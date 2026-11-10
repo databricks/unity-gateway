@@ -2,10 +2,10 @@ import { expect, mock, test } from 'claude-code/testing';
 import { register } from '../hooks/register.ts';
 
 const config = {
-  model: 'ug-auto', mainModel: 'opus', storeKey: 'workspace-main',
+  model: 'ug-auto-opus', description: 'Auto description', mainModel: 'opus', storeKey: 'workspace-main',
   models: [
-    {model: 'opus', label: 'Opus 5.5'}, {model: 'fable-old', label: 'Fable 5.0'},
-    {model: 'fable', label: 'Fable 5.1'}, {model: 'astra', label: 'Astra 6.0'},
+    {model: 'opus', label: 'Opus 5.5', autoModel: 'ug-auto-opus'}, {model: 'fable-old', label: 'Fable 5.0', autoModel: 'ug-auto-fable-old'},
+    {model: 'fable', label: 'Fable 5.1', autoModel: 'ug-auto-fable'}, {model: 'astra', label: 'Astra 6.0', autoModel: 'ug-auto-astra'},
   ],
 };
 const options = {
@@ -15,8 +15,8 @@ const options = {
 };
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
-function host(on: any, selected = 'ug-auto') {
-  const state = {selected, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+function host(on: any, selected = 'ug-auto-opus') {
+  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -26,6 +26,10 @@ function host(on: any, selected = 'ug-auto') {
   on('env.get', ($: any, e: any) => ({value: env[e.name]}));
   on('env.set', ($: any, e: any) => {env[e.name] = e.value; return {value: undefined};});
   on('fs.read', () => ({value: '{}'}));
+  on('command.run', {command: 'model'}, ($: any, e: any, next: any) => {
+    if (!e.args) return next(e);
+    state.selected = e.args; return state.modelResult;
+  });
   on('session.model', () => ({value: state.selected}));
   on('session.start', () => ({cwd: '/work'}));
   on('ui.invalidate', () => ({value: undefined}));
@@ -104,7 +108,7 @@ test('Auto sends the main model and retains the native model display with a sepa
   await $.session.start(start);
   await step($);
   expect(state.forwarded[0].model).toBe('opus');
-  expect(state.selected).toBe('ug-auto');
+  expect(state.selected).toBe('ug-auto-opus');
   expect(await hint($, state)).toBe('native · Auto(Opus 5.5)');
   await step($, 'child');
   expect(state.forwarded[1].model).toBe('native');
@@ -123,7 +127,7 @@ test('/auto changes only the main preference and offers the complete catalog', {
   expect(state.selected).toBe('opus');
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
   expect(await hint($, state)).toBe('native');
-  state.selected = 'ug-auto';
+  state.selected = env.ANTHROPIC_CUSTOM_MODEL_OPTION!;
   await step($);
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
   expect(state.forwarded[0].model).toBe('astra');
@@ -180,11 +184,32 @@ test('native model panel places Auto before its transcript and dismisses it on c
 
 test('direct model commands open the main selector only for Auto', {options}, async ($, on) => {
   const {state} = host(on, 'opus');
-  on('command.run', {command: 'model'}, () => ({text: 'Set model'}));
+  state.modelResult = {ref: 1};
   await $.command.run({command: 'model', args: 'opus'});
   expect(state.questions.length).toBe(0);
-  state.selected = 'ug-auto';
-  await $.command.run({command: 'model', args: 'ug-auto'});
+  state.selected = 'ug-auto-opus';
+  await $.command.run({command: 'model', args: 'ug-auto-opus'});
   expect(state.questions.length).toBe(1);
   expect(state.questions[0].id).toBe('auto-main');
+});
+
+
+test('/auto switches the native identity while Auto is selected', {options}, async ($, on) => {
+  const {state, env} = host(on);
+  await $.session.start(start);
+  await $.command.run({command: 'auto'});
+  const pane = await $.ui.mount({plugin: 'ug-smart-router', component: 'Pane', requestId: 'auto-main', surface: 'terminal', props: {} as any});
+  await pane.select({key: 'auto-main', value: 'astra'});
+  await pane.unmount();
+  expect(state.selected).toBe('ug-auto-astra');
+  expect(state.saved).toBe('astra');
+  expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('ug-auto-astra');
+  expect(state.questions.length).toBe(1);
+  await step($);
+  expect(state.forwarded[0].model).toBe('astra');
+  expect(await hint($, state)).toBe('native · Auto(Astra 6.0)');
+  state.saved = 'opus'; // Another session's persisted preference cannot change this profile.
+  await step($);
+  expect(state.forwarded[1].model).toBe('astra');
+  expect(await hint($, state)).toBe('native · Auto(Astra 6.0)');
 });

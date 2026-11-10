@@ -2359,14 +2359,31 @@ def _reconcile_managed_settings(
     )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     if auto_picker:
-        from ucode.agents.claude_auto import AUTO_MODEL, add_picker_entry, picker_is_configured
+        from ucode.agents.claude_auto import add_picker_entry, is_auto_model, picker_is_configured
 
         # The native picker and startup allowlist read their source directly,
         # before the merged settings.read hook. Install the row at configure;
         # subsequent launches only preserve an already configured row.
         if installed or picker_is_configured(managed_before):
             desired_settings = add_picker_entry(desired_settings)
-            owned_paths = [*owned_paths, ["modelPicker"], ["modelOverrides", AUTO_MODEL]]
+            owned_paths = [
+                *owned_paths,
+                ["modelPicker"],
+                *[
+                    ["modelOverrides", key]
+                    for source in (managed_before, desired_settings)
+                    for key in source.get("modelOverrides", {})
+                    if is_auto_model(key)
+                ],
+                *[
+                    ["env", key]
+                    for key in (
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+                    )
+                ],
+            ]
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
     if header_mod_root is not None:

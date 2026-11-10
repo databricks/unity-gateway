@@ -534,13 +534,18 @@ Fresh sessions default to Auto, with Opus 5.5 as the main model when available;
 otherwise the first available model is used. A saved or explicit ordinary model
 stays selected and disables routing. Claude's standard model display is retained.
 A separate `Auto(model name)` hint appears only while `/model` is Auto. Choosing
-a main model through `/auto` saves a per-workspace preference, without changing
-the `/model` selection or enabling routing. Escape preserves the preference.
+a main model through `/auto` switches the underlying native Auto variant and its
+context/effort profile immediately, keeping the checkmark on Auto. If a regular
+model is selected, `/auto` only saves the next-Auto preference and does not enable
+routing. Escape preserves the current selection. Each running session keeps its
+own selected profile, even when another session saves a different preference.
 
 This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
-wrapper. Configure writes the Auto row and its allowed fallback model into the
-actual model-picker source before Claude starts. Launch settings supply the catalog
-and routing baseline; the routing mod resolves Auto to the main model before inference. No synthetic model ID is sent to the gateway. Selecting
+wrapper. Configure writes fixed aliases for permitted main models and enables
+Claude's native custom-model row (`replaceBuiltInOptions: false`). The mod points
+that one row at the current Auto variant within each process; it never rewrites a
+shared capability profile. Launch settings supply the catalog and routing baseline;
+the routing mod resolves the selected variant to its real model before inference. No synthetic model ID is sent to the gateway. Selecting
 an ordinary model switches off routing through UG's existing atomic session
 controls. Launches do not edit managed files or install a custom status-line script.
 
@@ -548,14 +553,17 @@ The Auto flow applies to interactive subagent-routing launches. Explicit routing
 versions and flags remain supported. First-prompt-routing presets, headless runs,
 provider launches without routing support, and Isaac's feedback-gated controls
 retain their existing flows. `--disable-smart-routing` launches without the Auto routing mod. The configured row
-remains visible; outside the routed UG flow its alias uses the configured fallback model.
+is supplied by routed UG launches; a saved alias outside that flow maps to its
+configured real model without enabling routing.
 The Auto flow hides the old `/smart-router` command and ON/OFF routing banner.
 The Codex integration is unchanged.
 
 This branch is still a prototype. Cancelling `/model` or choosing a regular model
-can briefly display the main-model pane before it closes. Auto's capability profile
-comes from its configured fallback; changing the main preference does not update
-the native context/effort profile. Do not treat alternate main models as capability-verified.
+can briefly display the main-model pane before it closes. The native header shows
+the underlying model name. Capability recognition uses the exact Claude ID or an
+explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
+Other model families, native Windows/macOS execution and actual compaction require
+separate validation.
 
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt

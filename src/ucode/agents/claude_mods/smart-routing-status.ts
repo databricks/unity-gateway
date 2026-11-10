@@ -53,7 +53,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On, auto?: { model: string; mainModel: string; storeKey: string; models: {model: string; label: string}[] }): void => {
+export const registerStatusBand = (on: On, auto?: { model: string; mainModel: string; storeKey: string; models: {model: string; label: string; autoModel: string}[] }): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
@@ -74,10 +74,9 @@ export const registerStatusBand = (on: On, auto?: { model: string; mainModel: st
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
     let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
     if (auto) {
-      const saved = await $.store.get(auto.storeKey)
-      const main = auto.models.find((row) => row.model === saved)
-        ?? auto.models.find((row) => row.model === auto.mainModel)!
-      state = await $.session.model() === auto.model ? `Auto(${main.label})${agents}` : ''
+      const selected = await $.session.model()
+      const main = auto.models.find((row) => row.autoModel === selected)
+      state = main ? `Auto(${main.label})${agents}` : ''
     }
     const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
     return next({ ...e, props: { ...e.props, tail } })

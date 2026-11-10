@@ -1,30 +1,29 @@
 # Integration tests
 
-The Claude Auto model-picker flow has Python and native Claude 2.1.290
-component coverage (see `../README.md`). That verifies model selection, preference
-persistence, session routing controls and native render properties with controlled
-engine boundaries, including the native model panel returning before its confirmation
-is appended. The two confirmation component cases invoke the registered middleware
-directly; real transcript dispatch is verified by the terminal journey.
-`test_ug_claude_auto.py` now exercises `/model` → Auto → main-model choice,
-cancellation and reselection, a real routed child task, and a subsequent manual
-model task with no new routing decision in an 80-column terminal. It uses the
-checked-in managed routing catalog, or the 5.5 catalog for the explicitly
-selected agent-bricks staging workspace. This does not assert absence of transient pane
-flash or dynamic capability changes. The existing CI version pins are unchanged.
-Component checks alone are not gateway inference evidence. A manual Ubuntu 24.04 check
-on Claude 2.1.322 completed a real Auto-routed task (Sonnet 5.5 parent,
-Haiku 5.5 child) and a subsequent manual Opus 5.5 task with no new routing
-decision. Native child handbacks and parent answers were verified. The automated
-managed 80-column journey also passed on clean Ubuntu ARM64 with Claude 2.1.290
-and 2.1.322
-against the staging gateway, including parent/child answers and routing decisions.
-The brief pane flash on cancellation/manual selection remains a known UX failure.
-Auto capability metadata has component regression coverage for static managed
-catalogs, explicit admin metadata and context suffixes. After the privileged update, a fresh Ubuntu Claude 2.1.322 session with Auto
-showed no unknown-model warning, and native `/context` reported a 1m-token
-context and auto-compact window for its Opus 5.5 fallback. This does not verify
-dynamic capability changes for every alternate main model.
+Claude Auto has Python and native Claude 2.1.290 component coverage for fixed
+per-main-model aliases, managed allow/deny policy, migration of the old shared alias,
+complete catalog selection, cancellation/reselection, and routing activation only
+while a configured Auto variant is selected. The native mod tests check actual
+model-command dispatch and that another session's saved preference cannot change
+the active inference target or indicator.
+
+`native_claude/test_auto_profile.py` (relative to the tests directory) drives two real
+Claude terminals with the production UG mod. It checks a single checked Auto row,
+Opus 5.5 1M to Haiku 4.5 200K native context, changed effort support, independent
+sessions, Auto reselection, cancellation, and preference-only `/auto` under a manual
+model. It uses a dummy credential with no model responses: it does not establish
+inference, subagent routing, or actual `/compact` coverage. Native version pins are
+unchanged. It also guards against putting the custom option in settings env, which
+Claude reapplies after `/model` saves a selection.
+
+The existing `integration/test_ug_claude_auto.py` managed 80-column journey requires
+real parent/child answers and correlated routing decisions before and after a manual
+model choice. The fixed-variant journey passed on Ubuntu ARM64 with the existing Claude 2.1.290
+pin, including real routed and unrouted child tasks. The two-session native profile
+journey also passed on 2.1.290. Older shared-alias runs passed on 2.1.322; the new
+variant implementation has not been validated on that version. The known transient pane
+flash on cancellation/manual selection is not asserted away. Native header labels
+continue to show the underlying model.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.

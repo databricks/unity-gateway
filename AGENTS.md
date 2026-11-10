@@ -62,14 +62,20 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
-Claude Auto installs its picker row, allowed alias and `modelOverrides.ug-auto` during
-explicit configure. Claude reads picker and startup policy from the actual source,
-not the merged settings hook. Preserve an existing list when no central config exists.
-The alias maps only to an allowed model and preserves native model display. The routing mod receives its catalog through
-`pluginConfigs.ug-smart-router.options.autoPicker` and stores only the per-workspace
-main-model preference with native `$.store`; `/auto` never writes a config file.
-An ordinary `/model` selection disables the session routing controls. Updating the
-managed mod still requires explicit `ug configure`; a launch never installs it.
+Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
+permits only aliases whose real targets are allowed. Configure removes stale UG
+aliases and sets `modelPicker.replaceBuiltInOptions` false so the native custom
+option is visible. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+its display companions in the process environment: putting these in settings env
+would reset the pointer whenever native `/model` saves a selection. Keep one Auto
+row; aliases must not be separate modelPicker rows. Preserve other overrides and
+regular picker rows. `/auto` changes the native selected alias while Auto is active,
+and only the next-Auto preference while a regular model is active. Native context,
+effort, inference target and indicator derive from the selected alias, never another
+session's saved preference. The mod stores the per-workspace preference with native
+`$.store` and never writes configuration files. An ordinary `/model` selection
+disables session routing. Managed configuration changes require explicit configure;
+a launch never installs or rewrites machine-wide configuration.
 
 ### Adding a parameter
 

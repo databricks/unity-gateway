@@ -18,12 +18,28 @@ type AutoPicker = {
   model: string;
   mainModel: string;
   storeKey: string;
-  models: { model: string; label: string }[];
+  description: string;
+  models: { model: string; label: string; autoModel: string }[];
 };
 
 async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
+  const awaitModel = await $.session.model();
+  const active = auto.models.find((row) => row.autoModel === awaitModel);
+  if (active) return active.model;
   const saved = await $.store.get(auto.storeKey);
   return auto.models.some((row) => row.model === saved) ? saved as string : auto.mainModel;
+}
+
+async function autoSelected($: EngineInterface, auto: AutoPicker): Promise<boolean> {
+  const selected = await $.session.model();
+  return auto.models.some((row) => row.autoModel === selected);
+}
+
+async function customAutoRow($: EngineInterface, auto: AutoPicker, model: string): Promise<void> {
+  const row = auto.models.find((row) => row.model === model)!;
+  await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION', row.autoModel);
+  await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'Auto');
+  await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION', auto.description);
 }
 
 async function chooseMainModel($: EngineInterface, auto: AutoPicker): Promise<void> {
@@ -31,7 +47,7 @@ async function chooseMainModel($: EngineInterface, auto: AutoPicker): Promise<vo
 }
 
 async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker): Promise<void> {
-  const enabled = await $.session.model() === auto.model;
+  const enabled = await autoSelected($, auto);
   const current = isRoutingEnabled(await readSessionEnvironment($));
   if (current !== enabled) await setRouting($, options, enabled, true);
 }
@@ -150,6 +166,7 @@ async function setRouting(
 export function register(on: On, options: PluginOptions): void {
   const auto: AutoPicker | undefined = options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   let choosing = false;
+  let switchingAuto = false;
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
@@ -158,6 +175,7 @@ export function register(on: On, options: PluginOptions): void {
   on('session.start', async ($, e, next) => {
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
+      await customAutoRow($, auto, await mainModel($, auto));
       await syncAutoRouting($, options, auto);
     }
     if (launchedEnabled) {
@@ -176,19 +194,20 @@ export function register(on: On, options: PluginOptions): void {
       $.ui.invalidate('tool.describe');
     }
     const model = routedModels.model(e.agentId)
-      ?? (auto && !e.agentId && await $.session.model() === auto.model ? await mainModel($, auto) : undefined);
+      ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined);
     return yield* next(model ? {...e, model} : e);
   });
 
   if (auto) {
     on('command.run', { command: 'model' }, async ($, e, next) => {
       const result = await next(e);
+      if (switchingAuto) return result;
       // Panel commands return an opaque ref, before their transcript is appended.
       // Place the pane while this still carries the user's command context; the
       // confirmation below focuses it after /model closes or dismisses it on Esc.
       // Direct /model <name> commands have no panel handoff. In particular,
       // never reopen a pane after their manual-model confirmation closed it.
-      if (typeof result.ref === 'number' || (e.args.trim() && await $.session.model() === auto.model)) {
+      if ((!e.args.trim() && typeof result.ref === 'number') || (e.args.trim() && await autoSelected($, auto))) {
         await chooseMainModel($, auto);
       }
       return result;
@@ -203,7 +222,26 @@ export function register(on: On, options: PluginOptions): void {
           onSelect: async (value) => {
             const selected = auto.models.find((row) => row.model === value);
             if (!selected) return;
-            await $.store.set(auto.storeKey, selected.model);
+            const previous = await mainModel($, auto);
+            const active = await autoSelected($, auto);
+            switchingAuto = true;
+            pendingSelection?.cancel();
+            try {
+              await customAutoRow($, auto, selected.model);
+              if (active) {
+                await $.command.run({ command: 'model', args: selected.autoModel });
+                if (await $.session.model() !== selected.autoModel) {
+                  throw new Error('Claude did not accept the selected main model.');
+                }
+              }
+              await $.store.set(auto.storeKey, selected.model);
+            } catch (error) {
+              // Preserve the selected profile and the single row after a rejected switch.
+              await customAutoRow($, auto, await mainModel($, auto) || previous);
+              throw error;
+            } finally {
+              switchingAuto = false;
+            }
             await $.ui.close({ id: 'auto-main' });
             $.ui.invalidate('ui.render');
             $.ui.toast(`Auto(${selected.label}) saved`);
@@ -229,7 +267,9 @@ export function register(on: On, options: PluginOptions): void {
     // change hook alone misses that first-use/reselection case. Defer the next
     // native question until the model picker has closed; never self-dispatch /auto.
     on('session.append', { door: 'command' }, async ($, e, next) => {
+      const internalSwitch = switchingAuto;
       const result = await next(e);
+      if (internalSwitch) return result;
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
       if (/^<local-command-stdout>Kept model/.test(text)) await $.ui.close({ id: 'auto-main' });
@@ -238,7 +278,7 @@ export function register(on: On, options: PluginOptions): void {
         pendingSelection = $.clock.after(0, async () => {
           await syncAutoRouting($, options, auto);
           $.ui.invalidate('ui.render');
-          if (await $.session.model() !== auto.model) {
+          if (!await autoSelected($, auto)) {
             await $.ui.close({ id: 'auto-main' });
             return;
           }

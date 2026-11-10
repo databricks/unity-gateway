@@ -133,7 +133,7 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     A managed picker is authoritative for smart routing: its rows are the models the
     administrator exposed, so there is no need to query the gateway catalog first.
     """
-    from ucode.agents.claude_auto import AUTO_MODEL, model_available
+    from ucode.agents.claude_auto import is_auto_model, model_available
 
     try:
         from ucode.agents.claude import (
@@ -169,7 +169,7 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
             model_id = row["model"].strip()
             if (
                 not model_id
-                or model_id == AUTO_MODEL
+                or is_auto_model(model_id)
                 or model_id in seen
                 or not model_available(model_id, policy)
             ):
@@ -752,7 +752,7 @@ def launch_claude(
         and not _claude_print_mode(remaining)
         and not env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
     )
-    from ucode.agents.claude import auto_picker_available
+    from ucode.agents.claude import _managed_settings_path, auto_picker_available
     from ucode.agents.claude_auto import add_picker_entry
 
     if auto_picker and not auto_picker_available():
@@ -773,6 +773,13 @@ def launch_claude(
             },
         )
         settings = add_picker_entry(settings)
+        managed_path = _managed_settings_path()
+        managed_auto = read_json_safe(managed_path) if managed_path is not None else {}
+        auto_config = json.loads(
+            picker_config(
+                catalog, workspace, managed_auto if "modelPicker" in managed_auto else settings
+            )
+        )
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
     if route_first_prompt and _claude_print_mode(remaining):
@@ -847,7 +854,12 @@ def launch_claude(
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
             }
             if auto_picker:
-                mod_options["autoPicker"] = picker_config(catalog, workspace)
+                mod_options["autoPicker"] = json.dumps(auto_config)
+                # Settings env is reapplied when /model saves a native selection.
+                # Keep this pointer process-local, so it cannot revert to a shared default.
+                os.environ["ANTHROPIC_CUSTOM_MODEL_OPTION"] = auto_config["model"]
+                os.environ["ANTHROPIC_CUSTOM_MODEL_OPTION_NAME"] = "Auto"
+                os.environ["ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION"] = auto_config["description"]
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = mod_options
@@ -859,7 +871,10 @@ def launch_claude(
             start_model = routed_model or launch_model
             if auto_picker and not start_model and not has_explicit_model_arg(remaining):
                 saved = read_json_safe(user_settings_path).get("model")
-                start_model = saved if saved in [AUTO_MODEL, *model_ids] else AUTO_MODEL
+                variants = [row["autoModel"] for row in auto_config["models"]]
+                start_model = saved if saved in [*variants, *model_ids] else auto_config["model"]
+            if auto_picker and start_model == AUTO_MODEL:
+                start_model = auto_config["model"]
             model_args = launch_model_args(remaining, start_model)
             argv = [
                 binary,

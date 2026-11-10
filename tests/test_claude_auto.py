@@ -9,6 +9,7 @@ import pytest
 from ucode.agents.claude_auto import (
     AUTO_MODEL,
     add_picker_entry,
+    auto_variant,
     picker_config,
     picker_is_configured,
 )
@@ -22,11 +23,19 @@ def test_auto_is_distinct_and_opus_55_is_default():
         {"system.ai.claude-opus-5-5[1m]": "Opus"},
     )
     result = json.loads(picker_config(catalog, "https://workspace"))
-    assert result["model"] == AUTO_MODEL
+    assert result["model"] == auto_variant({"model": "system.ai.claude-opus-5-5[1m]"})
     assert result["mainModel"] == "system.ai.claude-opus-5-5[1m]"
     assert result["models"] == [
-        {"model": "system.ai.claude-fable-5-1", "label": "Fable 5.1"},
-        {"model": "system.ai.claude-opus-5-5[1m]", "label": "Opus 5.5"},
+        {
+            "model": "system.ai.claude-fable-5-1",
+            "label": "Fable 5.1",
+            "autoModel": auto_variant({"model": "system.ai.claude-fable-5-1"}),
+        },
+        {
+            "model": "system.ai.claude-opus-5-5[1m]",
+            "label": "Opus 5.5",
+            "autoModel": auto_variant({"model": "system.ai.claude-opus-5-5[1m]"}),
+        },
     ]
     other = json.loads(picker_config(catalog, "https://other-workspace"))
     assert result["storeKey"] != other["storeKey"]
@@ -37,7 +46,9 @@ def test_default_stays_in_available_catalog_and_preserves_custom_labels():
         picker_config(AnthropicModelCatalog(["custom"], {"custom": "Team model"}), "w")
     )
     assert result["mainModel"] == "custom"
-    assert result["models"] == [{"model": "custom", "label": "Team model"}]
+    assert result["models"] == [
+        {"model": "custom", "label": "Team model", "autoModel": auto_variant({"model": "custom"})}
+    ]
     with pytest.raises(ValueError, match="at least one"):
         picker_config(AnthropicModelCatalog([AUTO_MODEL], {}), "w")
 
@@ -61,6 +72,12 @@ def test_native_launch_default_precedence_and_compatibility(
     from ucode import custom_oauth
     from ucode.agents import claude
 
+    for key in (
+        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "0")
     monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
@@ -68,6 +85,7 @@ def test_native_launch_default_precedence_and_compatibility(
     monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, sys.executable)
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(claude, "auto_picker_available", lambda: installed)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent-managed.json")
     monkeypatch.setattr(v2, "_model_picker_catalog", lambda: AnthropicModelCatalog(["opus"], {}))
     monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
@@ -99,6 +117,8 @@ def test_native_launch_default_precedence_and_compatibility(
             model_name=claude._maybe_add_1m_suffix,
         )
     assert exit_info.value.code == 0
+    if expected == AUTO_MODEL:
+        expected = auto_variant({"model": "opus"})
     argv = captured["argv"]
     assert (argv[argv.index("--model") + 1] if "--model" in argv else None) == expected
     options = captured["settings"]["pluginConfigs"]["ug-smart-router"]["options"]
@@ -125,10 +145,12 @@ def test_auto_configured_in_actual_picker_and_allowlist_without_widening_targets
         "prependPlugins": ["sec-default@builtin"],
     }
     result = add_picker_entry(original)
-    assert result["availableModels"] == ["system.ai.claude-opus-5", AUTO_MODEL]
-    assert result["modelOverrides"] == {"other": "custom", AUTO_MODEL: "system.ai.claude-opus-5"}
-    assert result["modelPicker"]["options"][0]["behavesAs"] == "claude-opus-5"
-    assert result["modelPicker"]["options"][1:] == original["modelPicker"]["options"]
+    alias = auto_variant({"model": "system.ai.claude-opus-5"})
+    assert result["availableModels"] == ["system.ai.claude-opus-5", alias]
+    assert result["modelOverrides"] == {"other": "custom", alias: "system.ai.claude-opus-5"}
+    assert result["modelPicker"]["replaceBuiltInOptions"] is False
+    assert "ANTHROPIC_CUSTOM_MODEL_OPTION" not in result["env"]
+    assert result["modelPicker"]["options"] == original["modelPicker"]["options"]
     assert result["enforceAvailableModels"] is True
     assert result["prependPlugins"] == original["prependPlugins"]
     assert original["availableModels"] == ["system.ai.claude-opus-5"]
@@ -136,7 +158,8 @@ def test_auto_configured_in_actual_picker_and_allowlist_without_widening_targets
     assert add_picker_entry(result) == result
     assert not picker_is_configured(original)
     blocked = {**original, "deniedModels": ["system.ai.claude-opus-5"]}
-    assert add_picker_entry(blocked) == blocked
+    assert not picker_is_configured(add_picker_entry(blocked))
+    assert add_picker_entry(blocked)["availableModels"] == blocked["availableModels"]
 
 
 @pytest.mark.parametrize(
@@ -151,8 +174,10 @@ def test_auto_configured_in_actual_picker_and_allowlist_without_widening_targets
 def test_auto_inherits_fallback_capabilities_without_guessing_from_labels(main, behavior):
     settings = {"modelPicker": {"options": [main]}}
     result = add_picker_entry(settings)
-    assert result["modelPicker"]["options"][0].get("behavesAs") == behavior
-    assert result["modelOverrides"][AUTO_MODEL] == main["model"]
+    alias = auto_variant(main)
+    assert alias.endswith(behavior or main["model"])
+    assert "ANTHROPIC_CUSTOM_MODEL_OPTION" not in result["env"]
+    assert result["modelOverrides"][alias] == main["model"]
     assert settings["modelPicker"]["options"] == [main]
     assert add_picker_entry(result) == result
 
@@ -255,3 +280,52 @@ def test_configure_discovers_catalog_without_central_config(tmp_path, monkeypatc
     )
     assert path.read_bytes() == before
     assert len(writes) == count
+
+
+def test_auto_profiles_are_immutable_and_migrate_stale_aliases():
+    opus = {"model": "system.ai.claude-opus-5-5"}
+    haiku = {"model": "team-fast", "behavesAs": "claude-haiku-4-5"}
+    original = {
+        "modelPicker": {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": AUTO_MODEL, "label": "Auto"}, opus, haiku],
+        },
+        "availableModels": [AUTO_MODEL, opus["model"], haiku["model"]],
+        "modelOverrides": {AUTO_MODEL: opus["model"], "other": "unrelated"},
+    }
+    result = add_picker_entry(original)
+    assert result["modelPicker"]["options"] == [opus, haiku]
+    assert result["modelOverrides"] == {
+        auto_variant(opus): opus["model"],
+        auto_variant(haiku): haiku["model"],
+        "other": "unrelated",
+    }
+    config = json.loads(
+        picker_config(AnthropicModelCatalog([opus["model"], haiku["model"]], {}), "w", result)
+    )
+    assert config["models"][1]["autoModel"] == auto_variant(haiku)
+    assert add_picker_entry(result) == result
+    withdrawn = {**result, "deniedModels": [haiku["model"]]}
+    cleaned = add_picker_entry(withdrawn)
+    assert auto_variant(haiku) not in cleaned["modelOverrides"]
+    assert auto_variant(haiku) not in cleaned["availableModels"]
+    assert cleaned["modelOverrides"][auto_variant(opus)] == opus["model"]
+
+
+def test_separate_deployments_with_same_profile_have_distinct_aliases():
+    a = {"model": "a", "behavesAs": "claude-sonnet-5-5[1m]"}
+    b = {"model": "b", "behavesAs": a["behavesAs"]}
+    assert auto_variant(a) != auto_variant(b)
+    assert auto_variant(a).endswith(a["behavesAs"])
+
+
+def test_removing_last_auto_alias_does_not_turn_allowlist_into_unrestricted():
+    original = {
+        "availableModels": [AUTO_MODEL],
+        "modelOverrides": {AUTO_MODEL: "opus"},
+        "modelPicker": {"options": [{"model": AUTO_MODEL}, {"model": "opus"}]},
+    }
+    result = add_picker_entry(original)
+    assert result["availableModels"] == [AUTO_MODEL]
+    assert AUTO_MODEL not in result["modelOverrides"]
+    assert not picker_is_configured(result)

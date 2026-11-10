@@ -1,26 +1,29 @@
 # Test suites and user journeys
 
-Claude Auto component coverage in `test_claude_auto.py` and the native mod suite
-checks a distinct Auto identity, Opus 5.5 default, per-workspace preference keys,
-policy-filtered main models, managed deny/allow rules across picker sources,
-empty authoritative catalogs that fail closed, Auto fallback capability metadata
-(including context suffixes and explicit admin hints), unchanged native settings, complete catalog selection,
-cancellation, Auto reselection, command-before-transcript pane placement, root-only inference model substitution, and hiding
-the separate indicator while ordinary models disable session routing. Native
-checks pass on the existing Claude Code 2.1.290 pin (and previously on 2.1.322).
-The two transcript-confirmation cases invoke the actual registered middleware with
-controlled engine boundaries because 2.1.290 has no `mock.session` helper; native
-transcript dispatch is covered by the terminal journey. These component checks do
-not establish a live gateway routing decision or a completed interactive task.
+Claude Auto has Python and native Claude 2.1.290 component coverage for fixed
+per-main-model aliases, managed allow/deny policy, migration of the old shared alias,
+complete catalog selection, cancellation/reselection, and routing activation only
+while a configured Auto variant is selected. The native mod tests check actual
+model-command dispatch and that another session's saved preference cannot change
+the active inference target or indicator.
 
-`integration/test_ug_claude_auto.py` adds an 80-column real terminal journey for
-managed configure, the complete selector, cancellation/reselection, and real routed
-then unrouted child tasks. It checks settled UI states, not transient flash or dynamic
-capabilities. It uses the existing CI routing fixture, or the checked-in 5.5 catalog when the
-caller selects the agent-bricks staging workspace. This journey passed on clean
-Ubuntu ARM64 with Claude 2.1.290 and 2.1.322. Terminal component tests also cover transcript
-prompts preceding a picker and the native task menu's collapsed history heading,
-while continuing to reject running tasks and mismatched completion counts.
+`native_claude/test_auto_profile.py` (relative to the tests directory) drives two real
+Claude terminals with the production UG mod. It checks a single checked Auto row,
+Opus 5.5 1M to Haiku 4.5 200K native context, changed effort support, independent
+sessions, Auto reselection, cancellation, and preference-only `/auto` under a manual
+model. It uses a dummy credential with no model responses: it does not establish
+inference, subagent routing, or actual `/compact` coverage. Native version pins are
+unchanged. It also guards against putting the custom option in settings env, which
+Claude reapplies after `/model` saves a selection.
+
+The existing `integration/test_ug_claude_auto.py` managed 80-column journey requires
+real parent/child answers and correlated routing decisions before and after a manual
+model choice. The fixed-variant journey passed on Ubuntu ARM64 with the existing Claude 2.1.290
+pin, including real routed and unrouted child tasks. The two-session native profile
+journey also passed on 2.1.290. Older shared-alias runs passed on 2.1.322; the new
+variant implementation has not been validated on that version. The known transient pane
+flash on cancellation/manual selection is not asserted away. Native header labels
+continue to show the underlying model.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
