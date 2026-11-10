@@ -1942,13 +1942,13 @@ spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
 
-Managed schema/MPS wildcard expansion has component coverage in `../test_databricks.py` and
-`../test_cli.py`, including mixed source ordering, Claude catalog IDs and Copilot alias normalization, duplicate removal,
+Managed schema/MPS wildcard expansion has component coverage in `../test_agent_model_sources.py` and
+`../test_cli.py`, including agent-specific catalog selection, mixed source ordering, Claude catalog IDs and Copilot alias normalization, duplicate removal,
 schema-only sources, and empty/error fail-closed behavior. No installed-agent integration
 journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Short Claude picker labels for qualified MPS IDs have component coverage in
-`../test_string_utils.py` and `../test_agent_claude.py`. The checks retain the full option and
+`../test_agent_claude_models.py` and `../test_agent_claude.py`. The checks retain the full option and
 allow-list IDs and preserve dotted GPT versions. No installed-agent journey covers these labels.
 
 Gateway-alias picker text has component coverage in `../test_agent_claude.py` for short labels,

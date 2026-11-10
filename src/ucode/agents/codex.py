@@ -58,6 +58,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     CodexCatalogSource,
+    CodexModelCatalogEmpty,
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
@@ -1580,6 +1581,27 @@ def _set_routing_header(config: dict, header: str, value: str | None) -> None:
         headers[header] = value
     else:
         headers.pop(header, None)
+
+
+def source_models(
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+) -> tuple[list[str], str | None]:
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace,
+            token,
+            source=CodexCatalogSource.PROVIDER if provider else CodexCatalogSource.PARENT_SCHEMA,
+            identifier=provider or parent_schema or "",
+        )
+    except CodexModelCatalogEmpty:
+        if provider:
+            return [], None
+        raise
+    return catalog_slugs(catalog), None
 
 
 def _model_catalog_path(workspace: str, scope: str) -> Path:

@@ -122,7 +122,6 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
-from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import (
@@ -133,6 +132,7 @@ from ucode.workspace import (
 )
 
 from .args import LaunchOptions, has_explicit_model_arg
+from .claude_models import picker_label, picker_option, static_picker_option
 from .request_tags import request_tags_header_value
 
 GATEWAY_MODEL_DISCOVERY_ENV_VAR = "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY"
@@ -695,17 +695,17 @@ def render_overlay(
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
-            "options": [_static_picker_option(model) for model in static_models],
+            "options": [static_picker_option(model) for model in static_models],
         }
         keys += [[key] for key in CLAUDE_MANAGED_PICKER_KEYS]
     elif picker_catalog and picker_catalog.model_ids and not relayed:
         overlay["modelPicker"] = {
             "replaceBuiltInOptions": True,
             "options": [
-                _picker_option(
+                picker_option(
                     maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model)
-                    or model_picker_label(unwrap_anthropic_gateway_model(model)),
+                    or picker_label(unwrap_anthropic_gateway_model(model)),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -722,35 +722,6 @@ def render_overlay(
         keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
 
     return overlay, keys
-
-
-_CLAUDE_PICKER_LABEL_RE = re.compile(
-    r"^Claude (Fable|Opus|Sonnet|Haiku) (\d+(?:\.\d+)*)$", re.IGNORECASE
-)
-
-
-def _static_picker_option(model: str) -> dict[str, str]:
-    display_model = unwrap_anthropic_gateway_model(model)
-    option = {
-        "model": maybe_add_gpt_1m_suffix(model),
-        "label": model_picker_label(display_model),
-    }
-    if display_model != model:
-        option["description"] = f"Managed by your organization ({display_model})"
-    return option
-
-
-def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
-    option = {"model": model, "label": label}
-    if not description and (display_model := unwrap_anthropic_gateway_model(model)) != model:
-        description = f"Managed by your organization ({display_model})"
-    if description:
-        option["description"] = description
-    match = _CLAUDE_PICKER_LABEL_RE.fullmatch(label)
-    if match:
-        family, version = match.groups()
-        option["behavesAs"] = f"claude-{family.lower()}-{version.replace('.', '-')}"
-    return option
 
 
 def _maybe_add_1m_suffix(model: str) -> str:
@@ -784,7 +755,7 @@ def default_model_picker_catalog(
     descriptions: dict[str, str] = {}
     for family, raw_model in defaults.items():
         model = raw_model
-        label = model_picker_label(model.removesuffix("[1m]"))
+        label = picker_label(model.removesuffix("[1m]"))
         if provider is not None:
             # Family shortcuts stay distinct from catalog rows for the same target.
             model = family

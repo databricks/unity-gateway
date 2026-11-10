@@ -382,6 +382,20 @@ def _without_registry_prefix(model: str) -> str:
     return rest if separator and name in PROVIDER_NAMES.values() else model
 
 
+def source_models(
+    workspace: str,
+    token: str,
+    *,
+    parent_schema: str | None = None,
+    provider: str | None = None,
+    provider_type: str = "",
+) -> tuple[list[str], str | None]:
+    if provider:
+        return list_provider_service_models(workspace, token, provider, provider_type)
+    catalog = list_anthropic_model_catalog(workspace, token, parent_schema=parent_schema)
+    return [unwrap_anthropic_gateway_model(model) for model in catalog.model_ids], catalog.error_msg
+
+
 def provider_service_catalog(
     state: dict, service_name: str, requested: str | None, *, tool: str = "copilot"
 ) -> list[CopilotModel]:
