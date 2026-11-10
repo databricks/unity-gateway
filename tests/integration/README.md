@@ -242,6 +242,12 @@ pointer and an unchanged repeat configure with no restart notice; a second case 
 catalog pointer through configure and revert. Revert of ug's pointer is covered by
 `test_ug_codex_managed_model_discovery.py`. It does not cover desktop tracing (its systemd/launchd
 service needs a user session), the GUI, or inference.
+`test_ug_codex_desktop_macos.py` covers the GUI and inference on macOS only: after the same managed
+configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
+Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
+app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model.
+`scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
+macOS desktop CI job does, so a local run never drives a developer's installed app.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -252,7 +258,10 @@ is read-only and checked for changes at teardown; concurrent readers need no res
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
 inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
 model, provider type and target restrictions. Offline checks accept Responses alongside Chat
-Completions in either order and reject missing or additional APIs. Both inference cases ask
+Completions in either order and reject missing or additional APIs. CUJ2 expects only
+`gpt-6-luna` in its OpenAI MPS and as its Codex default. CUJ1 and CUJ6's Codex Luna
+selection is `system.ai.gpt-6-luna`; their published model lists and CUJ6 phase C default
+must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
@@ -578,7 +587,7 @@ from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copi
 `test_ug_copilot_model_location.py` launches Copilot from fresh state with `--model-location` on the
 model-discovery schema and completes a file task on its Claude-compatible model service.
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
-Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
+Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-6-luna`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
 `test_ug_copilot_mcp.py` adds `system.ai.web_search` with `ug mcp add --agents copilot` over a
 developer's own disabled server, checks Copilot's `copilot mcp list --json` and `ug mcp list`, runs
@@ -688,6 +697,8 @@ required; floating `latest`, caret, and tilde versions are rejected. Hosted prov
 exercise explicit model arguments use a real `system.ai` model already discovered
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
 `--codex-model` and `--opencode-model` overrides reproduce a particular model-related failure.
+Explicit Codex cases prefer `system.ai.gpt-6-luna` on both Linux and Windows; Copilot's
+GPT file tasks use the same model. The Codex and Copilot tracing fixtures also select it.
 OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install and select it.
 Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.91`).
 Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<version>-<build id>`
@@ -956,6 +967,7 @@ test_ug_codex_v2_routing.py              # exact native v2 assignments and route
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
+test_ug_codex_desktop_macos.py          # ChatGPT desktop app on macOS: GUI prompt, exact answer, model, completed turn
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
@@ -1114,7 +1126,7 @@ MPS CUJs select the existing services already used by e2e:
 - Codex (custom Azure OpenAI): `main.ucode.ci_custom_azure_openai_mps` declares GPT deployments
   on `openai/v1/responses`. `test_ug_configure_codex_custom_azure_openai_mps` selects the service
   in the real configure picker, then launches Codex without `--provider` and completes a TUI
-  file-reading task on `gpt-5-nano`. Override with `--codex-custom-provider` and
+  file-reading task on `gpt-6-luna`. Override with `--codex-custom-provider` and
   `--codex-custom-provider-model`.
   Both journeys assert the saved provider, completed-turn model, and normal exit, and run
   in their full agent lanes on Linux and Windows. Codex sets its MPS header at launch;
@@ -1126,11 +1138,11 @@ MPS CUJs select the existing services already used by e2e:
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
-- Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
+- Codex and Copilot (OpenAI): `main.ucode.ci_openai_mps`, using its allowed `gpt-6-luna` model.
 - Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
   target (`--antigravity-provider`, `--antigravity-provider-models`).
-- Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
-- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
+- Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-6-luna` model.
+- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-6-luna` model.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
@@ -1194,6 +1206,8 @@ the Claude service. Codex's app-server catalog must exactly match a separate rea
 Codex model-list request with the parent-schema header, including the dedicated Codex
 service and no out-of-schema models. A Claude service is included only if that API
 advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
+Codex provider discovery also compares the full app-server list with an independent
+provider-scoped model-list request and requires `--codex-provider-model` in that catalog.
 Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude can
 deduplicate it into the native Haiku picker row (Haiku 4.5), while an explicit
@@ -1368,6 +1382,14 @@ It uploads `integration-headless-windows-claude` evidence and remains outside
 the required gate while native failures are diagnosed. Codex's Windows CI
 journey is deferred while the npm proxy rejects its package metadata; the runner
 still supports explicitly selecting it once the requested package is available.
+The required **Codex desktop inference · macOS** job installs the ChatGPT desktop app from
+OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml`, and runs the
+`macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
+Accessibility to the runner's shell, so no permission prompt is needed. It uploads
+`integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
+`https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
+harness-latest workflow runs the same journey against the newest appcast build, so it shows
+when a bump is due.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
@@ -1524,7 +1546,10 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
-Versions are resolved once for all three suites. A final job sends one success or
+Its `desktop` suite runs `test_ug_codex_desktop_macos.py` on macOS against the newest
+ChatGPT desktop build in OpenAI's appcast. With no hash to pin, it requires `codesign`,
+`spctl` (notarization) and OpenAI's Developer ID team before opening the app.
+Versions are resolved once for all four suites. A final job sends one success or
 failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
 a workflow-run link on success or a failed-job link on failure (the workflow-run
 link if GitHub's jobs API is unavailable).

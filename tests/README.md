@@ -1031,6 +1031,14 @@ Consult the run's JUnit report and artifacts for results. Each function states
 its **Scenario** and **Expected** outcome and shows its configure and launch
 commands. Fixtures supply fresh environments and credentials, never configured ug.
 Integration tests live directly in `integration/`; shared mechanics live in `utils/`.
+
+Generic Codex and Copilot GPT file tasks use `system.ai.gpt-6-luna`; their OpenAI,
+Azure OpenAI, custom Azure and Foundry provider journeys default to `gpt-6-luna`.
+Managed tracing and Codex lifecycle fixtures use the hosted model too. Dedicated CUJ1 and
+CUJ6 Codex Luna selections also use `system.ai.gpt-6-luna`; CUJ2's OpenAI MPS uses
+`gpt-6-luna`. Their separately provisioned workspace configs and CUJ2 MPS must match
+the test expectations; tests never update those fixtures.
+
 Dedicated-workspace CUJs live in `e2e_cuj/` and use the shared `cuj` fixture plus
 integration utilities; only CUJ-specific evidence correlation stays in a test file.
 
@@ -1053,7 +1061,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_07_configured_claude_discovers_system_models` (CUJ7), `test_case_09_fresh_claude_discovers_system_models` (integration) | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry; case 07 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_08_configured_codex_uses_default_models` (CUJ7), `test_case_10_fresh_codex_uses_default_models` (integration) | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog; case 08 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_11_*` | Launch configured and fresh Claude with an explicit provider and no managed config | The provider catalog replaces built-in picker rows; the cache contains exactly the provider model, and the picker shows both its row and Default resolving to it |
-| `test_case_12_*` | Launch configured and fresh Codex with a provider | The provider supplies exactly its model catalog |
+| `test_case_12_*` | Launch configured and fresh Codex with a provider | App-server models exactly match the independently fetched provider catalog, which must include the selected provider-task model |
 | `test_case_13_*` | Launch configured and fresh Claude with a model location and no managed config | The explicit parent's catalog replaces built-in picker rows and appears in the real picker; Default resolves to the model in the scoped fixture catalog |
 | `test_case_14_*` | Launch configured and fresh Codex with a model location | The app-server list exactly matches the independent API-compatible parent catalog, includes the dedicated Codex service, and contains no out-of-schema models |
 | `test_ug_claude_headless_prompt_argument`, `test_ug_claude_headless_prompt_stdin`, `test_ug_claude_headless_prompt_after_separator` | Run Claude from a script using each prompt form | Structured final answer contains the file value; exit zero; no routing |
@@ -1219,6 +1227,8 @@ It installs the shared CI Claude version and uploads independent evidence. Codex
 journey is deferred while its npm proxy access is blocked. Native TUI
 and managed-settings coverage remain deferred; a green installation check alone
 does not establish a successful live task.
+A required macOS job opens the pinned ChatGPT desktop app after managed `ug configure`, sends a
+prompt through the GUI, and asserts the exact answer, model, and completed turn from the app's rollout.
 The `All integration tests` check requires every selected integration job to pass, including
 both managed-config lanes for full/live runs; full coverage does not depend on a label or
 a manual request.
@@ -1361,7 +1371,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys verify that `smart_routing.enabled` alone leaves Claude's first prompt unrouted and turns on Smart Router Orchestrator for Claude, and that Codex's managed default stays unrouted and unorchestrated; the Claude managed-default skill-toggle cases and a Codex launch-only opt-out case cover those paths; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
-| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; desktop tracing, GUI, and inference are not |
+| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; GUI inference on macOS by `integration/test_ug_codex_desktop_macos.py`; desktop tracing and Windows/Linux GUI are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
 | Other agents | Live scope is Claude Code and Codex, plus a non-blocking OpenCode headless case |
 | OpenCode `--model` / `-m` | Unit/component tests cover raw CLI forwarding, configured model selection, launch arguments, rejection of unknown models before starting the native process, and the existing failure when no default model is available; no dedicated live integration journey |
