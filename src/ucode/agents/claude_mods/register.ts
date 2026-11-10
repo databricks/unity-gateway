@@ -14,10 +14,11 @@ import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import {
   ROUTING_LOGS_PANE,
+  applyRoutingLogsRead,
+  logsReaderCommand,
   registerRoutingLogs,
   routingLogsPaneClosed,
   routingLogsPaneOpen,
-  runRoutingLogsReader,
 } from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
@@ -62,7 +63,9 @@ async function readSessionEnvironment($: EngineInterface): Promise<Environment> 
 }
 
 // While the Smart Router logs pane is open, a finished turn reruns the reader, so
-// decisions routed after the pane opened appear and the relative ages stay fresh.
+// decisions routed after the pane opened appear and the relative ages stay fresh. The
+// reader runs here rather than in routing-logs because the mod compiler keeps $ only
+// within the file that declares the function receiving it.
 async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions): Promise<void> {
   if (!routingLogsPaneOpen()) return;
   try {
@@ -74,7 +77,18 @@ async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions
   } catch {
     return;
   }
-  const note = await runRoutingLogsReader($, options);
+  let note: string | undefined;
+  try {
+    const command = logsReaderCommand(options);
+    const session = await $.session.id();
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    note = applyRoutingLogsRead(result.stdout,
+      result.exitCode !== 0 || result.isStdoutTruncated
+        ? `logs command exited ${result.exitCode} or truncated output`
+        : undefined);
+  } catch (error) {
+    note = applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
+  }
   $.ui.invalidate('ui.render');
   if (note) $.ui.log(note, { to: 'debug' });
 }

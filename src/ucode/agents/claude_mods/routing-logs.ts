@@ -37,8 +37,9 @@ export function logsReaderCommand(options: PluginOptions): string[] {
 }
 
 // Run the reader CLI once and store its result. Returns the debug-log note,
-// empty when the read succeeded.
-export async function runRoutingLogsReader($: any, options: PluginOptions): Promise<string> {
+// empty when the read succeeded. Local because the mod compiler keeps $ only
+// within the file that declares the function receiving it.
+async function runRoutingLogsReader($: any, options: PluginOptions): Promise<string> {
   try {
     const command = logsReaderCommand(options);
     const session = await $.session.id();
