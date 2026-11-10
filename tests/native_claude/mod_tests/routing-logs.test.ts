@@ -6,9 +6,10 @@ const pane = {
   props: { title: 'Smart Router logs', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const;
 const command = { command: 'smart-router', args: 'logs' };
+const now = Date.now() / 1000;
 const records = [
-  { decision_id: 'd1', at: 1000, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
-  { decision_id: 'd2', at: 2000, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
+  { decision_id: 'd1', at: now - 2 * 3600, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
+  { decision_id: 'd2', at: now - 5, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
 ];
 const decision = {
   v: 1,
@@ -41,6 +42,8 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   const ui = await $.ui.mount(pane);
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('2 routed prompts this session');
+  expect(tree).toContain('  2h ago  ');
+  expect(tree).toContain('just now  ');
   expect(tree).not.toMatch(/\d{2}:\d{2}/);
   expect(tree.indexOf('(prompt not recorded)')).toBeGreaterThanOrEqual(0);
   expect(tree.indexOf('older task')).toBeGreaterThanOrEqual(0);
@@ -49,10 +52,11 @@ test('opens and refreshes session rows newest first', { options }, async ($, on)
   expect(tree).toContain('fast');
   expect(tree).not.toContain('1.4s');
   expect(tree).not.toContain('0.3s');
-  // Rows are pressable Buttons labeled with the preview and the short model.
+  // Rows are pressable Buttons labeled with the age, the preview, and the short model.
   expect(tree).toContain('"type":"Button"');
-  expect(tree).toContain('"key":"d2","label":"(prompt not recorded)  fast"');
-  expect(tree).toContain('"key":"d1","label":"older task  claude-sonnet"');
+  // Each row fills bodyColumns exactly, so the model name is right-aligned.
+  expect(tree).toContain(`"key":"d2","label":"just now  ${'(prompt not recorded)'.padEnd(80 - 'fast'.length - 12)}  fast"`);
+  expect(tree).toContain(`"key":"d1","label":"  2h ago  ${'older task'.padEnd(80 - 'claude-sonnet'.length - 12)}  claude-sonnet"`);
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   expect(count).toBe(2);
@@ -189,18 +193,22 @@ test('a decision that fails to load shows an error with a way back', { options }
   await $.command.run(command);
   const ui = await $.ui.mount(pane);
   const invalidId = JSON.stringify({ ...decision, decision: { ...decision.decision, decision_id: 'different-id' } });
-  for (const [stdout, exitCode, truncated] of [
+  const failures = [
     ['{"v":1,"error":"decision not found"}', 1, false],
     ['not json', 0, false],
     ['{"v":1,"decision":{"v":1}}', 0, false],
     [invalidId, 0, false],
     [JSON.stringify(decision), 0, true],
-  ] as const) {
+  ] as const;
+  for (const [index, [stdout, exitCode, truncated]] of failures.entries()) {
     decisionStdout = stdout;
     decisionExit = exitCode;
     decisionTruncated = truncated;
     await ui.press({ key: 'd1' });
-    expect(JSON.stringify(await ui.drawn())).toContain('Could not load this routing decision.');
+    const failedTree = JSON.stringify(await ui.drawn());
+    expect(failedTree).toContain('Could not load this routing decision.');
+    // The reader CLI's own error envelope is surfaced under the generic notice.
+    expect(failedTree.includes('decision not found')).toBe(index === 0);
     await ui.press({ key: 'back' });
     expect(JSON.stringify(await ui.drawn())).toContain('2 routed prompts this session');
   }
@@ -281,6 +289,64 @@ test('missing command fails safely and unrouted launches stay inert', { options:
   expect(JSON.stringify(await ui.drawn())).toContain('Could not read Smart Router logs.');
   expect(logged).toBe(1);
   await ui.unmount();
+});
+
+test('a failed read surfaces the CLI error envelope', { options }, async ($, on) => {
+  let stdout: string = JSON.stringify({ v: 1, error: 'cannot read session log at /tmp/missing.jsonl' });
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('process.run', () => ({ value: { exitCode: 1, stderr: '', stdout } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('Could not read Smart Router logs.');
+  expect(tree).toContain('cannot read session log at /tmp/missing.jsonl');
+  await ui.unmount();
+  // A failure without a readable envelope keeps only the generic line.
+  stdout = '';
+  await $.command.run(command);
+  const generic = await $.ui.mount(pane);
+  const bare = JSON.stringify(await generic.drawn());
+  expect(bare).toContain('Could not read Smart Router logs.');
+  expect(bare).not.toContain('cannot read session log');
+  await generic.unmount();
+});
+
+test('the open pane refreshes on turn completion and a closed one stops', { options }, async ($, on) => {
+  let reads = 0;
+  let decisions: unknown[] = records;
+  let open: unknown[] = [{ id: 'smart-router-logs' }];
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('ui.panes', () => ({ value: open }));
+  on('turn.complete', () => ({ text: '' }));
+  on('process.run', () => {
+    reads++;
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
+  });
+  // No reader runs while the pane has never been opened.
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(0);
+  await $.command.run(command);
+  expect(reads).toBe(1);
+  const ui = await $.ui.mount(pane);
+  expect(JSON.stringify(await ui.drawn())).toContain('older task');
+  await ui.unmount();
+  // A decision recorded after the pane opened shows up on the next turn completion.
+  decisions = [records[1]];
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(2);
+  const refreshed = await $.ui.mount(pane);
+  const tree = JSON.stringify(await refreshed.drawn());
+  expect(tree).toContain('1 routed prompt this session');
+  expect(tree).not.toContain('older task');
+  await refreshed.unmount();
+  // Once the user closes the pane, later turns spawn no reader.
+  open = [];
+  decisions = records;
+  await $.turn.complete({ answer: '' });
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(2);
 });
 
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
