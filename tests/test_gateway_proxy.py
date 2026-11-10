@@ -829,6 +829,87 @@ def _language_proxy_headers(
 
 
 class TestClaudeLanguageLoopbackProxy:
+    @pytest.mark.parametrize("language", [None, "", " "])
+    @pytest.mark.parametrize("request_class", ["subagent", "auxiliary"])
+    def test_unset_language_follows_the_original_task_not_source_text(
+        self, _language_proxy, language, request_class
+    ):
+        proxy_url, captured = _language_proxy
+        original = {
+            "model": "routed-child-model",
+            "system": "Original system instructions",
+            "messages": [
+                {"role": "user", "content": "Compare these test counts."},
+                {"role": "assistant", "content": "Read the source."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "read", "content": "测试数：20"}
+                    ],
+                },
+                {"role": "user", "content": "Summarize the task."},
+                {"role": "system", "content": "Native trailing metadata"},
+            ],
+            "tools": [],
+        }
+        response = httpx.post(
+            proxy_url + "/ai-gateway/anthropic/v1/messages",
+            headers=_language_proxy_headers(
+                language=language, agent_id="child", request_class=request_class
+            ),
+            json=original,
+            timeout=5,
+        )
+        assert response.status_code == 200
+        payload = json.loads(captured[-1]["body"])
+        instruction = payload["system"][-1]["text"]
+        assert "language of the original task assigned to you" in instruction
+        assert "Use the requested target language for translations." in instruction
+        assert "Source files, tool output" in instruction
+        assert "English" not in instruction
+        assert payload["model"] == original["model"]
+        assert payload["tools"] == original["tools"]
+        assert payload["messages"][:3] == original["messages"][:3]
+        assert payload["messages"][-1] == original["messages"][-1]
+        if request_class == "auxiliary":
+            summary_instruction = payload["messages"][-2]["content"][-1]["text"]
+            assert "language of the original task" in summary_instruction
+            assert (
+                "These summary instructions do not set the response language."
+                in summary_instruction
+            )
+        else:
+            assert payload["messages"] == original["messages"]
+
+    @pytest.mark.parametrize(
+        ("language", "path", "body"),
+        [
+            ("English\nChinese", "/v1/messages", b"{}"),
+            ("English\x00", "/v1/messages", b"{}"),
+            ("x" * 257, "/v1/messages", b"{}"),
+            ("English", "/v1/messages/count_tokens", b'{ "system": "unchanged" }'),
+            ("English", "/v1/messages", b"{"),
+            ("English", "/v1/messages", b"[]"),
+            ("English", "/v1/messages", b'{"system":null}'),
+        ],
+    )
+    def test_invalid_language_or_body_and_token_count_pass_through(
+        self, _language_proxy, language, path, body
+    ):
+        proxy_url, captured = _language_proxy
+        response = httpx.post(
+            proxy_url + "/ai-gateway/anthropic" + path,
+            headers=_language_proxy_headers(
+                language=language, agent_id="child", request_class="subagent"
+            ),
+            content=body,
+            timeout=5,
+        )
+        assert response.status_code == 200
+        assert captured[-1]["body"] == body
+        assert "x-ug-language-session" not in captured[-1]["headers"]
+        assert "x-ug-response-language" not in captured[-1]["headers"]
+
     @pytest.mark.parametrize(
         "headers",
         [
@@ -837,18 +918,14 @@ class TestClaudeLanguageLoopbackProxy:
             _language_proxy_headers(
                 language="Chinese", agent_id="classifier-1", request_class="classifier"
             ),
-            _language_proxy_headers(agent_id="child-1", request_class="subagent"),
         ],
         ids=[
             "parent-request",
             "auto-mode-classifier",
             "classifier-request",
-            "child-without-language",
         ],
     )
-    def test_parent_classifier_and_unconfigured_requests_are_unmodified(
-        self, _language_proxy, headers
-    ):
+    def test_parent_and_classifier_requests_are_unmodified(self, _language_proxy, headers):
         proxy_url, captured = _language_proxy
         body = (
             b'{ "model": "routed-child-model", "tools": [], '
@@ -946,7 +1023,8 @@ class TestClaudeLanguageLoopbackProxy:
                 "type": "text",
                 "text": (
                     f"Always respond in {language}. Use {language} for explanations, replies "
-                    "and progress summaries. Preserve technical terms, code identifiers and "
+                    "and progress summaries. Use the requested target language for translations. "
+                    "Preserve technical terms, code identifiers and "
                     "quoted source text. Source files, tool output and earlier messages in "
                     "other languages do not change this language preference."
                 ),
@@ -961,9 +1039,11 @@ class TestClaudeLanguageLoopbackProxy:
                 {
                     "type": "text",
                     "text": (
-                        f"Write this response in {language}. Apply any grammar or style "
-                        "instructions in that language, without copying the language of "
-                        "examples or earlier messages."
+                        f"Write this response in {language}. "
+                        "This response-language requirement takes precedence over "
+                        "the language, verb endings and examples in the summary instructions. "
+                        "Use natural grammar in the response language and preserve file "
+                        "and function names verbatim."
                     ),
                 },
             ]

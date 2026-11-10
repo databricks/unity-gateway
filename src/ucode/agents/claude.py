@@ -2194,11 +2194,42 @@ def header_mod_active(*, require_ug: bool = False) -> bool:
 
 
 @contextmanager
-def subagent_language_transport(state: dict) -> Iterator[None]:
+def subagent_language_transport(state: dict, settings: dict | None = None) -> Iterator[None]:
     """Give the managed mod a launch-local transport without changing saved settings."""
     if not header_mod_active(require_ug=True):
         yield
         return
+    managed_path = _managed_settings_path()
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    paths = [Path(config_dir) / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH]
+    if managed_path:
+        paths.extend(
+            [
+                managed_path,
+                *sorted(
+                    path
+                    for path in managed_path.with_name("managed-settings.d").glob("*.json")
+                    if not path.name.startswith(".") and (path.is_file() or path.is_symlink())
+                ),
+            ]
+        )
+    paths.extend(
+        directory / ".claude" / name
+        for directory in (Path.cwd(), *Path.cwd().parents)
+        for name in ("settings.json", "settings.local.json")
+    )
+    configs = [settings or {}, *(read_json_safe(path) for path in paths)]
+    hints = [os.environ.get("CLAUDE_CODE_GATEWAY_HINT_HEADERS")]
+    hints.extend(
+        config["env"].get("CLAUDE_CODE_GATEWAY_HINT_HEADERS")
+        for config in configs
+        if isinstance(config.get("env"), dict)
+    )
+    if any(value is not None and value != "1" for value in hints):
+        raise RuntimeError(
+            "Subagent language inheritance requires CLAUDE_CODE_GATEWAY_HINT_HEADERS=1. "
+            "Remove the conflicting environment or settings override and restart ug claude."
+        )
     from ucode.custom_oauth import launch_token
     from ucode.gateway_proxy import start_claude_language_proxy
 

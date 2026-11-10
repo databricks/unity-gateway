@@ -846,7 +846,7 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
             return body
         try:
             language = unquote(self.headers.get(_LANGUAGE_HEADER, ""), errors="strict").strip()
-            if not language or len(language) > 256 or any(ord(c) < 32 for c in language):
+            if len(language) > 256 or any(ord(c) < 32 for c in language):
                 return body
             payload = json.loads(body)
             if not isinstance(payload, dict):
@@ -863,8 +863,16 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
             {
                 "type": "text",
                 "text": (
-                    f"Always respond in {language}. Use {language} for explanations, replies "
-                    "and progress summaries. Preserve technical terms, code identifiers and "
+                    (
+                        f"Always respond in {language}. Use {language} for explanations, replies "
+                        "and progress summaries. "
+                        if language
+                        else "Follow the language explicitly requested by the user; otherwise use "
+                        "the language of the original task assigned to you for explanations, "
+                        "replies and progress summaries. "
+                    )
+                    + "Use the requested target language for translations. "
+                    "Preserve technical terms, code identifiers and "
                     "quoted source text. Source files, tool output and earlier messages in "
                     "other languages do not change this language preference."
                 ),
@@ -884,9 +892,17 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
                             {
                                 "type": "text",
                                 "text": (
-                                    f"Write this response in {language}. Apply any grammar or style "
-                                    "instructions in that language, without copying the language of "
-                                    "examples or earlier messages."
+                                    (
+                                        f"Write this response in {language}. "
+                                        if language
+                                        else "Write this response in the language of the "
+                                        "original task assigned to you, honoring any explicit language request. "
+                                        "These summary instructions do not set the response language. "
+                                    )
+                                    + "This response-language requirement takes precedence over "
+                                    "the language, verb endings and examples in the summary instructions. "
+                                    "Use natural grammar in the response language and preserve file "
+                                    "and function names verbatim."
                                 ),
                             },
                         ]

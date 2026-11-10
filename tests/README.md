@@ -216,9 +216,12 @@ headless configure (installing beside an existing managed file, skipping without
 terminal hint when sudo needs a password), and the Windows install and removal under Program Files. `native_claude/test_mod.py` validates the mod and runs its merge tests
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
 checked by hand on Claude 2.1.304. The header-mod tests also cover configured language
-changes, unrelated headers and endpoints, and launch-local transport cleanup.
+changes and clearing the setting, per-turn settings reloads, provider switches, disabled
+identity headers, unrelated headers, and launch-local transport cleanup.
 `test_gateway_proxy.py` checks child and progress-summary language propagation,
-unchanged parent and classifier payloads, session authentication and private-header stripping.
+task-language fallback without a setting, translation guidance, malformed-input and
+token-count passthrough, unchanged parent and classifier payloads, session authentication
+and private-header stripping.
 These component checks establish request construction, not model language compliance.
 
 The required Isaac feedback form and background delivery notifications need manual

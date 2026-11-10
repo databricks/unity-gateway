@@ -50,6 +50,7 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
     monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+    monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "user-settings.json")
     monkeypatch.setattr(
         claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
     )
@@ -353,6 +354,66 @@ def test_language_transport_restores_environment_and_closes_on_failure(tmp_path,
     server.server_close.assert_called_once()
     cache.stop.assert_called_once()
     client.close.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "scope", ["environment", "caller", "managed", "drop-in", "user", "project"]
+)
+def test_language_transport_rejects_disabled_identity_headers_before_starting(
+    tmp_path, monkeypatch, scope
+):
+    from ucode import gateway_proxy
+
+    _managed_env(tmp_path, monkeypatch)
+    state = {"workspace": WS, "codex_models": []}
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    start = Mock()
+    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
+    settings = {}
+    override = {"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}}
+    if scope == "environment":
+        monkeypatch.setenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", "0")
+    elif scope == "caller":
+        settings = override
+    else:
+        monkeypatch.chdir(tmp_path)
+        path = {
+            "managed": claude._managed_settings_path(),
+            "drop-in": claude._managed_settings_path().with_name("managed-settings.d")
+            / "policy.json",
+            "user": claude.CLAUDE_USER_SETTINGS_PATH,
+            "project": tmp_path / ".claude/settings.local.json",
+        }[scope]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        config = json.loads(path.read_text()) if path.exists() else {}
+        config.setdefault("env", {}).update(override["env"])
+        path.write_text(json.dumps(config))
+    with pytest.raises(RuntimeError, match="requires CLAUDE_CODE_GATEWAY_HINT_HEADERS=1"):
+        with claude.subagent_language_transport(state, settings):
+            pytest.fail("The incompatible launch must not start")
+    start.assert_not_called()
+    if scope == "environment":
+        assert os.environ["CLAUDE_CODE_GATEWAY_HINT_HEADERS"] == "0"
+
+
+def test_language_transport_ignores_inactive_managed_dropins(tmp_path, monkeypatch):
+    from ucode import gateway_proxy
+
+    managed_path, _root, _writes = _managed_env(tmp_path, monkeypatch)
+    state = {"workspace": WS, "codex_models": []}
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    dropins = managed_path.with_name("managed-settings.d")
+    dropins.mkdir()
+    (dropins / ".disabled.json").write_text(
+        json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}})
+    )
+    (dropins / "directory.json").mkdir()
+    server, cache, client = Mock(server_port=12345), Mock(), Mock()
+    start = Mock(return_value=(server, cache, client))
+    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
+    with claude.subagent_language_transport(state):
+        start.assert_called_once()
+    server.shutdown.assert_called_once()
 
 
 def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):

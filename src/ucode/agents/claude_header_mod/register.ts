@@ -52,19 +52,26 @@ async function applyLanguageTransport($: EngineInterface): Promise<void> {
     typeof transport.upstream !== 'string' ||
     typeof transport.secret !== 'string' || !transport.secret
   ) throw new Error('Invalid Unity Gateway language transport.');
+  const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
+    .split(/\r?\n/).filter(line => !/^\s*x-ug-(response-language|language-session)\s*:/i.test(line));
   const base = await $.env.get('ANTHROPIC_BASE_URL');
-  if (base !== transport.upstream && base !== transport.url) return;
+  if (base !== transport.upstream && base !== transport.url) {
+    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+    return;
+  }
+  const hints = await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS');
+  if (hints !== undefined && hints !== '1') {
+    throw new Error('Subagent language inheritance requires CLAUDE_CODE_GATEWAY_HINT_HEADERS=1. Remove the conflicting override and restart ug claude.');
+  }
   const { language } = await $.settings.read();
   const configured = typeof language === 'string' && language.trim() !== '';
-  const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
-    .split(/\r?\n/).filter(line => !/^x-ug-(response-language|language-session):/i.test(line));
   if (configured) {
     headers.push(`X-UG-Response-Language: ${encodeURIComponent(language.trim())}`);
-    headers.push(`X-UG-Language-Session: ${transport.secret}`);
   }
+  headers.push(`X-UG-Language-Session: ${transport.secret}`);
   await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
-  await $.env.set('ANTHROPIC_BASE_URL', configured ? transport.url : transport.upstream);
-  if (configured && await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS') === undefined) {
+  await $.env.set('ANTHROPIC_BASE_URL', transport.url);
+  if (hints === undefined) {
     await $.env.set('CLAUDE_CODE_GATEWAY_HINT_HEADERS', '1');
   }
 }

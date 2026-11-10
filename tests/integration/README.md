@@ -41,9 +41,11 @@ parallel calls as cards above the parent's next reply in call order, calls
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
 provider latency or token renewal behavior. Child-language component coverage also checks
-configured language on child and summary requests, parent/classifier passthrough,
+configured language and task-language fallback on child and summary requests, parent/classifier passthrough,
 authentication, and private-header stripping. Live language checks must inspect both
-child replies and progress summaries with English and non-English settings; request
+child replies and progress summaries with English, non-English and unset settings,
+including foreign-language source files and explicit translations. With no setting,
+the fallback follows the task text delivered to the child. Request
 construction alone does not establish generated language. The native task-view parser
 also recognizes an empty earlier-session section without treating running or
 partially rendered task lists as complete.

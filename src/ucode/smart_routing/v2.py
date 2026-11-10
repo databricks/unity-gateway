@@ -774,7 +774,7 @@ def launch_claude(
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         with (
-            subagent_language_transport(state),
+            subagent_language_transport(state, settings),
             TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory,
         ):
             launch_dir = Path(directory)
