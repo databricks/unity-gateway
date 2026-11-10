@@ -114,7 +114,10 @@ def assert_mcp_web_search_answer(events: list[dict], *, server: str, query: str)
 
 
 def _web_urls(text: str) -> set[str]:
-    return set(re.findall(r"https?://[^\s<>\"'\\)\]]+", text))
+    return {
+        match["url"].removesuffix(match["markup"] or "")
+        for match in re.finditer(r"(?P<markup>\*{1,2}|`)?(?P<url>https?://[^\s<>\"'\\)\]]+)", text)
+    }
 
 
 def _logs(session) -> list[Path]:

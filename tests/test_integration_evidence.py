@@ -298,6 +298,51 @@ def test_antigravity_web_search_requires_native_result_and_matching_answer(encod
 
 
 @pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        (
+            "Databricks' official website is: **https://www.databricks.com/** "
+            "([databricks.com](https://www.databricks.com//?utm_source=openai))",
+            "https://www.databricks.com/",
+        ),
+        ("*https://www.databricks.com/*", "https://www.databricks.com/"),
+        ("`https://www.databricks.com/`", "https://www.databricks.com/"),
+        ("https://www.databricks.com/", "**https://www.databricks.com/**"),
+        ("https://www.databricks.com/", "`https://www.databricks.com/`"),
+        ("[Databricks](https://www.databricks.com/)", "<https://www.databricks.com/>"),
+    ],
+)
+def test_antigravity_web_search_matches_urls_inside_markdown(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        ("**https://www.databricks.com/a**", "https://www.databricks.com/b"),
+        ("**https://www.databricks.com/?q=a**", "https://www.databricks.com/?q=b"),
+        ("**https://www.databricks.com/#a**", "https://www.databricks.com/#b"),
+        ("https://www.databricks.com/?q=*", "https://www.databricks.com/?q="),
+    ],
+)
+def test_antigravity_web_search_preserves_url_path_query_and_fragment(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    with pytest.raises(AssertionError):
+        antigravity.assert_mcp_web_search_answer(
+            events, server="system-ai-web_search", query="Databricks official website"
+        )
+
+
+@pytest.mark.parametrize(
     ("path", "value"),
     [
         ((0, "step_update", "state"), "ACTIVE"),

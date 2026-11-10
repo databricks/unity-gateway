@@ -595,8 +595,10 @@ The MCP case registers `system.ai.web_search` with `ug mcp add` and pins
 the native file reader at the server's generated tool definition and instructions, avoiding
 shell-based directory discovery that headless permissions deny. It requires a successful native
 `call_mcp_tool` for the exact server, `web_search` tool, and query, plus an official Databricks
-URL shared by the returned search output and final answer. Search ranking and wording are not
-asserted. This replaces the SQL digest task; SQL execution is no longer covered by this case.
+URL shared by the returned search output and final answer, ignoring surrounding Markdown
+emphasis and inline-code markers while preserving the URL's path, query, and fragment.
+Search ranking and wording are not asserted. This replaces the SQL digest task; SQL execution
+is no longer covered by this case.
 Denied actions, empty answers, tool errors, and provider errors still fail.
 The skill case places a user skill in
 `~/.agents/skills` and requires its code word. Headless Antigravity cannot answer permission
@@ -682,8 +684,10 @@ by `ug configure`, recorded in that case's `model.json`. Optional `--claude-mode
 OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install and select it.
 Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.91`).
 Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<version>-<build id>`
-from Google's release manifest (for example `1.4.9-4962164969177088`). The runner downloads that
-archive for the host platform into the run directory, records its URL and SHA-512 in
+from Google's release manifest (for example `1.5.4-5037094733742080`, pinned for Linux x64 CI).
+For a build/platform without a pinned checksum, pass `--antigravity-sha512` from its official
+release manifest. The runner downloads that archive for the host platform into the run directory,
+records its URL and SHA-512 in
 `versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
 sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
 ([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).

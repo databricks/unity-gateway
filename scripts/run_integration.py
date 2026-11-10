@@ -35,7 +35,7 @@ AGENT_PACKAGES = {
 # Agents not published on npm: installed from a pinned native build (see install_native_agent).
 NATIVE_AGENT_BINARIES = {"antigravity": "agy"}
 # Antigravity CLI release archives, keyed by (sys.platform, machine); `{build}` is
-# `<version>-<build id>`, e.g. 1.4.9-4962164969177088 (the path in Google's release manifest).
+# `<version>-<build id>`, e.g. 1.5.4-5037094733742080 (the path in Google's release manifest).
 ANTIGRAVITY_RELEASE_URL = (
     "https://storage.googleapis.com/antigravity-public/antigravity-cli/{build}/{path}"
 )
@@ -49,9 +49,9 @@ ANTIGRAVITY_ARCHIVES = {
 # (`<updater>/manifests/<platform>.json`). A build without an entry needs --antigravity-sha512.
 ANTIGRAVITY_SHA512 = {
     (
-        "1.4.9-4962164969177088",
+        "1.5.4-5037094733742080",
         "linux-x64/cli_linux_x64.tar.gz",
-    ): "96a259b7475ae70a5b002ea8a83b804bba9b6ad2171af0cd0839b3959d9e6046ba36e181bc2d5597522aeceaacc06023564c46232fdb958f26f8c72267d9f0fd",
+    ): "1431a409ef7c7bce23f4abf03f988afab728ba87d91d24ed7db0d5eea3ab71a4b590bf0bf2c79cec84f79b32b674ea38df0417356ce8d5d4f698cd62ea9ee6be",
     (
         "1.4.9-4962164969177088",
         "linux-arm/cli_linux_arm64.tar.gz",
@@ -290,7 +290,7 @@ def exact_antigravity_build(value: str) -> str:
     if not re.fullmatch(r"\d+\.\d+\.\d+-\d+", value):
         raise argparse.ArgumentTypeError(
             "Use an exact Antigravity build, <version>-<build id>, for example "
-            "1.4.9-4962164969177088 (from the release manifest's url)."
+            "1.5.4-5037094733742080 (from the release manifest's url)."
         )
     return value
 
@@ -389,7 +389,7 @@ def arguments(
     parser.add_argument(
         "--antigravity-build",
         type=exact_antigravity_build,
-        help="Exact Antigravity CLI build to download (Linux and macOS), e.g. 1.4.9-4962164969177088.",
+        help="Exact Antigravity CLI build to download (Linux and macOS), e.g. 1.5.4-5037094733742080.",
     )
     parser.add_argument(
         "--antigravity-sha512",
