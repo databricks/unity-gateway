@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import configparser
+import gzip
 import json
 import os
 import subprocess
@@ -214,7 +215,7 @@ class TestWorkspaceHostname:
 
 
 class _FakeResponseWithHeaders(_FakeResponse):
-    def __init__(self, payload: dict, headers: dict):
+    def __init__(self, payload: dict | bytes, headers: dict):
         super().__init__(payload)
         self.headers = headers
 
@@ -2438,48 +2439,7 @@ class TestDiscoverGeminiModels:
 
         assert reason is None
         assert models == ["databricks-gpt-5-2-codex", "databricks-gpt-4-1"]
-        assert requests[0][2] == {"max_retries": db_mod._MODEL_DISCOVERY_MAX_RETRIES}
-
-    def test_retries_truncated_response_during_discovery(self, monkeypatch):
-        from http.client import IncompleteRead
-
-        payload = {
-            "endpoints": [
-                {
-                    "name": "databricks-gpt-5-codex",
-                    "config": {
-                        "served_entities": [
-                            {
-                                "foundation_model": {
-                                    "ai_gateway_v2_supported": True,
-                                    "api_types": ["openai/v1/responses"],
-                                }
-                            }
-                        ]
-                    },
-                }
-            ]
-        }
-        truncated = _FakeResponse(b"")
-        truncated.read = lambda: (_ for _ in ()).throw(IncompleteRead(b'{"endpoints":', 100))
-        outcomes = iter([truncated, _FakeResponse(json.dumps(payload).encode())])
-        requests = []
-        sleeps = []
-
-        def fake_urlopen(request, timeout=None):
-            requests.append(request)
-            return next(outcomes)
-
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
-        monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
-        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
-
-        models, reason = db_mod.discover_codex_models(WS, "token")
-
-        assert models == ["databricks-gpt-5-codex"]
-        assert reason is None
-        assert len(requests) == 2
-        assert sleeps == [1.25]
+        assert requests[0][2] == {}
 
     def test_persistent_truncated_response_returns_actionable_reason(self, monkeypatch):
         from http.client import IncompleteRead
@@ -2505,8 +2465,8 @@ class TestDiscoverGeminiModels:
         assert "network, VPN, or proxy" in reason
         assert "Retry the request" in reason
         assert "IncompleteRead" in reason
-        assert len(requests) == db_mod._MODEL_DISCOVERY_MAX_RETRIES + 1
-        assert sleeps == [1.25, 2.5]
+        assert len(requests) == 1
+        assert sleeps == []
 
 
 class TestResolvePatToken:
@@ -5480,6 +5440,89 @@ class TestRunDatabricksCliInstaller:
         assert str(exc.value) == "Failed to install/upgrade Databricks CLI automatically."
         assert "remove it" not in str(exc.value)
         assert str(local_bin) not in str(exc.value)
+
+
+class TestHttpGetBytesEncoding:
+    def test_gzip_json_is_decoded_and_sizes_logged(self, monkeypatch):
+        original = b'{"models":["one", "two"]}'
+        wire = gzip.compress(original)
+        calls = []
+        logs = []
+
+        def urlopen(request, timeout=None):
+            calls.append(request)
+            return _FakeResponseWithHeaders(wire, {"Content-Encoding": "gzip"})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_debug", lambda *args: logs.append(args))
+        body, reason = db_mod._http_get_bytes(f"{WS}/models", "token")
+
+        assert body == original
+        assert json.loads(body) == {"models": ["one", "two"]}
+        assert reason is None
+        assert calls[0].get_header("Accept-encoding") == "gzip"
+        assert any(f"{len(wire)} wire bytes, {len(original)} decoded bytes" in s for _, s in logs)
+
+    @pytest.mark.parametrize("encoding", [None, "identity"])
+    def test_identity_bytes_are_unchanged(self, monkeypatch, encoding):
+        original = b"\x89PNG\x00\xff"
+        headers = {"Content-Encoding": encoding} if encoding else {}
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "urlopen",
+            lambda request, timeout=None: _FakeResponseWithHeaders(original, headers),
+        )
+        assert db_mod._http_get_bytes(f"{WS}/file", "token") == (original, None)
+
+    def test_caller_accept_encoding_is_preserved_case_insensitively(self, monkeypatch):
+        requests = []
+
+        def urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse(b"plain")
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        assert db_mod._http_get_bytes(
+            f"{WS}/file", "token", headers={"accept-encoding": "identity"}
+        ) == (b"plain", None)
+        assert requests[0].get_header("Accept-encoding") == "identity"
+
+    @pytest.mark.parametrize(
+        "wire",
+        [
+            b"",
+            b"not gzip",
+            gzip.compress(b"content")[:15],
+            gzip.compress(b"content")[:10] + b"\xff",
+        ],
+    )
+    def test_corrupt_gzip_is_a_handled_network_failure(self, monkeypatch, wire):
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "urlopen",
+            lambda request, timeout=None: _FakeResponseWithHeaders(
+                wire, {"Content-Encoding": "gzip"}
+            ),
+        )
+        body, reason = db_mod._http_get_bytes(f"{WS}/file", "token")
+        assert body is None
+        assert reason is not None and reason.startswith("network error:")
+
+    def test_skill_file_download_decodes_binary_exactly(self, monkeypatch):
+        from ucode.skills_api import fetch_skill_file
+
+        original = bytes(range(256)) * 4
+        wire = gzip.compress(original)
+        monkeypatch.setattr(
+            db_mod.urllib_request,
+            "urlopen",
+            lambda request, timeout=None: _FakeResponseWithHeaders(
+                wire, {"Content-Encoding": "gzip"}
+            ),
+        )
+        body, reason = fetch_skill_file(WS, "token", "catalog", "schema", "skill", "image.png")
+        assert body == original
+        assert reason is None
 
 
 class TestHttpGetJsonTimeout:

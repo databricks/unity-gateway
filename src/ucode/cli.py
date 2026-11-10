@@ -641,13 +641,17 @@ def configure_shared_state(
     # After `load_state`, which selected the previous workspace.
     activate(workspace, workspace_id)
     if previous_key != key:
-        # Model discovery below refreshes the selected workspace. MCP selections are different:
-        # they are user choices, so carry the destination's saved registry across a switch.
+        # Carry the destination's MCP choices and cached web-search model across a switch.
         destination = load_full_state().get("workspaces", {}).get(key, {})
         # managed_mcp_servers records what the source workspace delivered to user scope.
         # Keep it until reconciliation removes registrations the destination no longer wants.
         # The server-side web search choice is likewise per workspace.
-        for field in ("mcp_servers", "mcp_clients", CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY):
+        for field in (
+            "mcp_servers",
+            "mcp_clients",
+            "web_search_model",
+            CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+        ):
             if field in destination:
                 state[field] = destination[field]
             else:
@@ -801,9 +805,9 @@ def configure_shared_state(
     if skip_model_discovery:
         # Provider mode: the agent routes through a Model Provider Service and
         # pins no Databricks model, so the full family discovery is unused. Web
-        # search (claude only) still needs one Responses-capable model, so fetch
-        # just that with a single call.
-        if want_claude:
+        # search still needs one Responses-capable model. Reuse the workspace's
+        # saved choice on launch, and refresh it on explicit configure.
+        if want_claude and (force_login or not state.get("web_search_model")):
             with spinner("Fetching available models..."):
                 ws_models, _ = discover_codex_models(workspace, token)
             if ws_models:
@@ -858,6 +862,10 @@ def configure_shared_state(
             state["gemini_models"] = gemini_models
         if want_codex:
             state["codex_models"] = codex_models
+            # Explicit configure normally performs full discovery. Refresh an
+            # existing provider-mode cache without creating one for normal launches.
+            if force_login and want_claude and codex_models and state.get("web_search_model"):
+                state["web_search_model"] = codex_models[0]
         if want_oss:
             state["oss_models"] = oss_models
         if want_copilot and copilot_models is not None:
@@ -3961,7 +3969,7 @@ def _launch_tool(
         # endpoints show up without a manual `ug configure` (and so that
         # tools like pi which read multiple model bundles never run on
         # stale state from before a tool added a new bundle). Under a provider
-        # this heavy discovery is skipped (only a web-search model is fetched).
+        # this heavy discovery is skipped and a saved web-search model is reused.
         configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
         family_defaults = (
             claude_agent.get_family_defaults(

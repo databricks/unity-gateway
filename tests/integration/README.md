@@ -18,6 +18,11 @@ configuration and launch with explicit overrides. Other tools retain existing fi
 Opaque deployment names such as `team-coding` have component coverage only; the custom-provider
 live journeys below use vendor model IDs.
 
+`../test_databricks.py` covers gzip negotiation, decoded JSON and binary skill files, and
+corrupt and truncated responses at mocked HTTP boundaries. `../test_cli.py` covers provider
+launch reuse of a workspace's saved web-search model and explicit configure refresh. These
+component checks do not establish live agent launch or inference coverage.
+
 The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
 service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
 It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
