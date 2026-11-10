@@ -62,6 +62,15 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
+Claude Auto installs its picker row, allowed alias and `modelOverrides.ug-auto` during
+explicit configure. Claude reads picker and startup policy from the actual source,
+not the merged settings hook. Preserve an existing list when no central config exists.
+The alias maps only to an allowed model and preserves native model display. The routing mod receives its catalog through
+`pluginConfigs.ug-smart-router.options.autoPicker` and stores only the per-workspace
+main-model preference with native `$.store`; `/auto` never writes a config file.
+An ordinary `/model` selection disables the session routing controls. Updating the
+managed mod still requires explicit `ug configure`; a launch never installs it.
+
 ### Adding a parameter
 
 1. Define its environment-variable constant in `src/ucode/constants.py` and add it to

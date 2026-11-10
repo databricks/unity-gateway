@@ -34,6 +34,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
@@ -46,6 +47,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.env import env_bool
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
@@ -131,6 +133,8 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
     A managed picker is authoritative for smart routing: its rows are the models the
     administrator exposed, so there is no need to query the gateway catalog first.
     """
+    from ucode.agents.claude_auto import AUTO_MODEL, model_available
+
     try:
         from ucode.agents.claude import (
             CLAUDE_SETTINGS_PATH,
@@ -143,26 +147,46 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
         paths = [_managed_settings_path(), CLAUDE_SETTINGS_PATH, CLAUDE_USER_SETTINGS_PATH]
     except (ImportError, OSError):
         return None
+    policy: dict = {}
     for path in paths:
         if path is None or not path.is_file():
             continue
         settings = read_json_safe(path)
+        if isinstance(settings, dict):
+            for key in ("availableModels", "deniedModels"):
+                if key in settings:
+                    policy.setdefault(key, settings[key])
         picker_settings = settings.get("modelPicker") if isinstance(settings, dict) else None
         picker = picker_settings.get("options") if isinstance(picker_settings, dict) else None
         if not isinstance(picker, list):
             continue
         model_ids: list[str] = []
+        labels: dict[str, str] = {}
         seen: set[str] = set()
         for row in picker:
             if not isinstance(row, dict) or not isinstance(row.get("model"), str):
                 continue
             model_id = row["model"].strip()
-            if not model_id or model_id in seen:
+            if (
+                not model_id
+                or model_id == AUTO_MODEL
+                or model_id in seen
+                or not model_available(model_id, policy)
+            ):
                 continue
             seen.add(model_id)
             model_ids.append(model_id)
-        if model_ids:
-            return AnthropicModelCatalog(model_ids, {})
+            if isinstance(row.get("label"), str):
+                labels[model_id] = row["label"]
+        # An authoritative picker with no permitted targets must fail closed,
+        # not fall through to a lower-priority list or gateway discovery.
+        return AnthropicModelCatalog(
+            model_ids,
+            labels,
+            error_msg=None
+            if model_ids
+            else "No permitted models remain in Claude's configured picker",
+        )
     return None
 
 
@@ -384,6 +408,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
             "description": "Launch-scoped agents for Unity Gateway smart routing.",
             "author": {"name": "Databricks"},
             "userConfig": {
+                "autoPicker": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Auto model picker",
+                    "description": "Launch catalog for the native Auto and main-model controls",
+                },
                 "orchestratorInstructions": {
                     "type": "string",
                     "default": "",
@@ -687,6 +717,7 @@ def launch_claude(
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude_auto import AUTO_MODEL, picker_config
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -714,6 +745,34 @@ def launch_claude(
 
     route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     settings, remaining = compose_settings(tool_args)
+    # Isaac's feedback-gated toggle remains its own flow. Do not sidestep it
+    # through a model selection; explicit first-prompt presets also stay intact.
+    auto_picker = (
+        not route_first_prompt
+        and not _claude_print_mode(remaining)
+        and not env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+    )
+    from ucode.agents.claude import auto_picker_available
+    from ucode.agents.claude_auto import add_picker_entry
+
+    if auto_picker and not auto_picker_available():
+        print_warning(
+            "Auto is missing from Claude's configured picker. Run `ug configure --agent claude` once, then restart `ug claude`."
+        )
+        auto_picker = False
+    if auto_picker:
+        # --settings supplies the row when no higher-priority managed picker exists.
+        settings.setdefault(
+            "modelPicker",
+            {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {"model": model, "label": catalog.model_id_to_display_name.get(model, model)}
+                    for model in model_ids
+                ],
+            },
+        )
+        settings = add_picker_entry(settings)
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
     if route_first_prompt and _claude_print_mode(remaining):
@@ -787,6 +846,8 @@ def launch_claude(
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
             }
+            if auto_picker:
+                mod_options["autoPicker"] = picker_config(catalog, workspace)
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = mod_options
@@ -795,7 +856,11 @@ def launch_claude(
                 _write_routed_claude_plugin(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
-            model_args = launch_model_args(remaining, routed_model or launch_model)
+            start_model = routed_model or launch_model
+            if auto_picker and not start_model and not has_explicit_model_arg(remaining):
+                saved = read_json_safe(user_settings_path).get("model")
+                start_model = saved if saved in [AUTO_MODEL, *model_ids] else AUTO_MODEL
+            model_args = launch_model_args(remaining, start_model)
             argv = [
                 binary,
                 "--settings",

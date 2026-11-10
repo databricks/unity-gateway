@@ -1582,6 +1582,19 @@ def write_tool_config(
         coding_agent_config_defaults = derived.coding_agent_config_defaults
         route_root_model = derived.route_root_model
         picker_catalog = derived.picker_catalog
+        if _explicit_configure and managed_manifest is None and picker_catalog is None:
+            from ucode.databricks import list_anthropic_model_catalog
+
+            discovered = list_anthropic_model_catalog(
+                state["workspace"], get_databricks_token(state["workspace"], state.get("profile"))
+            )
+            if not discovered.model_ids:
+                raise RuntimeError(
+                    discovered.error_msg or "No models are available for Claude Auto."
+                )
+            picker_catalog = default_model_picker_catalog(
+                state.get("claude_models") or {}, discovered_catalog=discovered
+            )
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     if web_search_model is not None and machine_wide_only():
@@ -1870,6 +1883,7 @@ def write_tool_config(
             *(["WebSearch"] if withdraws_web_search else []),
         ],
         passthrough_leaves=passthrough.record(),
+        auto_picker=not (provider or parent_schema or relayed),
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -2192,6 +2206,17 @@ def header_mod_active() -> bool:
     return True
 
 
+def auto_picker_available() -> bool:
+    """A managed picker/allowlist must admit Auto before native startup."""
+    from ucode.agents.claude_auto import AUTO_MODEL, model_available, picker_is_configured
+
+    path = _managed_settings_path()
+    settings = read_json_safe(path) if path is not None else {}
+    if "modelPicker" in settings:
+        return picker_is_configured(settings)
+    return model_available(AUTO_MODEL, settings)
+
+
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
     """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
 
@@ -2267,6 +2292,7 @@ def _reconcile_managed_settings(
     picker_keys: list[str],
     withdrawn_denies: list | None = None,
     passthrough_leaves: list | None = None,
+    auto_picker: bool = False,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -2332,6 +2358,15 @@ def _reconcile_managed_settings(
         header_mod_root, managed_file_exists=current_text is not None
     )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
+    if auto_picker:
+        from ucode.agents.claude_auto import AUTO_MODEL, add_picker_entry, picker_is_configured
+
+        # The native picker and startup allowlist read their source directly,
+        # before the merged settings.read hook. Install the row at configure;
+        # subsequent launches only preserve an already configured row.
+        if installed or picker_is_configured(managed_before):
+            desired_settings = add_picker_entry(desired_settings)
+            owned_paths = [*owned_paths, ["modelPicker"], ["modelOverrides", AUTO_MODEL]]
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
     if header_mod_root is not None:

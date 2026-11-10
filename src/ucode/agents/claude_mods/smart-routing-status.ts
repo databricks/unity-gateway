@@ -53,7 +53,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On): void => {
+export const registerStatusBand = (on: On, auto?: { model: string; mainModel: string; storeKey: string; models: {model: string; label: string}[] }): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
@@ -72,14 +72,20 @@ export const registerStatusBand = (on: On): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
-    const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
+    let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    if (auto) {
+      const saved = await $.store.get(auto.storeKey)
+      const main = auto.models.find((row) => row.model === saved)
+        ?? auto.models.find((row) => row.model === auto.mainModel)!
+      state = await $.session.model() === auto.model ? `Auto(${main.label})${agents}` : ''
+    }
+    const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
     return next({ ...e, props: { ...e.props, tail } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible) return theirs
+    if (auto || !band.isVisible) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 

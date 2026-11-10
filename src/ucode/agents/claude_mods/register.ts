@@ -14,6 +14,27 @@ import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedbac
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
+type AutoPicker = {
+  model: string;
+  mainModel: string;
+  storeKey: string;
+  models: { model: string; label: string }[];
+};
+
+async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
+  const saved = await $.store.get(auto.storeKey);
+  return auto.models.some((row) => row.model === saved) ? saved as string : auto.mainModel;
+}
+
+async function chooseMainModel($: EngineInterface, auto: AutoPicker): Promise<void> {
+  await $.ui.open({ id: 'auto-main', title: 'Customize main agent model', focus: true, closeOnEscape: true, rows: 18 });
+}
+
+async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker): Promise<void> {
+  const enabled = await $.session.model() === auto.model;
+  const current = isRoutingEnabled(await readSessionEnvironment($));
+  if (current !== enabled) await setRouting($, options, enabled, true);
+}
 
 // Kept when a host description has no Usage notes section, so continuation stays native.
 // Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
@@ -127,11 +148,18 @@ async function setRouting(
 }
 
 export function register(on: On, options: PluginOptions): void {
+  const auto: AutoPicker | undefined = options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
+  let choosing = false;
+  let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
+    if (auto) {
+      await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
+      await syncAutoRouting($, options, auto);
+    }
     if (launchedEnabled) {
       const current = await readEnvironment($);
       await setRouting($, options, isRoutingEnabled(current), false);
@@ -140,15 +168,92 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   on('turn.step', async function* ($, e, next) {
+    if (auto && !e.agentId) await syncAutoRouting($, options, auto);
     const active = await readOrchestratorState($, options);
     if (active !== orchestratorActive) {
       orchestratorActive = active;
       // A CLI/skill toggle changes the session file without notifying this process.
       $.ui.invalidate('tool.describe');
     }
-    const model = routedModels.model(e.agentId);
+    const model = routedModels.model(e.agentId)
+      ?? (auto && !e.agentId && await $.session.model() === auto.model ? await mainModel($, auto) : undefined);
     return yield* next(model ? {...e, model} : e);
   });
+
+  if (auto) {
+    on('command.run', { command: 'model' }, async ($, e, next) => {
+      const result = await next(e);
+      // Panel commands return an opaque ref, before their transcript is appended.
+      // Place the pane while this still carries the user's command context; the
+      // confirmation below focuses it after /model closes or dismisses it on Esc.
+      // Direct /model <name> commands have no panel handoff. In particular,
+      // never reopen a pane after their manual-model confirmation closed it.
+      if (typeof result.ref === 'number' || (e.args.trim() && await $.session.model() === auto.model)) {
+        await chooseMainModel($, auto);
+      }
+      return result;
+    });
+    on('ui.render', { component: 'Pane' }, async ($, e, next) => {
+      if (e.requestId !== 'auto-main') return next(e);
+      const { Box, Text, Select } = $.ui.resolve(e);
+      return Box({ flexDirection: 'column', children: [
+        Text({ children: ['Choose the main agent model for Auto.'] }),
+        Select({ key: 'auto-main', autoFocus: true, value: await mainModel($, auto),
+          options: auto.models.map((row) => ({ value: row.model, label: row.label })),
+          onSelect: async (value) => {
+            const selected = auto.models.find((row) => row.model === value);
+            if (!selected) return;
+            await $.store.set(auto.storeKey, selected.model);
+            await $.ui.close({ id: 'auto-main' });
+            $.ui.invalidate('ui.render');
+            $.ui.toast(`Auto(${selected.label}) saved`);
+          },
+        }),
+      ] });
+    });
+    on('command.describe', { command: ['smart-router', 'smart-router-orchestrator'] }, ($, e, next) =>
+      next({ ...e, isHidden: true }));
+    on('skill.prompt', { skill: ['smart-router', 'smart-router-orchestrator'] }, () =>
+      ({ text: 'Routing is controlled only by the user selecting Auto in /model. Do not change routing controls through a skill.' }));
+    on('command.run', { command: 'auto' }, async ($) => {
+      if (choosing) return {};
+      choosing = true;
+      try {
+        await chooseMainModel($, auto);
+      } finally {
+        choosing = false;
+      }
+      return {};
+    });
+    // The native confirmation also fires when Auto was already selected. A model
+    // change hook alone misses that first-use/reselection case. Defer the next
+    // native question until the model picker has closed; never self-dispatch /auto.
+    on('session.append', { door: 'command' }, async ($, e, next) => {
+      const result = await next(e);
+      const content = e.message?.content;
+      const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
+      if (/^<local-command-stdout>Kept model/.test(text)) await $.ui.close({ id: 'auto-main' });
+      if (/^<local-command-stdout>Set model to /.test(text)) {
+        pendingSelection?.cancel();
+        pendingSelection = $.clock.after(0, async () => {
+          await syncAutoRouting($, options, auto);
+          $.ui.invalidate('ui.render');
+          if (await $.session.model() !== auto.model) {
+            await $.ui.close({ id: 'auto-main' });
+            return;
+          }
+          if (choosing) return;
+          choosing = true;
+          try {
+            await chooseMainModel($, auto);
+          } finally {
+            choosing = false;
+          }
+        });
+      }
+      return result;
+    });
+  }
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
     const instructions = options.orchestratorInstructions as string;
@@ -168,6 +273,7 @@ export function register(on: On, options: PluginOptions): void {
 
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
+    if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /auto to customize the main agent model.' };
     const action = e.args.trim();
     if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
@@ -194,7 +300,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: `Smart Router is ${action}`};
   });
-  registerStatusBand(on);
+  registerStatusBand(on, auto);
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {

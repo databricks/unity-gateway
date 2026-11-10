@@ -193,9 +193,7 @@ def _installed_skills(session, agent: str) -> list[str]:
     )
 
 
-def _toggle_with_skill(
-    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
-) -> None:
+def _toggle_routing(tui, session, agent: str, enabled: bool, orchestration_enabled: bool) -> None:
     installed_skills = _installed_skills(session, agent)
     expected_skills = (
         ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
@@ -206,11 +204,28 @@ def _toggle_with_skill(
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
     confirmation = f"Smart Router is {state} for this session"
     if agent == "claude":
-        # Claude's mod handles this locally; routing changes are checked by the next child.
-        tui.submit(invocation)
+        # Auto replaces the skill toggle in configured interactive Claude sessions.
+        # Keep the recipe/request and real-child assertions below unchanged.
+        controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
+        assert len(controls) == 1, controls
+        tui.submit("/model ug-auto" if enabled else f"/model {CLAUDE_MODELS[0]}")
+        selector = "Choose the main agent model for Auto."
+        if enabled:
+            tui.wait_for(lambda screen: selector in screen, "the Auto main-model selector")
+            tui.send("\r", "keep Auto's main model")
         tui.wait_for(
-            lambda screen: f"Smart Router is {state}" in screen,
-            f"the Smart Router {state} confirmation",
+            lambda screen: (
+                selector not in screen
+                and (
+                    json.loads(controls[0].read_text()) == {}
+                    if enabled
+                    else json.loads(controls[0].read_text()).get(
+                        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
+                    )
+                    == "0"
+                )
+            ),
+            f"routing {state} after the native model command",
             timeout=120,
         )
         return
@@ -735,15 +750,15 @@ def test_smart_router_routes_claude_subagent_at_launch(
 @pytest.mark.managed_fixture
 @pytest.mark.soft_fail
 @SMART_ROUTER_VERSIONS
-def test_smart_router_skill_turns_claude_subagent_routing_off(
+def test_smart_router_model_turns_claude_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
     """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
-    config's smart routing default, invoke the installed Smart Router skill to turn routing off,
+    config's smart routing default, select an ordinary model with /model to turn routing off,
     then spawn a child in the same real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. The local invocation confirms "Smart Router is off" in the TUI.
+    Smart Router Orchestrator. The native model command changes the saved routing controls.
     The uniquely tagged calculation completes in native parent and child sessions; its recorded
     inference payloads carry smart_router_recipe_name DISABLED, without a recipe header, and
     receive non-empty HTTP 200 responses (including verified native compatibility retries).
@@ -768,7 +783,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_off(
             session, "claude", [str(session.binary), "claude"], "smart-router-skill-off"
         ) as tui:
             tui.boot()
-            _toggle_with_skill(
+            _toggle_routing(
                 tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
             )
             checkpoint = recorder.checkpoint()
@@ -791,16 +806,16 @@ def test_smart_router_skill_turns_claude_subagent_routing_off(
 @pytest.mark.managed_fixture
 @pytest.mark.soft_fail
 @SMART_ROUTER_VERSIONS
-def test_smart_router_skill_turns_claude_subagent_routing_back_on(
+def test_smart_router_model_turns_claude_subagent_routing_back_on(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):
     """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
-    config's smart routing default, spawn a child, invoke the installed Smart Router skill to turn
-    routing off, spawn a second child, turn routing back on, and spawn a third child in the same
+    config's smart routing default, spawn a child, select an ordinary model to turn
+    routing off, spawn a second child, select Auto, and spawn a third child in the same
     real TUI session.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. Each local invocation confirms the new state in the TUI. All
+    Smart Router Orchestrator. Each native model command changes the saved routing controls. All
     uniquely tagged calculations complete in native parent and child sessions. The second
     child's recorded inference payloads carry smart_router_recipe_name DISABLED, with no
     native model/rationale row and no live gateway decision. The first and third children show
@@ -839,7 +854,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
                 launch_recipe=None,
                 orchestration_enabled=orchestration_enabled,
             )
-            _toggle_with_skill(
+            _toggle_routing(
                 tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
             )
             # Prove "off" takes effect after a routed child before turning routing back on.
@@ -854,7 +869,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
                 orchestration_enabled=orchestration_enabled,
             )
             assert recipe == "DISABLED", recipe
-            _toggle_with_skill(
+            _toggle_routing(
                 tui, session, "claude", enabled=True, orchestration_enabled=orchestration_enabled
             )
             checkpoint = recorder.checkpoint()
@@ -947,7 +962,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
         session, "codex", [str(session.binary), "codex"], "smart-router-skill-off"
     ) as tui:
         tui.boot()
-        _toggle_with_skill(
+        _toggle_routing(
             tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
         )
         _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
@@ -994,12 +1009,12 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
-        _toggle_with_skill(
+        _toggle_routing(
             tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
         )
         # Prove "off" takes effect after a routed child before turning routing back on.
         _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
-        _toggle_with_skill(
+        _toggle_routing(
             tui, session, "codex", enabled=True, orchestration_enabled=orchestration_enabled
         )
         _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)

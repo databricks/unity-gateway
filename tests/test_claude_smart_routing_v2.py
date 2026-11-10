@@ -57,7 +57,10 @@ class TestManagedModelPicker:
 
         assert catalog is not None
         assert catalog.model_ids == ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]
-        assert catalog.model_id_to_display_name == {}
+        assert catalog.model_id_to_display_name == {
+            "system.ai.claude-opus-4-8": "Opus",
+            "system.ai.claude-sonnet-5": "Sonnet",
+        }
 
     def test_ignores_empty_or_missing_picker(self, tmp_path, monkeypatch):
         path = tmp_path / "managed-settings.json"
@@ -434,6 +437,8 @@ class TestV2Launch:
         }
 
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
+        # Exercise the legacy launch independently of the developer's installed Auto row.
+        monkeypatch.setattr(claude, "auto_picker_available", lambda: False)
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))

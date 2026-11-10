@@ -87,8 +87,8 @@ WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
 # The quarantined Claude Smart Router toggle journey, split into one test per toggle state.
 CLAUDE_TOGGLE_TESTS = (
     "test_smart_router_routes_claude_subagent_at_launch",
-    "test_smart_router_skill_turns_claude_subagent_routing_off",
-    "test_smart_router_skill_turns_claude_subagent_routing_back_on",
+    "test_smart_router_model_turns_claude_subagent_routing_off",
+    "test_smart_router_model_turns_claude_subagent_routing_back_on",
 )
 
 
@@ -689,7 +689,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     contents = workflow.read_text()
 
-    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.290' }}" in contents
+    assert "  CLAUDE_VERSION: ${{ inputs.claude_version || '2.1.322' }}" in contents
     assert contents.count('"--claude-version", $env:CLAUDE_VERSION,') == 2
 
 
@@ -931,7 +931,7 @@ def test_cowork_ci_permissions_and_required_gate():
     job = jobs["cowork-inference-windows"]
     assert "github.event_name != 'merge_group'" in job
     assert "inputs.ug_version == 'checkout'" in job
-    assert "inputs.claude_version == '2.1.290'" in job
+    assert "inputs.claude_version == '2.1.322'" in job
     assert "inputs.dependency == ''" in job
     assert "id-token:" not in job
     assert "continue-on-error:" not in job

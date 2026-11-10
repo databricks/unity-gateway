@@ -70,6 +70,10 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    # 2.1.322 adds a collapsed history heading after the current task rows.
+    # Keep requiring an exact Completed group and every current row to be done.
+    if rows and re.fullmatch(r"Earlier in this session \([0-9]+\)", rows[-1]):
+        rows.pop()
     if not rows:
         return False
     completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
@@ -221,7 +225,7 @@ def spawn_pty(command, cwd, env, dimensions):
 
 
 class TerminalProcess:
-    def __init__(self, session, agent, command, name):
+    def __init__(self, session, agent, command, name, *, dimensions=(60, 140)):
         self.session = session
         self.agent = agent
         self.name = name
@@ -230,8 +234,9 @@ class TerminalProcess:
         if agent == "codex":
             # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
             session.choose_codex_windows_sandbox()
-        self.child = spawn_pty(self.command, str(session.cwd), env, (60, 140))
-        self.screen = TerminalScreen(140, 60, self.child.send)
+        self.dimensions = dimensions
+        self.child = spawn_pty(self.command, str(session.cwd), env, dimensions)
+        self.screen = TerminalScreen(dimensions[1], dimensions[0], self.child.send)
         self.stream = pyte.Stream(self.screen)
         self.output = []
         self.actions = []
@@ -256,7 +261,11 @@ class TerminalProcess:
             f"{self.name}.json",
             {
                 "argv": self.command,
-                "terminal": {"rows": 60, "columns": 140, "term": "xterm-256color"},
+                "terminal": {
+                    "rows": self.dimensions[0],
+                    "columns": self.dimensions[1],
+                    "term": "xterm-256color",
+                },
                 "actions": self.actions,
                 "transcript": "".join(self.output),
                 "screen": self.visible,
@@ -306,27 +315,28 @@ class TerminalProcess:
                 since = None
         raise AssertionError(f"TUI did not show {description} within {timeout}s:\n{self.visible}")
 
-    def selected_line(self):
+    def selected_line(self, *, after=None):
+        # Prior submitted prompts also begin with ❯. Once a menu is open, only
+        # its rows can identify the current selection.
+        text = self.visible if after is None else self.visible.rpartition(after)[2]
         return next(
-            (
-                line.strip()
-                for line in self.visible.splitlines()
-                if re.match(rf"^\s*{SELECTED}", line)
-            ),
+            (line.strip() for line in text.splitlines() if re.match(rf"^\s*{SELECTED}", line)),
             "",
         )
 
     def choose(self, prompt, label):
         """Navigate the visible menu with arrow keys; never write its saved state."""
-        self.wait_for(lambda text: prompt in text and self.selected_line(), prompt, timeout=120)
+        self.wait_for(
+            lambda text: prompt in text and self.selected_line(after=prompt), prompt, timeout=120
+        )
         visited = set()
         for _ in range(100):
-            current = self.selected_line()
+            current = self.selected_line(after=prompt)
             if label in current:
                 self.send("\r", f"choose {label}")
                 self.wait_for(
                     lambda text, before=current: (
-                        prompt not in text or self.selected_line() != before
+                        prompt not in text or self.selected_line(after=prompt) != before
                     ),
                     f"confirmation of {label}",
                 )
@@ -335,7 +345,8 @@ class TerminalProcess:
             visited.add(current)
             self.send("\x1b[B", f"move towards {label}")
             self.wait_for(
-                lambda text, before=current: self.selected_line() != before, "next menu option"
+                lambda text, before=current: self.selected_line(after=prompt) != before,
+                "next menu option",
             )
         raise AssertionError(f"Could not select {label}")
 

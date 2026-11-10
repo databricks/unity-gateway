@@ -1,5 +1,28 @@
 # Integration tests
 
+The Claude Auto model-picker flow currently has Python and native Claude 2.1.322
+component coverage (see `../README.md`). That verifies model selection, preference
+persistence, session routing controls and native render properties with controlled
+engine boundaries, including the native model panel returning before its confirmation
+is appended. `test_ug_claude_auto.py` now exercises `/model` → Auto → main-model choice,
+cancellation and reselection, a real routed child task, and a subsequent manual
+model task with no new routing decision in an 80-column terminal. It uses the
+checked-in managed routing catalog, or the 5.5 catalog for the explicitly
+selected agent-bricks staging workspace. This does not assert absence of transient pane
+flash or dynamic capability changes. The native-mod and integration CI pin is
+2.1.322. Component checks alone are not gateway inference evidence. A manual Ubuntu 24.04 check
+on Claude 2.1.322 completed a real Auto-routed task (Sonnet 5.5 parent,
+Haiku 5.5 child) and a subsequent manual Opus 5.5 task with no new routing
+decision. Native child handbacks and parent answers were verified. The automated
+managed 80-column journey also passed on clean Ubuntu ARM64 with Claude 2.1.322
+against the staging gateway, including parent/child answers and routing decisions.
+The brief pane flash on cancellation/manual selection remains a known UX failure.
+Auto capability metadata has component regression coverage for static managed
+catalogs, explicit admin metadata and context suffixes. After the privileged update, a fresh Ubuntu Claude 2.1.322 session with Auto
+showed no unknown-model warning, and native `/context` reported a 1m-token
+context and auto-compact window for its Opus 5.5 fallback. This does not verify
+dynamic capability changes for every alternate main model.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
@@ -1472,8 +1495,8 @@ different workspace/setup, extend the advisory lanes to run them. The marker alo
 not provide that setup or affect unit tests, installation checks, or dedicated CUJs.
 
 Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claude_subagent_at_launch`,
-`test_smart_router_skill_turns_claude_subagent_routing_off` and
-`test_smart_router_skill_turns_claude_subagent_routing_back_on`) and their six variants each carry
+`test_smart_router_model_turns_claude_subagent_routing_off` and
+`test_smart_router_model_turns_claude_subagent_routing_back_on`) and their six variants each carry
 `soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
 Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.

@@ -1,5 +1,24 @@
 # Test suites and user journeys
 
+Claude Auto component coverage in `test_claude_auto.py` and the native mod suite
+checks a distinct Auto identity, Opus 5.5 default, per-workspace preference keys,
+policy-filtered main models, managed deny/allow rules across picker sources,
+empty authoritative catalogs that fail closed, Auto fallback capability metadata
+(including context suffixes and explicit admin hints), unchanged native settings, complete catalog selection,
+cancellation, Auto reselection, command-before-transcript pane placement, root-only inference model substitution, and hiding
+the separate indicator while ordinary models disable session routing. Native
+checks ran with Claude Code 2.1.322; the native-mod CI job now pins that version. These controlled checks do not establish a
+live gateway routing decision or a completed interactive task.
+
+`integration/test_ug_claude_auto.py` adds an 80-column real terminal journey for
+managed configure, the complete selector, cancellation/reselection, and real routed
+then unrouted child tasks. It checks settled UI states, not transient flash or dynamic
+capabilities. It uses the existing CI routing fixture, or the checked-in 5.5 catalog when the
+caller selects the agent-bricks staging workspace. This journey passed on clean
+Ubuntu ARM64 with Claude 2.1.322. Terminal component tests also cover transcript
+prompts preceding a picker and the native task menu's collapsed history heading,
+while continuing to reject running tasks and mismatched completion counts.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
@@ -94,7 +113,7 @@ unit/component checks, not live workspace or sign-in coverage; CLI wiring is sep
 
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
-`native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
+`native_claude/test_mod.py` suite. Claude 2.1.322 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
@@ -189,7 +208,7 @@ not live agent, Windows, or gateway coverage.
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
 making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
-not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
+not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.322) against a
 fake API with both shell variables set: the blanks make it send the `apiKeyHelper` token, or on the relayed
 path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
 skips on a machine with Claude managed settings, which would replace the fixture's.
@@ -1063,7 +1082,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_reports_unknown_argument` | Pass an invalid option directly to `ug codex app` with legacy smart routing off/on | Real Codex parser error and status preserved |
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
-| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
+| `test_smart_router_routes_{claude,codex}_subagent_at_launch`, `test_smart_router_model_turns_claude_subagent_routing_off`, `test_smart_router_skill_turns_codex_subagent_routing_off`, `test_smart_router_model_turns_claude_subagent_routing_back_on`, `test_smart_router_skill_turns_codex_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch; select an ordinary Claude model (or invoke the Codex Smart Router skill) to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
 | `test_smart_router_managed_default_leaves_codex_unrouted_at_launch` | Configure with only the managed config's `smart_routing.enabled` (selects `subagent_orch_v0_claude_only`), launch the real Codex TUI, and spawn one tagged child without touching the Smart Router skill | ug warns that smart routing is enabled for Codex in this workspace but currently only supported for Claude Code; neither `smart-router` nor the orchestrator skill is installed; the tagged child completes natively with no subagent-routing banner and no live routing decision; no first-prompt interposer; normal exit |
 | `test_ug_codex_native_v2_plain_assignment_routing` | Configure and launch subagent-only routing with a native v2 catalog and a user-owned observer hook; delegate a multiline Unicode file task | Exact plaintext at the hook, router, and native child; completed child uses the routed model; parent model, Databricks provider, and user settings are preserved |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |

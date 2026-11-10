@@ -3935,6 +3935,22 @@ def _launch_tool(
             # rewriting it; the admin's location exists only for this launch.
             provider = None
             parent_schema = managed_parent_schema
+        # Offer Auto on ordinary interactive gateway launches. Resolve the source
+        # first: provider/relay launches do not support UG smart routing.
+        if (
+            tool == AGENT_CLAUDE
+            and not provider
+            and not routing_chosen
+            and not os.environ.get("SMART_ROUTER_CONFIG_VERSION")
+            and not any(key in os.environ for key in SMART_ROUTING_ENV_KEYS)
+            and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt)
+            and not _child_owns_stdout(tool, ctx.args)
+        ):
+            previous = {
+                **smart_routing_config.apply_enabled_version(agent=tool),
+                **previous,
+            }
+            routing_chosen = True
         # Managed smart routing overrides individual routing env vars, but not the flag or a known
         # version. Its version is applied right before launch, after the launch options below.
         managed_smart_routing_applies = (

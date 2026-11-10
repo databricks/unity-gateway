@@ -75,8 +75,8 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         Session(native_binary, tmp_path / "a", env) as a,
         Session(native_binary, tmp_path / "b", {}) as b,
     ):
-        assert a.observe()["options"] == _claude_mod_launch_options(env)
-        assert b.observe()["options"] == _claude_mod_launch_options({})
+        assert a.observe()["options"] == {**_claude_mod_launch_options(env), "autoPicker": ""}
+        assert b.observe()["options"] == {**_claude_mod_launch_options({}), "autoPicker": ""}
         assert not (a.plugin / "hooks/launch.json").exists()
 
 
