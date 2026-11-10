@@ -1584,6 +1584,18 @@ def test_expand_wildcard_sources_preserves_other_forms(monkeypatch):
     assert db_mod.expand_wildcard_sources(models, "claude", WS, "token") == models
 
 
+def test_expand_wildcard_sources_without_token_names_the_missing_token(monkeypatch):
+    def fail(*args):
+        pytest.fail("unexpected lookup without a token")
+
+    monkeypatch.setattr(db_mod, "get_model_provider_service", fail)
+    warnings = []
+    monkeypatch.setattr(db_mod, "print_warning", warnings.append)
+    assert db_mod.expand_wildcard_sources(["c.s.mps.*"], "claude", WS, "") == []
+    assert len(warnings) == 1
+    assert "no Databricks token; run `ug configure`" in warnings[0]
+
+
 class TestListProviderServiceModels:
     @pytest.mark.parametrize(
         ("provider_type", "response", "expected"),

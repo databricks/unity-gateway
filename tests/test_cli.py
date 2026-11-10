@@ -1928,11 +1928,25 @@ class TestManagedConfigLaunchSourceGuard:
         calls["launch"].assert_called_once()
 
 
-def test_managed_wildcard_expansion_writes_a_copy(monkeypatch):
-    managed = {"enabled_agents": {"claude": {"model_config": {"model_services": ["c.s.mps.*"]}}}}
-    monkeypatch.setattr(cli_mod, "expand_wildcard_sources", lambda *args: ["c.s.mps.model"])
+@pytest.mark.parametrize("key", ["sources", "model_services"])
+def test_managed_wildcard_expansion_writes_a_copy(monkeypatch, key):
+    managed = {"enabled_agents": {"claude": {"model_config": {key: ["c.s.mps.*"]}}}}
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args, **kwargs: "tok")
+    monkeypatch.setattr(
+        cli_mod, "expand_wildcard_sources", lambda *args, **kwargs: ["c.s.mps.model"]
+    )
     expanded = cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
+    assert expanded["enabled_agents"]["claude"]["model_config"][key] == ["c.s.mps.model"]
     assert cli_mod.managed_static_models(expanded, "claude") == ["c.s.mps.model"]
+    assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
+
+
+def test_managed_wildcard_expansion_fails_closed_when_every_wildcard_fails(monkeypatch):
+    managed = {"enabled_agents": {"claude": {"model_config": {"sources": ["c.s.mps.*"]}}}}
+    monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args, **kwargs: "tok")
+    monkeypatch.setattr(cli_mod, "expand_wildcard_sources", lambda *args, **kwargs: [])
+    with pytest.raises(RuntimeError, match="c.s.mps"):
+        cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
     assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
 
 

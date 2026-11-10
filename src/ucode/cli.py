@@ -1090,12 +1090,10 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     return state
 
 
-def _expand_managed_model_sources(managed: dict | None, state: dict, tool: str) -> dict | None:
-    models = managed_static_models(managed or {}, tool) or []
-    if (
-        managed is None
-        or tool not in ("claude", "codex", "copilot")
-        or not any(is_mps_wildcard(model) for model in models)
+def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict:
+    models = managed_static_models(managed, tool) or []
+    if tool not in ("claude", "codex", "copilot") or not any(
+        is_mps_wildcard(model) for model in models
     ):
         return managed
     try:
@@ -1103,8 +1101,19 @@ def _expand_managed_model_sources(managed: dict | None, state: dict, tool: str) 
     except RuntimeError:
         token = ""
     expanded = expand_wildcard_sources(models, tool, state["workspace"], token)
+    if not expanded:
+        # Every wildcard failed to expand. An empty static list reads as unset, which would
+        # silently replace the admin's allow-list with workspace discovery; fail closed instead.
+        failed = ", ".join(model for model in models if is_mps_wildcard(model))
+        raise RuntimeError(
+            f"Could not expand managed model sources ({failed}); refusing to fall back to "
+            "workspace discovery. Check service access and compatible models, then retry."
+        )
     managed = copy.deepcopy(managed)
-    managed["enabled_agents"][tool]["model_config"]["model_services"] = expanded
+    model_config = managed["enabled_agents"][tool]["model_config"]
+    # Write back to the key the list was read from; `sources` wins over legacy `model_services`.
+    key = "sources" if "sources" in model_config else "model_services"
+    model_config[key] = expanded
     return managed
 
 
@@ -1161,7 +1170,7 @@ def _setup_single_agent(
     if apply_managed and tool in MODEL_LOCATION_TOOLS:
         _reject_disabled_agent(managed, tool)
         if managed is not None:
-            managed = _expand_managed_model_sources(managed, state, tool) or managed
+            managed = _expand_managed_model_sources(managed, state, tool)
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
@@ -1473,7 +1482,7 @@ def _configure_workspace_command(
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
-            expanded_managed = _expand_managed_model_sources(managed, state, tool_name) or managed
+            expanded_managed = _expand_managed_model_sources(managed, state, tool_name)
             resolved = resolve_state(expanded_managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
@@ -3994,7 +4003,8 @@ def _launch_tool(
             raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
-        managed = _expand_managed_model_sources(managed, state, tool)
+        if managed is not None:
+            managed = _expand_managed_model_sources(managed, state, tool)
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)

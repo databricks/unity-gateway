@@ -4198,7 +4198,8 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
         if model not in lookups:
             service_name = model[:-2]
             targets: list[str] = []
-            reason = "authentication failed"
+            # Only read when no token was available; real lookups set their own reason below.
+            reason = "no Databricks token; run `ug configure`"
             try:
                 if token:
                     service, reason = get_model_provider_service(service_name, workspace, token)
