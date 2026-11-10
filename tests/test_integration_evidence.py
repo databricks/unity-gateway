@@ -258,6 +258,80 @@ def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
     assert not antigravity.resource_exhausted(stdout)
 
 
+def _antigravity_web_search_events():
+    return [
+        {
+            "event": "step_update",
+            "step_update": {
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "call_mcp_tool",
+                "tool_info": {
+                    "name": "call_mcp_tool",
+                    "parameters": {
+                        "ServerName": "system-ai-web_search",
+                        "ToolName": "web_search",
+                        "Arguments": {"query": "Databricks official website"},
+                    },
+                    "output": "Official site: https://www.databricks.com/",
+                },
+            },
+        },
+        {
+            "event": "result",
+            "result": {"status": "SUCCESS", "response": "https://www.databricks.com/"},
+        },
+    ]
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_antigravity_web_search_requires_native_result_and_matching_answer(encoded):
+    events = _antigravity_web_search_events()
+    if encoded:
+        call = events[0]["step_update"]["tool_info"]
+        call["output"] = json.dumps(
+            {"isError": False, "content": [{"type": "text", "text": call["output"]}]}
+        )
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ((0, "step_update", "state"), "ACTIVE"),
+        ((0, "step_update", "state"), "ERROR"),
+        ((0, "step_update", "tool_name"), "search_web"),
+        ((0, "step_update", "tool_info", "parameters", "ServerName"), "another-server"),
+        ((0, "step_update", "tool_info", "parameters", "ToolName"), "execute_sql"),
+        ((0, "step_update", "tool_info", "parameters", "Arguments", "query"), "another query"),
+        ((0, "step_update", "tool_info", "error"), {"type": "TOOL_ERROR"}),
+        ((0, "step_update", "tool_info", "output"), ""),
+        ((0, "step_update", "tool_info", "output"), "https://www.databricks.com.example.org/"),
+        (
+            (0, "step_update", "tool_info", "output"),
+            '{"isError": true, "content": [{"type": "text", "text": "https://www.databricks.com/"}]}',
+        ),
+        ((1, "result", "status"), "ERROR"),
+        ((1, "result", "response"), ""),
+        ((1, "result", "response"), "https://www.databricks.com/not-returned-by-search"),
+        ((1, "result", "denied_actions"), [{"action": "command", "display_name": "RunCommand"}]),
+    ],
+)
+def test_antigravity_web_search_rejects_incomplete_or_unrelated_evidence(path, value):
+    events = _antigravity_web_search_events()
+    target = events
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(AssertionError):
+        antigravity.assert_mcp_web_search_answer(
+            events, server="system-ai-web_search", query="Databricks official website"
+        )
+
+
 def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(monkeypatch):
     monkeypatch.setattr(antigravity.random, "uniform", lambda _start, _end: 0)
 

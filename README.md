@@ -78,7 +78,8 @@ to discovery or change ug's saved default.
 `ug antigravity` (or `ug agy`) runs Google's Antigravity CLI 1.2.15 or later in its
 Enterprise Gateway mode, so it never asks for Google sign-in. It offers the workspace's
 Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-flash` is
-`gemini-3.8-flash`) and starts on the newest. A local proxy refreshes the Databricks token
+`gemini-3.8-flash`) and explicitly selects the newest for each launch, including headless
+sessions. A local proxy refreshes the Databricks token
 for the whole session and maps each name back to its Databricks model. `--model` accepts
 either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
 `--provider` routes through a Gemini Enterprise Model Provider Service, as with
