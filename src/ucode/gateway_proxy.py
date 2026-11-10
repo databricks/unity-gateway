@@ -491,7 +491,8 @@ GATEWAY_MODEL_PATH_PREFIXES = (
 )
 _ANTHROPIC_PATH_PREFIX = "/ai-gateway/anthropic/"
 # The agent's credential headers carry the session secret, never a Databricks token.
-_SESSION_CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key"})
+# The Google GenAI SDK (Gemini CLI) also copies its API key into `x-goog-api-key`.
+_SESSION_CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key", "x-goog-api-key"})
 
 
 def _is_allowed_gateway_path(path: str, prefixes: tuple[str, ...]) -> bool:

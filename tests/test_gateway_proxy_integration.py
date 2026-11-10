@@ -16,6 +16,7 @@ Fully hermetic: no agent binary, no network, no workspace credentials.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import gzip
 import json
@@ -456,6 +457,40 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.path == "/ai-gateway/anthropic/v1/messages"
         assert req.header("x-api-key") is None
         assert req.header("Authorization") == "Bearer dbx-token"
+
+    def test_gemini_session_gets_a_fresh_token_after_the_old_one_nears_expiry(self, make_gateway):
+        # Gemini CLI holds one key for the whole session and sends it twice (bearer
+        # auth plus the GenAI SDK's own `x-goog-api-key`).
+        gw = make_gateway()
+        minted: list[str] = []
+
+        def expiring_token(force_refresh: bool = False) -> str:
+            # Inside the refresh buffer, so every request has to mint again.
+            payload = base64.urlsafe_b64encode(json.dumps({"exp": time.time() + 60}).encode())
+            minted.append(f"h.{payload.decode().rstrip('=')}.{len(minted)}")
+            return minted[-1]
+
+        with _running_gateway_auth_proxy(
+            gw, expiring_token, allowed_path_prefixes=("/ai-gateway/gemini/",)
+        ) as proxy_url:
+            for _ in range(2):
+                resp = httpx.post(
+                    f"{proxy_url}/ai-gateway/gemini/v1beta/models/m:streamGenerateContent?alt=sse",
+                    headers={
+                        "Authorization": f"Bearer {_SESSION_SECRET}",
+                        "x-goog-api-key": _SESSION_SECRET,
+                    },
+                    content=b"{}",
+                    timeout=10,
+                )
+                assert resp.status_code == 200
+        first, second = gw.requests
+        assert first.path == "/ai-gateway/gemini/v1beta/models/m:streamGenerateContent?alt=sse"
+        assert first.header("Authorization") != second.header("Authorization")
+        assert second.header("Authorization") == f"Bearer {minted[-1]}"
+        for req in gw.requests:
+            assert req.header("x-goog-api-key") is None
+            assert _SESSION_SECRET not in json.dumps(req.headers)
 
     @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
     def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):
