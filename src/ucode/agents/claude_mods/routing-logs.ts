@@ -36,6 +36,22 @@ export function logsReaderCommand(options: PluginOptions): string[] {
   return command;
 }
 
+// Run the reader CLI once and store its result. Returns the debug-log note,
+// empty when the read succeeded.
+export async function runRoutingLogsReader($: any, options: PluginOptions): Promise<string> {
+  try {
+    const command = logsReaderCommand(options);
+    const session = await $.session.id();
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    return applyRoutingLogsRead(result.stdout,
+      result.exitCode !== 0 || result.isStdoutTruncated
+        ? `logs command exited ${result.exitCode} or truncated output`
+        : undefined);
+  } catch (error) {
+    return applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
+  }
+}
+
 // Store one reader result in the pane state. A failed or malformed read shows the generic
 // notice; a CLI error envelope {"v":1,"error":"..."} adds its hint under that notice.
 // Returns the debug-log note, empty when the read succeeded.
@@ -81,18 +97,7 @@ async function load($: any, options: PluginOptions): Promise<void> {
   }
   loading = true;
   try {
-    let note: string | undefined;
-    try {
-      const command = logsReaderCommand(options);
-      const session = await $.session.id();
-      const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
-      note = applyRoutingLogsRead(result.stdout,
-        result.exitCode !== 0 || result.isStdoutTruncated
-          ? `logs command exited ${result.exitCode} or truncated output`
-          : undefined);
-    } catch (error) {
-      note = applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
-    }
+    const note = await runRoutingLogsReader($, options);
     if (note) $.ui.log(note, { to: 'debug' });
   } finally {
     loading = false;
