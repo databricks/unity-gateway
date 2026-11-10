@@ -29,9 +29,10 @@ configuration and launch with explicit overrides. Other tools retain existing fi
 Opaque deployment names such as `team-coding` have component coverage only; the custom-provider
 live journeys below use vendor model IDs.
 
-The managed Codex MCP journey checks its OS-managed native HTTP entry, exact
-service/resource URL, pinned Codex OAuth client, and absence of a user-scope copy.
-It replaces the obsolete stdio-only expectation; this checks configuration, not live login.
+The managed Codex MCP journey checks its OS-managed `ug mcp-proxy` stdio entry, exact
+service URL, 330-second tool timeout, and absence of a user-scope copy.
+It replaces the obsolete native-OAuth expectation; this checks configuration, not live
+in-chat sign-in through the proxy's `authenticate` tool, which remains a manual gap.
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged

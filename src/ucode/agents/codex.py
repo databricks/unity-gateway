@@ -1249,6 +1249,8 @@ def managed_mcp_entry(argv: list[str]) -> dict:
         "command": argv[0],
         "args": list(argv[1:]),
         "env_vars": list(_CODEX_MCP_AUTH_ENV_VARS),
+        # The proxy holds a call open through connection sign-in (up to 300s); Codex's default is 60s.
+        "tool_timeout_sec": 330,
     }
 
 
