@@ -56,6 +56,7 @@ const explanationModelId = (model: string): string => {
 
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
+    .replace(/^databricks-claude-/, 'system.ai.claude-')
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
@@ -484,17 +485,87 @@ export const registerSubagentRouting = (
   unusedNames.splice(0, unusedNames.length, ...ANIMALS)
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
-    await routeCall({
-      session: { id: () => $.session.id(), model: () => $.session.model() },
-      routingEnabled: async () => isRoutingEnabled({
-        ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
-        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
-      }),
-      process: { run: (command: readonly string[], init: { stdin: string; timeoutMs: number }) => $.process.run(command, init) },
-      clock: { now: () => $.clock.now(), every: (ms: number, tick: () => void) => $.clock.every(ms, tick) },
-      ui: { invalidate: (name: 'ui.render') => $.ui.invalidate(name), log: (text: string) => $.ui.log(text) },
-    }, e)
-    const { tool_use_id } = e
+    const command = options.routeCommand as readonly string[]
+    if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    const { tool, tool_use_id, agentId, ...input } = e
+    let route
+    let denial: string | undefined
+    const timestamp = await now($)
+    const excluded_models = [...rateLimitedUntil]
+      .filter(([, until]) => timestamp !== undefined && until > timestamp)
+      .map(([model]) => model)
+    let spinner: { cancel: () => void } | undefined
+    if (tool_use_id) {
+      if (!names.has(tool_use_id)) {
+        if (!unusedNames.length) unusedNames.push(...ANIMALS)
+        const animal = unusedNames.splice(Math.floor(Math.random() * unusedNames.length), 1)[0]
+        const cycle = Math.floor(names.size / ANIMALS.length)
+        names.set(tool_use_id, cycle ? `${animal} ${cycle + 1}` : animal)
+      }
+      // Parallel calls start together, so one still routing means this call is not alone.
+      if (pending.size) {
+        for (const id of pending.keys()) {
+          if (!grouped.has(id)) {
+            grouped.add(id)
+            cards.unplaced.push(id)
+          }
+        }
+        grouped.add(tool_use_id)
+        cards.unplaced.push(tool_use_id)
+      }
+      pending.set(tool_use_id, undefined)
+      pending.set(tool_use_id, await now($))
+      // Mods have no global timers; $.clock redraws the spinner while the router answers.
+      // The frame comes from the clock, so parallel calls do not speed it up.
+      try {
+        spinner = $.clock.every(SPINNER_INTERVAL_MS, () => $.ui.invalidate('ui.render'))
+      } catch {}
+      $.ui.invalidate('ui.render')
+    }
+    try {
+      const session_id = await $.session.id()
+      const result = await $.process.run(command, {
+        stdin: JSON.stringify({ session_id, agent_id: agentId, tool_use_id, tool_name: tool, tool_input: input,
+          ...(excluded_models.length ? { excluded_models } : {}) }),
+        timeoutMs: 35000,
+      })
+      if (result.exitCode !== 0) throw new Error('Router command failed')
+      const response = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+      if (typeof response?.deny === 'string' && response.deny) denial = response.deny
+      else if (response?.disabled !== true) {
+        if (response === undefined && excluded_models.length) throw new Error('Missing routing decision')
+        route = response
+      }
+      if (route !== undefined && (
+          typeof route?.model !== 'string' || !route.model ||
+          typeof route.rationale !== 'string')) {
+        throw new Error('Invalid routing response')
+      }
+    } catch {
+      route = undefined
+      if (excluded_models.length) {
+        denial = 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
+      } else {
+        $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      }
+    } finally {
+      spinner?.cancel()
+    }
+    const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
+    if (tool_use_id) {
+      pending.delete(tool_use_id)
+      if (route) {
+        records.set(tool_use_id, {
+          name: names.get(tool_use_id)!,
+          title: taskTitle(input),
+          model: route.model,
+          rationale: route.rationale,
+          seconds,
+        })
+      }
+      $.ui.invalidate('ui.render')
+    }
+    if (denial) return { deny: denial }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
     const result = await next(e)
     const record = tool_use_id ? records.get(tool_use_id) : undefined
@@ -511,17 +582,11 @@ export const registerSubagentRouting = (
   })
 
   on('agent.spawn', async ($, e, next) => {
-    let route = e.resume ? undefined : records.get(e.tool_use_id)
+    const route = e.resume ? undefined : records.get(e.tool_use_id)
     const timestamp = route ? await now($) : undefined
     if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
-      // Use the running parent's resolved model; the call's alias can select the failed model again.
-      if ((rateLimitedUntil.get(canonicalModel(e.parentModel)) ?? 0) > timestamp) {
-        return { deny: 'The routed and parent models are rate-limited. Wait for the limit to reset before starting another subagent.' }
-      }
-      route = { ...route, model: e.parentModel,
-        rationale: `${shortModel(route.model)} recently hit a rate limit; using the parent model during its cooldown.` }
-      records.set(e.tool_use_id, route)
-      $.ui.invalidate('ui.render')
+      // A failure notice may arrive while the routing request is in flight.
+      return { deny: 'The selected model is now rate-limited. Retry to select another available model.' }
     }
     // The task shows the spawn description, so the routed label is set here — after the
     // permission decision, never on the reviewed call. On the rewrite path the recorded

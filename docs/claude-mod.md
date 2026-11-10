@@ -36,7 +36,7 @@ The same entry point routes Agent/Task calls in a native `tool.call` hook. It pi
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
 `agent.spawn` hook applies the selected model, preserving the agent's type, prompt,
-name and permissions. The routing response contains only `model` and `rationale`;
+name and permissions. A successful routing response contains `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
@@ -131,8 +131,13 @@ Without a version selector, an unset flag preserves the visible routing details.
 The same flag suppresses Codex's routed-subagent model card and post-launch model
 verification message, without changing the model injected into the spawn request.
 
-Disabled routing, command failures, and invalid responses keep the original call;
-failures also log a diagnostic.
+A confirmed native background-task 429 excludes that model and equivalent aliases from
+new router requests for 60 seconds. The router chooses from the remaining candidates;
+no candidates or a routing failure during cooldown denies the new spawn. Resumes retain
+their native behavior. A spawn guard also rejects a model rate-limited while routing was
+in flight. This launch-local cooldown does not retry the failed child.
+Explicitly disabled routing keeps the original call. Outside cooldown, command failures
+and invalid responses also keep it and log a diagnostic.
 
 ### Routing explanations
 

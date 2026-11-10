@@ -3684,6 +3684,8 @@ def claude_router_hook_cmd(
     if event != ROUTE_VALIDATION_MOD_EVENT and not smart_routing_v2.smart_routing_enabled(
         environment, default=False, agent=AGENT_CLAUDE
     ):
+        if event == ROUTE_SUBAGENT_MOD_EVENT:
+            sys.stdout.write(json.dumps({"disabled": True}))
         return
 
     from ucode.smart_routing.claude_routing import (

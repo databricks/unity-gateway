@@ -2227,7 +2227,7 @@ class TestSubcommandRouting:
                 hook_output=False,
             )
         else:
-            assert result.output == ""
+            assert json.loads(result.output) == {"disabled": True}
             route.assert_not_called()
 
     @pytest.mark.parametrize(
