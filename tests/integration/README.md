@@ -1842,8 +1842,8 @@ Local Claude mod confirmation replaces the old saved-control-file/assistant-turn
 Codex retains its CLI control-file checks. No extra TUI sessions or tasks are added.
 Clear/reload, compaction, and denied-write rollback are not independently checked.
 
-The spawn-rewrite check in `test_codex_routing.py` covers a prompt preview alongside
-the child name in legacy routing notices. Live rendering remains unverified.
+Existing `test_codex_routing.py` cases cover bounded plaintext previews alongside
+child names and omission of encrypted prompts. Live rendering remains unverified.
 
 Subagent-routing failures have shared warning coverage in `test_codex_routing.py`;
 the live hook journeys retain their routing assertions and include stderr when no
