@@ -1501,7 +1501,7 @@ class TestWindowsInstalledPolicy:
         refresh_managed_config(_state(), force_refresh=True)
         foreign = _state(workspace="https://other.example.com")
 
-        with pytest.raises(RuntimeError, match="Launch refused"):
+        with pytest.raises(RuntimeError, match="the launch was refused"):
             refresh_managed_config(foreign)
 
     def test_only_the_program_data_file_is_read(self, tmp_path):
