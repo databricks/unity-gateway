@@ -2056,7 +2056,10 @@ class _HelpOrderedGroup(TyperGroup):
             signature = ", ".join(option.opts)
             if option.secondary_opts:
                 signature += f" / {', '.join(option.secondary_opts)}"
-            metavar = option.make_metavar(ctx=ctx)
+            display_type = getattr(option, "display_type_rich", None)
+            metavar = (
+                display_type(ctx=ctx) if display_type is not None else option.make_metavar(ctx=ctx)
+            )
             if metavar and "boolean" not in metavar.lower():
                 signature += f" {metavar}"
             help_record = option.get_help_record(ctx)

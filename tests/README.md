@@ -331,6 +331,10 @@ preconfigured workspace is assigned.
 
 `test_entry_points.py` also runs both installed console scripts (`ug` and `ucode`)
 and checks their version output against the `unity-gateway` distribution metadata.
+`test_cli.py::TestHelp` checks command grouping, global option order, and value labels.
+The help formatter supports Typer's pre-0.29 and 0.29+ type-display APIs.
+Fresh-install checks in `integration/test_installation.py` require both console scripts
+to render help and report their version with the resolved dependencies.
 `test_startup_imports.py` guards the bare `--version` / `-V` fast path and deferred
 command-specific imports in fresh interpreters. Component tests cover metadata lookup,
 version suffixes, fallback, and unchanged dispatch for other arguments; they do not

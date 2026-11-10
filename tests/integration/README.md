@@ -358,8 +358,10 @@ evidence is checked, because Claude can resume a child after its first completed
 
 `../test_startup_imports.py` covers the bare version fast path, deferred imports,
 metadata fallback, and other-argument dispatch as component checks. Installation
-checks still exercise real console-script help and version output; neither suite
-asserts end-to-end agent startup latency. The component suite also checks that
+checks exercise both `ug` and `ucode` help and version output with freshly resolved
+dependencies, including Typer's type-display API. `../test_cli.py::TestHelp` protects
+the help layout across supported Typer versions. Neither suite asserts end-to-end
+agent startup latency. The component suite also checks that
 version output alone cannot establish CLI health when startup dependencies are
 absent; use `--help` for the startup-import probe.
 
