@@ -166,10 +166,13 @@ class Machine:
         return self.marker.exists()
 
     def mint_bearer(self) -> str:
-        # Stands in for the developer's own OAuth sign-in, which has all-apis; only this token,
-        # never the client secret, reaches the demoted user.
+        # Stands in for the developer's own OAuth sign-in, limited to the two APIs a launch uses.
+        # The :read scopes can't send inference requests. Only this token, never the client
+        # secret, reaches the demoted user.
         basic = b64encode(f"{self.client_id}:{self.client_secret}".encode()).decode()
-        body = urllib.parse.urlencode({"grant_type": "client_credentials", "scope": "all-apis"})
+        body = urllib.parse.urlencode(
+            {"grant_type": "client_credentials", "scope": "ai-gateway unity-catalog"}
+        )
         request = urllib.request.Request(
             f"{self.workspace}/oidc/v1/token",
             data=body.encode(),
