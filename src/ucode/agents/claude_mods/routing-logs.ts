@@ -244,9 +244,18 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
         if (detail.hint) children.push(Text({ dimColor: true, children: [detail.hint.slice(0, columns)] }));
       } else {
         // One labeled line per routing outcome; every label is dim so the block
-        // reads consistently, and each value wraps in its own column.
+        // reads consistently, and each value wraps in its own column. The label
+        // column is fixed at the longest label plus a one-space gutter, so no
+        // label ever wraps or shrinks and every value starts at the same column.
+        const labelWidth = 'Prompt preview: '.length + 1;
         const labeledRow = (label: string, value: ReturnType<typeof Text>) =>
-          Box({ flexDirection: 'row', children: [Text({ dimColor: true, children: [label] }), value] });
+          Box({
+            flexDirection: 'row',
+            children: [
+              Box({ width: labelWidth, flexShrink: 0, children: [Text({ dimColor: true, children: [label] })] }),
+              Box({ flexGrow: 1, children: [value] }),
+            ],
+          });
         children.push(labeledRow('Prompt preview: ', Text({ children: [detail.preview ?? '(prompt not recorded)'] })));
         if (detail.subagent) children.push(labeledRow('Agent type: ', Text({ children: [detail.subagent] })));
         children.push(labeledRow('Selected: ', Text({ color: 'green', bold: true, children: [shortModel(detail.selected)] })));

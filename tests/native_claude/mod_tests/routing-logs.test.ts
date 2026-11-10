@@ -78,9 +78,13 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
   expect(runs[1]).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--decision', 'd1']);
   const tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('Recorded prompt preview');
-  // Labels are dim; the prompt preview carries the agent type on its own line.
+  // Labels are dim and sit in one fixed-width column ('Prompt preview: ' is the
+  // longest label; the width is its length plus a one-space gutter) that never
+  // shrinks, and each value fills the rest of the row so values align.
   expect(tree).toContain('"props":{"dimColor":true},"children":["Prompt preview: "]');
   expect(tree).toContain('"props":{"dimColor":true},"children":["Agent type: "]');
+  expect(tree).toContain('"props":{"width":17,"flexShrink":0}');
+  expect(tree).toContain('"props":{"flexGrow":1}');
   expect(tree.indexOf('Prompt preview: ')).toBeLessThan(tree.indexOf('Agent type: '));
   expect(tree).not.toContain('SHA-256');
   expect(tree).not.toContain('Full prompt is not stored.');
