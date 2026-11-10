@@ -596,7 +596,12 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
         session, "claude", [str(session.binary), "claude"], "smart-router-resume-child"
     ) as tui:
         tui.boot()
-        tui.submit(first.delegate_prompt + " Spawn exactly one agent in total.")
+        tui.submit(
+            first.delegate_prompt
+            + " Spawn exactly one agent in total. If Agent reports a background launch, "
+            "end your turn and wait for its actual completion notification. Do not call "
+            "Agent again to wait, or write a completion notification yourself."
+        )
         tui.wait_for_task(first)
         tui.wait_for(
             lambda _: first.completed(session, "claude", child=True),
