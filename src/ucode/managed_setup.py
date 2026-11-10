@@ -444,10 +444,13 @@ def _validate_agent_models(tool: str, agent_config: dict, known: set[str]) -> li
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         referenced.extend(m for m in family_models.values() if isinstance(m, str) and m)
-    for key in ("sources", "model_services"):
-        models = model_config.get(key)
-        if isinstance(models, list):
-            referenced.extend(m for m in models if isinstance(m, str) and m)
+    models = None
+    if "sources" in model_config:
+        models = model_config["sources"]
+    elif "model_services" in model_config:
+        models = model_config["model_services"]
+    if isinstance(models, list):
+        referenced.extend(m for m in models if isinstance(m, str) and m)
 
     return [
         f"{tool}: model '{model}' is not available on this workspace."
@@ -538,10 +541,13 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         ids.update(v for v in family_models.values() if isinstance(v, str) and v)
-    for key in ("sources", "model_services"):
-        models = model_config.get(key)
-        if isinstance(models, list):
-            ids.update(m for m in models if isinstance(m, str) and m)
+    models = None
+    if "sources" in model_config:
+        models = model_config["sources"]
+    elif "model_services" in model_config:
+        models = model_config["model_services"]
+    if isinstance(models, list):
+        ids.update(m for m in models if isinstance(m, str) and m)
     default_model = model_config.get("default_model")
     if isinstance(default_model, str) and default_model:
         ids.add(default_model)

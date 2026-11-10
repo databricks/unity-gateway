@@ -229,11 +229,14 @@ def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     discovering the workspace's models. The order is the admin's; empty and non-string entries are
     dropped. None when unset. ``sources`` entries may be 4-part MPS model refs, used as-is."""
     model_config = _agent_model_config(managed, tool)
-    for key in ("sources", "model_services"):
-        models = model_config.get(key)
-        if isinstance(models, list):
-            listed = [model for model in (_str(item) for item in models) if model]
-            return listed or None
+    models = None
+    if "sources" in model_config:
+        models = model_config["sources"]
+    elif "model_services" in model_config:
+        models = model_config["model_services"]
+    if isinstance(models, list):
+        listed = [model for model in (_str(item) for item in models) if model]
+        return listed or None
     return None
 
 
