@@ -4161,14 +4161,14 @@ def _fetch_codex_model_catalog(
 
 
 def list_provider_service_models(
-    workspace: str, token: str, service_name: str, provider_type: str
+    workspace: str, token: str, service_name: str, provider_type: str, *, tool: str | None = None
 ) -> tuple[list[str], str | None]:
     """The models the gateway lists for Model Provider Service ``service_name``, and why listing
     failed. An empty listing is not a failure.
 
-    Anthropic and Bedrock services list through the Anthropic models route, others through the
-    Codex model catalog."""
-    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
+    When a tool is specified, use its API catalog; otherwise choose by provider type.
+    """
+    if tool == "claude" or (tool != "codex" and provider_type in ANTHROPIC_API_PROVIDER_TYPES):
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
         reason = listing.error_msg
         return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
@@ -4181,6 +4181,49 @@ def list_provider_service_models(
     except RuntimeError as exc:
         return [], str(exc)
     return catalog_slugs(catalog), None
+
+
+def is_mps_wildcard(model: str) -> bool:
+    parts = model.split(".")
+    return len(parts) == 4 and parts[-1] == "*" and all(p and "*" not in p for p in parts[:3])
+
+
+def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token: str) -> list[str]:
+    expanded: list[str] = []
+    lookups: dict[str, list[str]] = {}
+    for model in models:
+        if not is_mps_wildcard(model):
+            expanded.append(model)
+            continue
+        if model not in lookups:
+            service_name = model[:-2]
+            targets: list[str] = []
+            reason = "authentication failed"
+            try:
+                if token:
+                    service, reason = get_model_provider_service(service_name, workspace, token)
+                    if service is not None:
+                        targets, reason = list_provider_service_models(
+                            workspace,
+                            token,
+                            service_name,
+                            service.get("provider_type", ""),
+                            tool=tool,
+                        )
+            except RuntimeError as exc:
+                reason = str(exc)
+            if not targets:
+                detail = f" ({reason})" if reason else ""
+                print_warning(
+                    f"Could not expand managed model source {model}{detail}; "
+                    "check service access and compatible models, then retry."
+                )
+            lookups[model] = [
+                target if target.startswith(f"{service_name}.") else f"{service_name}.{target}"
+                for target in targets
+            ]
+        expanded.extend(lookups[model])
+    return list(dict.fromkeys(expanded))
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

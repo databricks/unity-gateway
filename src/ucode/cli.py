@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import shutil
@@ -87,12 +88,14 @@ from ucode.databricks import (
     discover_model_services,
     ensure_databricks_auth,
     ensure_pat_bearer,
+    expand_wildcard_sources,
     external_bearer_configured,
     find_profile_name_for_host,
     find_profile_name_for_workspace,
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    is_mps_wildcard,
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
@@ -1087,6 +1090,24 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     return state
 
 
+def _expand_managed_model_sources(managed: dict | None, state: dict, tool: str) -> dict | None:
+    models = managed_static_models(managed or {}, tool) or []
+    if (
+        managed is None
+        or tool not in ("claude", "codex", "copilot")
+        or not any(is_mps_wildcard(model) for model in models)
+    ):
+        return managed
+    try:
+        token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
+    except RuntimeError:
+        token = ""
+    expanded = expand_wildcard_sources(models, tool, state["workspace"], token)
+    managed = copy.deepcopy(managed)
+    managed["enabled_agents"][tool]["model_config"]["model_services"] = expanded
+    return managed
+
+
 # The agents whose `ug configure --agent` reads and installs the policy and applies its MCP and skills.
 _FRESH_POLICY_AGENTS = ("claude", "codex", "copilot")
 
@@ -1140,6 +1161,7 @@ def _setup_single_agent(
     if apply_managed and tool in MODEL_LOCATION_TOOLS:
         _reject_disabled_agent(managed, tool)
         if managed is not None:
+            managed = _expand_managed_model_sources(managed, state, tool) or managed
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
@@ -1451,7 +1473,8 @@ def _configure_workspace_command(
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
-            resolved = resolve_state(managed, state, tool_name)
+            expanded_managed = _expand_managed_model_sources(managed, state, tool_name) or managed
+            resolved = resolve_state(expanded_managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
                 if tool_name in MODEL_LOCATION_TOOLS
@@ -3971,6 +3994,7 @@ def _launch_tool(
             raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
+        managed = _expand_managed_model_sources(managed, state, tool)
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)

@@ -1928,6 +1928,14 @@ class TestManagedConfigLaunchSourceGuard:
         calls["launch"].assert_called_once()
 
 
+def test_managed_wildcard_expansion_writes_a_copy(monkeypatch):
+    managed = {"enabled_agents": {"claude": {"model_config": {"model_services": ["c.s.mps.*"]}}}}
+    monkeypatch.setattr(cli_mod, "expand_wildcard_sources", lambda *args: ["c.s.mps.model"])
+    expanded = cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
+    assert cli_mod.managed_static_models(expanded, "claude") == ["c.s.mps.model"]
+    assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
+
+
 class TestManagedClaudeModelDiscovery:
     @pytest.mark.parametrize("with_defaults", [False, True])
     def test_managed_static_models_do_not_enable_discovery(self, with_defaults):

@@ -1541,6 +1541,49 @@ class TestResolveProviderService:
         assert service["targets"] == ["gemini-3.5-flash"]
 
 
+@pytest.mark.parametrize("tool", ["claude", "codex"])
+def test_expand_wildcard_sources_in_place_and_deduplicates(monkeypatch, tool):
+    monkeypatch.setattr(
+        db_mod, "get_model_provider_service", lambda *_: ({"provider_type": "custom"}, None)
+    )
+    calls = []
+
+    def catalog(workspace, token, service, provider_type, *, tool):
+        calls.append((workspace, token, service, provider_type, tool))
+        return ["one", "two"], None
+
+    monkeypatch.setattr(db_mod, "list_provider_service_models", catalog)
+    models = ["system.ai.kimi", "c.s.mps.*", "c.s.mps.one", "system.ai.*"]
+    assert db_mod.expand_wildcard_sources(models, tool, WS, "token") == [
+        "system.ai.kimi",
+        "c.s.mps.one",
+        "c.s.mps.two",
+        "system.ai.*",
+    ]
+    assert calls == [(WS, "token", "c.s.mps", "custom", tool)]
+
+
+@pytest.mark.parametrize("service", [(None, "403"), ({"provider_type": "custom"}, None)])
+def test_expand_wildcard_sources_drops_failed_lookup(monkeypatch, service):
+    monkeypatch.setattr(db_mod, "get_model_provider_service", lambda *_: service)
+    monkeypatch.setattr(db_mod, "list_provider_service_models", lambda *a, **k: ([], None))
+    warnings = []
+    monkeypatch.setattr(db_mod, "print_warning", warnings.append)
+    models = ["c.s.mps.*", "system.ai.model", "c.s.mps.*"]
+    assert db_mod.expand_wildcard_sources(models, "claude", WS, "token") == ["system.ai.model"]
+    assert len(warnings) == 1
+    assert "c.s.mps.*" in warnings[0]
+
+
+def test_expand_wildcard_sources_preserves_other_forms(monkeypatch):
+    def fail(*args):
+        pytest.fail("unexpected lookup")
+
+    monkeypatch.setattr(db_mod, "get_model_provider_service", fail)
+    models = ["system.ai.*", "c.s.mps.model", "c.s.*.model", "c.*.mps.*"]
+    assert db_mod.expand_wildcard_sources(models, "claude", WS, "token") == models
+
+
 class TestListProviderServiceModels:
     @pytest.mark.parametrize(
         ("provider_type", "response", "expected"),
