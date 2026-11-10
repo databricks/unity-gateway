@@ -2122,17 +2122,13 @@ class TestMdmOs:
         mc_mod.request_mdm_os(None)
         assert os.environ["MDM_OS"] == "None"
 
-    def test_windows_saves_in_the_per_user_cache(self, monkeypatch):
+    def test_windows_saves_machine_wide(self, monkeypatch):
+        """An elevated MDM run (e.g. as SYSTEM) saves beside the ProgramData policy every user reads."""
         monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
-        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
-        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
-        mc_mod.request_mdm_os(True)
-        refresh_managed_config(_state(), force_refresh=True)
-        mc_mod.save_requested_mdm_os()
-        mc_mod.request_mdm_os(None)
+        self._save(True)
 
-        assert self._saved(mc_mod.USER_MANAGED_CONFIG_PATH)["mdm_os"] == "Windows"
-        refresh_managed_config(_state(), force_refresh=True)
+        assert self._saved() == {"mdm_os": "Windows"}
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
         assert mc_mod.saved_mdm_os() == "Windows"
 
     def test_revert_clears_the_per_user_value(self, monkeypatch):
