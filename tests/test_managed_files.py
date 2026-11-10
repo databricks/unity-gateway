@@ -1924,6 +1924,15 @@ class TestManagedFileLifecycle:
         header = managed_files.mask_user_agent_versions({"h": f"a: 1\nUser-Agent: {user_agent}"})
         assert header == {"h": "a: 1\nUser-Agent: ucode/* claude/*"}
 
+    def test_mdm_marker_survives_masking(self):
+        plain = {"User-Agent": "ucode/1.0 claude/2.2 (macos 15.1; arm64)"}
+        mdm = {"User-Agent": "ucode/1.1 claude/2.3 (macos 15.2; arm64; mdm)"}
+        assert managed_files.mask_user_agent_versions(mdm) == {
+            "User-Agent": "ucode/* claude/* (mdm)"
+        }
+        assert managed_files.managed_file_conflicts(plain, mdm, [["User-Agent"]]) == ["User-Agent"]
+        assert managed_files.managed_file_conflicts(mdm, plain, [["User-Agent"]]) == ["User-Agent"]
+
     def test_ug_upgrade_adding_platform_suffix_is_not_a_conflict(self):
         # A file written by an older ug (no suffix) must not force a sudo rewrite on upgrade.
         existing = {"h": {"User-Agent": "ucode/1.0 codex/0.1"}, "a": 1}

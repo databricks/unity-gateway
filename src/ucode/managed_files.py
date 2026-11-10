@@ -693,7 +693,7 @@ def ug_agent_token(user_agent: str, agent: str) -> str | None:
     return match.group(1) if match else None
 
 
-_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}{_PLATFORM_SUFFIX}")
+_UG_USER_AGENT = re.compile(rf"ucode/{_VERSION} ([a-z][a-z0-9-]*)/{_VERSION}( \([^()]*\))?")
 
 
 def mask_user_agent_versions(value: object, key: object = None) -> object:
@@ -701,7 +701,8 @@ def mask_user_agent_versions(value: object, key: object = None) -> object:
     User-Agent masked. They change on every ug or agent upgrade, which alone must not rewrite (and
     prompt for sudo to replace) the root-owned file. The ``(<os>; <arch>)`` suffix is dropped too:
     it describes the machine that owns the file, and keeping it would force one sudo rewrite on the
-    first ug upgrade that adds it. Only User-Agent headers are masked: a
+    first ug upgrade that adds it. Its ``mdm`` field is kept, so ``ug configure --mdm/--no-mdm``
+    rewrites a file that no longer matches. Only User-Agent headers are masked: a
     ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
     exactly."""
     value = _unwrap(value)
@@ -728,7 +729,10 @@ def _is_user_agent(name: object) -> bool:
 
 def _mask_ug_user_agent(user_agent: str) -> str:
     match = _UG_USER_AGENT.fullmatch(user_agent.strip())
-    return f"ucode/* {match.group(1)}/*" if match else user_agent
+    if not match:
+        return user_agent
+    mdm = " (mdm)" if (match.group(2) or "").endswith("; mdm)") else ""
+    return f"ucode/* {match.group(1)}/*{mdm}"
 
 
 def is_semantically_equal(current: object, desired: object) -> bool:

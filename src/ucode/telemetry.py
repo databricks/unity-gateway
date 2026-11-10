@@ -7,7 +7,10 @@ wrapped agent + version, and the client OS. Format:
 `<os_ver>` is the macOS major.minor, the Windows build number, or the Linux
 `ID-VERSION_ID`; `unknown` when unavailable. `<arch>` is the host arch, not the
 interpreter's. The leading `ucode/<v> <agent>/<v>` is what the gateway parser
-keys on, so the platform suffix must stay last.
+keys on, so the platform suffix must stay last. A machine set up with
+`ug configure --mdm` adds a last `mdm` field to the platform comment, e.g.
+`(macos 15.1; arm64; mdm)`; the gateway's attribution parser ignores comments with
+more than two fields, and its usage logs keep the raw User-Agent.
 
 The helpers fall back to "unknown" rather than raising — telemetry must
 never block a launch.
@@ -16,6 +19,7 @@ never block a launch.
 from __future__ import annotations
 
 import ctypes
+import os
 import platform
 import re
 import subprocess
@@ -186,5 +190,11 @@ def client_platform() -> str:
 
 
 def ucode_user_agent(ug_ver: str, *agent_tokens: str) -> str:
-    """`ucode/<v> [<agent>/<v> ...] (<os> <os_ver>; <arch>)`; agent tokens are `<agent>/<v>`."""
-    return " ".join([f"ucode/{ug_ver}", *agent_tokens, client_platform()])
+    """`ucode/<v> [<agent>/<v> ...] (<os> <os_ver>; <arch>[; mdm])`; agent tokens are `<agent>/<v>`.
+
+    ``mdm`` follows ``MDM_OS``, which every ``ug`` command sets from ``ug configure --mdm``.
+    """
+    platform_comment = client_platform()
+    if os.environ.get("MDM_OS", "None") not in ("", "None"):
+        platform_comment = f"{platform_comment[:-1]}; mdm)"
+    return " ".join([f"ucode/{ug_ver}", *agent_tokens, platform_comment])
