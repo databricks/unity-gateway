@@ -118,8 +118,11 @@ def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
         return []
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
+    except FileNotFoundError:
+        # A session without a log simply has no recorded decisions.
         return []
+    # Other read failures (permissions, I/O) propagate: the caller must not
+    # present an unreadable log as an empty history.
     records: list[dict[str, Any]] = []
     for line in lines:
         line = line.strip()
