@@ -286,10 +286,15 @@ class TestReadHelpers:
 
         assert read_toml_values_safe(tmp_path / "settings.toml") == {}
 
-    def test_read_toml_values_accepts_newer_syntax_without_rereading(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+    def test_read_toml_values_accepts_newer_syntax_without_rereading(
+        self, tmp_path, monkeypatch, newline
+    ):
         path = tmp_path / "settings.toml"
-        original = '# Keep the inline table\nprovider = {\nname = "Databricks",\n}\n'
-        path.write_text(original, encoding="utf-8")
+        original = '# Keep the inline table\nprovider = {\nname = "Databricks",\n}\n'.replace(
+            "\n", newline
+        )
+        path.write_bytes(original.encode("utf-8"))
         original_read = type(path).read_text
         reads = []
 

@@ -2,7 +2,8 @@
 
 `../test_lazy_toml.py` checks deferred TOML writer loading and existing exports in
 fresh interpreters; Codex/config component tests cover real temporary-file edits and
-parser fallback. No live startup or native-agent timing claim is made.
+parser fallback, preserving LF and CRLF file bytes. No live startup or native-agent
+timing claim is made.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
