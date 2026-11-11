@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+from ctypes import wintypes
 from pathlib import Path
 
 runtime, host, profile = sys.argv[1:]
@@ -13,11 +14,41 @@ username = ctypes.create_unicode_buffer(256)
 length = ctypes.c_ulong(len(username))
 assert ctypes.windll.advapi32.GetUserNameW(username, ctypes.byref(length))
 assert username.value == "ug-native-consumer", "Wrong consuming Windows account"
+ctypes.windll.kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+ctypes.windll.advapi32.OpenProcessToken.argtypes = (
+    wintypes.HANDLE,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.HANDLE),
+)
+token = wintypes.HANDLE()
+assert ctypes.windll.advapi32.OpenProcessToken(
+    ctypes.windll.kernel32.GetCurrentProcess(), 8, ctypes.byref(token)
+)
+block = ctypes.c_void_p()
+ctypes.windll.userenv.CreateEnvironmentBlock.argtypes = (
+    ctypes.POINTER(ctypes.c_void_p),
+    wintypes.HANDLE,
+    wintypes.BOOL,
+)
+ctypes.windll.userenv.DestroyEnvironmentBlock.argtypes = (ctypes.c_void_p,)
+account_env = {}
+try:
+    assert ctypes.windll.userenv.CreateEnvironmentBlock(ctypes.byref(block), token, False)
+    address = block.value
+    assert address is not None
+    while entry := ctypes.wstring_at(address):
+        if not entry.startswith("="):
+            name, value = entry.split("=", 1)
+            account_env[name.upper()] = value
+        address += (len(entry) + 1) * ctypes.sizeof(ctypes.c_wchar)
+finally:
+    if block.value:
+        ctypes.windll.userenv.DestroyEnvironmentBlock(block)
+    ctypes.windll.kernel32.CloseHandle(token)
 consumer_env = dict(os.environ)
-for name, folder_id in (("USERPROFILE", 40), ("APPDATA", 26), ("LOCALAPPDATA", 28)):
-    folder = ctypes.create_unicode_buffer(260)
-    assert ctypes.windll.shell32.SHGetFolderPathW(None, folder_id, None, 0, folder) == 0
-    consumer_env[name] = folder.value
+for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA"):
+    assert account_env.get(name), f"Windows did not initialize {name} for the consumer"
+    consumer_env[name] = account_env[name]
 consumer_env.pop("HOME", None)
 consumer_env["CLAUDE_HELPER_CONTEXT"] = "silent"
 assert Path(consumer_env["USERPROFILE"]).name == username.value
