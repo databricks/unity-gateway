@@ -234,3 +234,29 @@ test('manual selection and cancellation close Auto before the native picker conf
   await confirm('Kept model as Opus');
   expect(state.appendClosed.at(-1)).toBe(2);
 });
+
+test('Auto arrow scrolling selects a model but wheel and page scrolling remain native', async () => {
+  let scroll: any;
+  register(((event: string, ...args: any[]) => {
+    if (event === 'ui.scroll' && args[0]?.requestId === 'auto-main') scroll = args.at(-1);
+  }) as any, options);
+  const focused: any[] = [];
+  const revealed: any[] = [];
+  const forwarded: any[] = [];
+  const engine = {ui: {
+    focus: async (request: any) => {focused.push(request); return {};},
+    scroll: async (request: any) => {revealed.push(request); return {};},
+  }};
+  const event = {component:'Pane', requestId:'auto-main', offset:1, by:1,
+    bodyRows:5, contentRows:12, origin:{kind:'person'}};
+  const next = async (event: any) => {forwarded.push(event); return {};};
+  await scroll(engine, event, next);
+  expect(focused).toEqual([{requestId:'auto-main',key:'auto-main-model-1'}]);
+  expect(revealed).toEqual([{in:'auto-main',to:{key:'auto-main-model-1'},block:'nearest'}]);
+  expect(forwarded).toHaveLength(0);
+  await scroll(engine, {...event,pointer:{row:2,column:1}}, next);
+  await scroll(engine, {...event,by:5}, next);
+  await scroll(engine, {...event,origin:{kind:'plugin',name:'ug-smart-router'}}, next);
+  expect(forwarded).toHaveLength(3);
+  expect(focused).toHaveLength(1);
+});

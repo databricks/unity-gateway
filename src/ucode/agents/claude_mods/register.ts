@@ -233,6 +233,18 @@ export function register(on: On, options: PluginOptions): void {
       }
       return next(e);
     });
+    on('ui.scroll', {requestId:'auto-main'}, async ($, e, next) => {
+      // Overflow makes the native pane consume arrows as one-row scrolls.
+      // Keep those keys on the model list; wheel and page scrolling stay native.
+      if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e);
+      const current = Math.max(0, auto.models.findIndex(row => row.model === effortState.model));
+      const index = Math.max(0, Math.min(auto.models.length - 1, current + e.by));
+      const key = 'auto-main-model-' + index;
+      const focused = await $.ui.focus({requestId:'auto-main', key});
+      if (focused.deny) return next(e);
+      await $.ui.scroll({in:'auto-main', to:{key}, block:'nearest'});
+      return {};
+    });
     on('ui.render', { component: 'Pane' }, async ($, e, next) => {
       if (e.requestId !== 'auto-main') return next(e);
       const { Box, Text, Button } = $.ui.resolve(e);

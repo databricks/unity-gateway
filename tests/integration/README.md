@@ -21,6 +21,9 @@ Claude reapplies after `/model` saves a selection.
 `native_claude/test_auto_effort.py` exercises Auto's custom main-model pane
 on the existing Claude 2.1.290 pin: h/l effort adjustment without moving model
 focus, Enter confirmation, a single checked Auto row, and Escape cancellation.
+It also runs at 60 columns and 22 rows, where the pane overflows: Up/Down must
+select and reveal model rows, Enter commits that model, and Escape preserves the
+previous selection. A native component test keeps wheel and page scrolling intact.
 The change is applied through native `/effort` after model confirmation. This uses
 no inference. Profile component tests cover supported levels, settings caps and
 environment overrides. The stock `/model` picker remains unchanged.
