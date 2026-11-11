@@ -8,7 +8,6 @@ import {
   estimateTokens,
   responsesReplies,
   responsesRequest,
-  USAGE_MIME_TYPE,
 } from "../src/formats";
 import { ASSISTANT, call, collect, events, image, message, rejectsWith, result, SYSTEM, text, USER, weatherTool } from "./support";
 import { LanguageModelDataPart, LanguageModelTextPart, LanguageModelToolCallPart } from "./vscode";
@@ -26,7 +25,7 @@ const usage = (input: number, output: number, cached: number) =>
     new TextEncoder().encode(
       JSON.stringify({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output, prompt_tokens_details: { cached_tokens: cached } }),
     ),
-    USAGE_MIME_TYPE,
+    "usage",
   );
 
 describe("Chat Completions", () => {
@@ -34,6 +33,7 @@ describe("Chat Completions", () => {
     assert.deepEqual(chatCompletionsRequest(turn), {
       model: "m",
       stream: true,
+      stream_options: { include_usage: true },
       messages: [
         { role: "system", content: "Be brief." },
         { role: "user", content: [{ type: "text", text: "Weather?" }, { type: "image_url", image_url: { url: "data:image/png;base64,Bw==" } }] },
@@ -97,10 +97,11 @@ describe("Chat Completions", () => {
             usage: { prompt_tokens: 120, completion_tokens: 9, total_tokens: 129, prompt_tokens_details: { cached_tokens: 100 } },
           },
           { choices: [], usage: null },
+          { choices: [], usage: { prompt_tokens: 120, completion_tokens: 10, total_tokens: 130, prompt_tokens_details: { cached_tokens: 100 } } },
         ),
       ),
     );
-    assert.deepEqual(replies, [new LanguageModelTextPart("Checking."), new LanguageModelToolCallPart("c1", "get_weather", {}), usage(120, 9, 100)]);
+    assert.deepEqual(replies, [new LanguageModelTextPart("Checking."), new LanguageModelToolCallPart("c1", "get_weather", {}), usage(120, 10, 100)]);
   });
 
   it("fails on a length stop and on arguments that aren't an object", async () => {
@@ -331,6 +332,7 @@ describe("Anthropic Messages", () => {
         events(
           { type: "message_start", message: { usage: { input_tokens: 10, cache_creation_input_tokens: 50, cache_read_input_tokens: 1000, output_tokens: 1 } } },
           { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi." } },
+          { type: "message_delta", delta: {}, usage: { output_tokens: 3 } },
           { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: null, output_tokens: 7 } },
           { type: "message_stop" },
         ),

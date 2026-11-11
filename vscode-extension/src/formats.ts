@@ -67,16 +67,14 @@ const cutOff = () => new Error("The response ended before the model finished. Tr
 
 const count = (value: unknown): number => (typeof value === "number" && value > 0 ? value : 0);
 
-/** Copilot Chat shows a third-party model's token counts only from a data part of this type, in
- * Chat Completions' usage shape. */
-export const USAGE_MIME_TYPE = "usage";
-
+/** Copilot Chat shows a third-party model's token counts only from a "usage" data part, in Chat
+ * Completions' usage shape. */
 const usagePart = (input: number, output: number, cached: number): vscode.LanguageModelDataPart =>
   new vscode.LanguageModelDataPart(
     new TextEncoder().encode(
       JSON.stringify({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output, prompt_tokens_details: { cached_tokens: cached } }),
     ),
-    USAGE_MIME_TYPE,
+    "usage",
   );
 
 const toolOptions = (turn: Turn, toTool: (tool: vscode.LanguageModelChatTool) => object): object =>
@@ -137,6 +135,8 @@ export function chatCompletionsRequest(turn: Turn): object {
     model: turn.model,
     messages,
     stream: true,
+    // OpenAI-compatible providers stream usage only when asked.
+    stream_options: { include_usage: true },
     ...toolOptions(turn, (tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: parametersOf(tool) } })),
   };
 }
