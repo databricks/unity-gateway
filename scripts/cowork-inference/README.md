@@ -27,8 +27,16 @@ combined-source Cowork inventory contained both `probe-summary` and
 `ug-native-contract:probe-summary`, failing the single-entry assertion. Code still
 failed before submission because the folder picker matched its confirmation control
 instead of its window. The next selected subset fixes that picker on Desktop 2.42304.2
-and checks enterprise-only and combined-source Cowork on Desktop 3.6556.2. No global
-publisher has been validated by these results.
+and checks enterprise-only and combined-source Cowork on Desktop 3.6556.2.
+Run `42939759711` reproduced both Cowork failures on that newer Desktop, with embedded
+engine 2.1.308. Code reached the correct folder and stopped at the visible workspace
+trust dialog before submission. The driver now checks that dialog's folder and clicks
+`Trust workspace` before waiting for the prompt. No global publisher has been validated
+by these results.
+
+Branch pushes currently select only Code on Desktop 2.42304.2 to validate that driver
+change. Manual dispatch selects one native case or all five, and either pinned Desktop
+version. Failed native contracts remain available; narrower runs are explicit subsets.
 
 The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.

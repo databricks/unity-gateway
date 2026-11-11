@@ -6,8 +6,10 @@ They require successful native Skill and Read calls and completed hidden-file an
 `test_cowork_session_evidence.py` checks false-pass rejection, duplicate calls,
 prompt/session isolation, and hook counts. See that script directory's README for
 fixture boundaries and coverage still requiring the Windows global publisher.
-The selected follow-up subset checks Code on Desktop 2.42304.2 and Cowork skill-source
-overlap on candidate Desktop 3.6556.2; the blocking suite's pin is unchanged.
+Manual dispatch selects any native case or all five on Desktop 2.42304.2 or 3.6556.2.
+Branch pushes currently select Code only; the blocking suite's pin is unchanged.
+Both tested Desktop versions reject enterprise reference reads in Cowork and expose
+duplicate skills with both sources installed. See the native test README for run evidence.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.

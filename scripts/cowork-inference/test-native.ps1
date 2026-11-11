@@ -88,8 +88,9 @@ function Select-Folder {
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 1
     Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
-    $permission = Find-Control -Names @('Allow Claude to change files in “NativeCodeProbe”?')
-    if ($permission) { Invoke-Control (Wait-Control -Names @('Allow') -Seconds 10 -Root $permission) }
+    $trust = Wait-Control -Names @('Trust this workspace?') -Seconds 20
+    $null = Wait-Control -Names @($task.folder) -Seconds 10 -Root $trust
+    Invoke-Control (Wait-Control -Names @('Trust workspace') -Seconds 10 -Root $trust)
     $report.folderSelected = $true
     Save-UI 'folder-selected'
 }
