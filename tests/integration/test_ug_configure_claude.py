@@ -79,6 +79,7 @@ def test_ug_configure_claude_databricks(live_session, workspace, desktop_cli_pro
         tui.check_input_and_exit()
 
 
+@pytest.mark.anthropic_mps
 def test_ug_configure_claude_anthropic_mps(
     live_session, claude_provider, claude_provider_model, desktop_cli_profile
 ):

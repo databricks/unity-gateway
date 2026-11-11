@@ -32,6 +32,7 @@ FIRST_PROMPT_SELECTOR = "first_prompt_and_subagent_no_orch_v0"
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
+@pytest.mark.anthropic_mps
 def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace):
     """Scenario: launch Claude under an injected config with defaults and MPS discovery.
 

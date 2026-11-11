@@ -205,7 +205,7 @@ def _collect_integration_cases(expression):
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
+def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     if agent == "codex":
         workflow = WORKFLOW.read_text()
         assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.154\.0", workflow)
@@ -243,7 +243,72 @@ def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
     assert not smoke & full
-    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
+    selected = smoke | full
+    if agent == "claude":
+        staging = _collect_integration_cases(
+            f"({_ci_marker_expression(jobs['anthropic-mps'], agent)}) and live"
+        )
+        assert not selected & staging
+        selected |= staging
+    assert selected == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
+    monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
+    jobs = _integration_jobs()
+    expected_workspace = "https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com"
+    selected = set()
+    for job_name, agent in (("anthropic-mps", "claude"), ("anthropic-mps-copilot", "copilot")):
+        job = jobs[job_name]
+        assert f"UCODE_TEST_WORKSPACE: {expected_workspace}" in job
+        assert "DATABRICKS_CLIENT_ID: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_ID }}" in job
+        assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
+        assert "DATABRICKS_BEARER:" not in job
+        assert "os: [ubuntu-22.04, windows-latest]" in job
+        assert "steps: *live-steps" in job
+        assert ("continue-on-error: true" in job) == (agent == "copilot")
+        cases = _collect_integration_cases(_ci_marker_expression(job, agent))
+        assert not selected & cases
+        selected |= cases
+    assert selected == _collect_integration_cases("anthropic_mps")
+    for job_name, agent in (("full", "claude"), ("managed", "claude"), ("copilot", "copilot")):
+        assert not selected & _collect_integration_cases(
+            _ci_marker_expression(jobs[job_name], agent)
+        )
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    required = {name.strip() for name in needs.group(1).split(",")}
+    assert "anthropic-mps" in required
+    assert "anthropic-mps-copilot" not in required
+
+
+def test_anthropic_mps_fixtures_use_the_same_service():
+    from scripts.run_integration import arguments
+    from tests.integration.utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
+
+    expected = "main.ucode.dont_delete_ci_company_anthropic_mps"
+    args = arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
+    assert args.claude_provider == MANAGED_CLAUDE_PROVIDER_SERVICE == expected
+    for name in ("claude_mps", "claude_mps_defaults"):
+        config = json.loads(
+            (Path(__file__).parent / "fixtures" / "managed_config" / f"{name}.json").read_text()
+        )
+        assert config["enabled_agents"][0]["config"]["models"]["model_provider_service"] == expected
+
+
+def test_legacy_anthropic_mps_ci_has_its_own_workspace_shard():
+    workflow = _workflow("ci.yml")
+    clauses = dict(
+        re.findall(r"- group: ([^\n]+)\n\s+name: [^\n]+\n\s+keyword: ([^\n]+)", workflow)
+    )
+    assert clauses["anthropic-mps"] == "TestModelProviderLaunch"
+    assert "TestModelProviderLaunch" not in clauses["claude"]
+    assert "TestModelProviderLaunch" in clauses["gateway"]
+    assert "UCODE_TEST_WORKSPACE: ${{ matrix.group == 'anthropic-mps' && " in workflow
+    assert "DATABRICKS_BEARER: ${{ matrix.group != 'anthropic-mps' && " in workflow
+    assert (
+        "mint_m2m_token(os.environ['UCODE_TEST_WORKSPACE'], client_id, client_secret)" in workflow
+    )
 
 
 def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
@@ -501,6 +566,8 @@ FORK_GUARD = (
 )
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
+    "anthropic-mps",
+    "anthropic-mps-copilot",
     "cowork-inference-windows",
     "cowork-inference-macos",
     "workspace",

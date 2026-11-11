@@ -1,8 +1,20 @@
 # Test suites and user journeys
 
+Direct Anthropic MPS coverage uses
+`main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace
+`4168069418041172` (`dbc-1bb9e8f5-bf3a`). Integration's `anthropic_mps`
+Claude lanes and the legacy `TestModelProviderLaunch` shard are required;
+Copilot's equivalent lanes remain advisory. CI authenticates with
+`UG_ANTHROPIC_MPS_CLIENT_ID` / `UG_ANTHROPIC_MPS_CLIENT_SECRET` and never receives
+the Anthropic key. The service allows only `claude-haiku-4-5-20251001`.
+Contract tests check that staging and existing lanes partition coverage, share the
+same MPS fixture, and use separate workspace credentials. Subscription relay,
+Bedrock, Foundry, and dedicated CUJ2 retain their existing fixtures.
+
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
+
 Antigravity MCP web-search evidence checks accept homepage slash variants, omit
 `utm_source` attribution, and separate closing Markdown from sentence punctuation.
 Offline cases retain checks for the completed MCP call, official host, scheme, page,
@@ -1153,7 +1165,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_case_04_*`, `test_case_06_*` | Pass a provider or model-location override to managed Codex after configure and from fresh state | ug rejects the override before Codex starts and preserves agent-owned state |
 | `test_ug_configure_managed_codex_catalog_fallback` | Configure from an injected managed response containing a GPT model absent from Codex's bundled catalog, then inspect the picker with legacy smart routing off/on | Actionable metadata warning; conservative catalog entry for the unknown model; real Codex picker lists the custom catalog model |
 | `test_managed_fixture_codex_http_headers_in_managed_file` | Interactive PTY configure with injected managed `http_headers` for Codex | The specified header (`x-databricks-workspace`) lands in `model_providers.Databricks.http_headers` in `/etc/codex/managed_config.toml` with the exact admin value |
-| `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from a stubbed config and launch Claude with MPS discovery (`main.default.ci_e2e_anthropic_mps`) and with `system.ai` Unity Catalog discovery, respectively, both on the managed workspace | Both generated settings files retain every admin-authored default alongside the source header and every independently fetched catalog model with its label; MPS pickers keep family shortcut rows separate from catalog entries; only UC Opus/Sonnet family ids gain `[1m]` |
+| `test_managed_claude_mps_defaults_accompany_discovery`, `test_managed_claude_parent_schema_defaults_accompany_discovery` | Configure from a stubbed config and launch Claude with MPS discovery (`main.ucode.dont_delete_ci_company_anthropic_mps`) and with `system.ai` Unity Catalog discovery, respectively, on the staging MPS workspace and managed workspace | Both generated settings files retain every admin-authored default alongside the source header and every independently fetched catalog model with its label; MPS pickers keep family shortcut rows separate from catalog entries; only UC Opus/Sonnet family ids gain `[1m]` |
 | `test_launcher_sessions_prompt_at_most_once` (CUJ8) | Three launcher sessions: a second writer applies a launcher's OS-managed field set on drift, then a real smart-routed `ug claude` TUI with the launcher's args and env opens `/model` and runs a task | At most two privileged writes in the first session and none after; no ug password notice after the first session, warnings, or errors; writer's picker shown; every writer field unchanged except ug-owned ones; no discovered defaults in either settings file; orchestrator on; inference served on the writer's Haiku default; `ug revert` restores the writer's file exactly |
 | `test_unmanaged_claude_preserves_preexisting_family_defaults` | Seed Claude's OS-managed family defaults, then configure against one real workspace verified to have no managed config | Every pre-existing Claude family default remains unchanged in the OS-managed settings file |
 | `test_managed_fixture_claude_model_lifecycle`, `test_managed_fixture_codex_model_lifecycle` | Configure across no config -> static A -> static B -> MPS -> no config (stub-injected, `null` for no-config; MPS via a real provider service) | Each agent's model files reconcile to each static config (removed models pruned); switching to an MPS and a workspace with no managed config clears ug's static picker/catalog so no stale list is enforced |
