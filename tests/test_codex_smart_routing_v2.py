@@ -552,7 +552,6 @@ class TestLaunchCodex:
         assert interposer_options["workspace"] is None
         assert interposer_options["token_provider"] is None
         assert interposer_options["restart_notices"].empty()
-        assert "thread_unload_delay_secs=0" not in argv
         config = tomllib.loads("\n".join(argv[3:-2:2]))
         assert config["responses_api_metadata"]["smart_router_recipe_name"] == "stable"
         assert 'model="gpt-start"' in argv

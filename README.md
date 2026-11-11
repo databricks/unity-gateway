@@ -587,8 +587,8 @@ app-server and UG control interposer, including subagent-only presets.
 to refresh inference attribution in body metadata and, where supported, the recipe
 header. Configure removes old persisted recipe headers that would pin attribution.
 The TUI reconnects; existing children stay stopped until the parent reopens them
-with `followup_task` under their saved IDs. Running commands stop; agents must inspect
-completed effects before retrying. This uses no gateway proxy or backend session
+with `followup_task` under their saved IDs. Running commands stop; agents rerun any
+command that did not exit, keeping effects that already completed. This uses no gateway proxy or backend session
 state. The managed default remains Claude-only; Codex routing requires an explicit
 Codex-enabled preset.
 

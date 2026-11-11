@@ -115,9 +115,13 @@ class RestartContinuation:
                             "from earlier spawn_agent and followup_task calls in this conversation. Use "
                             "followup_task to resume every unfinished child assignment, even if the latest "
                             "user prompt only changed Smart Router. Do not spawn replacement "
-                            "agents. Running commands were interrupted; inspect any completed effects before "
-                            "retrying them. Only after checking children, if no unfinished parent or child "
-                            "work remains, confirm the new state and stop."
+                            "agents. A child assignment is unfinished unless that child delivered its "
+                            "final answer before the restart. Running commands were interrupted before "
+                            "exiting: files or output a command wrote while running show it started, not "
+                            "that it finished. Tell each resumed child to inspect existing effects, keep "
+                            "completed work, and rerun any command that did not exit successfully. Apply "
+                            "the same rule to your own work. Only after checking children, if no "
+                            "unfinished parent or child work remains, confirm the new state and stop."
                         ),
                     }
                 ],

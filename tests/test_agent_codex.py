@@ -2241,6 +2241,20 @@ class TestCodexManagedConfig:
         assert "ug configure --global" in str(exc.value)
         assert "administrator" in str(exc.value)
 
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            'model_providers = "x"\n',
+            'model_providers.Databricks = "x"\n',
+            'model_providers.Databricks.http_headers = "x"\n',
+        ],
+    )
+    def test_malformed_managed_provider_has_no_pinned_recipe(self, tmp_path, monkeypatch, contents):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(contents)
+        codex._reject_managed_recipe()
+
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

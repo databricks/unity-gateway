@@ -880,17 +880,18 @@ def _stop_codex_process(process, *, process_tree: bool = False, port: int | None
     try:
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        if stopped is not None and stopped.returncode:
-            detail = (stopped.stderr or stopped.stdout).strip()
-            raise RuntimeError(
-                f"Could not stop the Codex app-server process tree: {detail}"
-            ) from None
         if process_tree and os.name != "nt":
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
         else:
             process.kill()
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+        if stopped is not None and stopped.returncode:
+            # Killing only the wrapper can leave descendants running.
+            detail = (stopped.stderr or stopped.stdout).strip()
+            raise RuntimeError(
+                f"Could not stop the Codex app-server process tree: {detail}"
+            ) from None
     finally:
         if process_tree and os.name != "nt":
             # The wrapper can exit before descendants release the listener.

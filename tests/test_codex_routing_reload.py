@@ -127,7 +127,8 @@ def test_restart_continues_same_root_once_and_never_a_viewed_child(child):
     assert "Smart Router is now off" in prompt
     assert "followup_task" in prompt
     assert "Do not spawn replacement agents" in prompt
-    assert "inspect any completed effects" in prompt
+    assert "started, not that it finished" in prompt
+    assert "rerun any command that did not exit successfully" in prompt
     assert continuation.take_response({"id": request["id"], "result": {"turn": {"id": "t"}}})
     assert not continuation.take_response({"id": 3, "result": {}})
     assert resumed(continuation, 4, {"id": "root"}) is None
@@ -481,17 +482,15 @@ def test_forced_shutdown_releases_native_descendants_listening_port(
     tmp_path, monkeypatch, wrapper_ignores_sigterm
 ):
     ready = tmp_path / "ready"
-    with socket.socket() as listener:
-        listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
     child = """
 import signal, socket, sys, time
 from pathlib import Path
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 listener = socket.socket()
-listener.bind(('127.0.0.1', int(sys.argv[2])))
+listener.bind(('127.0.0.1', 0))
 listener.listen()
-Path(sys.argv[1]).touch()
+Path(sys.argv[1] + '.tmp').write_text(str(listener.getsockname()[1]))
+Path(sys.argv[1] + '.tmp').replace(sys.argv[1])
 time.sleep(60)
 """
     wrapper = """
@@ -508,7 +507,6 @@ subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
             "ignore" if wrapper_ignores_sigterm else "exit",
             child,
             str(ready),
-            str(port),
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -521,6 +519,7 @@ subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
             assert process.poll() is None
             assert time.monotonic() < deadline, "native descendant did not bind its port"
             time.sleep(0.01)
+        port = int(ready.read_text())
         if os.name != "nt":
             monkeypatch.setattr(v2, "PROCESS_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
         v2._stop_codex_process(process, process_tree=True, port=port)
@@ -542,12 +541,14 @@ def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, wai
     calls = []
     waits = []
 
+    kills = []
+
     def wait(**kwargs):
         waits.append(kwargs)
-        if wait_times_out:
+        if wait_times_out and not kills:
             raise subprocess.TimeoutExpired("codex", kwargs["timeout"])
 
-    process = SimpleNamespace(pid=42, poll=lambda: None, wait=wait)
+    process = SimpleNamespace(pid=42, poll=lambda: None, wait=wait, kill=lambda: kills.append(1))
     monkeypatch.setattr(v2, "os", SimpleNamespace(name="nt"))
 
     def taskkill(argv, **kwargs):
@@ -560,7 +561,9 @@ def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, wai
             v2._stop_codex_process(process, process_tree=True)
     else:
         v2._stop_codex_process(process, process_tree=True)
-    assert waits == [{"timeout": v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS}]
+    # A failed taskkill still kills and reaps the wrapper before reporting.
+    assert kills == ([1] if wait_times_out else [])
+    assert waits == [{"timeout": v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS}] * (1 + len(kills))
     argv, options = calls[0]
     assert argv[0].endswith("taskkill.exe")
     assert argv[1:] == ["/PID", "42", "/T", "/F"]

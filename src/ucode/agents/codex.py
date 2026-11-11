@@ -2052,11 +2052,14 @@ def _reject_managed_recipe() -> None:
         raise RuntimeError(
             f"Could not read Codex managed settings at {path}: {exc}. {repair}"
         ) from exc
-    provider = managed.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
+    providers = managed.get("model_providers")
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, dict) else None
+    if not isinstance(provider, dict):
+        return
     if any(
-        name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold()
-        for key in ("http_headers", "env_http_headers")
-        for name in provider.get(key, {})
+        isinstance(headers, dict)
+        and any(name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold() for name in headers)
+        for headers in (provider.get("http_headers"), provider.get("env_http_headers"))
     ):
         raise RuntimeError(
             f"Codex managed settings at {path} pin the Smart Router recipe. "
