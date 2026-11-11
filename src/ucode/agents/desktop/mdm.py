@@ -337,12 +337,8 @@ def configure(workspace: str, profile: str | None, *, managed_config: dict | Non
         managed = (
             normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
         )
-    if windows and managed is None:
-        raise RuntimeError(
-            "Windows Desktop global setup requires a workspace managed configuration."
-        )
     enabled_tools = managed_enabled_tools(managed or {})
-    if (windows or enabled_tools) and "claude" not in enabled_tools:
+    if enabled_tools and "claude" not in enabled_tools:
         raise RuntimeError("The workspace configuration does not enable Claude.")
     state = {"workspace": workspace, "profile": profile}
     parent_schema = None
