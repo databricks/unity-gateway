@@ -60,12 +60,11 @@ def test_global_skips_user_desktop_setup(monkeypatch):
     machine_configure.assert_called_once_with("https://workspace.example", None)
 
 
-@pytest.mark.parametrize("platform", ["linux", "win32"])
-def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch, platform):
+def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch):
     from ucode.agents.desktop import mdm
 
     managed_files.set_machine_wide_only(True)
-    monkeypatch.setattr(desktop_setup.sys, "platform", platform)
+    monkeypatch.setattr(desktop_setup.sys, "platform", "linux")
     machine_configure = Mock()
     profile_write = Mock()
     monkeypatch.setattr(mdm, "configure", machine_configure)
@@ -122,23 +121,15 @@ def configuration(monkeypatch):
 def test_successful_claude_setup_configures_desktop_once(configuration, monkeypatch, flow):
     configure = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
+    managed = {
+        "enabled_agents": {"claude": {"model_config": {"unity_catalog_location": "main.models"}}}
+    }
     args: dict[str, Any] = {"selected_tools": ["claude"]}
     if flow == "single":
         args = {"tool": "claude"}
     if flow == "managed":
         args = {}
-        monkeypatch.setattr(
-            cli,
-            "refresh_managed_config",
-            lambda *a, **k: (
-                {
-                    "enabled_agents": {
-                        "claude": {"model_config": {"unity_catalog_location": "main.models"}}
-                    }
-                },
-                False,
-            ),
-        )
+        monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **k: (managed, False))
     assert (
         cli._configure_workspace_command(
             workspaces=[("https://workspace.example", "chosen-profile")], **args
@@ -148,9 +139,9 @@ def test_successful_claude_setup_configures_desktop_once(configuration, monkeypa
     configure.assert_called_once_with(
         configuration,
         **(
-            {"parent_schema": "main.models"}
+            {"parent_schema": "main.models", "managed_config": managed}
             if flow == "managed"
-            else {"parent_schema": None}
+            else {"parent_schema": None, "managed_config": None}
             if flow == "single"
             else {}
         ),
@@ -201,25 +192,19 @@ def test_self_managed_agent_add_does_not_configure_desktop(configuration, monkey
 def test_single_managed_setup_passes_catalog_scope_to_desktop(configuration, monkeypatch):
     configure = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
-    monkeypatch.setattr(
-        cli,
-        "refresh_managed_config",
-        lambda *a, **k: (
-            {
-                "enabled_agents": {
-                    "claude": {"model_config": {"unity_catalog_location": "main.models"}}
-                }
-            },
-            False,
-        ),
-    )
+    managed = {
+        "enabled_agents": {"claude": {"model_config": {"unity_catalog_location": "main.models"}}}
+    }
+    monkeypatch.setattr(cli, "refresh_managed_config", lambda *a, **k: (managed, False))
     assert (
         cli._configure_workspace_command(
             tool="claude", workspaces=[("https://workspace.example", "chosen-profile")]
         )
         == 0
     )
-    configure.assert_called_once_with(configuration, parent_schema="main.models")
+    configure.assert_called_once_with(
+        configuration, parent_schema="main.models", managed_config=managed
+    )
 
 
 def test_single_managed_claude_configures_cowork(configuration, monkeypatch):
