@@ -150,7 +150,21 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` executable at launch or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
+After the form turns routing off, the mod logs `Smart Router is off` to the transcript, the
+reply an off without the form gives.
+
+To turn routing off after collecting the reason somewhere other than the mod's form, first
+have Isaac save that feedback, then send `/smart-router off --feedback-collected`. The mod
+skips its form and turns routing off right away. A plain `/smart-router off` still opens the
+form. `--feedback-collected` works only after `off` and does nothing when the feedback rule
+is off.
+
+Today `--feedback-collected` is honored only when `ISAAC_LAUNCH_MODE=omni`, where Omnigent's
+Web UI is the caller. Those sessions also skip the CLI's reason rule. To support a caller in
+another launch mode, widen both checks: the one in `isaac-feedback.ts` and the one in
+`_toggle_current_smart_routing_session` in `cli.py`.
+
+In sessions with `ISAAC_SMART_ROUTER_FEEDBACK` enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available
 after routing is turned off so users can report on an earlier routed task. It asks
 for a category when none was supplied, and for feedback text when the invocation is empty.

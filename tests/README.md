@@ -949,6 +949,13 @@ A denied control-file read or write fails both toggle commands with native-appro
 guidance and leaves the saved controls byte-for-byte unchanged. Write coverage includes
 raw temporary-file errors and wrapped mkdir/replace errors, read-only filesystems,
 and full-disk failures, which report their cause without permission guidance.
+With Isaac's feedback rule on, an off without a 16-character reason exits 2 and keeps the
+controls, except in an `ISAAC_LAUNCH_MODE=omni` session, where it turns routing off
+(`test_smart_router.py`). `mod_tests/register.test.ts` checks that the mod skips the form there
+only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
+form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,
+and that the flag after `on` or with other text gets the usage reply. `native_claude/test_mod.py`
+runs the marked off through Claude, the mod and the real CLI.
 
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete
