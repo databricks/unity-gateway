@@ -2060,20 +2060,109 @@ class TestCodexManagedConfig:
         desktop: list = []
         monkeypatch.setattr(codex, "_sync_desktop_tracing", lambda *a: desktop.append(a))
         monkeypatch.setattr(codex, "_sync_desktop_relay", lambda *a, **k: desktop.append(a))
-        monkeypatch.setattr(
-            codex, "prepare_codex_catalog", lambda *a: pytest.fail("catalog is per-user")
-        )
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
         managed_files.set_machine_wide_only(True)
         state = {"workspace": WS, "codex_models": ["gpt-5"], "codex_static_models": ["gpt-5"]}
 
         codex.write_tool_config(state)
 
-        assert read_toml_safe(managed_path)["model_provider"] == "Databricks"
-        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        managed = read_toml_safe(managed_path)
+        assert managed["model_provider"] == "Databricks"
+        assert managed["model_catalog_json"] == str(catalog_path)
+        assert json.loads(catalog_path.read_text()) == self.CATALOG
         assert not config_path.exists()
         assert not codex.CODEX_MODEL_CATALOG_PATH.exists()
         assert desktop == []
         assert codex.configured_paths(state) == []
+
+    CATALOG = {"models": [{"slug": "gpt-5", "visibility": "list"}]}
+
+    def _patch_catalog(self, tmp_path, monkeypatch, managed_path):
+        """Stub the catalog builder and the privileged writer; returns ug's catalog path."""
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: self.CATALOG)
+
+        def fake_privileged(files, **kwargs):
+            for path, text in files.items():
+                if text is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(text, encoding="utf-8")
+
+        monkeypatch.setattr(codex, "reconcile_privileged_files", fake_privileged)
+        return managed_path.parent / codex.MANAGED_MODEL_CATALOG_NAME
+
+    def test_static_list_is_enforced_through_managed_catalog(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert read_toml_safe(managed_path)["model_catalog_json"] == str(catalog_path)
+        assert json.loads(catalog_path.read_text()) == self.CATALOG
+        # The per-user reference stays as the fallback when the managed file can't be written.
+        assert read_toml_safe(config_path)["model_catalog_json"] == str(
+            codex.CODEX_MODEL_CATALOG_PATH
+        )
+
+    @pytest.mark.parametrize(
+        "kwargs", [{}, {"provider": "main.default.openai"}, {"parent_schema": "main.models"}]
+    )
+    def test_dropping_static_list_removes_managed_catalog(self, tmp_path, monkeypatch, kwargs):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        # A provider or UC location discovers its own catalog at launch, which ug's would override.
+        state = {"workspace": WS}
+        if kwargs:
+            state["codex_static_models"] = ["gpt-5"]
+        codex.write_tool_config(state, **kwargs)
+
+        assert "model_catalog_json" not in read_toml_safe(managed_path)
+        assert not catalog_path.exists()
+
+    def test_failed_catalog_write_leaves_managed_file_unreferenced(self, tmp_path, monkeypatch):
+        config_path, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS})
+        managed_text = managed_path.read_text()
+
+        def denied(files, **kwargs):
+            raise CalledProcessError(1, ["sudo"], stderr="sudo: a password is required")
+
+        monkeypatch.setattr(codex, "reconcile_privileged_files", denied)
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert managed_path.read_text() == managed_text
+        assert not catalog_path.exists()
+        assert read_toml_safe(config_path)["model_catalog_json"] == str(
+            codex.CODEX_MODEL_CATALOG_PATH
+        )
+
+    def test_revert_removes_managed_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        def fake_revert(*args, **kwargs):
+            managed_path.unlink()
+            return "removed"
+
+        monkeypatch.setattr(codex, "revert_managed_file", fake_revert)
+
+        assert codex.revert_managed_config() == "removed"
+        assert not catalog_path.exists()
+
+    def test_launch_on_provider_reports_stale_managed_catalog(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = managed_path.parent / codex.MANAGED_MODEL_CATALOG_NAME
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(f'model_catalog_json = "{catalog_path}"\n', encoding="utf-8")
+
+        with pytest.raises(RuntimeError, match="earlier static model list.*`ug configure`"):
+            codex._reject_managed_model_catalog()
 
     def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)

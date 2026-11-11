@@ -32,6 +32,7 @@ target_is_allowed() {
     case "$platform:$1" in
         "linux:/etc/claude-code/managed-settings.json"|\
         "linux:/etc/codex/managed_config.toml"|\
+        "linux:/etc/codex/ug-model-catalog.json"|\
         "linux:/etc/unitygateway/managed-settings.json"|\
         "linux:/etc/claude-code/ucode-plugins/.claude-plugin/marketplace.json"|\
         "linux:/etc/claude-code/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
@@ -42,6 +43,7 @@ target_is_allowed() {
         "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/ug"|\
         "macos:/Library/Application Support/UnityGateway/claude-desktop-mdm/otel-headers.sh"|\
         "macos:/etc/codex/managed_config.toml"|\
+        "macos:/etc/codex/ug-model-catalog.json"|\
         "macos:/etc/unitygateway/managed-settings.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/.claude-plugin/marketplace.json"|\
         "macos:/Library/Application Support/ClaudeCode/ucode-plugins/ug-headers/.claude-plugin/plugin.json"|\
