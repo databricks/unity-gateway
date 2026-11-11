@@ -57,11 +57,16 @@ function Invoke-Control {
     } elseif ($Control.TryGetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         $pattern.Select()
     } elseif ($Control.Current.Name -eq 'Select Folder' -and $Control.Current.ControlType.ProgrammaticName -eq 'ControlType.Pane') {
-        $point = $Control.GetClickablePoint()
-        [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
-        [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-        [CapabilityWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        Click-Control $Control
     } else { throw "No activation pattern for $($Control.Current.Name)" }
+}
+
+function Click-Control {
+    param($Control)
+    $point = $Control.GetClickablePoint()
+    [Windows.Forms.Cursor]::Position = [Drawing.Point]::new([int]$point.X, [int]$point.Y)
+    [CapabilityWindow]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    [CapabilityWindow]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
 }
 
 function Save-UI {
@@ -104,7 +109,12 @@ function Approve-ReferenceRead {
     }
     if ($report.referenceReadApproved) { throw 'Code requested the reference read more than once' }
     Save-UI 'reference-read-permission'
-    Invoke-Control (Wait-Control -Names @('Allow once 3') -Seconds 10 -Root $request)
+    Click-Control (Wait-Control -Names @('Allow once 3') -Seconds 10 -Root $request)
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (Find-Control -Names @('Permission request: read')) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'Native read consent did not close after Allow once' }
+        Start-Sleep -Milliseconds 500
+    }
     $report.referenceReadApproved = $true
 }
 
@@ -152,12 +162,14 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
     do {
         Start-Sleep -Seconds 3
-        Approve-ReferenceRead
         $sessionEvidence = (& $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
             --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p') --sessions-root (Join-Path $env:USERPROFILE '.claude/projects') | ConvertFrom-Json)
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
-        if ($sessionEvidence.status -eq 'pending') { continue }
         $report.session = $sessionEvidence
+        if ($sessionEvidence.status -eq 'pending') {
+            Approve-ReferenceRead
+            continue
+        }
         if ($sessionEvidence.status -ne 'passed') { throw $sessionEvidence.error }
         $report.passed = $true
         break

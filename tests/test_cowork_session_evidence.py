@@ -258,6 +258,21 @@ def test_transcript_rotation_preserves_pending_and_valid_sessions(
     assert result["status"] == ("passed" if remaining_session else "pending")
 
 
+@pytest.mark.parametrize("matches_prompt", [False, True])
+def test_pending_transcript_retained_only_for_matching_task(evidence, tmp_path, matches_prompt):
+    records, task = evidence
+    task["startedAfter"] = datetime.fromtimestamp(0, tz=UTC).isoformat()
+    if not matches_prompt:
+        records[0]["message"]["content"] = "An unrelated task"
+    transcript = tmp_path / "pending.jsonl"
+    transcript.write_text(json.dumps(records[0]))
+
+    result = inspect_sessions(tmp_path, task)
+
+    assert result["status"] == "pending"
+    assert result.get("transcript") == (str(transcript) if matches_prompt else None)
+
+
 def test_transcript_permission_errors_are_not_hidden(tmp_path, monkeypatch):
     directory = tmp_path / "projects" / "session"
     directory.mkdir(parents=True)

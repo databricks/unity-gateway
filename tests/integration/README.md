@@ -11,6 +11,8 @@ Both tested Desktop versions reject enterprise reference reads in Cowork and exp
 duplicate skills with both sources installed. See the native test README for run evidence.
 The Code driver confirms workspace trust and grants a one-time native Read permission
 only for the exact enterprise fixture reference; it does not change persistent permissions.
+The parser preserves matching incomplete transcripts for diagnosis while keeping their
+status pending; unrelated sessions are excluded.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.

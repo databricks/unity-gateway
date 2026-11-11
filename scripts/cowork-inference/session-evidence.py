@@ -175,7 +175,14 @@ def inspect_sessions(root, task):
             except json.JSONDecodeError:
                 continue  # The running app can still be appending the final record.
         result = evaluate(records, task)
-        if result["status"] != "pending":
+        contains_prompt = any(
+            isinstance(record, dict)
+            and isinstance(record.get("message"), dict)
+            and record["message"].get("role") == "user"
+            and task["prompt"] in content_text(record["message"].get("content", []))
+            for record in records
+        )
+        if result["status"] != "pending" or contains_prompt:
             return {**result, "transcript": str(path)}
     return {"status": "pending"}
 
@@ -189,6 +196,6 @@ if __name__ == "__main__":
     result = {"status": "pending"}
     for root in args.sessions_root:
         result = inspect_sessions(root, task)
-        if result["status"] != "pending":
+        if result.get("transcript"):
             break
     print(json.dumps(result))

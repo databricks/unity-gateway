@@ -40,6 +40,10 @@ The driver now verifies the exact reference path and selects `Allow once`, never
 `Always allow`. A successful run therefore proves execution with explicit native consent,
 not a permission-free read. Transcript discovery includes Desktop's Code and Cowork data
 under `Claude-3p`, correlating the unique prompt before considering any result.
+Run `42942028988` left the same consent control visible after accessibility invocation;
+that did not establish a second native read request. The driver now clicks the identified
+button and requires the prompt to close. Matching incomplete transcripts are retained for
+failure diagnosis, without treating them as successful tasks.
 
 Branch pushes currently select only Code on Desktop 2.42304.2 to validate the driver
 change. Manual dispatch selects one native case or all five, and either pinned Desktop
