@@ -1141,6 +1141,10 @@ MPS CUJs select preprovisioned services:
   inference and raw Messages response-shape assertions are no longer covered.
   Relay, other-provider, and dedicated CUJ2 fixtures stay in their existing
   workspaces. Missing SP credentials or MPS access fail the new jobs.
+  Token-request HTTP failures report the endpoint, status, and up to 2,000 response-body
+  characters, with the client secret and encoded Basic credential redacted first.
+  `../test_integration_runner.py` covers these diagnostics with controlled HTTP responses;
+  these component checks do not establish live authentication or network access.
 
   For a local direct-Anthropic run, select the dedicated workspace and an explicit
   profile authorized there:

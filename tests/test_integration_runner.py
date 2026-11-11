@@ -1,3 +1,6 @@
+import base64
+import io
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -16,6 +19,73 @@ def test_secrets_are_redacted_from_build_output():
         runner.redact_secrets(output, ("bearer-a", "token-b", "token-c"))
         == "failed for <redacted> with <redacted> and <redacted>"
     )
+
+
+def test_m2m_token_uses_workspace_client_credentials(monkeypatch):
+    def token_response(request, timeout):
+        assert request.full_url == "https://workspace.example/oidc/v1/token"
+        assert request.data == b"grant_type=client_credentials&scope=all-apis"
+        assert request.get_header("Authorization") == (
+            "Basic " + base64.b64encode(b"client:secret").decode()
+        )
+        assert timeout == 30
+        return io.BytesIO(b'{"access_token":"workspace-token"}')
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+
+    assert runner.mint_m2m_token("https://workspace.example/", "client", "secret") == (
+        "workspace-token"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            '{"error":"invalid_client","error_description":"secret"}',
+            '{"error":"invalid_client","error_description":"<redacted>"}',
+        ),
+        (
+            "<html>IP access denied; secret; Y2xpZW50OnNlY3JldA==</html>",
+            "<html>IP access denied; <redacted>; <redacted></html>",
+        ),
+    ],
+)
+def test_m2m_token_reports_http_error_without_credentials(monkeypatch, body, expected):
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", denied)
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as error:
+        runner.mint_m2m_token("https://workspace.example", "client", "secret")
+
+    assert str(error.value) == (
+        "Service-principal OAuth token request to https://workspace.example/oidc/v1/token "
+        "failed (HTTP 403): " + expected
+    )
+    assert "secret" not in str(error.value)
+    assert "Y2xpZW50OnNlY3JldA==" not in str(error.value)
+
+
+def test_m2m_token_redacts_before_truncating_error_body(monkeypatch):
+    secret = "sensitive-client-secret"
+    body = "x" * 1990 + secret + "x" * 2000
+
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", denied)
+
+    with pytest.raises(RuntimeError) as error:
+        runner.mint_m2m_token("https://workspace.example", "client", secret)
+
+    detail = str(error.value).split("(HTTP 403): ", 1)[1]
+    assert detail == "x" * 1990 + "<redacted>"
 
 
 def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
