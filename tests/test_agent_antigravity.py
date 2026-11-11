@@ -193,6 +193,36 @@ class TestRequestRewrites:
 
         assert antigravity.rewrite_request_body("/ai-gateway/gemini/v1beta/m", raw) is raw
 
+    @pytest.mark.parametrize(
+        ("model", "thinking"),
+        [
+            ("gemini-4-carbon", {"includeThoughts": True, "thinkingBudget": 0}),
+            ("system.ai.gemini-4-carbon", {"includeThoughts": True, "thinkingBudget": -1}),
+            ("gemini-4-carbon", {"thinkingBudget": 1024}),
+        ],
+    )
+    def test_drops_thinking_budget_for_gemini_4(self, model, thinking):
+        # Gemini 4 rejects any thinkingBudget ("Use thinking level instead") but accepts the rest.
+        body = json.dumps({"generationConfig": {"thinkingConfig": thinking}}).encode()
+        path = f"/ai-gateway/gemini/v1beta/models/{model}:streamGenerateContent"
+
+        rewritten = json.loads(antigravity.rewrite_request_body(path, body))
+
+        expected = {k: v for k, v in thinking.items() if k != "thinkingBudget"}
+        assert rewritten["generationConfig"]["thinkingConfig"] == expected
+
+    def test_keeps_thinking_budget_for_gemini_3(self):
+        raw = json.dumps(
+            {
+                "generationConfig": {
+                    "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 64}
+                }
+            }
+        ).encode()
+        path = "/ai-gateway/gemini/v1beta/models/gemini-3.8-flash:streamGenerateContent"
+
+        assert antigravity.rewrite_request_body(path, raw) is raw
+
     def test_keeps_non_json_bodies(self):
         assert antigravity.rewrite_request_body("/ai-gateway/gemini/x", b"not json") == b"not json"
 
