@@ -1,9 +1,9 @@
 import json
 import os
-import re
 import runpy
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -107,7 +107,12 @@ def prepare_task(capability, desktop):
     )
     for index, args in enumerate(commands):
         result = process.run(
-            [claude, *args], env=env, capture_output=True, stdin=subprocess.DEVNULL, timeout=120
+            [claude, *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=120,
         )
         desktop.save(f"skill-install-{index}.txt", result.stdout + "\n" + result.stderr)
         if result.returncode:
@@ -151,20 +156,12 @@ def new_task(desktop):
 
 def select_folder(desktop, task):
     click_first(desktop, ("Project or folder", "Work in a folder", "Choose a folder", "Add folder"))
-    menu = desktop.ui("snapshot")
-    desktop.save("folder-menu.json", menu)
-    choices = [
-        label
-        for row in json.loads(menu)
-        if row[0] in ("AXMenuItem", "AXButton") and row[-2] == "1"
-        for label in row[1:5]
-        if re.fullmatch(r"(?i)(choose|select|add|open|work in).*folder[.\u2026]*", label)
-    ]
-    if choices:
-        desktop.ui("click", choices[0])
+    picker = desktop.wait_for("Add folders to this session")
+    desktop.save("folder-picker.json", picker)
     desktop.ui("key", "go-to-folder")
     desktop.wait_for(("Go to the folder:", "Go to Folder", "Go to folder:"))
-    desktop.ui("paste", task["folder"])
+    desktop.ui("folder-path", task["folder"])
+    desktop.wait_for(task["folder"])
     desktop.ui("key", "return")
     click_first(desktop, ("Select Folder", "Choose", "Open"))
     desktop.save("folder-permission.json", desktop.ui("snapshot"))
@@ -179,6 +176,23 @@ def select_folder(desktop, task):
     desktop.save("folder-selected.json", desktop.ui("snapshot"))
 
 
+def runtime_task(task, root):
+    if task["capability"] != "skill":
+        return task
+    source = Path(task["expectedFile"])
+    references = root.glob("*/*/skills/probe-summary/references/facts.txt")
+    copies = [
+        path
+        for path in references
+        if path.read_bytes() == source.read_bytes()
+        and (path.parents[1] / "SKILL.md").read_bytes()
+        == (source.parents[1] / "SKILL.md").read_bytes()
+    ]
+    if len(copies) > 1:
+        raise RuntimeError("Ambiguous native runtime copy of the test skill")
+    return {**task, "expectedFile": str(copies[0])} if copies else task
+
+
 def run_task(desktop, task, report):
     if task["capability"] == "file":
         select_folder(desktop, task)
@@ -188,7 +202,8 @@ def run_task(desktop, task, report):
     report["submitted"] = True
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
-        result = inspect_sessions(session_root(), task)
+        runtime = runtime_task(task, Path(tempfile.gettempdir()) / "claude-hostloop-plugins")
+        result = inspect_sessions(session_root(), runtime)
         if result["status"] == "pending":
             time.sleep(3)
             continue

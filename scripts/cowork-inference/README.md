@@ -52,6 +52,10 @@ wrong files, unrelated sessions, and echoed prompts cannot satisfy these asserti
 Each task checks the model shown in the UI, has a five-minute response limit, and
 stops Desktop before the next task. The skill is an ordinary user-authored plugin;
 this does not verify Unity Catalog skill downloads or UG's downloaded-skill propagation.
+On macOS, Desktop copies installed plugins into its native runtime directory. The test
+identifies the copy by matching both the skill instructions and random reference-file bytes
+against the installed fixture, then requires a Read of that exact runtime path. Ambiguous
+copies fail. File-path comparisons remain case-sensitive on macOS.
 
 ## Dependencies
 

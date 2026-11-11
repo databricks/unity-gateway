@@ -47,7 +47,8 @@ successful tool results and completed answers with random values absent from the
 mismatched result IDs, missing skill calls, incomplete answers, and case-mismatched macOS paths. It tolerates unrelated
 non-message content and transcripts disappearing during polling without accepting invalid
 tool evidence. Native PowerShell checks and macOS harness component tests cover separate stderr
-diagnostics, failed plugin installation, and nested plugin listing formats. A file-read failure does not skip the skill case after successful baseline
+diagnostics, failed plugin installation, and nested plugin listing formats. macOS component
+checks reject mismatched or ambiguous native runtime skill copies. A file-read failure does not skip the skill case after successful baseline
 inference; either task failure still fails the job. UC skill downloads,
 external MCP calls, and file writes remain outside this native coverage. CI contract checks
 verify workspace-credential event guards, installation without OIDC permissions,

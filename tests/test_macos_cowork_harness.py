@@ -436,8 +436,8 @@ def test_macos_skill_install_checks_native_result(tasks, tmp_path, monkeypatch, 
         return subprocess.CompletedProcess(
             args,
             1 if failure == "exit" else 0,
-            stdout=json.dumps(result),
-            stderr="diagnostic outside JSON",
+            stdout=json.dumps(result) if kwargs.get("text") else json.dumps(result).encode(),
+            stderr="diagnostic outside JSON" if kwargs.get("text") else b"diagnostic outside JSON",
         )
 
     # Native plugin installation is unavailable on Linux; fixture creation and validation stay real.
@@ -457,3 +457,30 @@ def test_macos_skill_install_checks_native_result(tasks, tmp_path, monkeypatch, 
         tmp_path / "installed/skills/probe-summary/references/facts.txt"
     )
     assert "diagnostic outside JSON" in logs["skill-install-3.txt"]
+
+
+@pytest.mark.parametrize("copies", [0, 1, 2])
+@pytest.mark.parametrize("matches_source", [True, False])
+def test_macos_skill_runtime_copy_must_match_installed_fixture(
+    tasks, tmp_path, copies, matches_source
+):
+    source = tmp_path / "installed/skills/probe-summary/references/facts.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("unique-fixture-value")
+    (source.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
+    runtime = tmp_path / "claude-hostloop-plugins"
+    for index in range(copies):
+        path = runtime / f"copy-{index}/1.0.0/skills/probe-summary/references/facts.txt"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(source.read_bytes())
+        (path.parents[1] / "SKILL.md").write_text(
+            "Read references/facts.txt" if matches_source else "Different skill"
+        )
+    task = {"capability": "skill", "expectedFile": str(source)}
+    if copies == 2 and matches_source:
+        with pytest.raises(RuntimeError, match="Ambiguous"):
+            tasks.runtime_task(task, runtime)
+        return
+    result = tasks.runtime_task(task, runtime)
+    expected = runtime / "copy-0/1.0.0/skills/probe-summary/references/facts.txt"
+    assert result["expectedFile"] == str(expected if copies == 1 and matches_source else source)

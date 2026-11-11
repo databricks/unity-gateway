@@ -52,24 +52,21 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
     up.post(tap: .cghidEventTap)
 }
 
-if arguments.count == 2 && (operation == "key" || operation == "paste") {
+if arguments.count == 2 && operation == "key" {
     app.activate(options: [.activateIgnoringOtherApps])
-    if operation == "paste" {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(arguments[1], forType: .string)
-        key(9, flags: .maskCommand)
-    } else {
-        switch arguments[1] {
-        case "go-to-folder": key(5, flags: [.maskCommand, .maskShift])
-        case "return": key(36)
-        default: fail("Unsupported key")
-        }
+    switch arguments[1] {
+    case "go-to-folder": key(5, flags: [.maskCommand, .maskShift])
+    case "return": key(36)
+    default: fail("Unsupported key")
     }
     exit(0)
 }
 
+let sheets = controls.filter { field($0, "AXRole") == "AXSheet" }
+let activeControls = sheets.last.map { descendants($0) } ?? controls
+
 if operation == "snapshot" {
-    let rows = controls.map { element in
+    let rows = activeControls.map { element in
         (["AXRole"] + labelAttributes + ["AXEnabled", "AXSelected"]).map {
             field(element, $0)
         }
@@ -84,7 +81,18 @@ if operation == "snapshot" {
 }
 guard arguments.count >= 2 else { fail("Expected a control label") }
 let label = arguments[1]
-guard let control = controls.first(where: { element in
+if operation == "folder-path" {
+    guard let sheet = sheets.last,
+          let textField = descendants(sheet).first(where: {
+              field($0, "AXRole") == "AXTextField" && field($0, "AXEnabled") == "1"
+          }) else { fail("Folder path field unavailable") }
+    AXUIElementSetAttributeValue(textField, "AXFocused" as CFString, kCFBooleanTrue)
+    guard AXUIElementSetAttributeValue(textField, "AXValue" as CFString, label as CFString) == .success else {
+        fail("Could not set folder path")
+    }
+    exit(0)
+}
+guard let control = activeControls.first(where: { element in
     labelAttributes.contains(where: { field(element, $0) == label })
 }) else { fail("Control unavailable: \(label)") }
 guard (attribute(control, "AXEnabled") as? Bool) == true else {
