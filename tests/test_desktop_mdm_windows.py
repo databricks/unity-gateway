@@ -334,6 +334,7 @@ def test_acl_validation_exchanges_text_with_process(tmp_path, monkeypatch, rejec
     )
 
     def acl_process(args, **kwargs):
+        assert kwargs["env"]["PSModulePath"] == str(Path(args[0]).parent / "Modules")
         return run([sys.executable, "-c", child, str(rejected)], **kwargs)
 
     # PowerShell is unavailable on Linux; keep the actual subprocess stream exchange.
