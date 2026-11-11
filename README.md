@@ -525,7 +525,7 @@ so these logs may still contain sensitive details. Claude's audit format is unch
 
 After upgrading UG, run `ug configure --agent claude` once to add Auto to the native model configuration,
 then launch normally with `ug claude`. The native `/model` picker includes **Auto**:
-“Automatically picks models for quality at lower cost.” Selecting it
+“Pairs your main model with smart task routing for quality at lower cost.” Selecting it
 enables UG's existing subagent router and opens the complete native main-agent model selector.
 `/auto` opens the same selector without a model request. All available models
 appear in catalog order in one scrollable list.
