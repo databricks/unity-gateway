@@ -9,9 +9,12 @@ They must be owned by Administrators, SYSTEM, or TrustedInstaller, readable/exec
 by device users, and writable only by administrators. Links and reparse-point output
 paths are rejected. UG validates existing installations; it does not install shared runtimes.
 
-The workspace must publish a managed configuration enabling Claude. Dedicated workspace
-hostnames and normal Databricks OAuth are required; PAT/custom OAuth deployment remains
-unsupported. Missing configuration or failed publication makes the global command fail.
+Workspace-managed configuration is optional, as on macOS. Without it, UG discovers
+accessible Claude models and configures inference without managed connectors or tracing.
+An explicit enabled-agent list excluding Claude is rejected. Configuration fetch errors
+and failed publication still fail the global command.
+Dedicated workspace hostnames and normal Databricks OAuth are required; PAT/custom OAuth
+deployment remains unsupported.
 Already completed CLI/file changes can remain after a later component fails; rerun configure
 after resolving the error. Ordinary user configure retains its best-effort behavior.
 

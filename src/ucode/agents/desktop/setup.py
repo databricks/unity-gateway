@@ -49,10 +49,6 @@ def configure_claude_desktop(
                     "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
                 )
             if sys.platform == "win32":
-                if managed_config is None:
-                    raise RuntimeError(
-                        "Windows Desktop global setup requires a workspace managed configuration."
-                    )
                 mdm.configure(
                     state["workspace"], state.get("profile"), managed_config=managed_config
                 )
