@@ -34,6 +34,7 @@ import os
 import shlex
 import signal
 
+from ucode import metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -315,6 +316,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     token = _configure_launch(state)
     env = build_runtime_env(token)
 
+    metrics.agent_handoff()
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()

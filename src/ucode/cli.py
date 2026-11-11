@@ -27,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, metrics
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -2274,6 +2274,7 @@ def agents_add(
             f"Added {TOOL_SPECS[tool]['display']} as self-managed. Run `ug {tool}` to use it."
         )
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2302,6 +2303,7 @@ def agents_remove(
         save_state(state)
         print_success(f"Removed {TOOL_SPECS[tool]['display']} from your self-managed list.")
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2343,6 +2345,7 @@ def agents_list_cmd() -> None:
             print_note("No agents set up for this workspace yet.")
         print_note("Add another agent to run it self-managed with `ug agents add <agent>`.")
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2576,6 +2579,7 @@ def mcp_add(
         added = True
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -2613,6 +2617,7 @@ def mcp_remove(
         remove_mcp_command(agents=requested_agents)
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -2645,6 +2650,7 @@ def mcp_list(
     try:
         list_mcp_command(agents=requested_agents)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -3139,6 +3145,7 @@ def auth_token_cmd(
                 workspace, profile, force_refresh=force_refresh, browser_login=browser_login
             )
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     # Write the bare token (with trailing newline) to stdout — nothing else may
@@ -3218,6 +3225,7 @@ def otel_headers_cmd(
         with redirect_stdout(sys.stderr):
             token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     sys.stdout.write(
@@ -3568,6 +3576,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
@@ -3966,6 +3975,7 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
+        metrics.start_agent(tool, preflight_skipped=skip_preflight)
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
@@ -3995,6 +4005,9 @@ def _launch_tool(
             apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
+        )
+        metrics.start_agent(
+            tool, preflight_skipped=skip_preflight, first_time_setup=needs_auto_configure
         )
         # Refuse an agent the managed config doesn't enable before installing or configuring it, so
         # a blocked launch never downloads the agent first. Reading the config needs a known
@@ -4494,6 +4507,7 @@ def _launch_tool(
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -4615,6 +4629,7 @@ def default(
         # `print_err(str(exc))` printing the exit code — a bare, meaningless "ERROR 1".
         raise
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -4754,6 +4769,7 @@ def codex_cmd(
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from exc
     # Read before the flag applies the version, which consumes the selector.
@@ -4856,6 +4872,7 @@ def claude_cmd(
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from exc
     with _smart_routing_v2_flag(
@@ -5068,6 +5085,7 @@ def cursor_cmd(ctx: typer.Context) -> None:
         print_success("Starting Cursor Agent")
         cursor.launch(load_state(), ctx.args)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -5500,6 +5518,7 @@ def configure(
         # meaningless "ERROR 0".
         raise
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -5641,6 +5660,7 @@ def export_cmd(
     try:
         export_command(file_path=file_path)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5651,6 +5671,7 @@ def status_cmd() -> None:
     try:
         status()
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5662,6 +5683,7 @@ def revert_cmd() -> None:
     try:
         result = revert()
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     raise typer.Exit(result)
@@ -5675,6 +5697,7 @@ def doctor_cmd() -> None:
     try:
         doctor()
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5690,6 +5713,7 @@ def usage_cmd(
         install_databricks_cli()
         usage_report(show_all=show_all)
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5771,6 +5795,7 @@ def upgrade_cmd() -> None:
             print_err(f"Upgrade failed (exit code {exc.returncode}); `ucode` was not removed.")
         raise typer.Exit(1) from None
     except RuntimeError as exc:
+        metrics.failure("command", exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 

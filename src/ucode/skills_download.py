@@ -14,6 +14,7 @@ from pathlib import Path
 
 import questionary
 
+from ucode import metrics
 from ucode.databricks import get_databricks_token, workspace_org_id
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
 from ucode.skills_api import (
@@ -569,6 +570,7 @@ def _update_stale_skills(
     return updated
 
 
+@metrics.timed("skills_refresh_duration_ms", deadline_reached=False, continued_with_fallback=True)
 def refresh_downloaded_skills_on_launch(state: dict) -> None:
     """Update downloaded skills whose UC source changed, before an agent launches.
 
@@ -598,9 +600,11 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
             pairs = _refs_needing_refresh(workspace, token, present, deadline)
             updated = _update_stale_skills(workspace, token, pairs, deadline)
+            metrics.annotate(deadline_reached=time.monotonic() >= deadline)
             if updated:
                 print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
+        metrics.failure("skills_refresh", exc, continued_with_fallback=True)
         print_note(f"Skipped checking for skill updates: {exc}")
 
 
