@@ -78,8 +78,12 @@ A service principal is used only while the Jamf policy runs, to download the wor
 4. Save.
 
 The script installs Claude Code, Codex and the Databricks CLI only when they're missing, and
-reinstalls `ug` on each run. It doesn't update the agents or the CLI after the first install; to
-keep them current, modify the script to match how you update software on your Macs.
+reinstalls `ug` on each run. Codex comes from its release package, which includes the
+`codex-code-mode-host` helper that Code Mode needs: the package goes in
+`/usr/local/unity-gateway/codex`, with `codex` and `codex-code-mode-host` linked into
+`/usr/local/bin`. A Mac provisioned before the helper was added gets the package on the next run.
+The script doesn't update the agents or the CLI after the first install; to keep them current,
+modify the script to match how you update software on your Macs.
 
 ## 3. Create the policy
 
@@ -103,7 +107,7 @@ Go to **Computers → Policies → New**:
 After the policy runs (check the computer's **History → Policy Logs**), as a user, with no sudo:
 
 ```bash
-ls -l /usr/local/bin/ug /usr/local/bin/databricks /usr/local/bin/claude /usr/local/bin/codex
+ls -l /usr/local/bin/{ug,databricks,claude,codex,codex-code-mode-host}
 cat /etc/unitygateway/managed-settings.json      # your workspace's policy
 alias claude codex                               # in a new terminal: the UG aliases
 claude
