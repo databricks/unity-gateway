@@ -90,6 +90,11 @@ tools only for models it recognizes. `ug` installs the CLI with Google's install
 is missing (macOS and Linux). On a workspace with a managed config, which can't enable
 Antigravity yet, run `ug agents add antigravity` to use it self-managed.
 
+For Gemini 4 Carbon, UG replaces Antigravity's zero thinking budget with `LOW`,
+the model's [lowest supported thinking level](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/start/get-started-with-gemini-4).
+An explicit `thinkingLevel` is preserved.
+Other models keep their existing budget behavior; nonzero budgets are not translated.
+
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
 Copilot's `/model` picker, and you can switch between them mid-session. Claude
 models use the Anthropic Messages API, GPT-5 and newer use Responses, and older

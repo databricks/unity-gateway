@@ -593,7 +593,7 @@ on a named model of the Bedrock allow-all service; launching on the relayed serv
 developer's own disabled server, checks Copilot's `copilot mcp list --json` and `ug mcp list`, runs
 a headless task whose tool call Copilot's session events record as successful, and reverts.
 
-Antigravity CLI has five live headless journeys in `test_ug_antigravity_headless.py` and three in
+Antigravity CLI has six live headless journeys in `test_ug_antigravity_headless.py` and three in
 `test_ug_configure_antigravity.py`. Headless runs use `agy -p --output-format stream-json`; the
 file task requires a finished `read_file` step on the fixture and the value in the `result`
 event, every logged model request on ug's loopback proxy (`/ai-gateway/gemini/v1beta/models/`)
@@ -626,6 +626,13 @@ trust screens through visible choices, and reads the answer from a finished agen
 revert journey checks the user's own skills.json (including an entry added after configure) and
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
+
+Carbon zero-budget compatibility has component coverage in `../test_agent_antigravity.py`
+and a real-socket proxy case in `../test_gateway_proxy_integration.py`: UG sends `LOW`
+instead of `thinkingBudget: 0`, preserves an explicit level, and retains older-model
+behavior. The explicit Carbon file-task journey uses installed Antigravity and the real
+gateway, requiring a completed file-read task and Carbon in every logged model request.
+It exercises Carbon even when discovery selects a different default.
 
 The managed saved-config journey installs `/etc/unitygateway/managed-settings.json` through real
 configure, checks root ownership and readable modes, and checks the user-owned
@@ -1221,7 +1228,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 journeys check setup and launch with existing services, without inference.
 
 There are **88 live cases** (including 12 marked TUI journeys) and **8 installation
-checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI). One
+checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds nine live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
 managed workspace with a checked-in JSON CodingAgentConfig from `tests/fixtures/managed_config/`
@@ -1480,7 +1487,7 @@ managed e2e workspace (`E2E_ADMIN_WORKSPACE`) with the injected `managed_workspa
 which enables Claude/Codex but not OpenCode. It is likewise outside `cujs`.
 A non-blocking **Copilot** job (`live and copilot`, seventeen cases) runs on Linux and Windows the
 same way and is likewise outside `cujs` until it is stable.
-A blocking **Antigravity** job (`live and antigravity`, eight cases) runs on Linux only with
+A blocking **Antigravity** job (`live and antigravity`, nine cases) runs on Linux only with
 the pinned `ANTIGRAVITY_BUILD`; it is part of the `cujs` gate.
 
 Each lane installs only the agent CLIs it needs (one, except the managed OpenCode lane's

@@ -137,14 +137,19 @@ names (dotted versions, `-preview` names and their tiers, image models dropped),
 selection-id lookup, the gateway-mode environment, skills.json/mcp_config.json merges and the
 entry-scoped skills.json revert, explicit selection of the discovered default or saved provider
 target on bare launches (including preview-model tiers), and launch cleanup (spawn failure,
-nonzero exit, Ctrl-C). `test_gateway_proxy_integration.py` runs the Antigravity proxy hooks over
-real local HTTP (model path rewrite, `includeThoughts` body fix, provider header, Gemini-only
-route). `test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug revert` keeping
+nonzero exit, Ctrl-C). Request tests cover Carbon's zero-budget conversion to `LOW`, explicit
+thinking-level preservation, and unchanged nonzero budgets and other models.
+`test_gateway_proxy_integration.py` runs the Antigravity proxy hooks over
+real local HTTP (model path rewrite, Carbon thinking-level and older-model `includeThoughts`
+body fixes, provider header, Gemini-only route).
+`test_agents_init.py`, `test_mcp.py`, `test_cli.py` (including `ug revert` keeping
 skills.json entries added after configure) and `test_agents_commands.py` cover dispatch, the
 native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 `ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
-eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
-Enterprise MPS; see `integration/README.md`). The MCP journey uses `system.ai.web_search`
+nine journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
+Enterprise MPS; see `integration/README.md`). An explicit Carbon file-task journey checks
+the compatibility path even when the discovered default changes.
+The MCP journey uses `system.ai.web_search`
 on pinned Gemini 3.8 Flash instead of SQL. It requires a completed call to the exact server,
 tool and query, and an official Databricks URL present in both its result and the final answer.
 Native file-reader guidance avoids shell-based tool discovery; permissions remain scoped to

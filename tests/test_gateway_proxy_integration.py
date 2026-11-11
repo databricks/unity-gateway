@@ -501,11 +501,24 @@ class TestGatewayAuthProxyEndToEnd:
         assert resp.status_code == 401
         assert gw.requests == []
 
-    def test_antigravity_session_rewrites_model_and_body_with_fresh_token(self, make_gateway):
+    @pytest.mark.parametrize(
+        ("model", "gateway_model", "expected_thinking"),
+        [
+            ("gemini-3.8-flash", "system.ai.gemini-3-8-flash", {"thinkingBudget": 0}),
+            (
+                "gemini-4-carbon",
+                "system.ai.gemini-4-carbon",
+                {"thinkingLevel": "LOW", "includeThoughts": True},
+            ),
+        ],
+    )
+    def test_antigravity_session_rewrites_model_and_body_with_fresh_token(
+        self, make_gateway, model, gateway_model, expected_thinking
+    ):
         from ucode.agents import antigravity
 
         gw = make_gateway()
-        catalog = {"gemini-3.8-flash": "system.ai.gemini-3-8-flash"}
+        catalog = {model: gateway_model}
         with _running_gateway_auth_proxy(
             gw,
             _counting_token("dbx-token"),
@@ -516,7 +529,7 @@ class TestGatewayAuthProxyEndToEnd:
         ) as proxy_url:
             resp = httpx.post(
                 f"{proxy_url}/ai-gateway/gemini/v1beta/models/"
-                "gemini-3.8-flash:streamGenerateContent?alt=sse",
+                f"{model}:streamGenerateContent?alt=sse",
                 headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
                 json={
                     "generationConfig": {
@@ -528,14 +541,11 @@ class TestGatewayAuthProxyEndToEnd:
         assert resp.status_code == 200
         req = gw.requests[-1]
         assert req.path == (
-            "/ai-gateway/gemini/v1beta/models/system.ai.gemini-3-8-flash"
-            ":streamGenerateContent?alt=sse"
+            f"/ai-gateway/gemini/v1beta/models/{gateway_model}:streamGenerateContent?alt=sse"
         )
         assert req.header("Authorization") == "Bearer dbx-token"
         assert req.header("Databricks-Model-Provider-Service") == "cat.sch.svc"
-        assert json.loads(req.body) == {
-            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
-        }
+        assert json.loads(req.body) == {"generationConfig": {"thinkingConfig": expected_thinking}}
 
     def test_antigravity_session_reaches_only_the_gemini_route(self, make_gateway):
         gw = make_gateway()

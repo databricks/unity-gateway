@@ -342,10 +342,7 @@ def rewrite_model_path(path: str, catalog: dict[str, str]) -> str:
 
 
 def rewrite_request_body(path: str, body: bytes) -> bytes:
-    """Drop ``includeThoughts`` from a request whose thinking budget is zero.
-
-    Antigravity sends ``{"includeThoughts": true, "thinkingBudget": 0}`` for models it treats
-    as non-thinking, which Vertex rejects with a 400."""
+    """Adapt Antigravity's zero-budget fallback to the selected model."""
     if not path.startswith(GEMINI_GATEWAY_PATH):
         return body
     try:
@@ -356,6 +353,11 @@ def rewrite_request_body(path: str, body: bytes) -> bytes:
     thinking = config.get("thinkingConfig") if isinstance(config, dict) else None
     if not isinstance(thinking, dict) or thinking.get("thinkingBudget") != 0:
         return body
+    model_path = _MODEL_PATH.match(path)
+    if model_path and agy_model_name(unquote(model_path["model"])) == "gemini-4-carbon":
+        thinking.pop("thinkingBudget")
+        thinking.setdefault("thinkingLevel", "LOW")  # Carbon cannot disable thinking.
+        return json.dumps(payload).encode()
     if "includeThoughts" not in thinking:
         return body
     thinking.pop("includeThoughts")

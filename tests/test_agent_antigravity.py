@@ -134,6 +134,72 @@ class TestModelNames:
 
 
 class TestRequestRewrites:
+    @pytest.mark.parametrize(
+        "model",
+        ["gemini-4-carbon", "system.ai.gemini-4-carbon", "databricks-gemini-4-carbon"],
+    )
+    @pytest.mark.parametrize(
+        ("thinking", "expected"),
+        [
+            ({"thinkingBudget": 0}, {"thinkingLevel": "LOW"}),
+            (
+                {"thinkingBudget": 0, "includeThoughts": True},
+                {"thinkingLevel": "LOW", "includeThoughts": True},
+            ),
+            (
+                {"thinkingBudget": 0, "includeThoughts": False, "thinkingLevel": "HIGH"},
+                {"thinkingLevel": "HIGH", "includeThoughts": False},
+            ),
+        ],
+    )
+    def test_carbon_zero_budget_uses_supported_thinking_level(self, model, thinking, expected):
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+            "generationConfig": {"maxOutputTokens": 100, "thinkingConfig": thinking},
+        }
+
+        rewritten = antigravity.rewrite_request_body(
+            f"/ai-gateway/gemini/v1beta/models/{model}:streamGenerateContent?alt=sse",
+            json.dumps(payload).encode(),
+        )
+
+        assert json.loads(rewritten) == {
+            **payload,
+            "generationConfig": {"maxOutputTokens": 100, "thinkingConfig": expected},
+        }
+
+    @pytest.mark.parametrize(
+        "thinking",
+        [
+            {"thinkingLevel": "MEDIUM", "includeThoughts": True},
+            {"thinkingBudget": -1, "includeThoughts": True},
+            {"thinkingBudget": 8192, "includeThoughts": True},
+        ],
+    )
+    def test_carbon_nonzero_budget_and_native_levels_are_unchanged(self, thinking):
+        raw = json.dumps({"generationConfig": {"thinkingConfig": thinking}}).encode()
+
+        assert (
+            antigravity.rewrite_request_body(
+                "/ai-gateway/gemini/v1beta/models/gemini-4-carbon:generateContent", raw
+            )
+            is raw
+        )
+
+    @pytest.mark.parametrize("model", ["gemini-3.8-flash", "gemini-4-carbon-custom"])
+    def test_other_models_retain_zero_budget_compatibility(self, model):
+        raw = json.dumps(
+            {"generationConfig": {"thinkingConfig": {"thinkingBudget": 0, "includeThoughts": True}}}
+        ).encode()
+
+        rewritten = antigravity.rewrite_request_body(
+            f"/ai-gateway/gemini/v1beta/models/{model}:generateContent", raw
+        )
+
+        assert json.loads(rewritten) == {
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
+        }
+
     def test_rewrites_model_in_gemini_path(self):
         catalog = {"gemini-3.8-flash": "system.ai.gemini-3-8-flash"}
 

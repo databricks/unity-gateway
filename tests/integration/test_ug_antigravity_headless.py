@@ -79,6 +79,26 @@ def test_ug_antigravity_headless_completes_file_task(live_session, workspace):
     assert_no_bearer_on_disk(session)
 
 
+def test_ug_antigravity_carbon_completes_file_task(live_session, workspace):
+    """Scenario: configure Antigravity and explicitly run a file task on Gemini 4 Carbon.
+
+    Expected: the native CLI completes the task through UG on Carbon, without the
+    unsupported thinking-budget error, even when another model becomes the default.
+    """
+    session = live_session
+    task = FileTask(session)
+    _configure(session, workspace)
+    model = "system.ai.gemini-4-carbon"
+    assert model in session.workspace_state().get("gemini_models", [])
+    session.record("model.json", {"model": model, "antigravity_name": "gemini-4-carbon"})
+
+    result = _ask(session, task.prompt, "--model", model)
+
+    task.assert_headless_answer("antigravity", result)
+    _assert_through_ug_proxy(session)
+    assert antigravity.requested_models(session) == {"gemini-4-carbon"}
+
+
 def test_ug_antigravity_headless_explicit_model(live_session, workspace):
     """Scenario: launch a headless task on a specific discovered Gemini model with `--model`,
     through the `ug agy` alias.
