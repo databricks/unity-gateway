@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.harness import clean_environment
+from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -38,10 +38,66 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
-def test_isolated_sessions_bound_claude_gateway_discovery(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS", "1")
+@pytest.mark.parametrize(
+    ("cache", "status", "models"),
+    [
+        (None, "missing", []),
+        ("{", "invalid_json", []),
+        ('{"models": null}', "invalid_models", []),
+        ('{"models": [1]}', "invalid_models", []),
+        ('{"models": []}', "readable", []),
+        (
+            '{"models": [{"id": "other-model", "display_name": "Other", "extra": "private"}]}',
+            "readable",
+            [{"id": "other-model", "display_name": "Other"}],
+        ),
+    ],
+)
+def test_claude_discovery_diagnostics_preserve_cache_failure_state(tmp_path, cache, status, models):
+    session = UserSession(tmp_path, tmp_path, tmp_path / "ug", tmp_path / "artifacts")
+    if cache is not None:
+        path = session.home / ".claude/cache/gateway-models.json"
+        path.parent.mkdir(parents=True)
+        path.write_text(cache)
 
-    assert clean_environment(tmp_path)["CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS"] == "30000"
+    session.record_claude_gateway_discovery(["expected-model"], tmp_path / "absent-debug.log")
+
+    result = json.loads(
+        (session.artifacts / "claude-gateway-discovery-diagnostics.json").read_text()
+    )
+    assert result == {
+        "expected_ids": ["expected-model"],
+        "models": models,
+        "events": [],
+        "cache_status": status,
+        "debug_status": "missing",
+    }
+
+
+def test_claude_discovery_diagnostics_exclude_freeform_native_debug(tmp_path):
+    session = UserSession(tmp_path, tmp_path, tmp_path / "ug", tmp_path / "artifacts")
+    debug_path = tmp_path / "native-debug.log"
+    debug_path.write_text(
+        "[DEBUG] Authorization: Bearer private-token\n"
+        "[DEBUG] [gatewayDiscovery] failed: timed out after 3000ms\n"
+        "[DEBUG] [gatewayDiscovery] non-OK status 401\n"
+        "[DEBUG] [gatewayDiscovery] cached 3 models\n"
+        "[DEBUG] [gatewayDiscovery] failed: credential-helper private-token\n"
+    )
+
+    session.record_claude_gateway_discovery(["expected-model"], debug_path)
+
+    result = json.loads(
+        (session.artifacts / "claude-gateway-discovery-diagnostics.json").read_text()
+    )
+    assert result["debug_status"] == "readable"
+    assert result["events"] == [
+        "failed: timed out after 3000ms",
+        "non-OK status 401",
+        "cached 3 models",
+        "unrecognized discovery event (details omitted)",
+    ]
+    assert "private-token" not in json.dumps(result)
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():

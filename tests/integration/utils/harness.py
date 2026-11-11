@@ -77,8 +77,6 @@ def clean_environment(home: Path) -> dict[str, str]:
             # agy requires the literal "true"; "1" leaves background updates enabled.
             "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            # Native discovery aborts at 3s by default, before the picker/cache's 60s wait.
-            "CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS": "30000",
             "NO_COLOR": "1",
             "TERM": "dumb",
             "COLUMNS": "160",
@@ -280,6 +278,58 @@ class UserSession:
             f"Invalid Claude gateway model entries: {models!r}"
         )
         return ids
+
+    def record_claude_gateway_discovery(self, expected_ids: list[str], debug_path: Path) -> None:
+        """Keep discovery failure evidence without archiving native auth/debug details."""
+        diagnostics = {"expected_ids": expected_ids, "models": [], "events": []}
+        path = Path(self.env["CLAUDE_CONFIG_DIR"]) / "cache/gateway-models.json"
+        try:
+            payload = json.loads(path.read_text())
+        except FileNotFoundError:
+            diagnostics["cache_status"] = "missing"
+        except OSError:
+            diagnostics["cache_status"] = "unreadable"
+        except ValueError:
+            diagnostics["cache_status"] = "invalid_json"
+        else:
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if not isinstance(models, list) or not all(isinstance(model, dict) for model in models):
+                diagnostics["cache_status"] = "invalid_models"
+            else:
+                diagnostics["cache_status"] = "readable"
+                diagnostics["models"] = [
+                    {
+                        key: model[key]
+                        for key in ("id", "display_name")
+                        if isinstance(model.get(key), str)
+                    }
+                    for model in models
+                ]
+        try:
+            lines = debug_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except FileNotFoundError:
+            diagnostics["debug_status"] = "missing"
+        except OSError:
+            diagnostics["debug_status"] = "unreadable"
+        else:
+            diagnostics["debug_status"] = "readable"
+            for line in lines:
+                if "[gatewayDiscovery] " not in line:
+                    continue
+                message = line.split("[gatewayDiscovery] ", 1)[1]
+                if not re.fullmatch(
+                    r"(?:cached \d+ models|non-OK status \d{3}|failed: timed out after \d+ms"
+                    r"|response body failed validation|0 usable models after filter"
+                    r"|skipped: apiKeyHelper requires workspace trust"
+                    r"|skipped: no credential \(ANTHROPIC_AUTH_TOKEN, apiKeyHelper, or API key\)"
+                    r"|skipped: ANTHROPIC_BASE_URL is (?:a first-party host|unset)"
+                    r"|skipped: _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL is set)",
+                    message,
+                ):
+                    # Native errors can contain URLs, headers, or credential-helper output.
+                    message = "unrecognized discovery event (details omitted)"
+                diagnostics["events"].append(message)
+        self.record("claude-gateway-discovery-diagnostics.json", diagnostics)
 
     def claude_gateway_cache_ready(self, expected_ids: list[str] | None = None) -> bool:
         """Report whether Claude's gateway cache has landed, without asserting.
