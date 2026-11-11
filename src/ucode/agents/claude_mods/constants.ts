@@ -4,6 +4,7 @@ export const CLI_MODULE = 'ucode.cli';
 export const CLI_AGENT = 'claude';
 export const ENABLE_ROUTING_FLAG = '--enable-smart-routing';
 export const DISABLE_ROUTING_FLAG = '--disable-smart-routing';
+// Omnigent matches the "Smart Router is on" and "Smart Router is off" replies exactly; update Omnigent if either changes.
 export const SMART_ROUTER_ON_REPLY = 'Smart Router is on';
 export const SMART_ROUTER_OFF_REPLY = 'Smart Router is off';
 export const SMART_ROUTING_KEY = 'ENABLE_SMART_ROUTING_V2';
