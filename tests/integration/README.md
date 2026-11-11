@@ -1125,7 +1125,8 @@ MPS CUJs select preprovisioned services:
 
 - Claude (direct API key): `main.ucode.dont_delete_ci_company_anthropic_mps` in
   `https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com`
-  (workspace `4168069418041172`). The `anthropic_mps` lanes use
+  (workspace `4168069418041172`). The `anthropic_mps` lanes read the URL from
+  `UG_ANTHROPIC_MPS_WORKSPACE` and authenticate with
   `UG_ANTHROPIC_MPS_CLIENT_ID` and `UG_ANTHROPIC_MPS_CLIENT_SECRET` GitHub secrets;
   the runner mints a short-lived OAuth bearer for this workspace. The service resolves
   `databricks-staging-shared-key://anthropic` server-side, exposes only

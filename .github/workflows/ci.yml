@@ -169,8 +169,8 @@ jobs:
       # See the test job: hosted runners can't reach the internal pypi-proxy,
       # so resolve against public PyPI (paired with the `uv lock` step below).
       UV_INDEX_URL: https://pypi.org/simple
-      UCODE_TEST_WORKSPACE: ${{ matrix.group == 'anthropic-mps' && 'https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com' || secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_HOST: ${{ matrix.group == 'anthropic-mps' && 'https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com' || secrets.UCODE_TEST_WORKSPACE }}
+      UCODE_TEST_WORKSPACE: ${{ secrets[matrix.group == 'anthropic-mps' && 'UG_ANTHROPIC_MPS_WORKSPACE' || 'UCODE_TEST_WORKSPACE'] }}
+      DATABRICKS_HOST: ${{ secrets[matrix.group == 'anthropic-mps' && 'UG_ANTHROPIC_MPS_WORKSPACE' || 'UCODE_TEST_WORKSPACE'] }}
       # DATABRICKS_BEARER is the CI escape hatch: `databricks auth token`
       # only retrieves cached user-OAuth tokens, so on a hosted runner
       # (no databrickscfg, no cached login) it can never produce a bearer.
