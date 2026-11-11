@@ -154,7 +154,7 @@ export function register(on) {
         tui.boot(timeout=45)
         tui.submit("/model")
         tui.choose("Select model", "Auto")
-        heading = "Choose your main model for Smart Routing"
+        heading = "Choose your main model"  # The remainder wraps in a narrow native dock.
         tui.wait_for(
             lambda s: heading in s and "h/l to adjust effort" in pane_text(s),
             "the Auto effort pane",

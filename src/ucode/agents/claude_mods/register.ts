@@ -328,18 +328,27 @@ export function register(on: On, options: PluginOptions): void {
     // native question until the model picker has closed; never self-dispatch /auto.
     on('session.append', { door: 'command' }, async ($, e, next) => {
       const internalSwitch = switchingAuto;
-      const result = await next(e);
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
+      const keptModel = /^<local-command-stdout>Kept model/.test(text);
+      const setModel = /^<local-command-stdout>Set model to /.test(text);
+      // Close the provisional pane before forwarding the native confirmation.
+      // Forwarding first can dismiss /model and expose the pane for one frame.
+      const dismiss = !internalSwitch && (keptModel || (setModel && !await autoSelected($, auto)));
+      if (dismiss) {
+        pendingSelection?.cancel();
+        await $.ui.close({ id: 'auto-main' });
+        if (setModel) await syncAutoRouting($, options, auto);
+      }
+      const result = await next(e);
       if (/^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i.test(text)) {
         effortState.native[await $.session.model()] = text;
         $.ui.invalidate('ui.render');
       }
       const modelEffort = text.match(/^<local-command-stdout>Set model to .*? with `?(low|medium|high|xhigh|max)`? effort/i)?.[1];
       if (modelEffort) effortState.native[await $.session.model()] = 'Effort level: ' + modelEffort;
-      if (internalSwitch) return result;
-      if (/^<local-command-stdout>Kept model/.test(text)) await $.ui.close({ id: 'auto-main' });
-      if (/^<local-command-stdout>Set model to /.test(text)) {
+      if (internalSwitch || dismiss) return result;
+      if (setModel) {
         pendingSelection?.cancel();
         pendingSelection = $.clock.after(0, async () => {
           await syncAutoRouting($, options, auto);

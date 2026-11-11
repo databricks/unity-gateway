@@ -16,7 +16,7 @@ const options = {
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
 function host(on: any, selected = 'ug-auto-opus') {
-  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -88,7 +88,10 @@ function commandTranscript({state, env}: ReturnType<typeof host>) {
     const event = {door: 'command', uuid: text, message: {type: 'user', content: [
       {type: 'text', text: `<local-command-stdout>${text}</local-command-stdout>`},
     ]}};
-    await append(engine, event, async (forwarded: any) => ({message: forwarded.message, uuid: forwarded.uuid}));
+    await append(engine, event, async (forwarded: any) => {
+      state.appendClosed.push(state.closed.length);
+      return {message: forwarded.message, uuid: forwarded.uuid};
+    });
     for (const callback of pending) await callback();
   };
 }
@@ -213,4 +216,20 @@ test('/auto switches the native identity while Auto is selected', {options}, asy
   await step($);
   expect(state.forwarded[1].model).toBe('astra');
   expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
+});
+
+
+test('manual selection and cancellation close Auto before the native picker confirmation renders', {options}, async ($, on) => {
+  const context = host(on);
+  const {state, env} = context;
+  on('command.run', {command: 'model'}, () => ({ref: 1}));
+  const confirm = commandTranscript(context);
+  await $.command.run({command: 'model', args: ''});
+  state.selected = 'opus';
+  await confirm('Set model to Opus');
+  expect(state.appendClosed.at(-1)).toBe(1);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+  await $.command.run({command: 'model', args: ''});
+  await confirm('Kept model as Opus');
+  expect(state.appendClosed.at(-1)).toBe(2);
 });

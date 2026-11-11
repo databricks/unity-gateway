@@ -156,7 +156,7 @@ export function register(on) {
         tui.wait_for(lambda s: "Select model" not in s, "the closed picker")
         return screen
 
-    selector = "Choose your main model for Smart Routing"
+    selector = "Choose your main model"  # The remainder wraps in a narrow native dock.
     with launch("a") as a, launch("b") as b:
         a.boot(timeout=45)
         b.boot(timeout=45)
@@ -190,7 +190,8 @@ export function register(on) {
         a.send("\x1b", "cancel the selector")
         a.wait_for(lambda s: selector not in s, "the dismissed selector")
         assert observe(a, "cancelled")["model"] == changed["model"]
-        a.submit("/model " + models[0])
+        a.submit("/model")
+        a.choose("Select model", "Opus 5.5")
         a.wait_for(lambda s: "Set model to" in s and selector not in s, "the ordinary model switch")
         manual = observe(a, "manual")
         assert manual["model"] == models[0]

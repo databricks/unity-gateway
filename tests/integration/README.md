@@ -30,9 +30,11 @@ real parent/child answers and correlated routing decisions before and after a ma
 model choice. The fixed-variant journey passed on Ubuntu ARM64 with the existing Claude 2.1.290
 pin, including real routed and unrouted child tasks. The two-session native profile
 journey passed for all four alternatives on 2.1.290 and for Haiku on 2.1.322.
-A separate 2.1.322 terminal capture found
-no unwanted main-model pane in 28 frames following picker cancellation; this does
-not guarantee frame-by-frame behavior on every terminal. Native header labels
+A reported pane flash during manual selection was traced to closing the provisional
+Auto pane after forwarding the native confirmation. A regression verifies it closes
+before that confirmation is rendered, including cancellation. A 2.1.322 80-column
+capture found no unwanted pane in 33 frames across cancellation and manual selection;
+this does not guarantee frame-by-frame behavior on every terminal. Native header labels
 continue to show the underlying model. Launch regressions cover saved native aliases
 and avoiding an implicit model flag on resume/continue; the live journey additionally
 checks restart and compares resume against the same native Claude and managed settings.
