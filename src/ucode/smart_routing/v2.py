@@ -41,10 +41,10 @@ from ucode.constants import (
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
     AnthropicModelCatalog,
-    build_auth_token_argv,
     list_anthropic_model_catalog,
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
+    ug_binary,
 )
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
@@ -735,9 +735,7 @@ def launch_claude(
             "routing."
         )
         route_first_prompt = False
-    hook_executable = build_auth_token_argv(
-        workspace, state.get("profile"), use_pat=bool(state.get("use_pat"))
-    )[0]
+    hook_executable = ug_binary()
     env = settings.setdefault("env", {})
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")

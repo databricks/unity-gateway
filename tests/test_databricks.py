@@ -2617,13 +2617,72 @@ class TestUgBinary:
 
 
 class TestBuildAuthTokenArgv:
+    @pytest.mark.parametrize("console_exists", [False, True])
+    def test_pins_the_configuring_python_instead_of_a_path_console_script(
+        self, tmp_path, monkeypatch, console_exists
+    ):
+        console = tmp_path / "transient cache" / "ug"
+        console.parent.mkdir()
+        if console_exists:
+            console.write_text("unrelated installation")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: str(console))
+
+        argv = build_auth_token_argv(WS, profile="selected profile")
+
+        assert argv[:4] == [sys.executable, "-P", "-m", "ucode.cli"]
+        assert argv[4:] == ["auth-token", "--host", WS, "--profile", "selected profile"]
+
+    @pytest.mark.parametrize("shadow_cwd", [False, True])
+    def test_generated_helper_survives_removal_of_the_console_script(
+        self, tmp_path, monkeypatch, shadow_cwd
+    ):
+        console = tmp_path / "transient cache" / "ug"
+        console.parent.mkdir()
+        console.write_text("obsolete console script")
+        monkeypatch.setattr(db_mod.shutil, "which", lambda command: str(console))
+        argv = build_auth_token_argv(WS, profile="selected profile")
+        console.unlink()
+        working_directory = tmp_path / "workspace"
+        working_directory.mkdir()
+        if shadow_cwd:
+            package = working_directory / "ucode"
+            package.mkdir()
+            (package / "__init__.py").write_text("")
+            (package / "cli.py").write_text("print('wrong-installation')")
+        environment = {
+            key: value
+            for key, value in os.environ.items()
+            if key.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "TEMP", "TMP"}
+        }
+        environment.update(
+            HOME=str(tmp_path),
+            USERPROFILE=str(tmp_path),
+            APPDATA=str(tmp_path),
+            LOCALAPPDATA=str(tmp_path),
+            XDG_CONFIG_HOME=str(tmp_path),
+            PATH="",
+            PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"),
+            DATABRICKS_BEARER="offline-component-token",
+            NO_COLOR="1",
+        )
+
+        result = subprocess.run(
+            argv,
+            cwd=working_directory,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "offline-component-token\n"
+
     def test_basic_argv(self, monkeypatch):
         monkeypatch.setattr(db_mod.shutil, "which", lambda command: f"/tools/{command}")
         argv = build_auth_token_argv(WS)
-        # First element resolves to the ug executable; the rest is the
-        # cross-platform helper invocation — no `sh`, no `jq`, no shell syntax.
-        assert argv[0] == "/tools/ug"
-        assert argv[1:] == ["auth-token", "--host", WS]
+        assert argv[:4] == [sys.executable, "-P", "-m", "ucode.cli"]
+        assert argv[4:] == ["auth-token", "--host", WS]
 
     def test_strips_trailing_slash_from_host(self):
         argv = build_auth_token_argv(WS + "/")
@@ -2663,13 +2722,22 @@ class TestBuildAuthShellCommand:
         assert "jq" not in cmd
         assert "if [ -n" not in cmd
 
-    def test_windows_quotes_ug_path_with_spaces(self, monkeypatch):
-        executable = r"C:\Program Files\Unity Gateway\ug.exe"
-        monkeypatch.setattr(db_mod.shutil, "which", lambda command: executable)
+    @pytest.mark.parametrize(
+        ("executable", "quoted"),
+        [
+            (r"C:\Tools\python.exe", r"C:\Tools\python.exe"),
+            (
+                r"C:\Program Files\Unity Gateway\python.exe",
+                '"C:\\Program Files\\Unity Gateway\\python.exe"',
+            ),
+        ],
+    )
+    def test_windows_quotes_interpreter_path(self, monkeypatch, executable, quoted):
+        monkeypatch.setattr(sys, "executable", executable)
         monkeypatch.setattr(db_mod.platform, "system", lambda: "Windows")
 
         assert build_auth_shell_command(WS, "my profile") == (
-            f'"{executable}" auth-token --host {WS} --profile "my profile"'
+            f'{quoted} -P -m ucode.cli auth-token --host {WS} --profile "my profile"'
         )
 
     def test_embeds_profile_when_provided(self):

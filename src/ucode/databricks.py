@@ -2113,14 +2113,16 @@ def ug_binary() -> str:
 def build_auth_token_argv(
     workspace: str, profile: str | None = None, *, use_pat: bool = False
 ) -> list[str]:
-    """Argv for the cross-platform token helper: `ug auth-token ...`.
+    """Argv for the token helper in the configuring Python installation.
 
     Unlike the previous POSIX `databricks ... | jq` pipeline, this is a single
     executable with plain arguments — no `sh`, no `jq`, no shell quoting — so it
     runs identically on macOS, Linux, and Windows (issue #116). The DATABRICKS_BEARER
     short-circuit, its DATABRICKS_BEARER_COMMAND counterpart, and the PAT path all
-    live inside `auth-token` itself."""
-    argv = [ug_binary(), "auth-token", "--host", workspace.rstrip("/")]
+    live inside `auth-token` itself. Pin the interpreter without resolving its
+    virtualenv symlink; a console script found on PATH can belong to a different
+    installation or disappear when an installer prunes its cache."""
+    argv = [sys.executable, "-P", "-m", "ucode.cli", "auth-token", "--host", workspace.rstrip("/")]
     if profile:
         argv += ["--profile", profile]
     if use_pat:
@@ -2156,9 +2158,9 @@ def build_auth_shell_command(
 ) -> str:
     """Single-line, shell-quoted form of :func:`build_auth_token_argv`.
 
-    Used where a tool wants the helper as one command *string* (Claude Code's
-    `apiKeyHelper`). On every platform this resolves to the `ug auth-token`
-    executable rather than a POSIX shell pipeline, so no `sh`/`jq` is required."""
+    Used where a tool wants one command string, such as Claude Code's
+    `apiKeyHelper`. The pinned Python invokes the same token command on every
+    platform without a POSIX shell pipeline."""
     return subprocess_cross_os.shell_command(
         build_auth_token_argv(workspace, profile, use_pat=use_pat)
     )

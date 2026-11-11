@@ -289,7 +289,7 @@ class TestHydrateState:
         # Codex runs the helper as argv (command + args), never via `sh -c`.
         codex_auth = result["agents"]["codex"]["auth"]
         assert codex_auth["command"] != "sh"
-        assert codex_auth["args"][0] == "auth-token"
+        assert codex_auth["args"][:4] == ["-P", "-m", "ucode.cli", "auth-token"]
         assert result["agents"]["pi"]["model"] == "claude-opus"
         assert result["agents"]["pi"]["base_urls"] == FAKE_URLS["pi"]
 

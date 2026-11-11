@@ -560,6 +560,7 @@ class TestLaunchCodex:
 
     def test_v2_pre_tool_hook_uses_current_model(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr("ucode.smart_routing.codex_hooks.ug_binary", lambda: "/bin/ug")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         (codex_home / "config.toml").write_text(

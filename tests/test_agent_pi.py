@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -499,22 +500,37 @@ class TestBuildPiApiKey:
         monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: f"/tools/{command}")
         api_key = pi.build_pi_api_key({"workspace": WS})
 
-        assert api_key == f"!/tools/ug auth-token --host {WS}"
+        assert shlex.split(api_key[1:]) == [
+            sys.executable,
+            "-P",
+            "-m",
+            "ucode.cli",
+            "auth-token",
+            "--host",
+            WS,
+        ]
 
     @pytest.mark.parametrize(
-        "ug_exe",
-        [r"C:\Users\me\.local\bin\ug.EXE", r"C:\Program Files\ug.exe", r"C:\Users\O'Brien\ug.exe"],
+        "python_exe",
+        [
+            r"C:\Users\me\.local\bin\python.EXE",
+            r"C:\Program Files\python.exe",
+            r"C:\Users\O'Brien\python.exe",
+        ],
     )
-    def test_windows_executable_path_survives_bash(self, monkeypatch, ug_exe):
+    def test_windows_executable_path_survives_bash(self, monkeypatch, python_exe):
         # Pi runs `!command` through Git Bash on Windows, so the command must be
-        # POSIX-quoted: an unquoted `C:\...\ug.EXE` would lose its backslashes.
+        # POSIX-quoted: an unquoted Windows path would lose its backslashes.
         monkeypatch.setattr("ucode.databricks.platform.system", lambda: "Windows")
-        monkeypatch.setattr("ucode.databricks.shutil.which", lambda command: ug_exe)
+        monkeypatch.setattr(sys, "executable", python_exe)
         api_key = pi.build_pi_api_key({"workspace": WS, "profile": "my profile", "use_pat": True})
 
         assert api_key.startswith("!")
         assert shlex.split(api_key[1:]) == [
-            ug_exe,
+            python_exe,
+            "-P",
+            "-m",
+            "ucode.cli",
             "auth-token",
             "--host",
             WS,
