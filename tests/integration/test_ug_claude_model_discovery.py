@@ -174,8 +174,14 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
 
 @pytest.mark.live
 @pytest.mark.tui
+@pytest.mark.parametrize("_diagnostic_iteration", range(20))
 def test_case_13_configured_claude_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, _claude_parent_model_ids, _parent_discovery_diagnostics
+    live_session,
+    workspace,
+    parent_schema,
+    _claude_parent_model_ids,
+    _parent_discovery_diagnostics,
+    _diagnostic_iteration,
 ):
     """Scenario: configure Claude, then launch with --model-location.
 
