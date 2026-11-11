@@ -24,6 +24,9 @@ focus, Enter confirmation, a single checked Auto row, and Escape cancellation.
 It also runs at 60 columns and 22 rows, where the pane overflows: Up/Down must
 select and reveal model rows, Enter commits that model, and Escape preserves the
 previous selection. A native component test keeps wheel and page scrolling intact.
+Confirmation coverage requires “Set model to Auto” after both picker selection and
+main-model confirmation, with the internal selected profile unchanged. Component
+checks preserve native save/effort details, warnings, and regular-model confirmations.
 The change is applied through native `/effort` after model confirmation. This uses
 no inference. Profile component tests cover supported levels, settings caps and
 environment overrides. The stock `/model` picker remains unchanged.

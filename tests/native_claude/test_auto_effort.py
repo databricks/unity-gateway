@@ -207,6 +207,10 @@ export function register(on) {
         tui.wait_for(
             lambda s: heading not in s and "Auto (Opus 5.5) saved" in s, "saved Auto effort"
         )
+        tui.wait_for(
+            lambda s: s.count("Set model to Auto") == 2,
+            "Auto confirmations from the picker and main-model selection",
+        )
         current = observe(tui, "selected")
         assert current["model"] == catalog["models"][0]["autoModel"], current
         tui.submit("/effort status")

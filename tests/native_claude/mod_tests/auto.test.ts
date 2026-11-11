@@ -16,7 +16,7 @@ const options = {
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
 function host(on: any, selected = 'ug-auto-opus') {
-  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -90,6 +90,7 @@ function commandTranscript({state, env}: ReturnType<typeof host>) {
     ]}};
     await append(engine, event, async (forwarded: any) => {
       state.appendClosed.push(state.closed.length);
+      state.appended.push(forwarded.message.content[0].text);
       return {message: forwarded.message, uuid: forwarded.uuid};
     });
     for (const callback of pending) await callback();
@@ -163,6 +164,21 @@ test('reselecting Auto opens the next step and manual selection disables routing
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
   expect(state.questions.length).toBe(1);
   expect(await hint($, state)).toBe('native');
+});
+
+test('Auto confirmations preserve native save details and warnings', {options}, async ($, on) => {
+  const context = host(on);
+  const confirm = commandTranscript(context);
+  const details = ' and saved as your default for new sessions with `high` effort\nA native warning';
+  await confirm('Set model to `Opus 5.5`' + details);
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Auto`' + details + '</local-command-stdout>');
+  expect(context.state.selected).toBe('ug-auto-opus');
+  context.state.selected = 'opus';
+  await confirm('Set model to `Opus 5.5`' + details);
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Opus 5.5`' + details + '</local-command-stdout>');
+  context.state.selected = 'ug-auto-opus';
+  await confirm('Kept model as `Opus 5.5`');
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>');
 });
 
 test('native model panel places Auto before its transcript and dismisses it on cancellation', {options}, async ($, on) => {

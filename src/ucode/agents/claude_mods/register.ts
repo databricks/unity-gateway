@@ -352,7 +352,14 @@ export function register(on: On, options: PluginOptions): void {
         await $.ui.close({ id: 'auto-main' });
         if (setModel) await syncAutoRouting($, options, auto);
       }
-      const result = await next(e);
+      // Keep native success details, but name the selected mode in its confirmation.
+      // This changes the transcript text only, never the selected model/profile.
+      const confirmation = setModel && await autoSelected($, auto) ? {
+        ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
+          ...block, text: block.text.replace(/^(<local-command-stdout>Set model to )(`+).+?\2/, '$1`Auto`'),
+        } : block) },
+      } : e;
+      const result = await next(confirmation);
       if (/^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i.test(text)) {
         effortState.native[await $.session.model()] = text;
         $.ui.invalidate('ui.render');
