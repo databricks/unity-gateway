@@ -319,6 +319,7 @@ def _print_managed_summary(
     abridged: bool = False,
     configured_tools: list[str] | None = None,
     registered_mcps: list[str] | None = None,
+    failed_tools: list[str] | None = None,
 ) -> None:
     """Show which of the admin's settings are in force.
 
@@ -339,12 +340,24 @@ def _print_managed_summary(
         lines.append(f"[bold]Agent:[/bold] [green]{TOOL_SPECS[tool]['display']}[/green]")
     enabled = [t for t in (managed.get("enabled_agents") or {}) if t in TOOL_SPECS]
     failed: list[str] = []
+    self_managed: list[str] = []
     if configured_tools is not None:
+        self_managed = [
+            tool
+            for tool in configured_tools
+            if tool in TOOL_SPECS and tool not in enabled and is_self_managed(state, tool)
+        ]
         failed = [t for t in enabled if t not in configured_tools]
+        failed.extend(t for t in (failed_tools or []) if t in TOOL_SPECS and t not in failed)
         enabled = [t for t in enabled if t in configured_tools]
     if enabled:
         lines.append(
             f"[bold]Coding Agents:[/bold] {', '.join(TOOL_SPECS[t]['display'] for t in enabled)}"
+        )
+    if self_managed:
+        lines.append(
+            "[bold]Self-managed agents:[/bold] "
+            + ", ".join(TOOL_SPECS[tool]["display"] for tool in self_managed)
         )
     if failed:
         lines.append(
@@ -394,7 +407,11 @@ def _print_managed_summary_abridged(managed: dict, state: dict, tool: str | None
 
 
 def _summarize_managed_config(
-    managed: dict, configured_tools: list[str], registered_mcps: list[str]
+    managed: dict,
+    configured_tools: list[str],
+    registered_mcps: list[str],
+    *,
+    failed_tools: list[str] | None = None,
 ) -> None:
     """Show the resulting managed setup, listing only the agents that configured cleanly."""
     _print_managed_summary(
@@ -403,6 +420,7 @@ def _summarize_managed_config(
         tool=None,
         configured_tools=configured_tools,
         registered_mcps=registered_mcps,
+        failed_tools=failed_tools,
     )
     print_success("Configuration complete — launch with [bold cyan]ug[/bold cyan].")
 
@@ -1436,14 +1454,67 @@ def _configure_workspace_command(
     state = states[0]
     save_state(state)
 
-    # A published managed config means the admin dictates the setup: apply it to every enabled agent
-    # now rather than prompting the developer to pick. Configure always reads fresh so it never
-    # applies a config the admin has since changed.
+    # Configure reads current policy and defaults to all enabled agents. An explicit --agents
+    # limits installation and setup to the requested agents that policy enables.
     managed, _ = _refresh_configured_policy(state)
     refuse_user_scope_over_managed_config(state.get("workspace"), managed)
     managed_tools = managed_enabled_tools(managed) if managed is not None else []
     if managed is not None and managed_tools:
         _reject_managed_model_source(managed, model_location=model_location, provider=provider)
+        summary_managed = managed
+        selected_self_managed: list[str] = []
+        if selected_tools is not None:
+            selected_self_managed = [
+                name
+                for name in selected_tools
+                if _agent_management(managed, state, name) is AgentManagement.SELF
+            ]
+            excluded = [
+                name
+                for name in selected_tools
+                if name not in managed_tools and name not in selected_self_managed
+            ]
+            managed_tools = [name for name in managed_tools if name in selected_tools] + (
+                selected_self_managed
+            )
+            displays = ", ".join(TOOL_SPECS[name]["display"] for name in excluded)
+            opt_ins = ", ".join(
+                f"`ug agents add {name}`" for name in excluded if name in _MANAGEABLE_AGENTS
+            )
+            unsupported = ", ".join(
+                TOOL_SPECS[name]["display"] for name in excluded if name not in _MANAGEABLE_AGENTS
+            )
+            hints = []
+            if opt_ins:
+                hints.append(f"Run {opt_ins} to use those agents self-managed.")
+            if unsupported:
+                hints.append(
+                    f"Self-managed opt-in is not supported for {unsupported}; "
+                    "choose an enabled agent."
+                )
+            selection_hint = " ".join(hints)
+            if not managed_tools:
+                if excluded:
+                    raise RuntimeError(
+                        f"Your workspace's managed config doesn't enable {displays}. "
+                        f"{selection_hint}"
+                    )
+                print_note("No coding agents selected — nothing to configure.")
+                return 0
+            if excluded:
+                print_warning(
+                    f"Skipping agent(s) not enabled by your workspace configuration: {displays}. "
+                    f"{selection_hint}"
+                )
+            # Unrequested agents were not attempted, so the summary must not call them failures.
+            summary_managed = {
+                **managed,
+                "enabled_agents": {
+                    name: managed["enabled_agents"][name]
+                    for name in managed_tools
+                    if name not in selected_self_managed
+                },
+            }
         refuse_user_scope_over_managed_files(managed_tools)
         managed_tools = _machine_wide_tools(managed_tools)
         if not managed_tools:
@@ -1452,19 +1523,32 @@ def _configure_workspace_command(
         configured_tools: list[str] = []
         failed_tools: list[str] = []
         for tool_name in managed_tools:
-            resolved = resolve_state(managed, state, tool_name)
+            # A developer's existing opt-in keeps its own model/provider settings.
+            resolved = (
+                state
+                if tool_name in selected_self_managed
+                else resolve_state(managed, state, tool_name)
+            )
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
                 if tool_name in MODEL_LOCATION_TOOLS
+                and tool_name not in selected_self_managed
                 and not managed_provider_service(managed, tool_name)
                 else None
             )
+            if (
+                tool_name in selected_self_managed
+                and tool_name in MODEL_LOCATION_TOOLS
+                and not get_provider_service(resolved, tool_name)
+            ):
+                parent_schema = get_model_location(resolved, tool_name)
             if (
                 get_provider_service(resolved, tool_name)
                 or parent_schema
                 or check_gateway_endpoint(resolved, tool_name)
             ):
                 if not install_tool_binary(tool_name, strict=False):
+                    failed_tools.append(tool_name)
                     continue
                 configured = configure_selected_tools(
                     resolved,
@@ -1490,7 +1574,18 @@ def _configure_workspace_command(
                         configure_claude_desktop(configured, parent_schema=parent_schema)
                 else:
                     failed_tools.append(tool_name)
+            else:
+                failed_tools.append(tool_name)
+                management = "self-managed " if tool_name in selected_self_managed else ""
+                print_warning(
+                    f"Skipping {management}{TOOL_SPECS[tool_name]['display']}: unavailable on "
+                    "this workspace. Run `ug status` to inspect model availability."
+                )
         if not configured_tools:
+            if selected_tools is not None:
+                raise RuntimeError(
+                    "None of the selected coding agents are available on this workspace."
+                )
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
                 "are available on this workspace."
@@ -1507,7 +1602,9 @@ def _configure_workspace_command(
                 _sync_claude_cowork_plugin(
                     state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
                 )
-        _summarize_managed_config(managed, configured_tools, registered_mcps)
+        _summarize_managed_config(
+            summary_managed, configured_tools, registered_mcps, failed_tools=failed_tools
+        )
         _fail_machine_wide_run(failed_tools)
         return 0
 

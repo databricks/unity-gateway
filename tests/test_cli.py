@@ -5693,27 +5693,57 @@ class TestConfigureAgentsSelection:
         cli_mod.configure_workspace_command()
         assert picked_for == ["claude"]
 
-    def test_managed_config_applies_all_enabled_and_skips_selection(self, monkeypatch):
-        # A managed config means the admin dictates the agents, so `ug configure` applies it to every
-        # enabled+available agent and does NOT prompt the developer to pick.
+    @pytest.mark.parametrize(
+        ("selected", "expected", "excluded", "self_managed", "unavailable"),
+        [
+            (None, ["claude", "codex", "pi"], None, [], None),
+            (["codex", "claude"], ["claude", "codex"], None, [], None),
+            (["claude", "gemini"], ["claude"], "gemini", [], None),
+            (["gemini"], ["gemini"], None, ["gemini"], None),
+            (["claude", "gemini"], ["claude", "gemini"], None, ["gemini"], None),
+            (["claude", "gemini"], ["claude"], None, ["gemini"], "gemini"),
+        ],
+        ids=[
+            "all-enabled",
+            "requested-subset",
+            "disabled-request-excluded",
+            "self-managed",
+            "mixed-management",
+            "unavailable-self-managed",
+        ],
+    )
+    def test_managed_config_applies_selected_enabled_agents_without_picker(
+        self, monkeypatch, capsys, selected, expected, excluded, self_managed, unavailable
+    ):
         import ucode.cli as cli_mod
 
-        state = {**MINIMAL_STATE, "available_tools": []}
+        state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": self_managed}
+        managed = {"enabled_agents": {"claude": {}, "codex": {}, "pi": {}}}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(
             cli_mod,
             "refresh_managed_config",
-            lambda s, **_k: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+            lambda s, **_k: (managed, False),
         )
-        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: True)
+        mcp_setup = MagicMock(return_value=[])
+        skills_setup = MagicMock(return_value=True)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", mcp_setup)
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", skills_setup)
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda s, t: t != unavailable)
         installed: list[str] = []
         monkeypatch.setattr(
             cli_mod,
             "install_tool_binary",
             lambda tool, **kwargs: installed.append(tool) or True,
         )
-        monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
-        monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
+        resolve = MagicMock(side_effect=lambda managed, s, tool: s)
+        monkeypatch.setattr(cli_mod, "resolve_state", resolve)
+        summaries: list[list[str]] = []
+        monkeypatch.setattr(
+            cli_mod,
+            "_print_managed_summary",
+            lambda managed, *args, **kwargs: summaries.append(list(managed["enabled_agents"])),
+        )
         configured: list[str] = []
         monkeypatch.setattr(
             cli_mod,
@@ -5726,9 +5756,78 @@ class TestConfigureAgentsSelection:
             lambda options: pytest.fail("must not prompt for tools when a managed config exists"),
         )
 
-        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
-        assert installed == ["claude", "codex"]
-        assert configured == ["claude", "codex"]
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=selected, workspaces=[("https://w.com", None)]
+            )
+            == 0
+        )
+        assert installed == expected
+        assert configured == expected
+        mcp_setup.assert_called_once_with(managed)
+        skills_setup.assert_called_once_with(managed)
+        assert [call.args[2] for call in resolve.call_args_list] == [
+            tool for tool in expected if tool not in self_managed
+        ]
+        assert summaries == [[tool for tool in expected if tool not in self_managed]]
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        if excluded:
+            assert (
+                "Skipping agent(s) not enabled by your workspace configuration: "
+                f"{cli_mod.TOOL_SPECS[excluded]['display']}" in output
+            )
+            assert f"ug agents add {excluded}" in output
+        else:
+            assert "Skipping agent(s)" not in output
+        if unavailable:
+            assert f"Skipping self-managed {cli_mod.TOOL_SPECS[unavailable]['display']}" in output
+            assert "Run `ug status` to inspect model availability." in output
+
+    @pytest.mark.parametrize("selected", [["gemini", "opencode"], ["kilo"]])
+    def test_managed_config_rejects_selection_without_enabled_agents(self, monkeypatch, selected):
+        state = {**MINIMAL_STATE, "available_tools": []}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s, **kwargs: ({"enabled_agents": {"claude": {}, "codex": {}}}, False),
+        )
+        install = MagicMock()
+        configure = MagicMock()
+        monkeypatch.setattr(cli_mod, "install_tool_binary", install)
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
+
+        with pytest.raises(RuntimeError, match="doesn't enable") as error:
+            cli_mod.configure_workspace_command(
+                selected_tools=selected, workspaces=[("https://w.com", None)]
+            )
+
+        for tool in selected:
+            assert cli_mod.TOOL_SPECS[tool]["display"] in str(error.value)
+            if tool in cli_mod._MANAGEABLE_AGENTS:
+                assert f"ug agents add {tool}" in str(error.value)
+            else:
+                assert f"ug agents add {tool}" not in str(error.value)
+                assert "Self-managed opt-in is not supported" in str(error.value)
+        install.assert_not_called()
+        configure.assert_not_called()
+
+    def test_unavailable_self_managed_selection_is_not_described_as_admin_enabled(
+        self, monkeypatch
+    ):
+        state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": ["gemini"]}
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda s, **kwargs: ({"enabled_agents": {"claude": {}}}, False),
+        )
+        monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *args: False)
+
+        with pytest.raises(RuntimeError, match="None of the selected coding agents"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["gemini"], workspaces=[("https://w.com", None)]
+            )
 
     def test_managed_summary_separates_configured_and_failed_agents(self, capsys, monkeypatch):
         # An enabled agent that failed to configure is listed under "Failed to configure",
@@ -5745,6 +5844,71 @@ class TestConfigureAgentsSelection:
         assert "Coding Agents:" in out and "Claude Code" in out
         assert "Failed to configure:" in out and "Codex" in out
 
+    def test_managed_summary_labels_self_managed_selection(self, capsys, monkeypatch):
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {"workspace": "https://w.com", "self_managed_agents": ["gemini"]},
+        )
+        monkeypatch.setattr(cli_mod, "records_for_scope", lambda scope: [])
+
+        cli_mod._summarize_managed_config({"enabled_agents": {}}, ["gemini"], [])
+
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        assert "Self-managed agents: Gemini" in output
+        assert "Coding Agents:" not in output
+
+    @pytest.mark.parametrize(
+        ("failure", "self_managed"),
+        [("unavailable", True), ("configure", True), ("install", True), ("unavailable", False)],
+    )
+    def test_global_selection_reports_failed_selected_agent(
+        self, monkeypatch, capsys, failure, self_managed
+    ):
+        state = {**MINIMAL_STATE, "available_tools": [], "self_managed_agents": ["claude"]}
+        managed = {"enabled_agents": {"codex": {}}}
+        if not self_managed:
+            managed["enabled_agents"]["claude"] = {}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
+        monkeypatch.setattr(
+            cli_mod,
+            "refresh_managed_config",
+            lambda *a, **k: (managed, False),
+        )
+        monkeypatch.setattr(cli_mod, "machine_wide_only", lambda: True)
+        monkeypatch.setattr(cli_mod, "resolve_state", lambda managed, s, tool: s)
+        monkeypatch.setattr(
+            cli_mod,
+            "check_gateway_endpoint",
+            lambda s, tool: not (tool == "claude" and failure == "unavailable"),
+        )
+        monkeypatch.setattr(
+            cli_mod,
+            "install_tool_binary",
+            lambda tool, **k: not (tool == "claude" and failure == "install"),
+        )
+        configured = []
+
+        def configure(s, tools, **kwargs):
+            successful = [] if tools == ["claude"] and failure == "configure" else tools
+            configured.extend(successful)
+            return {**s, "available_tools": configured, "last_configured_tools": successful}
+
+        monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
+        monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
+        monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *a: True)
+
+        with pytest.raises(RuntimeError, match="could not configure Claude Code"):
+            cli_mod.configure_workspace_command(
+                selected_tools=["codex", "claude"], workspaces=[(state["workspace"], None)]
+            )
+
+        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
+        assert configured == ["codex"]
+        assert "Coding Agents: Codex" in output
+        assert "Failed to configure: Claude Code" in output
+
     @pytest.mark.parametrize(
         ("model_config", "expected_provider", "expected_parent"),
         [
@@ -5757,22 +5921,30 @@ class TestConfigureAgentsSelection:
         ],
         ids=["mps", "uc-parent"],
     )
-    def test_managed_claude_source_configures_without_global_models(
-        self, monkeypatch, model_config, expected_provider, expected_parent
+    @pytest.mark.parametrize("self_managed", [False, True], ids=["admin", "self-managed"])
+    def test_selected_claude_source_configures_without_global_models(
+        self, monkeypatch, model_config, expected_provider, expected_parent, self_managed
     ):
         state = {
             **MINIMAL_STATE,
             "available_tools": [],
             "claude_models": {},
             "provider_services": {"claude": "main.default.developer"},
+            # An old opt-in must not override subsequently published admin policy.
+            "self_managed_agents": ["claude"],
         }
         managed = {"enabled_agents": {"claude": {"model_config": model_config}}}
+        if self_managed:
+            # The provider case also keeps a saved schema, proving provider precedence.
+            state["model_locations"] = {"claude": expected_parent or "main.saved"}
+            state["provider_services"] = {"claude": expected_provider} if expected_provider else {}
+            managed = {"enabled_agents": {"codex": {}}}
         monkeypatch.setattr(cli_mod, "configure_shared_state", lambda *a, **k: state)
         monkeypatch.setattr(cli_mod, "refresh_managed_config", lambda s, **_k: (managed, False))
         monkeypatch.setattr(
             cli_mod,
             "check_gateway_endpoint",
-            lambda *_a: pytest.fail("managed model sources do not require global models"),
+            lambda *_a: pytest.fail("configured model sources do not require global models"),
         )
         monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
         monkeypatch.setattr(cli_mod, "_print_managed_summary", lambda *a, **k: None)
@@ -5784,11 +5956,19 @@ class TestConfigureAgentsSelection:
             lambda resolved, tools, **kwargs: configured.append((resolved, kwargs)) or resolved,
         )
 
-        assert cli_mod.configure_workspace_command(workspaces=[("https://w.com", None)]) == 0
+        assert (
+            cli_mod.configure_workspace_command(
+                selected_tools=["claude"],
+                workspaces=[("https://w.com", None)],
+            )
+            == 0
+        )
 
         assert len(configured) == 1
         resolved, kwargs = configured[0]
-        expected_saved_provider = expected_provider or "main.default.developer"
+        expected_saved_provider = expected_provider or (
+            None if self_managed else "main.default.developer"
+        )
         assert cli_mod.get_provider_service(resolved, "claude") == expected_saved_provider
         assert kwargs["parent_schemas"] == (
             {"claude": expected_parent} if expected_parent else None
