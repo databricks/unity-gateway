@@ -8,6 +8,7 @@ import {
   estimateTokens,
   responsesReplies,
   responsesRequest,
+  USAGE_MIME_TYPE,
 } from "../src/formats";
 import { ASSISTANT, call, collect, events, image, message, rejectsWith, result, SYSTEM, text, USER, weatherTool } from "./support";
 import { LanguageModelDataPart, LanguageModelTextPart, LanguageModelToolCallPart } from "./vscode";
@@ -19,6 +20,14 @@ const conversation = [
   message(USER, result("c1", text("Sunny"))),
 ];
 const turn = { model: "m", messages: conversation, tools: [weatherTool], toolRequired: true };
+
+const usage = (input: number, output: number, cached: number) =>
+  new LanguageModelDataPart(
+    new TextEncoder().encode(
+      JSON.stringify({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output, prompt_tokens_details: { cached_tokens: cached } }),
+    ),
+    USAGE_MIME_TYPE,
+  );
 
 describe("Chat Completions", () => {
   it("sends the conversation, images and tools", () => {
@@ -76,6 +85,22 @@ describe("Chat Completions", () => {
       ),
     );
     assert.deepEqual(replies, [new LanguageModelTextPart("Checking. Done.")]);
+  });
+
+  it("reports the last usage the stream sent, after the tool calls", async () => {
+    const replies = await collect(
+      chatCompletionsReplies(
+        events(
+          { choices: [{ delta: { content: "Checking." } }], usage: { prompt_tokens: 120, completion_tokens: 1, total_tokens: 121 } },
+          {
+            choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "get_weather", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
+            usage: { prompt_tokens: 120, completion_tokens: 9, total_tokens: 129, prompt_tokens_details: { cached_tokens: 100 } },
+          },
+          { choices: [], usage: null },
+        ),
+      ),
+    );
+    assert.deepEqual(replies, [new LanguageModelTextPart("Checking."), new LanguageModelToolCallPart("c1", "get_weather", {}), usage(120, 9, 100)]);
   });
 
   it("fails on a length stop and on arguments that aren't an object", async () => {
@@ -169,6 +194,18 @@ describe("Responses", () => {
       ),
     );
     assert.deepEqual(replies, [new LanguageModelTextPart("Checking."), new LanguageModelToolCallPart("c1", "get_weather", { city: "Paris" })]);
+  });
+
+  it("reports the completed response's usage", async () => {
+    const replies = await collect(
+      responsesReplies(
+        events(
+          { type: "response.output_text.delta", delta: "Hi." },
+          { type: "response.completed", response: { usage: { input_tokens: 300, input_tokens_details: { cached_tokens: 256 }, output_tokens: 4, total_tokens: 304 } } },
+        ),
+      ),
+    );
+    assert.deepEqual(replies, [new LanguageModelTextPart("Hi."), usage(300, 4, 256)]);
   });
 
   it("fails on a token-limit stop and on a failed response", async () => {
@@ -286,6 +323,20 @@ describe("Anthropic Messages", () => {
       new LanguageModelToolCallPart("c1", "get_weather", { city: "Paris" }),
       new LanguageModelToolCallPart("c2", "list", {}),
     ]);
+  });
+
+  it("reports the input, cache reads and writes included, and the output from the last message_delta", async () => {
+    const replies = await collect(
+      anthropicMessagesReplies(
+        events(
+          { type: "message_start", message: { usage: { input_tokens: 10, cache_creation_input_tokens: 50, cache_read_input_tokens: 1000, output_tokens: 1 } } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hi." } },
+          { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { input_tokens: null, output_tokens: 7 } },
+          { type: "message_stop" },
+        ),
+      ),
+    );
+    assert.deepEqual(replies, [new LanguageModelTextPart("Hi."), usage(1060, 7, 1000)]);
   });
 
   it("fails on a token-limit stop, a refusal, any other stop reason, an error event, and a stream without message_stop", async () => {
