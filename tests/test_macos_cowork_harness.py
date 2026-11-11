@@ -436,8 +436,8 @@ def test_macos_skill_install_checks_native_result(tasks, tmp_path, monkeypatch, 
         return subprocess.CompletedProcess(
             args,
             1 if failure == "exit" else 0,
-            stdout=json.dumps(result),
-            stderr="diagnostic outside JSON",
+            stdout=json.dumps(result) if kwargs.get("text") else json.dumps(result).encode(),
+            stderr="diagnostic outside JSON" if kwargs.get("text") else b"diagnostic outside JSON",
         )
 
     # Native plugin installation is unavailable on Linux; fixture creation and validation stay real.

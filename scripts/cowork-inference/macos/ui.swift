@@ -84,7 +84,9 @@ if operation == "snapshot" {
 }
 guard arguments.count >= 2 else { fail("Expected a control label") }
 let label = arguments[1]
-guard let control = controls.first(where: { element in
+let sheets = controls.filter { field($0, "AXRole") == "AXSheet" }
+let activeControls = sheets.isEmpty ? controls : sheets.flatMap { descendants($0) }
+guard let control = activeControls.first(where: { element in
     labelAttributes.contains(where: { field(element, $0) == label })
 }) else { fail("Control unavailable: \(label)") }
 guard (attribute(control, "AXEnabled") as? Bool) == true else {

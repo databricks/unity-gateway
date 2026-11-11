@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import runpy
 import shutil
 import subprocess
@@ -107,7 +106,12 @@ def prepare_task(capability, desktop):
     )
     for index, args in enumerate(commands):
         result = process.run(
-            [claude, *args], env=env, capture_output=True, stdin=subprocess.DEVNULL, timeout=120
+            [claude, *args],
+            env=env,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=120,
         )
         desktop.save(f"skill-install-{index}.txt", result.stdout + "\n" + result.stderr)
         if result.returncode:
@@ -151,20 +155,12 @@ def new_task(desktop):
 
 def select_folder(desktop, task):
     click_first(desktop, ("Project or folder", "Work in a folder", "Choose a folder", "Add folder"))
-    menu = desktop.ui("snapshot")
-    desktop.save("folder-menu.json", menu)
-    choices = [
-        label
-        for row in json.loads(menu)
-        if row[0] in ("AXMenuItem", "AXButton") and row[-2] == "1"
-        for label in row[1:5]
-        if re.fullmatch(r"(?i)(choose|select|add|open|work in).*folder[.\u2026]*", label)
-    ]
-    if choices:
-        desktop.ui("click", choices[0])
+    picker = desktop.wait_for("Add folders to this session")
+    desktop.save("folder-picker.json", picker)
     desktop.ui("key", "go-to-folder")
     desktop.wait_for(("Go to the folder:", "Go to Folder", "Go to folder:"))
     desktop.ui("paste", task["folder"])
+    desktop.wait_for(task["folder"])
     desktop.ui("key", "return")
     click_first(desktop, ("Select Folder", "Choose", "Open"))
     desktop.save("folder-permission.json", desktop.ui("snapshot"))
