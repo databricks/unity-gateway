@@ -218,20 +218,23 @@ class TuiRequestRecorder:
                 headers=forwarded_headers,
                 content=body,
             ) as response:
-                handler.send_response(response.status_code)
-                for name, value in response.headers.items():
-                    if name.lower() not in _STRIPPED_HEADERS:
-                        handler.send_header(name, value)
-                handler.end_headers()
-                response_body = bytearray()
                 connected = True
+                try:
+                    handler.send_response(response.status_code)
+                    for name, value in response.headers.items():
+                        if name.lower() not in _STRIPPED_HEADERS:
+                            handler.send_header(name, value)
+                    handler.end_headers()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    connected = False
+                response_body = bytearray()
                 for chunk in response.iter_raw():
                     response_body.extend(chunk)
                     if connected:
                         try:
                             handler.wfile.write(chunk)
                             handler.wfile.flush()
-                        except (BrokenPipeError, ConnectionResetError):
+                        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                             connected = False
                 with self._condition:
                     self._responses[request.sequence] = RecordedResponse(

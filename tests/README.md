@@ -25,6 +25,8 @@ internal responses. App-server stderr is retained in the TUI evidence artifacts.
 Recovery guidance uses prior child assignments even when `list_agents` omits saved children.
 Launcher configuration checks exercise both POSIX and Windows shutdown paths with
 mock processes; they do not establish native Windows restart coverage.
+Request-recorder component tests preserve actual upstream responses after a client
+disconnects during headers or body, including Windows connection-aborted errors.
 These replace obsolete tests of manual descendant unloading, permission reconstruction,
 held input, approval draining, and Escape suppression. Native Codex owns resume and
 reconnect behavior; those removed controller guarantees are no longer provided.

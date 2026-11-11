@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import threading
@@ -59,6 +60,43 @@ def test_records_request_and_response(recorder):
     assert recorder.requests_after(checkpoint) == (request,)
     assert_request(request)
     assert_response(recorder.response_for(request))
+
+
+@pytest.mark.parametrize("disconnect_at", ["headers", "body"])
+@pytest.mark.parametrize(
+    "disconnect_error", [BrokenPipeError, ConnectionResetError, ConnectionAbortedError]
+)
+def test_records_upstream_response_after_client_disconnect(
+    recorder, disconnect_at, disconnect_error
+):
+    body = json.dumps({"task": {"prompt": "hello"}}).encode()
+
+    class DisconnectedClient:
+        command = "POST"
+        path = "/test/requests"
+        headers = {"Content-Length": str(len(body))}
+        rfile = io.BytesIO(body)
+
+        def send_response(self, status):
+            pass
+
+        def send_header(self, name, value):
+            pass
+
+        def end_headers(self):
+            if disconnect_at == "headers":
+                raise disconnect_error("client disconnected")
+
+        def write(self, chunk):
+            raise disconnect_error("client disconnected")
+
+    client = DisconnectedClient()
+    client.wfile = client
+    recorder._forward(client)
+
+    request = recorder.expect_request(method="POST", path=client.path)
+    assert_request(request)
+    assert_response(recorder.response_for(request, timeout=1))
 
 
 def _configured_session(recorder, tmp_path, commands):
