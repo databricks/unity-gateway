@@ -150,9 +150,22 @@ class TestRequestRewrites:
                 {"thinkingBudget": 0, "includeThoughts": False, "thinkingLevel": "HIGH"},
                 {"thinkingLevel": "HIGH", "includeThoughts": False},
             ),
+            (
+                {"thinkingBudget": 4096, "includeThoughts": True},
+                {"thinkingLevel": "MEDIUM", "includeThoughts": True},
+            ),
+            (
+                {"thinkingBudget": -1, "includeThoughts": True},
+                {"thinkingLevel": "MEDIUM", "includeThoughts": True},
+            ),
+            ({"thinkingBudget": 8192}, {"thinkingLevel": "MEDIUM"}),
+            (
+                {"thinkingBudget": 4096, "includeThoughts": True, "thinkingLevel": "HIGH"},
+                {"thinkingLevel": "HIGH", "includeThoughts": True},
+            ),
         ],
     )
-    def test_carbon_zero_budget_uses_supported_thinking_level(self, model, thinking, expected):
+    def test_carbon_budget_uses_supported_thinking_level(self, model, thinking, expected):
         payload = {
             "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
             "generationConfig": {"maxOutputTokens": 100, "thinkingConfig": thinking},
@@ -172,11 +185,11 @@ class TestRequestRewrites:
         "thinking",
         [
             {"thinkingLevel": "MEDIUM", "includeThoughts": True},
-            {"thinkingBudget": -1, "includeThoughts": True},
-            {"thinkingBudget": 8192, "includeThoughts": True},
+            {"includeThoughts": True},
+            {},
         ],
     )
-    def test_carbon_nonzero_budget_and_native_levels_are_unchanged(self, thinking):
+    def test_carbon_without_budget_is_unchanged(self, thinking):
         raw = json.dumps({"generationConfig": {"thinkingConfig": thinking}}).encode()
 
         assert (
@@ -199,6 +212,24 @@ class TestRequestRewrites:
         assert json.loads(rewritten) == {
             "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
         }
+
+    @pytest.mark.parametrize("model", ["gemini-3.8-flash", "gemini-4-carbon-custom"])
+    @pytest.mark.parametrize("budget", [-1, 4096])
+    def test_other_models_retain_nonzero_budgets(self, model, budget):
+        raw = json.dumps(
+            {
+                "generationConfig": {
+                    "thinkingConfig": {"thinkingBudget": budget, "includeThoughts": True}
+                }
+            }
+        ).encode()
+
+        assert (
+            antigravity.rewrite_request_body(
+                f"/ai-gateway/gemini/v1beta/models/{model}:generateContent", raw
+            )
+            is raw
+        )
 
     def test_rewrites_model_in_gemini_path(self):
         catalog = {"gemini-3.8-flash": "system.ai.gemini-3-8-flash"}

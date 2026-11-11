@@ -137,8 +137,9 @@ names (dotted versions, `-preview` names and their tiers, image models dropped),
 selection-id lookup, the gateway-mode environment, skills.json/mcp_config.json merges and the
 entry-scoped skills.json revert, explicit selection of the discovered default or saved provider
 target on bare launches (including preview-model tiers), and launch cleanup (spawn failure,
-nonzero exit, Ctrl-C). Request tests cover Carbon's zero-budget conversion to `LOW`, explicit
-thinking-level preservation, and unchanged nonzero budgets and other models.
+nonzero exit, Ctrl-C). Request tests cover Carbon's numeric-budget conversion to `MEDIUM`
+(`LOW` for zero), explicit thinking-level preservation, and unchanged budgets on other models.
+The 4096-budget case matches a request captured from native Antigravity 1.5.4.
 `test_gateway_proxy_integration.py` runs the Antigravity proxy hooks over
 real local HTTP (model path rewrite, Carbon thinking-level and older-model `includeThoughts`
 body fixes, provider header, Gemini-only route).

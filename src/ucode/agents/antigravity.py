@@ -342,7 +342,7 @@ def rewrite_model_path(path: str, catalog: dict[str, str]) -> str:
 
 
 def rewrite_request_body(path: str, body: bytes) -> bytes:
-    """Adapt Antigravity's zero-budget fallback to the selected model."""
+    """Adapt Antigravity's thinking configuration to the selected model."""
     if not path.startswith(GEMINI_GATEWAY_PATH):
         return body
     try:
@@ -351,14 +351,15 @@ def rewrite_request_body(path: str, body: bytes) -> bytes:
         return body
     config = payload.get("generationConfig") if isinstance(payload, dict) else None
     thinking = config.get("thinkingConfig") if isinstance(config, dict) else None
-    if not isinstance(thinking, dict) or thinking.get("thinkingBudget") != 0:
+    if not isinstance(thinking, dict) or "thinkingBudget" not in thinking:
         return body
     model_path = _MODEL_PATH.match(path)
     if model_path and agy_model_name(unquote(model_path["model"])) == "gemini-4-carbon":
-        thinking.pop("thinkingBudget")
-        thinking.setdefault("thinkingLevel", "LOW")  # Carbon cannot disable thinking.
+        budget = thinking.pop("thinkingBudget")
+        # Carbon cannot disable thinking; nonzero budgets use its default level.
+        thinking.setdefault("thinkingLevel", "LOW" if budget == 0 else "MEDIUM")
         return json.dumps(payload).encode()
-    if "includeThoughts" not in thinking:
+    if thinking["thinkingBudget"] != 0 or "includeThoughts" not in thinking:
         return body
     thinking.pop("includeThoughts")
     return json.dumps(payload).encode()

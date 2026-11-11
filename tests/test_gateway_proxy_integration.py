@@ -502,18 +502,25 @@ class TestGatewayAuthProxyEndToEnd:
         assert gw.requests == []
 
     @pytest.mark.parametrize(
-        ("model", "gateway_model", "expected_thinking"),
+        ("model", "gateway_model", "budget", "expected_thinking"),
         [
-            ("gemini-3.8-flash", "system.ai.gemini-3-8-flash", {"thinkingBudget": 0}),
+            ("gemini-3.8-flash", "system.ai.gemini-3-8-flash", 0, {"thinkingBudget": 0}),
             (
                 "gemini-4-carbon",
                 "system.ai.gemini-4-carbon",
+                0,
                 {"thinkingLevel": "LOW", "includeThoughts": True},
+            ),
+            (
+                "gemini-4-carbon",
+                "system.ai.gemini-4-carbon",
+                4096,
+                {"thinkingLevel": "MEDIUM", "includeThoughts": True},
             ),
         ],
     )
     def test_antigravity_session_rewrites_model_and_body_with_fresh_token(
-        self, make_gateway, model, gateway_model, expected_thinking
+        self, make_gateway, model, gateway_model, budget, expected_thinking
     ):
         from ucode.agents import antigravity
 
@@ -533,7 +540,7 @@ class TestGatewayAuthProxyEndToEnd:
                 headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
                 json={
                     "generationConfig": {
-                        "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 0}
+                        "thinkingConfig": {"includeThoughts": True, "thinkingBudget": budget}
                     }
                 },
                 timeout=10,

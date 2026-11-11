@@ -627,10 +627,11 @@ revert journey checks the user's own skills.json (including an entry added after
 MCP server survive `ug revert`. Not covered: UC skill download into the declared directory, a
 TUI `/model` switch, and Windows (no Antigravity gateway build).
 
-Carbon zero-budget compatibility has component coverage in `../test_agent_antigravity.py`
-and a real-socket proxy case in `../test_gateway_proxy_integration.py`: UG sends `LOW`
-instead of `thinkingBudget: 0`, preserves an explicit level, and retains older-model
-behavior. The explicit Carbon file-task journey uses installed Antigravity and the real
+Carbon thinking-budget compatibility has component coverage in `../test_agent_antigravity.py`
+and real-socket proxy cases in `../test_gateway_proxy_integration.py`: UG sends Carbon's
+default `MEDIUM` instead of a nonzero budget, uses `LOW` for zero, preserves an explicit
+level, and retains older-model behavior. The 4096-budget case matches native Antigravity
+1.5.4. The explicit Carbon file-task journey uses installed Antigravity and the real
 gateway, requiring a completed file-read task and Carbon in every logged model request.
 It exercises Carbon even when discovery selects a different default.
 
