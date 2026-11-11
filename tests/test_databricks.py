@@ -1291,6 +1291,68 @@ class TestGetModelProviderService:
 class TestResolveProviderService:
     _PAYLOAD = TestListModelProviderServices._PAYLOAD
 
+    def test_named_service_uses_one_request_without_listing(self, monkeypatch):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            assert url.endswith("/model-provider-services/main.schema1.anthropic-svc")
+            return {
+                "name": "model-provider-services/main.schema1.anthropic-svc",
+                "config": {
+                    "provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_ANTHROPIC",
+                    "allow_all_targets": True,
+                },
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema1.anthropic-svc", WS, "token"
+        )
+
+        assert error is None
+        assert service["provider_type"] == "anthropic"
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("reason", ["HTTP 404 Not Found", "HTTP 403 Forbidden"])
+    def test_direct_lookup_failure_falls_back_to_listing(self, monkeypatch, reason):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            if url.endswith("/model-provider-services/main.schema1.anthropic-svc"):
+                return None, reason
+            assert "/model-provider-services?" in url
+            return self._PAYLOAD, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema1.anthropic-svc", WS, "token"
+        )
+
+        assert error is None
+        assert service["provider_type"] == "anthropic"
+        assert len(calls) == 2
+
+    def test_direct_lookup_still_validates_agent_compatibility(self, monkeypatch):
+        def get(url, token, **kwargs):
+            assert url.endswith("/model-provider-services/main.schema1.openai-svc")
+            return {
+                "name": "model-provider-services/main.schema1.openai-svc",
+                "config": {"provider_type": "EXTERNAL_MODEL_PROVIDER_TYPE_OPENAI"},
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        service, error = db_mod.resolve_provider_service(
+            "claude", "main.schema1.openai-svc", WS, "token"
+        )
+
+        assert service is None
+        assert "can't route to" in error
+
     def _patch(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "_http_get_json", lambda url, token, timeout=30: (self._PAYLOAD, None)
