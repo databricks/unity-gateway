@@ -3,6 +3,7 @@ import os
 import runpy
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from datetime import UTC, datetime
@@ -159,7 +160,7 @@ def select_folder(desktop, task):
     desktop.save("folder-picker.json", picker)
     desktop.ui("key", "go-to-folder")
     desktop.wait_for(("Go to the folder:", "Go to Folder", "Go to folder:"))
-    desktop.ui("paste", task["folder"])
+    desktop.ui("folder-path", task["folder"])
     desktop.wait_for(task["folder"])
     desktop.ui("key", "return")
     click_first(desktop, ("Select Folder", "Choose", "Open"))
@@ -175,6 +176,23 @@ def select_folder(desktop, task):
     desktop.save("folder-selected.json", desktop.ui("snapshot"))
 
 
+def runtime_task(task, root):
+    if task["capability"] != "skill":
+        return task
+    source = Path(task["expectedFile"])
+    references = root.glob("*/*/skills/probe-summary/references/facts.txt")
+    copies = [
+        path
+        for path in references
+        if path.read_bytes() == source.read_bytes()
+        and (path.parents[1] / "SKILL.md").read_bytes()
+        == (source.parents[1] / "SKILL.md").read_bytes()
+    ]
+    if len(copies) > 1:
+        raise RuntimeError("Ambiguous native runtime copy of the test skill")
+    return {**task, "expectedFile": str(copies[0])} if copies else task
+
+
 def run_task(desktop, task, report):
     if task["capability"] == "file":
         select_folder(desktop, task)
@@ -184,7 +202,8 @@ def run_task(desktop, task, report):
     report["submitted"] = True
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
-        result = inspect_sessions(session_root(), task)
+        runtime = runtime_task(task, Path(tempfile.gettempdir()) / "claude-hostloop-plugins")
+        result = inspect_sessions(session_root(), runtime)
         if result["status"] == "pending":
             time.sleep(3)
             continue
