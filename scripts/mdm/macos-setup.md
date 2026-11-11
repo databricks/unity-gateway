@@ -81,7 +81,8 @@ The script installs Claude Code, Codex and the Databricks CLI only when they're 
 reinstalls `ug` on each run. Codex comes from its release package, which includes the
 `codex-code-mode-host` helper that Code Mode needs: the package goes in
 `/usr/local/unity-gateway/codex`, with `codex` and `codex-code-mode-host` linked into
-`/usr/local/bin`. A Mac provisioned before the helper was added gets the package on the next run.
+`/usr/local/bin`. A Mac with an older Codex install outside that folder gets the package on the next
+run.
 The script doesn't update the agents or the CLI after the first install; to keep them current,
 modify the script to match how you update software on your Macs.
 

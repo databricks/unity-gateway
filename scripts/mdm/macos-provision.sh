@@ -77,27 +77,19 @@ if [ ! -x /usr/local/bin/claude ]; then
   install -m 755 "$tmp/claude" /usr/local/bin/claude
 fi
 
-# Install Codex from its release package, which also ships the
-# codex-code-mode-host helper that Code Mode needs next to codex. The
-# package goes in the shared prefix, with both commands linked into
-# /usr/local/bin. Also runs on machines provisioned before the helper.
-if [ ! -x /usr/local/bin/codex ] \
-    || [ ! -x /usr/local/bin/codex-code-mode-host ]; then
+# Install Codex from its release package, which also includes the
+# codex-code-mode-host helper Code Mode needs next to codex.
+if [ ! -x "$PREFIX/codex/bin/codex" ]; then
   case "$(uname -m)" in
     arm64) target=aarch64-apple-darwin ;;
     *) target=x86_64-apple-darwin ;;
   esac
   package="codex-package-$target.tar.gz"
   curl -fsSL -o "$tmp/$package" "$CODEX_RELEASES/$package"
-  checksum="$(curl -fsSL "$CODEX_RELEASES/codex-package_SHA256SUMS" \
-    | awk -v asset="$package" '$2 == asset { print $1 }')"
-  [ -n "$checksum" ]
-  echo "$checksum  $tmp/$package" | shasum -a 256 -c -
-  rm -rf "$PREFIX/codex.new"
-  mkdir -p "$PREFIX/codex.new"
-  tar -xzf "$tmp/$package" -C "$PREFIX/codex.new"
-  rm -rf "$PREFIX/codex"
-  mv "$PREFIX/codex.new" "$PREFIX/codex"
+  curl -fsSL "$CODEX_RELEASES/codex-package_SHA256SUMS" \
+    | grep "  $package\$" | (cd "$tmp" && shasum -a 256 -c -)
+  mkdir -p "$PREFIX/codex"
+  tar -xzf "$tmp/$package" -C "$PREFIX/codex"
   ln -sfn "$PREFIX/codex/bin/codex" /usr/local/bin/codex
   ln -sfn "$PREFIX/codex/bin/codex-code-mode-host" \
     /usr/local/bin/codex-code-mode-host
