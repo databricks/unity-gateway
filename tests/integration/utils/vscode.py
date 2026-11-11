@@ -319,13 +319,19 @@ class VSCode:
                 ),
             )
         elif state == "language models editor":
-            self._act("Language Models editor: Escape", lambda: page.keyboard.press("Escape"))
+            # Its own close button: Escape only closes it while it has focus.
+            self._click(
+                "Language Models editor: Close",
+                page.locator('.monaco-modal-editor-block:visible [aria-label^="Close"]').first,
+            )
+            self._wait(
+                lambda: not self.screen()["modelsEditor"],
+                STEP_TIMEOUT_S,
+                "the Language Models editor to close",
+            )
             # The button keeps its signed-out label for a moment after the providers load.
             self._wait(
-                lambda: (
-                    not (s := self.screen())["modelsEditor"]
-                    and "sign in" not in (s["modelButton"] or "")
-                ),
+                lambda: "sign in" not in (self.screen()["modelButton"] or ""),
                 STEP_TIMEOUT_S,
                 "Copilot Chat to list the added models",
             )
