@@ -16,7 +16,7 @@ import {
 import { streamEvents } from "./gateway";
 import { listen, type OtelSetting, otelEndpoint, otelSettings, startReceiver } from "./otel";
 import { fetchRecommendation, RECHECK_INTERVAL_MS, SmartDefaults } from "./recommend";
-import { DEFAULT_MODEL_SETTING, syncSettings } from "./settings";
+import { DEFAULT_MODEL_SETTING, OWNED_SETTINGS_KEY, syncSettings } from "./settings";
 
 // ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
 const APIS = ["anthropic", "completions", "responses"] as const;
@@ -242,18 +242,23 @@ export function activate(context: vscode.ExtensionContext): void {
       warn,
       new Set([DEFAULT_MODEL_SETTING]),
     ).catch((error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`));
-  if (settings.smartDefaults && tokens) {
+  const followsTiers = settings.smartDefaults === true && tokens !== undefined;
+  const ids = settings.models.map((model) => model.id);
+  // Until the first check answers, keep what the extension set last, which may be an earlier tier's model.
+  const owned = context.globalState.get<Record<string, unknown>>(OWNED_SETTINGS_KEY)?.[DEFAULT_MODEL_SETTING];
+  const initial = followsTiers && typeof owned === "string" && ids.includes(owned) ? owned : settings.defaultModel;
+  const started = sync(initial);
+  if (followsTiers) {
     const smartDefaults = new SmartDefaults(
       () => fetchRecommendation(settings.workspace, tokens, headers()),
-      settings.models.map((model) => model.id),
+      ids,
       settings.defaultModel,
+      initial,
       sync,
       (line) => output.info(line),
     );
-    void smartDefaults.check();
+    void started.then(() => smartDefaults.check());
     const timer = setInterval(() => void smartDefaults.check(), RECHECK_INTERVAL_MS);
     context.subscriptions.push({ dispose: () => clearInterval(timer) });
-  } else {
-    void sync(settings.defaultModel);
   }
 }

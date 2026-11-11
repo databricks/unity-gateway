@@ -41,10 +41,13 @@ The extension then asks the gateway for the caller's recommendation (`POST
 /api/ai-gateway/v2/coding-agent-configs:recommendModel`, as `ug copilot` does at launch) when VS Code starts and
 every 15 minutes after. When the tier is for GitHub Copilot and its model is one of `models` (matched as
 `ug copilot --model` matches), new chats start on that model; otherwise they start on `defaultModel`. A tier for
-another agent is ignored. The same developer-wins rule applies, and an open chat keeps its model. When the first
-check fails, the extension uses `defaultModel`. A later failed check keeps the current value. Failures are logged
-once each to the output channel. `ug revert` also removes a `chat.defaultModel` that names one of `models`.
-Budget limits are enforced by the gateway, not here: a tier changes only the model new chats start on.
+another agent is ignored, and so is a tier model that isn't one of `models` (logged once). The same developer-wins
+rule applies, and an open chat keeps its model. At startup the extension writes its settings right away, with the
+model it set last (an earlier tier's, if one still holds), and then checks. A failed check keeps the current value.
+Failures are logged once each to the output channel. `ug revert` also removes a `chat.defaultModel` that names one
+of `models`. Whether to follow tiers is fixed at configure time: once an admin adds tiers, developers run
+`ug configure --agents copilot` again. Budget limits are enforced by the gateway, not here: a tier changes only the
+model new chats start on.
 
 The token is kept in memory until it nears expiry, and fetched again when the gateway answers 401.
 Token fetches and failed requests are logged to the **Unity Gateway** output channel.

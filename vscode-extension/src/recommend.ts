@@ -59,7 +59,7 @@ export const fetchRecommendation = async (
 
 const normalized = (id: string) => (id.split("[", 1)[0] ?? id).toLowerCase();
 
-/** The id in `ids` that `requested` names, by the rules `ug copilot --model` matches with (`resolve_copilot_model`). */
+/** The id in `ids` that `requested` names, by `resolve_copilot_model`'s rules except its `provider/id` form. */
 export const matchModel = (requested: string, ids: readonly string[]): string | undefined => {
   const name = normalized(requested);
   const rules: ((id: string) => boolean)[] = [
@@ -77,6 +77,11 @@ export const matchModel = (requested: string, ids: readonly string[]): string | 
   return undefined;
 };
 
+const copilotTierModel = (recommendation: Recommendation | undefined): string | undefined => {
+  const { agent, model } = recommendation ?? {};
+  return model && (agent === undefined || agent === COPILOT_AGENT) ? model : undefined;
+};
+
 /**
  * The model new chats should start on: the tier's when it is for Copilot and Copilot has it, else the
  * config's default. A tier for another agent is ignored, as `ug copilot` ignores it: VS Code can't switch agents.
@@ -86,24 +91,20 @@ export const chooseDefault = (
   ids: readonly string[],
   configDefault: string | undefined,
 ): string | undefined => {
-  const { agent, model } = recommendation ?? {};
-  const tierModel = model && (agent === undefined || agent === COPILOT_AGENT) ? matchModel(model, ids) : undefined;
-  return tierModel ?? configDefault;
+  const model = copilotTierModel(recommendation);
+  return (model ? matchModel(model, ids) : undefined) ?? configDefault;
 };
 
-/**
- * Keeps `chat.defaultModel` on the tier's model. The first check falls back to the config's default when
- * the read fails, as `ug copilot` does; a later failed check keeps what is set.
- */
+/** Keeps `chat.defaultModel` on the tier's model. `chosen` is the value already set; a failed check keeps it. */
 export class SmartDefaults {
-  private chosen: string | undefined;
-  private checked = false;
   private lastFailure: string | undefined;
+  private lastUnmatched: string | undefined;
 
   constructor(
     private readonly recommend: () => Promise<Recommendation | undefined>,
     private readonly ids: readonly string[],
     private readonly configDefault: string | undefined,
+    private chosen: string | undefined,
     private readonly apply: (model: string | undefined) => Promise<void>,
     private readonly log: (line: string) => void,
   ) {}
@@ -116,25 +117,26 @@ export class SmartDefaults {
     } catch (error) {
       const failure = error instanceof Error ? error.message : String(error);
       if (failure !== this.lastFailure) {
-        this.log(`Could not check your workspace's budget tier (${failure}); new chats keep their default model.`);
+        this.log(`Could not check your workspace's budget tier (${failure}); new chats keep starting on ${this.chosen ?? "VS Code's own default model"}.`);
         this.lastFailure = failure;
       }
-      if (this.checked) {
-        return;
-      }
-    }
-    const chosen = chooseDefault(recommendation, this.ids, this.configDefault);
-    if (this.checked && chosen === this.chosen) {
       return;
     }
-    if (this.checked || chosen !== this.configDefault) {
-      this.log(
-        chosen && chosen !== this.configDefault
-          ? `Your workspace's budget tier starts new chats on ${chosen}.`
-          : `New chats start on ${chosen ?? "VS Code's own default model"} again.`,
-      );
+    const tierModel = copilotTierModel(recommendation);
+    const unmatched = tierModel && !matchModel(tierModel, this.ids) ? tierModel : undefined;
+    if (unmatched && unmatched !== this.lastUnmatched) {
+      this.log(`Your workspace's budget tier names ${unmatched}, which isn't one of the Databricks models in VS Code; new chats start on the default model.`);
     }
-    this.checked = true;
+    this.lastUnmatched = unmatched;
+    const chosen = chooseDefault(recommendation, this.ids, this.configDefault);
+    if (chosen === this.chosen) {
+      return;
+    }
+    this.log(
+      chosen && chosen !== this.configDefault
+        ? `Your workspace's budget tier starts new chats on ${chosen}.`
+        : `New chats start on ${chosen ?? "VS Code's own default model"} again.`,
+    );
     this.chosen = chosen;
     await this.apply(chosen);
   }

@@ -857,8 +857,8 @@ Copilot in VS Code follows the same tiers. `test_managed_resolve.py` and `test_a
 `ug revert` removing a tier-written `chat.defaultModel`. The extension's `recommend.test.ts`
 (`npm test` in `vscode-extension/`) covers the `recommendModel` request (401 retry, silent 404,
 errors), matching the tier's model to the extension's models, ignoring another agent's tier, the
-15-minute re-check writing only on change, and the fallback to `defaultModel`. No test runs a real
-VS Code against a live tier.
+15-minute re-check writing only on change, a failed check keeping the current value, and a one-time
+log for a tier model the extension lacks. No test runs a real VS Code against a live tier.
 
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
 opt-in, including the five highest usage percentages, stable ties, missing percentages
