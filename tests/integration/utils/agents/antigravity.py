@@ -114,10 +114,19 @@ def assert_mcp_web_search_answer(events: list[dict], *, server: str, query: str)
 
 
 def _web_urls(text: str) -> set[str]:
-    return {
-        match["url"].removesuffix(match["markup"] or "")
-        for match in re.finditer(r"(?P<markup>\*{1,2}|`)?(?P<url>https?://[^\s<>\"'\\)\]]+)", text)
-    }
+    urls = set()
+    for match in re.finditer(r"(?P<markup>\*{1,2}|`)?(?P<url>https?://[^\s<>\"'\\)\]]+)", text):
+        raw_url = match["url"]
+        if markup := match["markup"]:
+            raw_url = re.sub(re.escape(markup) + r"[.,!?;:]*$", "", raw_url)
+        url = urlparse(raw_url)
+        # Search citations add attribution that agents omit when returning the homepage.
+        query = "&".join(
+            part for part in url.query.split("&") if part.partition("=")[0] != "utm_source"
+        )
+        path = url.path if url.path.strip("/") else "/"
+        urls.add(url._replace(path=path, query=query).geturl())
+    return urls
 
 
 def _logs(session) -> list[Path]:

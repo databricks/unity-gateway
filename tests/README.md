@@ -1,5 +1,10 @@
 # Test suites and user journeys
 
+Antigravity MCP web-search evidence checks accept homepage slash variants, omit
+`utm_source` attribution, and separate closing Markdown from sentence punctuation.
+Offline cases retain checks for the completed MCP call, official host, scheme, page,
+meaningful query and fragment. These checks do not establish live search availability.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

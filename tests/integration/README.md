@@ -1977,3 +1977,9 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+Antigravity MCP web-search evidence compares homepage slash variants and ignores
+`utm_source` attribution while retaining the completed-call and official-URL checks.
+Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
+Offline regressions in `../test_integration_evidence.py` reject different schemes,
+hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
