@@ -256,11 +256,10 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
     monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
     jobs = _integration_jobs()
-    expected_workspace = "https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com"
     selected = set()
     for job_name, agent in (("anthropic-mps", "claude"), ("anthropic-mps-copilot", "copilot")):
         job = jobs[job_name]
-        assert f"UCODE_TEST_WORKSPACE: {expected_workspace}" in job
+        assert "UCODE_TEST_WORKSPACE: ${{ secrets.UG_ANTHROPIC_MPS_WORKSPACE }}" in job
         assert "DATABRICKS_CLIENT_ID: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_ID }}" in job
         assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
         assert "DATABRICKS_BEARER:" not in job
@@ -304,7 +303,12 @@ def test_legacy_anthropic_mps_ci_has_its_own_workspace_shard():
     assert clauses["anthropic-mps"] == "TestModelProviderLaunch"
     assert "TestModelProviderLaunch" not in clauses["claude"]
     assert "TestModelProviderLaunch" in clauses["gateway"]
-    assert "UCODE_TEST_WORKSPACE: ${{ matrix.group == 'anthropic-mps' && " in workflow
+    workspace_secret = (
+        "${{ secrets[matrix.group == 'anthropic-mps' && "
+        "'UG_ANTHROPIC_MPS_WORKSPACE' || 'UCODE_TEST_WORKSPACE'] }}"
+    )
+    for name in ("UCODE_TEST_WORKSPACE", "DATABRICKS_HOST"):
+        assert f"{name}: {workspace_secret}" in workflow
     assert "DATABRICKS_BEARER: ${{ matrix.group != 'anthropic-mps' && " in workflow
     assert (
         "mint_m2m_token(os.environ['UCODE_TEST_WORKSPACE'], client_id, client_secret)" in workflow

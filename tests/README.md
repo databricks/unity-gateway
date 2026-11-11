@@ -4,7 +4,8 @@ Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace
 `4168069418041172` (`dbc-1bb9e8f5-bf3a`). Integration's `anthropic_mps`
 Claude lanes and the legacy `TestModelProviderLaunch` shard are required;
-Copilot's equivalent lanes remain advisory. CI authenticates with
+Copilot's equivalent lanes remain advisory. CI reads the workspace URL from
+`UG_ANTHROPIC_MPS_WORKSPACE` and authenticates with
 `UG_ANTHROPIC_MPS_CLIENT_ID` / `UG_ANTHROPIC_MPS_CLIENT_SECRET` and never receives
 the Anthropic key. The service allows only `claude-haiku-4-5-20251001`.
 Contract tests check that staging and existing lanes partition coverage, share the
