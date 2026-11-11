@@ -101,6 +101,7 @@ def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.tui
+@pytest.mark.anthropic_mps
 def test_case_11_configured_claude_provider_discovers_models_by_default(
     live_session, workspace, claude_provider, claude_provider_model
 ):
@@ -135,6 +136,7 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
 
 @pytest.mark.live
 @pytest.mark.tui
+@pytest.mark.anthropic_mps
 def test_case_11_fresh_claude_provider_discovers_models_by_default(
     live_session, workspace, claude_provider, claude_provider_model
 ):

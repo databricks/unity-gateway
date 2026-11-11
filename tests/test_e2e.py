@@ -55,7 +55,9 @@ from ucode.ui import normalize_workspace_url
 # that exposes only its cheapest model, so the inference is deterministic and
 # ~a cent per run rather than depending on whichever service happened to list
 # first. Hardcoded on purpose.
-CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
+CI_ANTHROPIC_MPS = (
+    "main.ucode.dont_delete_ci_company_anthropic_mps"  # api-key Anthropic (for claude)
+)
 CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 
 # Claude Code's client-side model pre-flight is flaky for MPS-routed ids and emits this; the

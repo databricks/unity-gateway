@@ -154,6 +154,7 @@ def test_ug_claude_headless_fresh_workspace(live_session, workspace):
 
 
 @pytest.mark.usefixtures("unmanaged_workspace")
+@pytest.mark.anthropic_mps
 def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provider):
     """Scenario: launch Claude from fresh state with an explicit provider service.
 

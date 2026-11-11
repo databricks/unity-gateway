@@ -17,5 +17,5 @@ COPILOT_HEADLESS_FLAGS = (
     "--disable-builtin-mcps",
 )
 
-MANAGED_CLAUDE_PROVIDER_SERVICE = "main.default.ci_e2e_anthropic_mps"
+MANAGED_CLAUDE_PROVIDER_SERVICE = "main.ucode.dont_delete_ci_company_anthropic_mps"
 MANAGED_CODEX_PROVIDER_SERVICE = "main.default.ci_e2e_openai_mps"

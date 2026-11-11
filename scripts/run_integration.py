@@ -415,7 +415,7 @@ def arguments(
     )
     parser.add_argument(
         "--claude-provider",
-        default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
+        default="main.ucode.dont_delete_ci_company_anthropic_mps",
         help="Existing Anthropic MPS selected in the configure CUJ.",
     )
     parser.add_argument(
