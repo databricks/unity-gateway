@@ -376,6 +376,7 @@ class TestCopilotModels:
         assert vscode.configure(state)
 
         assert [model["id"] for model in code.config["models"]] == [self.GPT]
+        assert code.config["models"][0]["maxInputTokens"] == 794_000
         assert "Skipping system.ai.gemini-4-argon from your workspace's managed config" in (
             _printed(capsys)
         )
