@@ -602,6 +602,8 @@ def arguments(
     )
     mode.add_argument(
         "--desktop-app",
+        # /integration-test runs the default branch's workflow, which may still pass the old name.
+        "--macos-desktop",
         action="store_true",
         help="Also collect the journeys that drive the installed ChatGPT desktop app.",
     )

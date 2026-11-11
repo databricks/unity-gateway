@@ -54,6 +54,9 @@ switch ($Command) {
         }
     }
     'type' {
+        # SendKeys types into whatever has focus, so fail now rather than lose the keystrokes.
+        $focused = $automation::FocusedElement.Current.ProcessId
+        if ($focused -ne $ProcessId) { throw "Keyboard focus is in process $focused, not $ProcessId" }
         # SendKeys treats these characters as commands unless braced.
         [Windows.Forms.SendKeys]::SendWait(($First -replace '[+^%~(){}\[\]]', '{$0}') + '{ENTER}')
     }
