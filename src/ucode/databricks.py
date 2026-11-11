@@ -70,7 +70,7 @@ UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
 WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
-AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
+UNITY_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
@@ -3793,7 +3793,7 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
     )
 
 
-def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]:
+def fetch_unity_gateway_claude_models(workspace: str, token: str) -> dict[str, str]:
     """Backwards-compatible wrapper that discards the diagnostic reason."""
     models, _ = discover_claude_models(workspace, token)
     return models
@@ -3970,7 +3970,7 @@ def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
     return GatewayProbe(True, "reachable", conclusive=False)
 
 
-def _raise_ai_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
+def _raise_unity_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
     raise RuntimeError(
         f"Databricks rejected the access token for {workspace} ({reason}). "
         f"Try:\n"
@@ -3979,7 +3979,7 @@ def _raise_ai_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
     )
 
 
-def _raise_ai_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
+def _raise_unity_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
     raise RuntimeError(
         f"The access token for {workspace} is missing an OAuth scope required by the "
         f"AI Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
@@ -4026,9 +4026,9 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if isinstance(reason, WorkspaceSelectionReason):
         raise RuntimeError(reason)
     if _looks_like_definitive_auth_failure(reason):
-        _raise_ai_gateway_auth_failure(workspace, reason)
+        _raise_unity_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):
-        _raise_ai_gateway_scope_failure(workspace, reason)
+        _raise_unity_gateway_scope_failure(workspace, reason)
     if _looks_like_permission_failure(reason):
         _raise_model_service_permission_failure(workspace, reason)
 
@@ -4042,11 +4042,11 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if _is_not_found_reason(reason):
         raise RuntimeError(
             "Databricks Unity Gateway is not enabled on this workspace: model services "
-            f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+            f"({reason}) are not available. See {UNITY_GATEWAY_DOCS_URL}"
         )
     raise RuntimeError(
         f"Could not verify Databricks Unity Gateway model services on {workspace} "
-        f"({reason}). See {AI_GATEWAY_DOCS_URL}"
+        f"({reason}). See {UNITY_GATEWAY_DOCS_URL}"
     )
 
 
