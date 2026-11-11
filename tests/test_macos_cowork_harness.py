@@ -396,3 +396,162 @@ finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
             child.communicate(timeout=5)
+
+
+@pytest.fixture
+def tasks(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location("macos_cowork_tasks", SCRIPTS / "tasks.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.Path, "home", lambda: tmp_path)
+    return module
+
+
+@pytest.mark.skipif(os.name != "posix", reason="macOS probe uses POSIX signals and permissions")
+@pytest.mark.parametrize("capture_failure", [False, True])
+def test_task_diagnostics_preserve_report_and_independent_errors(
+    harness, tasks, monkeypatch, capture_failure
+):
+    private = harness.root / "private"
+    private.mkdir(mode=0o700)
+    evidence = harness.probe.EVIDENCE
+    (evidence / "configuration.json").write_text(json.dumps({"label": harness.probe.MODEL}))
+    task = tasks.prepare_task("file", harness.probe)
+    transcript = tasks.session_root() / "org/account/projects/session/current.jsonl"
+    transcript.parent.mkdir(parents=True)
+    if capture_failure:
+        (evidence / "file/native-session-0.jsonl").mkdir(parents=True)
+
+    def native_ui(args, **kwargs):
+        if Path(args[0]).name == "desktop-ui":
+            raise OSError("Accessibility unavailable test-bearer")
+        return subprocess.CompletedProcess(args, 0)
+
+    def launch_native(*args, **kwargs):
+        transcript.write_bytes(task["prompt"].encode("utf-8") + b" test-bearer \xff")
+        modified = transcript.stat().st_mtime + 60
+        os.utime(transcript, (modified, modified))
+        return SimpleNamespace(terminate=lambda: None, wait=lambda **kwargs: 0, poll=lambda: 0)
+
+    # Native app and Accessibility require macOS; task setup and diagnostic capture stay real.
+    monkeypatch.setattr(
+        harness.probe, "process", SimpleNamespace(run=native_ui, popen=launch_native)
+    )
+    monkeypatch.setitem(sys.modules, "tasks", tasks)
+    monkeypatch.setitem(sys.modules, harness.probe.__name__, harness.probe)
+    monkeypatch.setattr(
+        harness.probe, "sys", SimpleNamespace(platform="darwin", modules=sys.modules)
+    )
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGALRM)}
+    assert harness.probe.main(private, "file") == 1
+    report = json.loads((evidence / "file/result.json").read_text())
+    assert report["passed"] is False
+    assert report["responseAsserted"] is False
+    assert report["error"] == "Accessibility unavailable [REDACTED]"
+    assert report["captureError"] == "Accessibility unavailable [REDACTED]"
+    if capture_failure:
+        assert "native-session-0.jsonl" in report["sessionCaptureError"]
+    else:
+        assert "sessionCaptureError" not in report
+        assert (evidence / "file/native-session-0.jsonl").read_text() == (
+            task["prompt"] + " [REDACTED] \ufffd"
+        )
+    assert harness.probe.EVIDENCE == evidence
+    assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+    assert signal.alarm(0) == 0
+
+
+def test_macos_file_fixture_keeps_answer_out_of_prompt(tasks, tmp_path):
+    task = tasks.prepare_task("file", SimpleNamespace(TEMP=tmp_path))
+    assert Path(task["expectedFile"]).read_text() == task["expected"]
+    assert task["expected"] not in task["prompt"]
+    assert Path(task["expectedFile"]).parent == Path(task["folder"])
+
+
+@pytest.mark.parametrize("listing", ["id", "pluginId", "name"])
+@pytest.mark.parametrize("failure", [None, "exit", "outcome", "disabled"])
+def test_macos_skill_install_checks_native_result(tasks, tmp_path, monkeypatch, listing, failure):
+    account = tasks.session_root() / "org/account"
+    account.mkdir(parents=True)
+    (account / "cowork_account_settings.json").write_text("{}")
+    logs = {}
+    plugin = {"enabled": failure != "disabled", "installPath": str(tmp_path / "installed")}
+    if listing == "name":
+        plugin.update(name="cowork-probe", marketplace="cowork-probe-marketplace")
+    else:
+        plugin[listing] = tasks.PLUGIN_ID
+
+    def native_plugin(args, **kwargs):
+        assert kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(account)
+        result = {"outcome": "failed" if failure == "outcome" else "ok"}
+        if args[1:3] == ["plugin", "list"]:
+            result = {"data": {"plugins": [plugin]}}
+        return subprocess.CompletedProcess(
+            args,
+            1 if failure == "exit" else 0,
+            stdout=json.dumps(result) if kwargs.get("text") else json.dumps(result).encode(),
+            stderr="diagnostic outside JSON" if kwargs.get("text") else b"diagnostic outside JSON",
+        )
+
+    # Native plugin installation is unavailable on Linux; fixture creation and validation stay real.
+    monkeypatch.setattr(tasks.shutil, "which", lambda _: "/installed/claude")
+    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=native_plugin))
+    desktop = SimpleNamespace(TEMP=tmp_path, save=logs.__setitem__)
+    if failure:
+        with pytest.raises(RuntimeError):
+            tasks.prepare_task("skill", desktop)
+        return
+    task = tasks.prepare_task("skill", desktop)
+    source = tmp_path / "cowork-probe-marketplace/plugins/cowork-probe/skills/probe-summary"
+    assert (source / "references/facts.txt").read_text() == task["expected"]
+    assert task["expected"] not in task["prompt"]
+    assert task["expected"] not in (source / "SKILL.md").read_text()
+    assert task["expectedFile"] == str(
+        tmp_path / "installed/skills/probe-summary/references/facts.txt"
+    )
+    assert "diagnostic outside JSON" in logs["skill-install-3.txt"]
+
+
+@pytest.mark.parametrize(
+    "copies, matches_source, found",
+    [(0, True, False), (1, True, True), (1, False, False), (2, True, None), (2, False, False)],
+)
+def test_macos_skill_runtime_copy_must_match_installed_fixture(
+    tasks, tmp_path, copies, matches_source, found
+):
+    source = tmp_path / "installed/skills/probe-summary/references/facts.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("unique-fixture-value")
+    (source.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
+    runtime = tmp_path / "claude-hostloop-plugins"
+    for index in range(copies):
+        path = runtime / f"copy-{index}/1.0.0/skills/probe-summary/references/facts.txt"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(source.read_bytes())
+        (path.parents[1] / "SKILL.md").write_text(
+            "Read references/facts.txt" if matches_source else "Different skill"
+        )
+    task = {"capability": "skill", "expectedFile": str(source)}
+    if found is None:
+        with pytest.raises(RuntimeError, match="Ambiguous"):
+            tasks.runtime_task(task, runtime)
+        return
+    result = tasks.runtime_task(task, runtime)
+    expected = runtime / "copy-0/1.0.0/skills/probe-summary/references/facts.txt"
+    assert result == ({**task, "expectedFile": str(expected)} if found else None)
+
+
+def test_macos_skill_runtime_copy_waits_for_partial_copy(tasks, tmp_path):
+    source = tmp_path / "installed/skills/probe-summary/references/facts.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("unique-fixture-value")
+    (source.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
+    runtime = tmp_path / "claude-hostloop-plugins"
+    copy = runtime / "copy/1.0.0/skills/probe-summary/references/facts.txt"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(source.read_bytes())
+    task = {"capability": "skill", "expectedFile": str(source)}
+    assert tasks.runtime_task(task, runtime) is None
+    (copy.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
+    assert tasks.runtime_task(task, runtime)["expectedFile"] == str(copy)

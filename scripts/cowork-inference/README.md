@@ -1,7 +1,8 @@
-# Cowork desktop inference tests
+# Cowork desktop tests
 
-The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
-Claude Desktop inference through Unity Gateway on a disposable Windows runner.
+The `cowork-inference-windows` and `cowork-inference-macos` jobs in `.github/workflows/integration.yml` exercise real
+Claude Desktop inference, local file reads, and native skill execution through Unity Gateway
+on disposable Windows and macOS runners. All three tasks run sequentially in each blocking job.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual
 CI dispatches. It skips merge-group runs and fork PRs, which lack the required
 credentials. Authorized fork-integration runs test the pinned commit.
@@ -10,7 +11,8 @@ Desktop jobs always test the checkout with their pinned dependencies. Manual UG/
 version, package-index, entry-point, and dependency overrides apply to CLI jobs only.
 Every integration job must succeed; failure, cancellation, or a skip blocks the gate.
 A [20-run fresh-Windows soak](https://github.com/databricks/unity-gateway/actions/runs/42240639887)
-passed without retries before enabling the gate. Whole-test retries are not used.
+passed without retries before enabling the inference gate. File/skill tasks have separate
+live validation; that soak does not establish their flake rate. Whole-test retries are not used.
 
 The test installs a signed, SHA256-pinned Claude MSIX and drives the real app
 through Windows UI Automation. `--force-renderer-accessibility` exposes the app's
@@ -31,6 +33,30 @@ Cowork, and verifies the selected model maps to `system.ai.claude-haiku-4-5`.
 It submits a number-conversion prompt and requires both `Claude responded: 48213`
 in the conversation pane and `Claude finished the response` within four minutes.
 The prompt spells the number in words so echoing the input cannot pass.
+
+After inference, two fresh Cowork tasks run through the same native UI:
+
+1. Create `Documents/CoworkProbe/input.txt` with a random value absent from the prompt.
+   Select that folder through the native picker and choose **Allow** for this task.
+   Require a successful native `Read` call on that exact file, its contents in the
+   matching tool result, and an identical completed assistant answer.
+2. Install a local test skill through native `claude plugin ... --cowork` commands,
+   using the account directory created by the inference task. Its instructions refer
+   to a file containing another random value. Require successful `Skill` and `Read`
+   calls, the reference file's value in the tool result, and an identical completed answer.
+
+`session-evidence.py` reads the native Desktop transcript belonging to the submitted
+prompt and requires an assistant `end_turn`. Failed tools, mismatched result IDs,
+wrong files, unrelated sessions, and echoed prompts cannot satisfy these assertions.
+`tests/test_cowork_session_evidence.py` exercises these rejection cases offline.
+Each task checks the model shown in the UI, has a five-minute response limit, and
+stops Desktop before the next task. The skill is an ordinary user-authored plugin;
+this does not verify Unity Catalog skill downloads or UG's downloaded-skill propagation.
+On macOS, Desktop copies installed plugins into its native runtime directory. The test
+identifies the copy by matching both the skill instructions and random reference-file bytes
+against the installed fixture, then requires a Read of that exact runtime path. Evidence
+stays pending until that copy exists; ambiguous copies fail. Both platforms build prompts and
+the skill fixture from `task-fixture.json`. File-path comparisons remain case-sensitive on macOS.
 
 ## Dependencies
 
@@ -55,7 +81,7 @@ a CLI pin change does not update the app.
 ## Evidence and limits
 
 Artifacts contain installer provenance, configuration status, UI control names,
-window screenshots, and native launch logs. Raw process logs stay outside the
+window screenshots, native launch logs, and redacted task transcripts/results. Raw process logs stay outside the
 artifact directory. Known bearer values, authorization bearer strings, and JWT-shaped tokens are
 redacted before writing text artifacts; app profiles and credential files are not archived. Artifacts expire
 after three days.
@@ -63,12 +89,11 @@ after three days.
 The named `desktop-ci` Databricks profile contains host/auth metadata, not a
 token. No Claude.ai login is used. The test verifies the configured provider/model
 and desktop response; it does not independently trace gateway HTTP requests.
-Code-tab, MCP, file operations, and Cowork VM readiness are outside these
-tests' inference-only coverage.
+Code-tab, external MCP execution, file writes, and Cowork VM readiness are outside these tests.
 
 ## macOS
 
-The `cowork-inference-macos` job runs the same inference journey on a disposable
+The `cowork-inference-macos` job runs the same inference, file-read, and skill journeys on a disposable
 GitHub-hosted `macos-15-intel` runner. It has the same event guards and
 required integration gate as Windows. Apple Silicon hosted runners are not covered:
 Cowork was unavailable on the `macos-15` runner in the feasibility probe.
@@ -82,7 +107,9 @@ installed version. Dependencies use the same approved public npm/PyPI path as Wi
 `macos/ui.swift` drives the installed app through native macOS Accessibility APIs.
 The Python harness runs through Terminal to inherit the hosted image's existing
 Accessibility authorization; it does not modify TCC or macOS security settings.
-A missing permission fails the job. UG configures the app through its public CLI,
+Folder-picker keyboard input uses System Events, as in the existing Codex macOS harness.
+Accessibility checks and clicks stay scoped to the active native dialog. A missing permission
+fails the job. UG configures the app through its public CLI,
 then the test accepts gateway onboarding, opens Cowork, verifies the configured
 model, sends the prompt, and requires both the exact answer and completion marker.
 Navigation supports the Cowork tab and the task screen exposed under Claude in the
