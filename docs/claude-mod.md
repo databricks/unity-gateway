@@ -150,9 +150,14 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` executable at launch or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-Omnigent sessions (`ISAAC_LAUNCH_MODE=omni`) skip both the form and the reason rule:
-`/smart-router off` turns routing off directly, because Omnigent's Web UI asks for the
-reason and has Isaac save it before it sends the command.
+After the form turns routing off, the mod logs `Smart Router is off` to the transcript, the
+reply an off without the form gives.
+
+Omnigent sessions (`ISAAC_LAUNCH_MODE=omni`) skip the CLI's reason rule. There
+`/smart-router off --feedback-collected` also skips the form and turns routing off directly,
+because Omnigent's Web UI asks for the reason and has Isaac save it before it sends that
+command. A plain `/smart-router off` there opens the form as usual. Elsewhere, or with the
+feedback rule off, the flag changes nothing; it is accepted only after `off`.
 
 In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available

@@ -194,8 +194,8 @@ def test_orchestrator_instructions_follow_native_toggles(native_binary, tmp_path
         shutil.rmtree(controls.parent)
 
 
-def test_omni_off_turns_routing_off_without_the_feedback_form(native_binary, tmp_path):
-    """Scenario: Omnigent's Web UI already asked for the reason, then typed /smart-router off."""
+def test_marked_omni_off_turns_routing_off_without_the_feedback_form(native_binary, tmp_path):
+    """Scenario: Omnigent's Web UI already asked for the reason, then typed the marked off."""
     env = {
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
@@ -206,7 +206,8 @@ def test_omni_off_turns_routing_off_without_the_feedback_form(native_binary, tmp
     controls = session_env.start_session(env)
     try:
         with Session(native_binary, tmp_path / "omni", env) as session:
-            assert "Smart Router is off" in session.send("/smart-router off")["result"]
+            result = session.send("/smart-router off --feedback-collected")["result"]
+            assert "Smart Router is off" in result
             assert json.loads(controls.read_text())["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
     finally:
         shutil.rmtree(controls.parent)

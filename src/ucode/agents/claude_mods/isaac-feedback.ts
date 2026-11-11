@@ -3,7 +3,18 @@ import { envBool } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+const FEEDBACK_COLLECTED_FLAG = '--feedback-collected';
 type FeedbackCategory = 'smart-routing' | 'other';
+
+type SmartRouterCommand = { action: 'on' | 'off'; feedbackCollected: boolean };
+
+export function parseSmartRouterCommand(args: string): SmartRouterCommand | undefined {
+  const [action, flag, ...rest] = args.trim().split(/\s+/);
+  if (action !== 'on' && action !== 'off') return undefined;
+  if (flag === undefined) return { action, feedbackCollected: false };
+  if (action === 'off' && flag === FEEDBACK_COLLECTED_FLAG && !rest.length) return { action, feedbackCollected: true };
+  return undefined;
+}
 
 function feedbackSuffix(feedbackId: string): string {
   return feedbackId ? ` Feedback ID: ${feedbackId}` : '';
@@ -141,6 +152,7 @@ async function submitFeedback(
     try {
       if (!disableRouting) throw new Error('Smart Router controls are unavailable.');
       await disableRouting(['--smart-router-feedback', message]);
+      $.ui.log('Smart Router is off');
     } catch {
       $.ui.log('Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
     }
@@ -223,9 +235,12 @@ export function registerIsaacFeedback(
   });
 
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (e.args.trim() !== 'off') return next(e);
+    const command = parseSmartRouterCommand(e.args);
+    if (command?.action !== 'off') return next(e);
     const feedbackRequired = envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'));
-    if (!feedbackRequired || await $.env.get('ISAAC_LAUNCH_MODE') === 'omni') return next(e);
+    if (!feedbackRequired || (command.feedbackCollected && await $.env.get('ISAAC_LAUNCH_MODE') === 'omni')) {
+      return next(e);
+    }
     if (state.submitted) return { text: 'Feedback is being prepared.' };
     try {
       if (!state.readRoutingEnabled || !state.disableRouting) {
