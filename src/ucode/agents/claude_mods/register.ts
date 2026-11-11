@@ -8,6 +8,8 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   RECIPE_FIELD,
+  SMART_ROUTER_OFF_REPLY,
+  SMART_ROUTER_ON_REPLY,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
@@ -192,7 +194,7 @@ export function register(on: On, options: PluginOptions): void {
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
-    return {text: `Smart Router is ${action}`};
+    return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
   registerStatusBand(on);
   registerSubagentRouting(on, options);

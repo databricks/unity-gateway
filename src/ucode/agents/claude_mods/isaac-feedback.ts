@@ -1,5 +1,5 @@
 import type { EngineInterface, On } from 'claude-code';
-import { envBool } from './constants.ts';
+import { envBool, SMART_ROUTER_OFF_REPLY } from './constants.ts';
 
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -154,7 +154,7 @@ async function submitFeedback(
     try {
       if (!disableRouting) throw new Error('Smart Router controls are unavailable.');
       await disableRouting(['--smart-router-feedback', message]);
-      $.ui.log('Smart Router is off');
+      $.ui.log(SMART_ROUTER_OFF_REPLY);
     } catch {
       $.ui.log('Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
     }
@@ -248,7 +248,7 @@ export function registerIsaacFeedback(
       if (!state.readRoutingEnabled || !state.disableRouting) {
         throw new Error('Smart Router controls are unavailable.');
       }
-      if (!await state.readRoutingEnabled()) return {text: 'Smart Router is off'};
+      if (!await state.readRoutingEnabled()) return {text: SMART_ROUTER_OFF_REPLY};
       state.submitted = false;
       state.reason = '';
       state.category = 'smart-routing';
