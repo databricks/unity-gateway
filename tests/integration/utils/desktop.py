@@ -28,6 +28,20 @@ def prepare_cowork_home(session) -> Path:
     return root
 
 
+def assert_desktop_model_labels(
+    session, expected_labels: dict[str, str], *, provider: str | None = None
+) -> None:
+    profile_path = desktop_config_library(session) / "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    profile = json.loads(profile_path.read_text())
+    models = profile["inferenceModels"]
+    labels = {model["name"]: model["labelOverride"] for model in models}
+    session.record("desktop-model-labels.json", {"models": models, "expected": expected_labels})
+    assert expected_labels.items() <= labels.items(), (labels, expected_labels)
+    assert all(isinstance(label, str) and label.strip() for label in labels.values()), labels
+    headers = {key.casefold(): value for key, value in profile["inferenceCustomHeaders"].items()}
+    assert headers.get("databricks-model-provider-service") == provider, headers
+
+
 def installed_cowork_servers(session, root: Path) -> dict:
     state = json.loads((session.home / ".ucode/claude-cowork.json").read_text())
     source = session.home / ".ucode/claude-cowork-marketplace"
@@ -43,12 +57,17 @@ def installed_cowork_servers(session, root: Path) -> dict:
     assert manifest == json.loads((source / "plugins/ug/.claude-plugin/plugin.json").read_text())
     assert "installationPreference" not in manifest
     assert manifest["name"] == "ug"
-    assert manifest["mcpServers"] == "./.mcp.json"
-    return json.loads((plugin / manifest["mcpServers"]).read_text())["mcpServers"]
+    assert "mcpServers" not in manifest
+    assert not (plugin / ".mcp.json").exists()
+    profile = json.loads(
+        (desktop_config_library(session) / "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json").read_text()
+    )
+    assert profile["toolSearchEnabled"] is True
+    return {server["name"]: server for server in profile["managedMcpServers"]}
 
 
 async def assert_desktop_mcp(session, registration: dict, workspace: str) -> None:
-    assert registration["type"] == "stdio", registration
+    assert registration["transport"] == "stdio", registration
     arguments = registration["args"]
     assert arguments[arguments.index("--url") + 1] == (
         workspace + "/ai-gateway/mcp-services/system.ai.web_search"

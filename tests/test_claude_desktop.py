@@ -90,10 +90,12 @@ def test_render_profile_uses_exact_owned_fields_and_full_model_ids(tmp_path: Pat
         "inferenceCredentialHelperTimeoutSec": 300,
         "inferenceCredentialHelperSilentRefreshEnabled": True,
         "modelDiscoveryEnabled": False,
+        "toolSearchEnabled": True,
         "inferenceModels": [
             {"name": "databricks/anthropic/claude-sonnet-4"},
             {"name": "openai/gpt-oss-120b"},
         ],
+        "claudeAiImport": {"enabled": True},
     }
     assert "defaultModel" not in profile
     assert "inferenceGatewayCustomHeaders" not in profile
@@ -388,6 +390,28 @@ def test_configure_replaces_entire_reserved_profile_without_records(tmp_path, di
     assert not path.exists()
     assert not state_path.exists()
     assert _read(result.metadata_path) == {"entries": [], "unrelated": {"keep": True}}
+
+
+@pytest.mark.parametrize("change", ["models", "workspace", "workspace-selector"])
+def test_reconfigure_preserves_connectors_only_for_same_workspace(tmp_path, directory, change):
+    state_path = tmp_path / "state.json"
+    result = _configure(state_path)
+    profile = _read(result.profile_path)
+    connectors = [{"name": "slack", "transport": "stdio", "command": "/old-ug", "args": []}]
+    profile["managedMcpServers"] = connectors
+    if change == "workspace-selector":
+        profile["inferenceCustomHeaders"] = {"X-Databricks-Workspace-Id": "previous"}
+    _write_json(result.profile_path, profile)
+
+    _configure(
+        state_path,
+        workspace="https://other.example" if change == "workspace" else "https://workspace.example",
+        models=("new-claude-model",),
+    )
+
+    updated = _read(result.profile_path)
+    assert updated["inferenceModels"] == [{"name": "new-claude-model"}]
+    assert updated.get("managedMcpServers", []) == (connectors if change == "models" else [])
 
 
 def test_repeat_configure_and_workspace_switch_replace_same_file(tmp_path, directory):

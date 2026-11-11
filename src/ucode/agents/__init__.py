@@ -25,6 +25,7 @@ from ucode.databricks import (
     install_ai_tools,
     install_databricks_cli,
     map_claude_family_models,
+    provider_targets_for_tool,
     resolve_provider_service,
 )
 from ucode.env import env_bool
@@ -417,9 +418,11 @@ def resolve_provider_models(
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
     Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
-    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
-    Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
-    ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
+    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
+    (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
+    alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    When no family can be inferred, ``default`` pins the first compatible target instead.
+    It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
     launch path wires with the relayed overlay + refresh proxy. A non-None ``error`` means the
@@ -444,7 +447,11 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+    targets = provider_targets_for_tool(tool, service)
+    models = map_claude_family_models(targets)
+    if not models and targets:
+        models = {"default": targets[0]}
+    return models or None, None, relayed
 
 
 def _newest_first(model: str) -> list[int]:
@@ -704,7 +711,11 @@ def request_vscode_with_copilot(requested: bool = True) -> None:
 
 
 def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
-    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with, or remove
+    an earlier setup when the workspace's managed config turns VS Code off."""
+    if state.get("copilot_vscode_integration") is False:
+        _remove_vscode_for_managed_config()
+        return
     if not _vscode_with_copilot:
         return
     if is_dry_run():
@@ -713,6 +724,19 @@ def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | 
     from . import vscode
 
     vscode.configure(state, provider=provider, location=parent_schema)
+
+
+def _remove_vscode_for_managed_config() -> None:
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    removed = vscode.revert() == "removed"
+    print_note(
+        "This workspace's managed configuration turns off GitHub Copilot in VS Code, so "
+        + ("the VS Code extension was removed." if removed else "VS Code was skipped.")
+    )
 
 
 def configure_single_tool(
@@ -798,6 +822,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -813,10 +838,14 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
+            # An explicit provider displaces a saved model location, as on the picker.
+            explicit_provider = (providers or {}).get(tool)
             parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
-                tool, state, None
+                tool, state, explicit_provider
             )
-            provider = None if parent_schema else get_provider_service(state, tool)
+            provider = (
+                None if parent_schema else explicit_provider or get_provider_service(state, tool)
+            )
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning

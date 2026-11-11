@@ -149,10 +149,12 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
-and `~/.config` on Linux. Windows and Linux require Desktop to have opened once.
+and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux requires Desktop to have opened once.
 UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned profile.
-Configure replaces the whole file, updates its metadata entry, and selects it;
-changing workspaces replaces the same profile. Revert deletes that file and entry.
+Configure replaces the profile, updates its metadata entry, and selects it, retaining
+same-workspace connectors until MCP reconciliation succeeds. Changing workspaces
+replaces the same profile without retaining its connectors. Revert deletes that file and entry.
+The generated profile enables the manual import wizard with `claudeAiImport.enabled: true`.
 Unrelated profiles and metadata are preserved. Only the previous selection is saved
 in `~/.ucode/claude-desktop.json`; profile contents are not restored on revert.
 Old random-ID and workspace-derived profiles are left untouched.
@@ -166,15 +168,22 @@ When `claude_otel_tracing` is enabled, Desktop's reserved profile also owns
 for the existing `otel-headers` command. Native sessions rerun it as tokens rotate;
 no bearer is persisted. Disable/revert removes the wrapper, with atomic writes and
 rollback shared with the profile. Disabled tracing omits these fields on replacement.
-Claude setup also installs a generated Cowork plugin containing only the current
-workspace's managed and user-downloaded home-level skills and Claude-targeted MCP servers.
+The reserved Desktop profile enables `toolSearchEnabled` and declares Claude-targeted
+MCP servers in `managedMcpServers`, using the existing stdio proxy commands. Connector sync
+requires a profile for the same workspace, replaces the connector list, and restores the
+previous profile if plugin setup fails. It works before Cowork has started.
+After a successful plugin update, legacy-plugin removal failures warn and keep the
+updated plugin and native connectors; reconfigure retries the cleanup.
+Claude setup also installs a generated Cowork plugin containing the current workspace's
+managed and user-downloaded home-level skills, connector guidance, and hooks. It contains
+no MCP declarations; reconfigure removes legacy plugin MCP files.
 Downloaded skill additions and removals resync the plugin; project-local,
 user-authored, and other-workspace skills are excluded. The user-scope source lives at
 `~/.ucode/claude-cowork-marketplace`. Default configure and `--user` both write only
 this user source, the user 3P profile, and native Cowork registration/cache, even when saved
 scope is `global`. They never publish or remove root Desktop files. Explicit `--global`
 is detected by the command-local `machine_wide_only` switch and skips ordinary Desktop
-profile/plugin setup; macOS MDM provisioning is a separate follow-up. CLI-agent behavior
+profile/plugin setup and instead provisions Desktop through macOS MDM. CLI-agent behavior
 is unchanged by these Desktop guards.
 Ordinary plugin setup requires Desktop's local account/org directory and uses scoped
 `claude plugin ... --cowork --json` with `CLAUDE_CONFIG_DIR`. First configure skips if no
@@ -189,13 +198,35 @@ generated user marketplace, including manual edits. Its writer retains staged re
 and rollback. Native refresh failures retain the source/state for retry/revert. A failed source switch
 restores the previous marketplace/plugin through native commands when possible, and
 reports a failed recovery with configure retry instructions. Ordinary
-revert removes user source/registration only. Explicit MCP/skill changes resync this source;
-launches do not. Root bundle publication is implemented in the separate MDM follow-up.
+revert removes user source/registration and attempts macOS MDM cleanup. Explicit MCP/skill changes resync this source;
+launches do not. The privileged bundle writer is used only for MDM publication; its
+macOS worker uses the existing on-demand sudo path, validates caller ownership of staged
+files, and rejects links/special files before copying into a root-owned destination.
+Staged replacement restores the previous bundle if publication fails.
+The macOS Desktop MDM mode requires preinstalled, root-owned shared UG/Python,
+Databricks CLI, and Claude CLI runtimes. It publishes the managed plist with
+`managedMcpServers` and `toolSearchEnabled`, shared helpers, and a required organization
+plugin at `/Library/Application Support/Claude/org-plugins/ug`. That plugin contains
+skills/assets, connector guidance, and warming hooks, with no MCP declarations.
+It reuses the normal generator and content-derived version, with matching `version.json`.
+Desktop loads the organization plugin itself; no LaunchAgent, timer, per-user marketplace
+sync, deployment descriptor, or `desktop-mdm-sync` command is installed. No administrator-local
+profile, skills, or credentials are copied. Provisioning reuses one token and existing
+bundle/atomic writers; rerun configure after partial publication failure. Existing auth,
+MCP proxy and tracing commands are unchanged; users authenticate with their own OAuth profiles.
+A foreign policy is recognized by its credential helper and preserved. Generated root files
+belong to UG and are replaced. Desktop provisioning failures warn without failing CLI setup.
+Ordinary `ug revert` attempts user and machine cleanup; failed MDM cleanup warns,
+continues other cleanup, and retains UG state for retry. Revert has no scope flags. Earlier marketplace/LaunchAgent
+builds require manual migration; remove prior UG marketplace registrations to avoid duplicate
+skills/hooks. Restart Desktop after updates. Native organization-plugin delivery remains a
+validation gap. See the deployment guide before migration or rollout.
+Windows MDM and shared-runtime installation remain unsupported. See docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old
 `unity-gateway@unity-gateway-cowork` registration only after installing/updating `ug`;
-revert removes both IDs. New sessions use the `mcp__plugin_ug_...` tool namespace.
+revert removes both IDs. Use Desktop's exposed native connector names, not old plugin-prefixed names.
 Claude Code also receives `ug@unity-gateway-code` in its regular user plugin scope,
 shared with the Desktop Code tab. The generated source lives at
 `~/.ucode/claude-code-marketplace`, with its config root recorded in
@@ -207,8 +238,9 @@ downloaded skill files stay in their native locations; Cowork hooks are not inst
 Code setup is independent of Cowork account discovery and best-effort; explicit `--global`
 skips this user-scope plugin too. Model-configured Claude and
 explicit Claude MCP clients are eligible. Managed configure refreshes Code after successful
-MCP reconciliation even if skill downloads fail; Cowork keeps its existing model and skill
-requirements. MCP updates refresh eligible plugins, and revert removes both while preserving
+MCP reconciliation even if skill downloads fail. Model-configured Claude also syncs native
+Desktop connectors on skill failure, while leaving the existing Cowork skill plugin intact.
+MCP updates refresh eligible plugins, and revert removes both while preserving
 unrelated plugins.
 Code and Cowork skill templates live in `src/ucode/agents/desktop/connector_skills/`;
 the generator inserts connector names and bounds each description.
@@ -231,5 +263,18 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
+
+</details>
+
+<details>
+<summary>GitHub Copilot in VS Code</summary>
+
+Fields live in the VS Code user `settings.json`. `ug`'s extension writes them when it starts, from the `ug-config.json` that `ug configure` packed into it, and records what it wrote: once a configure no longer asks for a field, the extension removes the value it wrote, and a value the developer changed since stays. `ug revert` removes them before it uninstalls the extension, from the user `settings.json` and each profile's, except a value the developer changed; for an OTel agent, a changed `otlpEndpoint` keeps its whole group. A `settings.json` with comments is left alone, and revert names the fields to remove.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `github.copilot.chat.otel.enabled`, `.exporterType`, `.protocol`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the local agent exports protobuf to the extension's loopback receiver, which forwards traces to the gateway |
+| `chat.agentHost.otel.enabled`, `.exporterType`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the Copilot CLI agent exports to the same receiver |
+| `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on |
 
 </details>

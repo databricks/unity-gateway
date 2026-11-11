@@ -33,6 +33,7 @@ from ucode.databricks import (
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
 )
+from ucode.managed_resolve import static_model_list
 
 # ucode tool name -> CodingAgent proto enum. Inverted from the read side's map so the two directions
 # cannot drift: adding an agent to `managed_config._AGENT_ENUM_TO_TOOL` makes it serializable here
@@ -58,7 +59,7 @@ _AGENT_MODEL_FAMILIES: dict[str, tuple[str, ...]] = {
     "codex": ("codex", "oss"),
     "opencode": ("claude", "codex", "gemini", "oss"),
     "pi": ("claude", "codex", "gemini", "oss"),
-    "copilot": ("claude", "codex"),
+    "copilot": ("claude", "codex", "oss"),
 }
 
 
@@ -175,16 +176,23 @@ def _model_config_payload(tool: str, model_config: dict) -> dict:
     """Build one agent's ``models`` object and ``default_models`` map for the wire.
 
     The wire has two per-agent fields: ``models`` (the source oneof, one of
-    model_provider_service / unity_catalog_location / model_services) and ``default_models``
-    (the overall default_model plus per-family slots). Internally, claude's family slots live
-    under ``default_models_by_model_family`` and flat-list agents under ``model_services``.
+    sources / model_provider_service / unity_catalog_location / model_services) and
+    ``default_models`` (the overall default_model plus per-family slots). Internally, claude's
+    family slots live under ``default_models_by_model_family``.
     """
     models_obj: dict = {}
-    # Exactly one model source (the API oneof), precedence provider > location > model_services.
+    # Exactly one model source (the API oneof), precedence
+    # sources > provider > location > model_services.
+    sources = model_config.get("sources")
     mps = model_config.get("model_provider_service")
     location = model_config.get("unity_catalog_location")
     model_services = model_config.get("model_services")
-    if isinstance(mps, str) and mps:
+    source_list = (
+        [m for m in sources if isinstance(m, str) and m] if isinstance(sources, list) else []
+    )
+    if source_list:
+        models_obj["sources"] = source_list
+    elif isinstance(mps, str) and mps:
         models_obj["model_provider_service"] = mps
     elif isinstance(location, str) and location:
         models_obj["unity_catalog_location"] = location
@@ -232,6 +240,9 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     tracing_enabled = agent_config.get("otel_tracing_enabled")
     if isinstance(tracing_enabled, bool):
         config["tracing"] = {"enabled": tracing_enabled}
+    vscode_enabled = agent_config.get("vscode_integration_enabled")
+    if isinstance(vscode_enabled, bool):
+        config["vscode_integration"] = {"enabled": vscode_enabled}
     settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
         config["agent_native_settings"] = settings
@@ -437,14 +448,14 @@ def _validate_agent_models(tool: str, agent_config: dict, known: set[str]) -> li
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         referenced.extend(m for m in family_models.values() if isinstance(m, str) and m)
-    model_services = model_config.get("model_services")
-    if isinstance(model_services, list):
-        referenced.extend(m for m in model_services if isinstance(m, str) and m)
+    referenced.extend(static_model_list(model_config))
 
+    # A 4-part `catalog.schema.mps.model` ref names a model behind a Model Provider Service, which
+    # the workspace's UC model-service inventory doesn't list.
     return [
         f"{tool}: model '{model}' is not available on this workspace."
         for model in dict.fromkeys(referenced)
-        if model not in known
+        if model not in known and not _is_uc_fqn(model, parts=4)
     ]
 
 
@@ -520,7 +531,7 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     """Every model id an agent is configured with — its list plus its default.
 
     Claude's ``default_models_by_model_family`` is a family-slot dict; flat-list agents use
-    ``model_services`` (a list); codex has no list at all, only ``default_model``. Returns an empty
+    ``sources`` or ``model_services`` (a list); codex has no list at all, only ``default_model``. Returns an empty
     set when nothing is configured, which callers treat as "can't check" rather than "nothing is allowed".
     """
     model_config = agent_config.get("model_config")
@@ -530,9 +541,7 @@ def _agent_model_ids(agent_config: dict) -> set[str]:
     family_models = model_config.get("default_models_by_model_family")
     if isinstance(family_models, dict):
         ids.update(v for v in family_models.values() if isinstance(v, str) and v)
-    model_services = model_config.get("model_services")
-    if isinstance(model_services, list):
-        ids.update(m for m in model_services if isinstance(m, str) and m)
+    ids.update(static_model_list(model_config))
     default_model = model_config.get("default_model")
     if isinstance(default_model, str) and default_model:
         ids.add(default_model)

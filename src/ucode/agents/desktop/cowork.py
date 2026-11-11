@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from ucode import config_io, managed_files
-from ucode.agents.desktop.claude import claude_desktop_root_directory
+from ucode.agents.desktop.claude import claude_desktop_root_directory, desktop_mcp_configuration
 from ucode.databricks import build_mcp_proxy_argv
 from ucode.mcp_connection_login import connection_from_url
 from ucode.os_compatibility import subprocess_cross_os
@@ -67,10 +67,9 @@ def configure_code(mcp_servers: list[dict]) -> bool:
         marketplace_root,
         marketplace_root / "plugins" / PLUGIN_NAME,
         [],
-        {"mcpServers": {}},
+        server_names,
         marketplace_name=CODE_MARKETPLACE_NAME,
         description="Unity Gateway connector guidance for Claude Code",
-        connector_names=server_names,
         code=True,
     )
     _install_plugin(
@@ -119,18 +118,14 @@ def _code_config_root() -> Path:
     )
 
 
-def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
-    """Generate and install UG's Cowork plugin for the active workspace."""
+def configure_cowork(state: dict, mcp_servers: list[dict], *, sync_plugin: bool = True) -> bool:
+    """Register native connectors and optionally refresh the workspace plugin."""
     workspace = state.get("workspace")
     if not isinstance(workspace, str) or not workspace:
         raise RuntimeError("No Databricks workspace is configured for Cowork.")
 
     previous_state = config_io.read_json_safe(_state_path())
-    skill_records = _workspace_skill_records(workspace)
-    if not previous_state and not skill_records and not mcp_servers:
-        return False
-    if not previous_state and not _cowork_sessions_root_exists():
-        return False
+    skill_records = _workspace_skill_records(workspace) if sync_plugin else []
     org_plugin = managed_files.claude_desktop_org_plugin_path()
     if org_plugin is not None and (org_plugin.exists() or org_plugin.is_symlink()):
         raise RuntimeError(
@@ -140,6 +135,8 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
 
     profile = state.get("profile")
     if not isinstance(profile, str) or not profile:
+        if not previous_state and not skill_records and not mcp_servers:
+            return False
         raise RuntimeError("Select an explicit Databricks CLI profile for Cowork.")
 
     mcp_config = _cowork_mcp_config(
@@ -149,26 +146,37 @@ def configure_cowork(state: dict, mcp_servers: list[dict]) -> bool:
         use_pat=bool(state.get("use_pat")),
         custom_oauth=bool(state.get("custom_oauth")),
     )
-    if not previous_state and not skill_records and not mcp_config["mcpServers"]:
-        return False
+    with desktop_mcp_configuration(workspace, mcp_config):
+        if not sync_plugin:
+            return False
+        if not previous_state and not skill_records and not mcp_config["mcpServers"]:
+            return False
+        if not previous_state and not _cowork_sessions_root_exists():
+            return False
 
-    cowork_root = discover_cowork_root()
-    previous_root = previous_state.get("cowork_root")
-    if (
-        isinstance(previous_root, str)
-        and previous_root
-        and Path(previous_root).resolve() != cowork_root.resolve()
-    ):
-        _remove_plugin_registration(Path(previous_root))
-    marketplace_root = _marketplace_root()
-    hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
-    plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
-    _write_marketplace(marketplace_root, plugin_root, skill_records, mcp_config, hooks)
-    config_io.atomic_write_json(
-        _state_path(),
-        {"version": 1, "cowork_root": str(cowork_root)},
-    )
-    _install_plugin(cowork_root, marketplace_root)
+        cowork_root = discover_cowork_root()
+        previous_root = previous_state.get("cowork_root")
+        if (
+            isinstance(previous_root, str)
+            and previous_root
+            and Path(previous_root).resolve() != cowork_root.resolve()
+        ):
+            _remove_plugin_registration(Path(previous_root))
+        marketplace_root = _marketplace_root()
+        plugin_root = marketplace_root / "plugins" / PLUGIN_NAME
+        hooks = _connector_hooks(mcp_config, workspace, profile, use_pat=bool(state.get("use_pat")))
+        _write_marketplace(
+            marketplace_root,
+            plugin_root,
+            skill_records,
+            list(mcp_config["mcpServers"]),
+            hooks,
+        )
+        config_io.atomic_write_json(
+            _state_path(),
+            {"version": 1, "cowork_root": str(cowork_root)},
+        )
+        _install_plugin(cowork_root, marketplace_root)
     return True
 
 
@@ -331,6 +339,7 @@ def _cowork_mcp_config(
     *,
     use_pat: bool = False,
     custom_oauth: bool = False,
+    mdm_ug_executable: Path | None = None,
 ) -> dict:
     entries: dict[str, dict] = {}
     urls: dict[str, str] = {}
@@ -351,12 +360,12 @@ def _cowork_mcp_config(
             profile,
             use_pat=use_pat,
         )
-        executable = Path(argv[0])
-        if not executable.is_absolute():
+        command = mdm_ug_executable if mdm_ug_executable is not None else Path(argv[0])
+        if not command.is_absolute():
             raise RuntimeError(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
             )
-        entries[name] = {"type": "stdio", "command": str(executable), "args": argv[1:]}
+        entries[name] = {"type": "stdio", "command": str(command), "args": argv[1:]}
         urls[name] = url
     aliases = _cowork_mcp_aliases(urls)
     return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}
@@ -415,12 +424,11 @@ def _write_marketplace(
     marketplace_root: Path,
     plugin_root: Path,
     skill_records: list[dict],
-    mcp_config: dict,
+    connector_names: list[str],
     hooks: dict | None = None,
     *,
     marketplace_name: str = MARKETPLACE_NAME,
-    description: str = "Unity Gateway workspace skills and MCP servers for Cowork",
-    connector_names: list[str] | None = None,
+    description: str = "Unity Gateway workspace skills and connector guidance for Cowork",
     code: bool = False,
 ) -> None:
     marketplace_root.parent.mkdir(parents=True, exist_ok=True)
@@ -434,11 +442,10 @@ def _write_marketplace(
             staging,
             staging_plugin,
             skill_records,
-            mcp_config,
+            connector_names,
             hooks,
             marketplace_name=marketplace_name,
             description=description,
-            connector_names=connector_names,
             code=code,
         )
         if backup.exists():
@@ -462,12 +469,11 @@ def _write_marketplace_contents(
     marketplace_root: Path,
     plugin_root: Path,
     skill_records: list[dict],
-    mcp_config: dict,
+    connector_names: list[str],
     hooks: dict | None,
     *,
     marketplace_name: str = MARKETPLACE_NAME,
-    description: str = "Unity Gateway workspace skills and MCP servers for Cowork",
-    connector_names: list[str] | None = None,
+    description: str = "Unity Gateway workspace skills and connector guidance for Cowork",
     code: bool = False,
 ) -> None:
     (marketplace_root / ".claude-plugin").mkdir(parents=True)
@@ -490,10 +496,10 @@ def _write_marketplace_contents(
         "description": description,
         "author": {"name": "Databricks"},
     }
-    _write_plugin_connectors(plugin_root, plugin, mcp_config, hooks)
+    if hooks:
+        _write_json(plugin_root / "hooks" / "hooks.json", hooks)
     _write_json(marketplace_root / ".claude-plugin" / "marketplace.json", marketplace)
-    names = list(mcp_config["mcpServers"]) if connector_names is None else connector_names
-    _write_plugin_skills(plugin_root / "skills", skill_records, names, code=code)
+    _write_plugin_skills(plugin_root / "skills", skill_records, connector_names, code=code)
     if not code:
         files = _marketplace_files(plugin_root)
         if files is None:
@@ -501,16 +507,6 @@ def _write_marketplace_contents(
         files[".claude-plugin/plugin.json"] = (_json_bytes(plugin), 0o644)
         plugin["version"] = "0.0.0-ug-" + _marketplace_digest(files)
     _write_json(plugin_root / ".claude-plugin" / "plugin.json", plugin)
-
-
-def _write_plugin_connectors(
-    plugin_root: Path, plugin: dict, mcp_config: dict, hooks: dict | None
-) -> None:
-    if mcp_config["mcpServers"]:
-        plugin["mcpServers"] = "./.mcp.json"
-        _write_json(plugin_root / ".mcp.json", mcp_config)
-    if hooks:
-        _write_json(plugin_root / "hooks" / "hooks.json", hooks)
 
 
 def _write_plugin_skills(
@@ -721,12 +717,19 @@ def _register_plugin(
         and plugin_id != LEGACY_PLUGIN_ID
         and _contains_plugin_id(installed, plugin_id=LEGACY_PLUGIN_ID)
     ):
-        _run_claude_json(
-            claude,
-            ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
-            env,
-            accepted_failures=("not installed", "not_installed", "not found"),
-        )
+        try:
+            _run_claude_json(
+                claude,
+                ["plugin", "uninstall", LEGACY_PLUGIN_ID, "--cowork", "--json"],
+                env,
+                accepted_failures=("not installed", "not_installed", "not found"),
+            )
+        except Exception as exc:
+            print_warning(
+                f"Could not remove legacy Claude Desktop plugin {LEGACY_PLUGIN_ID}: {exc}. "
+                "The updated plugin and native connectors remain configured. "
+                "Run `ug configure` again to retry cleanup."
+            )
 
 
 def _claude_binary() -> str:

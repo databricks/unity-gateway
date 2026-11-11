@@ -1,18 +1,27 @@
 """Desktop hooks on successful configure paths, not ordinary agent launches."""
 
+import json
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
 
 from ucode import cli, managed_files
+from ucode.agents.desktop import claude as desktop
+from ucode.agents.desktop import cowork
 from ucode.agents.desktop import setup as desktop_setup
+from ucode.agents.desktop.setup import configure_claude_cowork
+from ucode.cli import _configure_managed_mcp_servers, _configure_managed_skills
+from ucode.databricks import AnthropicModelCatalog
+from ucode.mcp import McpServiceListingRateLimited
 
 
 @pytest.mark.parametrize("flags", [[], ["--user"], ["--global"]])
 @pytest.mark.parametrize("failed", [False, True])
 def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, failed):
     selections = []
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
 
     def configure_workspace(*args, **kwargs):
@@ -32,7 +41,11 @@ def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, fail
 
 
 def test_global_skips_user_desktop_setup(monkeypatch):
+    from ucode.agents.desktop import mdm
+
     managed_files.set_machine_wide_only(True)
+    machine_configure = Mock()
+    monkeypatch.setattr(mdm, "configure", machine_configure)
 
     def unexpected_write(*args, **kwargs):
         pytest.fail("--global attempted user-level Desktop setup")
@@ -40,9 +53,43 @@ def test_global_skips_user_desktop_setup(monkeypatch):
     monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_cowork", unexpected_write)
     monkeypatch.setattr(desktop_setup, "configure_code", unexpected_write)
-    desktop_setup.configure_claude_desktop({})
+    monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
     desktop_setup.configure_claude_cowork({}, [])
     desktop_setup.configure_claude_code_plugin([])
+    machine_configure.assert_called_once_with("https://workspace.example", None)
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch, platform):
+    from ucode.agents.desktop import mdm
+
+    managed_files.set_machine_wide_only(True)
+    monkeypatch.setattr(desktop_setup.sys, "platform", platform)
+    machine_configure = Mock()
+    profile_write = Mock()
+    monkeypatch.setattr(mdm, "configure", machine_configure)
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    machine_configure.assert_not_called()
+    profile_write.assert_not_called()
+
+
+def test_global_desktop_provisioning_failure_warns(monkeypatch, capsys):
+    message = "Could not update Desktop plugin: sudo authentication failed"
+    from ucode.agents.desktop import mdm
+
+    managed_files.set_machine_wide_only(True)
+    monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
+    monkeypatch.setattr(mdm, "configure", Mock(side_effect=RuntimeError(message)))
+    profile_write = Mock()
+    monkeypatch.setattr(desktop_setup, "write_claude_desktop_profile", profile_write)
+    desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not configure Claude Desktop" in output
+    assert message in output
+    assert "Claude Code setup is unchanged" in output
+    profile_write.assert_not_called()
 
 
 @pytest.fixture
@@ -75,7 +122,7 @@ def configuration(monkeypatch):
 def test_successful_claude_setup_configures_desktop_once(configuration, monkeypatch, flow):
     configure = Mock()
     monkeypatch.setattr(desktop_setup, "configure_claude_desktop", configure)
-    args = {"selected_tools": ["claude"]}
+    args: dict[str, Any] = {"selected_tools": ["claude"]}
     if flow == "single":
         args = {"tool": "claude"}
     if flow == "managed":
@@ -196,7 +243,7 @@ def test_single_managed_claude_configures_cowork(configuration, monkeypatch):
     )
     configure_mcps.assert_called_once_with(managed)
     configure_code.assert_called_once_with(servers)
-    configure_cowork.assert_called_once_with(configuration, servers)
+    configure_cowork.assert_called_once_with(configuration, servers, sync_plugin=True)
 
 
 def test_single_unmanaged_claude_reconciles_empty_cowork(configuration, monkeypatch):
@@ -210,7 +257,7 @@ def test_single_unmanaged_claude_reconciles_empty_cowork(configuration, monkeypa
         )
         == 0
     )
-    configure_cowork.assert_called_once_with(configuration, [])
+    configure_cowork.assert_called_once_with(configuration, [], sync_plugin=True)
 
 
 @pytest.mark.parametrize("flow", ["single", "managed", "selected"])
@@ -220,9 +267,9 @@ def test_desktop_failure_preserves_successful_configure_exit(
     def fail(*a, **k):
         raise OSError("Desktop profile is not writable")
 
-    monkeypatch.setattr(desktop_setup, "_configure_desktop", fail)
+    monkeypatch.setattr(desktop_setup, "_configure_claude_desktop_user_level", fail)
     monkeypatch.setattr(desktop_setup.sys, "platform", "darwin")
-    args = {"selected_tools": ["claude"]}
+    args: dict[str, Any] = {"selected_tools": ["claude"]}
     if flow == "single":
         args = {"tool": "claude"}
     if flow == "managed":
@@ -269,7 +316,7 @@ def test_managed_claude_configures_cowork_after_mcp_and_skill_sync(configuration
         == 0
     )
     configure_code.assert_called_once_with(servers)
-    configure_cowork.assert_called_once_with(configuration, servers)
+    configure_cowork.assert_called_once_with(configuration, servers, sync_plugin=True)
 
 
 @pytest.mark.parametrize("flow", ["single", "managed"])
@@ -302,11 +349,106 @@ def test_managed_sync_failure_preserves_existing_cowork(
         )
         == 0
     )
-    configure_cowork.assert_not_called()
     if failed_sync == "mcp":
+        configure_cowork.assert_not_called()
         configure_code.assert_not_called()
     else:
+        configure_cowork.assert_called_once_with(configuration, servers, sync_plugin=False)
         configure_code.assert_called_once_with(servers)
+
+
+@pytest.mark.parametrize("flow", ["single", "managed"])
+@pytest.mark.parametrize("remove_connectors", [False, True], ids=["replace", "remove"])
+@pytest.mark.parametrize("failure", ["skills", "rate-limit", "discovery-error"])
+def test_reconfigure_preserves_connectors_until_refresh_succeeds(
+    configuration, monkeypatch, tmp_path, capsys, flow, remove_connectors, failure
+):
+    """Failed discovery keeps old connectors; successful discovery applies replacements/removals."""
+    directory = tmp_path / "Desktop" / "configLibrary"
+    directory.mkdir(parents=True)
+    monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: directory)
+    monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: directory)
+    monkeypatch.setattr(desktop_setup, "get_databricks_token", lambda *args: "token")
+    monkeypatch.setattr(
+        desktop_setup,
+        "list_anthropic_model_catalog",
+        lambda *args, **kwargs: AnthropicModelCatalog(
+            model_ids=["system.ai.claude-haiku-4-5"], model_id_to_display_name={}
+        ),
+    )
+    monkeypatch.setattr(desktop_setup, "configure_claude_cowork", configure_claude_cowork)
+    monkeypatch.setattr(cli, "_configure_managed_skills", _configure_managed_skills)
+    monkeypatch.setattr(cowork.shutil, "which", lambda name: str(tmp_path / "bin" / name))
+
+    def fail_download(*args):
+        raise RuntimeError("skill download unavailable")
+
+    def unexpected_plugin_refresh(*args, **kwargs):
+        pytest.fail("Failed skill downloads must preserve the installed plugin")
+
+    monkeypatch.setattr(cli, "reconcile_managed_skills", fail_download)
+    monkeypatch.setattr(cowork, "records_for_scope", unexpected_plugin_refresh)
+    monkeypatch.setattr(cowork.subprocess_cross_os, "run", unexpected_plugin_refresh)
+    marketplace = cowork._marketplace_root()
+    marketplace.mkdir(parents=True)
+    (marketplace / "existing-skill.md").write_text("Keep the installed skill")
+    before_plugin = cowork._marketplace_files(marketplace)
+    desktop_setup.configure_claude_desktop(configuration)
+    with desktop.desktop_mcp_configuration(
+        configuration["workspace"], {"mcpServers": {"old": {"command": "/old-proxy", "args": []}}}
+    ):
+        pass
+    servers = (
+        []
+        if remove_connectors
+        else [
+            {
+                "name": "system-ai-github",
+                "url": "https://workspace.example/ai-gateway/mcp-services/system.ai.github",
+                "clients": ["claude"],
+            }
+        ]
+    )
+    monkeypatch.setattr(cli, "_configure_managed_mcp_servers", lambda managed: servers)
+    if failure != "skills":
+        monkeypatch.setattr(cli, "_configure_managed_mcp_servers", _configure_managed_mcp_servers)
+
+        def fail_discovery(*args):
+            if failure == "rate-limit":
+                raise McpServiceListingRateLimited("system.ai")
+            raise RuntimeError("connector discovery unavailable")
+
+        monkeypatch.setattr(cli, "reconcile_managed_mcp_servers", fail_discovery)
+    monkeypatch.setattr(
+        cli,
+        "refresh_managed_config",
+        lambda *args, **kwargs: ({"enabled_agents": {"claude": {}}}, False),
+    )
+
+    assert (
+        cli._configure_workspace_command(
+            workspaces=[("https://workspace.example", "chosen-profile")],
+            **({"tool": "claude"} if flow == "single" else {}),
+        )
+        == 0
+    )
+
+    profile = json.loads((directory / f"{desktop.PROFILE_ID}.json").read_text())
+    connectors = profile["managedMcpServers"]
+    if failure != "skills":
+        assert connectors == [
+            {"name": "old", "transport": "stdio", "command": "/old-proxy", "args": []}
+        ]
+    else:
+        assert [server["name"] for server in connectors] == (
+            [] if remove_connectors else ["github"]
+        )
+        if connectors:
+            assert connectors[0]["transport"] == "stdio"
+            assert connectors[0]["command"] == str(tmp_path / "bin" / "ug")
+            assert servers[0]["url"] in connectors[0]["args"]
+    assert cowork._marketplace_files(marketplace) == before_plugin
+    assert "skill download unavailable" in capsys.readouterr().out
 
 
 def test_unmanaged_configure_syncs_user_mcp_servers_to_cowork(configuration, monkeypatch):
@@ -330,7 +472,7 @@ def test_unmanaged_configure_syncs_user_mcp_servers_to_cowork(configuration, mon
         )
         == 0
     )
-    configure_cowork.assert_called_once_with(configuration, user_servers)
+    configure_cowork.assert_called_once_with(configuration, user_servers, sync_plugin=True)
 
 
 def test_managed_config_without_claude_preserves_cowork(configuration, monkeypatch):

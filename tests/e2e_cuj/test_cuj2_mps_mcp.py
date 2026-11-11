@@ -218,7 +218,8 @@ class TestCuj2Configuration(_Cuj2Base):
         Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
         MCP; both native MPS APIs advertise their selected model, generated agent settings use
         the exact provider/model values, the complete Desktop profile/metadata match the
-        Anthropic MPS contract, and agent MCP listings exclude web_search.
+        Anthropic MPS contract with the readable Claude Haiku 4.5 label, and agent MCP listings
+        exclude web_search.
         """
         session, workspace, _ = cuj
         published = workspace.config()
@@ -242,7 +243,8 @@ class TestCuj2Configuration(_Cuj2Base):
             session,
             config_library,
             workspace.url,
-            models=[{"name": claude_model, "labelOverride": claude_model}],
+            models=[{"name": claude_model, "labelOverride": "Claude Haiku 4.5"}],
+            mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
                 PROVIDER_HEADER: claude_mps,
@@ -255,7 +257,7 @@ class TestCuj2CodexInference(_Cuj2Base):
     def test_cuj_codex_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Codex inference.
 
-        Expected: Codex sends a Responses request for gpt-5-nano with the
+        Expected: Codex sends a Responses request for gpt-6-luna with the
         ug_e2e.providers.openai target header and receives its paired HTTP 200 response; its
         parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """
