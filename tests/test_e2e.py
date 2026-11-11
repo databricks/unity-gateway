@@ -137,12 +137,21 @@ def _run_gemini_gateway_smoke(workspace: str, model: str, token: str) -> str:
         },
         method="POST",
     )
+    timeout_seconds = 30
     try:
-        with urllib_request.urlopen(req, timeout=30) as response:
+        with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
             body = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
         raise AssertionError(f"Gemini gateway smoke failed: HTTP {exc.code}: {body[:500]}") from exc
+    except (TimeoutError, urllib_error.URLError) as exc:
+        if isinstance(exc, urllib_error.URLError) and not isinstance(exc.reason, TimeoutError):
+            raise
+        # Matches the e2e shards' `--only-rerun 'timed out after [0-9]+s'`, so a slow live
+        # model gets the same single rerun as the CLI launch tests.
+        raise AssertionError(
+            f"Gemini gateway smoke for model={model} timed out after {timeout_seconds}s"
+        ) from exc
 
     data = json.loads(body)
     return data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
