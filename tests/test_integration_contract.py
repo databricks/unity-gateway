@@ -264,12 +264,20 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
         assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
         assert "DATABRICKS_BEARER:" not in job
         assert "os: [ubuntu-22.04, windows-latest]" in job
+        assert "group: databricks-protected-runner-group" in job
+        assert (
+            "labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' "
+            "|| 'linux-ubuntu-latest' }}"
+        ) in job
+        assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in job
+        assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in job
         assert "steps: *live-steps" in job
         assert ("continue-on-error: true" in job) == (agent == "copilot")
         cases = _collect_integration_cases(_ci_marker_expression(job, agent))
         assert not selected & cases
         selected |= cases
     assert selected == _collect_integration_cases("anthropic_mps")
+    assert '--npm-registry "$NPM_REGISTRY"' in jobs["smoke"]
     for job_name, agent in (("full", "claude"), ("managed", "claude"), ("copilot", "copilot")):
         assert not selected & _collect_integration_cases(
             _ci_marker_expression(jobs[job_name], agent)

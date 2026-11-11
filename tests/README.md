@@ -8,9 +8,12 @@ workspace URL from
 `UG_ANTHROPIC_MPS_WORKSPACE` and authenticates with
 `UG_ANTHROPIC_MPS_CLIENT_ID` / `UG_ANTHROPIC_MPS_CLIENT_SECRET` and never receives
 the Anthropic key. The service allows only `claude-haiku-4-5-20251001`.
+These lanes use the IT-managed `databricks-protected-runner-group` on Linux and
+Windows for staging ingress, with Python and npm installs through internal package proxies.
 Contract tests check that staging and existing lanes partition coverage, share the
-same MPS fixture, and use separate workspace credentials. Subscription relay,
-Bedrock, Foundry, and dedicated CUJ2 retain their existing fixtures.
+same MPS fixture, and use separate workspace credentials. They also check staging's
+managed runners and package proxies. Subscription relay, Bedrock, Foundry, and
+dedicated CUJ2 retain their existing fixtures.
 
 Runner component tests cover workspace OAuth token requests and HTTP-error diagnostics,
 including redaction of the client secret and encoded Basic credential before truncation.

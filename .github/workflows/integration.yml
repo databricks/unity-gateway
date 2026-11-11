@@ -64,6 +64,7 @@ env:
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
+  NPM_REGISTRY: https://registry.npmjs.org
 
 jobs:
   installation:
@@ -371,6 +372,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            --npm-registry "$NPM_REGISTRY" \
             "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
@@ -389,13 +391,17 @@ jobs:
   anthropic-mps:
     name: Anthropic MPS - Staging workspace · Claude · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     needs: workspace
-    runs-on: ${{ matrix.os }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' || 'linux-ubuntu-latest' }}
     timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-latest]
     env:
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
       UCODE_TEST_WORKSPACE: ${{ secrets.UG_ANTHROPIC_MPS_WORKSPACE }}
       DATABRICKS_CLIENT_ID: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}
@@ -409,13 +415,17 @@ jobs:
     name: Anthropic MPS - Staging workspace · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
     needs: workspace
     continue-on-error: true
-    runs-on: ${{ matrix.os }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' || 'linux-ubuntu-latest' }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-latest]
     env:
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
       UCODE_TEST_WORKSPACE: ${{ secrets.UG_ANTHROPIC_MPS_WORKSPACE }}
       DATABRICKS_CLIENT_ID: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_ID }}
       DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}

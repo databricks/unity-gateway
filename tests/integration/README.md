@@ -1133,6 +1133,9 @@ MPS CUJs select preprovisioned services:
   `claude-haiku-4-5-20251001` on `anthropic/v1/messages`, and disables all three
   forwarding options. CI never reads the provider key. Claude runs are required on
   Linux and Windows; Copilot retains its advisory status on both platforms.
+  All four lanes use `databricks-protected-runner-group`, with
+  `linux-ubuntu-latest` / `windows-server-latest` labels and internal Python/npm
+  package proxies. These managed runners can reach staging ingress.
   The configure picker journey also rejects an out-of-allowlist model and verifies
   that its completed file task used the pinned Haiku model. This and Cases 11
   replace the duplicate legacy launches, raw inference, fixture listing, and fresh
