@@ -1903,7 +1903,9 @@ class TestGetModelRecommendation:
 
     @staticmethod
     def _stub(monkeypatch, payload, reason=None):
-        monkeypatch.setattr(mc_mod, "fetch_model_recommendation", lambda ws, tok: (payload, reason))
+        monkeypatch.setattr(
+            mc_mod, "fetch_model_recommendation", lambda ws, tok, **kwargs: (payload, reason)
+        )
 
     def test_normalizes_agent_model_and_spend(self, monkeypatch):
         self._stub(

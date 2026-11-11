@@ -436,6 +436,11 @@ no UG-owned `--model` option: all three spellings are forwarded to Codex in eith
 The `smart_defaults` wire schema, legacy `spend_tiers` cache reads, and recommendation
 request gating are covered by unit/component tests listed in `../README.md`. This suite
 does not yet assert live `recommendModel` request counts for configs with and without tiers.
+The launch-only three-second recommendation socket timeout and default agent/model
+fallback have component coverage in `../test_budget_recommendation_timeout.py` with a
+stalled local HTTP peer. Other callers retain the thirty-second default. These checks
+do not establish live recommendation availability, an authentication/launch deadline,
+or production startup p90; no live budget-timeout journey is claimed.
 
 ## Dedicated-workspace CUJ5
 
