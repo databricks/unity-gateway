@@ -77,6 +77,8 @@ def clean_environment(home: Path) -> dict[str, str]:
             # agy requires the literal "true"; "1" leaves background updates enabled.
             "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            # Native discovery aborts at 3s by default, before the picker/cache's 60s wait.
+            "CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS": "30000",
             "NO_COLOR": "1",
             "TERM": "dumb",
             "COLUMNS": "160",

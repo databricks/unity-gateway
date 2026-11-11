@@ -38,6 +38,12 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
+def test_isolated_sessions_bound_claude_gateway_discovery(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS", "1")
+
+    assert clean_environment(tmp_path)["CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS"] == "30000"
+
+
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
     from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
