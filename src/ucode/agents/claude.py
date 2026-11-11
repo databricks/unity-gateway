@@ -200,7 +200,7 @@ def _resolve_web_search_model(state: dict) -> str | None:
 
 WEB_SEARCH_MCP_NAME = "web_search"
 DENIED_MCP_SERVERS_KEY = "deniedMcpServers"
-# Matches both the AI Gateway form (`databricks-claude-opus-4-8`) and the UC
+# Matches both the Unity Gateway form (`databricks-claude-opus-4-8`) and the UC
 # model-services form (`system.ai.claude-opus-4-8`).
 _CLAUDE_MODEL_RE = re.compile(
     r"^(?:system\.ai\.)?(?:databricks-)?claude-(opus|sonnet)-(\d+)(?:-(\d+))?(.*)$"

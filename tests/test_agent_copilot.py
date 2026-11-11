@@ -737,7 +737,7 @@ class TestLocationCatalog:
         assert seen["parent_schema"] == "main.ucode"
 
     def test_an_empty_schema_says_so(self, monkeypatch):
-        _stub_location(monkeypatch, [], error="AI Gateway returned no Anthropic model ids")
+        _stub_location(monkeypatch, [], error="Unity Gateway returned no Anthropic model ids")
 
         with pytest.raises(RuntimeError, match="no model services to use in main.ucode"):
             copilot.location_catalog({"workspace": WS}, "main.ucode")

@@ -447,7 +447,7 @@ def provider_service_catalog(
 def gateway_catalog(
     listing: AnthropicModelCatalog, *, fallback_wire: str | None = None
 ) -> list[CopilotModel]:
-    """The models of an AI Gateway Anthropic-route listing Copilot can use, with their limits.
+    """The models of a Unity Gateway Anthropic-route listing Copilot can use, with their limits.
 
     The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
     sends the full name, which the gateway routes directly."""
@@ -480,7 +480,7 @@ def catalog_from_listings(
 ) -> list[CopilotModel] | None:
     """The Copilot catalog from this run's model listings.
 
-    ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
+    ``gateway`` is Unity Gateway's Anthropic-route listing, which also reports the models' limits; it
     wins whenever it lists a Claude or GPT model Copilot can use. Otherwise ``entries`` is the UC
     model-services listing (None when it failed) and ``fallback`` holds the ids the per-family
     gateway listings found instead. Open models come only from ``entries``, which leaves out the

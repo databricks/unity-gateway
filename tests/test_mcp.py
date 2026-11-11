@@ -77,7 +77,7 @@ def test_restore_workspace_mcp_servers_uses_saved_name_and_destination_url(monke
 # The proxy argv every client registers as a stdio command. The leading element
 # is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
-# A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
+# A connection-backed Unity Gateway MCP service (3-part FQN) — the URL form that
 # registers as direct HTTP for supported CIMD clients.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
@@ -4722,7 +4722,7 @@ class TestConfiguredMcpServersByName:
 
 class TestListMcpCommand:
     def _state(self):
-        # A developer-added AI Gateway service on claude+codex, a workspace-managed one, and a
+        # A developer-added Unity Gateway service on claude+codex, a workspace-managed one, and a
         # skills connection (which must be reported in its own section, never as a plain server).
         return {
             "workspace": WS,

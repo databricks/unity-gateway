@@ -250,7 +250,7 @@ def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     installed, target = downgrade
     print_warning(
         f"{spec['display']} {installed} is newer than the latest version known to work "
-        f"with the Databricks AI Gateway ({target})."
+        f"with the Databricks Unity Gateway ({target})."
     )
     if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)

@@ -1,7 +1,7 @@
 # Unity Gateway for VS Code
 
-Adds Databricks AI Gateway models to the VS Code chat model picker, for Copilot Chat in Ask and Agent
-mode. The extension calls the workspace's AI Gateway directly: Anthropic Messages for Claude, Responses
+Adds Databricks Unity Gateway models to the VS Code chat model picker, for Copilot Chat in Ask and Agent
+mode. The extension calls the workspace's Unity Gateway directly: Anthropic Messages for Claude, Responses
 for GPT-5 and later, and Chat Completions for older GPT models.
 
 `ug configure --agents copilot` packs the extension with a `ug-config.json` that holds the workspace URL,

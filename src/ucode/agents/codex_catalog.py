@@ -121,7 +121,7 @@ def build_codex_catalog(
                     default_reasoning_level=efforts[-1],
                     supported_reasoning_levels=_reasoning_levels(efforts),
                 )
-            model["description"] = f"{name} served on the Databricks AI Gateway."
+            model["description"] = f"{name} served on the Databricks Unity Gateway."
             model["display_name"] = model_picker_label(name.rsplit(".", 1)[-1])
         model.update(
             slug=name,
