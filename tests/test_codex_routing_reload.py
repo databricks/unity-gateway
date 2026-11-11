@@ -70,6 +70,30 @@ def test_session_controls_use_explicit_off_and_restore_launch_baseline(tmp_path)
     assert codex_reload.session_routing_enabled(controls)
 
 
+@pytest.mark.parametrize("contents", [None, b"{", b"\xff", b"[]", b'{"unknown":"0"}'])
+def test_unreadable_session_controls_report_failure_instead_of_enabling(tmp_path, contents):
+    controls = tmp_path / "env.json"
+    if contents is not None:
+        controls.write_bytes(contents)
+    with pytest.raises((OSError, UnicodeError, ValueError)):
+        codex_reload.session_routing_enabled(controls)
+
+
+@pytest.mark.parametrize("result", [None, [], {"thread": None}, {"thread": []}])
+def test_malformed_resume_does_not_consume_restart_notice(result):
+    notices = SimpleQueue()
+    continuation = RestartContinuation(notices)
+    resumed(continuation, 1, {"id": "root"}, method="thread/start")
+    notices.put("DISABLED")
+    continuation.before_tui({"id": [], "method": "thread/resume"})
+    continuation.before_tui({"id": 2, "method": "thread/resume", "params": None})
+    assert continuation.after_resume({"id": [], "result": result}) is None
+    continuation.before_tui({"id": 3, "method": "thread/resume"})
+    assert continuation.after_resume({"id": 3, "result": result}) is None
+    assert not notices.empty()
+    assert resumed(continuation, 4, {"id": "root"})["params"]["threadId"] == "root"
+
+
 def resumed(continuation, identity, thread, *, method="thread/resume", error=False):
     continuation.before_tui({"id": identity, "method": method})
     reply = {"id": identity, "result": {"thread": thread}}
@@ -145,6 +169,15 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
         logs = []
         notices = SimpleQueue()
         engine_connections = []
+        passthrough = [
+            b"binary",
+            "{",
+            "null",
+            "[]",
+            '{"id": [], "method": "thread/resume"}',
+            '{"id": 0, "method": "thread/resume", "params": null}',
+            '{"id": [], "result": null}',
+        ]
 
         def decide(*args, **kwargs):
             route_calls.append(args)
@@ -158,6 +191,9 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
             engine_connections.append(ws)
             try:
                 async for raw in ws:
+                    if raw in passthrough:
+                        await ws.send(raw)
+                        continue
                     message = json.loads(raw)
                     calls.append(message)
                     method = message["method"]
@@ -199,6 +235,9 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
             uri = f"ws://127.0.0.1:{interposer.sockets[0].getsockname()[1]}"
             try:
                 async with connect(uri) as tui:
+                    for raw in passthrough:
+                        await tui.send(raw)
+                        assert await tui.recv() == raw
                     await tui.send(json.dumps({"id": 1, "method": "thread/start", "params": {}}))
                     assert json.loads(await tui.recv())["id"] == 1
                     await tui.send(
@@ -266,7 +305,10 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
 
 
-@pytest.mark.parametrize("failure", [None, "startup", "restart", "exit", "spawn", "interrupt"])
+@pytest.mark.parametrize(
+    "failure",
+    [None, "startup", "restart", "exit", "spawn", "interrupt", "interrupt-timeout", "controls"],
+)
 def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
     tmp_path, monkeypatch, failure
 ):
@@ -284,6 +326,16 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
     ready_calls = []
     interposer_options = {}
     waits = 0
+    warnings = []
+    monkeypatch.setattr(v2, "print_warning", warnings.append)
+    read_controls = codex_reload.read_session_environment
+
+    def read(path):
+        if failure == "controls" and waits in (2, 3):
+            raise PermissionError("temporarily unreadable")
+        return read_controls(path)
+
+    monkeypatch.setattr(codex_reload, "read_session_environment", read)
 
     def ready(*args, **kwargs):
         ready_calls.append(args)
@@ -309,14 +361,18 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
             nonlocal waits
             if "--remote" not in self.argv:
                 return 0
-            if self.terminated or self.signals:
+            if self.terminated:
+                return 130
+            if self.signals:
+                if failure == "interrupt-timeout":
+                    raise subprocess.TimeoutExpired(self.argv, timeout)
                 return 130
             waits += 1
-            if failure == "interrupt":
+            if failure in ("interrupt", "interrupt-timeout"):
                 raise KeyboardInterrupt
             if waits == 1:
                 controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
-            elif waits == 2:
+            elif waits == 2 or failure == "controls" and waits in (3, 4):
                 controls.write_text("{}")
             else:
                 return 7
@@ -341,13 +397,19 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
         process.terminate()
         return SimpleNamespace(returncode=0)
 
+    def killpg(pid, signum):
+        process = next(process for process in processes if process.pid == pid)
+        if signum == signal.SIGTERM:
+            process.terminate()
+
+    monkeypatch.setattr(v2, "os", SimpleNamespace(name=os.name, environ=os.environ, killpg=killpg))
     monkeypatch.setattr(v2, "_wait_for_app_server", ready)
     monkeypatch.setattr(v2.subprocess_cross_os, "popen", Process)
     monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
     monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
     expected = (
         SystemExit
-        if failure in (None, "interrupt")
+        if failure in (None, "interrupt", "interrupt-timeout", "controls")
         else OSError
         if failure == "spawn"
         else RuntimeError
@@ -366,10 +428,14 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
         assert stopped == [True]
     if failure in ("restart", "exit", "spawn"):
         assert processes[1].terminated
-    if failure == "interrupt":
+    if failure in ("interrupt", "interrupt-timeout"):
         assert processes[1].signals == [v2.signal.SIGINT]
         assert exc.value.code == 130
-    if failure is None:
+        assert processes[1].terminated == (failure == "interrupt-timeout")
+    if failure == "controls":
+        assert len(warnings) == 1
+        assert "Keeping the current routing state" in warnings[0]
+    if failure in (None, "controls"):
         assert exc.value.code == 7
         assert len(processes) == 4  # three server processes, one TUI
         assert all(server.argv[-2:] == ["--listen", "ws://127.0.0.1:41001"] for server in servers)
@@ -410,7 +476,10 @@ def test_shutdown_kills_unresponsive_server_with_bounded_wait():
     assert calls == ["terminate", "wait", "kill", "wait"]
 
 
-def test_forced_shutdown_releases_native_descendants_listening_port(tmp_path, monkeypatch):
+@pytest.mark.parametrize("wrapper_ignores_sigterm", [False, True])
+def test_forced_shutdown_releases_native_descendants_listening_port(
+    tmp_path, monkeypatch, wrapper_ignores_sigterm
+):
     ready = tmp_path / "ready"
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -427,11 +496,20 @@ time.sleep(60)
 """
     wrapper = """
 import signal, subprocess, sys
-signal.signal(signal.SIGTERM, lambda *_: None)
+if sys.argv.pop(1) == 'ignore':
+    signal.signal(signal.SIGTERM, lambda *_: None)
 subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
 """
     process = subprocess.Popen(
-        [sys.executable, "-c", wrapper, child, str(ready), str(port)],
+        [
+            sys.executable,
+            "-c",
+            wrapper,
+            "ignore" if wrapper_ignores_sigterm else "exit",
+            child,
+            str(ready),
+            str(port),
+        ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

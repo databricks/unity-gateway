@@ -32,7 +32,10 @@ Off sets both to `DISABLED`; on restores the launch recipe.
 
 `ug configure` removes persisted recipe headers because OS-managed headers
 outrank session configuration. An installation with an old managed recipe header
-needs reconfiguration through the existing managed-write flow. On Windows,
+needs `ug configure --global` with `UG_SKIP_OS_SETTINGS` unset, or an administrator
+to remove that header. User-only configure leaves machine-wide settings intact.
+Unreadable or malformed managed settings report the affected path and repair steps.
+On Windows,
 `requirements.toml` replaces the provider block: attribution uses body metadata,
 and the recipe header may be absent. It must never carry a stale value.
 
@@ -41,6 +44,8 @@ and the recipe header may be absent. It must never carry a stale value.
 1. The skill atomically updates the existing session-control JSON. Routing hooks
    continue to read the same file. If the sandbox denies access to those private
    controls, the skill requests native command approval; without approval, routing stays unchanged.
+   Temporary control-file read errors keep the last applied routing state; UG warns
+   once and retries until the file is readable again.
 2. UG stops its app-server, then starts a fresh process on the same WebSocket
    address with updated attribution. The TUI process and `CODEX_HOME` stay intact.
 3. Native Codex reconnects and resumes the saved conversation. UG forwards that
@@ -61,9 +66,10 @@ settings, or run per-thread unload transactions. The first-prompt router does no
 run again after a reconnect. Ordinary `/subagents` navigation causes no restart
 or recovery prompt.
 
-On POSIX, app-server shutdown gets five seconds before a forced kill of its
-process group, including the npm launcher and native server, followed by a
-bounded wait. Windows stops the whole app-server process tree with `taskkill`.
+On POSIX, app-server shutdown signals its whole process group, including the npm
+launcher and native server. After waiting up to five seconds for the launcher,
+UG kills remaining descendants even if the launcher exited promptly.
+Windows stops the whole app-server process tree with `taskkill`.
 If a child exits during that traversal, UG still waits for its app-server handle
 before deciding shutdown failed. A failed shutdown includes `taskkill` diagnostics.
 This prevents a surviving native server from holding the replacement's port.
@@ -106,7 +112,10 @@ shutdown escalation, native descendant port release, Windows process-tree shutdo
 failed startup/restart, unexpected exit, reconnect without rerouting, root-only
 continuation, ephemeral title threads, coalesced notices, and private internal RPC
 responses. Component checks simulate delayed Windows exit and failed termination;
-a real subprocess-tree check requires the descendant's listening port to be released
+malformed frames and null resume results do not close the relay or consume a pending
+restart. Temporary control-file failures preserve the current session, and a stalled
+TUI after Ctrl+C gets bounded cleanup.
+A real subprocess-tree check requires the descendant's listening port to be released
 on both Linux and Windows. Live Windows restart coverage comes from the installed-wheel journey.
 
 Linux Codex 0.165.0 installed-wheel checks passed against the selected
@@ -116,7 +125,8 @@ Linux Codex 0.165.0 installed-wheel checks passed against the selected
   calculations in each state, and exits normally.
 - `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
   toggles off with two busy children and on with three. All original IDs and
-  permissions survive; resumed children complete their own answers. Successful
+  permissions survive; resumed child commands write exclusive completion receipts
+  before the children deliver their own final answers. Successful
   parent, existing-child, and new-child inference carries both the expected recipe
   header and body metadata after each restart. The real TUI exits normally.
 

@@ -119,7 +119,11 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
     before = session_file.read_bytes()
     with monkeypatch.context() as denied:
         # Model a sandbox-denied read while leaving the actual controls available for comparison.
-        denied.setattr(session_env, "_read", Mock(side_effect=PermissionError("sandbox denied")))
+        denied.setattr(
+            session_env,
+            "read_session_environment",
+            Mock(side_effect=PermissionError("sandbox denied")),
+        )
         for flag in ("--disable-smart-routing", "--enable-smart-routing"):
             result = runner.invoke(cli.app, ["codex", flag], env=env)
             assert result.exit_code == 1

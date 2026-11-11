@@ -11,44 +11,26 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-`test_codex_routing_reload.py` covers app-server restarts, off/on recipe config,
-bounded cleanup, failed startup/restart, unexpected exits, reconnect without
-rerouting, parent-only continuation, ephemeral title threads, rapid notices, and private
-internal responses. App-server stderr is retained in the TUI evidence artifacts.
-Recovery guidance uses prior child assignments even when `list_agents` omits saved children.
-Launcher configuration checks exercise both POSIX and Windows shutdown paths with
-mock processes; they do not establish native Windows restart coverage.
-Shutdown checks also cover a delayed Windows exit after a nonzero `taskkill`,
-retained failure diagnostics, and real descendant port release on both platforms.
-`../test_integration_mcp.py` covers refreshing Codex's printed `/mcp` snapshots
-until all expected servers are connected in the same snapshot; persistent startup
-and servers that are never connected together still fail.
-Request-recorder component tests preserve actual upstream responses after a client
-disconnects during headers or body, including Windows connection-aborted errors.
-These replace obsolete tests of manual descendant unloading, permission reconstruction,
-held input, approval draining, and Escape suppression. Native Codex owns resume and
-reconnect behavior; those removed controller guarantees are no longer provided.
-
-`test_smart_router_codex_agent_navigation_preserves_running_child` retains the real
-`/subagents` navigation journey: no restart, stable IDs, no interrupted or duplicated
-command, a child-owned answer, and a working parent follow-up.
+`test_codex_routing_reload.py` covers restart configuration, bounded process-tree
+cleanup, early wrapper exit, transient control-file failures, stalled Ctrl+C,
+malformed control messages, and root-only recovery without rerouting the first prompt.
+Managed-config checks require path-specific repair instructions, including user-only
+and administrator-managed installations. Mock launcher checks cover POSIX and Windows;
+real subprocess checks require descendant port release.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
-retains the installed-wheel busy-child off/on journey. It requires stable IDs and
-permissions, child-owned answers, and matching recipe fields on successful parent,
-existing-child, and new-child inference. On Windows it uses native approval for
-the exact toggle command and verifies the original approval policy and sandbox survive.
-The busy-child journey and routing-only
-off/on skill journey passed on Linux Codex 0.165.0 against the selected `eng-ml-inference` profile. They preserve the
-existing restart, inference, identity, permission, and normal-exit assertions.
-Navigation passed the Linux Codex 0.165.0 CI journey. Earlier live results on
-0.164.0/0.165.0/0.167.0 tested the removed in-process controller.
+checks the installed-wheel busy-child off/on journey: stable IDs and permissions,
+exclusive command-completion receipts, child-owned final answers, successful parent
+and child inference with the current recipe, and normal TUI exit. Windows uses native
+approval for the exact toggle command. Ordinary `/subagents` navigation has separate
+coverage requiring no restart or interrupted command.
 
-Separate Linux Codex 0.167.0 native checks passed same-ID child recovery with
-saved tool history and root sandbox preservation, plus real TUI reconnect and
-inference before/after restart. Selected-workspace attribution is now covered by
-the Linux 0.165.0 installed-wheel busy-child journey.
-See [restart behavior and validation limits](../../docs/codex-routing-reload.md).
+`test_integration_mcp.py` covers repeated printed inventory snapshots without
+overflowing scrollback; every expected server must be connected in the same snapshot.
+Request-recorder checks preserve upstream responses after client disconnects during
+headers or body, including Windows connection-aborted errors.
+
+See [restart behavior and validation limits](../../docs/codex-routing-reload.md) for live results and remaining gaps.
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).

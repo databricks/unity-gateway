@@ -1206,8 +1206,9 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
 
     Expected: every resumed parent/child inference carries the new recipe in body metadata
     and the header (Windows permits an absent header). All original IDs and permissions
-    survive; busy children complete their own answers and newly spawned children inherit
-    the current recipe. Windows uses native approval for the exact toggle command;
+    survive; resumed commands write exclusive completion receipts before children deliver
+    their own final answers. Newly spawned children inherit the current recipe.
+    Windows uses native approval for the exact toggle command;
     the workspace-write sandbox stays enabled. Requires real gateway responses and a normal TUI exit.
     """
     session = live_session
@@ -1230,6 +1231,8 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
         "while not (root / f'release-{phase}').exists():\n"
         "    if time.monotonic() >= deadline: raise TimeoutError('child gate')\n"
         "    time.sleep(0.05)\n"
+        "with (root / f'{phase}-{name}-completed').open('x') as receipt:\n"
+        f"    receipt.write('{marker}')\n"
         f"print(f'child-{{phase}}-{{name}}-{marker}')\n"
     )
 
@@ -1246,7 +1249,9 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
 
     def children_finished(phase, threads):
         return all(
-            _codex_thread_answered(
+            (receipt := session.cwd / f"{phase}-{path.rsplit('/', 1)[-1]}-completed").exists()
+            and receipt.read_text() == marker
+            and _codex_thread_answered(
                 session, tid, f"child-{phase}-{path.rsplit('/', 1)[-1]}-{marker}"
             )
             for path, tid in threads.items()
@@ -1425,6 +1430,10 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                 ),
             )
             session.record("thread-identities.json", on_threads)
+            session.record(
+                "child-completion-receipts.json",
+                {path.name: path.read_text() for path in session.cwd.glob("*-completed")},
+            )
             for records in agent_sessions(session, "codex").values():
                 contexts = [row["payload"] for row in records if row.get("type") == "turn_context"]
                 assert contexts

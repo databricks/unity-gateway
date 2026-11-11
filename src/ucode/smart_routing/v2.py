@@ -871,6 +871,9 @@ def _stop_codex_process(process, *, process_tree: bool = False, port: int | None
             text=True,
             timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
         )
+    elif process_tree:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
     else:
         process.terminate()
     # A descendant can exit during taskkill's traversal; wait for the owned handle.
@@ -888,6 +891,11 @@ def _stop_codex_process(process, *, process_tree: bool = False, port: int | None
         else:
             process.kill()
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+    finally:
+        if process_tree and os.name != "nt":
+            # The wrapper can exit before descendants release the listener.
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
     if port is None:
         return
     deadline = time.monotonic() + PROCESS_SHUTDOWN_TIMEOUT_SECONDS
@@ -990,6 +998,7 @@ def launch_codex(
     app_server = start_app_server(enabled=True)
     restart_notices: SimpleQueue[str] = SimpleQueue()
     applied = True
+    controls_unreadable = False
     tui = None
     stop_interposer = None
     try:
@@ -1034,7 +1043,17 @@ def launch_codex(
                             f"see {CODEX_APP_SERVER_LOG}. Restart ug codex and resume "
                             "your saved conversation."
                         ) from None
-                    enabled = session_routing_enabled(session_env_path)
+                    try:
+                        enabled = session_routing_enabled(session_env_path)
+                    except (OSError, UnicodeError, ValueError) as exc:
+                        if not controls_unreadable:
+                            print_warning(
+                                f"Could not read Smart Router controls at {session_env_path}: {exc}. "
+                                "Keeping the current routing state; retrying automatically."
+                            )
+                        controls_unreadable = True
+                        continue
+                    controls_unreadable = False
                     if enabled == applied:
                         continue
                     _stop_codex_process(app_server, process_tree=True, port=app_port)
@@ -1052,7 +1071,11 @@ def launch_codex(
                     applied = enabled
         except KeyboardInterrupt:
             tui.send_signal(signal.SIGINT)
-            returncode = tui.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            try:
+                returncode = tui.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                _stop_codex_process(tui)
+                returncode = 130
             tui = None
     finally:
         try:

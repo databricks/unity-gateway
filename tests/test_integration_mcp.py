@@ -12,6 +12,7 @@ from tests.integration.utils import mcp
     [
         ([("connected", "connected")], True),
         ([("starting", "connected"), ("connected", "connected")], True),
+        ([("starting", "connected")] * 40 + [("connected", "connected")], True),
         ([("starting", "connected")], False),
         ([("connected", "starting"), ("starting", "connected")], False),
     ],
@@ -45,6 +46,7 @@ def test_codex_inventory_requires_both_servers_connected_in_same_snapshot(
                         f"    • Tools: {tool}",
                     ]
                 )
+            rows.extend(["other MCP settings"] * 40)
             snapshot = "\n".join(rows)
             self.visible += "\n" + snapshot
             self.output.append("\r\n".join(rows) + "\r\n")

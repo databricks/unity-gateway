@@ -87,7 +87,7 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
     refresh_at = time.monotonic() + 2
 
     def connected(screen):
-        nonlocal refresh_at
+        nonlocal refresh_at, output_start
         inventory = screen.rsplit("MCP Tools", 1)[-1]
         if all(
             re.search(
@@ -101,6 +101,7 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
             return True
         if ": starting" in inventory and time.monotonic() >= refresh_at:
             # /mcp prints a snapshot; startup notifications do not update those rows.
+            output_start = len(tui.output)
             tui.submit("/mcp verbose")
             refresh_at = time.monotonic() + 2
         return False

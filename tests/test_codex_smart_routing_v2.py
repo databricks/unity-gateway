@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import tomllib
 from types import SimpleNamespace
@@ -20,11 +21,22 @@ def _isolate_app_server_log(tmp_path, monkeypatch):
     monkeypatch.setattr(v2, "CODEX_APP_SERVER_LOG", tmp_path / "codex-app-server.log")
 
 
-@pytest.fixture(params=["posix", "nt"])
+@pytest.fixture
 def codex_launch_processes(request, monkeypatch):
     """Configuration checks must not start or stop real agent processes."""
     processes = []
-    monkeypatch.setattr(v2, "os", SimpleNamespace(name=request.param, environ=os.environ))
+
+    def killpg(pid, signum):
+        assert pid == processes[0].pid
+        if signum == signal.SIGTERM:
+            processes[0].terminate()
+
+    monkeypatch.setattr(
+        v2,
+        "os",
+        SimpleNamespace(name=getattr(request, "param", "posix"), environ=os.environ, killpg=killpg),
+    )
+    monkeypatch.setattr(v2, "signal", SimpleNamespace(SIGTERM=signal.SIGTERM, SIGKILL=9))
 
     class Process:
         def __init__(self, argv, **kwargs):
@@ -302,7 +314,16 @@ class TestLaunchCodex:
         user_config.write_bytes(saved_config)
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
+
+        def killpg(pid, signum):
+            assert pid == processes[0].pid
+            if signum == signal.SIGTERM:
+                processes[0].terminate()
+
+        monkeypatch.setattr(
+            v2, "os", SimpleNamespace(name=platform_name, environ=os.environ, killpg=killpg)
+        )
+        monkeypatch.setattr(v2, "signal", SimpleNamespace(SIGTERM=signal.SIGTERM, SIGKILL=9))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
@@ -487,6 +508,7 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
+    @pytest.mark.parametrize("codex_launch_processes", ["posix", "nt"], indirect=True)
     def test_subagent_only_launch_enables_restart_without_first_prompt_routing(
         self, tmp_path, monkeypatch, codex_launch_processes
     ):

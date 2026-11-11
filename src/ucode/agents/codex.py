@@ -2035,9 +2035,23 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
 
 def _reject_managed_recipe() -> None:
     path = codex_managed_config_path()
-    if path is None or (text := read_managed_file(path)) is None:
+    if path is None:
         return
-    managed = _parse_managed_config(text)
+    repair = (
+        "Run `ug configure --global` with UG_SKIP_OS_SETTINGS unset to repair the managed file. "
+        "If your administrator manages this file, ask them to repair it and remove any "
+        f"{SMART_ROUTER_RECIPE_HEADER} entries from http_headers and env_http_headers. "
+        "User-only configure does not update machine-wide settings."
+    )
+    try:
+        text = read_managed_file(path)
+        if text is None:
+            return
+        managed = _parse_managed_config(text)
+    except (RuntimeError, UnicodeError) as exc:
+        raise RuntimeError(
+            f"Could not read Codex managed settings at {path}: {exc}. {repair}"
+        ) from exc
     provider = managed.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
     if any(
         name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold()
@@ -2046,8 +2060,7 @@ def _reject_managed_recipe() -> None:
     ):
         raise RuntimeError(
             f"Codex managed settings at {path} pin the Smart Router recipe. "
-            "Run `ug configure` to remove that persisted header before using smart routing; "
-            "otherwise session toggles cannot update inference attribution."
+            f"Session toggles cannot update inference attribution. {repair}"
         )
 
 

@@ -12,7 +12,7 @@ from ucode.constants import (
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
     SMART_ROUTER_RECIPE_HEADER,
 )
-from ucode.smart_routing.session_env import _read
+from ucode.smart_routing.session_env import read_session_environment
 
 
 def routing_config(config: dict, enabled: bool) -> dict:
@@ -41,7 +41,7 @@ def routing_config(config: dict, enabled: bool) -> dict:
 
 
 def session_routing_enabled(controls: Path) -> bool:
-    overrides = _read(controls)
+    overrides = read_session_environment(controls)
     return not all(
         overrides.get(key) == "0"
         for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
@@ -57,18 +57,26 @@ class RestartContinuation:
         self.recipe: str | None = None
 
     def before_tui(self, message: dict) -> None:
+        params = message.get("params", {})
         if (
             message.get("method") in ("thread/start", "thread/resume")
-            and "id" in message
-            and not message.get("params", {}).get("ephemeral")
+            and isinstance(message.get("id"), (str, int))
+            and isinstance(params, dict)
+            and not params.get("ephemeral")
         ):
             self.requests[message["id"]] = message["method"]
 
     def after_resume(self, message: dict) -> dict | None:
-        method = self.requests.pop(message.get("id"), None)
-        if method is None:
+        identity = message.get("id")
+        if not isinstance(identity, (str, int)):
             return None
-        thread = message.get("result", {}).get("thread", {})
+        method = self.requests.pop(identity, None)
+        result = message.get("result")
+        if method is None or "error" in message or not isinstance(result, dict):
+            return None
+        thread = result.get("thread")
+        if not isinstance(thread, dict):
+            return None
         source = thread.get("source")
         if thread.get("parentThreadId") or isinstance(source, dict) and "subAgent" in source:
             return None

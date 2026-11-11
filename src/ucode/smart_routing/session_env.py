@@ -49,7 +49,7 @@ def _validate(values: object) -> dict[str, str]:
     return values
 
 
-def _read(path: Path) -> dict[str, str]:
+def read_session_environment(path: Path) -> dict[str, str]:
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
@@ -61,7 +61,7 @@ def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -
     except RuntimeError:
         return effective
     try:
-        effective.update(_read(path))
+        effective.update(read_session_environment(path))
     except (OSError, UnicodeError, ValueError) as exc:
         print(
             f"Smart Router could not read session controls at {path} ({exc}); "
@@ -75,7 +75,7 @@ def set_session_environment(values: Mapping[str, str]) -> None:
     """Atomically replace the current session's allowlisted overrides."""
     path = session_env_path()
     try:
-        _read(path)
+        read_session_environment(path)
     except PermissionError as exc:
         raise RuntimeError(
             f"Permission denied reading Smart Router session controls at {path}. "

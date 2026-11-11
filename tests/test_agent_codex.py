@@ -2202,22 +2202,44 @@ class TestCodexManagedConfig:
         ]
 
     @pytest.mark.parametrize("key", ["http_headers", "env_http_headers"])
+    @pytest.mark.parametrize("opt_out", [None, "env", "user_scope"])
     def test_smart_routing_rejects_stale_managed_recipe_before_startup(
-        self, tmp_path, monkeypatch, key
+        self, tmp_path, monkeypatch, key, opt_out
     ):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True)
         managed_path.write_text(
             f'[model_providers.Databricks.{key}]\ndatabricks-smart-router-recipe = "stale"\n'
         )
+        if opt_out == "env":
+            monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")
+        elif opt_out == "user_scope":
+            managed_files.set_config_scope("user")
         monkeypatch.setattr("ucode.agents.ensure_minimum_version", lambda *args: None)
         monkeypatch.setattr(
             codex.smart_routing_v2,
             "launch_codex",
             lambda *args, **kwargs: pytest.fail("stale attribution must block startup"),
         )
-        with pytest.raises(RuntimeError, match="ug configure"):
+        with pytest.raises(RuntimeError, match="ug configure --global") as exc:
             codex._launch_smart_routing({"workspace": WS}, [])
+        assert str(managed_path) in str(exc.value)
+        assert "UG_SKIP_OS_SETTINGS unset" in str(exc.value)
+        assert "administrator" in str(exc.value)
+        assert "User-only configure does not update" in str(exc.value)
+
+    @pytest.mark.parametrize("contents", [b"[invalid", b"\xff"])
+    def test_invalid_managed_recipe_config_reports_path_and_repair(
+        self, tmp_path, monkeypatch, contents
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_bytes(contents)
+        with pytest.raises(RuntimeError, match="Could not read Codex managed settings") as exc:
+            codex._reject_managed_recipe()
+        assert str(managed_path) in str(exc.value)
+        assert "ug configure --global" in str(exc.value)
+        assert "administrator" in str(exc.value)
 
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_config(self, tmp_path, monkeypatch, opt_out):

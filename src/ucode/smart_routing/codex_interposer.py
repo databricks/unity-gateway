@@ -29,6 +29,14 @@ SwitchMessageFn = Callable[[str, str], str]
 TokenProvider = Callable[[], str]
 
 
+def _parse_message(raw: str) -> dict | None:
+    try:
+        message = json.loads(raw)
+    except ValueError:
+        return None
+    return message if isinstance(message, dict) else None
+
+
 def _prompt_from_turn(params: dict) -> str | None:
     """Extract the plaintext portions of a Codex ``turn/start`` input."""
     raw_input = params.get("input")
@@ -79,11 +87,8 @@ class _Session:
         self.settings_update_event: asyncio.Event = asyncio.Event()
 
     def on_tui_frame(self, raw: str) -> TuiFrameResult:
-        try:
-            msg = json.loads(raw)
-        except ValueError:
-            return TuiFrameResult(raw, needs_settings_update=False)
-        if not isinstance(msg, dict):
+        msg = _parse_message(raw)
+        if msg is None:
             return TuiFrameResult(raw, needs_settings_update=False)
         params = msg.get("params")
         if msg.get("method") == TURN_START and isinstance(params, dict):
@@ -121,14 +126,15 @@ class _Session:
         return TuiFrameResult(raw, needs_settings_update=False)
 
     def on_engine_frame(self, raw: str) -> list[dict]:
-        try:
-            msg = json.loads(raw)
-        except ValueError:
+        msg = _parse_message(raw)
+        if msg is None:
             return []
-        if not isinstance(msg, dict):
-            return []
-        params = msg.get("params") if isinstance(msg.get("params"), dict) else {}
-        result = msg.get("result") if isinstance(msg.get("result"), dict) else {}
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        result = msg.get("result")
+        if not isinstance(result, dict):
+            result = {}
         for src in (params, result):
             thread = src.get("thread")
             tid = src.get("threadId") or (thread.get("id") if isinstance(thread, dict) else None)
@@ -212,8 +218,8 @@ async def _handle_tui(tui, upstream_uri: str, sess: _Session, log, restart=None)
         async def tui_to_app():
             async for frame in tui:
                 if isinstance(frame, str):
-                    if restart is not None:
-                        restart.before_tui(json.loads(frame))
+                    if restart is not None and (message := _parse_message(frame)) is not None:
+                        restart.before_tui(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
                     if result.needs_settings_update and sess.thread_id:
                         update_id = f"ucode-route-{uuid.uuid4().hex}"
@@ -243,8 +249,8 @@ async def _handle_tui(tui, upstream_uri: str, sess: _Session, log, restart=None)
 
         async def app_to_tui():
             async for frame in upstream:
-                if restart is not None and isinstance(frame, str):
-                    message = json.loads(frame)
+                message = _parse_message(frame) if isinstance(frame, str) else None
+                if restart is not None and message is not None:
                     if restart.take_response(message):
                         if error := message.get("error"):
                             log(f"[RESTART FAILED] continuation: {error}")
@@ -273,8 +279,8 @@ async def _handle_tui(tui, upstream_uri: str, sess: _Session, log, restart=None)
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))
 
-                if restart is not None and isinstance(frame, str):
-                    continuation = restart.after_resume(json.loads(frame))
+                if restart is not None and message is not None:
+                    continuation = restart.after_resume(message)
                     if continuation is not None:
                         await upstream.send(json.dumps(continuation))
 
