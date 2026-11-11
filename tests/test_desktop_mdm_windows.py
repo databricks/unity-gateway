@@ -3,6 +3,7 @@
 import json
 import os
 import runpy
+import sys
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -317,3 +318,28 @@ def test_runtime_discards_provisioning_auth_but_keeps_current_user_home(
     assert os.environ["USERPROFILE"] == "consumer-home"
     assert "administrator-path" not in os.environ["PATH"]
     assert not any(value == "administrator-only" for value in os.environ.values())
+
+
+@pytest.mark.parametrize("rejected", [False, True])
+def test_acl_validation_exchanges_text_with_process(tmp_path, monkeypatch, rejected):
+    monkeypatch.setattr(
+        windows_machine_paths.system_cross_os, "windows_program_files_dir", lambda: tmp_path
+    )
+    run = windows_machine_paths.subprocess_cross_os.run
+    child = (
+        "import json, sys; "
+        "assert json.load(sys.stdin); "
+        "sys.stderr.write('ACL rejected' if sys.argv[1] == 'True' else ''); "
+        "sys.exit(int(sys.argv[1] == 'True'))"
+    )
+
+    def acl_process(args, **kwargs):
+        return run([sys.executable, "-c", child, str(rejected)], **kwargs)
+
+    # PowerShell is unavailable on Linux; keep the actual subprocess stream exchange.
+    monkeypatch.setattr(windows_machine_paths.subprocess_cross_os, "run", acl_process)
+    if rejected:
+        with pytest.raises(PermissionError, match="ACL rejected"):
+            windows_machine_paths.validate(tmp_path, required=True)
+    else:
+        windows_machine_paths.validate(tmp_path, required=True)
