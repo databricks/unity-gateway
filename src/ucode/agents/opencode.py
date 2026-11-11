@@ -7,6 +7,7 @@ import os
 import re
 import signal
 
+from ucode import metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -496,6 +497,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             *tool_args[separator:],
         ]
 
+    metrics.agent_handoff()
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
