@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import pytest
@@ -46,18 +47,13 @@ class TestModelKey:
     def test_collapses_gateway_spellings(self, model):
         assert pricing.model_key(model) == "claude-opus-4-8"
 
-    def test_matches_a_served_bedrock_id_to_the_requested_model(self):
-        # The gateway reports Haiku responses by their Bedrock id.
-        assert pricing.model_key("anthropic.claude-haiku-4-5-20251001-v1:0") == pricing.model_key(
-            "system.ai.claude-haiku-4-5"
-        )
-
     def test_unwraps_non_claude_gateway_models(self):
         assert pricing.model_key("anthropic-aigw-73ea02b2-system.ai.glm-5-2") == "glm-5-2"
 
     @pytest.mark.parametrize(
         ("served", "requested"),
         [
+            ("anthropic.claude-haiku-4-5-20251001-v1:0", "system.ai.claude-haiku-4-5"),
             ("glm-5.3-flash", "system.ai.glm-5-3-flash"),
             ("glm-5-3-colo-on-sp-v1", "system.ai.glm-5-3"),
             ("kimi-k3-colo-on-sp-v1", "system.ai.kimi-k3"),
@@ -147,7 +143,14 @@ class TestPriceCache:
             "deepseek-v3": ModelPrice(input=Decimal("1"), output=Decimal("2")),
             "deepseek-v4": ModelPrice(input=Decimal("3"), output=Decimal("4")),
         }
-        pricing.write_price_cache(path, prices)
+        # Different launches can refresh disjoint model sets in the same workspace.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            writes = [
+                pool.submit(pricing.write_price_cache, path, {model: price})
+                for model, price in prices.items()
+            ]
+            for write in writes:
+                write.result()
 
         cached = pricing.read_price_cache(path)
 
@@ -164,7 +167,10 @@ class TestPriceCache:
 
         assert cached is not None
         assert cached == {"claude-opus-4-8": OPUS, "claude-sonnet-4": SONNET_4}
-        assert [entry.name for entry in path.parent.iterdir()] == ["model-prices.json"]
+        assert {entry.name for entry in path.parent.iterdir()} == {
+            "model-prices.json",
+            "model-prices.json.lock",
+        }
 
     @pytest.mark.parametrize(
         "content",
@@ -173,6 +179,8 @@ class TestPriceCache:
             json.dumps({"version": 999, "models": {"claude-opus-4-8": {"input": "5"}}}),
             json.dumps({"version": 1, "models": {}}),
             json.dumps({"version": 1, "models": []}),
+            json.dumps({"version": 1, "models": {"claude-opus-4-8": {}}}),
+            json.dumps({"version": 1, "models": {"claude-opus-4-8": {"input": "invalid"}}}),
         ],
     )
     def test_unusable_cache_reads_as_absent(self, tmp_path, content):

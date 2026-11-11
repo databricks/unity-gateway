@@ -57,7 +57,10 @@ test('a denied savings read preserves orchestration, startup and model requests'
 });
 
 async function savingsRow($: any, on: On) {
-  const state = { controls: {} as Record<string, string>, failWrites: false, writes: 0, prices: 0 };
+  const state = {
+    controls: {} as Record<string, string>, failWrites: false, writes: 0, prices: 0,
+    usage: null as any,
+  };
   const clock = mock.clock(on);
   const env: Record<string, unknown> = { ...options, UCODE_SESSION_ENV_FILE: '/session/env.json' };
   on('env.get', (_, e) => ({ value: env[e.name] }));
@@ -76,11 +79,11 @@ async function savingsRow($: any, on: On) {
       before_user_switch: true, usage: { input_tokens: 100, output_tokens: 10 },
     }],
   }) }));
-  on('fs.write', () => {
+  on('session.model', () => ({ value: 'claude-opus-4-8' }));
+  on('process.run', (_, e) => {
     state.writes += 1;
-    return state.failWrites ? { deny: 'ENOSPC' } : { value: undefined };
-  });
-  on('process.run', () => {
+    if (state.failWrites) return { value: { exitCode: 1, stderr: '', stdout: '{"savings":null}' } };
+    state.usage = JSON.parse(e.init.stdin);
     state.prices += 1;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       savings: { saved: true, amount: '$0.18', percent: '60%' },
@@ -107,6 +110,23 @@ test('saved off/on controls hide and restore a mounted savings row', { options }
   state.controls = {};
   await clock.advance(1000);
   expect(JSON.stringify(await row.drawn())).toContain('$0.18');
+});
+
+test('a request model override keeps the selected main model and child baseline', { options }, async ($, on) => {
+  const { state, clock } = await savingsRow($, on);
+  await $.turn.step({ turnId: 'turn', index: 0, messageCount: 1, model: 'claude-haiku-4-5' }).next();
+  await $.turn.step({
+    turnId: 'child-turn', index: 0, messageCount: 1, model: 'claude-sonnet-4-6', agentId: 'child-2',
+  }).next();
+  await $.turn.complete({ answer: 'done', isAborted: false });
+  await clock.advance(1);
+  expect(state.usage.main_model).toBe('claude-opus-4-8');
+  expect(state.usage.user_switched).toBe(false);
+  expect(state.usage.entries.find((entry: any) => entry.agent === 'child-2')).toEqual({
+    agent: 'child-2', baseline: 'claude-opus-4-8', served: 'claude-sonnet-4-6',
+    before_user_switch: true,
+    usage: { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+  });
 });
 
 test('a failed usage write removes the stale estimate until a later write succeeds', { options }, async ($, on) => {
