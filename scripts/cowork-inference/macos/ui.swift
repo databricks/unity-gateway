@@ -41,29 +41,8 @@ let arguments = Array(CommandLine.arguments.dropFirst())
 let labelAttributes = ["AXTitle", "AXDescription", "AXValue", "AXHelp"]
 guard let operation = arguments.first else { fail("Expected snapshot, click, or type") }
 
-func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
-    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
-          let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else {
-        fail("Could not create keyboard event")
-    }
-    down.flags = flags
-    up.flags = flags
-    down.postToPid(app.processIdentifier)
-    up.postToPid(app.processIdentifier)
-}
-
-if arguments.count == 2 && operation == "key" {
-    app.activate(options: [.activateIgnoringOtherApps])
-    let deadline = Date().addingTimeInterval(5)
-    while NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
-        guard Date() < deadline else { fail("Claude did not become the foreground application") }
-        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
-    }
-    switch arguments[1] {
-    case "go-to-folder": key(5, flags: [.maskCommand, .maskShift])
-    case "return": key(36)
-    default: fail("Unsupported key")
-    }
+if operation == "pid" {
+    print(app.processIdentifier)
     exit(0)
 }
 
@@ -86,17 +65,6 @@ if operation == "snapshot" {
 }
 guard arguments.count >= 2 else { fail("Expected a control label") }
 let label = arguments[1]
-if operation == "folder-path" {
-    guard let sheet = sheets.last,
-          let textField = descendants(sheet).first(where: {
-              field($0, "AXRole") == "AXTextField" && field($0, "AXEnabled") == "1"
-          }) else { fail("Folder path field unavailable") }
-    AXUIElementSetAttributeValue(textField, "AXFocused" as CFString, kCFBooleanTrue)
-    guard AXUIElementSetAttributeValue(textField, "AXValue" as CFString, label as CFString) == .success else {
-        fail("Could not set folder path")
-    }
-    exit(0)
-}
 guard let control = activeControls.first(where: { element in
     labelAttributes.contains(where: { field(element, $0) == label })
 }) else { fail("Control unavailable: \(label)") }

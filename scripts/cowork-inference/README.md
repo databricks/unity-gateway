@@ -106,7 +106,9 @@ installed version. Dependencies use the same approved public npm/PyPI path as Wi
 `macos/ui.swift` drives the installed app through native macOS Accessibility APIs.
 The Python harness runs through Terminal to inherit the hosted image's existing
 Accessibility authorization; it does not modify TCC or macOS security settings.
-A missing permission fails the job. UG configures the app through its public CLI,
+Folder-picker keyboard input uses System Events, as in the existing Codex macOS harness.
+Accessibility checks and clicks stay scoped to the active native dialog. A missing permission
+fails the job. UG configures the app through its public CLI,
 then the test accepts gateway onboarding, opens Cowork, verifies the configured
 model, sends the prompt, and requires both the exact answer and completion marker.
 Navigation supports the Cowork tab and the task screen exposed under Claude in the
