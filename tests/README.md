@@ -3,14 +3,24 @@
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace
 `4168069418041172` (`dbc-1bb9e8f5-bf3a`). Integration's `anthropic_mps`
-Claude lanes and the legacy `TestModelProviderLaunch` shard are required;
-Copilot's equivalent lanes remain advisory. CI reads the workspace URL from
+Claude lanes are required; Copilot's equivalent lanes remain advisory. CI reads the
+workspace URL from
 `UG_ANTHROPIC_MPS_WORKSPACE` and authenticates with
 `UG_ANTHROPIC_MPS_CLIENT_ID` / `UG_ANTHROPIC_MPS_CLIENT_SECRET` and never receives
 the Anthropic key. The service allows only `claude-haiku-4-5-20251001`.
 Contract tests check that staging and existing lanes partition coverage, share the
 same MPS fixture, and use separate workspace credentials. Subscription relay,
 Bedrock, Foundry, and dedicated CUJ2 retain their existing fixtures.
+
+Direct-provider coverage is consolidated in the installed-CLI journeys. The configure
+picker journey checks a completed task on the pinned Haiku model and rejects a model
+outside the MPS allowlist; Cases 11 check configured and fresh provider discovery.
+These replace the legacy launch, raw inference, per-fixture listing, and fresh
+`--version` checks. Generic MPS listing remains in
+`test_e2e.py::TestModelProviderServicesDiscovery`;
+family-alias resolution remains in `test_databricks.py::TestResolveProviderLaunchModel`.
+A separate live `--model haiku` inference and raw Messages response-shape assertions
+are no longer covered.
 
 Antigravity MCP web-search evidence checks accept homepage slash variants, omit
 `utm_source` attribution, and separate closing Markdown from sentence punctuation.
@@ -1086,7 +1096,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | --- | --- | --- |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
-| `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task; normal exit |
+| `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
 | `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku/Sonnet deployment defaults; completed TUI file task on Sonnet; normal exit |
 | `test_ug_claude_fresh_foundry_mps` | Launch fresh Claude with a Foundry provider and deployment name | Correct provider header; successful structured answer containing an unknown file value; no routing |
 | `test_ug_configure_claude_custom_foundry_mps` | Select custom Foundry MPS through the configure picker, then launch plain Claude | Saved provider and Sonnet default; correct Claude provider header; completed TUI file task on Sonnet; normal exit; no routing |
@@ -1121,7 +1131,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_agents_self_managed_opencode_journey` | Under the injected `managed_workspace_default` config (enables Claude/Codex, not OpenCode): bare configure, `ug agents list`, refused OpenCode launch, `ug agents add opencode`, real headless task, `ug agents remove opencode` (marker `managed_fixture and opencode`, non-blocking CI lane) | OpenCode absent from the list and launch fails with "doesn't enable OpenCode" / `ug agents add opencode`; after add it is listed self-managed and the headless Read task returns the fixture value; after remove it is hidden and refused again |
 | `test_ug_agents_admin_managed_guardrails` | `ug agents add` / `remove` on an agent the admin config enables | Add is a no-op noting the admin manages it; remove is rejected with nonzero exit |
 | `test_ug_claude_headless_fresh_workspace`, `test_ug_codex_headless_fresh_workspace` | From fresh state, launch an agent with `--workspace` against a workspace with no managed config | Claude Haiku 4.5 and Codex GPT-5.4 Nano read an unpredictable file value through the gateway and return it in a structured completed answer; exit zero; no routing |
-| `test_ug_claude_fresh_provider_launch`, `test_ug_codex_fresh_provider_launch` | From fresh state, launch each real agent CLI with `--workspace` and an existing provider | Both CLIs report the selected provider and exit successfully without routing or inference; Claude also checks its provider header. Cases 11/12 cover provider discovery |
+| `test_ug_codex_fresh_provider_launch` | From fresh state, launch Codex with `--workspace` and an existing provider | Real CLI reports the selected provider and exits successfully without routing or inference; Case 12 covers provider discovery |
 | `test_ug_claude_headless_fresh_model_location` | From fresh state, launch Claude in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.claude_haiku` | Haiku reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_codex_headless_fresh_model_location` | From fresh state, launch Codex in the CUJ7 workspace with `--workspace`, `--model-location ug_e2e.models`, and `ug_e2e.models.gpt_luna` | Luna reads an unpredictable file value through the selected model location and returns it in a structured completed answer; exit zero; no routing |
 | `test_ug_claude_preserves_preexisting_managed_family_defaults` | Launch fresh Claude with pre-existing OS-managed family defaults and select the Sonnet family | Every default survives unchanged; the selected family completes a file task through the preconfigured Sonnet service |
@@ -1203,8 +1213,6 @@ paired HTTP 200 response, and a nonempty final answer in the completed parent tu
 the submitted greeting prompt. Request IDs correlate recorded traffic without constraining
 answer text. Offline evidence checks reject empty, incomplete, unrelated and child-session
 answers while retaining hidden-value requirements for file tasks.
-The existing direct Anthropic non-relay MPS e2e check also requires a complete Messages
-response: assistant role/type, the pinned model, `end_turn`, and nonempty text.
 The configuration case verifies sandbox MCP
 selection and generated client listings; live sandbox execution remains deferred because
 MAS cannot downscope the CI service principal. CUJ1 and CUJ2 also initialize Claude Desktop's

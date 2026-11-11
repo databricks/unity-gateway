@@ -295,26 +295,6 @@ def test_anthropic_mps_fixtures_use_the_same_service():
         assert config["enabled_agents"][0]["config"]["models"]["model_provider_service"] == expected
 
 
-def test_legacy_anthropic_mps_ci_has_its_own_workspace_shard():
-    workflow = _workflow("ci.yml")
-    clauses = dict(
-        re.findall(r"- group: ([^\n]+)\n\s+name: [^\n]+\n\s+keyword: ([^\n]+)", workflow)
-    )
-    assert clauses["anthropic-mps"] == "TestModelProviderLaunch"
-    assert "TestModelProviderLaunch" not in clauses["claude"]
-    assert "TestModelProviderLaunch" in clauses["gateway"]
-    workspace_secret = (
-        "${{ secrets[matrix.group == 'anthropic-mps' && "
-        "'UG_ANTHROPIC_MPS_WORKSPACE' || 'UCODE_TEST_WORKSPACE'] }}"
-    )
-    for name in ("UCODE_TEST_WORKSPACE", "DATABRICKS_HOST"):
-        assert f"{name}: {workspace_secret}" in workflow
-    assert "DATABRICKS_BEARER: ${{ matrix.group != 'anthropic-mps' && " in workflow
-    assert (
-        "mint_m2m_token(os.environ['UCODE_TEST_WORKSPACE'], client_id, client_secret)" in workflow
-    )
-
-
 def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
     jobs = _integration_jobs()
     assert "concurrency:" not in jobs["smoke"]

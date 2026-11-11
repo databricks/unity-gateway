@@ -1118,9 +1118,14 @@ MPS CUJs select preprovisioned services:
   `claude-haiku-4-5-20251001` on `anthropic/v1/messages`, and disables all three
   forwarding options. CI never reads the provider key. Claude runs are required on
   Linux and Windows; Copilot retains its advisory status on both platforms.
-  Legacy `test_e2e.py::TestModelProviderLaunch` uses a separate staging shard with
-  the same service and SP. Relay, other-provider, and dedicated CUJ2 fixtures stay
-  in their existing workspaces. Missing SP credentials or MPS access fail the new jobs.
+  The configure picker journey also rejects an out-of-allowlist model and verifies
+  that its completed file task used the pinned Haiku model. This and Cases 11
+  replace the duplicate legacy launches, raw inference, fixture listing, and fresh
+  `--version` check, so no separate legacy staging shard or token setup is needed.
+  Family-alias resolution remains unit-tested; a standalone live `--model haiku`
+  inference and raw Messages response-shape assertions are no longer covered.
+  Relay, other-provider, and dedicated CUJ2 fixtures stay in their existing
+  workspaces. Missing SP credentials or MPS access fail the new jobs.
 
   For a local direct-Anthropic run, select the dedicated workspace and an explicit
   profile authorized there:
@@ -1177,10 +1182,11 @@ reproduce another existing service. Use `--claude-provider-model` /
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-The `test_ug_claude_fresh_provider_launch` and `test_ug_codex_fresh_provider_launch` journeys
-check provider selection and real agent CLI launch without inference. The Foundry and custom MPS
-journeys above additionally require inference and file-reading task completion. Codex discovery
-journeys also check its app-server model catalog.
+The `test_ug_codex_fresh_provider_launch` journey checks provider selection and real agent
+CLI launch without inference. Claude's fresh provider discovery journey covers its
+launch and model picker. The configure, Foundry, and custom MPS journeys additionally
+require inference and file-reading task completion. Codex discovery journeys also
+check its app-server model catalog.
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
