@@ -429,9 +429,37 @@ def test_antigravity_web_search_requires_native_result_and_matching_answer(encod
         ("https://www.databricks.com/", "**https://www.databricks.com/**"),
         ("https://www.databricks.com/", "`https://www.databricks.com/`"),
         ("[Databricks](https://www.databricks.com/)", "<https://www.databricks.com/>"),
+        ("**https://www.databricks.com/**.", "https://www.databricks.com/"),
+        ("*https://www.databricks.com/*,", "https://www.databricks.com/"),
+        ("`https://www.databricks.com/`.", "https://www.databricks.com/"),
     ],
 )
 def test_antigravity_web_search_matches_urls_inside_markdown(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        ("https://www.databricks.com//?utm_source=openai", "https://www.databricks.com/\n"),
+        (
+            "[Databricks](https://www.databricks.com//?utm_source=openai)",
+            "https://www.databricks.com/",
+        ),
+        ("https://www.databricks.com/", "https://www.databricks.com/?utm_source=openai"),
+        (
+            "https://www.databricks.com/?utm_source=openai&q=a#top",
+            "https://www.databricks.com/?q=a#top",
+        ),
+    ],
+)
+def test_antigravity_web_search_matches_homepage_tracking_urls(output, answer):
     events = _antigravity_web_search_events()
     events[0]["step_update"]["tool_info"]["output"] = output
     events[1]["result"]["response"] = answer
@@ -448,6 +476,14 @@ def test_antigravity_web_search_matches_urls_inside_markdown(output, answer):
         ("**https://www.databricks.com/?q=a**", "https://www.databricks.com/?q=b"),
         ("**https://www.databricks.com/#a**", "https://www.databricks.com/#b"),
         ("https://www.databricks.com/?q=*", "https://www.databricks.com/?q="),
+        ("**https://www.databricks.com/?q=*.**", "https://www.databricks.com/?q=*"),
+        ("https://www.databricks.com/?q=.", "https://www.databricks.com/?q="),
+        ("https://www.databricks.com//?utm_source=openai", "https://www.databricks.com/a"),
+        ("https://www.databricks.com/?utm_source=openai&q=a", "https://www.databricks.com/?q=b"),
+        ("https://www.databricks.com/?utm_source=openai#top", "https://www.databricks.com/"),
+        ("https://www.databricks.com/", "http://www.databricks.com/"),
+        ("https://www.databricks.com/", "https://databricks.com/"),
+        ("https://www.databricks.com/", "https://www.databricks.com.example.org/"),
     ],
 )
 def test_antigravity_web_search_preserves_url_path_query_and_fragment(output, answer):

@@ -15,14 +15,14 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-Windows Desktop detection allows up to 30 seconds for the native package query.
-Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
-UG's profile, while missing packages, timeouts, launch errors, and query failures leave
-it absent. Query failures report their actual cause instead of asking users to open
-an app that is already installed. Native Cowork CI still requires completed inference.
-
-Windows Cowork desktop coverage and required integration gating are
-documented in the [main test guide](../README.md).
+Windows and macOS Cowork desktop coverage, installation detection, and required
+integration gating are documented in the [main test guide](../README.md).
+`../test_macos_cowork_harness.py` separately covers bounded Accessibility retries,
+ambiguous model labels, private logs, and launch/timeout/cleanup/evidence-write failures.
+Navigation checks cover both Cowork and Claude task layouts, sidebar auto-opening,
+and failure when any required task control is missing.
+Those component tests control native boundaries and use an isolated subprocess for
+termination checks; they do not replace the native desktop inference jobs.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
@@ -1981,3 +1981,9 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+Antigravity MCP web-search evidence compares homepage slash variants and ignores
+`utm_source` attribution while retaining the completed-call and official-URL checks.
+Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
+Offline regressions in `../test_integration_evidence.py` reject different schemes,
+hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.

@@ -502,6 +502,7 @@ FORK_GUARD = (
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
     "cowork-inference-windows",
+    "cowork-inference-macos",
     "workspace",
     "smoke",
     "headless-windows",
@@ -739,6 +740,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "installation-windows",
         "headless-windows",
         "cowork-inference-windows",
+        "cowork-inference-macos",
         "workspace",
         "smoke",
         "full",
@@ -750,8 +752,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
     ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
-@pytest.mark.parametrize("cowork_expected", ["success", "skipped"])
-def test_integration_ci_gate_requires_every_job(failed_job, job_result, cowork_expected):
+def test_integration_ci_gate_requires_every_job(failed_job, job_result):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
@@ -763,6 +764,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result, cowork_e
             "installation-windows",
             "headless-windows",
             "cowork-inference-windows",
+            "cowork-inference-macos",
             "workspace",
             "smoke",
             "full",
@@ -773,17 +775,15 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result, cowork_e
             "dedicated-cuj",
         )
     }
-    results["cowork-inference-windows"]["result"] = cowork_expected
     results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],
-        env={"RESULTS": json.dumps(results), "COWORK_EXPECTED": cowork_expected},
+        env={"RESULTS": json.dumps(results)},
         capture_output=True,
         text=True,
         timeout=10,
     )
-    expected_result = cowork_expected if failed_job == "cowork-inference-windows" else "success"
-    if job_result == expected_result:
+    if job_result == "success":
         assert result.returncode == 0, result.stderr
         assert "All integration jobs passed:" in result.stdout
     else:
@@ -967,18 +967,23 @@ def test_live_suites_use_fresh_id_for_random_ids():
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
 
 
-def test_cowork_ci_permissions_and_required_gate():
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
-    job = jobs["cowork-inference-windows"]
+    job = jobs[job_name]
     assert "github.event_name != 'merge_group'" in job
-    assert "inputs.ug_version == 'checkout'" in job
-    assert "inputs.claude_version == '2.1.290'" in job
-    assert "inputs.dependency == ''" in job
+    condition = re.search(r"(?m)^    if: (.*)$", job)
+    assert condition is not None
+    assert condition.group(1) == (
+        "${{ github.event_name != 'merge_group' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+    )
     assert "id-token:" not in job
     assert "continue-on-error:" not in job
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
-    assert "cowork-inference-windows" in {name.strip() for name in needs.group(1).split(",")}
+    assert job_name in {name.strip() for name in needs.group(1).split(",")}
     for caller in ("ci.yml", "fork-integration.yml"):
         integration = _workflow(caller).split("\n  integration:\n", 1)[1].split("\n  #", 1)[0]
         integration = re.split(r"\n  [a-z-]+:\n", integration, maxsplit=1)[0]
