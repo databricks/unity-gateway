@@ -1,4 +1,6 @@
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -269,7 +271,113 @@ def test_windows_policy_paths_match_pinned_agent_locations():
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),
+        Path("C:/Program Files/ClaudeCode/managed-settings.d"),
+        Path("C:/Program Files/ClaudeCode/.claude/skills"),
+        Path("C:/Program Files/Claude/org-plugins"),
+        Path("C:/Program Files/UnityGateway/claude-desktop-mdm"),
+        Path("C:/Program Files/UnityGateway/claude-managed-skills.json"),
     )
+
+
+def test_windows_policy_preflight_uses_native_program_files_from_32_bit_process():
+    paths = runner.managed_policy_paths(
+        ["claude"],
+        {"ProgramFiles": "C:/Program Files (x86)", "ProgramW6432": "C:/Program Files"},
+        platform_name="nt",
+    )
+
+    assert paths
+    assert all(path.is_relative_to(Path("C:/Program Files")) for path in paths)
+
+
+@pytest.mark.parametrize("index", range(6))
+def test_windows_policy_preflight_detects_each_existing_machine_artifact(tmp_path, index):
+    paths = runner.managed_policy_paths(
+        ["claude"], {"PROGRAMFILES": str(tmp_path)}, platform_name="nt"
+    )
+    artifact = paths[index]
+    if artifact.suffix == ".json":
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("{}")
+    else:
+        artifact.mkdir(parents=True)
+
+    assert runner.present_policy_paths(paths) == [str(artifact)]
+
+
+def test_policy_preflight_detects_dangling_links(tmp_path):
+    policy = tmp_path / "managed-settings.json"
+    policy.symlink_to(tmp_path / "missing.json")
+
+    assert runner.present_policy_paths([policy]) == [str(policy)]
+
+
+def test_policy_preflight_reports_inspection_failure(tmp_path, monkeypatch):
+    # Simulate an OS denial; unreadable policy must not be treated as absent.
+    def deny_stat(self):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(Path, "lstat", deny_stat)
+    with pytest.raises(RuntimeError, match="Cannot inspect machine-wide agent settings"):
+        runner.present_policy_paths([tmp_path / "managed-settings.json"])
+
+
+@pytest.fixture
+def registry(monkeypatch):
+    # The Windows registry is an external boundary unavailable on Linux test hosts.
+    registry = SimpleNamespace(
+        HKEY_LOCAL_MACHINE=object(),
+        KEY_READ=0x20019,
+        KEY_WOW64_64KEY=0x100,
+        OpenKey=MagicMock(),
+        QueryInfoKey=MagicMock(return_value=(0, 1, 0)),
+    )
+    monkeypatch.setitem(runner.sys.modules, "winreg", registry)
+    return registry
+
+
+@pytest.mark.parametrize("counts", [(0, 1, 0), (1, 0, 0)])
+def test_windows_registry_preflight_detects_values_or_subkeys_in_native_view(registry, counts):
+    registry.QueryInfoKey.return_value = counts
+
+    assert runner.present_registry_policies(["claude"], platform_name="nt") == [
+        r"HKLM\SOFTWARE\Policies\Claude"
+    ]
+    registry.OpenKey.assert_called_once_with(
+        registry.HKEY_LOCAL_MACHINE,
+        r"SOFTWARE\Policies\Claude",
+        0,
+        registry.KEY_READ | registry.KEY_WOW64_64KEY,
+    )
+    registry.OpenKey.return_value.__exit__.assert_called_once()
+
+
+def test_windows_registry_preflight_accepts_empty_key(registry):
+    registry.QueryInfoKey.return_value = (0, 0, 0)
+
+    assert runner.present_registry_policies(["claude"], platform_name="nt") == []
+
+
+def test_windows_registry_preflight_accepts_missing_key(registry):
+    registry.OpenKey.side_effect = FileNotFoundError
+
+    assert runner.present_registry_policies(["claude"], platform_name="nt") == []
+
+
+@pytest.mark.parametrize("operation", ["OpenKey", "QueryInfoKey"])
+def test_windows_registry_preflight_fails_closed_on_access_denied(registry, operation):
+    getattr(registry, operation).side_effect = PermissionError("access denied")
+
+    with pytest.raises(RuntimeError, match="Cannot inspect machine-wide Desktop policy"):
+        runner.present_registry_policies(["claude"], platform_name="nt")
+
+
+@pytest.mark.parametrize("agents,platform_name", [(["codex"], "nt"), (["claude"], "posix")])
+def test_registry_preflight_leaves_other_agents_and_platforms_alone(
+    registry, agents, platform_name
+):
+    assert runner.present_registry_policies(agents, platform_name=platform_name) == []
+    registry.OpenKey.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -295,3 +403,5 @@ def test_posix_policy_paths_include_the_installed_workspace_policy(system_platfo
 def test_windows_policy_preflight_fails_closed_without_required_roots():
     with pytest.raises(RuntimeError, match="PROGRAMDATA"):
         runner.managed_policy_paths(["codex"], {}, platform_name="nt", system_platform="win32")
+    with pytest.raises(RuntimeError, match="PROGRAMFILES"):
+        runner.managed_policy_paths(["claude"], {}, platform_name="nt", system_platform="win32")

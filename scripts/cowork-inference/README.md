@@ -1,5 +1,21 @@
 # Windows Cowork inference test
 
+The separate test branch also includes `windows-native-contracts.yml`. It reuses this
+installer, configure flow, and accessibility driver on four disposable Windows runners:
+bare CLI enterprise skill, Desktop Code enterprise skill, Cowork enterprise skill,
+and Cowork organization-plugin skill plus hooks. Each task must invoke the skill once,
+read its reference file, and return a random value absent from the prompt. The organization
+plugin must execute SessionStart and UserPromptSubmit once for that native session.
+Standalone CLI inventory/version and Desktop transcript engine versions are recorded
+separately from the MSIX version. Unsupported loading, UI failures, and missing hooks fail.
+
+These native prerequisite probes use explicitly administrator-authored skill/plugin
+inputs, not simulated workspace bundles or UG-generated output. They do not establish
+managed skill download, global Desktop publication, separate-user authentication/ACLs,
+MCP deduplication, or the configure/update/revert lifecycle. Those checks must exercise
+the Windows publisher once native source selection is established. Test changes remain
+on their own branch for a later PR; the existing blocking inference job is unchanged.
+
 The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual

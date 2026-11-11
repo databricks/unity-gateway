@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+Branch-only Windows native-loading checks extend `scripts/cowork-inference/` to
+bare CLI, Code, Cowork enterprise skills, and Cowork organization plugins/hooks.
+They require successful native Skill and Read calls and completed hidden-file answers;
+`test_cowork_session_evidence.py` checks false-pass rejection, duplicate calls,
+prompt/session isolation, and hook counts. See that script directory's README for
+fixture boundaries and coverage still requiring the Windows global publisher.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
@@ -28,6 +35,15 @@ exercises real installation, UG configuration before first launch, and completed
 verify workspace-credential event guards, installation without OIDC permissions,
 and required Cowork success in the integration gate. Unsupported release/version dispatches allow an
 explicit skip; failure, cancellation, and unexpected skips fail the gate.
+
+Windows integration-runner preflight now rejects existing Claude enterprise skills,
+managed settings/drop-ins, organization plugins, shared Desktop helpers, skill ownership
+records, and nonempty native-view `HKLM\SOFTWARE\Policies\Claude` policy. It uses the
+native Program Files directory even from a 32-bit process, rejects dangling links,
+and fails on inspection errors without reading registry values. Component coverage lives
+in `test_integration_runner.py`. This prepares isolation for Windows global testing;
+native CLI/Code skill discovery, Cowork skill-source overlap, and global publication
+remain unverified. The separate Cowork UI job still covers user-scope inference only.
 
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected

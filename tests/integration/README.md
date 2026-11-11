@@ -1,5 +1,11 @@
 # Integration tests
 
+The separate Windows native-contract branch reuses the Cowork accessibility suite for
+CLI/Code enterprise skill loading and Cowork enterprise/organization-plugin loading.
+`../test_cowork_session_evidence.py` verifies the transcript assertions offline.
+These native capability inputs do not substitute for managed workspace bundles or
+global configure lifecycle tests. See `../../scripts/cowork-inference/README.md`.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
@@ -19,6 +25,13 @@ an app that is already installed. Native Cowork CI still requires completed infe
 
 Windows Cowork desktop coverage and required integration gating are
 documented in the [main test guide](../README.md).
+
+Before live installation, `scripts/run_integration.py` rejects existing Windows Claude
+enterprise skills, managed settings/drop-ins, organization plugins, shared Desktop
+helpers, skill ownership records, and nonempty native-view Desktop HKLM policy.
+Unreadable artifacts and dangling links also block the run. Use a clean disposable
+Windows runner; the preflight never deletes existing configuration. Its component
+checks do not establish native skill loading or Windows global-configure support.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API

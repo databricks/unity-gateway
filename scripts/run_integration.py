@@ -118,6 +118,7 @@ def managed_policy_paths(
     selected = set(agents)
     paths: list[Path] = []
     if platform_name == "nt":
+        environment = {key.upper(): value for key, value in environment.items()}
         if "codex" in selected:
             program_data = environment.get("PROGRAMDATA", "").strip()
             if not program_data:
@@ -127,12 +128,25 @@ def managed_policy_paths(
             codex_system = Path(program_data) / "OpenAI" / "Codex"
             paths.extend([codex_system / "requirements.toml", codex_system / "config.toml"])
         if "claude" in selected:
-            program_files = environment.get("PROGRAMFILES", "").strip()
+            program_files = (
+                environment.get("PROGRAMW6432", "").strip()
+                or environment.get("PROGRAMFILES", "").strip()
+            )
             if not program_files:
                 raise RuntimeError(
                     "Cannot verify Claude managed settings because PROGRAMFILES is unavailable."
                 )
-            paths.append(Path(program_files) / "ClaudeCode" / "managed-settings.json")
+            root = Path(program_files)
+            paths.extend(
+                [
+                    root / "ClaudeCode/managed-settings.json",
+                    root / "ClaudeCode/managed-settings.d",
+                    root / "ClaudeCode/.claude/skills",
+                    root / "Claude/org-plugins",
+                    root / "UnityGateway/claude-desktop-mdm",
+                    root / "UnityGateway/claude-managed-skills.json",
+                ]
+            )
     elif platform_name == "posix":
         # Unity Gateway's installed workspace policy affects every agent.
         paths.append(Path("/etc/unitygateway/managed-settings.json"))
@@ -156,7 +170,7 @@ def present_policy_paths(paths: Iterable[Path]) -> list[str]:
     present = []
     for path in paths:
         try:
-            path.stat()
+            path.lstat()
         except FileNotFoundError:
             continue
         except OSError as exc:
@@ -165,6 +179,29 @@ def present_policy_paths(paths: Iterable[Path]) -> list[str]:
             ) from exc
         present.append(str(path))
     return present
+
+
+def present_registry_policies(
+    agents: Iterable[str], *, platform_name: str | None = None
+) -> list[str]:
+    platform_name = os.name if platform_name is None else platform_name
+    if platform_name != "nt" or "claude" not in agents:
+        return []
+
+    import winreg
+
+    path = r"SOFTWARE\Policies\Claude"
+    label = rf"HKLM\{path}"
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, path, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+        ) as key:
+            subkeys, values, _ = winreg.QueryInfoKey(key)
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise RuntimeError(f"Cannot inspect machine-wide Desktop policy at {label}: {exc}") from exc
+    return [label] if subkeys or values else []
 
 
 def integration_test_targets(
@@ -668,6 +705,7 @@ def main() -> int:
     if not args.installation_only:
         try:
             present = present_policy_paths(managed_policy_paths(agents))
+            present.extend(present_registry_policies(agents))
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
         if present:
