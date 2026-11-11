@@ -1,7 +1,6 @@
 import json
 import sys
 import threading
-from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -14,6 +13,7 @@ from tests.e2e_cuj.helpers.tui_request_recorder import (
     RecordedResponse,
     TuiRequestRecorder,
 )
+from tests.integration.utils import request_recorder
 
 
 @pytest.fixture
@@ -87,7 +87,6 @@ def _configured_session(recorder, tmp_path, commands):
                 json.dumps(
                     {
                         recorder.upstream: {
-                            "last_checked_at": "2000-01-01T00:00:00+00:00",
                             "outcome": "published",
                             "policy_fingerprint": {"exists": False},
                         }
@@ -120,7 +119,7 @@ def test_configures_isolated_session_state_for_recorder(recorder, tmp_path, monk
     assert state["workspaces"][recorder.url] == state["workspaces"][recorder.upstream]
     refresh = json.loads((tmp_path / ".ucode/refresh_ts.json").read_text())
     assert refresh[recorder.url] == refresh[recorder.upstream]
-    # Without an installed policy, launches fetch it through the recorder: nothing to refresh.
+    # Without an installed policy there is nothing to retarget before a launch.
     recorder.prepare_launch()
     assert json.loads((tmp_path / ".ucode/refresh_ts.json").read_text()) == refresh
 
@@ -144,5 +143,74 @@ def test_retargets_an_installed_policy_to_the_recorder(recorder, tmp_path, monke
     assert copies == [str(policy)]
     assert json.loads(policy.read_text())["workspace"] == recorder.url
     entry = json.loads((tmp_path / ".ucode/refresh_ts.json").read_text())[recorder.url]
-    assert datetime.fromisoformat(entry["last_checked_at"]).year > 2000
+    assert "last_checked_at" not in entry
     assert entry["policy_fingerprint"]["exists"] is True
+
+
+@pytest.fixture
+def held_upstream():
+    """An upstream whose response body stays open until the test releases it."""
+    release = threading.Event()
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, format, *args):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", "4")
+            self.end_headers()
+            self.wfile.write(b"he")
+            self.wfile.flush()
+            release.wait(10)
+            self.wfile.write(b"ld")
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        yield f"http://127.0.0.1:{server.server_address[1]}", release
+        release.set()
+        server.shutdown()
+        thread.join()
+
+
+def _start_held_request(recorder):
+    bodies = []
+    thread = threading.Thread(
+        target=lambda: bodies.append(httpx.get(f"{recorder.url}/held", timeout=10).content)
+    )
+    thread.start()
+    recorder.expect_request(method="GET", path="/held", timeout=5)
+    return thread, bodies
+
+
+def test_teardown_waits_for_in_flight_forward_before_closing_client(held_upstream):
+    endpoint, release = held_upstream
+    recorder = TuiRequestRecorder(endpoint).__enter__()
+    thread, bodies = _start_held_request(recorder)
+
+    threading.Timer(0.3, release.set).start()
+    recorder.__exit__(None, None, None)
+
+    thread.join(5)
+    assert bodies == [b"held"]
+    assert recorder._client.is_closed
+
+
+def test_teardown_leaves_client_open_for_forward_that_outlives_drain(held_upstream, monkeypatch):
+    # Closing the client under a still-streaming forward frees its socket descriptor while the
+    # forward's TLS reader keeps using that number; a reused descriptor then corrupts another
+    # connection in the process. The forward must finish on its own connection instead.
+    monkeypatch.setattr(request_recorder, "_DRAIN_SECONDS", 0.2)
+    endpoint, release = held_upstream
+    recorder = TuiRequestRecorder(endpoint).__enter__()
+    thread, bodies = _start_held_request(recorder)
+
+    recorder.__exit__(None, None, None)
+    assert not recorder._client.is_closed
+
+    release.set()
+    thread.join(5)
+    assert bodies == [b"held"]

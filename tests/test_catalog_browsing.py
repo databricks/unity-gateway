@@ -86,6 +86,7 @@ def test_streamed_mcp_metadata_is_ready_before_rows_are_emitted(monkeypatch):
         "token",
         metadata=metadata,
         on_services=on_services,
+        on_progress=lambda *_: None,
     )
     assert reason is None
     assert names == ["cat.one.tool", "cat.two.tool"]
@@ -129,6 +130,7 @@ def test_initial_and_streamed_mcp_choices_have_identical_details(monkeypatch):
     def discover(workspace, profile, *, on_services, metadata, **kwargs):
         metadata["cat.sch.docs"] = details
         on_services(["cat.sch.docs"])
+        return ["cat.sch.docs"], None
 
     monkeypatch.setattr(mcp, "discover_all_mcp_service_names", discover)
     streamed = []

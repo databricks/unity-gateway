@@ -6,14 +6,17 @@ machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644
 
 - fetching the raw manifest (via :func:`ucode.databricks.fetch_managed_coding_agent_configs`),
 - normalizing the proto-JSON into a stable internal dict keyed by ucode's own tool names,
-- persisting it via :func:`save_managed_state` / :func:`load_managed_state` — the launch path pulls
+- persisting it via :func:`save_managed_state` / :func:`load_managed_state` — ``ug configure`` pulls
   the published copy into this file only when its workspace or configuration changes, and
-- re-reading it on each launch (reusing a read younger than :data:`MANAGED_CONFIG_TTL` rather than
-  re-fetching), falling back to the persisted copy when the read fails.
+- replaying it on each launch without a network read, falling back to the persisted copy when a
+  read fails. A launch never refreshes it: an admin's later edit reaches a machine when the
+  developer re-runs ``ug configure``. Only when nothing is saved for the workspace yet does a launch
+  read the control plane once.
 
-Refresh timestamps live separately in ``~/.ucode/refresh_ts.json`` (0600), keyed by workspace.
-Unchanged remote reads never rewrite the protected policy. Non-root launches never invoke sudo;
-they retain installed policy and request an administrator update when remote policy changes.
+The last read's outcome (published / none / feature_disabled) lives separately in
+``~/.ucode/refresh_ts.json`` (0600), keyed by workspace, so a launch can tell "no managed config"
+from "feature disabled" without a request. Unchanged remote reads never rewrite the protected
+policy. Non-root launches never invoke sudo.
 
 :func:`refresh_managed_config` is the launch path's entry point. It is called before model discovery,
 because the manifest decides whether that discovery is needed at all; the launch path then hands the
@@ -28,7 +31,6 @@ import json
 import os
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple, cast
@@ -48,9 +50,10 @@ from ucode.managed_files import (
     managed_settings_skipped,
     update_workspace_policy,
 )
-from ucode.os_compatibility.system_cross_os import is_admin
+from ucode.os_compatibility import system_cross_os
 from ucode.time_utils import parse_update_time
 from ucode.ui import console, normalize_workspace_url, print_warning
+from ucode.workspace import split_workspace_key, state_workspace_key
 
 MANAGED_CONFIG_PATH = UNITY_GATEWAY_MANAGED_SETTINGS_PATH
 # Per-user policy cache for platforms or modes without machine installation (Windows,
@@ -70,7 +73,7 @@ AGENT_ENUM_TO_TOOL: dict[str, str] = {
     "CODING_AGENT_CLAUDE_CODE": "claude",
     "CODING_AGENT_CODEX": "codex",
     "CODING_AGENT_GEMINI": "gemini",
-    "CODING_AGENT_COPILOT": "copilot",
+    "CODING_AGENT_GITHUB_COPILOT": "copilot",
     "CODING_AGENT_PI": "pi",
     "CODING_AGENT_OPENCODE": "opencode",
 }
@@ -82,10 +85,9 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 
 MAX_SPEC_VERSION = 1
 
-# Launch-path cache TTL. `ug` / `ug <agent>` reuse a managed-config read younger than this instead of
-# hitting the control plane every launch; `ug configure` forces a fresh read (force_refresh=True).
-MANAGED_CONFIG_TTL = timedelta(minutes=5)
-
+# The last authoritative read's outcome, persisted alongside the config so a launch can replay it
+# without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome is what
+# tells them apart.
 _OUTCOME_PUBLISHED = "published"
 _OUTCOME_NONE = "none"
 _OUTCOME_FEATURE_DISABLED = "feature_disabled"
@@ -101,7 +103,7 @@ class AgentModels:
     """Model configuration for an agent with mutually-exclusive source selection.
 
     Reads the default model and family slots from default_models map, and selects
-    exactly one of: model_provider_service, unity_catalog_location, or model_services.
+    exactly one of: sources, model_provider_service, unity_catalog_location, or model_services.
     """
 
     default_model: str | None = None
@@ -109,6 +111,7 @@ class AgentModels:
     model_provider_service: str | None = None
     unity_catalog_location: str | None = None
     model_services: list[str] | None = None
+    sources: list[str] | None = None  # 3-part model services and/or 4-part MPS model refs
 
     @classmethod
     def from_wire(cls, default_models: object, models_obj: object) -> AgentModels | None:
@@ -125,15 +128,19 @@ class AgentModels:
             for key, value in defaults.items()
             if isinstance(key, str) and _FAMILY_SLOT_RE.fullmatch(key) and (model := _str(value))
         }
-        # The model source is a server-enforced oneof; keep the one present, precedence
-        # model_provider_service > unity_catalog_location > model_services.
-        provider = _str(models_dict.get("model_provider_service"))
-        location = None if provider else _str(models_dict.get("unity_catalog_location"))
-        model_services = (
-            None if provider or location else (_str_list(models_dict.get("model_services")) or None)
-        )
+        # The server validates that at most one model source is set. `sources` may mix 3-part model
+        # services and 4-part MPS model refs, used as-is.
+        provider = location = model_services = sources = None
+        if "sources" in models_dict:
+            sources = _str_list(models_dict["sources"]) or None
+        elif "model_provider_service" in models_dict:
+            provider = _str(models_dict["model_provider_service"])
+        elif "unity_catalog_location" in models_dict:
+            location = _str(models_dict["unity_catalog_location"])
+        elif "model_services" in models_dict:
+            model_services = _str_list(models_dict["model_services"]) or None
 
-        if not (overall_default or slots or provider or location or model_services):
+        if not (overall_default or slots or provider or location or model_services or sources):
             return None
         return cls(
             default_model=overall_default,
@@ -141,6 +148,7 @@ class AgentModels:
             model_provider_service=provider,
             unity_catalog_location=location,
             model_services=model_services,
+            sources=sources,
         )
 
     def to_internal(self) -> dict | None:
@@ -150,7 +158,9 @@ class AgentModels:
             result["default_model"] = self.default_model
         if self.family_slots:
             result["default_models_by_model_family"] = self.family_slots
-        if self.model_provider_service:
+        if self.sources:
+            result["sources"] = self.sources
+        elif self.model_provider_service:
             result["model_provider_service"] = self.model_provider_service
         elif self.unity_catalog_location:
             result["unity_catalog_location"] = self.unity_catalog_location
@@ -167,6 +177,7 @@ class AgentConfig:
     models: AgentModels | None = None
     smart_routing_enabled: bool = False
     otel_tracing_enabled: bool | None = None
+    vscode_integration_enabled: bool | None = None
     # Harness-native settings delivered verbatim into the agent's managed settings file.
     settings: dict | None = None
 
@@ -183,7 +194,8 @@ class AgentConfig:
             http_headers=headers or None,
             models=agent_models,
             smart_routing_enabled=smart_routing.get("enabled") is True,
-            otel_tracing_enabled=_tracing_enabled(config_dict.get("tracing")),
+            otel_tracing_enabled=_enabled_flag(config_dict.get("tracing")),
+            vscode_integration_enabled=_enabled_flag(config_dict.get("vscode_integration")),
             settings=_as_dict(config_dict.get("agent_native_settings")) or None,
         )
 
@@ -199,6 +211,8 @@ class AgentConfig:
             result["model_config"] = model_config
         if self.otel_tracing_enabled is not None:
             result["otel_tracing_enabled"] = self.otel_tracing_enabled
+        if self.vscode_integration_enabled is not None:
+            result["vscode_integration_enabled"] = self.vscode_integration_enabled
         if self.settings:
             result["agent_native_settings"] = self.settings
         return result
@@ -435,9 +449,10 @@ def _str_list(value: object) -> list[str]:
     return out
 
 
-def _tracing_enabled(tracing: object) -> bool | None:
-    """Return ``TracingConfig.enabled`` as a tri-state value."""
-    value = _as_dict(tracing).get("enabled")
+def _enabled_flag(message: object) -> bool | None:
+    """Return the ``enabled`` of a ``{enabled: bool}`` message such as ``TracingConfig`` as a
+    tri-state value."""
+    value = _as_dict(message).get("enabled")
     return value if isinstance(value, bool) else None
 
 
@@ -644,11 +659,6 @@ def _is_unsupported_spec(reason: str) -> bool:
     return "spec_version" in reason.lower()
 
 
-def _utcnow() -> datetime:
-    """Current UTC time. A seam so the launch-path cache TTL can be exercised deterministically."""
-    return datetime.now(UTC)
-
-
 def _policy_content(config: dict) -> dict:
     return {key: value for key, value in config.items() if key != "retrieved_time"}
 
@@ -665,8 +675,12 @@ def save_managed_state(
     interactive: bool = False,
     allow_sudo: bool = False,
     sets_machine_workspace: bool = False,
+    allow_write: bool = True,
 ) -> None:
     """Install raw policy only when changed; remove a matching policy when it no longer exists.
+
+    With ``allow_write=False`` (a launch) nothing is written, even as root: a change that would
+    need a write raises :class:`RuntimeError` instead.
 
     ``sets_machine_workspace`` marks an explicit ``ug configure``, which decides the machine's
     workspace: a workspace that publishes no policy then also removes another workspace's
@@ -682,6 +696,7 @@ def save_managed_state(
     )
     if not config:
         if matches or (sets_machine_workspace and existing_workspace):
+            _require_policy_write(allow_write)
             update_workspace_policy(
                 MANAGED_CONFIG_PATH, None, interactive=interactive, allow_sudo=allow_sudo
             )
@@ -693,6 +708,7 @@ def save_managed_state(
         and _policy_content(existing_config) == _policy_content(config)
     ):
         return
+    _require_policy_write(allow_write)
     payload = {"workspace": workspace, "config": config}
     update_workspace_policy(
         MANAGED_CONFIG_PATH,
@@ -700,6 +716,13 @@ def save_managed_state(
         interactive=interactive,
         allow_sudo=allow_sudo,
     )
+
+
+def _require_policy_write(allow_write: bool) -> None:
+    if not allow_write:
+        raise RuntimeError(
+            "Workspace policy updates are only made by `ug configure`, never by a launch."
+        )
 
 
 def revert_machine_policy() -> str:
@@ -713,9 +736,13 @@ def revert_machine_policy() -> str:
     try:
         update_workspace_policy(MANAGED_CONFIG_PATH, None, interactive=True, allow_sudo=True)
     except RuntimeError as exc:
+        retry = (
+            "Rerun `ug revert` from an elevated terminal (Run as administrator)."
+            if current_os() is OS.WINDOWS
+            else "Rerun `ug revert` from a terminal where you can use sudo."
+        )
         print_warning(
-            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} Rerun "
-            "`ug revert` from a terminal where you can use sudo."
+            f"Could not remove the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {retry}"
         )
         return "failed"
     return "removed"
@@ -762,8 +789,8 @@ def load_managed_configuration(workspace: str | None) -> dict | None:
 def _installed_config(workspace: str) -> dict | None:
     """The installed machine policy for ``workspace``, read only where ug installs one.
 
-    On Windows the POSIX path resolves under the current drive's root, which a standard user may be
-    able to create, so it is never trusted there.
+    On Windows only the protected ProgramData file is read, never a POSIX-style path under a drive
+    root that a standard user may be able to create.
     """
     if not _machine_policy_supported():
         return None
@@ -809,24 +836,24 @@ def managed_launch_workspace(workspace: str | None) -> str | None:
     if installed and selected and selected != installed:
         # UG_SKIP_OS_SETTINGS never writes the policy, so the switch must run without it.
         without_skip = f" without {SKIP_OS_SETTINGS_ENV}" if managed_settings_skipped() else ""
+        # Lead with the fix: a `--workspace` launch can't switch the machine, only configure can.
         raise RuntimeError(
-            f"This machine is managed for {installed}, but your selected workspace is {selected}. "
-            f"Launch refused. Use `--workspace {installed}`, or ask your IT team or an administrator "
-            f"to switch the machine with `ug configure --workspace {selected}`{without_skip}."
+            f"Run `ug configure --workspace {selected}`{without_skip} to use {selected}. This "
+            f"machine is managed for {installed}, so the launch was refused. Switching needs sudo; "
+            f"without it, ask your IT team or an administrator. To keep using {installed}, launch "
+            f"with `--workspace {installed}`."
         )
     return installed or selected
 
 
-def _cached_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
-    """Reuse a recent user-owned refresh stamp only while the installed policy is unchanged."""
+def _saved_result(workspace: str) -> ManagedConfigResult | None:
+    """Replay the saved read for ``workspace`` while the installed policy is unchanged.
+
+    None when nothing is saved: no outcome record for this workspace, or the installed policy
+    changed since it was recorded.
+    """
     entry = config_io.read_json_safe(REFRESH_TS_PATH).get(normalize_workspace_url(workspace))
     if not isinstance(entry, dict):
-        return None
-    checked_at = parse_update_time(_str(entry.get("last_checked_at")))
-    if checked_at is None:
-        return None
-    age = _utcnow() - checked_at
-    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
         return None
     if entry.get("policy_fingerprint") != managed_file_fingerprint(MANAGED_CONFIG_PATH):
         return None
@@ -851,7 +878,6 @@ def _record_refresh(
         return
     data = config_io.read_json_safe(REFRESH_TS_PATH)
     data[normalize_workspace_url(workspace)] = {
-        "last_checked_at": _utcnow().isoformat(),
         # Disabled first: an installed policy whose removal failed still replays as disabled.
         "outcome": (
             _OUTCOME_FEATURE_DISABLED
@@ -868,45 +894,45 @@ def _record_refresh(
         config_io.atomic_write_json(REFRESH_TS_PATH, data)
         _restrict_permissions(REFRESH_TS_PATH)
     except RuntimeError as exc:
-        print_warning(f"Could not save the workspace policy refresh timestamp: {exc}")
+        print_warning(f"Could not save the workspace policy refresh record: {exc}")
 
 
 def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> ManagedConfigResult:
-    """Refresh workspace policy, reusing user-owned timestamps for five-minute launch throttling.
+    """Read the workspace policy; a launch replays what ``ug configure`` saved.
 
-    ``force_refresh`` bypasses throttling for explicit configuration. The installed policy changes
+    A launch reads the control plane only when nothing is saved for the workspace yet; it never
+    refreshes on a timer, so an admin's edit reaches a machine with the next ``ug configure``.
+    ``force_refresh`` (explicit configuration) always reads fresh. The installed policy changes
     only when the workspace or configuration changes; unchanged reads update only refresh metadata.
-    Only explicit configuration may invoke sudo. Non-root launches are read-only regardless of
-    terminal attachment or cached sudo access; root launches can install without sudo.
+    Only explicit configuration writes the machine policy. Launches are read-only regardless of
+    privilege, terminal attachment, or cached sudo access.
 
     The installed workspace is authoritative for launches; mismatched selections fail before
-    cached reads or remote requests. Explicit configure can change the machine workspace.
+    saved reads or remote requests. Explicit configure can change the machine workspace.
     Failed launch writes warn once per distinct pending policy and return the installed policy,
-    recording the attempt for throttling. Explicit configuration write failures raise instead.
-    Fetch failures retain the existing installed-policy fallback and do not advance the timestamp.
+    recording the outcome. Explicit configuration write failures raise instead.
+    Fetch failures retain the existing installed-policy fallback and record nothing.
     No-config and ``FEATURE_DISABLED`` remove a matching installed policy; if removal fails, launches
     keep using it with a warning rather than pretending it was removed.
     """
-    workspace = (
-        state.get("workspace")
-        if force_refresh
-        else managed_launch_workspace(state.get("workspace"))
-    )
+    selected = state_workspace_key(state)
+    workspace = selected if force_refresh else managed_launch_workspace(selected)
     if not workspace:
         return ManagedConfigResult(None, False)
+    host = split_workspace_key(workspace)[0]
     if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
     if config_io.is_dry_run() and not force_refresh:
         return ManagedConfigResult(load_managed_state(workspace), False)
     if not force_refresh:
-        cached = _cached_result_if_fresh(workspace)
+        cached = _saved_result(workspace)
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(host, state.get("profile"))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
-    raw, reason = get_managed_config(workspace, token)
+    raw, reason = get_managed_config(host, token)
     if reason is not None:
         if not _is_feature_disabled(reason):
             fallback = _persisted_fallback(workspace, reason, refused=_is_permission_denied(reason))
@@ -929,13 +955,22 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
             interactive=force_refresh,
             allow_sudo=force_refresh,
             sets_machine_workspace=force_refresh,
+            allow_write=force_refresh,
         )
     except RuntimeError as exc:
         if force_refresh and _machine_policy_installable():
+            if current_os() is OS.WINDOWS:
+                hint = (
+                    "Run `ug configure` from an elevated terminal (Run as administrator), or ask "
+                    "your IT team or an administrator to run it."
+                )
+            else:
+                hint = (
+                    "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where "
+                    "you can use sudo, or ask your IT team or an administrator to run it."
+                )
             message = (
-                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} "
-                "This machine-wide file needs sudo. Rerun `ug configure` from a terminal where you "
-                "can use sudo, or ask your IT team or an administrator to run it."
+                f"Could not install the workspace policy at {MANAGED_CONFIG_PATH}: {exc} {hint}"
             )
             raise ManagedPolicyInstallDenied(message) from exc
         installed = load_managed_state(workspace)
@@ -960,6 +995,11 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
                     f"installed policy at {MANAGED_CONFIG_PATH} was not updated. Run `ug configure` "
                     f"without {SKIP_OS_SETTINGS_ENV} as an administrator. {fallback_message}"
                 )
+            elif system_cross_os.is_admin():
+                print_warning(
+                    "Your workspace policy changed. Run `ug configure` to apply the update on "
+                    f"this machine. {fallback_message}"
+                )
             else:
                 print_warning(
                     "Your workspace policy changed. Ask your IT team or an administrator to apply "
@@ -975,38 +1015,41 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
 
 
 def _machine_policy_supported() -> bool:
-    """Whether ug installs a machine policy on this OS at all (Linux and macOS)."""
-    return current_os() in (OS.LINUX, OS.MACOS)
+    """Whether ug installs a machine policy on this OS at all (Linux, macOS, and Windows).
+
+    On Windows the path is the protected ProgramData file, never the POSIX one.
+    """
+    return current_os() in (OS.LINUX, OS.MACOS, OS.WINDOWS)
 
 
 def _machine_policy_installable() -> bool:
-    """Whether this machine can hold the installed workspace policy (Linux or macOS, not opted out
-    with ``UG_SKIP_OS_SETTINGS``)."""
+    """Whether this machine can hold the installed workspace policy (Linux, macOS, or Windows, not
+    opted out with ``UG_SKIP_OS_SETTINGS``)."""
     return not managed_settings_skipped() and _machine_policy_supported()
 
 
 def _can_install_policy(explicit_configure: bool) -> bool:
-    """Whether this run may install the machine policy: root, or an explicit ``ug configure``
-    (which may use sudo). A non-root launch never does."""
-    return _machine_policy_installable() and (explicit_configure or is_admin())
+    """Whether this run may install the machine policy: only an explicit ``ug configure``.
+    A launch never does, regardless of privilege."""
+    return _machine_policy_installable() and explicit_configure
 
 
 def _refresh_user_cache(state: dict, workspace: str, *, force_refresh: bool) -> ManagedConfigResult:
     """Cache policy per user when machine installation is unavailable.
 
-    A launch reuses a read younger than
-    :data:`MANAGED_CONFIG_TTL`, ``ug configure`` always reads fresh, a failed read falls back to the
-    last saved config for this workspace, and no-config or ``FEATURE_DISABLED`` replaces it.
+    A launch replays the saved read and only reads the control plane when none is saved,
+    ``ug configure`` always reads fresh, a failed read falls back to the last saved config for this
+    workspace, and no-config or ``FEATURE_DISABLED`` replaces it.
     """
     if not force_refresh:
-        cached = _cached_user_result_if_fresh(workspace)
+        cached = _saved_user_result(workspace)
         if cached is not None:
             return cached
     try:
-        token = get_databricks_token(workspace, state.get("profile"))
+        token = get_databricks_token(split_workspace_key(workspace)[0], state.get("profile"))
     except RuntimeError as exc:
         return ManagedConfigResult(_persisted_fallback(workspace, str(exc)), False)
-    raw, reason = get_managed_config(workspace, token)
+    raw, reason = get_managed_config(split_workspace_key(workspace)[0], token)
     if reason is not None:
         if _is_feature_disabled(reason):
             _save_user_cache(workspace, {}, outcome=_OUTCOME_FEATURE_DISABLED)
@@ -1027,7 +1070,6 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
     payload = {
         "workspace": workspace,
         "config": config,
-        "retrieved_at": _utcnow().isoformat(),
         "outcome": outcome,
     }
     if config_io.is_dry_run():
@@ -1046,27 +1088,28 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
     _restrict_permissions(USER_MANAGED_CONFIG_PATH)
 
 
-def _cached_user_result_if_fresh(workspace: str) -> ManagedConfigResult | None:
-    """The per-user cache's read for ``workspace`` replayed as a result, if within the TTL."""
+def _saved_user_result(workspace: str) -> ManagedConfigResult | None:
+    """The per-user cache's read for ``workspace`` replayed as a result, or None when none is saved.
+
+    A file written before ug recorded the outcome counts as nothing saved, so the next read fetches
+    once and stamps it: an older empty file could be either "no config" or a disabled feature.
+    """
     data = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH)
     stored = data.get("workspace")
     if not isinstance(stored, str) or normalize_workspace_url(stored) != normalize_workspace_url(
         workspace
     ):
         return None
-    retrieved_at = parse_update_time(_str(data.get("retrieved_at")))
-    if retrieved_at is None:
-        return None
-    age = _utcnow() - retrieved_at
-    if age < timedelta(0) or age >= MANAGED_CONFIG_TTL:
+    config = data.get("config")
+    if not isinstance(config, dict):
         return None
     outcome = data.get("outcome")
     if outcome == _OUTCOME_FEATURE_DISABLED:
         return ManagedConfigResult(None, True)
     if outcome == _OUTCOME_NONE:
         return ManagedConfigResult(None, False)
-    if outcome == _OUTCOME_PUBLISHED and isinstance(data.get("config"), dict):
-        return ManagedConfigResult(normalize_managed_config(data["config"]), False)
+    if outcome == _OUTCOME_PUBLISHED and config:
+        return ManagedConfigResult(normalize_managed_config(config), False)
     return None
 
 

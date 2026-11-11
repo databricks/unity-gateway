@@ -16,6 +16,12 @@ from ucode.ui import print_warning
 
 CODEX_PROFILE_NAME = "ucode"
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.config.toml"
+# Codex keeps its hook-trust bookkeeping (each hook source's approved
+# ``trusted_hash``) under ``hooks.state`` in the user's ``config.toml`` and
+# rewrites it whenever the user approves a hook. ug's profile layer must
+# neither carry nor forward it: a forwarded snapshot outranks ``config.toml``,
+# so a stale hash would make Codex re-ask for hook approval on every launch.
+HOOK_TRUST_STATE_KEY = "state"
 
 
 class ModelVisibility(StrEnum):
@@ -131,14 +137,33 @@ def _toml_value(value: object) -> str:
     return _toml_item(value).as_string()
 
 
+def strip_hook_trust_state(config: dict) -> bool:
+    """Drop Codex's ``hooks.state`` trust bookkeeping from a parsed document.
+
+    Returns True when an entry was removed; an emptied ``hooks`` table is
+    removed with it.
+    """
+    hooks = config.get("hooks")
+    if not isinstance(hooks, dict) or HOOK_TRUST_STATE_KEY not in hooks:
+        return False
+    hooks.pop(HOOK_TRUST_STATE_KEY, None)
+    if not hooks:
+        config.pop("hooks", None)
+    return True
+
+
 def codex_config_args(config: dict) -> list[str]:
     """Render a Codex config layer as repeatable ``--config`` overrides."""
     args: list[str] = []
     for key, value in config.items():
         # These maps contain named entries. Override each entry individually so
         # the rest of the user's base map remains intact.
-        if key in {"hooks", "model_providers"} and isinstance(value, dict):
+        if key in {"hooks", "model_providers", "mcp_servers"} and isinstance(value, dict):
             for entry_name, entry_config in value.items():
+                if key == "hooks" and entry_name == HOOK_TRUST_STATE_KEY:
+                    # Codex owns hook trust in the user's config.toml; forwarding
+                    # a snapshot would override its saved approvals.
+                    continue
                 args.extend(
                     [
                         "--config",

@@ -8,6 +8,7 @@ from pathlib import Path
 
 __all__ = [
     "is_admin",
+    "user_profiles_dir",
     "windows_program_data_dir",
     "windows_program_files_dir",
     "windows_system32_dir",
@@ -22,6 +23,17 @@ def is_admin() -> bool:
 
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     return os.geteuid() == 0
+
+
+def user_profiles_dir() -> Path | None:
+    """The folder that holds every user's home folder, or ``None`` where there is no standard one."""
+    if sys.platform == "win32":
+        return Path((os.environ.get("SystemDrive") or "C:") + "\\") / "Users"
+    if sys.platform == "darwin":
+        return Path("/Users")
+    if sys.platform.startswith("linux"):
+        return Path("/home")
+    return None
 
 
 def windows_program_files_dir() -> Path:

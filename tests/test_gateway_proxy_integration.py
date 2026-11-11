@@ -17,6 +17,7 @@ Fully hermetic: no agent binary, no network, no workspace credentials.
 from __future__ import annotations
 
 import contextlib
+import gzip
 import json
 import threading
 import time
@@ -53,6 +54,7 @@ class _FakeGateway:
         chunks: list[bytes] | None = None,
         sse_delay: float = 0.0,
         statuses: list[int] | None = None,
+        headers: dict[str, str] | None = None,
     ):
         self.requests: list[_CapturedRequest] = []
         self._status = status
@@ -60,6 +62,7 @@ class _FakeGateway:
         self._statuses = list(statuses or [])
         self._chunks = chunks if chunks is not None else [b'{"ok":true}']
         self._sse_delay = sse_delay
+        self._headers = headers or {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -71,6 +74,7 @@ class _FakeGateway:
     def start(self) -> None:
         captured = self.requests
         status, chunks, sse_delay = self._status, self._chunks, self._sse_delay
+        extra_headers = self._headers
         statuses = self._statuses
 
         class Handler(BaseHTTPRequestHandler):
@@ -87,6 +91,8 @@ class _FakeGateway:
                 )
                 self.send_response(statuses.pop(0) if statuses else status)
                 self.send_header("Content-Type", "text/event-stream")
+                for name, value in extra_headers.items():
+                    self.send_header(name, value)
                 self.end_headers()
                 for chunk in chunks:
                     self.wfile.write(chunk)
@@ -281,6 +287,7 @@ def _running_gateway_auth_proxy(
     added_headers=None,
     on_refresh_failure=None,
     dropped_chat_completions_fields=(),
+    **hooks,
 ):
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         gateway.base_url,
@@ -290,6 +297,7 @@ def _running_gateway_auth_proxy(
         sign_in_hint="Run `databricks auth login`.",
         on_refresh_failure=on_refresh_failure or (lambda exc: None),
         dropped_chat_completions_fields=dropped_chat_completions_fields,
+        **hooks,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -349,6 +357,91 @@ class TestGatewayAuthProxyEndToEnd:
         assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
         assert responses.body == body
 
+    def test_copilot_session_rewords_a_context_overflow(self, make_gateway):
+        from ucode.agents import copilot
+
+        overflow = (
+            b'{"error_code":"BAD_REQUEST","message":"{\\"error\\":\\"Input exceeds the model\'s'
+            b' maximum context length. Reduce the length of the input messages.\\"}"}'
+        )
+        gw = make_gateway(status=400, chunks=[overflow])
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b'{"model":"system.ai.glm-5-3"}',
+                timeout=10,
+            )
+        assert resp.status_code == 400
+        assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
+        assert resp.headers["Content-Length"] == str(len(resp.content))
+
+    def test_copilot_session_rewords_a_compressed_context_overflow(self, make_gateway):
+        from ucode.agents import copilot
+
+        overflow = b'{"message":"Input exceeds the model\'s maximum context length."}'
+        gw = make_gateway(
+            status=400, chunks=[gzip.compress(overflow)], headers={"Content-Encoding": "gzip"}
+        )
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 400
+        assert "Content-Encoding" not in resp.headers
+        assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
+
+    def test_copilot_session_relays_a_body_it_cannot_decode_as_it_is(self, make_gateway):
+        from ucode.agents import copilot
+
+        body = b"\x8b\x05\x80not-really-brotli"
+        gw = make_gateway(status=400, chunks=[body], headers={"Content-Encoding": "br"})
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            with httpx.stream(
+                "POST",
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            ) as resp:
+                raw = b"".join(resp.iter_raw())
+        assert resp.status_code == 400
+        assert resp.headers["Content-Encoding"] == "br"
+        assert raw == body
+
+    @pytest.mark.parametrize(
+        ("status", "chunks"),
+        [
+            (400, [b'{"error_code":"BAD_REQUEST",', b'"message":"endpoint is deprecated"}']),
+            (200, [b'data: {"a":1}\n\n', b"data: [DONE]\n\n"]),
+            (404, [b'{"message":"Input exceeds the model\'s maximum context length"}']),
+        ],
+    )
+    def test_copilot_session_relays_other_responses_unchanged(self, make_gateway, status, chunks):
+        from ucode.agents import copilot
+
+        gw = make_gateway(status=status, chunks=chunks)
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == status
+        assert resp.content == b"".join(chunks)
+
     def test_accepts_secret_in_x_api_key_and_does_not_forward_it(self, make_gateway):
         gw = make_gateway()
         with _running_gateway_auth_proxy(gw, _counting_token("dbx-token")) as proxy_url:
@@ -364,6 +457,36 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.header("x-api-key") is None
         assert req.header("Authorization") == "Bearer dbx-token"
 
+    def test_forwards_traces_and_drops_metrics_on_allowed_otel_paths(self, make_gateway):
+        gw = make_gateway()
+        traces, metrics = "/ai-gateway/otel/v1/traces", "/ai-gateway/otel/v1/metrics"
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, traces, metrics),
+            discarded_paths=(metrics,),
+        ) as proxy_url:
+            sent = httpx.post(
+                f"{proxy_url}{traces}",
+                headers={"x-api-key": _SESSION_SECRET, "Content-Type": "application/x-protobuf"},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            dropped = httpx.post(
+                f"{proxy_url}{metrics}",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            unauthenticated = httpx.post(f"{proxy_url}{metrics}", content=b"", timeout=10)
+        assert sent.status_code == 200
+        assert (dropped.status_code, dropped.content) == (200, b"")
+        assert unauthenticated.status_code == 401
+        assert [req.path for req in gw.requests] == [traces]
+        assert gw.requests[0].header("Authorization") == "Bearer dbx-token"
+        assert gw.requests[0].header("x-api-key") is None
+        assert gw.requests[0].body == b"\x0a\x00"
+
     @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
     def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):
         gw = make_gateway()
@@ -376,6 +499,56 @@ class TestGatewayAuthProxyEndToEnd:
                 timeout=10,
             )
         assert resp.status_code == 401
+        assert gw.requests == []
+
+    def test_antigravity_session_rewrites_model_and_body_with_fresh_token(self, make_gateway):
+        from ucode.agents import antigravity
+
+        gw = make_gateway()
+        catalog = {"gemini-3.8-flash": "system.ai.gemini-3-8-flash"}
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            added_headers=antigravity.proxy_headers("cat.sch.svc"),
+            allowed_path_prefixes=(antigravity.GEMINI_GATEWAY_PATH,),
+            path_rewriter=lambda path: antigravity.rewrite_model_path(path, catalog),
+            body_rewriter=antigravity.rewrite_request_body,
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/gemini/v1beta/models/"
+                "gemini-3.8-flash:streamGenerateContent?alt=sse",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                json={
+                    "generationConfig": {
+                        "thinkingConfig": {"includeThoughts": True, "thinkingBudget": 0}
+                    }
+                },
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        req = gw.requests[-1]
+        assert req.path == (
+            "/ai-gateway/gemini/v1beta/models/system.ai.gemini-3-8-flash"
+            ":streamGenerateContent?alt=sse"
+        )
+        assert req.header("Authorization") == "Bearer dbx-token"
+        assert req.header("Databricks-Model-Provider-Service") == "cat.sch.svc"
+        assert json.loads(req.body) == {
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}
+        }
+
+    def test_antigravity_session_reaches_only_the_gemini_route(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw, allowed_path_prefixes=("/ai-gateway/gemini/",)
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 404
         assert gw.requests == []
 
     @pytest.mark.parametrize(

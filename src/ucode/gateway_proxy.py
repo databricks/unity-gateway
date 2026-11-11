@@ -36,12 +36,14 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import cast
+from typing import Any, cast
 from urllib.parse import unquote
 
 import httpx
 
+from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
+from ucode.workspace import workspace_headers
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
 # client-supplied value is replaced, so a stale settings.json value can't leak.
@@ -148,6 +150,7 @@ class TokenCache:
         self._stop = threading.Event()
         self._token = ""
         self._expiry = 0.0
+        self._generation = 0
         # Preserve the existing non-forced relayed-auth fetch. Gateway discovery
         # opts into a forced fetch so its static client token starts with a full TTL.
         self._refresh(force=force_refresh_near_expiry)
@@ -157,6 +160,9 @@ class TokenCache:
         token = self._token_provider(force)
         expiry = _jwt_exp(token) or (time.time() + _DEFAULT_TTL_S)
         with self._state_lock:
+            # A non-forced lookup may only return the same rejected cached token.
+            if force or token != self._token:
+                self._generation += 1
             self._token = token
             self._expiry = expiry
 
@@ -179,16 +185,23 @@ class TokenCache:
 
     @property
     def token(self) -> str:
+        return self.token_snapshot()[0]
+
+    def token_snapshot(self) -> tuple[str, int]:
+        """The current token and its refresh generation, read together."""
         self._ensure_fresh()
         with self._state_lock:
-            return self._token
+            return self._token, self._generation
 
     def report_refresh_failure(self, exc: BaseException) -> None:
         self._on_refresh_failure(exc)
 
-    def refresh(self) -> None:
-        """Force a fresh mint now (used by the retry-on-401 path)."""
+    def refresh(self, *, rejected_generation: int | None = None) -> None:
+        """Refresh unless another caller already replaced the rejected generation."""
         with self._refresh_lock:
+            with self._state_lock:
+                if rejected_generation is not None and rejected_generation != self._generation:
+                    return
             self._refresh(force=True)
 
     def run_refresher(self) -> None:
@@ -215,6 +228,10 @@ def forwarded_request_headers(
         key: value for key, value in handler.headers.items() if key.lower() not in strip_on_forward
     }
     headers[token_header] = f"Bearer {token}"
+    # Don't let httpx's default `Accept-Encoding: gzip, deflate` ask for a compressed body the
+    # client never requested: the response is relayed raw, and Codex can't decode gzip.
+    if not any(key.lower() == "accept-encoding" for key in headers):
+        headers["Accept-Encoding"] = "identity"
     return headers
 
 
@@ -255,6 +272,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     cache: TokenCache
     client: httpx.Client
     token_header = AI_GATEWAY_TOKEN_HEADER
+    # Applied last so neither the agent nor an admin header can select another workspace.
+    workspace_selector: Mapping[str, str] = {}
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -297,16 +316,23 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             route=route_label,
         )
 
-        def request_headers() -> dict[str, str]:
-            headers = forwarded_request_headers(
-                self, self.cache.token, token_header, extra_strip=extra_strip
-            )
+        def request_headers(token: str) -> dict[str, str]:
+            headers = forwarded_request_headers(self, token, token_header, extra_strip=extra_strip)
             headers.update(self._added_headers())
+            if self.workspace_selector:
+                selector_names = {name.lower() for name in self.workspace_selector}
+                headers = {
+                    name: value
+                    for name, value in headers.items()
+                    if name.lower() not in selector_names
+                }
+                headers.update(self.workspace_selector)
             return headers
 
         try:
             # First attempt with the current token.
-            headers = request_headers()
+            token, generation = self.cache.token_snapshot()
+            headers = request_headers(token)
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -328,7 +354,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # genuine re-auth is triggered; a stale-Databricks 401 self-heals here
             # instead of surfacing to Claude Code as a spurious Anthropic prompt.
             try:
-                self.cache.refresh()
+                self.cache.refresh(rejected_generation=generation)
             except RuntimeError as exc:
                 # Refresh failed: the Databricks OAuth session is dead (not just the
                 # access token) and can't be re-minted non-interactively. Surface the
@@ -337,7 +363,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # user to the wrong re-auth. Still retry + relay with the existing token.
                 if self._on_refresh_failure(exc):
                     return
-            headers = request_headers()
+            headers = request_headers(self.cache.token)
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -492,8 +518,36 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     allowed_path_prefixes: tuple[str, ...]
     sign_in_hint: str
     dropped_chat_completions_fields: frozenset[str]
+    path_rewriter: Callable[[str], str] | None = None
+    body_rewriter: Callable[[str, bytes], bytes] | None = None
+    bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    discarded_paths: frozenset[str] = frozenset()
+
+    def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
+        # `read` decodes only these encodings, so the body goes out without Content-Encoding.
+        encoding = resp.headers.get("content-encoding", "identity").strip().lower()
+        if (
+            self.bad_request_rewriter is None
+            or resp.status_code != 400
+            or encoding not in ("identity", "gzip", "deflate")
+        ):
+            return super()._relay_response(resp, **kwargs)
+        body = resp.read()
+        body = self.bad_request_rewriter(body) or body
+        try:
+            self.send_response(400)
+            for key, value in resp.headers.items():
+                if key.lower() not in {*HOP_BY_HOP_HEADERS, "content-encoding"}:
+                    self.send_header(key, value)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            pass
 
     def _request_body(self, body: bytes | None) -> bytes | None:
+        if body and self.body_rewriter is not None:
+            body = self.body_rewriter(self.path, body)
         if not body or not self.dropped_chat_completions_fields:
             return body
         if not self.path.split("?", 1)[0].endswith("/chat/completions"):
@@ -551,7 +605,29 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
+        if self.path.split("?", 1)[0] in self.discarded_paths:
+            self._discard()
+            return
+        if self.path_rewriter is not None:
+            rewritten = self.path_rewriter(self.path)
+            # A rewrite must stay on a path the session may reach.
+            if not _is_allowed_gateway_path(rewritten, self.allowed_path_prefixes):
+                self._reject(404, "This path is not served by the Unity Gateway proxy.")
+                return
+            self.path = rewritten
         super()._handle()
+
+    def _discard(self) -> None:
+        """Accept and drop a request the gateway has no route for, with an empty success."""
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError:
+            pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         added = frozenset(name.lower() for name in self.added_headers)
@@ -616,6 +692,7 @@ def _start_proxy(
                 "cache": cache,
                 "client": client,
                 "token_header": token_header,
+                "workspace_selector": workspace_headers(workspace),
                 **(handler_attrs or {}),
             },
         ),
@@ -636,20 +713,34 @@ def _start_proxy(
     return server, cache, client
 
 
+# Each subscription relay's gateway route and request handler, by agent; another relayed
+# provider (e.g. Copilot's) adds an entry here.
+_RELAY_ROUTES: dict[str, tuple[str, type[_ProxyHandler]]] = {
+    AGENT_CLAUDE: ("ai-gateway/anthropic/", _RelayProxyHandler),
+    # Plain forwarding: the Anthropic hybrid reroute doesn't apply.
+    AGENT_CODEX: ("ai-gateway/codex/", _ProxyHandler),
+}
+
+
 def start_relay_proxy(
     workspace: str,
     token_provider: Callable[[bool], str],
     port: int,
+    *,
+    agent: str = AGENT_CLAUDE,
+    fallback_on_bind_error: bool = True,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start the Claude subscription relay proxy."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    upstream_path, handler_type = _RELAY_ROUTES[agent]
     return _start_proxy(
         workspace,
         token_provider,
         port,
-        upstream_path="ai-gateway/anthropic/",
+        upstream_path=upstream_path,
         token_header=AI_GATEWAY_TOKEN_HEADER,
-        handler_type=_RelayProxyHandler,
+        handler_type=handler_type,
         force_refresh_near_expiry=False,
+        fallback_on_bind_error=fallback_on_bind_error,
     )
 
 
@@ -681,14 +772,22 @@ def start_gateway_auth_proxy(
     sign_in_hint: str,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
     dropped_chat_completions_fields: Iterable[str] = (),
+    allowed_path_prefixes: tuple[str, ...] = GATEWAY_MODEL_PATH_PREFIXES,
+    path_rewriter: Callable[[str], str] | None = None,
+    body_rewriter: Callable[[str, bytes], bytes] | None = None,
+    bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
+    discarded_paths: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
     The agent sends ``session_secret`` as its API key; the proxy accepts it only on
-    gateway model paths and forwards with a fresh Databricks token plus
+    ``allowed_path_prefixes`` and forwards with a fresh Databricks token plus
     ``added_headers``, after removing ``dropped_chat_completions_fields`` from Chat
-    Completions request bodies. Binds an OS-assigned port, read from
-    ``server.server_address[1]``.
+    Completions request bodies. ``path_rewriter`` maps an accepted request path to the
+    gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
+    body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
+    (returning None relays it as it is). ``discarded_paths`` are answered with an empty 200 and
+    never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -702,9 +801,16 @@ def start_gateway_auth_proxy(
         handler_attrs={
             "session_secret": session_secret,
             "added_headers": dict(added_headers),
-            "allowed_path_prefixes": GATEWAY_MODEL_PATH_PREFIXES,
+            "allowed_path_prefixes": allowed_path_prefixes,
             "sign_in_hint": sign_in_hint,
             "dropped_chat_completions_fields": frozenset(dropped_chat_completions_fields),
+            # staticmethod: a plain function on the handler class would bind as a method.
+            "path_rewriter": staticmethod(path_rewriter) if path_rewriter else None,
+            "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
+            "bad_request_rewriter": (
+                staticmethod(bad_request_rewriter) if bad_request_rewriter else None
+            ),
+            "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
     )
