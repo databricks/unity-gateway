@@ -52,6 +52,7 @@ _SCREEN = """() => {
     dialog: dialog ? text(dialog) : null,
     picker: picker ? text(picker) : null,
     pickerSearch: !!(picker && picker.querySelector('input')),
+    pickerQuery: picker && picker.querySelector('input') ? picker.querySelector('input').value : null,
     modelButton: button ? button.getAttribute('aria-label') : null,
     confirmation: confirmation ? text(confirmation) : null,
     response: response
@@ -72,44 +73,39 @@ class UnknownScreen(AssertionError):
     pass
 
 
+def vscode_user_dir(session) -> Path:
+    """VS Code's user data folder for the session's home."""
+    if os.name == "nt":
+        return Path(session.env["APPDATA"]) / "Code"
+    return Path(session.env["XDG_CONFIG_HOME"]) / "Code"
+
+
 class VSCode:
     """One VS Code window on the session's project, closed and reaped on exit."""
 
     def __init__(self, session, name: str):
         self.session = session
         self.name = name
-        self.user_dir = Path(session.env["XDG_CONFIG_HOME"]) / "Code"
+        self.user_dir = vscode_user_dir(session)
         self.shots = 0
         self.actions: list[str] = []
+        self.copilot_chat_ready = False
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
 
         session = self.session
-        xvfb = shutil.which("Xvfb", path=session.env["PATH"])
-        assert xvfb, "Xvfb is not on the session PATH"
-        read, write = os.pipe()
-        self.display = subprocess.Popen(
-            [xvfb, "-displayfd", str(write), "-screen", "0", "1600x1000x24", "-nolisten", "tcp"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            pass_fds=(write,),
-            **process_group_options(),
-        )
-        os.close(write)
         try:
-            with os.fdopen(read) as pipe:
-                number = pipe.readline().strip()
-            assert number.isdigit(), "Xvfb reported no display"
-            self.env = {**session.env, "DISPLAY": f":{number}"}
+            self.env = session.env if os.name == "nt" else self._start_display()
             port_file = self.user_dir / "DevToolsActivePort"
             port_file.unlink(missing_ok=True)
             self.log = (session.artifacts / f"{self.name}-code.log").open("w")
             # The app itself, not bin/code: that CLI starts the window detached and exits, out of
             # reach of teardown. The sandbox needs a setuid helper the archive can't ship; GPU is
             # absent on CI.
-            app = session.which("code").resolve().parent.parent / "code"
+            app = session.which("code").resolve().parent.parent / (
+                "Code.exe" if os.name == "nt" else "code"
+            )
             self.code = subprocess.Popen(
                 [
                     str(app),
@@ -137,6 +133,25 @@ class VSCode:
             self._stop()
             raise
         return self
+
+    def _start_display(self) -> dict:
+        """Start a private X display and return the session environment pointed at it."""
+        xvfb = shutil.which("Xvfb", path=self.session.env["PATH"])
+        assert xvfb, "Xvfb is not on the session PATH"
+        read, write = os.pipe()
+        self.display = subprocess.Popen(
+            [xvfb, "-displayfd", str(write), "-screen", "0", "1600x1000x24", "-nolisten", "tcp"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            pass_fds=(write,),
+            **process_group_options(),
+        )
+        os.close(write)
+        with os.fdopen(read) as pipe:
+            number = pipe.readline().strip()
+        assert number.isdigit(), "Xvfb reported no display"
+        return {**self.session.env, "DISPLAY": f":{number}"}
 
     def __exit__(self, kind, value, traceback):
         try:
@@ -239,9 +254,12 @@ class VSCode:
             lambda: not self.screen()["welcome"], STEP_TIMEOUT_S, "the Welcome editor closed"
         )
 
-    def pick_model(self, label: str) -> None:
+    def pick_model(self, label: str, *, select: bool = True) -> None:
         """Choose ``label`` in Copilot Chat's model picker, trusting the folder and adding the
-        model providers on the way when the picker asks for it."""
+        model providers on the way when the picker asks for it.
+
+        With ``select=False`` the model must already be the chat's model once the providers are
+        added; reaching the model list fails."""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         deadline = time.monotonic() + STEP_TIMEOUT_S
@@ -253,16 +271,33 @@ class VSCode:
                 and screen["picker"] is None
                 and not screen["modelsEditor"]
             ):
+                self._wait_for_copilot_chat()
                 self.shot("model-picked")
                 return
             state = self._picker_state(screen, label)
+            if (
+                not select
+                and state.startswith("picker: ")
+                and state
+                not in (
+                    "picker: restricted",
+                    "picker: signed out",
+                )
+            ):
+                raise AssertionError(
+                    f"Copilot Chat didn't start on {label}: {screen['modelButton']}"
+                )
             # While VS Code finishes starting, the picker can close by itself, even between a
             # screen read and a click. A closed picker is a screen of its own: open it once, and
             # again only if it is still closed after it had time to open.
+            if state == "picker: no match" and time.monotonic() - acted >= SETTLE_S:
+                raise AssertionError(f"The model picker lists no {label}")
             if state == last and (state != "picker closed" or time.monotonic() - acted < SETTLE_S):
                 time.sleep(POLL_S)
                 continue
             last, acted = state, time.monotonic()
+            if state == "picker: no match":
+                continue
             try:
                 self._picker_action(state, screen, label)
             except PlaywrightTimeoutError:
@@ -294,14 +329,7 @@ class VSCode:
                 STEP_TIMEOUT_S,
                 "Copilot Chat to list the added models",
             )
-            # Copilot Chat shows this once it runs on the added models. A prompt sent before then
-            # goes to VS Code's setup agent, which asks for a GitHub sign-in.
-            self._wait(
-                lambda: self.screen()["byokToast"],
-                STEP_TIMEOUT_S,
-                "Copilot Chat to start on the added models",
-            )
-            self.shot("copilot-chat-ready")
+
         elif state == "picker closed":
             self._click("model picker: open", model_button)
         elif state == "picker: restricted":
@@ -327,6 +355,72 @@ class VSCode:
         else:
             raise UnknownScreen(f"Unknown screen while picking {label}: {screen}")
 
+    def _wait_for_copilot_chat(self) -> None:
+        # Copilot Chat shows this toast once it runs on Databricks models. A prompt sent before
+        # then goes to VS Code's setup agent, which asks for a GitHub sign-in.
+        if self.copilot_chat_ready:
+            return
+        self._wait(
+            lambda: self.screen()["byokToast"],
+            STEP_TIMEOUT_S,
+            "Copilot Chat to start on the Databricks models",
+        )
+        self.copilot_chat_ready = True
+        self.shot("copilot-chat-ready")
+
+    def assert_not_in_picker(self, label: str) -> None:
+        """Search Copilot Chat's model picker for ``label``, require no match, and close it."""
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+        page = self.page
+        deadline = time.monotonic() + STEP_TIMEOUT_S
+        last, acted = None, 0.0
+        while time.monotonic() < deadline:
+            screen = self.screen()
+            state = self._picker_state(screen, label)
+            if state == "picker: no match" and time.monotonic() - acted >= SETTLE_S:
+                self.shot(f"picker-without-{label}")
+                self._act("model picker: Escape", lambda: page.keyboard.press("Escape"))
+                self._wait(lambda: self.screen()["picker"] is None, STEP_TIMEOUT_S, "picker closed")
+                return
+            if state == "picker: row shown":
+                self.shot("picker-unexpected-row")
+                raise AssertionError(f"The model picker still lists {label}")
+            if state == last and (state != "picker closed" or time.monotonic() - acted < SETTLE_S):
+                time.sleep(POLL_S)
+                continue
+            last, acted = state, time.monotonic()
+            try:
+                if state == "picker: searching":
+                    self._act(f"model picker: type {label}", lambda: page.keyboard.type(label))
+                elif state in (
+                    "picker closed",
+                    "picker: models",
+                    "picker: restricted",
+                    "picker: signed out",
+                    "dialog: trust folder",
+                    "language models editor",
+                ):
+                    # Reopening a profile can show the signed-out picker until Copilot Chat starts.
+                    self._picker_action(state, screen, label)
+                elif state != "picker: no match":
+                    raise UnknownScreen(f"Unknown screen while searching for {label}: {screen}")
+            except PlaywrightTimeoutError:
+                if self._picker_state(self.screen(), label) == state:
+                    raise
+                self.actions.append(f"  (the screen changed before the click: {state})")
+        raise AssertionError(f"Timed out searching the picker for {label}; last {self.screen()}")
+
+    def quit(self) -> None:
+        """Quit VS Code from the keyboard, as File > Exit does, and wait for it to exit."""
+        # Windows binds Ctrl+Q to Quick Open View; closing the only window quits there.
+        key = "Alt+F4" if os.name == "nt" else "Control+q"
+        self._act(key, lambda: self.page.keyboard.press(key))
+        try:
+            self.code.wait(timeout=STEP_TIMEOUT_S)
+        except subprocess.TimeoutExpired as error:
+            raise AssertionError(f"VS Code did not exit after {key}") from error
+
     def _picker_state(self, screen: dict, label: str) -> str:
         if screen["onboarding"] is not None:
             return "onboarding"
@@ -347,7 +441,9 @@ class VSCode:
             row = self.page.locator(
                 f'.chat-model-picker-widget:visible .monaco-list-row[aria-label^="{label},"]'
             )
-            return "picker: row shown" if row.count() else "picker: searching"
+            if row.count():
+                return "picker: row shown"
+            return "picker: no match" if screen["pickerQuery"] == label else "picker: searching"
         return "picker: models"
 
     def send(self, prompt: str) -> int:
@@ -406,7 +502,11 @@ class VSCode:
 def copilot_chat_version(session) -> str:
     """The Copilot Chat version bundled in the installed VS Code."""
     root = session.which("code").resolve().parent.parent
-    package = root / "resources/app/extensions/copilot/package.json"
+    # Windows keeps the app under a folder named for the build's commit.
+    [package] = [
+        *root.glob("resources/app/extensions/copilot/package.json"),
+        *root.glob("*/resources/app/extensions/copilot/package.json"),
+    ]
     return json.loads(package.read_text())["version"]
 
 

@@ -4,6 +4,8 @@ import json
 import time
 from pathlib import Path
 
+from ..vscode import vscode_user_dir
+
 __all__ = ["chat_requests"]
 
 # VS Code saves chat sessions on a storage timer of about a minute, not when a turn ends.
@@ -72,7 +74,7 @@ def _summary(request: dict) -> dict:
 
 def chat_requests(session, count: int) -> list[dict]:
     """Wait until VS Code has saved a chat with ``count`` completed requests; return them in order."""
-    root = Path(session.env["XDG_CONFIG_HOME"]) / "Code/User/workspaceStorage"
+    root = vscode_user_dir(session) / "User/workspaceStorage"
     deadline = time.monotonic() + SAVE_TIMEOUT_S
     while time.monotonic() < deadline:
         for path in root.glob("*/chatSessions/*.jsonl"):

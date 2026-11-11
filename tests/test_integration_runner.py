@@ -260,7 +260,10 @@ def test_vscode_archive_url_matches_the_update_service_layout():
     assert runner.vscode_archive_url("1.144.0", "linux", "x86_64") == (
         "https://update.code.visualstudio.com/1.144.0/linux-x64/stable"
     )
-    for system, machine in (("win32", "AMD64"), ("darwin", "arm64"), ("linux", "aarch64")):
+    assert runner.vscode_archive_url("1.144.0", "win32", "AMD64") == (
+        "https://update.code.visualstudio.com/1.144.0/win32-x64-archive/stable"
+    )
+    for system, machine in (("darwin", "arm64"), ("linux", "aarch64")):
         with pytest.raises(RuntimeError, match="No pinned VS Code archive"):
             runner.vscode_archive_url("1.144.0", system, machine)
 
@@ -298,6 +301,37 @@ def test_vscode_install_checks_the_pinned_sha256_and_reports_copilot_chat(tmp_pa
     assert installed["copilot_chat"] == "0.72.0"
     assert installed["path"] == str(tmp_path / "vscode/VSCode-linux-x64/bin/code")
     assert not (tmp_path / "vscode/vscode.tar.gz").exists()
+
+
+def test_vscode_windows_install_finds_code_cmd_and_the_versioned_copilot_chat(
+    tmp_path, monkeypatch
+):
+    import hashlib
+    import io
+    import json
+    import zipfile
+
+    buffer = io.BytesIO()
+    # The Windows archive is flat, with the app under a folder named for the build's commit.
+    with zipfile.ZipFile(buffer, "w") as bundle:
+        bundle.writestr("Code.exe", b"MZ")
+        bundle.writestr("bin/code.cmd", b"@echo off")
+        bundle.writestr(
+            "2c33b50b16/resources/app/extensions/copilot/package.json",
+            json.dumps({"version": "0.72.0"}),
+        )
+    payload = buffer.getvalue()
+    _serve(monkeypatch, payload)
+    monkeypatch.setattr(runner.sys, "platform", "win32")
+    monkeypatch.setattr(runner.platform, "machine", lambda: "AMD64")
+
+    installed = runner.install_vscode(
+        "1.144.0", tmp_path / "vscode", sha256=hashlib.sha256(payload).hexdigest()
+    )
+
+    assert installed["path"] == str(tmp_path / "vscode/VSCode-win32-x64/bin/code.cmd")
+    assert installed["copilot_chat"] == "0.72.0"
+    assert (tmp_path / "vscode/VSCode-win32-x64/Code.exe").is_file()
 
 
 def test_vscode_install_rejects_a_swapped_archive(tmp_path, monkeypatch):

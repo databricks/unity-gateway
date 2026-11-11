@@ -1,0 +1,26 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_GITHUB_COPILOT",
+      "config": {
+        "models": {
+          "model_services": [
+            "system.ai.claude-haiku-4-5",
+            "system.ai.gpt-6-luna"
+          ]
+        },
+        "default_models": {
+          "default_model": "system.ai.gpt-6-luna"
+        },
+        "http_headers": {
+          "x-ug-integration-lane": "vscode"
+        },
+        "vscode_integration": {
+          "enabled": true
+        }
+      }
+    }
+  ]
+}
