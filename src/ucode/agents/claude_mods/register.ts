@@ -347,6 +347,7 @@ export function register(on: On, options: PluginOptions): void {
       }
       const modelEffort = text.match(/^<local-command-stdout>Set model to .*? with `?(low|medium|high|xhigh|max)`? effort/i)?.[1];
       if (modelEffort) effortState.native[await $.session.model()] = 'Effort level: ' + modelEffort;
+      if (dismiss && setModel) $.ui.invalidate('ui.render');
       if (internalSwitch || dismiss) return result;
       if (setModel) {
         pendingSelection?.cancel();

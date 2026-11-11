@@ -32,7 +32,8 @@ pin, including real routed and unrouted child tasks. The two-session native prof
 journey passed for all four alternatives on 2.1.290 and for Haiku on 2.1.322.
 A reported pane flash during manual selection was traced to closing the provisional
 Auto pane after forwarding the native confirmation. A regression verifies it closes
-before that confirmation is rendered, including cancellation. A 2.1.322 80-column
+before that confirmation is rendered, including cancellation, and that a regular
+model confirmation still refreshes the UI afterward. A 2.1.322 80-column
 capture found no unwanted pane in 33 frames across cancellation and manual selection;
 this does not guarantee frame-by-frame behavior on every terminal. Native header labels
 continue to show the underlying model. Launch regressions cover saved native aliases

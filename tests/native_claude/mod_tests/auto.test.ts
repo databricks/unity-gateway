@@ -16,7 +16,7 @@ const options = {
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
 function host(on: any, selected = 'ug-auto-opus') {
-  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -77,7 +77,7 @@ function commandTranscript({state, env}: ReturnType<typeof host>) {
       ui: {
         open: async (request: any) => {state.questions.push(request);},
         close: async (request: any) => {state.closed.push(request);},
-        invalidate: () => {},
+        invalidate: (event: string) => {state.invalidations.push(event);},
       },
       clock: {after: (_delay: number, callback: () => Promise<void>) => {
         let cancelled = false;
@@ -228,6 +228,7 @@ test('manual selection and cancellation close Auto before the native picker conf
   state.selected = 'opus';
   await confirm('Set model to Opus');
   expect(state.appendClosed.at(-1)).toBe(1);
+  expect(state.invalidations).toContain('ui.render');
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
   await $.command.run({command: 'model', args: ''});
   await confirm('Kept model as Opus');
