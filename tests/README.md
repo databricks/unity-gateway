@@ -1459,8 +1459,8 @@ while preserving reviewed inputs and denials.
 `test_agent_model_sources.py` and `test_cli.py` cover managed schema and MPS wildcard model sources.
 Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, provider
 catalogs follow service type, and failed discovery fails closed during configure. Launch uses
-matching last-configure expansions on live failures; tests cover missing fallbacks, per-workspace
-and per-agent isolation, and mixed per-agent configure errors. These are component checks;
+matching last-configure expansions on live failures; tests cover malformed or missing fallbacks,
+per-workspace and per-agent isolation, one accumulated save, and mixed configure errors. These are component checks;
 they do not establish live inference coverage.
 
 `test_agent_claude.py` covers short Claude picker labels for qualified MPS model IDs.

@@ -1945,7 +1945,7 @@ while preserving reviewed inputs and denials.
 Managed schema/MPS wildcard expansion has component coverage in `../test_agent_model_sources.py` and
 `../test_cli.py`, including provider-type catalog selection, mixed source ordering, schema IDs,
 Copilot alias normalization, duplicate removal, configure fail-closed behavior, launch fallback to
-per-workspace last-configure results, and per-agent configure failure reporting. No installed-agent
+validated per-workspace last-configure results, one accumulated save, and per-agent configure failure reporting. No installed-agent
 integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Short Claude picker labels for qualified MPS IDs have component coverage in

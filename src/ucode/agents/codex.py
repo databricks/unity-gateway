@@ -65,7 +65,6 @@ from ucode.databricks import (
     build_mcp_service_url,
     build_tool_base_url,
     get_model_provider_service,
-    list_provider_service_models,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -1588,13 +1587,7 @@ def source_models(
     token: str,
     *,
     parent_schema: str | None = None,
-    provider: str | None = None,
-    provider_service: dict | None = None,
 ) -> tuple[list[str], str | None]:
-    if provider:
-        return list_provider_service_models(
-            workspace, token, provider, (provider_service or {}).get("provider_type", "")
-        )
     catalog = _fetch_codex_model_catalog(
         workspace, token, source=CodexCatalogSource.PARENT_SCHEMA, identifier=parent_schema or ""
     )

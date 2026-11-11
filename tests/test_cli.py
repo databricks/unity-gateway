@@ -1934,9 +1934,12 @@ def test_managed_wildcard_expansion_writes_a_copy(monkeypatch, key, source):
     managed = {"enabled_agents": {"claude": {"model_config": {key: [source]}}}}
     monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args, **kwargs: "tok")
     monkeypatch.setattr(
-        cli_mod, "expand_wildcard_sources", lambda *args, **kwargs: ["c.s.mps.model"]
+        cli_mod,
+        "expand_wildcard_sources",
+        lambda *args, **kwargs: (["c.s.mps.model"], {source: ["c.s.mps.model"]}),
     )
-    expanded = cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
+    expanded, live = cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
+    assert live == {source: ["c.s.mps.model"]}
     assert expanded["enabled_agents"]["claude"]["model_config"][key] == ["c.s.mps.model"]
     assert cli_mod.managed_static_models(managed, "claude") == [source]
 
@@ -1944,7 +1947,7 @@ def test_managed_wildcard_expansion_writes_a_copy(monkeypatch, key, source):
 def test_managed_wildcard_expansion_fails_closed_when_every_wildcard_fails(monkeypatch):
     managed = {"enabled_agents": {"claude": {"model_config": {"sources": ["c.s.mps.*"]}}}}
     monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args, **kwargs: "tok")
-    monkeypatch.setattr(cli_mod, "expand_wildcard_sources", lambda *args, **kwargs: [])
+    monkeypatch.setattr(cli_mod, "expand_wildcard_sources", lambda *args, **kwargs: ([], {}))
     with pytest.raises(RuntimeError, match="c.s.mps"):
         cli_mod._expand_managed_model_sources(managed, MINIMAL_STATE, "claude")
     assert cli_mod.managed_static_models(managed, "claude") == ["c.s.mps.*"]
@@ -1992,7 +1995,7 @@ def test_managed_wildcard_launch_uses_only_matching_last_configure(monkeypatch, 
     monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *args: ([], "HTTP 403"))
     with (
         _launch_policy_patches(managed) as calls,
-        patch("ucode.cli._save_managed_model_source_expansions") as save_expansions,
+        patch("ucode.cli.set_managed_model_source_expansions") as save_expansions,
     ):
         calls["state"]["managed_model_source_expansions"] = {
             "codex" if cached == "other-agent" else "claude": {
@@ -2020,7 +2023,7 @@ def test_successful_live_launch_does_not_replace_last_configure(monkeypatch):
     monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *a: (["system.ai.live"], None))
     with (
         _launch_policy_patches(managed) as calls,
-        patch("ucode.cli._save_managed_model_source_expansions") as save_expansions,
+        patch("ucode.cli.set_managed_model_source_expansions") as save_expansions,
     ):
         saved = {"claude": {source: ["system.ai.saved"]}}
         calls["state"]["managed_model_source_expansions"] = saved
@@ -2086,7 +2089,8 @@ def test_managed_configure_accumulates_expansions_for_multiple_agents(monkeypatc
 
     monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(state_mod, "APP_DIR", tmp_path)
-    monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+    save = MagicMock(side_effect=real_save_state)
+    monkeypatch.setattr(cli_mod, "save_state", save)
     state = dict(MINIMAL_STATE)
     managed = {
         "enabled_agents": {
@@ -2103,7 +2107,11 @@ def test_managed_configure_accumulates_expansions_for_multiple_agents(monkeypatc
     monkeypatch.setattr(
         cli_mod,
         "configure_selected_tools",
-        lambda state, tools, **k: {**state, "last_configured_tools": tools},
+        lambda state, tools, **k: {
+            **state,
+            "last_configured_tools": tools,
+            "agent_written_state": tools[0],
+        },
     )
     monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
     monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *a: True)
@@ -2116,6 +2124,59 @@ def test_managed_configure_accumulates_expansions_for_multiple_agents(monkeypatc
         "copilot": {"system.ai.*": ["copilot"]},
     }
     assert "last_configured_tools" not in persisted
+    assert persisted["agent_written_state"] == "copilot"
+    assert save.call_count == 2  # Initial workspace save and one accumulated expansion save.
+
+
+@pytest.mark.parametrize("failure", ["expansion", "configuration"])
+def test_managed_configure_saves_only_successful_tools(monkeypatch, tmp_path, failure):
+    import ucode.state as state_mod
+
+    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(state_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+    state = {
+        **MINIMAL_STATE,
+        "managed_model_source_expansions": {
+            "codex": {"system.ai.*": ["old-codex"]},
+            "copilot": {"system.ai.*": ["old-copilot"]},
+        },
+    }
+    managed = {
+        "enabled_agents": {
+            tool: {"model_config": {"sources": ["system.ai.*"]}} for tool in ("codex", "copilot")
+        }
+    }
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_files", lambda *a: None)
+    monkeypatch.setattr(
+        agents,
+        "_expand_wildcard_source",
+        lambda source, tool, *a: (
+            ([], "403") if tool == "copilot" and failure == "expansion" else ([f"new-{tool}"], None)
+        ),
+    )
+    monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a: True)
+    monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+    monkeypatch.setattr(
+        cli_mod,
+        "configure_selected_tools",
+        lambda state, tools, **k: {
+            **state,
+            "last_configured_tools": [] if tools == ["copilot"] else tools,
+        },
+    )
+    monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
+    monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *a: True)
+    monkeypatch.setattr(cli_mod, "_restore_mcp_after_workspace_switch", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a: None)
+    cli_mod._configure_workspace_command(workspaces=[(state["workspace"], None)])
+    assert state_mod.load_state()["managed_model_source_expansions"] == {
+        "codex": {"system.ai.*": ["new-codex"]},
+        "copilot": {"system.ai.*": ["old-copilot"]},
+    }
 
 
 @pytest.mark.parametrize("single", [True, False], ids=["single-agent", "managed-loop"])
@@ -7275,7 +7336,7 @@ class TestConfigureScopeFlags:
                     "Could not expand managed model sources (main.default.mps.*); refusing to "
                     "fall back to workspace discovery. Check service access, then retry."
                 )
-            return _managed
+            return _managed, {}
 
         with (
             patch(

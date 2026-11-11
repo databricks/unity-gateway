@@ -58,7 +58,6 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     list_anthropic_model_catalog,
-    list_provider_service_models,
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
@@ -738,13 +737,7 @@ def source_models(
     token: str,
     *,
     parent_schema: str | None = None,
-    provider: str | None = None,
-    provider_service: dict | None = None,
 ) -> tuple[list[str], str | None]:
-    if provider:
-        return list_provider_service_models(
-            workspace, token, provider, (provider_service or {}).get("provider_type", "")
-        )
     catalog = list_anthropic_model_catalog(workspace, token, parent_schema=parent_schema)
     return catalog.model_ids, catalog.error_msg
 

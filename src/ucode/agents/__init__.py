@@ -23,9 +23,9 @@ from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
     AnthropicModelCatalog,
     get_databricks_token,
-    get_model_provider_service,
     install_ai_tools,
     install_databricks_cli,
+    list_model_provider_service_targets,
     map_claude_family_models,
     provider_targets_for_tool,
     resolve_provider_service,
@@ -119,8 +119,6 @@ class _ModelSourceModule(Protocol):
         token: str,
         *,
         parent_schema: str | None = None,
-        provider: str | None = None,
-        provider_service: dict | None = None,
     ) -> tuple[list[str], str | None]: ...
 
 
@@ -133,20 +131,10 @@ def _expand_wildcard_source(
     model: str, tool: str, workspace: str, token: str
 ) -> tuple[list[str], str | None]:
     source_name = model[:-2]
-    module = cast(_ModelSourceModule, _MODULES[tool])
     if len(model.split(".")) == 3:
+        module = cast(_ModelSourceModule, _MODULES[tool])
         return module.source_models(workspace, token, parent_schema=source_name)
-
-    service, reason = get_model_provider_service(source_name, workspace, token)
-    if service is None:
-        return [], reason
-    targets, reason = module.source_models(
-        workspace, token, provider=source_name, provider_service=service
-    )
-    return [
-        target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
-        for target in targets
-    ], reason
+    return list_model_provider_service_targets(workspace, token, source_name)
 
 
 def expand_wildcard_sources(
@@ -156,10 +144,10 @@ def expand_wildcard_sources(
     token: str,
     *,
     fallbacks: dict[str, list[str]] | None = None,
-    live_expansions: dict[str, list[str]] | None = None,
-) -> list[str]:
+) -> tuple[list[str], dict[str, list[str]]]:
     expanded: list[str] = []
     lookups: dict[str, list[str]] = {}
+    live: dict[str, list[str]] = {}
     for model in models:
         if not is_model_source_wildcard(model):
             expanded.append(model)
@@ -172,31 +160,24 @@ def expand_wildcard_sources(
                     targets, reason = _expand_wildcard_source(model, tool, workspace, token)
                 except RuntimeError as exc:
                     reason = str(exc)
-            if targets and live_expansions is not None:
-                live_expansions[model] = list(targets)
-            if not targets:
+            if targets:
+                live[model] = list(targets)
+            else:
                 if not token:
                     reason = "no Databricks token; run `ug configure`"
                 detail = f" ({reason})" if reason else ""
+                prefix = f"Could not expand managed model source {model}{detail}; "
                 fallback = (fallbacks or {}).get(model)
-                if (
-                    isinstance(fallback, list)
-                    and fallback
-                    and all(isinstance(target, str) and target for target in fallback)
-                ):
+                if fallback:
                     targets = fallback
-                    print_warning(
-                        f"Could not expand managed model source {model}{detail}; "
-                        "using the list from the last configure."
-                    )
+                    print_warning(prefix + "using the list from the last configure.")
                 else:
                     print_warning(
-                        f"Could not expand managed model source {model}{detail}; "
-                        "check service access and compatible models, then retry."
+                        prefix + "check service access and compatible models, then retry."
                     )
             lookups[model] = targets
         expanded.extend(lookups[model])
-    return list(dict.fromkeys(expanded))
+    return list(dict.fromkeys(expanded)), live
 
 
 def install_databricks_ai_tools_for_agents(
