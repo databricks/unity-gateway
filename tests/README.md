@@ -12,6 +12,10 @@ Contract tests check that staging and existing lanes partition coverage, share t
 same MPS fixture, and use separate workspace credentials. Subscription relay,
 Bedrock, Foundry, and dedicated CUJ2 retain their existing fixtures.
 
+Runner component tests cover workspace OAuth token requests and HTTP-error diagnostics,
+including redaction of the client secret and encoded Basic credential before truncation.
+These checks do not establish live authentication or staging network access.
+
 Direct-provider coverage is consolidated in the installed-CLI journeys. The configure
 picker journey checks a completed task on the pinned Haiku model and rejects a model
 outside the MPS allowlist; Cases 11 check configured and fresh provider discovery.
