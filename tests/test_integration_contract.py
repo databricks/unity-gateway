@@ -1181,14 +1181,31 @@ def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
         'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
         in workflow
     )
-    assert "runs-on: ubuntu-22.04" in job
+    assert "runs-on: ${{ matrix.os }}" in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
     assert "continue-on-error: true" in job
     assert "AGENT: vscode" in job
     assert "TEST_MARKER: live and vscode" in job
     assert (
         "      - name: Install a virtual display for VS Code\n"
-        "        if: ${{ env.AGENT == 'vscode' }}\n"
+        "        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}\n"
         "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
     ) in workflow
     gate_needs = re.search(r"(?m)^    needs: \[(.*)\]$", jobs["cujs"]).group(1)
     assert "vscode" not in [need.strip() for need in gate_needs.split(",")]
+
+
+def test_latest_harness_drives_the_newest_vscode_and_copilot():
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    assert "npm view @github/copilot@latest version" in resolver
+    assert "https://update.code.visualstudio.com/api/update/linux-x64/stable/latest" in resolver
+    for output in ("copilot", "vscode", "vscode_sha256"):
+        assert f"needs.resolve-versions.outputs.{output}" in harness
+    assert "- suite: vscode\n            runner: ubuntu-22.04\n" in harness
+    assert "marker: harness_latest and vscode" in harness
+    assert (
+        'args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION"\n'
+        '              --vscode-sha256 "$VSCODE_SHA256")'
+    ) in harness
+    assert "if: ${{ matrix.suite == 'vscode' }}" in harness

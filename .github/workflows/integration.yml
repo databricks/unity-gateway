@@ -398,7 +398,7 @@ jobs:
           test -f "$RUNNER_TEMP/.bin/databricks.exe"
           cygpath -w "$RUNNER_TEMP/.bin" >> "$GITHUB_PATH"
       - name: Install a virtual display for VS Code
-        if: ${{ env.AGENT == 'vscode' }}
+        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
       - name: Run the selected live cases against the e2e workspace
         shell: bash
@@ -713,14 +713,17 @@ jobs:
     steps: *live-steps
 
   # Non-blocking pending stabilization, like Copilot: continue-on-error and absent from the cujs
-  # `needs`. Linux only: ug's runner pins the Linux VS Code archive, and the tests drive its window
-  # on a private Xvfb display.
+  # `needs`. On Linux the tests drive the VS Code window on a private Xvfb display.
   vscode:
-    name: Full journeys · VS Code Copilot Chat · Linux (non-blocking)
+    name: Full journeys · VS Code Copilot Chat · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
     if: ${{ !cancelled() && needs.workspace.result == 'success' }}
     needs: workspace
     continue-on-error: true
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
     timeout-minutes: 30
     env:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
@@ -728,7 +731,7 @@ jobs:
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: vscode
       TEST_MARKER: live and vscode
-      ARTIFACT_NAME: integration-full-vscode-ubuntu-22.04
+      ARTIFACT_NAME: integration-full-vscode-${{ matrix.os }}
     steps: *live-steps
 
   # Non-blocking pending stabilization: continue-on-error and absent from the cujs `needs`.

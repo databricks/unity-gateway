@@ -69,11 +69,15 @@ ANTIGRAVITY_SHA512 = {
 # VS Code archives from its update service, keyed by (sys.platform, machine). The archive bundles
 # Copilot Chat, so pinning VS Code also pins Copilot Chat.
 VSCODE_RELEASE_URL = "https://update.code.visualstudio.com/{version}/{platform}/stable"
-VSCODE_ARCHIVES = {("linux", "x86_64"): "linux-x64"}
+VSCODE_ARCHIVES = {("linux", "x86_64"): "linux-x64", ("win32", "amd64"): "win32-x64-archive"}
 # Expected SHA-256 of each pinned archive: `sha256hash` from the update service's
 # `/api/versions/<version>/<platform>/stable`. A version without an entry needs --vscode-sha256.
 VSCODE_SHA256 = {
     ("1.144.0", "linux-x64"): "17b72a7e6f40a5b5dce9850f10eea13ce734a63052b67fa021cc01e715ad4cf1",
+    (
+        "1.144.0",
+        "win32-x64-archive",
+    ): "055722269e3c9531af0c50a8b757c14e8062a0d02fc973b038863d9732c567ea",
 }
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
@@ -398,12 +402,14 @@ def install_vscode(version: str, destination: Path, *, sha256: str | None = None
     The archive's SHA-256 is checked before anything is extracted. Returns the `code` command and
     the version of the Copilot Chat extension the archive bundles."""
     import tarfile
+    import zipfile
 
     system, machine = sys.platform, platform.machine()
     url = vscode_archive_url(version, system, machine)
     expected = vscode_expected_sha256(version, system, machine, sha256)
     destination.mkdir(parents=True, exist_ok=True)
-    archive = destination / "vscode.tar.gz"
+    windows = vscode_archive_platform(system, machine).startswith("win32")
+    archive = destination / ("vscode.zip" if windows else "vscode.tar.gz")
     digest = hashlib.sha256()
     with (
         urllib.request.urlopen(url, timeout=300) as response,  # noqa: S310 (pinned https URL)
@@ -415,15 +421,31 @@ def install_vscode(version: str, destination: Path, *, sha256: str | None = None
     if digest.hexdigest() != expected:
         archive.unlink()
         raise RuntimeError(f"{url} has SHA-256 {digest.hexdigest()}, expected {expected}.")
-    with tarfile.open(archive) as bundle:
-        bundle.extractall(destination, filter="data")
+    if windows:
+        # The Windows archive has no top-level folder.
+        root = destination / "VSCode-win32-x64"
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(root)
+        command = root / "bin" / f"{NATIVE_AGENT_BINARIES['vscode']}.cmd"
+    else:
+        root = destination / "VSCode-linux-x64"
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(destination, filter="data")
+        command = root / "bin" / NATIVE_AGENT_BINARIES["vscode"]
     archive.unlink()
-    root = destination / "VSCode-linux-x64"
-    command = root / "bin" / NATIVE_AGENT_BINARIES["vscode"]
     if not command.is_file():
-        raise RuntimeError(f"{url} has no bin/code.")
-    copilot_chat = root / "resources/app/extensions/copilot/package.json"
-    if not copilot_chat.is_file():
+        raise RuntimeError(f"{url} has no {command.relative_to(root)}.")
+    # Windows keeps the app under a folder named for the build's commit.
+    copilot_chat = next(
+        iter(
+            (
+                *root.glob("resources/app/extensions/copilot/package.json"),
+                *root.glob("*/resources/app/extensions/copilot/package.json"),
+            )
+        ),
+        None,
+    )
+    if copilot_chat is None:
         raise RuntimeError(f"{url} bundles no Copilot Chat extension.")
     return {
         "url": url,
@@ -510,7 +532,8 @@ def arguments(
     parser.add_argument(
         "--vscode-version",
         type=exact_vscode_version,
-        help="Exact VS Code version to download (Linux x64), e.g. 1.144.0. Needs --copilot-version: "
+        help="Exact VS Code version to download (Linux and Windows x64), e.g. 1.144.0. Needs "
+        "--copilot-version: "
         "ug sets up VS Code as part of the Copilot setup.",
     )
     parser.add_argument(
