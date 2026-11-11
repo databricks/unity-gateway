@@ -153,13 +153,18 @@ reason leaves routing off and reports the failure in the transcript. The form ma
 After the form turns routing off, the mod logs `Smart Router is off` to the transcript, the
 reply an off without the form gives.
 
-Omnigent sessions (`ISAAC_LAUNCH_MODE=omni`) skip the CLI's reason rule. There
-`/smart-router off --feedback-collected` also skips the form and turns routing off directly,
-because Omnigent's Web UI asks for the reason and has Isaac save it before it sends that
-command. A plain `/smart-router off` there opens the form as usual. Elsewhere, or with the
-feedback rule off, the flag changes nothing; it is accepted only after `off`.
+To turn routing off after collecting the reason somewhere other than the mod's form, first
+have Isaac save that feedback, then send `/smart-router off --feedback-collected`. The mod
+skips its form and turns routing off right away. A plain `/smart-router off` still opens the
+form. `--feedback-collected` works only after `off` and does nothing when the feedback rule
+is off.
 
-In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
+Today `--feedback-collected` is honored only when `ISAAC_LAUNCH_MODE=omni`, where Omnigent's
+Web UI is the caller. Those sessions also skip the CLI's reason rule. To support a caller in
+another launch mode, widen both checks: the one in `isaac-feedback.ts` and the one in
+`_toggle_current_smart_routing_session` in `cli.py`.
+
+In sessions with `ISAAC_SMART_ROUTER_FEEDBACK` enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available
 after routing is turned off so users can report on an earlier routed task. It asks
 for a category when none was supplied, and for feedback text when the invocation is empty.
