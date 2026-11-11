@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Collection, Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
@@ -817,23 +817,21 @@ def configure_shared_state(
         # family only.
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
-            model_services = model_services_discovery.result()
-            ms_reason = model_services[4]
-            wanted = {"claude": want_claude, "codex": want_codex, "gemini": want_gemini}
-            found_claude, found_codex, found_gemini, found_oss, reasons = discover_models(
-                workspace,
-                token,
-                families={family for family, want in wanted.items() if want},
-                model_services=model_services,
-            )
+            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
             if want_claude:
-                claude_models, claude_reason = found_claude, reasons.get("claude")
+                claude_models, claude_reason = ms_claude, ms_reason
+                if not claude_models:
+                    claude_models, claude_reason = discover_claude_models(workspace, token)
             if want_gemini:
-                gemini_models, gemini_reason = found_gemini, reasons.get("gemini")
+                gemini_models, gemini_reason = ms_gemini, ms_reason
+                if not gemini_models:
+                    gemini_models, gemini_reason = discover_gemini_models(workspace, token)
             if want_codex:
-                codex_models, codex_reason = found_codex, reasons.get("codex")
+                codex_models, codex_reason = ms_codex, ms_reason
+                if not codex_models:
+                    codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
-                oss_models, oss_reason = found_oss, ms_reason
+                oss_models, oss_reason = ms_oss, ms_reason
             if want_copilot:
                 copilot_models = copilot_agent.catalog_from_listings(
                     cached_model_service_entries(workspace),
@@ -1732,37 +1730,6 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
     )
 
 
-def discover_models(
-    workspace: str,
-    token: str,
-    *,
-    families: Collection[str] = ("claude", "codex", "gemini"),
-    model_services: tuple[dict[str, str], list[str], list[str], list[str], str | None]
-    | None = None,
-) -> tuple[dict[str, str], list[str], list[str], list[str], dict[str, str | None]]:
-    """UC model services first; each requested family that comes back empty falls back to its
-    AI Gateway listing.
-
-    Returns (claude_models, codex_models, gemini_models, oss_models, reasons), where ``reasons``
-    maps each family that fell back to why it is still empty, if it is. Pass ``model_services``
-    to reuse a :func:`discover_model_services` result already fetched in the background.
-    """
-    claude, codex, gemini, oss, shared_reason = model_services or discover_model_services(
-        workspace, token
-    )
-    reasons: dict[str, str | None] = {}
-    if "claude" in families and not claude:
-        claude, reason = discover_claude_models(workspace, token)
-        reasons["claude"] = reason or shared_reason
-    if "codex" in families and not codex:
-        codex, reason = discover_codex_models(workspace, token)
-        reasons["codex"] = reason or shared_reason
-    if "gemini" in families and not gemini:
-        gemini, reason = discover_gemini_models(workspace, token)
-        reasons["gemini"] = reason or shared_reason
-    return claude, codex, gemini, oss, reasons
-
-
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     """Return a fresh, read-only model inventory and its freshness label."""
     workspace = state.get("workspace")
@@ -1778,9 +1745,16 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
             apply_pat_environment(state)
         with spinner("Refreshing live workspace models..."):
             token = get_databricks_token(workspace, profile)
-            claude_models, codex_models, gemini_models, oss_models, reasons = discover_models(
-                workspace, token
+            claude_models, codex_models, gemini_models, oss_models, shared_reason = (
+                discover_model_services(workspace, token)
             )
+            reasons: dict[str, str | None] = {}
+            if not claude_models:
+                claude_models, reasons["claude"] = discover_claude_models(workspace, token)
+            if not codex_models:
+                codex_models, reasons["codex"] = discover_codex_models(workspace, token)
+            if not gemini_models:
+                gemini_models, reasons["gemini"] = discover_gemini_models(workspace, token)
             gateway_listing = (
                 list_anthropic_model_catalog(workspace, token) if "copilot" in tools else None
             )
@@ -1809,7 +1783,9 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
         )
         if copilot_models is not None:
             live[copilot_agent.CATALOG_STATE_KEY] = copilot_agent.catalog_state(copilot_models)
-    live["_status_model_reasons"] = reasons
+    live["_status_model_reasons"] = {
+        family: reason or shared_reason for family, reason in reasons.items()
+    }
     return live, "live"
 
 
