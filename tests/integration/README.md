@@ -25,8 +25,6 @@ and child inference with the current recipe, and normal TUI exit. Windows uses n
 approval for the exact toggle command. Ordinary `/subagents` navigation has separate
 coverage requiring no restart or interrupted command.
 
-`test_integration_mcp.py` covers repeated printed inventory snapshots without
-overflowing scrollback; every expected server must be connected in the same snapshot.
 Request-recorder checks preserve upstream responses after client disconnects during
 headers or body, including Windows connection-aborted errors.
 

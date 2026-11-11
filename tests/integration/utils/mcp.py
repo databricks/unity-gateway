@@ -1,7 +1,6 @@
 """Inspect MCP inventories through the real agent terminals."""
 
 import re
-import time
 
 import pyte
 
@@ -84,33 +83,18 @@ def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
 def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
     output_start = len(tui.output)
     tui.submit("/mcp verbose")
-    refresh_at = time.monotonic() + 2
-
-    def connected(screen):
-        nonlocal refresh_at, output_start
-        inventory = screen.rsplit("MCP Tools", 1)[-1]
-        if all(
-            re.search(
-                rf"(?m)^\s*• {re.escape(service.replace('.', '-'))}: connected \(1 tool\)\s*\n"
+    for service, tool in services.items():
+        name = re.escape(service.replace(".", "-"))
+        tui.wait_for(
+            lambda screen, name=name, tool=tool: re.search(
+                rf"(?m)^\s*• {name}: connected \(1 tool\)\s*\n"
                 rf"\s*• Auth: [^\n]*\n"
                 rf"\s*• Tools: {re.escape(tool)}\s*$",
-                inventory,
-            )
-            for service, tool in services.items()
-        ):
-            return True
-        if ": starting" in inventory and time.monotonic() >= refresh_at:
-            # /mcp prints a snapshot; startup notifications do not update those rows.
-            output_start = len(tui.output)
-            tui.submit("/mcp verbose")
-            refresh_at = time.monotonic() + 2
-        return False
-
-    tui.wait_for(
-        connected,
-        "all expected Codex MCP servers connected with their tools loaded",
-        timeout=120,
-    )
+                screen,
+            ),
+            f"{service} connected with {tool} loaded in Codex's MCP inventory",
+            timeout=120,
+        )
     screen = pyte.HistoryScreen(140, 60, history=1000)
     pyte.Stream(screen).feed("".join(tui.output[output_start:]))
     assert len(screen.history.top) < screen.history.size, "Codex's MCP inventory was truncated"

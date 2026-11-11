@@ -12,9 +12,6 @@ The two TUI journeys configure installed UG, open the real agent MCP inventory, 
 connected servers with their tools loaded. Claude opens each server's details and tools
 view; Codex uses `/mcp verbose`. Both then call the two tools with a fresh run ID and return
 their receipts. Expected receipts are computed locally and withheld from the prompt.
-Codex's inventory is a printed snapshot. While servers are starting, the harness
-refreshes `/mcp verbose` within the original 120-second deadline and requires both
-servers connected with their tools in the same snapshot.
 Terminal actions, rendered screens, and native transcripts are recorded by the harness.
 
 Both inventories must omit `ug_e2e.other_tools`, including the accessible

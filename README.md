@@ -66,7 +66,7 @@ When Claude Code or Codex is older than the minimum version `ug` supports, `ug`
 asks before upgrading it in place. Set `UG_AUTO_UPGRADE_AGENT=1` to upgrade
 without asking, for example from a launcher that manages the agent install.
 
-Codex smart routing requires 0.164.0, including existing managed-enabled
+Codex smart routing now requires 0.164.0, including existing managed-enabled
 workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
 for upgrading or launching with `--disable-smart-routing`.
 
@@ -555,7 +555,7 @@ Routing-enabled responses are buffered until each model step completes.
 
 ### Codex smart-routing compatibility
 
-Smart routing requires Codex 0.164.0
+Smart routing now requires Codex 0.164.0
 or newer, including workspaces that already enable managed smart routing. Users on
 Codex 0.145–0.163 who previously launched successfully must upgrade or explicitly
 run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
