@@ -275,6 +275,6 @@ Fields live in the VS Code user `settings.json`. `ug`'s extension writes them wh
 |-------|------------------------|---------------------|-------|
 | `github.copilot.chat.otel.enabled`, `.exporterType`, `.protocol`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the local agent exports protobuf to the extension's loopback receiver, which forwards traces to the gateway |
 | `chat.agentHost.otel.enabled`, `.exporterType`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the Copilot CLI agent exports to the same receiver |
-| `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on |
+| `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on. When the config has budget tiers, the extension checks the caller's tier at startup and every 15 minutes, and uses the tier's model instead while the tier is for GitHub Copilot and VS Code's models include it. `ug revert` then removes any value naming one of VS Code's models, since a tier may have written it |
 
 </details>
