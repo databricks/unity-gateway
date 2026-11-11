@@ -931,7 +931,7 @@ def prompt_for_mcp_server_choices(
     non-toggleable in either mode, since there is nothing to add and ug can't remove them here.
 
     ``background_loader`` streams more choices in after the picker opens (see
-    `scrolling_checkbox`) — used to load the workspace-wide MCP-services walk without
+    `scrolling_checkbox`) — used to load the workspace-wide MCP-service pages without
     blocking on it up front."""
     instruction = "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
     if allow_back:
@@ -1468,10 +1468,10 @@ def _mcp_services_background_loader(
     additive: bool,
     managed_names: set[str] | None = None,
 ) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
-    """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
-    streams each schema's newly-found services into the open picker as choices, so the walk
-    never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
-    `system.ai` list) is handled by the picker's append."""
+    """Stream each page of workspace-wide MCP services into the open picker.
+
+    The catalog/schema walk remains a fallback when the metastore listing is unavailable.
+    The picker deduplicates rows already shown by the fast `system.ai` list."""
 
     metadata: dict[str, dict] = {}
 
@@ -1495,10 +1495,14 @@ def _mcp_services_background_loader(
             cancel_event=cancel_event,
             metadata=metadata,
         )
-        if not cancel_event.is_set() and reason == _MCP_SERVICES_WALK_TIMEOUT_REASON:
+        if not cancel_event.is_set() and reason not in (None, "no MCP services found"):
+            detail = (
+                f"Timed out after {int(_MCP_SERVICES_WALK_DEADLINE_SECONDS)}s"
+                if reason == _MCP_SERVICES_WALK_TIMEOUT_REASON
+                else "Discovery stopped before the full list loaded"
+            )
             return (
-                f"⚠️ Timed out after {int(_MCP_SERVICES_WALK_DEADLINE_SECONDS)}s, "
-                f"found {len(names)} MCP services. "
+                f"⚠️ {detail}; found {len(names)} MCP services. "
                 "Use `ug mcp add --names <catalog.schema.service>` to add a known service."
             )
         return None
@@ -2294,7 +2298,7 @@ def configure_mcp_command(
     original_by_name = _servers_by_name(picker_servers)
 
     # Single source (MCP services), so there's no "choose sources" step — discover the fast
-    # `system.ai` list, show the picker immediately, and let the workspace-wide walk stream in
+    # `system.ai` list, show the picker immediately, and let workspace-wide pages stream in
     # behind it via the background loader so the picker never blocks on it.
     discovered = _discover_selected_mcp_sources(workspace, profile, {MCP_SERVICES_SOURCE})
     services_loader = _mcp_services_background_loader(

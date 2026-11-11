@@ -211,7 +211,12 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     assert fallback.get("tool_mode") is None, fallback
     assert fallback.get("input_modalities") == ["text"], fallback
     assert fallback.get("context_window") == 32768, fallback
-    assert fallback.get("default_reasoning_level") == "none", fallback
+    assert fallback.get("default_reasoning_level") == "medium", fallback
+    assert fallback.get("supported_reasoning_levels") == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ], fallback
 
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
     with AgentTerminal(

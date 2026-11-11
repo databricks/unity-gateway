@@ -257,7 +257,7 @@ class TestCuj2CodexInference(_Cuj2Base):
     def test_cuj_codex_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Codex inference.
 
-        Expected: Codex sends a Responses request for gpt-5-nano with the
+        Expected: Codex sends a Responses request for gpt-6-luna with the
         ug_e2e.providers.openai target header and receives its paired HTTP 200 response; its
         parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """

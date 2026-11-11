@@ -5,6 +5,7 @@ import random
 import re
 import sqlite3
 from pathlib import Path
+from urllib.parse import urlparse
 
 STATE_DIRECTORY = ".gemini/antigravity-cli"
 # Structured, bounded `agy -p` output; it asks before tools it isn't allowed and answers no.
@@ -76,9 +77,47 @@ def final_response(events: list[dict]) -> str:
     results = [event.get("result") or {} for event in events if event.get("event") == "result"]
     assert results, "Antigravity produced no result event"
     assert results[-1].get("status") == "SUCCESS", results[-1]
+    assert not results[-1].get("denied_actions"), results[-1]
     response = results[-1].get("response")
-    assert isinstance(response, str), results[-1]
+    assert isinstance(response, str) and response.strip(), results[-1]
     return response
+
+
+def assert_mcp_web_search_answer(events: list[dict], *, server: str, query: str) -> None:
+    """Require native MCP search evidence and an official URL shared by its result and answer."""
+    answer = final_response(events)
+    calls = [
+        call
+        for call in completed_tools(events, "call_mcp_tool")
+        if call.get("parameters")
+        == {"ServerName": server, "ToolName": "web_search", "Arguments": {"query": query}}
+    ]
+    assert calls, "No completed MCP web_search call with the requested server and query"
+    returned_urls = set()
+    for call in calls:
+        assert not call.get("error"), call
+        output = call.get("output")
+        assert isinstance(output, str) and output.strip(), call
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError:
+            payload = None
+        assert not (isinstance(payload, dict) and payload.get("isError")), call
+        returned_urls.update(_web_urls(output))
+    official_urls = {
+        url
+        for url in returned_urls
+        if urlparse(url).hostname in {"databricks.com", "www.databricks.com"}
+    }
+    assert official_urls, calls
+    assert official_urls & _web_urls(answer), {"returned_urls": official_urls, "answer": answer}
+
+
+def _web_urls(text: str) -> set[str]:
+    return {
+        match["url"].removesuffix(match["markup"] or "")
+        for match in re.finditer(r"(?P<markup>\*{1,2}|`)?(?P<url>https?://[^\s<>\"'\\)\]]+)", text)
+    }
 
 
 def _logs(session) -> list[Path]:

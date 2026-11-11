@@ -2218,7 +2218,82 @@ class TestWalkCatalogSchemas:
 
 
 class TestListAllMcpServices:
-    """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
+    """Metastore listing, with the catalog/schema walk as a compatibility fallback."""
+
+    def test_metastore_pages_stream_with_metadata_before_callbacks(self, monkeypatch):
+        urls = []
+        metadata = {}
+        emitted = []
+
+        def fake_get(url, token, timeout=30):
+            urls.append(url)
+            if len(urls) == 1:
+                return {
+                    "mcp_services": [
+                        {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                        {
+                            "name": "mcp-services/main.tools.inactive",
+                            "config": {"connection": {"status": "FAILED"}},
+                        },
+                    ],
+                    "next_page_token": "second",
+                }, None
+            return {
+                "mcp_services": [
+                    {"name": "mcp-services/other.ops.pager", "comment": "Pager"},
+                    {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                ]
+            }, None
+
+        def on_services(new_names):
+            emitted.append([(name, metadata[name]["comment"]) for name in new_names])
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", metadata=metadata, on_services=on_services
+        )
+
+        assert reason is None
+        assert names == ["main.tools.linear", "other.ops.pager"]
+        assert emitted == [
+            [("main.tools.linear", "Linear")],
+            [("other.ops.pager", "Pager")],
+        ]
+        assert len(urls) == 2
+        assert all("parent=" not in url and "view=BASIC" in url for url in urls)
+        assert "page_size=200" in urls[0]
+        assert "page_token=second" in urls[1]
+
+    def test_metastore_mid_page_failure_keeps_partial_result_and_reason(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, token, timeout=30):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/main.tools.linear"}],
+                    "next_page_token": "second",
+                }, None
+            return None, "HTTP 503 Service Unavailable"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        assert names == ["main.tools.linear"]
+        assert reason == "HTTP 503 Service Unavailable"
+        assert len(calls) == 2
+
+    def test_invalid_token_does_not_fall_back_to_schema_walk(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (None, "HTTP 401 Unauthorized"),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "walk_catalog_schemas",
+            lambda *args, **kwargs: pytest.fail("auth failure must not start schema walk"),
+        )
+        assert db_mod.list_all_mcp_services(WS, "bad-token") == ([], "HTTP 401 Unauthorized")
 
     def _fake_http(self, catalogs, schemas_by_catalog, services_by_schema):
         """Route `_http_get_json` by URL to the right stubbed payload."""
@@ -2230,6 +2305,8 @@ class TestListAllMcpServices:
                 cat = url.split("catalog_name=")[1].split("&")[0]
                 return {"schemas": [{"name": s} for s in schemas_by_catalog.get(cat, [])]}, None
             if "unity-catalog/mcp-services" in url:
+                if "parent=" not in url:
+                    return None, "HTTP 400 Bad Request: parent is required"
                 # parent is url-encoded as `schemas%2F<cat>.<schema>`
                 parent = url.split("parent=")[1].split("&")[0]
                 schema_ref = parent.replace("schemas%2F", "").replace("schemas/", "")
@@ -2305,7 +2382,9 @@ class TestListAllMcpServices:
             lambda workspace, token, parent, **kwargs: (["main.tools.linear"], None),
         )
         streamed: list[list[str]] = []
-        names, reason = db_mod.list_all_mcp_services(WS, "token", on_services=streamed.append)
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", on_services=streamed.append, on_progress=lambda *_: None
+        )
 
         assert names == ["main.tools.linear"]
         assert streamed == [["main.tools.linear"]]
@@ -2329,7 +2408,13 @@ class TestListAllMcpServices:
 
     def test_returns_reason_when_no_catalogs(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, timeout=30: ({"catalogs": []}, None)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                ({"catalogs": []}, None)
+                if "unity-catalog/catalogs" in url
+                else (None, "HTTP 400 Bad Request: parent is required")
+            ),
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")

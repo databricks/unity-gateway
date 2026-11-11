@@ -436,9 +436,11 @@ E2E_MODEL_SKIP_HARNESSES: dict[str, frozenset[str]] = {
     "gpt-5-3-codex": frozenset({"codex", "pi"}),
     # Bedrock Grok rejects request/tool shapes from these harnesses.
     "grok": frozenset({"codex", "copilot", "pi"}),
+    # gpt-oss rejects Codex's `parallel_tool_calls` on the Responses API.
+    "gpt-oss": frozenset({"codex"}),
     # These Gemini endpoints hang OpenCode well past its E2E timeout.
-    "databricks-gemini-3-1-flash-lite": frozenset({"opencode"}),
-    "databricks-gemini-3-7-flash": frozenset({"opencode"}),
+    "gemini-3-1-flash-lite": frozenset({"opencode"}),
+    "gemini-3-7-flash": frozenset({"opencode"}),
     # Image-only Gemini endpoints reject function calling, which Pi's launch smoke requires.
     "flash-lite-image": frozenset({"pi"}),
     # These endpoints do not support Copilot's MLflow chat route.

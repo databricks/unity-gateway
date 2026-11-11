@@ -1347,6 +1347,20 @@ class TestConfigureMcpCommand:
         assert "Timed out after 30s" in message
         assert "ug mcp add --names" in message
 
+    def test_workspace_wide_walk_reports_incomplete_listing(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "discover_all_mcp_service_names",
+            lambda *args, **kwargs: ([], "HTTP 503 Service Unavailable"),
+        )
+        message = mcp._mcp_services_background_loader(WS, None, set(), additive=True)(
+            lambda choices: None, threading.Event()
+        )
+
+        assert message is not None
+        assert "Discovery stopped before the full list loaded" in message
+        assert "ug mcp add --names" in message
+
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
         # mode, and read-only under `mcp add` since there is nothing to add.

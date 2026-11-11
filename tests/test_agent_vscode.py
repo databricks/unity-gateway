@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import subprocess
 import zipfile
 from pathlib import Path
@@ -23,6 +25,7 @@ from ucode.managed_files import OS
 REAL_FIND_CODE = vscode.find_code
 REAL_FIND_COMMAND = vscode._find_command
 REAL_RUN_CODE = vscode._run_code
+REAL_USER_DIR = vscode.user_dir
 
 WS = "https://ws.cloud.databricks.com"
 # What `ug configure` saved for the Copilot CLI, which VS Code reuses.
@@ -62,8 +65,9 @@ class FakeCode:
                 self.vsix_entries = vsix.namelist()
                 self.config = json.loads(vsix.read(f"extension/{vscode.CONFIG_FILE}"))
             self.folder.mkdir(parents=True, exist_ok=True)
+            (self.folder / vscode.CONFIG_FILE).write_text(json.dumps(self.config))
         if args[0] == "--uninstall-extension":
-            self.folder.rmdir()
+            shutil.rmtree(self.folder)
         return subprocess.CompletedProcess(args, 0, "", "")
 
 
@@ -376,6 +380,37 @@ class TestCopilotModels:
             _printed(capsys)
         )
 
+    def test_a_traced_workspace_gets_one_trace_receiver_across_configures(self, code):
+        state = self._state(copilot_otel_tracing=True)
+
+        assert vscode.configure(state)
+        first = code.config["otel"]
+        assert vscode.configure(state)
+
+        assert code.config["otel"] == first
+        assert state[vscode.OTEL_RECEIVER_STATE_KEY] == first
+        assert 0 < first["port"] < 65536
+        assert re.fullmatch(r"[\w-]{20,}", first["secret"])
+
+    def test_an_untraced_workspace_gets_no_trace_receiver(self, code):
+        assert vscode.configure(self._state())
+
+        assert "otel" not in code.config
+
+    @pytest.mark.parametrize("default", [GPT, "gpt-6-luna"])
+    def test_passes_the_managed_default_model_as_the_catalog_names_it(self, code, default):
+        assert vscode.configure(self._state(copilot_default_model=default))
+
+        assert code.config["defaultModel"] == self.GPT
+
+    @pytest.mark.parametrize(
+        "managed", [{}, {"copilot_default_model": "system.ai.claude-opus-5-5"}]
+    )
+    def test_passes_no_default_model_the_catalog_lacks(self, code, managed):
+        assert vscode.configure(self._state(**managed))
+
+        assert "defaultModel" not in code.config
+
     def test_writes_the_managed_headers_without_the_ones_ug_sets(self, code):
         state = self._state(
             copilot_http_headers={
@@ -385,13 +420,11 @@ class TestCopilotModels:
                 "databricks-model-provider-service": "main.default.other",
                 "X-Bad": 3,
             },
-            copilot_default_model="claude-sonnet-5-5",
         )
 
         assert vscode.configure(state)
 
         assert code.config["headers"] == {"X-Team": "ml"}
-        assert "defaultModel" not in code.config
 
 
 class TestRevert:
@@ -422,6 +455,107 @@ class TestRevert:
         assert vscode.revert() == "removed"
 
         assert code.paths[-1] == Path("/fake/bin/code-insiders")
+
+
+class TestRevertSettings:
+    """Before uninstalling, revert removes the user settings the extension wrote."""
+
+    GPT = "system.ai.gpt-6-luna"
+
+    def _configure(self, code) -> dict[str, object]:
+        """Configure a traced workspace with a managed default model; returns what the extension
+        then writes to the user settings."""
+        assert vscode.configure(
+            {**STATE, "copilot_otel_tracing": True, "copilot_default_model": self.GPT}
+        )
+        otel = code.config["otel"]
+        endpoint = f"http://127.0.0.1:{otel['port']}/{otel['secret']}"
+        return {
+            "github.copilot.chat.otel.enabled": True,
+            "github.copilot.chat.otel.exporterType": "otlp-http",
+            "github.copilot.chat.otel.protocol": "http/protobuf",
+            "github.copilot.chat.otel.otlpEndpoint": endpoint,
+            "chat.agentHost.otel.enabled": True,
+            "chat.agentHost.otel.exporterType": "otlp-http",
+            "chat.agentHost.otel.otlpEndpoint": endpoint,
+            "chat.defaultModel": self.GPT,
+        }
+
+    def _settings(self, values: dict, profile: str | None = None) -> Path:
+        user = vscode.user_dir(insiders=False)
+        path = user / "profiles" / profile / "settings.json" if profile else user / "settings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(values))
+        return path
+
+    def test_removes_what_the_extension_wrote_then_uninstalls(self, code):
+        written = self._configure(code)
+        settings = self._settings({"editor.fontSize": 14, **written})
+        profile = self._settings({**written, "editor.tabSize": 2}, profile="-1a2b3c")
+
+        assert vscode.revert() == "removed"
+
+        assert json.loads(settings.read_text()) == {"editor.fontSize": 14}
+        assert json.loads(profile.read_text()) == {"editor.tabSize": 2}
+        assert code.calls[-1] == ("--uninstall-extension", vscode.EXTENSION_ID)
+
+    def test_leaves_what_the_developer_changed_since(self, code):
+        written = self._configure(code)
+        mine = {
+            "github.copilot.chat.otel.otlpEndpoint": "http://localhost:4318",
+            "chat.defaultModel": "system.ai.claude-sonnet-5-5",
+        }
+        settings = self._settings({**written, **mine})
+
+        assert vscode.revert() == "removed"
+
+        # The local agent now exports to the developer's collector, so its group stays whole.
+        assert json.loads(settings.read_text()) == {
+            "github.copilot.chat.otel.enabled": True,
+            "github.copilot.chat.otel.exporterType": "otlp-http",
+            "github.copilot.chat.otel.protocol": "http/protobuf",
+            **mine,
+        }
+
+    def test_leaves_settings_with_comments_and_says_what_to_remove(self, code, capsys):
+        self._configure(code)
+        path = vscode.user_dir(insiders=False) / "settings.json"
+        path.parent.mkdir(parents=True)
+        text = '{\n  // mine\n  "chat.defaultModel": "system.ai.gpt-6-luna"\n}\n'
+        path.write_text(text)
+
+        assert vscode.revert() == "removed"
+
+        assert path.read_text() == text
+        printed = _printed(capsys)
+        assert "Couldn't edit" in printed
+        assert "chat.agentHost.otel.otlpEndpoint" in printed
+        assert "chat.defaultModel" in printed
+
+    def test_leaves_settings_alone_for_an_install_that_wrote_none(self, code):
+        assert vscode.configure(STATE)
+        text = '{"chat.defaultModel": "system.ai.gpt-6-luna", "chat.agentHost.otel.enabled": true}'
+        path = self._settings({})
+        path.write_text(text)
+
+        assert vscode.revert() == "removed"
+
+        assert path.read_text() == text
+
+    @pytest.mark.parametrize(
+        ("system", "insiders", "expected"),
+        [
+            (OS.LINUX, False, ".config/Code/User"),
+            (OS.MACOS, True, "Library/Application Support/Code - Insiders/User"),
+            (OS.WINDOWS, False, "AppData/Roaming/Code/User"),
+        ],
+    )
+    def test_finds_the_user_folder(self, monkeypatch, system, insiders, expected):
+        monkeypatch.setattr(vscode, "current_os", lambda: system)
+        monkeypatch.delenv("APPDATA", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+        assert REAL_USER_DIR(insiders=insiders) == Path.home() / expected
 
 
 class TestFindCode:
@@ -581,6 +715,40 @@ def test_no_vscode_and_a_dry_run_leave_vscode_alone(monkeypatch, capsys, skip):
     assert ("VS Code isn't changed" in capsys.readouterr().out) == (skip == "dry_run")
 
 
+MANAGED_OFF = {**STATE, "copilot_vscode_integration": False}
+
+
+@pytest.mark.parametrize("no_vscode", [False, True])
+def test_managed_vscode_off_removes_an_earlier_setup(code, capsys, no_vscode):
+    vscode.configure(STATE)
+    agents_mod.request_vscode_with_copilot(not no_vscode)
+
+    agents_mod.configure_vscode(MANAGED_OFF, provider=None, parent_schema=None)
+
+    assert code.calls[-1] == ("--uninstall-extension", vscode.EXTENSION_ID)
+    assert not code.folder.exists()
+    assert "the VS Code extension was removed" in _printed(capsys)
+
+
+def test_managed_vscode_off_skips_vscode_without_an_earlier_setup(code, capsys):
+    agents_mod.configure_vscode(MANAGED_OFF, provider=None, parent_schema=None)
+
+    assert code.calls == []
+    assert "turns off GitHub Copilot in VS Code, so VS Code was skipped" in _printed(capsys)
+
+
+def test_managed_vscode_off_changes_nothing_in_a_dry_run(code, monkeypatch, capsys):
+    vscode.configure(STATE)
+    calls = len(code.calls)
+    monkeypatch.setattr(config_io, "_dry_run", True)
+
+    agents_mod.configure_vscode(MANAGED_OFF, provider=None, parent_schema=None)
+
+    assert len(code.calls) == calls
+    assert code.folder.exists()
+    assert "VS Code isn't changed" in capsys.readouterr().out
+
+
 def test_configure_passes_copilot_its_model_source_and_no_vscode(monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda: None)
@@ -685,6 +853,18 @@ def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, sou
     assert seen == []
     assert state["provider_services"] == {"copilot": "old.default.mps"}
     assert "model_locations" not in state
+
+
+def test_managed_configure_hands_copilot_the_vscode_switch(monkeypatch):
+    seen = _stub_workspace_setup(
+        monkeypatch,
+        dict(STATE),
+        {"enabled_agents": {"copilot": {"vscode_integration_enabled": False}}},
+    )
+
+    cli_mod.configure_workspace_command(selected_tools=None, workspaces=[(WS, None)])
+
+    assert seen[0]["state"]["copilot_vscode_integration"] is False
 
 
 @pytest.mark.parametrize(
