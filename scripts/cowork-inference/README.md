@@ -21,9 +21,14 @@ on their own branch for a later PR; the existing blocking inference job is uncha
 Initial run `42937812763` passed organization-plugin skill execution and both hooks on
 embedded engine 2.1.299. Cowork discovered the enterprise skill but its native Read hook
 rejected the Program Files reference as outside connected folders. CLI and Code probes
-hit driver issues (npm command lookup and Code-specific folder controls); the next run
-selects those corrected cases and the combined-source check. No global publisher has
-been validated by these results.
+hit driver issues (npm command lookup and Code-specific folder controls).
+Run `42938900415` passed bare CLI enterprise skill execution on CLI 2.1.290. Its
+combined-source Cowork inventory contained both `probe-summary` and
+`ug-native-contract:probe-summary`, failing the single-entry assertion. Code still
+failed before submission because the folder picker matched its confirmation control
+instead of its window. The next selected subset fixes that picker on Desktop 2.42304.2
+and checks enterprise-only and combined-source Cowork on Desktop 3.6556.2. No global
+publisher has been validated by these results.
 
 The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.
@@ -66,6 +71,11 @@ provenance comes from Microsoft's winget-pkgs catalog:
 `manifests/a/Anthropic/Claude/2.42304.2/Anthropic.Claude.installer.yaml`.
 Direct official Anthropic installer/runtime downloads were approved for these
 disposable CI tests.
+
+The branch-only native contracts also pin Desktop 3.6556.2 from the same catalog,
+`manifests/a/Anthropic/Claude/3.6556.2/Anthropic.Claude.installer.yaml` at commit
+`7f3d27eb0b2cb388c051c3b3f1c7b5981c42f7e1`. SHA256 and Anthropic signature checks
+remain required. This candidate does not change the blocking suite's version pin.
 
 Python dependencies come from PyPI and Claude Code CLI 2.1.290 from public npm,
 matching the existing GitHub-hosted Windows CLI integration tests. These public

@@ -75,20 +75,10 @@ function Save-UI {
 }
 
 function Select-Folder {
-    Invoke-Control (Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Select folder…', 'Add folder'))
-    Start-Sleep -Seconds 1
-    Save-UI 'folder-menu'
-    $choices = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-    $folderChoice = $choices | Where-Object {
-        $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and
-        $_.Current.Name -match '(?i)(choose|select|add|open|work in).{0,30}folder' -and
-        $_.Current.ControlType.ProgrammaticName -in @('ControlType.MenuItem', 'ControlType.Button')
-    } | Select-Object -First 1
-    if ($folderChoice) { Invoke-Control $folderChoice }
+    Invoke-Control (Wait-Control -Names @('Select folder…'))
     $desktop = [Windows.Automation.AutomationElement]::RootElement
-    Start-Sleep -Seconds 1
+    $dialog = Wait-Control -Names @('Select folder for local session') -Seconds 20 -Root $desktop
     Save-UI 'folder-dialog' -Root $desktop
-    $dialog = Wait-Control -Names @('Add folders to this session', 'Select Folder', 'Select a folder', 'Open Folder') -Seconds 20 -Root $desktop
     if (-not [CapabilityWindow]::SetForegroundWindow([IntPtr]$dialog.Current.NativeWindowHandle)) {
         throw 'Could not activate the native folder picker'
     }

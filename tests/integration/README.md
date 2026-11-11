@@ -5,6 +5,8 @@ CLI/Code enterprise skill loading and Cowork enterprise/organization-plugin load
 `../test_cowork_session_evidence.py` verifies the transcript assertions offline.
 These native capability inputs do not substitute for managed workspace bundles or
 global configure lifecycle tests. See `../../scripts/cowork-inference/README.md`.
+The selected follow-up subset checks Code on Desktop 2.42304.2 and Cowork skill-source
+overlap on candidate Desktop 3.6556.2; the blocking suite's pin is unchanged.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
