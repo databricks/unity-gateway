@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
@@ -226,6 +227,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
+from ucode.telemetry import ug_version
 from ucode.ug_headers import parse_header_line
 from ucode.ui import (
     console,
@@ -573,6 +575,35 @@ def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
     return future
 
 
+# A launch that skips model discovery reuses a gateway probe and web-search lookup that passed this
+# recently for the same workspace and credentials, so a burst of launches pays the round trips once.
+# Auth is still checked on every launch; `ug configure` and `ug <agent> --refresh` always probe.
+LAUNCH_GATEWAY_CHECK_MAX_AGE_SECONDS = 15 * 60
+_LAUNCH_GATEWAY_CHECK_KEY = "launch_gateway_check"
+
+
+def _gateway_check_identity(state: dict, custom_oauth: dict | None) -> dict:
+    """The workspace and credentials covered by a launch gateway check in state.json."""
+    identity = {
+        "workspace": state_workspace_key(state),
+        "profile": state.get("profile"),
+        "use_pat": bool(state.get("use_pat")),
+        "custom_oauth": custom_oauth,
+        "ug_version": ug_version(),
+    }
+    return json.loads(json.dumps(identity))
+
+
+def _recent_gateway_check(state: dict, identity: dict) -> bool:
+    record = state.get(_LAUNCH_GATEWAY_CHECK_KEY)
+    if not isinstance(record, dict) or record.get("identity") != identity:
+        return False
+    checked_at = record.get("checked_at")
+    if not isinstance(checked_at, int | float) or isinstance(checked_at, bool):
+        return False
+    return 0 <= time.time() - checked_at < LAUNCH_GATEWAY_CHECK_MAX_AGE_SECONDS
+
+
 def configure_shared_state(
     workspace: str,
     profile: str | None = None,
@@ -584,6 +615,7 @@ def configure_shared_state(
     databricks_ai_tools_enabled: bool | None = None,
     custom_oauth: CustomOAuthConfig | None = None,
     clear_custom_oauth: bool = False,
+    reuse_recent_gateway_check: bool = False,
     claude_server_side_web_search: bool | None = None,
 ) -> dict:
     """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
@@ -604,6 +636,9 @@ def configure_shared_state(
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
+    With reuse_recent_gateway_check (launches) and skip_model_discovery, a gateway probe and
+    web-search lookup that passed within LAUNCH_GATEWAY_CHECK_MAX_AGE_SECONDS for the same
+    workspace and credentials are reused instead of repeated; auth is still validated.
     """
     workspace = normalize_workspace_url(workspace)
     if not split_workspace_key(workspace)[1]:
@@ -635,6 +670,8 @@ def configure_shared_state(
     # `ug configure` — it already validated auth + the AI Gateway and saved the
     # model lists (carried over by load_state, left untouched).
     state = load_state()
+    if previous_key != key:
+        state.pop(_LAUNCH_GATEWAY_CHECK_KEY, None)
     state["workspace"] = workspace
     if workspace_id:
         state["workspace_id"] = workspace_id
@@ -747,22 +784,6 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
-        if not cli_custom_oauth:
-            token = get_databricks_token(workspace, profile)
-        # The listing is independent of the probe, so overlap the two round trips. The probe still
-        # gates the launch; its failure abandons the listing rather than waiting for it.
-        model_services_discovery = (
-            None
-            if skip_model_discovery
-            else _start_in_background(discover_model_services, workspace, token)
-        )
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
-    if model_service_probe.resource_available:
-        print_success("Unity Gateway connected")
-    else:
-        print_warning(f"Model service: {model_service_probe.detail}")
-
     want_claude = (
         fetch_all
         or "claude" in tools
@@ -788,6 +809,46 @@ def configure_shared_state(
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
 
+    gateway_check_identity = _gateway_check_identity(state, cli_custom_oauth)
+    reuse_gateway_check = (
+        reuse_recent_gateway_check
+        and skip_model_discovery
+        and previous_key == key
+        and _recent_gateway_check(state, gateway_check_identity)
+        and (not want_claude or bool(state.get("web_search_model")))
+    )
+    model_services_discovery = web_search_discovery = model_service_probe = None
+    if reuse_gateway_check:
+        print_success("Unity Gateway connected")
+    else:
+        state.pop(_LAUNCH_GATEWAY_CHECK_KEY, None)
+        if previous_key == key and _LAUNCH_GATEWAY_CHECK_KEY in prior_state:
+            # A failed refresh must not leave a prior success reusable. Preserve the saved
+            # configuration until the new preflight succeeds; only invalidate its check now.
+            prior_state.pop(_LAUNCH_GATEWAY_CHECK_KEY)
+            save_state(prior_state)
+        with spinner("Verifying Unity AI Gateway..."):
+            if not cli_custom_oauth:
+                token = get_databricks_token(workspace, profile)
+            # The listing is independent of the probe, so overlap the two round trips. The probe
+            # still gates the launch; its failure abandons the listing rather than waiting for it.
+            model_services_discovery = (
+                None
+                if skip_model_discovery
+                else _start_in_background(discover_model_services, workspace, token)
+            )
+            # Skipped discovery still looks up Claude's web-search model, which is independent too.
+            web_search_discovery = (
+                _start_in_background(discover_codex_models, workspace, token)
+                if skip_model_discovery and want_claude
+                else None
+            )
+            model_service_probe = probe_unity_gateway_capabilities(workspace, token)
+        if model_service_probe.resource_available:
+            print_success("Unity Gateway connected")
+        else:
+            print_warning(f"Model service: {model_service_probe.detail}")
+
     claude_reason: str | None = None
     gemini_reason: str | None = None
     codex_reason: str | None = None
@@ -805,9 +866,9 @@ def configure_shared_state(
         # pins no Databricks model, so the full family discovery is unused. Web
         # search (claude only) still needs one Responses-capable model, so fetch
         # just that with a single call.
-        if want_claude:
+        if web_search_discovery is not None:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
+                ws_models, _ = web_search_discovery.result()
             if ws_models:
                 web_search_model = ws_models[0]
     else:
@@ -853,6 +914,15 @@ def configure_shared_state(
         # claude's web_search MCP keeps working through the normal gateway.
         if web_search_model:
             state["web_search_model"] = web_search_model
+        if model_service_probe is None:
+            pass  # Reused a recent check; it still expires from its original time.
+        elif model_service_probe.resource_available and (web_search_model or not want_claude):
+            state[_LAUNCH_GATEWAY_CHECK_KEY] = {
+                "checked_at": time.time(),
+                "identity": gateway_check_identity,
+            }
+        else:
+            state.pop(_LAUNCH_GATEWAY_CHECK_KEY, None)
     else:
         if want_claude:
             state["claude_models"] = claude_models
@@ -4052,6 +4122,7 @@ def _launch_tool(
                 family_defaults=family_defaults,
             ),
             skip_preflight=skip_preflight,
+            reuse_recent_gateway_check=not refresh,
             **configure_kwargs,
         )
         # An admin-published managed config wins over the developer's own settings. Layered on after

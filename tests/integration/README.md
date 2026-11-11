@@ -525,6 +525,18 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
+Overlapping the model-service listing, or the web-search lookup when discovery is skipped, with
+the gateway probe is covered only by component tests in `../test_cli.py`: overlap, probe failure
+without waiting, listing errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse
+of the process-local probe and listing caches. This suite does not assert live request overlap,
+probe/listing timing, or launch-time savings.
+
+Reusing a recent gateway check across discovery-skipping launches is covered only by component
+tests in `../test_cli.py`: reuse with authentication on every launch, the 15-minute window,
+credential and workspace changes, incomplete checks, persisted invalidation before failed
+refresh/configure probes, `--refresh`, and launches that run discovery. This suite does not
+assert live reuse or launch-time savings.
+
 Overlapping the model-service listing with the gateway probe is covered only by
 component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
 errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
