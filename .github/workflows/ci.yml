@@ -142,7 +142,7 @@ jobs:
             keyword: TestClaudeLaunch or TestConfigureSubset
             package: '@anthropic-ai/claude-code'
           - group: anthropic-mps
-            name: Company Anthropic MPS tests
+            name: Anthropic MPS - Staging workspace tests
             keyword: TestModelProviderLaunch
             package: '@anthropic-ai/claude-code'
           - group: codex
