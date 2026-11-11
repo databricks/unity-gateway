@@ -387,7 +387,7 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   anthropic-mps:
-    name: Company Anthropic MPS · Claude · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
+    name: Anthropic MPS - Staging workspace · Claude · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     needs: workspace
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
@@ -406,7 +406,7 @@ jobs:
     steps: *live-steps
 
   anthropic-mps-copilot:
-    name: Company Anthropic MPS · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
+    name: Anthropic MPS - Staging workspace · Copilot · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }} (non-blocking)
     needs: workspace
     continue-on-error: true
     runs-on: ${{ matrix.os }}
