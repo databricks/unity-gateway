@@ -381,7 +381,7 @@ def test_dry_run_has_no_auth_discovery_or_writes(device, monkeypatch):
     assert not device.source.exists() and not mdm.MDM_ROOT.exists()
 
 
-@pytest.mark.parametrize("platform", ["linux", "win32"])
+@pytest.mark.parametrize("platform", ["linux"])
 def test_platform_guard(monkeypatch, platform):
     monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform=platform))
     with pytest.raises(RuntimeError):

@@ -5,6 +5,13 @@ Antigravity MCP web-search evidence checks accept homepage slash variants, omit
 Offline cases retain checks for the completed MCP call, official host, scheme, page,
 meaningful query and fragment. These checks do not establish live search availability.
 
+Windows Desktop global component coverage in `test_desktop_mdm_windows.py` exercises
+real temporary publication files with simulated registry/ACL boundaries: native registry
+view, foreign policy, refresh/removal, failed publication and retry, linked plugin rejection,
+consumer-auth helpers, and deferred workspace skills. Existing macOS tests remain applicable.
+Native global OAuth, connector deduplication, and UI lifecycle remain separate validation gaps;
+the Windows native-loading experiments live on their own test branch.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

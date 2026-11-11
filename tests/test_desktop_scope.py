@@ -288,7 +288,7 @@ def test_global_dry_run_writes_no_desktop_files(desktop_configuration, device):
     assert not cowork._marketplace_root().exists()
 
 
-@pytest.mark.parametrize("platform", ["win32", "linux"])
+@pytest.mark.parametrize("platform", ["linux"])
 def test_global_leaves_unsupported_desktop_platforms_unchanged(
     desktop_configuration, device, monkeypatch, platform
 ):
@@ -296,7 +296,7 @@ def test_global_leaves_unsupported_desktop_platforms_unchanged(
     monkeypatch.setattr(cli.sys, "platform", platform)
     result = _configure("--global")
     assert result.exit_code == 0, result.output
-    assert "supports macOS only" in " ".join(result.output.split())
+    assert "supports macOS and Windows" in " ".join(result.output.split())
     assert not mdm.MDM_ROOT.exists()
     assert not device.source.exists()
     assert not claude.claude_desktop_directory().exists()

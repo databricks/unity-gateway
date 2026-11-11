@@ -24,7 +24,7 @@ from ucode.managed_resolve import (
     resolve_state,
 )
 from ucode.mcp import _resolve_managed_mcp_servers
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility import subprocess_cross_os, system_cross_os, windows_machine_paths
 from ucode.skills_download import _fetch_bundles, _resolve_managed_skills, _write_bundle
 from ucode.ui import print_note
 from ucode.workspace import split_workspace_key, workspace_id_args
@@ -34,8 +34,10 @@ POLICY_PATH = managed_files.CLAUDE_DESKTOP_POLICY_PATH
 
 
 def validate_mdm_execution() -> None:
-    if sys.platform != "darwin":
-        raise RuntimeError("Desktop MDM currently supports macOS only.")
+    if sys.platform not in ("darwin", "win32"):
+        raise RuntimeError("Desktop MDM supports macOS and Windows only.")
+    if sys.platform == "win32" and not system_cross_os.is_admin():
+        raise PermissionError("Run ug configure --global from an elevated terminal.")
 
 
 def _check_machine_path(path: Path, *, required: bool = False) -> None:
@@ -72,6 +74,11 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
         raise RuntimeError(
             f"Install {name} in a shared machine location before ug configure --global."
         )
+    if sys.platform == "win32":
+        windows_machine_paths.validate(path, required=True)
+        if executable and not path.is_file():
+            raise RuntimeError(f"{name} must be an executable file: {path}")
+        return path
     resolved = path.resolve()
     for candidate in (path, resolved):
         if any(
@@ -106,8 +113,9 @@ def _shared_path(value: str, name: str, *, executable: bool = False) -> Path:
 
 def validate_cli_discovery() -> None:
     """Validate shared command lookup before CLI installation or version probes."""
-    for directory in os.get_exec_path():
-        _shared_path(directory, "MDM command PATH")
+    if sys.platform != "win32":
+        for directory in os.get_exec_path():
+            _shared_path(directory, "MDM command PATH")
     for candidate in databricks._iter_databricks_executables():
         _shared_path(candidate, "Databricks CLI", executable=True)
     _shared_path(shutil.which("claude") or "", "Claude CLI", executable=True)
@@ -118,6 +126,8 @@ def _runtime() -> dict[str, str]:
     validate_cli_discovery()
     python = _shared_path(os.path.abspath(sys.executable), "UG's Python runtime", executable=True)
     _shared_path(sys.prefix, "UG's Python environment")
+    if sys.platform == "win32":
+        _shared_path(sys.base_prefix, "UG's base Python installation")
     _shared_path(str(Path(__file__).resolve()), "UG package")
     probe = subprocess_cross_os.run(
         [str(python), "-I", "-c", "import ucode.agents.desktop.mdm as m; print(m.__file__)"],
@@ -141,6 +151,8 @@ def _runtime() -> dict[str, str]:
 
 
 def _runtime_script(runtime: dict[str, str]) -> bytes:
+    if sys.platform == "win32":
+        return _windows_runtime_script(runtime)
     path = os.pathsep.join(
         dict.fromkeys(
             [
@@ -163,6 +175,39 @@ def _runtime_script(runtime: dict[str, str]) -> bytes:
     return (
         f"#!/bin/sh\nunset {scrub}\nexport PATH={shlex.quote(path)}\n"
         f'exec {shlex.quote(runtime["python"])} -I -m ucode.cli "$@"\n'
+    ).encode()
+
+
+def windows_runtime_argv() -> list[str]:
+    return [
+        os.path.abspath(sys.executable),
+        "-I",
+        str(managed_files.windows_desktop_mdm_root() / "runtime.py"),
+    ]
+
+
+def user_auth_profile(workspace: str) -> str:
+    return "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
+
+
+def _windows_runtime_script(runtime: dict[str, str]) -> bytes:
+    path = os.pathsep.join(
+        dict.fromkeys(
+            [str(Path(runtime[name]).parent) for name in ("python", "databricks", "claude")]
+            + [str(system_cross_os.windows_system32_dir())]
+        )
+    )
+    scrub = (
+        "DATABRICKS_BEARER DATABRICKS_BEARER_COMMAND DATABRICKS_TOKEN DATABRICKS_HOST "
+        "DATABRICKS_CLIENT_ID DATABRICKS_CLIENT_SECRET DATABRICKS_AUTH_TYPE "
+        "DATABRICKS_CONFIG_FILE DATABRICKS_CONFIG_PROFILE PYTHONPATH PYTHONHOME VIRTUAL_ENV "
+        "UCODE_MANAGED_CONFIG_STUB UG_WORKSPACE"
+    ).split()
+    return (
+        "import os\nimport runpy\n"
+        f"for name in {scrub!r}:\n    os.environ.pop(name, None)\n"
+        f"os.environ['PATH'] = {path!r}\n"
+        "runpy.run_module('ucode.cli', run_name='__main__')\n"
     ).encode()
 
 
@@ -269,24 +314,35 @@ def require_dedicated_workspace(workspace: str) -> None:
         raise RuntimeError("Desktop MDM currently requires a dedicated workspace hostname.")
 
 
-def configure(workspace: str, profile: str | None) -> None:
+def configure(workspace: str, profile: str | None, *, managed_config: dict | None = None) -> None:
     validate_mdm_execution()
     if managed_files.managed_settings_skipped():
         raise RuntimeError(
             "Unset UG_SKIP_OS_SETTINGS and use global scope for Desktop MDM provisioning."
         )
     require_dedicated_workspace(workspace)
+    windows = sys.platform == "win32"
+    root = managed_files.windows_desktop_mdm_root() if windows else MDM_ROOT
     if config_io.is_dry_run():
-        print_note(f"Would publish Desktop policy to {POLICY_PATH} and a root organization plugin.")
+        destination = r"HKLM\SOFTWARE\Policies\Claude" if windows else str(POLICY_PATH)
+        print_note(f"Would publish Desktop policy to {destination} and an organization plugin.")
         return
     runtime = _runtime()
     token = databricks.get_databricks_token(workspace, profile)
-    fetched = get_managed_config(workspace, token)
-    if fetched.reason and "feature_disabled" not in fetched.reason.lower():
-        raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
-    managed = normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
+    managed = managed_config
+    if managed is None:
+        fetched = get_managed_config(workspace, token)
+        if fetched.reason and "feature_disabled" not in fetched.reason.lower():
+            raise RuntimeError(f"Could not read workspace configuration: {fetched.reason}")
+        managed = (
+            normalize_managed_config(fetched.manifest) if fetched.manifest is not None else None
+        )
+    if windows and managed is None:
+        raise RuntimeError(
+            "Windows Desktop global setup requires a workspace managed configuration."
+        )
     enabled_tools = managed_enabled_tools(managed or {})
-    if enabled_tools and "claude" not in enabled_tools:
+    if (windows or enabled_tools) and "claude" not in enabled_tools:
         raise RuntimeError("The workspace configuration does not enable Claude.")
     state = {"workspace": workspace, "profile": profile}
     parent_schema = None
@@ -298,9 +354,10 @@ def configure(workspace: str, profile: str | None) -> None:
     selector = (managed or {}).get("mcp_servers") or {}
     _validate_selector(selector)
     servers = _resolve_managed_mcp_servers(selector, workspace, profile, ["claude"], token=token)
-    user_profile = "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
-    helper = MDM_ROOT / "ug"
-    helper_args = [
+    user_profile = user_auth_profile(workspace)
+    helper = Path(runtime["python"]) if windows else root / "ug"
+    prefix = ["-I", str(root / "runtime.py")] if windows else []
+    helper_args = prefix + [
         "claude-desktop-auth",
         "--host",
         workspace,
@@ -313,34 +370,45 @@ def configure(workspace: str, profile: str | None) -> None:
         **settings,
         helper_command=helper,
         helper_args=helper_args,
-        otel_headers_helper=MDM_ROOT / "otel-headers.sh",
+        otel_headers_helper=root / ("otel-headers.cmd" if windows else "otel-headers.sh"),
     )
     otel = (
         claude_config.render_otel_helper(
             [
                 str(helper),
+                *prefix,
                 "otel-headers",
                 "--host",
                 workspace,
                 "--profile",
                 user_profile,
             ],
-            windows=False,
+            windows=windows,
         ).encode()
         if settings["otel_endpoint"]
         else None
     )
     mcp_config = cowork._cowork_mcp_config(
-        servers, workspace, user_profile, mdm_ug_executable=helper
+        servers,
+        workspace,
+        user_profile,
+        mdm_ug_executable=helper,
+        mdm_args=prefix,
+        use_aliases=not windows,
     )
     rendered["managedMcpServers"] = claude_config.render_managed_mcp_servers(mcp_config)
-    policy = plistlib.dumps(_policy_values(rendered))
     hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)
     with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
         staging = Path(directory).resolve()
-        records = _download_skills(
-            workspace, token, (managed or {}).get("skills") or {}, staging / "skills"
-        )
+        records = []
+        if windows:
+            print_note(
+                "Windows global workspace-skill delivery is deferred; skills were not installed."
+            )
+        else:
+            records = _download_skills(
+                workspace, token, (managed or {}).get("skills") or {}, staging / "skills"
+            )
         source = staging / "marketplace"
         plugin_root = source / "plugins/ug"
         cowork._write_marketplace(
@@ -351,17 +419,30 @@ def configure(workspace: str, profile: str | None) -> None:
         manifest["installationPreference"] = "required"
         manifest_path.write_bytes(_json_bytes(manifest))
         (plugin_root / "version.json").write_bytes(_json_bytes({"version": manifest["version"]}))
+        if windows:
+            from ucode.agents.desktop import mdm_windows
+
+            mdm_windows.publish(
+                plugin_root,
+                {root / "runtime.py": _runtime_script(runtime), root / "otel-headers.cmd": otel},
+                _policy_values(rendered),
+            )
+            return
         _publish(
             plugin_root,
             {
                 helper: _runtime_script(runtime),
                 MDM_ROOT / "otel-headers.sh": otel,
-                POLICY_PATH: policy,
+                POLICY_PATH: plistlib.dumps(_policy_values(rendered)),
             },
         )
 
 
 def remove() -> bool:
+    if sys.platform == "win32":
+        from ucode.agents.desktop import mdm_windows
+
+        return mdm_windows.remove()
     plugin = managed_files.claude_desktop_org_plugin_path()
     files: dict[Path, bytes | None] = {}
     if POLICY_PATH.exists():
