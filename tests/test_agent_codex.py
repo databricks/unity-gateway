@@ -2155,15 +2155,6 @@ class TestCodexManagedConfig:
         assert codex.revert_managed_config() == "removed"
         assert not catalog_path.exists()
 
-    def test_launch_on_provider_reports_stale_managed_catalog(self, tmp_path, monkeypatch):
-        _, managed_path = self._patch(tmp_path, monkeypatch)
-        catalog_path = managed_path.parent / codex.MANAGED_MODEL_CATALOG_NAME
-        managed_path.parent.mkdir(parents=True)
-        managed_path.write_text(f'model_catalog_json = "{catalog_path}"\n', encoding="utf-8")
-
-        with pytest.raises(RuntimeError, match="earlier static model list.*`ug configure`"):
-            codex._reject_managed_model_catalog()
-
     def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
         managed_files.set_machine_wide_only(True)

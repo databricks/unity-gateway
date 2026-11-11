@@ -741,9 +741,7 @@ def revert_managed_config() -> str:
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
     )
-    managed_path, catalog_path = codex_managed_config_path(), _managed_catalog_path()
-    if managed_path is not None and catalog_path is not None:
-        _remove_unreferenced_managed_catalog(managed_path, catalog_path)
+    _remove_managed_catalog()
     return result
 
 
@@ -1211,11 +1209,10 @@ def _reconcile_managed_config(
         warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
-    catalog_path = _managed_catalog_path()
     try:
-        if catalog is not None and catalog_path is not None:
+        if catalog is not None:
             # Before the reference, so Codex never reads a missing or stale catalog.
-            _reconcile_managed_catalog(catalog_path, catalog)
+            _write_managed_catalog(catalog)
         reconcile_managed_file(
             path,
             tomlkit.dumps(desired_doc),
@@ -1234,8 +1231,8 @@ def _reconcile_managed_config(
         )
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
-    if catalog is None and catalog_path is not None:
-        _remove_unreferenced_managed_catalog(path, catalog_path)
+    if catalog is None:
+        _remove_managed_catalog()
     mark_managed_file_verified(state, "codex", path)
 
 
@@ -1248,14 +1245,12 @@ def _managed_catalog_path() -> Path | None:
     return path.parent / MANAGED_MODEL_CATALOG_NAME
 
 
-def _reconcile_managed_catalog(path: Path, catalog: dict | None) -> None:
+def _write_managed_catalog(catalog: dict | None) -> None:
     """Write (or, for None, remove) ug's machine-wide catalog through the privileged writer."""
-    if is_dry_run():
-        if catalog is not None:
-            write_json_file(path, catalog)  # prints the dry-run preview
+    path = _managed_catalog_path()
+    if path is None or is_dry_run():
         return
     text = json.dumps(catalog, indent=2) + "\n" if catalog is not None else None
-    changed = read_managed_file(path) != text
     try:
         reconcile_privileged_files({path: text}, display="Codex")
     except (OSError, CalledProcessError) as exc:
@@ -1263,21 +1258,12 @@ def _reconcile_managed_catalog(path: Path, catalog: dict | None) -> None:
         raise ManagedFileWriteUnavailable(
             f"Could not update the Codex model catalog at {path}: {detail}"
         ) from exc
-    if changed and text is not None:
-        _print_app_catalog_restart_notice()
 
 
-def _remove_unreferenced_managed_catalog(managed_path: Path, catalog_path: Path) -> None:
-    """Remove ug's catalog once the managed file no longer names it; a failure only warns."""
-    if not catalog_path.exists() or is_dry_run():
-        return
-    text = read_managed_file(managed_path)
-    if text is not None and _parse_managed_config(text).get("model_catalog_json") == str(
-        catalog_path
-    ):
-        return
+def _remove_managed_catalog() -> None:
+    """Remove ug's machine-wide catalog once nothing references it; a failure only warns."""
     try:
-        _reconcile_managed_catalog(catalog_path, None)
+        _write_managed_catalog(None)
     except ManagedFileWriteUnavailable as exc:
         print_warning_err(str(exc))
 
@@ -1802,12 +1788,6 @@ def _reject_managed_model_catalog() -> None:
         managed = _parse_managed_config(text)
     except RuntimeError as exc:
         raise RuntimeError(f"Cannot read Codex managed settings at {path}: {exc}") from exc
-    ours = _managed_catalog_path()
-    if ours is not None and managed.get("model_catalog_json") == str(ours):
-        raise RuntimeError(
-            f"Codex managed settings at {path} still enforce your workspace's earlier static "
-            "model list, which overrides model discovery. Run `ug configure` to update them."
-        )
     if "model_catalog_json" in managed:
         raise RuntimeError(
             f"Codex managed settings at {path} define model_catalog_json, which overrides "
