@@ -27,6 +27,7 @@ from ucode.codex_config import (
     codex_config_precedence_paths,
     codex_managed_config_path,
     custom_catalog_models,
+    strip_hook_trust_state,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -621,6 +622,9 @@ def write_tool_config(
                 CODEX_MODEL_CATALOG_PATH.unlink()
 
         doc = read_toml_safe(CODEX_CONFIG_PATH)
+        # This file is ug's own profile layer; a stale hooks.state snapshot here
+        # would otherwise override Codex's saved hook approvals forever.
+        strip_hook_trust_state(doc)
         compose(doc)
         sync_smart_routing_hooks(
             doc,

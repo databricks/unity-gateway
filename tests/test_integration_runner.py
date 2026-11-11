@@ -23,6 +23,7 @@ def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
         tmp_path,
         ["claude", "codex"],
         platform_name="nt",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -36,6 +37,7 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
         tmp_path,
         ["copilot"],
         platform_name="posix",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -50,6 +52,7 @@ def test_antigravity_build_selects_its_headless_node_and_version(tmp_path):
         tmp_path,
         ["antigravity"],
         platform_name="posix",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -125,8 +128,8 @@ def test_antigravity_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
     # The real pinned digest cannot match this stand-in archive.
     _serve(monkeypatch, _archive(tmp_path))
 
-    with pytest.raises(RuntimeError, match="expected 96a259b7"):
-        runner.install_native_agent("antigravity", "1.4.9-4962164969177088", tmp_path / "bin")
+    with pytest.raises(RuntimeError, match="expected 1431a409"):
+        runner.install_native_agent("antigravity", "1.5.4-5037094733742080", tmp_path / "bin")
 
     assert not (tmp_path / "bin/agy").exists()
 
@@ -184,15 +187,17 @@ def test_copilot_version_output_matches_the_pinned_version():
     assert runner.agent_version_output("codex", "codex-cli 0.154.0") == "codex-cli 0.154.0"
 
 
-def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path):
+def test_live_runs_select_every_module_except_unsupported_and_desktop_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
     (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
+    (tmp_path / "test_ug_codex_desktop_macos.py").write_text("import json\n")
 
     assert runner.integration_test_targets(
         tmp_path,
         ["claude"],
         platform_name="nt",
+        macos_desktop=False,
         installation_only=False,
         headless_only=False,
     ) == [
@@ -204,6 +209,15 @@ def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path)
         tmp_path,
         ["claude"],
         platform_name="posix",
+        macos_desktop=False,
+        installation_only=False,
+        headless_only=False,
+    ) == [str(tmp_path), f"--ignore={tmp_path / 'test_ug_codex_desktop_macos.py'}"]
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["codex"],
+        platform_name="posix",
+        macos_desktop=True,
         installation_only=False,
         headless_only=False,
     ) == [str(tmp_path)]
@@ -266,6 +280,7 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
     assert paths == (
+        Path("C:/ProgramData/UnityGateway/managed-settings.json"),
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),

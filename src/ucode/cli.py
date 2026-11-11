@@ -66,6 +66,7 @@ from ucode.constants import (
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
+    ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -141,6 +142,7 @@ from ucode.managed_files import (
     set_machine_wide_only,
 )
 from ucode.managed_resolve import (
+    OTEL_TRACING_TOOLS,
     managed_claude_family_models,
     managed_default_model,
     managed_enabled_tools,
@@ -1041,9 +1043,11 @@ def _read_policy_for_other_agent(state: dict) -> ManagedConfigResult:
 
 
 def _launch_workspace_state(workspace: str | None) -> dict:
-    """Load launch state on the machine's installed workspace, refusing any other selection.
+    """Load launch state on the machine's installed workspace, refusing another `--workspace`.
 
-    Adopts the installed workspace when none is saved, so a fresh user launches it directly.
+    Adopts the installed workspace when none is saved, so a fresh user launches it directly. A
+    saved selection of another workspace is stale (the machine was switched since this user last
+    configured), so it is replaced and the agent set up again, as if nothing were saved.
     """
     state = load_state()
     saved = state_workspace_key(state)
@@ -1051,7 +1055,20 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     if requested and requested == state.get("workspace"):
         # The bare host of a multi-workspace host keeps its saved workspace.
         requested = saved
-    # The flag wins over the saved selection; either is refused if it isn't the installed one.
+    installed = managed_state_workspace()
+    stale = bool(
+        not requested
+        and saved
+        and installed
+        and normalize_workspace_url(saved) != normalize_workspace_url(installed)
+    )
+    if stale:
+        print_note(
+            f"This machine is managed for {normalize_workspace_url(installed)}; switching your "
+            f"workspace from {saved}."
+        )
+        saved = None
+    # The flag wins over the saved selection; it is refused if it isn't the installed one.
     target = managed_launch_workspace(requested or saved)
     # An explicit --workspace always saves the selection, as on main.
     if target and (requested or not saved or normalize_workspace_url(saved) != target):
@@ -1065,6 +1082,9 @@ def _launch_workspace_state(workspace: str | None) -> dict:
                 state["workspace_id"] = workspace_id
             else:
                 state.pop("workspace_id", None)
+    if stale:
+        # Rewrite this user's agent settings for the new workspace, as a first launch does.
+        state.pop("available_tools", None)
     return state
 
 
@@ -1874,13 +1894,15 @@ def status() -> int:
         default_model = _status_default_model(tool, effective_state, models)
         if default_model:
             rows.append(("Default model", default_model))
-        if tool in ("claude", "codex"):
+        if tool in OTEL_TRACING_TOOLS:
             rows.append(
                 (
                     "Tracing",
                     "enabled" if effective_state.get(f"{tool}_otel_tracing") else "disabled",
                 )
             )
+        if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
+            rows.append(("VS Code", "off (workspace-managed)"))
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -3434,6 +3456,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni"
         and len((reason or "").strip()) < 16
     ):
         print_err(
