@@ -51,10 +51,10 @@ def ug_version() -> str:
 
 
 @cache
-def agent_version(binary: str) -> str:
+def agent_version(binary: str, *, timeout: float = 2) -> str:
     """Return the agent CLI's reported version, or "unknown" on any failure.
 
-    Spawned at most once per binary per session (cached). Each agent CLI
+    Cached per binary and timeout for the session. Each agent CLI
     formats `--version` differently — we extract the first semver-shaped
     token from stdout (then stderr) so the same parser handles all of them.
     """
@@ -63,7 +63,7 @@ def agent_version(binary: str) -> str:
             [binary, "--version"],
             capture_output=True,
             text=True,
-            timeout=2,
+            timeout=timeout,
             check=False,
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):

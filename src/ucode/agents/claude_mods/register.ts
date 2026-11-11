@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   CLI_MODULE,
@@ -8,12 +8,24 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   RECIPE_FIELD,
+  SMART_ROUTER_OFF_REPLY,
+  SMART_ROUTER_ON_REPLY,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
-import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
+import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
 type Environment = Record<string, string | undefined>;
+
+// Kept when a host description has no Usage notes section, so continuation stays native.
+// Copied from Claude Code 2.1.314's Agent Usage notes; its compact layout (no such section)
+// words this differently. Update with tests/integration/test_ug_smart_routing_hooks.py.
+// Like the host, add the fork exception only when the host offers fork subagents.
+const FORK = 'subagent_type: "fork"';
+function continuationNote(host: string): string {
+  const fork = host.includes(FORK) ? ` (except ${FORK})` : '';
+  return `- To continue a previously spawned agent, use SendMessage with the agent's ID or name as the \`to\` field — that resumes it with full context. A new Agent call starts a fresh agent with no memory of prior runs${fork}, so the prompt must be self-contained.`;
+}
 
 async function readEnvironment($: EngineInterface): Promise<Environment> {
   return {
@@ -22,6 +34,32 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
     CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
+}
+
+async function readSessionEnvironment($: EngineInterface): Promise<Environment> {
+  const current = await readEnvironment($);
+  const sessionFile = await $.env.get('UCODE_SESSION_ENV_FILE');
+  if (sessionFile) {
+    try {
+      const overrides = JSON.parse(await $.fs.read(sessionFile));
+      for (const key of [
+        'ENABLE_SMART_ROUTING_V2',
+        'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
+        'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+      ]) {
+        if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
+      }
+    } catch {
+      // Match the routing hooks' inherited-environment fallback for unreadable controls.
+    }
+  }
+  return current;
+}
+
+async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
+  if (!options.orchestratorInstructions) return false;
+  const current = await readSessionEnvironment($);
+  return isRoutingEnabled(current) && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
 }
 
 async function writeEnvironment($: EngineInterface, env: Environment): Promise<void> {
@@ -82,6 +120,7 @@ async function setRouting(
     if (syncSessionControls) {
       await writeSessionControls($, enabled, sessionControlArgs);
     }
+    $.ui.invalidate('tool.describe');
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
     await writeEnvironment($, previous);
@@ -92,6 +131,7 @@ async function setRouting(
 export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
+  let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
     if (launchedEnabled) {
@@ -101,12 +141,39 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
+  on('turn.step', async function* ($, e, next) {
+    const active = await readOrchestratorState($, options);
+    if (active !== orchestratorActive) {
+      orchestratorActive = active;
+      // A CLI/skill toggle changes the session file without notifying this process.
+      $.ui.invalidate('tool.describe');
+    }
+    const model = routedModels.model(e.agentId);
+    return yield* next(model ? {...e, model} : e);
+  });
+
+  on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
+    const instructions = options.orchestratorInstructions as string;
+    const orchestrating = await readOrchestratorState($, options);
+    if (!orchestrating && (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($)))) return next(e);
+    const guidance = 'Smart Router selects the execution model for each task-role subagent. '
+      + "This tool's built-in model choices are not Smart Router's model catalog. "
+      + "Do not infer that a requested model is unavailable because it is absent from this tool's choices. "
+      + 'For a requested name outside those choices, launch a general-purpose subagent without the model argument. '
+      + 'Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. '
+      + 'In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.';
+    if (!orchestrating) return next({...e, description: `${e.description}\n\n${guidance}`});
+    // Preserve the host's waiting and follow-up mechanics without its ownership policy.
+    const notes = e.description.split('\n## Usage notes\n')[1]?.split('\n## ')[0].trim() || continuationNote(e.description);
+    return next({...e, description: `${instructions}\n\n## Usage notes\n\n${notes}\n\n${guidance}`});
+  });
+
   // The installed smart-router skill already supplies the slash command.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const action = e.args.trim();
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
+    const command = parseSmartRouterCommand(e.args);
+    if (!command) return {text: 'Usage: /smart-router on|off'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-    if (action === 'off') {
+    if (command.action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
@@ -119,7 +186,7 @@ export function register(on: On, options: PluginOptions): void {
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e) => {
-    const action = e.args.trim();
+    const action = parseSmartRouterCommand(e.args)?.action;
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();
@@ -127,7 +194,7 @@ export function register(on: On, options: PluginOptions): void {
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
-    return {text: `Smart Router is ${action}`};
+    return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
   registerStatusBand(on);
   registerSubagentRouting(on, options);

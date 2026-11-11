@@ -14,6 +14,10 @@ ENABLE_SUBAGENT_ROUTING_ENV_VAR = "ENABLE_SMART_ROUTING_SUBAGENT_ONLY"
 ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR = "ENABLE_SMART_ROUTER_ORCHESTRATOR"
 SMART_ROUTER_CONFIG_VERSION_ENV_VAR = "SMART_ROUTER_CONFIG_VERSION"
 ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR = "ISAAC_SMART_ROUTER_FEEDBACK"
+ISAAC_LAUNCH_MODE_ENV_VAR = "ISAAC_LAUNCH_MODE"
+# Feature gate: "1" allows Claude smart routing with a Model Provider Service. A rollout gate,
+# not a version-owned routing parameter, so it is deliberately not in SMART_ROUTING_ENV_KEYS.
+ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
 SMART_ROUTING_ENV_KEYS = (
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -32,7 +36,7 @@ API_MLFLOW_RESPONSES = "mlflow/v1/responses"
 API_OPENAI_CHAT_COMPLETIONS = "openai/v1/chat/completions"
 API_OPENAI_RESPONSES = "openai/v1/responses"
 MODEL_SERVICE_PARENT_SCHEMA_HEADER = "Databricks-Model-Service-Parent-Schema"
-# Names the smart-router recipe (e.g. `task_v3`) in use; sent only when smart routing is enabled.
+# Names the smart-router alias or recipe (e.g. `stable`); sent only when smart routing is enabled.
 SMART_ROUTER_RECIPE_HEADER = "Databricks-Smart-Router-Recipe"
 
 # Attribution tags the gateway records against every inference call. The value is
@@ -43,6 +47,10 @@ AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 # Extra Databricks request headers, one `Name: value` per line; `ug --header` adds to it.
 UG_HEADERS_ENV_VAR = "UG_HEADERS"
+# Launch-scoped opt-in to the AI Gateway's server-side Anthropic web search for Claude Code.
+UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
+# Saved by `ug configure --enable-server-side-web-search`; absent means off.
+CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY = "claude_server_side_web_search"
 
 
 # MCP server registration scopes. Claude Code supports local/project/user; the

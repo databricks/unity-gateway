@@ -188,7 +188,8 @@ def test_ug_managed_machine_refuses_foreign_workspace_launch(live_session, works
             result = session.run(*args, ok=False, timeout=30)
             assert result.returncode == 1, (result.stdout, result.stderr)
             output = " ".join((result.stdout + result.stderr).split())
-            assert "Launch refused" in output, output
+            assert "the launch was refused" in output, output
+            assert f"Run `ug configure --workspace {foreign}`" in output, output
             assert workspace.rstrip("/") in output, output
             assert foreign in output, output
             assert "IT team or an administrator" in output, output

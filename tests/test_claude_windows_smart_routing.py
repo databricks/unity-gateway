@@ -8,6 +8,7 @@ from pathlib import Path, PosixPath
 
 import pytest
 
+from ucode import custom_oauth
 from ucode.agents import claude
 from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import session_env, v2
@@ -55,7 +56,7 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(v2, "install_skill", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
-    monkeypatch.setattr(v2, "get_databricks_token", lambda *_args, **_kwargs: "token")
+    monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
     monkeypatch.setattr(
         v2,
@@ -115,7 +116,7 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     assert captured["argv"][0] == str(native_binary)
     assert captured["argv"].count("--plugin-dir") == 2
     assert captured["argv"][-len(caller_args) :] == caller_args
-    assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
+    assert captured["plugin_models"] == set()
     assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
     assert v2.ENABLE_SMART_ROUTING_ENV_VAR not in settings["env"]
     assert "UserPromptSubmit" not in settings["hooks"]

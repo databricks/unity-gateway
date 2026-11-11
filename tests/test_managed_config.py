@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 import ucode.config_io as config_io_mod
 import ucode.databricks as db_mod
 import ucode.managed_config as mc_mod
+import ucode.managed_files as mf_mod
 from ucode.managed_config import (
     get_managed_config,
     load_managed_configuration,
@@ -23,6 +25,7 @@ from ucode.managed_config import (
     refresh_managed_config,
     save_managed_state,
 )
+from ucode.managed_resolve import managed_static_models
 from ucode.managed_setup import serialize_managed_config
 from ucode.telemetry import client_platform
 
@@ -93,6 +96,15 @@ class TestNormalize:
         assert cfg["default_agent"] == "claude"
         assert set(cfg["enabled_agents"]) == {"claude", "codex"}
 
+    def test_github_copilot_maps_to_copilot(self):
+        raw = {
+            "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+            "enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}],
+        }
+        cfg = normalize_managed_config(raw)
+        assert cfg["default_agent"] == "copilot"
+        assert set(cfg["enabled_agents"]) == {"copilot"}
+
     def test_claude_alias_models_map_to_family_slots(self):
         claude = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["claude"]
         assert claude["model_config"]["default_models_by_model_family"] == {
@@ -144,6 +156,24 @@ class TestNormalize:
         codex = normalize_managed_config(raw)["enabled_agents"]["codex"]
         assert codex["otel_tracing_enabled"] is False
 
+    def test_copilot_vscode_integration_is_carried(self):
+        for enabled in (True, False):
+            raw = {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_GITHUB_COPILOT",
+                        "config": {"vscode_integration": {"enabled": enabled}},
+                    }
+                ]
+            }
+            copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+            assert copilot["vscode_integration_enabled"] is enabled
+
+    def test_unset_vscode_integration_is_omitted(self):
+        raw = {"enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}]}
+        copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+        assert "vscode_integration_enabled" not in copilot
+
     def test_workspace_level_tracing_is_ignored(self):
         assert "otel_tracing_enabled" not in normalize_managed_config(
             {"tracing": {"enabled": True}}
@@ -156,6 +186,33 @@ class TestNormalize:
             "system.ai.claude-sonnet-4-6",
             "system.ai.claude-haiku-4-5",
         ]
+
+    def test_sources_are_carried_as_their_own_field(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {
+                        "models": {
+                            "sources": [
+                                "main.anthropic.byok.claude-opus-5-5",
+                                "system.ai.kimi-k3",
+                            ],
+                        }
+                    },
+                }
+            ]
+        }
+        managed = normalize_managed_config(raw)
+        model_config = managed["enabled_agents"]["claude"]["model_config"]
+        assert model_config["sources"] == [
+            "main.anthropic.byok.claude-opus-5-5",
+            "system.ai.kimi-k3",
+        ]
+        assert "model_services" not in model_config
+        assert managed_static_models(managed, "claude") == model_config["sources"]
+        wire_models = serialize_managed_config(managed)["enabled_agents"][0]["config"]["models"]
+        assert wire_models == {"sources": model_config["sources"]}
 
     def test_unity_catalog_location_is_carried(self):
         raw = {
@@ -489,6 +546,31 @@ class TestFetchClient:
         assert reason == "HTTP 403 Forbidden"
 
     @pytest.mark.parametrize(
+        ("state", "expected"),
+        [
+            ({"available_tools": ["copilot"], "copilot_cli_version": "1.0.98"}, "copilot/1.0.98"),
+            ({"available_tools": ["copilot"]}, None),
+            ({"available_tools": ["claude"], "copilot_cli_version": "1.0.98"}, None),
+        ],
+    )
+    def test_user_agent_names_a_configured_copilots_recorded_version(
+        self, monkeypatch, state, expected
+    ):
+        from ucode.agents import claude, codex, copilot
+
+        monkeypatch.setattr(db_mod, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(copilot, "ug_version", lambda: "9.9.9")
+        monkeypatch.setattr(claude, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(codex, "managed_user_agent", lambda: None)
+        monkeypatch.setattr(copilot, "load_state", lambda: state)
+
+        user_agent = db_mod._managed_config_user_agent()
+
+        assert user_agent == " ".join(t for t in ("ucode/9.9.9", expected) if t) + (
+            f" {client_platform()}"
+        )
+
+    @pytest.mark.parametrize(
         ("claude_ua", "codex_ua", "expected"),
         [
             (None, None, "ucode/9.9.9"),
@@ -566,8 +648,38 @@ class TestRefreshManagedConfig:
             mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
         )
         # The raw config is persisted verbatim; the caller gets the normalized manifest.
-        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
+        assert refresh_managed_config(_state(), force_refresh=True) == (
+            normalize_managed_config(RAW_MANIFEST),
+            False,
+        )
         assert saved == [(WORKSPACE, RAW_MANIFEST)]
+
+    def test_shared_host_binds_the_policy_to_the_workspace(self, monkeypatch):
+        """On a host serving several workspaces the policy is stored for one of them."""
+        fetched: list[str] = []
+        saved: list[tuple] = []
+        monkeypatch.setattr(
+            mc_mod,
+            "get_managed_config",
+            lambda ws, tok: fetched.append(ws) or (RAW_MANIFEST, None),
+        )
+        monkeypatch.setattr(
+            mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
+        )
+        shared = "https://acme.cloud.databricks.com"
+        refresh_managed_config(_state(workspace=shared, workspace_id="111"), force_refresh=True)
+        assert fetched == [shared]
+        assert saved == [(f"{shared}?w=111", RAW_MANIFEST)]
+
+    def test_policy_saved_for_a_pasted_url_matches_its_saved_workspace(self, monkeypatch):
+        from ucode.managed_config import managed_launch_workspace
+
+        pasted = "https://adb-1.azuredatabricks.net/?o=1"
+        mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mc_mod.MANAGED_CONFIG_PATH.write_text(
+            json.dumps({"workspace": pasted, "config": {}}), encoding="utf-8"
+        )
+        assert managed_launch_workspace(pasted) == pasted
 
     def test_no_managed_config_returns_none(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, tok: (None, None))
@@ -668,7 +780,7 @@ class TestRefreshManagedConfig:
             mc_mod, "save_managed_state", lambda ws, cfg, **kwargs: saved.append((ws, cfg))
         )
         monkeypatch.setattr(mc_mod, "load_managed_state", lambda ws: None)
-        result, _ = refresh_managed_config(_state())
+        result, _ = refresh_managed_config(_state(), force_refresh=True)
         assert result is None
         assert saved == [(WORKSPACE, {})]
 
@@ -719,7 +831,7 @@ class TestRefreshManagedConfig:
             lambda msg: pytest.fail("feature-disabled must not warn about falling back to a cache"),
         )
         state = _state()
-        result, flag = refresh_managed_config(state)
+        result, flag = refresh_managed_config(state, force_refresh=True)
         assert result is None
         assert flag is True
         assert saved == [(WORKSPACE, {})]
@@ -840,11 +952,18 @@ class TestLaunchReplaysSavedConfig:
         self._no_fetch(monkeypatch)
         assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
 
-    def test_nothing_saved_fetches_once_then_replays(self, monkeypatch):
+    def test_nothing_saved_fetches_until_configure_installs_it(self, monkeypatch):
+        """A launch never installs, so with nothing installed each launch reads the policy for that
+        run only; once `ug configure` installs it, launches replay it."""
         calls = self._counting_fetch(monkeypatch)
         refresh_managed_config(_state())
         refresh_managed_config(_state())
-        assert calls["n"] == 1
+        assert calls["n"] == 2
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+        refresh_managed_config(_state(), force_refresh=True)
+        refresh_managed_config(_state())
+        assert calls["n"] == 3
 
     def test_non_utf8_saved_file_falls_through_to_a_fetch(self, monkeypatch):
         # A corrupted (non-UTF-8) file must not crash: it reads as absent.
@@ -953,7 +1072,7 @@ class TestMachinePolicyRefresh:
 
         monkeypatch.setattr(mc_mod, "update_workspace_policy", install)
         refresh_managed_config(_state(), force_refresh=force_refresh)
-        assert writes == [(force_refresh, force_refresh)]
+        assert writes == ([(True, True)] if force_refresh else [])
 
     def test_denied_changed_policy_warns_and_reuses_installed_policy(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
@@ -979,29 +1098,16 @@ class TestMachinePolicyRefresh:
         )
         assert refresh_managed_config(_state()) == result
 
-    def test_denied_initial_install_warns_and_applies_the_fetched_policy(self, monkeypatch):
-        """A root run that cannot install still governs this run with the fetched policy."""
-        warnings = []
-
-        def denied(*args, **kwargs):
-            raise RuntimeError("sudo permission denied")
-
-        monkeypatch.setattr(mc_mod, "update_workspace_policy", denied)
-        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
-        assert refresh_managed_config(_state()) == (normalize_managed_config(RAW_MANIFEST), False)
-        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
-        assert "Continuing with the fetched policy for this run" in warnings[0]
-        assert "Ask your IT team or an administrator" in warnings[0]
-
-    def test_non_root_launch_applies_the_fetched_policy_without_installing(self, monkeypatch):
-        """A first launch before any configure is managed, as on main, and installs nothing."""
-        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
+    @pytest.mark.parametrize("is_root", [False, True])
+    def test_launch_applies_the_fetched_policy_without_installing(self, monkeypatch, is_root):
+        """A first launch before any configure is managed and installs nothing, even as root."""
+        monkeypatch.setattr(mc_mod.system_cross_os, "is_admin", lambda: is_root)
         warnings = []
         monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
         monkeypatch.setattr(
             mc_mod,
             "update_workspace_policy",
-            lambda *a, **k: pytest.fail("a non-root launch must not install the machine policy"),
+            lambda *a, **k: pytest.fail("a launch must not install the machine policy"),
         )
 
         result = refresh_managed_config(_state())
@@ -1010,9 +1116,7 @@ class TestMachinePolicyRefresh:
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
         assert warnings == []
 
-    def test_non_root_configure_installs_the_policy(self, monkeypatch):
-        monkeypatch.setattr(mc_mod, "is_admin", lambda: False)
-
+    def test_configure_installs_the_policy(self):
         refresh_managed_config(_state(), force_refresh=True)
 
         assert load_managed_configuration(WORKSPACE) == RAW_MANIFEST
@@ -1045,8 +1149,29 @@ class TestMachinePolicyRefresh:
     def test_removed_policy_is_deleted_instead_of_replaced_with_empty_file(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
-        assert refresh_managed_config(_state()) == (None, False)
+        assert refresh_managed_config(_state(), force_refresh=True) == (None, False)
         assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    @pytest.mark.parametrize("is_root", [False, True])
+    def test_launch_never_removes_the_installed_policy(self, monkeypatch, is_root):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        monkeypatch.setattr(mc_mod.system_cross_os, "is_admin", lambda: is_root)
+        monkeypatch.setattr(
+            mc_mod,
+            "update_workspace_policy",
+            lambda *a, **k: pytest.fail("a launch must not remove the machine policy"),
+        )
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        result = refresh_managed_config(_state())
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert mc_mod.MANAGED_CONFIG_PATH.exists()
+        if is_root:
+            assert "Run `ug configure`" in warnings[0]
+            assert "IT team" not in warnings[0]
+        else:
+            assert "Ask your IT team or an administrator" in warnings[0]
 
     @pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED"])
     def test_failed_policy_removal_warns_and_preserves_installed_policy(self, monkeypatch, reason):
@@ -1107,7 +1232,7 @@ class TestMachinePolicyRefresh:
         """Only `ug configure` changes the machine's workspace; a launch is refused instead."""
         save_managed_state("https://other.example.com", RAW_MANIFEST)
 
-        with pytest.raises(RuntimeError, match="Launch refused"):
+        with pytest.raises(RuntimeError, match="the launch was refused"):
             refresh_managed_config(_state())
 
         assert load_managed_configuration("https://other.example.com") == RAW_MANIFEST
@@ -1129,7 +1254,7 @@ class TestMachinePolicyRefresh:
         assert all("config" not in entry for entry in entries.values())
 
     def test_workspace_urls_with_trailing_slash_share_policy_and_timestamp(self, monkeypatch):
-        refresh_managed_config(_state())
+        refresh_managed_config(_state(), force_refresh=True)
         monkeypatch.setattr(
             mc_mod,
             "get_managed_config",
@@ -1320,19 +1445,164 @@ class TestMachinePolicyRefresh:
         assert mc_mod.REFRESH_TS_PATH.read_bytes() == original
 
 
+_REAL_UPDATE_WORKSPACE_POLICY = mf_mod.update_workspace_policy
+_REAL_WINDOWS_REPLACE = mf_mod._windows_replace
+
+
+class TestWindowsInstalledPolicy:
+    """Windows holds the installed policy under ProgramData and follows the Linux/macOS rules."""
+
+    @pytest.fixture(autouse=True)
+    def windows(self, tmp_path, monkeypatch):
+        path = tmp_path / "ProgramData" / "UnityGateway" / "managed-settings.json"
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
+        for module in (mc_mod, mf_mod):
+            monkeypatch.setattr(module, "current_os", lambda: mf_mod.OS.WINDOWS)
+        monkeypatch.setattr(mc_mod, "MANAGED_CONFIG_PATH", path)
+        monkeypatch.setattr(mf_mod, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", _REAL_UPDATE_WORKSPACE_POLICY)
+        monkeypatch.setattr(mf_mod, "_windows_replace", _REAL_WINDOWS_REPLACE)
+        # Never run the real icacls; record the folder changes instead.
+        self.icacls = []
+
+        def run(args, **kwargs):
+            self.icacls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(mf_mod.subprocess_cross_os, "run", run)
+        self.path = path
+        self.set_admin(monkeypatch, True)
+
+    def set_admin(self, monkeypatch, admin):
+        monkeypatch.setattr(mf_mod.system_cross_os, "is_admin", lambda: admin)
+
+    def test_policy_path_is_under_program_data(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramData", str(tmp_path / "PD"))
+        monkeypatch.setattr(mf_mod, "current_os", lambda: mf_mod.OS.WINDOWS)
+
+        assert mf_mod.unity_gateway_managed_settings_path() == (
+            tmp_path / "PD" / "UnityGateway" / "managed-settings.json"
+        )
+
+    def test_elevated_configure_installs_replaces_and_removes(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        assert json.loads(self.path.read_text(encoding="utf-8"))["workspace"] == WORKSPACE
+        assert [entry.name for entry in self.path.parent.iterdir()] == [self.path.name]
+        assert self.icacls
+
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+        refresh_managed_config(_state(), force_refresh=True)
+        assert load_managed_configuration(WORKSPACE) == changed
+
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        refresh_managed_config(_state(), force_refresh=True)
+        assert not self.path.exists()
+
+    def test_non_elevated_configure_requires_an_administrator(self, monkeypatch):
+        self.set_admin(monkeypatch, False)
+
+        with pytest.raises(mc_mod.ManagedPolicyInstallDenied, match="elevated terminal"):
+            refresh_managed_config(_state(), force_refresh=True)
+
+        assert not self.path.exists()
+        assert not self.icacls
+
+    def test_non_admin_launch_with_nothing_installed_applies_fetched_policy(self, monkeypatch):
+        self.set_admin(monkeypatch, False)
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert not self.path.exists()
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert not self.icacls
+
+    def test_non_admin_launch_never_replaces_the_installed_policy(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        original = self.path.read_bytes()
+        self.icacls.clear()
+        self.set_admin(monkeypatch, False)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert self.path.read_bytes() == original
+        assert not self.icacls
+
+    def test_unchanged_launch_does_not_write(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        self.icacls.clear()
+        original = self.path.stat().st_mtime_ns
+
+        refresh_managed_config(_state())
+
+        assert self.path.stat().st_mtime_ns == original
+        assert not self.icacls
+
+    def test_foreign_workspace_is_refused(self):
+        refresh_managed_config(_state(), force_refresh=True)
+        foreign = _state(workspace="https://other.example.com")
+
+        with pytest.raises(RuntimeError, match="the launch was refused"):
+            refresh_managed_config(foreign)
+
+    def test_only_the_program_data_file_is_read(self, tmp_path):
+        # A POSIX-style path under a drive root is never consulted on Windows.
+        planted = tmp_path / "etc" / "unitygateway" / "managed-settings.json"
+        planted.parent.mkdir(parents=True)
+        planted.write_text(
+            json.dumps({"workspace": "https://planted.example.com", "config": RAW_MANIFEST}),
+            encoding="utf-8",
+        )
+
+        assert mc_mod.managed_state_workspace() is None
+        assert load_managed_configuration("https://planted.example.com") is None
+        refresh_managed_config(_state(), force_refresh=True)
+        assert mc_mod.managed_state_workspace() == WORKSPACE
+
+    def test_skip_mode_uses_the_per_user_cache(self, monkeypatch):
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+
+        result = refresh_managed_config(_state(), force_refresh=True)
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert not self.path.exists()
+
+    def test_elevated_revert_removes_the_policy(self):
+        refresh_managed_config(_state(), force_refresh=True)
+
+        assert mc_mod.revert_machine_policy() == "removed"
+        assert not self.path.exists()
+
+    def test_non_elevated_revert_warns_and_keeps_the_policy(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        self.set_admin(monkeypatch, False)
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+
+        assert mc_mod.revert_machine_policy() == "failed"
+        assert self.path.exists()
+        assert "elevated terminal" in warnings[0]
+
+
 class TestPolicyWithoutInstallation:
-    """Windows and UG_SKIP_OS_SETTINGS can't hold an installed policy."""
+    """UG_SKIP_OS_SETTINGS can't hold an installed policy."""
 
     @pytest.fixture(autouse=True)
     def _stub_fetch(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
 
-    @pytest.fixture(params=["skip_os_settings", "windows"])
+    @pytest.fixture(params=["linux", "windows"])
     def not_installable(self, request, monkeypatch):
-        if request.param == "skip_os_settings":
-            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-        else:
+        # The opt-out applies on every OS, Windows included.
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        if request.param == "windows":
             monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
         monkeypatch.setattr(
             mc_mod,
@@ -1444,17 +1714,6 @@ class TestPolicyWithoutInstallation:
 
         assert stat.S_IMODE(mc_mod.USER_MANAGED_CONFIG_PATH.stat().st_mode) == 0o600
 
-    def test_windows_ignores_a_planted_posix_policy_file(self, monkeypatch):
-        """On Windows the POSIX path sits under a drive root a standard user may create."""
-        save_managed_state("https://planted.example.com", {"default_agent": "CODING_AGENT_CODEX"})
-        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
-
-        result = refresh_managed_config(_state())
-
-        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
-        assert mc_mod.managed_state_workspace() is None
-        assert load_managed_configuration("https://planted.example.com") is None
-
     def test_export_finds_the_per_user_cache_without_a_saved_workspace(self, not_installable):
         refresh_managed_config(_state())
 
@@ -1520,11 +1779,14 @@ class TestInstalledWorkspaceLaunch:
             monkeypatch.setattr(
                 mc_mod, helper, lambda *args, **kwargs: pytest.fail("mismatch must fail first")
             )
-        with pytest.raises(RuntimeError, match="Launch refused") as error:
+        with pytest.raises(RuntimeError, match="the launch was refused") as error:
             refresh_managed_config(_state())
         assert "https://installed.example.com" in str(error.value)
         assert WORKSPACE in str(error.value)
         assert "IT team or an administrator" in str(error.value)
+        # The fix comes first: only `ug configure` can switch the machine's workspace.
+        assert str(error.value).startswith(f"Run `ug configure --workspace {WORKSPACE}`")
+        assert "launch with `--workspace https://installed.example.com`" in str(error.value)
         assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == original
         assert not mc_mod.REFRESH_TS_PATH.exists()
 
@@ -1559,7 +1821,7 @@ class TestInstalledWorkspaceLaunch:
             mc_mod.MANAGED_CONFIG_PATH
         )
         mc_mod.REFRESH_TS_PATH.write_text(json.dumps(entry))
-        with pytest.raises(RuntimeError, match="Launch refused"):
+        with pytest.raises(RuntimeError, match="the launch was refused"):
             refresh_managed_config(_state())
 
     def test_explicit_configure_can_replace_the_machine_workspace(self, monkeypatch):
@@ -1720,14 +1982,10 @@ class TestRevertMachinePolicy:
 
         assert mc_mod.revert_machine_policy() == "unchanged"
 
-    @pytest.mark.parametrize("mode", ["skip_os_settings", "windows"])
-    def test_revert_leaves_the_policy_where_ug_does_not_manage_it(self, monkeypatch, mode):
+    def test_revert_leaves_the_policy_where_ug_does_not_manage_it(self, monkeypatch):
         mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         mc_mod.MANAGED_CONFIG_PATH.write_text("{}", encoding="utf-8")
-        if mode == "skip_os_settings":
-            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-        else:
-            monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
 
         assert mc_mod.revert_machine_policy() == "unchanged"
         assert mc_mod.MANAGED_CONFIG_PATH.exists()
