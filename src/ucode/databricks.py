@@ -2790,14 +2790,14 @@ AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
 _MCP_SERVICE_NAME_PREFIX = "mcp-services/"
 
 
-def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
+def _mcp_service_full_name(service: dict, required_prefix: str | None) -> str | None:
     """Extract the full UC name from one mcp-service entry, or None if it
     doesn't live under ``required_prefix`` or isn't ACTIVE."""
     name = service.get("name")
     if not isinstance(name, str):
         return None
     name = name.strip().removeprefix(_MCP_SERVICE_NAME_PREFIX)
-    if not name.startswith(required_prefix):
+    if required_prefix is not None and not name.startswith(required_prefix):
         return None
     status = ((service.get("config") or {}).get("connection") or {}).get("status")
     if status is not None and status != "ACTIVE":
@@ -2808,12 +2808,19 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 def list_mcp_services(
     workspace: str,
     token: str,
-    parent: str = "system.ai",
+    parent: str | None = "system.ai",
     *,
     max_pages: int = 100,
     metadata: dict[str, dict] | None = None,
+    on_services: Callable[[list[str]], None] | None = None,
+    deadline: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    ``parent=None`` uses the existing metastore-wide list endpoint. That scope is
+    currently documented as internal-only by UC; the workspace picker uses it
+    opportunistically and can fall back to its schema walk if unavailable.
 
     ``metadata``, when provided, receives each accepted service's description and audit
     fields from the same list response. No per-service requests are made.
@@ -2831,39 +2838,60 @@ def list_mcp_services(
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
     """
     hostname = workspace_hostname(workspace)
-    expected_prefix = parent + "."
-    names: list[str] = []
+    expected_prefix = parent + "." if parent is not None else None
+    seen_names: set[str] = set()
     page_token: str | None = None
     seen_tokens: set[str] = set()
     for _ in range(max_pages):
-        params: dict[str, str] = {"parent": f"schemas/{parent}", "view": "BASIC"}
+        if cancel_event is not None and cancel_event.is_set():
+            return sorted(seen_names), "MCP listing cancelled"
+        if deadline is not None and time.monotonic() >= deadline:
+            return sorted(seen_names), "deadline exceeded while listing MCP services"
+        params: dict[str, str] = {"view": "BASIC"}
+        if parent is not None:
+            params["parent"] = f"schemas/{parent}"
+        else:
+            params["page_size"] = str(_UC_LIST_PAGE_SIZE)
         if page_token:
             params["page_token"] = page_token
         url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
-        payload, reason = _http_get_json(url, token, timeout=30)
+        timeout = max(1, min(10, int(deadline - time.monotonic() + 1))) if deadline else 30
+        payload, reason = _http_get_json(url, token, timeout=timeout)
         if payload is None:
-            # First-page failure surfaces the reason (e.g. HTTP 404 for an invalid
-            # location); a mid-pagination blip keeps whatever we already collected.
-            if not names:
-                return [], reason
+            # An interrupted metastore listing is incomplete, even if earlier pages
+            # returned services. Keep the scoped caller's existing behavior.
+            if parent is None or not seen_names:
+                return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
+        new_names: list[str] = []
         for service in data.get("mcp_services") or []:
             if not isinstance(service, dict):
                 continue
             full_name = _mcp_service_full_name(service, expected_prefix)
             if full_name:
-                names.append(full_name)
+                if full_name not in seen_names:
+                    seen_names.add(full_name)
+                    new_names.append(full_name)
                 if metadata is not None:
                     metadata[full_name] = {
                         key: service.get(key)
                         for key in ("comment", "created_by", "create_time", "update_time")
                     }
+        if on_services is not None and new_names:
+            on_services(sorted(new_names))
         page_token = data.get("next_page_token") or None
-        if not page_token or page_token in seen_tokens:
+        if not page_token:
+            break
+        if page_token in seen_tokens:
+            if parent is None:
+                return sorted(seen_names), "MCP listing repeated a page token"
             break
         seen_tokens.add(page_token)
-    return sorted(set(names)), None
+    else:
+        if parent is None:
+            return sorted(seen_names), f"MCP listing exceeded {max_pages} pages"
+    return sorted(seen_names), None
 
 
 def build_mcp_service_url(workspace: str, full_name: str) -> str:
@@ -3572,22 +3600,39 @@ def list_all_mcp_services(
     cancel_event: threading.Event | None = None,
     metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
-    """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
-    in the workspace. The mcp-services API is one-schema-per-call, so this walks
-    catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
-    returning partial results once `deadline_seconds` is exceeded.
+    """Return sorted unique MCP-service full names across the workspace.
 
-    `on_progress`, if given, is called as each schema's listing completes with
-    `(schemas_done, schemas_discovered_so_far, services_found)` so callers can render a live
-    count. `on_services`, if given, is called with each schema's newly-found service
-    names (deduped against everything emitted so far) so callers can stream results
-    into a picker as the walk progresses instead of waiting for the full result. Both
-    are invoked serially from the draining thread (not the workers).
+    Try the paginated metastore listing first, then fall back to the schema walk
+    if the first page is unavailable. Both paths share the wall-clock budget.
 
-    This walk is the slow, workspace-wide counterpart to `list_mcp_services`
-    (single schema)."""
+    `on_services` streams newly found names per page on the fast path, with metadata
+    ready before each callback. `on_progress` retains its schema-count contract by
+    selecting the fallback walk when provided."""
     deadline = time.monotonic() + deadline_seconds
     names: set[str] = set()
+
+    # `on_progress` reports schemas (not pages), so preserve its existing
+    # semantics by using the schema walk for callers that request it.
+    if on_progress is None:
+        fast_names, fast_reason = list_mcp_services(
+            workspace,
+            token,
+            parent=None,
+            metadata=metadata,
+            on_services=on_services,
+            deadline=deadline,
+            cancel_event=cancel_event,
+        )
+        if fast_reason is None:
+            return fast_names, None if fast_names else "no MCP services found"
+        if (
+            fast_names
+            or time.monotonic() >= deadline
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
+            return fast_names, fast_reason
+        if _looks_like_definitive_auth_failure(fast_reason):
+            return [], fast_reason
 
     def probe(catalog, schema):
         details: dict[str, dict] = {}

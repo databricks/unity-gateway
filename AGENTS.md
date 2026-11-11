@@ -265,3 +265,16 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
 
 </details>
+
+<details>
+<summary>GitHub Copilot in VS Code</summary>
+
+Fields live in the VS Code user `settings.json`. `ug`'s extension writes them when it starts, from the `ug-config.json` that `ug configure` packed into it, and records what it wrote: once a configure no longer asks for a field, the extension removes the value it wrote, and a value the developer changed since stays. `ug revert` removes them before it uninstalls the extension, from the user `settings.json` and each profile's, except a value the developer changed; for an OTel agent, a changed `otlpEndpoint` keeps its whole group. A `settings.json` with comments is left alone, and revert names the fields to remove.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `github.copilot.chat.otel.enabled`, `.exporterType`, `.protocol`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the local agent exports protobuf to the extension's loopback receiver, which forwards traces to the gateway |
+| `chat.agentHost.otel.enabled`, `.exporterType`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the Copilot CLI agent exports to the same receiver |
+| `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on |
+
+</details>

@@ -20,7 +20,9 @@
     "ui"
   ],
   "main": "./out/extension.js",
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "contributes": {
     "languageModelChatProviders": [
       {
