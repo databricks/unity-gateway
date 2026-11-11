@@ -83,8 +83,9 @@ See [the mod guide](../docs/claude-mod.md).
 `native_claude/mod_tests/waiting-notifications.test.ts` covers the empty waiting
 notification filter: event origin, exact payload, direct-child identity and state,
 and preservation of reports, warnings and attachments. It calls the function directly
-without host mocks. Background lifecycle and notification rendering remain manual
-checks; these tests do not measure live gateway cost.
+without host mocks. Fixtures cover the recognized Claude 2.1.316 format and normal
+delivery for Claude 2.1.290's `finished` summary. Background lifecycle and notification
+rendering remain manual checks; these tests do not measure live gateway cost.
 
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed

@@ -321,6 +321,8 @@ existing Claude skill-toggle journeys check the live recipe payload field (launc
 
 Waiting-notification recognition has direct function tests in
 `../native_claude/mod_tests/waiting-notifications.test.ts`, without host mocks.
+Fixtures cover the recognized Claude 2.1.316 format and normal delivery for
+Claude 2.1.290's `finished` summary.
 Background lifecycle, live gateway cost and notification rendering are not covered
 by the integration suite.
 
