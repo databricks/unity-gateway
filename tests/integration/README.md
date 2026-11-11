@@ -18,6 +18,11 @@ internal responses. App-server stderr is retained in the TUI evidence artifacts.
 Recovery guidance uses prior child assignments even when `list_agents` omits saved children.
 Launcher configuration checks exercise both POSIX and Windows shutdown paths with
 mock processes; they do not establish native Windows restart coverage.
+Shutdown checks also cover a delayed Windows exit after a nonzero `taskkill`,
+retained failure diagnostics, and real descendant port release on both platforms.
+`../test_integration_mcp.py` covers refreshing Codex's printed `/mcp` snapshots
+until all expected servers are connected in the same snapshot; persistent startup
+and servers that are never connected together still fail.
 Request-recorder component tests preserve actual upstream responses after a client
 disconnects during headers or body, including Windows connection-aborted errors.
 These replace obsolete tests of manual descendant unloading, permission reconstruction,

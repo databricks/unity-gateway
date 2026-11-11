@@ -64,7 +64,10 @@ or recovery prompt.
 On POSIX, app-server shutdown gets five seconds before a forced kill of its
 process group, including the npm launcher and native server, followed by a
 bounded wait. Windows stops the whole app-server process tree with `taskkill`.
+If a child exits during that traversal, UG still waits for its app-server handle
+before deciding shutdown failed. A failed shutdown includes `taskkill` diagnostics.
 This prevents a surviving native server from holding the replacement's port.
+UG also waits for that port to stop accepting connections before starting the replacement.
 Readiness gets 30 seconds. An unexpected server exit or failed
 restart stops the owned TUI and reports recovery instructions. A rejected recovery
 turn reports an error and asks the user to send a message to continue.
@@ -102,8 +105,9 @@ following those instructions.
 shutdown escalation, native descendant port release, Windows process-tree shutdown,
 failed startup/restart, unexpected exit, reconnect without rerouting, root-only
 continuation, ephemeral title threads, coalesced notices, and private internal RPC
-responses. Windows shutdown checks simulate the OS boundary; they are not native
-Windows verification.
+responses. Component checks simulate delayed Windows exit and failed termination;
+a real subprocess-tree check requires the descendant's listening port to be released
+on both Linux and Windows. Live Windows restart coverage comes from the installed-wheel journey.
 
 Linux Codex 0.165.0 installed-wheel checks passed against the selected
 `eng-ml-inference` profile:

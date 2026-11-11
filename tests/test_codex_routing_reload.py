@@ -410,7 +410,6 @@ def test_shutdown_kills_unresponsive_server_with_bounded_wait():
     assert calls == ["terminate", "wait", "kill", "wait"]
 
 
-@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups; Windows uses taskkill")
 def test_forced_shutdown_releases_native_descendants_listening_port(tmp_path, monkeypatch):
     ready = tmp_path / "ready"
     with socket.socket() as listener:
@@ -436,7 +435,7 @@ subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        start_new_session=True,
+        start_new_session=os.name != "nt",
     )
     try:
         deadline = time.monotonic() + 5
@@ -444,36 +443,64 @@ subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
             assert process.poll() is None
             assert time.monotonic() < deadline, "native descendant did not bind its port"
             time.sleep(0.01)
-        monkeypatch.setattr(v2, "PROCESS_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
-        v2._stop_codex_process(process, process_tree=True)
+        if os.name != "nt":
+            monkeypatch.setattr(v2, "PROCESS_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
+        v2._stop_codex_process(process, process_tree=True, port=port)
         with socket.socket() as replacement:
             replacement.bind(("127.0.0.1", port))
     finally:
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=5
+            )
+        else:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
         process.wait(timeout=5)
 
 
-@pytest.mark.parametrize("returncode,exited", [(0, None), (128, 0), (1, None)])
-def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, exited):
+@pytest.mark.parametrize("returncode,wait_times_out", [(0, False), (128, False), (1, True)])
+def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, wait_times_out):
     calls = []
     waits = []
-    process = SimpleNamespace(pid=42, poll=lambda: exited, wait=lambda **kw: waits.append(kw))
+
+    def wait(**kwargs):
+        waits.append(kwargs)
+        if wait_times_out:
+            raise subprocess.TimeoutExpired("codex", kwargs["timeout"])
+
+    process = SimpleNamespace(pid=42, poll=lambda: None, wait=wait)
     monkeypatch.setattr(v2, "os", SimpleNamespace(name="nt"))
 
     def taskkill(argv, **kwargs):
         calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=returncode)
+        return SimpleNamespace(returncode=returncode, stderr="Access denied", stdout="")
 
     monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
-    if returncode and exited is None:
-        with pytest.raises(RuntimeError, match="Could not stop"):
+    if wait_times_out:
+        with pytest.raises(RuntimeError, match="Could not stop.*Access denied"):
             v2._stop_codex_process(process, process_tree=True)
-        assert not waits
     else:
         v2._stop_codex_process(process, process_tree=True)
-        assert waits == [{"timeout": v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS}]
+    assert waits == [{"timeout": v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS}]
     argv, options = calls[0]
     assert argv[0].endswith("taskkill.exe")
     assert argv[1:] == ["/PID", "42", "/T", "/F"]
     assert options["timeout"] == v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS
+    assert options["capture_output"] and options["text"]
+
+
+def test_shutdown_fails_if_the_server_port_is_still_listening(monkeypatch):
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        try:
+            monkeypatch.setattr(v2, "PROCESS_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
+            with pytest.raises(RuntimeError, match=f"port {port} is still in use"):
+                v2._stop_codex_process(process, port=port)
+            assert process.poll() is not None
+        finally:
+            process.kill()
+            process.wait(timeout=5)

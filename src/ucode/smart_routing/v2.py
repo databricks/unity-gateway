@@ -861,28 +861,44 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
-def _stop_codex_process(process, *, process_tree: bool = False) -> None:
+def _stop_codex_process(process, *, process_tree: bool = False, port: int | None = None) -> None:
+    stopped = None
     if process_tree and os.name == "nt":
         stopped = subprocess_cross_os.run(
             [str(windows_system32_dir() / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
             timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
         )
-        if stopped.returncode and process.poll() is None:
-            raise RuntimeError("Could not stop the Codex app-server process tree.")
     else:
         process.terminate()
+    # A descendant can exit during taskkill's traversal; wait for the owned handle.
     try:
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
+        if stopped is not None and stopped.returncode:
+            detail = (stopped.stderr or stopped.stdout).strip()
+            raise RuntimeError(
+                f"Could not stop the Codex app-server process tree: {detail}"
+            ) from None
         if process_tree and os.name != "nt":
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
         else:
             process.kill()
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
+    if port is None:
+        return
+    deadline = time.monotonic() + PROCESS_SHUTDOWN_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((LOOPBACK_HOST, port), timeout=0.1):
+                pass
+        except OSError:
+            return
+        time.sleep(0.05)
+    raise RuntimeError(f"Codex app-server port {port} is still in use after shutdown.")
 
 
 def launch_codex(
@@ -1021,7 +1037,7 @@ def launch_codex(
                     enabled = session_routing_enabled(session_env_path)
                     if enabled == applied:
                         continue
-                    _stop_codex_process(app_server, process_tree=True)
+                    _stop_codex_process(app_server, process_tree=True, port=app_port)
                     restart_notices.put(
                         routing_config(overlay, enabled)["responses_api_metadata"][
                             "smart_router_recipe_name"
@@ -1047,5 +1063,5 @@ def launch_codex(
                 if stop_interposer is not None:
                     stop_interposer()
             finally:
-                _stop_codex_process(app_server, process_tree=True)
+                _stop_codex_process(app_server, process_tree=True, port=app_port)
     sys.exit(returncode)

@@ -138,7 +138,8 @@ def _run_gemini_gateway_smoke(workspace: str, model: str, token: str) -> str:
         method="POST",
     )
     try:
-        with urllib_request.urlopen(req, timeout=30) as response:
+        timeout = int(os.environ.get("UCODE_E2E_AGENT_TIMEOUT", "60"))
+        with urllib_request.urlopen(req, timeout=timeout) as response:
             body = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
