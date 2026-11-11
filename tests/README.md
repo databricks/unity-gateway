@@ -41,6 +41,7 @@ journeys use vendor model IDs.
 | Category | Location | What it proves |
 | --- | --- | --- |
 | Unit/component | Existing `test_*.py` files | Individual behavior; dependencies may be mocked |
+| Native launch components | `native_claude/test_savings_launch.py` | Real UG/Claude launch, local HTTPS endpoint rates and prepared Messages responses |
 | Dedicated-workspace CUJ | `e2e_cuj/test_*.py` | Real user journeys against read-only, preconfigured workspaces |
 | Existing e2e | `test_e2e*.py` | Real workspace behavior with some patched setup/internal calls |
 | Connector skill behavior | `connector_behavior/test_*.py` | Real Claude decisions with generated guidance and synthetic connector tools |
@@ -251,8 +252,16 @@ Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's toke
 (per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
 JSON line, snapshot persistence/rejection and zero-dollar display). `test_smart_routing_pricing.py`
 covers endpoint rates, concurrent refreshes of distinct model sets, empty-price rejection,
-and distinct price-cache paths for workspaces sharing a host. Shared-host launch wiring
-is not covered by these component checks.
+and distinct price-cache paths for workspaces sharing a host.
+`test_workspace_selection.py::TestEndpointRatesTransport` exercises the real HTTPS client
+through a loopback CONNECT/TLS fixture, with child-only CA trust and certificate/hostname
+verification. It checks repeated sorted model names, empty eligible input, both workspace
+selectors and their absence on another host, payload shapes, HTTP errors and closed connections.
+`native_claude/test_savings_launch.py` invokes the real savings-enabled UG launcher and
+Claude binary. It checks generated pricer/usage/version options, the exact main/default/routable
+model-service union, and separate shared-host workspace caches. A native turn completes
+while rates are withheld; after release the cache fills and another turn completes. Failed
+refreshes preserve prior cache bytes or leave the estimate absent, with a completed native turn.
 The pricer subprocess checks explicit opt-in; unset, empty, zero, and invalid values
 stay off. Preset coverage in
 `test_smart_routing_config.py` checks the savings flag, inherited-value precedence,
@@ -275,7 +284,7 @@ component tests check that off/on hides/restores a mounted row and failed usage 
 hide stale estimates until a successful write. Capability tests deny the savings flag
 read and verify that startup and requests still run.
 These are native component checks, not live gateway/model or TUI coverage.
-Endpoint-price refresh failures and orchestrator-version display are not covered automatically.
+Live endpoint compatibility and interactive orchestrator-version display remain unverified.
 
 Dedicated CUJs reuse `integration/utils` session/terminal mechanics and file-task
 and transcript readers, not its config stubs or pytest fixtures. Prompt/model

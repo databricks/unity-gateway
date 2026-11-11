@@ -1859,8 +1859,17 @@ Native UI component tests cover mounted-row updates after
 CLI toggles and hiding stale estimates on failed usage writes. Pricer subprocesses read
 the saved session controls and validate snapshot persistence/rejection. Pricing tests keep
 shared-host workspace cache paths and concurrently refreshed model sets distinct, reject
-empty prices and distinguish zero savings from sub-cent amounts. Shared-host launch wiring
-is not covered.
+empty prices and distinguish zero savings from sub-cent amounts.
+`../test_workspace_selection.py::TestEndpointRatesTransport` covers the real endpoint client
+over loopback CONNECT/TLS: repeated parameters, host-scoped selectors, payload shapes and
+HTTP/connection failures, with certificate verification and a child-only test CA.
+`../native_claude/test_savings_launch.py` exercises the real UG/Claude launch with prepared
+local Messages responses. Generated options, the main/default/routable service union and
+workspace-ID cache selection are checked while the child is alive. A completed native turn
+precedes release of a held rates response; a later turn runs after the cache fills. HTTP and
+closed-connection refresh failures preserve an existing cache or leave the estimate absent
+while a native turn completes. These are local component checks; live endpoint compatibility
+and interactive orchestrator-version display remain unverified.
 Live savings accumulation, display, and session off/on are not covered by the
 integration suite.
 
