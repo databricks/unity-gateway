@@ -732,9 +732,7 @@ class TestRenderOverlay:
             {
                 "model": model,
                 "label": "Gateway Flash" if explicit_metadata else "GLM 5.3 Flash",
-                "description": "Gateway description"
-                if explicit_metadata
-                else "Managed by your organization (system.ai.glm-5-3-flash)",
+                **({"description": "Gateway description"} if explicit_metadata else {}),
             }
         ]
 

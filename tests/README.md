@@ -1457,15 +1457,18 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 `test_agent_model_sources.py` and `test_cli.py` cover managed schema and MPS wildcard model sources.
-Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, schema-
-only sources trigger expansion, and empty or failed schema discovery fails closed for Claude,
-Codex, and Copilot. These are component checks; they do not establish live inference coverage.
+Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, provider
+catalogs follow service type, and failed discovery fails closed during configure. Launch uses
+matching last-configure expansions on live failures; tests cover missing fallbacks, per-workspace
+and per-agent isolation, and mixed per-agent configure errors. These are component checks;
+they do not establish live inference coverage.
 
 `test_agent_claude.py` covers short Claude picker labels for qualified MPS model IDs.
 The checks preserve dotted GPT versions and retain the full model IDs in picker options
 and the allow-list. These component checks do not establish live picker or inference coverage.
 
 `test_agent_claude.py` covers gateway-alias picker text for GLM, GPT, and Kimi models.
-Labels and fallback descriptions omit the synthetic Anthropic prefix while option values,
-long-context hints, allow-lists, and explicit catalog metadata are preserved. These component
-checks do not establish native picker rendering or inference coverage.
+Static managed options omit the synthetic Anthropic prefix from labels and organization
+descriptions; discovered options do not invent that description. Option values, long-context
+hints, allow-lists, and explicit catalog metadata are preserved. These component checks do not
+establish native picker rendering or inference coverage.

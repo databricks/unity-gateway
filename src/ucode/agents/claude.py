@@ -50,7 +50,6 @@ from ucode.custom_oauth import (
     custom_oauth_cli_enabled,
 )
 from ucode.databricks import (
-    _NO_ANTHROPIC_MODEL_IDS,
     AnthropicModelCatalog,
     _debug,
     build_auth_shell_command,
@@ -59,6 +58,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     list_anthropic_model_catalog,
+    list_provider_service_models,
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
@@ -739,14 +739,14 @@ def source_models(
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
+    provider_service: dict | None = None,
 ) -> tuple[list[str], str | None]:
-    catalog = list_anthropic_model_catalog(
-        workspace, token, parent_schema=parent_schema, provider=provider
-    )
-    reason = catalog.error_msg
-    if provider and reason == _NO_ANTHROPIC_MODEL_IDS:
-        reason = None
-    return catalog.model_ids, reason
+    if provider:
+        return list_provider_service_models(
+            workspace, token, provider, (provider_service or {}).get("provider_type", "")
+        )
+    catalog = list_anthropic_model_catalog(workspace, token, parent_schema=parent_schema)
+    return catalog.model_ids, catalog.error_msg
 
 
 _CLAUDE_PICKER_LABEL_RE = re.compile(
@@ -767,8 +767,6 @@ def static_picker_option(model: str) -> dict[str, str]:
 
 def picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
     option = {"model": model, "label": label}
-    if not description and (display_model := unwrap_anthropic_gateway_model(model)) != model:
-        description = f"Managed by your organization ({display_model})"
     if description:
         option["description"] = description
     match = _CLAUDE_PICKER_LABEL_RE.fullmatch(label)

@@ -1984,6 +1984,252 @@ def test_managed_schema_wildcard_fails_closed(monkeypatch, tool, failure):
     assert cli_mod.managed_static_models(managed, tool) == ["system.ai.*"]
 
 
+@pytest.mark.parametrize("cached", ["matching", "other-source", "other-agent"])
+def test_managed_wildcard_launch_uses_only_matching_last_configure(monkeypatch, cached):
+    source = "system.ai.*"
+    model = "system.ai.claude-sonnet-5"
+    managed = {"enabled_agents": {"claude": {"model_config": {"sources": [source]}}}}
+    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *args: ([], "HTTP 403"))
+    with (
+        _launch_policy_patches(managed) as calls,
+        patch("ucode.cli._save_managed_model_source_expansions") as save_expansions,
+    ):
+        calls["state"]["managed_model_source_expansions"] = {
+            "codex" if cached == "other-agent" else "claude": {
+                "other.ai.*" if cached == "other-source" else source: [model]
+            }
+        }
+        result = runner.invoke(app, ["claude"])
+
+    output = " ".join(_strip_ansi(result.output).split())
+    save_expansions.assert_not_called()
+    if cached == "matching":
+        assert result.exit_code == 0, output
+        assert "last configure" in output and "HTTP 403" in output
+        calls["launch"].assert_called_once()
+        assert calls["resolve_model"].call_args.args[1]["claude_static_models"] == [model]
+    else:
+        assert result.exit_code == 1, output
+        assert "refusing to fall back to workspace discovery" in output
+        calls["launch"].assert_not_called()
+
+
+def test_successful_live_launch_does_not_replace_last_configure(monkeypatch):
+    source = "system.ai.*"
+    managed = {"enabled_agents": {"claude": {"model_config": {"sources": [source]}}}}
+    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *a: (["system.ai.live"], None))
+    with (
+        _launch_policy_patches(managed) as calls,
+        patch("ucode.cli._save_managed_model_source_expansions") as save_expansions,
+    ):
+        saved = {"claude": {source: ["system.ai.saved"]}}
+        calls["state"]["managed_model_source_expansions"] = saved
+        result = runner.invoke(app, ["claude"])
+    assert result.exit_code == 0, result.output
+    assert calls["resolve_model"].call_args.args[1]["claude_static_models"] == ["system.ai.live"]
+    assert calls["state"]["managed_model_source_expansions"] == saved
+    save_expansions.assert_not_called()
+
+
+@pytest.mark.parametrize("single", [True, False], ids=["single-agent", "managed-loop"])
+def test_configure_saves_only_live_per_wildcard_expansions(monkeypatch, tmp_path, single):
+    import ucode.state as state_mod
+
+    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(state_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+    managed = {
+        "enabled_agents": {"codex": {"model_config": {"sources": ["system.ai.*", "c.s.mps.*"]}}}
+    }
+    state = {
+        **MINIMAL_STATE,
+        "managed_model_source_expansions": {
+            "codex": {"c.s.mps.*": ["c.s.mps.stale"]},
+            "claude": {"system.ai.*": ["system.ai.claude"]},
+        },
+    }
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_files", lambda *a: None)
+    monkeypatch.setattr(
+        agents,
+        "_expand_wildcard_source",
+        lambda source, *a: (["system.ai.live"], None) if source == "system.ai.*" else ([], "403"),
+    )
+    monkeypatch.setattr(cli_mod, "configure_single_tool", lambda tool, state, **k: state)
+    monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a: True)
+    monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+    monkeypatch.setattr(
+        cli_mod,
+        "configure_selected_tools",
+        lambda state, tools, **k: {**state, "last_configured_tools": tools},
+    )
+    monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
+    monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *a: True)
+    monkeypatch.setattr(cli_mod, "_restore_mcp_after_workspace_switch", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "install_databricks_ai_tools_for_agents", lambda *a, **k: None)
+    monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a: None)
+    if single:
+        cli_mod._setup_single_agent([(state["workspace"], None)], "codex", apply_managed=True)
+    else:
+        cli_mod._configure_workspace_command(workspaces=[(state["workspace"], None)])
+
+    assert state_mod.load_state()["managed_model_source_expansions"] == {
+        "codex": {"system.ai.*": ["system.ai.live"]},
+        "claude": {"system.ai.*": ["system.ai.claude"]},
+    }
+
+
+def test_managed_configure_accumulates_expansions_for_multiple_agents(monkeypatch, tmp_path):
+    import ucode.state as state_mod
+
+    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(state_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+    state = dict(MINIMAL_STATE)
+    managed = {
+        "enabled_agents": {
+            tool: {"model_config": {"sources": ["system.ai.*"]}} for tool in ("codex", "copilot")
+        }
+    }
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_files", lambda *a: None)
+    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda source, tool, *a: ([tool], None))
+    monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a: True)
+    monkeypatch.setattr(cli_mod, "install_tool_binary", lambda *a, **k: True)
+    monkeypatch.setattr(
+        cli_mod,
+        "configure_selected_tools",
+        lambda state, tools, **k: {**state, "last_configured_tools": tools},
+    )
+    monkeypatch.setattr(cli_mod, "_configure_managed_mcp_servers", lambda *a: [])
+    monkeypatch.setattr(cli_mod, "_configure_managed_skills", lambda *a: True)
+    monkeypatch.setattr(cli_mod, "_restore_mcp_after_workspace_switch", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "_summarize_managed_config", lambda *a: None)
+    cli_mod._configure_workspace_command(workspaces=[(state["workspace"], None)])
+    persisted = state_mod.load_state()
+    assert persisted["managed_model_source_expansions"] == {
+        "codex": {"system.ai.*": ["codex"]},
+        "copilot": {"system.ai.*": ["copilot"]},
+    }
+    assert "last_configured_tools" not in persisted
+
+
+@pytest.mark.parametrize("single", [True, False], ids=["single-agent", "managed-loop"])
+def test_configure_never_uses_last_configure_as_expansion_fallback(monkeypatch, single):
+    managed = {"enabled_agents": {"codex": {"model_config": {"sources": ["system.ai.*"]}}}}
+    state = {
+        **MINIMAL_STATE,
+        "managed_model_source_expansions": {"codex": {"system.ai.*": ["system.ai.stale"]}},
+    }
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_files", lambda *a: None)
+    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *a: ([], "403"))
+    configure = MagicMock()
+    monkeypatch.setattr(cli_mod, "configure_single_tool", configure)
+    monkeypatch.setattr(cli_mod, "configure_selected_tools", configure)
+
+    with pytest.raises(RuntimeError, match="Could not expand managed model sources"):
+        if single:
+            cli_mod._setup_single_agent([(state["workspace"], None)], "codex", apply_managed=True)
+        else:
+            cli_mod._configure_workspace_command(workspaces=[(state["workspace"], None)])
+    configure.assert_not_called()
+    assert state["managed_model_source_expansions"]["codex"]["system.ai.*"] == ["system.ai.stale"]
+
+
+@pytest.mark.parametrize("other_failure", ["expansion", "gateway", "installation", "configuration"])
+def test_managed_configure_reports_actual_no_agent_failure(monkeypatch, other_failure):
+    managed = {
+        "enabled_agents": {
+            "claude": {"model_config": {"sources": ["system.ai.*"]}},
+            "codex": {"model_config": {"sources": ["system.ai.*"]}}
+            if other_failure == "expansion"
+            else {},
+        }
+    }
+    state = dict(MINIMAL_STATE)
+    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
+    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_files", lambda *a: None)
+    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *a: ([], "403"))
+    monkeypatch.setattr(cli_mod, "check_gateway_endpoint", lambda *a: other_failure != "gateway")
+    monkeypatch.setattr(
+        cli_mod, "install_tool_binary", lambda *a, **k: other_failure != "installation"
+    )
+    monkeypatch.setattr(
+        cli_mod,
+        "configure_selected_tools",
+        lambda state, tools, **k: {**state, "last_configured_tools": []},
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        cli_mod._configure_workspace_command(workspaces=[(state["workspace"], None)])
+    message = str(error.value)
+    assert "Claude Code: Could not expand managed model sources" in message
+    assert "refusing to fall back to workspace discovery" in message
+    assert "retry" in message
+    if other_failure == "expansion":
+        assert "Codex: Could not expand managed model sources" in message
+        assert "None of the coding agents" not in message
+    else:
+        assert "None of the coding agents" in message
+        assert {
+            "gateway": "Codex: gateway endpoint unavailable",
+            "installation": "Codex: agent installation failed",
+            "configuration": "Codex: agent configuration failed",
+        }[other_failure] in message
+
+
+@pytest.mark.parametrize("same_host", [True, False])
+def test_workspace_switch_preserves_only_destination_model_expansions(
+    monkeypatch, tmp_path, same_host
+):
+    import ucode.state as state_mod
+
+    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
+    monkeypatch.setattr(state_mod, "APP_DIR", tmp_path)
+    monkeypatch.setattr(cli_mod, "save_state", real_save_state)
+    monkeypatch.setattr(cli_mod, "resolve_workspace", lambda workspace: workspace)
+    monkeypatch.setattr(cli_mod, "_find_profile_name", lambda *a: None)
+    monkeypatch.setattr(cli_mod, "_purge_after_workspace_switch", lambda *a: None)
+    host_a = "https://a.databricks.com"
+    host_b = host_a if same_host else "https://b.databricks.com"
+    key_a = f"{host_a}?w=111" if same_host else host_a
+    key_b = f"{host_b}?w=222" if same_host else host_b
+    model_a = {"codex": {"system.ai.*": ["system.ai.a"]}}
+    model_b = {"codex": {"system.ai.*": ["system.ai.b"]}}
+    real_save_state(
+        {
+            "workspace": host_b,
+            "workspace_id": "222" if same_host else None,
+            "managed_model_source_expansions": model_b,
+        }
+    )
+    real_save_state(
+        {
+            "workspace": host_a,
+            "workspace_id": "111" if same_host else None,
+            "managed_model_source_expansions": model_a,
+        }
+    )
+
+    destination = cli_mod.configure_shared_state(key_b, skip_preflight=True)
+    assert destination["managed_model_source_expansions"] == model_b
+    assert state_mod.load_state()["managed_model_source_expansions"] == model_b
+    source = cli_mod.configure_shared_state(key_a, skip_preflight=True)
+    assert source["managed_model_source_expansions"] == model_a
+    fresh = cli_mod.configure_shared_state("https://fresh.databricks.com", skip_preflight=True)
+    assert "managed_model_source_expansions" not in fresh
+    assert "managed_model_source_expansions" not in state_mod.load_state()
+
+
 class TestManagedClaudeModelDiscovery:
     @pytest.mark.parametrize("with_defaults", [False, True])
     def test_managed_static_models_do_not_enable_discovery(self, with_defaults):
@@ -7023,7 +7269,7 @@ class TestConfigureScopeFlags:
         attempted: list = []
         warned: list = []
 
-        def expand(_managed, _state, tool):
+        def expand(_managed, _state, tool, **_kwargs):
             if tool == "claude":
                 raise RuntimeError(
                     "Could not expand managed model sources (main.default.mps.*); refusing to "

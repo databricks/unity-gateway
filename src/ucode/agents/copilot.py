@@ -388,10 +388,12 @@ def source_models(
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
-    provider_type: str = "",
+    provider_service: dict | None = None,
 ) -> tuple[list[str], str | None]:
     if provider:
-        return list_provider_service_models(workspace, token, provider, provider_type)
+        return list_provider_service_models(
+            workspace, token, provider, (provider_service or {}).get("provider_type", "")
+        )
     catalog = list_anthropic_model_catalog(workspace, token, parent_schema=parent_schema)
     return [unwrap_anthropic_gateway_model(model) for model in catalog.model_ids], catalog.error_msg
 

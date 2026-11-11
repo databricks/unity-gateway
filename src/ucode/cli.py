@@ -652,8 +652,13 @@ def configure_shared_state(
         destination = load_full_state().get("workspaces", {}).get(key, {})
         # managed_mcp_servers records what the source workspace delivered to user scope.
         # Keep it until reconciliation removes registrations the destination no longer wants.
-        # The server-side web search choice is likewise per workspace.
-        for field in ("mcp_servers", "mcp_clients", CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY):
+        # The web search choice and managed source expansions are likewise per workspace.
+        for field in (
+            "mcp_servers",
+            "mcp_clients",
+            CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+            "managed_model_source_expansions",
+        ):
             if field in destination:
                 state[field] = destination[field]
             else:
@@ -1082,6 +1087,7 @@ def _launch_workspace_state(workspace: str | None) -> dict:
             # A dry run saves nothing, so carry the workspace for this run.
             host, workspace_id = split_workspace_key(target)
             state = {**state, "workspace": host}
+            state.pop("managed_model_source_expansions", None)
             if workspace_id:
                 state["workspace_id"] = workspace_id
             else:
@@ -1092,7 +1098,14 @@ def _launch_workspace_state(workspace: str | None) -> dict:
     return state
 
 
-def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict:
+def _expand_managed_model_sources(
+    managed: dict,
+    state: dict,
+    tool: str,
+    *,
+    fallbacks: dict[str, list[str]] | None = None,
+    live_expansions: dict[str, list[str]] | None = None,
+) -> dict:
     models = managed_static_models(managed, tool) or []
     wildcards = [model for model in models if is_model_source_wildcard(model)]
     if tool not in STATIC_MODEL_LIST_TOOLS or not wildcards:
@@ -1101,7 +1114,14 @@ def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict
         token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
     except RuntimeError:
         token = ""
-    expanded = expand_wildcard_sources(models, tool, state["workspace"], token)
+    expanded = expand_wildcard_sources(
+        models,
+        tool,
+        state["workspace"],
+        token,
+        fallbacks=fallbacks,
+        live_expansions=live_expansions,
+    )
     if not expanded:
         # Every wildcard failed to expand. An empty static list reads as unset, which would
         # silently replace the admin's allow-list with workspace discovery; fail closed instead.
@@ -1112,6 +1132,31 @@ def _expand_managed_model_sources(managed: dict, state: dict, tool: str) -> dict
     managed = copy.deepcopy(managed)
     set_static_model_list(managed["enabled_agents"][tool]["model_config"], expanded)
     return managed
+
+
+def _save_managed_model_source_expansions(
+    state: dict, tool: str, expansions: dict[str, list[str]]
+) -> None:
+    saved = state.get("managed_model_source_expansions")
+    saved = dict(saved) if isinstance(saved, dict) else {}
+    if expansions:
+        saved[tool] = expansions
+    else:
+        saved.pop(tool, None)
+    if saved:
+        state["managed_model_source_expansions"] = saved
+    else:
+        state.pop("managed_model_source_expansions", None)
+    # configure_selected_tools adds this per-run result only after its own state save.
+    persisted = dict(state)
+    persisted.pop("last_configured_tools", None)
+    save_state(persisted)
+
+
+def _managed_model_source_fallbacks(state: dict, tool: str) -> dict[str, list[str]]:
+    saved = state.get("managed_model_source_expansions")
+    by_tool = saved.get(tool) if isinstance(saved, dict) else None
+    return by_tool if isinstance(by_tool, dict) else {}
 
 
 # The agents whose `ug configure --agent` reads and installs the policy and applies its MCP and skills.
@@ -1156,6 +1201,7 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
+    live_expansions: dict[str, list[str]] | None = None
     if apply_managed and tool in _FRESH_POLICY_AGENTS:
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
@@ -1167,7 +1213,10 @@ def _setup_single_agent(
     if apply_managed and tool in MODEL_LOCATION_TOOLS:
         _reject_disabled_agent(managed, tool)
         if managed is not None:
-            managed = _expand_managed_model_sources(managed, state, tool)
+            live_expansions = {}
+            managed = _expand_managed_model_sources(
+                managed, state, tool, live_expansions=live_expansions
+            )
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
@@ -1180,6 +1229,8 @@ def _setup_single_agent(
     state = configure_single_tool(
         tool, state, parent_schema=parent_schema, provider=provider, with_vscode=True
     )
+    if live_expansions is not None:
+        _save_managed_model_source_expansions(state, tool, live_expansions)
     state = _save_headless_model_source(
         state, [tool], model_location=model_location, provider=provider
     )
@@ -1478,14 +1529,21 @@ def _configure_workspace_command(
             return 0
         configured_tools: list[str] = []
         failed_tools: list[str] = []
+        expansion_errors: dict[str, str] = {}
+        failure_reasons: dict[str, str] = {}
         for tool_name in managed_tools:
+            live_expansions = {}
             try:
-                expanded_managed = _expand_managed_model_sources(managed, state, tool_name)
+                expanded_managed = _expand_managed_model_sources(
+                    managed, state, tool_name, live_expansions=live_expansions
+                )
             except RuntimeError as exc:
                 # One agent's failed wildcard expansion must not stop the others; the run still
                 # fails at the end (`_fail_machine_wide_run`), matching other per-tool failures.
                 print_warning(str(exc))
                 failed_tools.append(tool_name)
+                expansion_errors[tool_name] = str(exc)
+                failure_reasons[tool_name] = str(exc)
                 continue
             resolved = resolve_state(expanded_managed, state, tool_name)
             parent_schema = (
@@ -1500,6 +1558,7 @@ def _configure_workspace_command(
                 or check_gateway_endpoint(resolved, tool_name)
             ):
                 if not install_tool_binary(tool_name, strict=False):
+                    failure_reasons[tool_name] = "agent installation failed"
                     continue
                 configured = configure_selected_tools(
                     resolved,
@@ -1519,16 +1578,33 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
+                    _save_managed_model_source_expansions(configured, tool_name, live_expansions)
+                    if "managed_model_source_expansions" in configured:
+                        state["managed_model_source_expansions"] = configured[
+                            "managed_model_source_expansions"
+                        ]
+                    else:
+                        state.pop("managed_model_source_expansions", None)
                     if tool_name == "claude":
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)
                 else:
                     failed_tools.append(tool_name)
+                    failure_reasons[tool_name] = "agent configuration failed"
+            else:
+                failure_reasons[tool_name] = "gateway endpoint unavailable"
         if not configured_tools:
+            details = "; ".join(
+                f"{TOOL_SPECS[name]['display']}: {reason}"
+                for name, reason in failure_reasons.items()
+            )
+            if len(expansion_errors) == len(managed_tools):
+                raise RuntimeError(details)
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
-                "are available on this workspace."
+                f"are available on this workspace. {details} "
+                "Check agent installation and workspace access, then retry."
             )
         registered_mcps: list[str] = []
         if not is_dry_run():
@@ -4008,7 +4084,9 @@ def _launch_tool(
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
         if managed is not None:
-            managed = _expand_managed_model_sources(managed, state, tool)
+            managed = _expand_managed_model_sources(
+                managed, state, tool, fallbacks=_managed_model_source_fallbacks(state, tool)
+            )
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)

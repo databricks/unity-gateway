@@ -58,7 +58,6 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     CodexCatalogSource,
-    CodexModelCatalogEmpty,
     CodexMpsModelCatalogUnavailable,
     _fetch_codex_model_catalog,
     build_auth_token_argv,
@@ -66,6 +65,7 @@ from ucode.databricks import (
     build_mcp_service_url,
     build_tool_base_url,
     get_model_provider_service,
+    list_provider_service_models,
     ug_binary,
 )
 from ucode.launcher import exec_or_spawn
@@ -1589,18 +1589,15 @@ def source_models(
     *,
     parent_schema: str | None = None,
     provider: str | None = None,
+    provider_service: dict | None = None,
 ) -> tuple[list[str], str | None]:
-    try:
-        catalog = _fetch_codex_model_catalog(
-            workspace,
-            token,
-            source=CodexCatalogSource.PROVIDER if provider else CodexCatalogSource.PARENT_SCHEMA,
-            identifier=provider or parent_schema or "",
+    if provider:
+        return list_provider_service_models(
+            workspace, token, provider, (provider_service or {}).get("provider_type", "")
         )
-    except CodexModelCatalogEmpty:
-        if provider:
-            return [], None
-        raise
+    catalog = _fetch_codex_model_catalog(
+        workspace, token, source=CodexCatalogSource.PARENT_SCHEMA, identifier=parent_schema or ""
+    )
     return catalog_slugs(catalog), None
 
 

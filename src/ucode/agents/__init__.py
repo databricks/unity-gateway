@@ -16,6 +16,7 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol, cast
 
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
@@ -111,6 +112,18 @@ AITOOLS_AGENT_TOKENS = {
 }
 
 
+class _ModelSourceModule(Protocol):
+    def source_models(
+        self,
+        workspace: str,
+        token: str,
+        *,
+        parent_schema: str | None = None,
+        provider: str | None = None,
+        provider_service: dict | None = None,
+    ) -> tuple[list[str], str | None]: ...
+
+
 def is_model_source_wildcard(model: str) -> bool:
     parts = model.split(".")
     return len(parts) in (3, 4) and parts[-1] == "*" and all(p and "*" not in p for p in parts[:-1])
@@ -120,26 +133,31 @@ def _expand_wildcard_source(
     model: str, tool: str, workspace: str, token: str
 ) -> tuple[list[str], str | None]:
     source_name = model[:-2]
-    module = {"claude": claude, "codex": codex, "copilot": copilot}[tool]
+    module = cast(_ModelSourceModule, _MODULES[tool])
     if len(model.split(".")) == 3:
         return module.source_models(workspace, token, parent_schema=source_name)
 
     service, reason = get_model_provider_service(source_name, workspace, token)
     if service is None:
         return [], reason
-    if tool == "copilot":
-        targets, reason = copilot.source_models(
-            workspace, token, provider=source_name, provider_type=service.get("provider_type", "")
-        )
-    else:
-        targets, reason = module.source_models(workspace, token, provider=source_name)
+    targets, reason = module.source_models(
+        workspace, token, provider=source_name, provider_service=service
+    )
     return [
         target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
         for target in targets
     ], reason
 
 
-def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token: str) -> list[str]:
+def expand_wildcard_sources(
+    models: list[str],
+    tool: str,
+    workspace: str,
+    token: str,
+    *,
+    fallbacks: dict[str, list[str]] | None = None,
+    live_expansions: dict[str, list[str]] | None = None,
+) -> list[str]:
     expanded: list[str] = []
     lookups: dict[str, list[str]] = {}
     for model in models:
@@ -154,14 +172,28 @@ def expand_wildcard_sources(models: list[str], tool: str, workspace: str, token:
                     targets, reason = _expand_wildcard_source(model, tool, workspace, token)
                 except RuntimeError as exc:
                     reason = str(exc)
+            if targets and live_expansions is not None:
+                live_expansions[model] = list(targets)
             if not targets:
                 if not token:
                     reason = "no Databricks token; run `ug configure`"
                 detail = f" ({reason})" if reason else ""
-                print_warning(
-                    f"Could not expand managed model source {model}{detail}; "
-                    "check service access and compatible models, then retry."
-                )
+                fallback = (fallbacks or {}).get(model)
+                if (
+                    isinstance(fallback, list)
+                    and fallback
+                    and all(isinstance(target, str) and target for target in fallback)
+                ):
+                    targets = fallback
+                    print_warning(
+                        f"Could not expand managed model source {model}{detail}; "
+                        "using the list from the last configure."
+                    )
+                else:
+                    print_warning(
+                        f"Could not expand managed model source {model}{detail}; "
+                        "check service access and compatible models, then retry."
+                    )
             lookups[model] = targets
         expanded.extend(lookups[model])
     return list(dict.fromkeys(expanded))

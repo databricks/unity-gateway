@@ -1943,14 +1943,15 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 Managed schema/MPS wildcard expansion has component coverage in `../test_agent_model_sources.py` and
-`../test_cli.py`, including agent-specific catalog selection, mixed source ordering, Claude catalog IDs and Copilot alias normalization, duplicate removal,
-schema-only sources, and empty/error fail-closed behavior. No installed-agent integration
-journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
+`../test_cli.py`, including provider-type catalog selection, mixed source ordering, schema IDs,
+Copilot alias normalization, duplicate removal, configure fail-closed behavior, launch fallback to
+per-workspace last-configure results, and per-agent configure failure reporting. No installed-agent
+integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Short Claude picker labels for qualified MPS IDs have component coverage in
 `../test_agent_claude.py`. The checks retain the full option and
 allow-list IDs and preserve dotted GPT versions. No installed-agent journey covers these labels.
 
 Gateway-alias picker text has component coverage in `../test_agent_claude.py` for short labels,
-prefix-free fallback descriptions, preserved option and allow-list IDs, long-context hints,
-and explicit catalog metadata. No installed-agent journey covers these presentation fields.
+managed-static-only organization descriptions, preserved option and allow-list IDs, long-context
+hints, and explicit catalog metadata. No installed-agent journey covers these presentation fields.
