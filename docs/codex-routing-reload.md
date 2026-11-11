@@ -39,7 +39,8 @@ and the recipe header may be absent. It must never carry a stale value.
 ## Restart behavior
 
 1. The skill atomically updates the existing session-control JSON. Routing hooks
-   continue to read the same file.
+   continue to read the same file. If the sandbox denies access to those private
+   controls, the skill requests native command approval; without approval, routing stays unchanged.
 2. UG stops its app-server, then starts a fresh process on the same WebSocket
    address with updated attribution. The TUI process and `CODEX_HOME` stay intact.
 3. Native Codex reconnects and resumes the saved conversation. UG forwards that
@@ -48,7 +49,8 @@ and the recipe header may be absent. It must never carry a stale value.
    parent to continue unfinished work and reopen existing children with
    `followup_task`, without spawning replacements or repeating the toggle.
    Unfinished children must be resumed even when the latest user prompt only
-   changed Smart Router.
+   changed Smart Router. Saved children can be absent from `list_agents` after
+   restart; the parent recovers their task names and assignments from conversation history.
 
 Temporary threads that Codex creates for conversation titles do not replace the
 saved root ID used to match that resume.

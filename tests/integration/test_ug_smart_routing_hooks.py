@@ -1207,14 +1207,18 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
     Expected: every resumed parent/child inference carries the new recipe in body metadata
     and the header (Windows permits an absent header). All original IDs and permissions
     survive; busy children complete their own answers and newly spawned children inherit
-    the current recipe. Requires real gateway responses and a normal TUI exit.
+    the current recipe. Windows uses native approval for the exact toggle command;
+    the workspace-write sandbox stays enabled. Requires real gateway responses and a normal TUI exit.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
     # User-owned native preferences; ug must preserve them through configure and restart.
     native_config = session.home / ".codex/config.toml"
     native_config.parent.mkdir(parents=True, exist_ok=True)
-    native_config.write_text('approval_policy = "never"\nsandbox_mode = "workspace-write"\n')
+    approval_policy = "on-request" if os.name == "nt" else "never"
+    native_config.write_text(
+        f'approval_policy = "{approval_policy}"\nsandbox_mode = "workspace-write"\n'
+    )
     marker = fresh_id()
     gate = session.cwd / "child-gate.py"
     python = session.binary.with_name("python.exe" if os.name == "nt" else "python")
@@ -1247,6 +1251,27 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             )
             for path, tid in threads.items()
         )
+
+    def wait_for_restart(tui, expected_recipe, description):
+        approval_sent = False
+        flag = (
+            "--disable-smart-routing" if expected_recipe == "DISABLED" else "--enable-smart-routing"
+        )
+        command = f'& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex {flag}'
+
+        def restarted(screen):
+            nonlocal approval_sent
+            if (
+                os.name == "nt"
+                and not approval_sent
+                and codex_command_approval_pending(screen, command)
+            ):
+                tui.send("\r", "approve the exact session-local Smart Router toggle once")
+                approval_sent = True
+                return False
+            return f"recipe={expected_recipe}" in reload_log.read_text()[log_checkpoint:]
+
+        tui.wait_for(restarted, description, timeout=120)
 
     with TuiRequestRecorder(workspace) as recorder:
         session.run(
@@ -1311,10 +1336,10 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             reload_log = session.home / ".ucode/codex-v2-interposer.log"
             log_checkpoint = len(reload_log.read_text())
             tui.submit("$smart-router off")
-            tui.wait_for(
-                lambda _: "recipe=DISABLED" in reload_log.read_text()[log_checkpoint:],
+            wait_for_restart(
+                tui,
+                "DISABLED",
                 "server restarted while both child commands were running",
-                timeout=120,
             )
             (session.cwd / "release-off").write_text("release")
             tui.wait_for(
@@ -1368,10 +1393,10 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             on_checkpoint = recorder.checkpoint()
             log_checkpoint = len(reload_log.read_text())
             tui.submit("$smart-router on")
-            tui.wait_for(
-                lambda _: f"recipe={recipe}" in reload_log.read_text()[log_checkpoint:],
+            wait_for_restart(
+                tui,
+                recipe,
                 "server restarted while all three child commands were running",
-                timeout=120,
             )
             (session.cwd / "release-on").write_text("release")
             tui.wait_for(
@@ -1405,7 +1430,7 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                 assert contexts
                 assert all(
                     context["sandbox_policy"]["type"] == "workspace-write"
-                    and context["approval_policy"] == "never"
+                    and context["approval_policy"] == approval_policy
                     for context in contexts
                 )
             tui.exit_normally()

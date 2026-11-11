@@ -22,6 +22,7 @@ description unchanged when routing is off.
 bounded cleanup, failed startup/restart, unexpected exits, reconnect without
 rerouting, parent-only continuation, ephemeral title threads, rapid notices, and private
 internal responses. App-server stderr is retained in the TUI evidence artifacts.
+Recovery guidance uses prior child assignments even when `list_agents` omits saved children.
 Launcher configuration checks exercise both POSIX and Windows shutdown paths with
 mock processes; they do not establish native Windows restart coverage.
 These replace obsolete tests of manual descendant unloading, permission reconstruction,
@@ -35,7 +36,9 @@ command, a child-owned answer, and a working parent follow-up.
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
 retains the installed-wheel busy-child off/on journey. It requires stable IDs and
 permissions, child-owned answers, and matching recipe fields on successful parent,
-existing-child, and new-child inference. The busy-child journey and routing-only
+existing-child, and new-child inference. On Windows it uses native approval for
+the exact toggle command and verifies the original approval policy and sandbox survive.
+The busy-child journey and routing-only
 off/on skill journey passed on Linux Codex 0.165.0 against the selected `eng-ml-inference` profile. They preserve the
 existing restart, inference, identity, permission, and normal-exit assertions.
 Navigation passed the Linux Codex 0.165.0 CI journey. Earlier live results on

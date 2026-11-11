@@ -102,8 +102,9 @@ class RestartContinuation:
                         "text": (
                             f"Smart Router is now {state}. UG restarted the app-server to update request "
                             "attribution. Do not repeat the routing toggle command. Continue the previous "
-                            "unfinished task. Existing children are saved but stopped. First use list_agents "
-                            "to check saved children. Use "
+                            "unfinished task. Existing children are saved but stopped and may be absent "
+                            "from list_agents until reopened. Recover their task names and assignments "
+                            "from earlier spawn_agent and followup_task calls in this conversation. Use "
                             "followup_task to resume every unfinished child assignment, even if the latest "
                             "user prompt only changed Smart Router. Do not spawn replacement "
                             "agents. Running commands were interrupted; inspect any completed effects before "
