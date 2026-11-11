@@ -2689,18 +2689,30 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
 
 def _relayed_user_credential_override() -> dict | None:
     # Claude can load user settings as project settings when launched from home.
-    project_dir = Path.cwd() / ".claude"
-    user_dirs = {Path.home() / ".claude"}
-    if config_dir := os.environ.get("CLAUDE_CONFIG_DIR"):
-        user_dirs.add(Path(config_dir))
-    names = ("settings.json", "settings.local.json")
-    user_paths = {(directory / name).resolve() for directory in user_dirs for name in names}
-    if not any((project_dir / name).resolve() in user_paths for name in names):
+    try:
+        project_dir = Path.cwd() / ".claude"
+    except OSError:
         return None
-    return {
-        "apiKeyHelper": "",
-        "env": dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
-    }
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    user_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
+    names = ("settings.json", "settings.local.json")
+    user_paths = set()
+    for name in names:
+        try:
+            user_paths.add((user_dir / name).resolve())
+        except (OSError, RuntimeError):
+            continue
+    for name in names:
+        try:
+            project_path = (project_dir / name).resolve()
+        except (OSError, RuntimeError):
+            continue
+        if project_path in user_paths:
+            return {
+                "apiKeyHelper": "",
+                "env": dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+            }
+    return None
 
 
 def _build_claude_argv(

@@ -77,7 +77,9 @@ journeys use vendor model IDs.
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
 `test_agent_claude.py` covers relay launch and subscription-status overrides when project settings
-resolve to user settings, including home, symlinks, custom config directories and unaffected launches.
+resolve to active user settings, including home, symlinks, custom config directories and unaffected
+launches. Regression cases preserve project credentials linked to an inactive default directory,
+ignore unused symlink loops, retain valid aliases beside looping paths, and tolerate unavailable cwd.
 These component checks do not establish live subscription or gateway coverage.
 
 `test_budget.py` covers the workspace-authenticated spend-status client in

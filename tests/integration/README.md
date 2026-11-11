@@ -90,8 +90,9 @@ Offline evidence checks accept both recipient forms and reject a missing recipie
 a wrong resumed child, a failed send, or a missing/crossed tool result.
 
 `../test_agent_claude.py` covers relay credential overrides when project and user
-settings resolve to the same files, including subscription-status checks. This is not live
-subscription or gateway coverage.
+settings resolve to the same files in the active user config directory, including subscription-status
+checks. Component regressions cover inactive default directories, unused and adjacent symlink loops,
+and unavailable cwd. This is not live subscription or gateway coverage.
 
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged

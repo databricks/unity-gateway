@@ -4010,10 +4010,9 @@ class TestBuildClaudeArgv:
         assert "--settings" in argv
         assert str(claude.CLAUDE_SETTINGS_PATH) in argv
 
-    @pytest.mark.parametrize("settings_name", ["settings.json", "settings.local.json"])
     @pytest.mark.parametrize("caller_settings", [False, True])
     def test_relayed_home_settings_cannot_override_subscription(
-        self, tmp_path, monkeypatch, settings_name, caller_settings
+        self, tmp_path, monkeypatch, caller_settings
     ):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))
@@ -4021,8 +4020,9 @@ class TestBuildClaudeArgv:
         monkeypatch.chdir(tmp_path)
         config_dir = tmp_path / ".claude"
         config_dir.mkdir()
-        user_settings = config_dir / settings_name
-        user_settings.write_text(json.dumps({"apiKeyHelper": "echo stale"}))
+        user_settings = [config_dir / name for name in ("settings.json", "settings.local.json")]
+        for path in user_settings:
+            path.write_text(json.dumps({"apiKeyHelper": "echo stale"}))
         gateway_settings = config_dir / "ucode-settings.json"
         gateway_settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://localhost"}}))
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", gateway_settings)
@@ -4043,7 +4043,8 @@ class TestBuildClaudeArgv:
         }
         if caller_settings:
             assert settings["model"] == "example"
-        assert json.loads(user_settings.read_text()) == {"apiKeyHelper": "echo stale"}
+        for path in user_settings:
+            assert json.loads(path.read_text()) == {"apiKeyHelper": "echo stale"}
 
     def test_relayed_user_settings_symlink_is_neutralized(self, tmp_path, monkeypatch):
         home = tmp_path / "home"
@@ -4081,26 +4082,132 @@ class TestBuildClaudeArgv:
 
         assert json.loads(argv[argv.index("--settings") + 1])["apiKeyHelper"] == ""
 
-    @pytest.mark.parametrize("relayed,inside_home", [(True, True), (True, False), (False, False)])
+    @pytest.mark.parametrize("relayed,cwd", [(True, "subdir"), (True, "project"), (False, "home")])
     def test_relayed_override_does_not_affect_other_launches(
-        self, tmp_path, monkeypatch, relayed, inside_home
+        self, tmp_path, monkeypatch, relayed, cwd
     ):
         home = tmp_path / "home"
         home.mkdir()
         subdir = home / "subdir"
         subdir.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-        monkeypatch.chdir(subdir if inside_home else home)
+        monkeypatch.chdir({"home": home, "subdir": subdir, "project": project}[cwd])
         settings_path = home / ".claude" / "ucode-settings.json"
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
-        if relayed and not inside_home:
-            monkeypatch.chdir(tmp_path)
-
         argv = claude._build_claude_argv("claude", [], relayed=relayed)
 
         assert argv[argv.index("--settings") + 1] == str(settings_path)
+
+    @pytest.fixture
+    def subscription_status_command(self, monkeypatch):
+        run = Mock(
+            return_value=subprocess.CompletedProcess(
+                [], 0, stdout='{"authMethod":"claude.ai"}', stderr=""
+            )
+        )
+        monkeypatch.setattr(claude.subprocess_cross_os, "run", run)
+        return run
+
+    def test_relayed_inactive_default_config_keeps_project_credentials(
+        self, tmp_path, monkeypatch, subscription_status_command
+    ):
+        home = tmp_path / "home"
+        default_config = home / ".claude"
+        default_config.mkdir(parents=True)
+        project = tmp_path / "project"
+        project.mkdir()
+        custom_config = tmp_path / "custom-config"
+        custom_config.mkdir()
+        (project / ".claude").symlink_to(default_config, target_is_directory=True)
+        project_settings = default_config / "settings.json"
+        project_settings.write_text(json.dumps({"apiKeyHelper": "echo project-helper"}))
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom_config))
+        monkeypatch.chdir(project)
+        settings_path = custom_config / "ucode-settings.json"
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+
+        argv = claude._build_claude_argv("claude", [], relayed=True)
+
+        assert argv[argv.index("--settings") + 1] == str(settings_path)
+        assert claude._has_subscription_login()
+        assert "--settings" not in subscription_status_command.call_args.args[0]
+        assert json.loads(project_settings.read_text()) == {"apiKeyHelper": "echo project-helper"}
+
+    def test_relayed_ignores_unused_default_config_symlink_loop(
+        self, tmp_path, monkeypatch, subscription_status_command
+    ):
+        home = tmp_path / "home"
+        default_config = home / ".claude"
+        default_config.mkdir(parents=True)
+        (default_config / "settings.local.json").symlink_to("settings.local.json")
+        project = tmp_path / "project"
+        project.mkdir()
+        custom_config = tmp_path / "custom-config"
+        custom_config.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom_config))
+        monkeypatch.chdir(project)
+        settings_path = custom_config / "ucode-settings.json"
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+
+        argv = claude._build_claude_argv("claude", [], relayed=True)
+
+        assert argv[argv.index("--settings") + 1] == str(settings_path)
+        assert claude._has_subscription_login()
+        assert "--settings" not in subscription_status_command.call_args.args[0]
+
+    @pytest.mark.parametrize("loop_directory", ["user", "project"])
+    def test_relayed_settings_symlink_loop_preserves_other_aliases(
+        self, tmp_path, monkeypatch, subscription_status_command, loop_directory
+    ):
+        home = tmp_path / "home"
+        user_config = home / ".claude"
+        user_config.mkdir(parents=True)
+        project = tmp_path / "project"
+        project_config = project / ".claude"
+        project_config.mkdir(parents=True)
+        user_settings = user_config / "settings.local.json"
+        user_settings.write_text(json.dumps({"apiKeyHelper": "echo stale"}))
+        (project_config / "settings.local.json").symlink_to(user_settings)
+        loop_config = user_config if loop_directory == "user" else project_config
+        (loop_config / "settings.json").symlink_to("settings.json")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+        monkeypatch.chdir(project)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", user_config / "ucode-settings.json")
+
+        argv = claude._build_claude_argv("claude", [], relayed=True)
+
+        expected = {
+            "apiKeyHelper": "",
+            "env": {"ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""},
+        }
+        assert json.loads(argv[argv.index("--settings") + 1]) == expected
+        assert claude._has_subscription_login()
+        command = subscription_status_command.call_args.args[0]
+        assert json.loads(command[command.index("--settings") + 1]) == expected
+        assert json.loads(user_settings.read_text()) == {"apiKeyHelper": "echo stale"}
+
+    def test_relayed_unavailable_cwd_adds_no_override(
+        self, tmp_path, monkeypatch, subscription_status_command
+    ):
+        settings_path = tmp_path / "ucode-settings.json"
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(Path, "cwd", Mock(side_effect=FileNotFoundError("cwd was deleted")))
+
+        argv = claude._build_claude_argv("claude", [], relayed=True)
+
+        assert argv[argv.index("--settings") + 1] == str(settings_path)
+        assert claude._has_subscription_login()
+        assert "--settings" not in subscription_status_command.call_args.args[0]
 
     def test_relayed_home_auth_status_neutralizes_project_helper(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
