@@ -9,15 +9,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1]
-    name: Cowork desktop tasks · macOS
+        attempt: [1, 2, 3, 4, 5]
+    name: Cowork desktop tasks · macOS · run ${{ matrix.attempt }}
     runs-on: macos-15-intel
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
-          ref: ${{ github.sha }}
+          ref: d41ebb87c8a4789d89ba13b6c1605b79be4c5bff
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
