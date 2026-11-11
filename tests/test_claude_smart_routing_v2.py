@@ -1179,7 +1179,10 @@ finally:
         assert guard("restore")
         assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
 
-    def test_manual_choice_revokes_older_cleanup_in_competing_sessions(self, guard_sessions):
+    @pytest.mark.parametrize("completed", [False, True], ids=["pending", "completed"])
+    def test_manual_choice_revokes_older_cleanup_in_competing_sessions(
+        self, guard_sessions, completed
+    ):
         settings, start = guard_sessions
         first, second = start(), start()
         assert first("begin", routed_model="sonnet")
@@ -1187,13 +1190,20 @@ finally:
         time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
         assert first("is_routed") is False
         assert second("begin", routed_model="opus") is True
-        first("abandon")
-        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        if completed:
+            assert second("restore")
+        chooser = second if completed else first
+        assert chooser("abandon")
+        model = "sonnet" if completed else "opus"
+        settings.write_text(json.dumps({"model": model, "theme": "light"}))
         assert second("restore") is True
         assert first("restore") is True
-        assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+        assert json.loads(settings.read_text()) == {"model": model, "theme": "light"}
 
-    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory permissions")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
     @pytest.mark.parametrize("before", [{"model": "haiku"}, {}], ids=["saved-model", "no-model"])
     def test_failed_writes_preserve_recovery_and_bound_exit(
         self, guard_sessions, tmp_path, capsys, before
@@ -1232,16 +1242,32 @@ finally:
         finally:
             settings.parent.chmod(0o700)
 
-    @pytest.mark.skipif(os.name != "posix", reason="requires POSIX directory permissions")
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
     def test_recovery_file_failures_preserve_manual_choice(self, guard_sessions, tmp_path, capsys):
         settings, start = guard_sessions
         guard = start()
         assert guard("begin", routed_model="sonnet")
-        assert guard("abandon")
         recovery_dir = tmp_path / ".ucode"
+        recovery = next(recovery_dir.glob("claude-v2-model-*.json"))
+        assert guard("abandon")
+        recovery.write_text("{")
+        blocked = start()
+        for _ in range(2):
+            assert blocked("begin", routed_model="sonnet") is False
+        warning = capsys.readouterr().out
+        assert warning.count("could not prepare model recovery") == 1
+        assert str(recovery) in "".join(warning.split())
+        assert recovery.read_text() == "{"
+        recovery.unlink()
         try:
             recovery_dir.chmod(0o500)
             assert guard("begin", routed_model="sonnet") is False
+            warning = capsys.readouterr().out
+            assert "could not prepare model recovery" in warning
+            assert str(recovery) in "".join(warning.split())
             assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "dark"}
         finally:
             recovery_dir.chmod(0o700)

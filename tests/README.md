@@ -770,11 +770,12 @@ Codex decisions carry the same request metadata. These use mocked HTTP responses
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command. Delayed completion must replay the prompt exactly once and restore the saved default.
 Arrow keys and fragmented terminal replies keep recovery active, including sequences split across
-settings restoration. Unfinished sequences and typed input stop replay with a notice but retain
-cleanup. Unit cases include the
+settings restoration. Open bracketed pastes, unfinished sequences and typed input stop replay
+with a notice and retain cleanup. Unit cases include the
 `ESC[1~` and `ESC[4~` Home/End keys. PTY cases cover typed and history-based selection of the
-routed model, including a failed recovery handoff. Parser cases cover completion, search,
-other unknown-line edits, and submitted slash commands. Claude's completed `Kept model as` cancellation
+routed model, including a failed recovery handoff and input immediately after submission
+confirmation. Parser cases cover completion, search, other unknown-line edits, and submitted
+slash commands. Claude's completed `Kept model as` cancellation
 result permits replay, while generic cancel messages and unconfirmed switches stop automatic input.
 Recovery cases use isolated Python processes and production deadlines, and read settings before
 the child exits. The timing cases cover immediate persistence
@@ -785,16 +786,18 @@ The late-write case also checks prompt submission after that deadline and a clea
 temporary parse error, bounded exit cleanup under lock contention, and actionable failure output.
 Real POSIX directory permissions exercise settings-write, recovery-record creation, and manual
 handoff failures. Settings and recovery records survive failures, and writable retries succeed.
+Corrupt or unwritable recovery state warns once per session with its path.
 Atomic restoration preserves surviving settings symlinks and existing POSIX file permissions.
 Permissions are asserted after replacement; failures at the exact `os.replace` and `chmod` calls
-are not independently exercised. Permission cases require an unprivileged POSIX user. Native
-Windows permission-failure behavior is not covered.
+are not independently exercised. Permission cases require an unprivileged POSIX user and skip
+when run as root. Native Windows permission-failure behavior is not covered.
 Deferred cleanup releases launch ownership after a two-second grace period and retains the
 original default in shared recovery state. Competing-process tests check that late writes before,
 during, and after a second switch cannot become its saved default, including an originally absent
 model setting. A missing late write does not block the second switch until the first child exits.
 Same-model sessions cannot both consume one persisted write. A crashed owner retains its original
-baseline for the next launch. Manual model input revokes older pending recovery across sessions.
+baseline for the next launch. Manual model input revokes older pending recovery across sessions,
+including when the choosing session has already completed its own recovery.
 PTY checks verify that settings reads are throttled during busy output. These are component
 checks; live first-prompt routing on a pinned Claude Code version is not executed here.
 

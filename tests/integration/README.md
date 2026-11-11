@@ -1460,25 +1460,10 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 the file task, and normal exit. The managed default alone routes only Claude subagents, with the
 orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
-`tests/test_claude_pty_replay.py` covers delayed switches, terminal input during recovery,
-typed and history-based model choices, completed versus ambiguous cancellation, and throttled
-settings recovery before child exit. Parser cases cover completion, search, other unknown-line
-edits, and submitted slash commands. Fragmented navigation and terminal replies complete across
-settings restoration; unfinished sequences and editing input produce resend guidance.
-Tilde-form Home/End keys are covered in unit tests.
-The late-write case checks prompt submission after the persistence deadline and a clean child exit.
-A missing late write must release launch ownership.
-`tests/test_claude_smart_routing_v2.py` checks competing processes with bounded deferred ownership,
-late writes across a second switch, same-model and crashed-owner recovery, manual choices,
-denied writes, and bounded exit cleanup. Recovery cases use isolated Python processes and
-production deadlines. Actual POSIX directory permissions cause write and unlink failures;
-settings and recovery records survive, and writable retries succeed. These permission cases
-require an unprivileged POSIX user. Atomic restoration preserves surviving settings symlinks
-and existing POSIX file permissions. Permissions are asserted after replacement; exact
-`os.replace`/`chmod` call failures and native Windows permission failures are not covered.
-These component checks use temporary settings and fake TUIs;
-they do not establish live Claude or gateway coverage.
-These checks do not replace the completed file task required by the live journeys.
+See the [component coverage inventory](../README.md) for delayed Claude model-switch
+recovery, manual choices, fragmented terminal input, and filesystem-failure coverage and gaps.
+Those checks use temporary settings and fake TUIs; they do not establish live Claude or gateway
+coverage or replace the completed file task required by these live journeys.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

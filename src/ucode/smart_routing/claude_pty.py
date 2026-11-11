@@ -139,7 +139,7 @@ class ModelSwitchInput:
 
     @property
     def pending(self) -> bool:
-        return bool(self._pending)
+        return bool(self._pending) or self._pasting
 
     def observe(self, data: bytes, now: float) -> tuple[bool, bool]:
         if data:
@@ -154,6 +154,7 @@ class ModelSwitchInput:
                     self._pending = self._pending[match.end() :]
                     if sequence in (b"\x1b[200~", b"\x1b[201~"):
                         self._pasting = sequence == b"\x1b[200~"
+                        edited |= self._pasting
                     elif (
                         sequence.startswith(b"\x1bO")
                         or sequence in (b"\x1b[1~", b"\x1b[4~")
@@ -510,14 +511,19 @@ def run_claude_pty(
 
             def observe_input(data: bytes, now: float) -> None:
                 nonlocal phase, model_pending, deferred_restore, restore_ready
-                if not model_pending and phase not in (
-                    "waiting_to_switch",
-                    "waiting_persist",
-                    "pasting",
-                    "verifying",
-                ):
+                if phase == "waiting_prompt":
                     return
                 edited, selected_model = user_input.observe(data, now)
+                if selected_model:
+                    # Manual input also revokes other sessions' pending recovery
+                    # after this session has finished its automatic replay.
+                    try:
+                        model_pending = abandon_model_setting() is False
+                    except (OSError, ValueError, RuntimeError) as exc:
+                        model_pending = True
+                        log(f"[WARN] manual model handoff deferred: {exc}")
+                    deferred_restore = model_pending
+                    restore_ready = model_pending
                 if phase == "verifying" and submitted_event.is_set():
                     return
                 if not edited:
@@ -536,20 +542,9 @@ def run_claude_pty(
                         ),
                     )
                     log("[WARN] user input stopped automatic replay")
-                if model_pending:
-                    if selected_model:
-                        # Unknown submitted text can select a model through history
-                        # or completion, including the routed model itself.
-                        try:
-                            model_pending = abandon_model_setting() is False
-                        except (OSError, ValueError, RuntimeError) as exc:
-                            model_pending = True
-                            log(f"[WARN] manual model handoff deferred: {exc}")
-                        deferred_restore = model_pending
-                        restore_ready = model_pending
-                    else:
-                        defer_model_setting()
-                        deferred_restore = True
+                if model_pending and not selected_model:
+                    defer_model_setting()
+                    deferred_restore = True
 
             def clear_keys() -> bytes:
                 # The box can still hold the blocked prompt and an unrun /model command.

@@ -638,6 +638,7 @@ class _ClaudeModelSettingGuard:
         self._owner_lock: TextIO | None = None
         self._deferred_until: float | None = None
         self._cancelled = False
+        self._begin_error_warned = False
         self._token = uuid.uuid4().hex
         settings_key = hashlib.sha256(str(settings_path.resolve()).encode()).hexdigest()[:16]
         self._recovery_path = APP_DIR / f"claude-v2-model-{settings_key}.json"
@@ -777,8 +778,13 @@ class _ClaudeModelSettingGuard:
                 self._before = before
                 self._routed_model = routed_model
                 return True
-        except (OSError, ValueError, RuntimeError):
-            pass
+        except (OSError, ValueError, RuntimeError) as exc:
+            if not self._begin_error_warned:
+                print_warning(
+                    f"Smart Routing could not prepare model recovery at {self._recovery_path}: "
+                    f"{exc}. Check the recovery file and its directory permissions."
+                )
+                self._begin_error_warned = True
         except BaseException:
             self._clear()
             raise
@@ -790,10 +796,10 @@ class _ClaudeModelSettingGuard:
     def is_routed(self) -> bool:
         """Reserve a persisted write for the immediately following restoration."""
         self._expire_owner()
-        if self._before is None:
-            return False
         if self._cancelled:
             return True
+        if self._before is None:
+            return False
         ready = False
         try:
             if self._lock_for_restore():
@@ -814,27 +820,26 @@ class _ClaudeModelSettingGuard:
         self._expire_owner()
 
     def abandon(self) -> bool:
-        if self._before is not None:
-            self._cancelled = True
-            self._release_owner_lock()
-            if self._lock is None:
-                self._lock = self._open_lock("claude-v2-model.lock")
-            if self._lock is None:
-                return False
-            try:
-                # Explicit input supersedes every older automatic restoration,
-                # including one currently owned by a different routed session.
-                self._recovery_path.unlink(missing_ok=True)
-            finally:
-                self._release_settings_lock()
+        self._cancelled = True
+        self._release_owner_lock()
+        if self._lock is None:
+            self._lock = self._open_lock("claude-v2-model.lock")
+        if self._lock is None:
+            return False
+        try:
+            # Explicit input supersedes every older automatic restoration,
+            # including one currently owned by a different routed session.
+            self._recovery_path.unlink(missing_ok=True)
+        finally:
+            self._release_settings_lock()
         self._clear()
         return True
 
     def restore(self) -> bool:
-        if self._before is None:
-            return True
         if self._cancelled:
             return self.abandon()
+        if self._before is None:
+            return True
         if not self._lock_for_restore():
             return False
         try:

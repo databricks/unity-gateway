@@ -488,8 +488,16 @@ capture_path.write_text(json.dumps({
             ([b"\x1b[", b"Anew input"], False),
             ([b"\x1b["], False),
             ([b"new input"], False),
+            ([b"\x1b[200~", b"user paste\x1b[201~"], False),
         ],
-        ids=["arrow", "terminal-reply", "edited-after-reply", "unfinished-reply", "user-edit"],
+        ids=[
+            "arrow",
+            "terminal-reply",
+            "edited-after-reply",
+            "unfinished-reply",
+            "user-edit",
+            "paste",
+        ],
     )
     def test_input_during_model_recovery(
         self, replay_model_switch, tmp_path, capfd, chunks, replay
@@ -513,17 +521,21 @@ assert received == INPUT
 settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
 received = b""
 submitted = []
+forwarded = b""
 deadline = time.monotonic() + 3
 while time.monotonic() < deadline:
     if sel.select([0], [], [], 0.01)[0]:
-        received += os.read(0, 4096)
+        chunk = os.read(0, 4096)
+        received += chunk
+        forwarded += chunk
     if b"\\x1b[200~" in received and b"\\x1b[201~\\r" in received:
         prompt = received.split(b"\\x1b[200~", 1)[1].split(b"\\x1b[201~", 1)[0].decode()
         submitted.append(prompt)
         assert send_hook(socket_path, prompt)["action"] == "allow"
         received = b""
 capture_path.write_text(json.dumps({
-    "submitted": submitted, "settings_while_running": json.loads(settings.read_text()),
+    "submitted": submitted, "forwarded": forwarded.hex(),
+    "settings_while_running": json.loads(settings.read_text()),
 }))
 """
         )
@@ -533,6 +545,8 @@ capture_path.write_text(json.dumps({
 
         assert restored.exists()
         assert capture["submitted"] == (["hello"] if replay else [])
+        if not replay:
+            assert capture["forwarded"] == b"".join(chunks[1:]).hex()
         assert (
             capture["settings_while_running"]
             == settings
@@ -541,27 +555,43 @@ capture_path.write_text(json.dumps({
         assert ("Resend your prompt" in capfd.readouterr().out) == (not replay)
 
     @pytest.mark.parametrize(
-        ("chunks", "fail_handoff"),
+        ("chunks", "fail_handoff", "after_submission"),
         [
-            ([b"/model ", b"sonnet\r"], False),
-            ([b"\x1b[A", b"\r"], False),
-            ([b"/model sonnet\r"], True),
+            ([b"/model ", b"sonnet\r"], False, False),
+            ([b"\x1b[A", b"\r"], False, False),
+            pytest.param(
+                [b"/model sonnet\r"],
+                True,
+                False,
+                marks=pytest.mark.skipif(
+                    os.name != "posix" or os.geteuid() == 0,
+                    reason="requires unprivileged POSIX directory permissions",
+                ),
+            ),
+            ([b"/model sonnet\r"], False, True),
         ],
-        ids=["typed", "history", "handoff-error"],
+        ids=["typed", "history", "handoff-error", "submitted"],
     )
     def test_manual_selection_of_the_routed_model_survives_recovery(
-        self, replay_model_switch, tmp_path, chunks, fail_handoff
+        self, replay_model_switch, tmp_path, chunks, fail_handoff, after_submission
     ):
         body = (
-            f"FAIL_HANDOFF = {fail_handoff}\n"
+            f"FAIL_HANDOFF = {fail_handoff}\nAFTER_SUBMISSION = {after_submission}\n"
             + """\
 assert send_hook(socket_path, "hello")["action"] == "block"
 tty.setraw(0)
 print("blocked", flush=True)
 read_until(b"\\r")
-assert os.read(0, 1) == b"\\x1b"
-while not (test_dir / "deferred").exists():
-    time.sleep(0.01)
+if AFTER_SUBMISSION:
+    os.write(1, b"Set model to sonnet\\n")
+    paste = read_until(b"\\x1b[201~")
+    assert b"\\x1b[200~hello\\x1b[201~" in paste
+    assert os.read(0, 1) == b"\\r"
+    assert send_hook(socket_path, "hello")["action"] == "allow"
+else:
+    assert os.read(0, 1) == b"\\x1b"
+    while not (test_dir / "deferred").exists():
+        time.sleep(0.01)
 recovery_dir = Path.home() / ".ucode"
 try:
     if FAIL_HANDOFF:
@@ -587,6 +617,10 @@ capture_path.write_text(json.dumps({
         assert capture["settings_while_running"] == settings == {"model": "sonnet"}
         assert (tmp_path / "handoff-failed").exists() is fail_handoff
 
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
     def test_restore_write_failure_is_retried_while_claude_runs(self, replay_model_switch):
         capture, settings, observations = replay_model_switch(
             """\
@@ -789,6 +823,11 @@ class TestModelSwitchInput:
         state = claude_pty.ModelSwitchInput()
         assert state.observe(b"\x1b[200~/model sonnet\nexplain it\x1b[201~", 1.0) == (True, False)
         assert state.observe(b"\r", 1.1) == (True, False)
+        assert state.observe(b"\x1b[200~", 1.2) == (True, False)
+        assert state.pending
+        assert state.observe(b"/model sonnet\nexplain it\x1b[201~", 1.3) == (True, False)
+        assert not state.pending
+        assert state.observe(b"\r", 1.4) == (True, False)
 
 
 # ---------------------------------------------------------------------------
@@ -872,19 +911,11 @@ box = blocked_prompt
 submitted = []
 pasting = False
 pending = b""
-in_hook = None
 deadline = time.monotonic() + 3.0
 while len(submitted) < EXPECTED_SUBMITS and time.monotonic() < deadline:
     if not sel.select([0], [], [], 0.05)[0]:
         continue
     pending += os.read(0, 1)
-    if pending == b"\\x1b" and not sel.select([0], [], [], 0.03)[0]:
-        if in_hook is not None:
-            box, in_hook = in_hook, None
-        pending = b""
-        os.write(1, b"Cancelled model switch\\n")
-        deadline = min(deadline, time.monotonic() + 0.6)
-        continue
     if pending in (b"\\x1b", b"\\x1b[", b"\\x1b[2", b"\\x1b[20", b"\\x1b[200", b"\\x1b[201"):
         continue
     if pending == b"\\x1b[200~":
@@ -895,15 +926,12 @@ while len(submitted) < EXPECTED_SUBMITS and time.monotonic() < deadline:
         continue
     if pending.startswith(b"\\x1b"):
         pending = b""
-        if in_hook is not None:  # ESC during the hook restores the typed prompt
-            box, in_hook = in_hook, None
         continue
     char, pending = pending.decode(), b""
     if char == "\\r" and not pasting:
         submitted.append(box)
         if box.startswith("/model ") and CONFIRM_SWITCH:
             os.write(1, b"Set model to sonnet\\n")
-        in_hook = None if box.startswith("/") else box
         box = ""
     elif char == "\\x15":
         if box.endswith("\\n"):
