@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -760,14 +761,27 @@ class TestSubagentRouting:
                     "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
                     "system.ai.claude-sonnet-5",
                     "team.models.claude-opus-4-8",
+                    "team.models.claude-opus-4-8[1m]",
                 ],
             ),
             (
                 ["anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]"],
-                ["system.ai.claude-sonnet-5", "team.models.claude-opus-4-8"],
+                [
+                    "system.ai.claude-sonnet-5",
+                    "team.models.claude-opus-4-8",
+                    "team.models.claude-opus-4-8[1m]",
+                ],
             ),
             (
                 ["team.models.claude-opus-4-8"],
+                [
+                    "system.ai.claude-opus-4-8",
+                    "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
+                    "system.ai.claude-sonnet-5",
+                ],
+            ),
+            (
+                ["team.models.claude-opus-4-8[1m]"],
                 [
                     "system.ai.claude-opus-4-8",
                     "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
@@ -801,6 +815,7 @@ class TestSubagentRouting:
             "anthropic-aigw-73ea02b2-system.ai.claude-opus-4-8[1m]",
             "databricks-claude-sonnet-5",
             "team.models.claude-opus-4-8",
+            "team.models.claude-opus-4-8[1m]",
         ]
         output = v2.route_claude_subagent(
             {
@@ -836,6 +851,59 @@ class TestSubagentRouting:
         assert record["route_options"] == body["route_options"]
         assert record["router_name"] == body["route_selector"]["router_name"]
         assert record["router_name"] == routing.ROUTER_NAME
+
+    @pytest.mark.parametrize(
+        ("excluded_models", "expected_error", "requested_models"),
+        [
+            ("claude-opus-4-8", "Invalid rate-limit exclusions; no subagent was started.", []),
+            ([None], "Invalid rate-limit exclusions; no subagent was started.", []),
+            ([], None, [["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]]),
+            (
+                ["system.ai.claude-opus-4-8"],
+                "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                [["system.ai.claude-sonnet-5"]],
+            ),
+        ],
+    )
+    def test_missing_route_and_malformed_exclusions(
+        self, excluded_models, expected_error, requested_models
+    ):
+        # An empty local response exercises the real router client's no-selection path.
+        requests = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *_args):
+                pass
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                requests.append([option["model"] for option in body["route_options"]])
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                output = v2.route_claude_subagent(
+                    {
+                        "tool_name": "Agent",
+                        "tool_input": {"prompt": "Inspect the parser"},
+                        "excluded_models": excluded_models,
+                    },
+                    workspace=f"http://127.0.0.1:{server.server_port}",
+                    token="fixture-token",
+                    available_models=["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"],
+                )
+            finally:
+                server.shutdown()
+                thread.join(timeout=5)
+
+        assert output == ({"deny": expected_error} if expected_error else None)
+        assert requests == requested_models
 
     def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch):
         gateway_model = "anthropic-aigw-77df06ea-system.ai.glm-5-3"

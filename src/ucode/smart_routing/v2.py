@@ -315,10 +315,8 @@ def _unwrapped_claude_model_id(model: str) -> str:
 
 def _claude_rate_limit_key(model: str) -> str:
     model = _canonical_claude_model_id(_unwrapped_claude_model_id(model))
-    if model.startswith("system.ai."):
-        return model.removeprefix("system.ai.").removesuffix("[1m]")
     # Custom UC deployment names remain distinct from built-in model aliases.
-    return model if model.count(".") == 2 else model.removesuffix("[1m]")
+    return model.removeprefix("system.ai.").removesuffix("[1m]")
 
 
 def _claude_model_overrides(model_ids: list[str]) -> dict[str, str]:

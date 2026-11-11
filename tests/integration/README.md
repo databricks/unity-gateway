@@ -338,7 +338,10 @@ The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 native hook tests cover rate-limit candidate exclusions, cooldown expiry, optional request IDs,
-and launch-model reporting using fixtures. Python component tests check the filtered router request.
+notices received during failed routing, rejected-card removal, and launch-model reporting using fixtures.
+Python component tests check the filtered router request, custom-deployment context hints,
+malformed exclusions and missing routing decisions. Native process coverage verifies the
+explicit disabled response.
 These checks do not establish live gateway quota recovery. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The required Isaac feedback form, evidence submission, and background delivery

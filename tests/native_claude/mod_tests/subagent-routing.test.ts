@@ -326,7 +326,8 @@ test('a turn that ends while the reply waits on a background agent keeps its car
 });
 
 for (const [name, result, warningCount] of [
-  ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
+  ['disabled', { value: { exitCode: 0, stdout: JSON.stringify({ disabled: true }), stderr: '' } }, 0],
+  ['empty response', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
   ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
   ['invalid JSON', { value: { exitCode: 0, stdout: 'invalid', stderr: '' } }, 1],
   ['missing model', { value: { exitCode: 0, stdout: JSON.stringify({ rationale: 'Selected' }), stderr: '' } }, 1],
@@ -660,16 +661,19 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   let response: object | undefined = choice(blocked);
   let exitCode = 0;
   let timestamp = 10_000;
+  let duringRouting: (() => Promise<void>) | undefined;
   const forwarded: any[] = [];
   const requests: any[] = [];
   const spawns: any[] = [];
   on('clock.now', () => ({ value: timestamp }));
   on('session.id', () => ({ value: 'session-1' }));
   on('fs.write', () => ({ value: undefined }));
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     requests.push(JSON.parse(e.init.stdin));
+    await duringRouting?.();
     return { value: { exitCode, stderr: '', stdout: response ? JSON.stringify(response) : '' } };
   });
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['Native row'] }));
   on('agent.spawn', ($, e) => {
     spawns.push(e);
     return { model: e.model === 'opus' ? parent : e.model!, agentId: `child-${e.tool_use_id}` };
@@ -709,6 +713,19 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
     expect((await launch(`unaffected-${index}`)).result.resolvedModel).toBe(blocked);
     expect(requests.at(-1).excluded_models).toBeUndefined();
   }
+  const beforeRace = spawns.length;
+  duringRouting = async () => { await $.prompt.submit(notice); };
+  response = undefined;
+  for (const code of [0, 1]) {
+    timestamp += 60_000;
+    exitCode = code;
+    expect((await launch(`notice-during-routing-${code}`)).deny).toContain('could not select an available model');
+    expect(requests.at(-1).excluded_models).toBeUndefined();
+    expect(spawns.length).toBe(beforeRace);
+  }
+  duringRouting = undefined;
+  exitCode = 0;
+  timestamp += 60_000;
   await $.prompt.submit(notice);
   expect(forwarded.at(-1)).toEqual(notice);
   response = choice(alternative);
@@ -721,6 +738,9 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   const spawnCount = spawns.length;
   response = choice(blocked);
   expect((await launch('stale-selection')).deny).toContain('selected model is now rate-limited');
+  const deniedRow = await $.ui.mount(row('stale-selection'));
+  expect(await deniedRow.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
+  await deniedRow.unmount();
   response = { deny: 'All routing candidates are rate-limited.' };
   expect((await launch('all-limited')).deny).toBe('All routing candidates are rate-limited.');
   response = undefined;
@@ -748,4 +768,12 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   response = { deny: 'All routing candidates are rate-limited.' };
   expect((await launch('both-limited')).deny).toBe('All routing candidates are rate-limited.');
   expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash', 'claude-haiku-5-5']);
+  timestamp += 60_000;
+  response = choice('team.models.claude-opus-4-8[1m]');
+  await launch('custom-model');
+  await $.prompt.submit({ ...notice, text: notice.text
+    .replace('child-first', 'child-custom-model').replace('system.ai.glm-5-3-flash', 'team.models.claude-opus-4-8') });
+  response = choice(parent);
+  expect((await launch('custom-model-excluded')).result.resolvedModel).toBe(parent);
+  expect(requests.at(-1).excluded_models).toEqual(['team.models.claude-opus-4-8']);
 });
