@@ -20,8 +20,7 @@ and failure when any required task control is missing.
 Those component tests control native boundaries and use an isolated subprocess for
 termination checks; they do not replace the native desktop inference jobs.
 
-Windows Cowork desktop coverage and required integration gating are
-documented in the [main test guide](../README.md). The same native Windows job runs
+Both native Windows and macOS Cowork jobs run
 inference, a selected-folder file read, and local plugin skill execution sequentially.
 The file/skill assertions require real native tool results and completed answers;
 UC skill downloads and external MCP execution are not covered by this job.

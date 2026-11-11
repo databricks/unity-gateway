@@ -133,18 +133,33 @@ def stop_probe(signum, _frame):
     raise TimeoutError(f"Cowork probe stopped by {signal.Signals(signum).name}")
 
 
-def main(private):
+def main(private, capability="inference"):
+    global EVIDENCE
     if sys.platform != "darwin" or os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
-    EVIDENCE.mkdir(exist_ok=True)
+    baseline_evidence = EVIDENCE
+    if capability != "inference":
+        EVIDENCE = baseline_evidence / capability
+    EVIDENCE.mkdir(parents=True, exist_ok=True)
     report = {"model": MODEL, "responseAsserted": False}
     app = None
+    task = None
     raw_log = private / "native.log"
     handlers = {sig: signal.signal(sig, stop_probe) for sig in (signal.SIGTERM, signal.SIGALRM)}
     signal.alarm(PROBE_TIMEOUT_SECONDS)
     try:
-        model_label = configure()
-        print("UG gateway profile configured", flush=True)
+        if capability == "inference":
+            model_label = configure()
+            print("UG gateway profile configured", flush=True)
+        else:
+            import tasks
+
+            model_label = json.loads((baseline_evidence / "configuration.json").read_text())[
+                "label"
+            ]
+            task = tasks.prepare_task(capability, sys.modules[__name__])
+            save("task.json", json.dumps(task, indent=2))
+            report.update(capability=capability, passed=False, submitted=False)
         with os.fdopen(os.open(raw_log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as log:
             app = process.popen(
                 [
@@ -155,14 +170,17 @@ def main(private):
                 stdout=log,
                 stderr=log,
             )
-        snapshot = wait_for(("Get started", "Continue"), timeout=60)
-        save("initial-ui.json", snapshot)
-        if matches_labels(snapshot, "Get started"):
-            ui("click", "Get started")
-        wait_for("Continue")
-        ui("click", "Continue")
-        print("Gateway onboarding accepted", flush=True)
-        snapshot = open_cowork()
+        if capability == "inference":
+            snapshot = wait_for(("Get started", "Continue"), timeout=60)
+            save("initial-ui.json", snapshot)
+            if matches_labels(snapshot, "Get started"):
+                ui("click", "Get started")
+            wait_for("Continue")
+            ui("click", "Continue")
+            print("Gateway onboarding accepted", flush=True)
+            snapshot = open_cowork()
+        else:
+            snapshot = tasks.new_task(sys.modules[__name__])
         report["coworkActivated"] = True
         print("Cowork task screen ready", flush=True)
         save("cowork-ui.json", snapshot)
@@ -172,16 +190,19 @@ def main(private):
         }
         if not matches_labels(snapshot, expected_labels):
             raise RuntimeError("Cowork did not select the expected system.ai model")
-        ui("type", "Write your prompt to Claude", PROMPT)
-        ui("click", "Start task")
-        print("Start task requested", flush=True)
-        snapshot = wait_for(
-            ("Claude responded: 48213", "Claude finished the response"),
-            timeout=240,
-            require_all=True,
-        )
-        save("response-ui.json", snapshot)
-        report.update(responseAsserted=True, responseFinished=True, expectedResponse="48213")
+        if task:
+            tasks.run_task(sys.modules[__name__], task, report)
+        else:
+            ui("type", "Write your prompt to Claude", PROMPT)
+            ui("click", "Start task")
+            print("Start task requested", flush=True)
+            snapshot = wait_for(
+                ("Claude responded: 48213", "Claude finished the response"),
+                timeout=240,
+                require_all=True,
+            )
+            save("response-ui.json", snapshot)
+            report.update(responseAsserted=True, responseFinished=True, expectedResponse="48213")
     except Exception as exc:
         report["error"] = str(exc)
         report["responseAsserted"] = False
@@ -218,6 +239,12 @@ def main(private):
             except OSError as exc:
                 report["logError"] = str(exc)
                 report["responseAsserted"] = False
+            if task:
+                report["passed"] = report["responseAsserted"]
+                try:
+                    tasks.capture_sessions(sys.modules[__name__], task)
+                except OSError as exc:
+                    report["captureError"] = str(exc)
             save("result.json", json.dumps(report, indent=2))
             print(
                 "Cowork inference passed"
@@ -225,10 +252,11 @@ def main(private):
                 else "Cowork probe failed; see evidence"
             )
         finally:
+            EVIDENCE = baseline_evidence
             for sig, handler in handlers.items():
                 signal.signal(sig, handler)
     return 0 if report["responseAsserted"] else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main(Path(sys.argv[1])))
+    sys.exit(main(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "inference"))

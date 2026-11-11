@@ -85,6 +85,16 @@ def test_accepts_windows_path_separators_used_by_native_read(evidence):
     assert evaluate(records, task)["status"] == "passed"
 
 
+@pytest.mark.parametrize("same_case", [True, False])
+def test_macos_file_paths_preserve_case(evidence, same_case):
+    records, task = evidence
+    task.update(platform="macos", expectedFile="/Users/runner/CoworkProbe/input.txt")
+    records[1]["message"]["content"][1]["input"]["file_path"] = (
+        task["expectedFile"] if same_case else task["expectedFile"].lower()
+    )
+    assert evaluate(records, task)["status"] == ("passed" if same_case else "failed")
+
+
 @pytest.mark.parametrize(
     "invalid",
     [

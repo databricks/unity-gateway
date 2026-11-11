@@ -24,7 +24,8 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 `macos-15-intel` runner it installs signed Claude Desktop 4.23118.0, configures
 installed UG through its CLI, and asserts a completed exact-answer task on
 `system.ai.claude-haiku-4-5` through macOS Accessibility. Both jobs block the
-integration gate. Apple Silicon, Code-tab, MCP, and file operations remain uncovered.
+integration gate. The macOS job also runs the file and skill tasks described below.
+Apple Silicon, Code-tab, MCP, and file writes remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
 and rejection of wrong/partial/unfinished responses. Navigation coverage includes the
@@ -43,10 +44,10 @@ exercises real installation, UG configuration before first launch, and completed
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
-mismatched result IDs, missing skill calls, and incomplete answers. It tolerates unrelated
+mismatched result IDs, missing skill calls, incomplete answers, and case-mismatched macOS paths. It tolerates unrelated
 non-message content and transcripts disappearing during polling without accepting invalid
-tool evidence. Native PowerShell checks cover separate stderr diagnostics and nested plugin
-listing formats. A file-read failure does not skip the skill case after successful baseline
+tool evidence. Native PowerShell checks and macOS harness component tests cover separate stderr
+diagnostics, failed plugin installation, and nested plugin listing formats. A file-read failure does not skip the skill case after successful baseline
 inference; either task failure still fails the job. UC skill downloads,
 external MCP calls, and file writes remain outside this native coverage. CI contract checks
 verify workspace-credential event guards, installation without OIDC permissions,

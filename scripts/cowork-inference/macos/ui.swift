@@ -35,11 +35,38 @@ guard let app = NSWorkspace.shared.runningApplications.first(where: {
 let application = AXUIElementCreateApplication(app.processIdentifier)
 AXUIElementSetMessagingTimeout(application, 2)
 let windows = attribute(application, "AXWindows") as? [AXUIElement] ?? []
-guard let window = windows.first else { fail("Claude window is unavailable") }
-let controls = descendants(window)
+guard !windows.isEmpty else { fail("Claude window is unavailable") }
+let controls = windows.flatMap { descendants($0) }
 let arguments = Array(CommandLine.arguments.dropFirst())
 let labelAttributes = ["AXTitle", "AXDescription", "AXValue", "AXHelp"]
 guard let operation = arguments.first else { fail("Expected snapshot, click, or type") }
+
+func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
+    guard let down = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: true),
+          let up = CGEvent(keyboardEventSource: nil, virtualKey: code, keyDown: false) else {
+        fail("Could not create keyboard event")
+    }
+    down.flags = flags
+    up.flags = flags
+    down.post(tap: .cghidEventTap)
+    up.post(tap: .cghidEventTap)
+}
+
+if arguments.count == 2 && (operation == "key" || operation == "paste") {
+    app.activate(options: [.activateIgnoringOtherApps])
+    if operation == "paste" {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(arguments[1], forType: .string)
+        key(9, flags: .maskCommand)
+    } else {
+        switch arguments[1] {
+        case "go-to-folder": key(5, flags: [.maskCommand, .maskShift])
+        case "return": key(36)
+        default: fail("Unsupported key")
+        }
+    }
+    exit(0)
+}
 
 if operation == "snapshot" {
     let rows = controls.map { element in

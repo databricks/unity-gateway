@@ -1,8 +1,8 @@
 # Cowork desktop tests
 
-The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
+The `cowork-inference-windows` and `cowork-inference-macos` jobs in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference, local file reads, and native skill execution through Unity Gateway
-on a disposable Windows runner. All three tasks run sequentially in the same blocking job.
+on disposable Windows and macOS runners. All three tasks run sequentially in each blocking job.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual
 CI dispatches. It skips merge-group runs and fork PRs, which lack the required
 credentials. Authorized fork-integration runs test the pinned commit.
@@ -88,7 +88,7 @@ Code-tab, external MCP execution, file writes, and Cowork VM readiness are outsi
 
 ## macOS
 
-The `cowork-inference-macos` job runs the same inference journey on a disposable
+The `cowork-inference-macos` job runs the same inference, file-read, and skill journeys on a disposable
 GitHub-hosted `macos-15-intel` runner. It has the same event guards and
 required integration gate as Windows. Apple Silicon hosted runners are not covered:
 Cowork was unavailable on the `macos-15` runner in the feasibility probe.

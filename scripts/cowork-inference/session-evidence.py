@@ -3,6 +3,7 @@
 import argparse
 import json
 import ntpath
+import posixpath
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,7 @@ def content_text(content):
 
 
 def evaluate(records, task):
+    paths = posixpath if task.get("platform") == "macos" else ntpath
     messages = [
         record["message"]
         for record in records
@@ -67,8 +69,8 @@ def evaluate(records, task):
             call
             for call in calls
             if call.get("name") == "Read"
-            and ntpath.normcase(ntpath.normpath(call.get("input", {}).get("file_path", "")))
-            == ntpath.normcase(ntpath.normpath(task["expectedFile"]))
+            and paths.normcase(paths.normpath(call.get("input", {}).get("file_path", "")))
+            == paths.normcase(paths.normpath(task["expectedFile"]))
             and task["expected"] in content_text(results[call["id"]].get("content", []))
         ),
         None,

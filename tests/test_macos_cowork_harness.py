@@ -396,3 +396,64 @@ finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
             child.communicate(timeout=5)
+
+
+@pytest.fixture
+def tasks(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    spec = importlib.util.spec_from_file_location("macos_cowork_tasks", SCRIPTS / "tasks.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module.Path, "home", lambda: tmp_path)
+    return module
+
+
+def test_macos_file_fixture_keeps_answer_out_of_prompt(tasks, tmp_path):
+    task = tasks.prepare_task("file", SimpleNamespace(TEMP=tmp_path))
+    assert Path(task["expectedFile"]).read_text() == task["expected"]
+    assert task["expected"] not in task["prompt"]
+    assert Path(task["expectedFile"]).parent == Path(task["folder"])
+
+
+@pytest.mark.parametrize("listing", ["id", "pluginId", "name"])
+@pytest.mark.parametrize("failure", [None, "exit", "outcome", "disabled"])
+def test_macos_skill_install_checks_native_result(tasks, tmp_path, monkeypatch, listing, failure):
+    account = tasks.session_root() / "org/account"
+    account.mkdir(parents=True)
+    (account / "cowork_account_settings.json").write_text("{}")
+    logs = {}
+    plugin = {"enabled": failure != "disabled", "installPath": str(tmp_path / "installed")}
+    if listing == "name":
+        plugin.update(name="cowork-probe", marketplace="cowork-probe-marketplace")
+    else:
+        plugin[listing] = tasks.PLUGIN_ID
+
+    def native_plugin(args, **kwargs):
+        assert kwargs["env"]["CLAUDE_CONFIG_DIR"] == str(account)
+        result = {"outcome": "failed" if failure == "outcome" else "ok"}
+        if args[1:3] == ["plugin", "list"]:
+            result = {"data": {"plugins": [plugin]}}
+        return subprocess.CompletedProcess(
+            args,
+            1 if failure == "exit" else 0,
+            stdout=json.dumps(result),
+            stderr="diagnostic outside JSON",
+        )
+
+    # Native plugin installation is unavailable on Linux; fixture creation and validation stay real.
+    monkeypatch.setattr(tasks.shutil, "which", lambda _: "/installed/claude")
+    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=native_plugin))
+    desktop = SimpleNamespace(TEMP=tmp_path, save=logs.__setitem__)
+    if failure:
+        with pytest.raises(RuntimeError):
+            tasks.prepare_task("skill", desktop)
+        return
+    task = tasks.prepare_task("skill", desktop)
+    source = tmp_path / "cowork-probe-marketplace/plugins/cowork-probe/skills/probe-summary"
+    assert (source / "references/facts.txt").read_text() == task["expected"]
+    assert task["expected"] not in task["prompt"]
+    assert task["expected"] not in (source / "SKILL.md").read_text()
+    assert task["expectedFile"] == str(
+        tmp_path / "installed/skills/probe-summary/references/facts.txt"
+    )
+    assert "diagnostic outside JSON" in logs["skill-install-3.txt"]

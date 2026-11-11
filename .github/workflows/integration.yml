@@ -242,10 +242,10 @@ jobs:
           if-no-files-found: warn
 
   cowork-inference-macos:
-    name: Cowork inference · macOS
+    name: Cowork desktop tasks · macOS
     runs-on: macos-15-intel
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 25
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -262,10 +262,24 @@ jobs:
       - name: Install UG checkout and pinned Claude CLI
         run: bash scripts/cowork-inference/macos/install-dependencies.sh
       - name: Configure and assert Cowork inference through macOS Accessibility
+        id: cowork-inference
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py'
+      - name: Assert Cowork file read
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability file'
+      - name: Assert Cowork skill execution
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability skill'
       - name: Stop desktop processes
         if: always()
         run: |

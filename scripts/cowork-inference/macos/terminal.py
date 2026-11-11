@@ -1,3 +1,4 @@
+import argparse
 import json
 import os
 import shlex
@@ -44,15 +45,17 @@ def stop_process_group(private):
             time.sleep(2)
 
 
-def cleanup(private, failure):
+def cleanup(private, failure, capability="inference"):
     errors = []
     try:
         stop_process_group(private)
     except (OSError, ValueError, RuntimeError) as exc:
         errors.append(str(exc))
     evidence = Path(os.environ["RUNNER_TEMP"]) / "macos-cowork-evidence"
+    if capability != "inference":
+        evidence /= capability
     try:
-        evidence.mkdir(exist_ok=True)
+        evidence.mkdir(parents=True, exist_ok=True)
         for source, destination in (("output.txt", "terminal.txt"), ("native.log", "native.log")):
             try:
                 path = private / source
@@ -78,8 +81,12 @@ def cleanup(private, failure):
 def main():
     if sys.platform != "darwin":
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
-    if len(sys.argv) == 3 and sys.argv[1] == "--child":
-        environment = Path(sys.argv[2])
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--child", type=Path)
+    parser.add_argument("--capability", choices=("inference", "file", "skill"), default="inference")
+    args = parser.parse_args()
+    if args.child:
+        environment = args.child
         os.environ.update(json.loads(environment.read_text()))
         environment.unlink()
         if os.getpgrp() != os.getpid():
@@ -87,14 +94,19 @@ def main():
         (environment.parent / "pid.txt").write_text(str(os.getpid()))
         os.execv(
             sys.executable,
-            [sys.executable, str(Path(__file__).with_name("probe.py")), str(environment.parent)],
+            [
+                sys.executable,
+                str(Path(__file__).with_name("probe.py")),
+                str(environment.parent),
+                args.capability,
+            ],
         )
     if os.environ.get("GITHUB_ACTIONS") != "true":
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
-    return run_terminal()
+    return run_terminal(args.capability)
 
 
-def run_terminal():
+def run_terminal(capability="inference"):
     private = Path(tempfile.mkdtemp(prefix="macos-probe-", dir=os.environ["RUNNER_TEMP"]))
     environment = private / "environment.json"
     output = private / "output.txt"
@@ -118,7 +130,14 @@ def run_terminal():
         )
         environment.chmod(0o600)
         invocation = shlex.join(
-            [sys.executable, str(Path(__file__).absolute()), "--child", str(environment)]
+            [
+                sys.executable,
+                str(Path(__file__).absolute()),
+                "--child",
+                str(environment),
+                "--capability",
+                capability,
+            ]
         )
         command.write_text(
             "#!/bin/bash\n"
@@ -163,7 +182,7 @@ def run_terminal():
         failure = str(exc)
         raise
     finally:
-        errors = cleanup(private, failure)
+        errors = cleanup(private, failure, capability)
     if errors:
         raise RuntimeError("Terminal probe cleanup failed; see diagnostics")
     return result
