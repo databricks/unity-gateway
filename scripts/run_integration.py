@@ -451,7 +451,7 @@ def install_vscode(version: str, destination: Path, *, sha256: str | None = None
         "url": url,
         "sha256": digest.hexdigest(),
         "path": str(command),
-        "copilot_chat": json.loads(copilot_chat.read_text())["version"],
+        "copilot_chat": json.loads(copilot_chat.read_text(encoding="utf-8"))["version"],
     }
 
 
