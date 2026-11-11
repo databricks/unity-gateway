@@ -786,9 +786,14 @@ model-service listing starts on a daemon thread before the gateway probe returns
 probe failure raises its own error while the listing is still blocked, that a listing error
 propagates without saving state, that `skip_model_discovery` never starts the listing but
 keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
-caches. The skip-preflight tests also reject starting a background worker. These component
-checks control the HTTP boundary with events; they do not establish live gateway timing,
-agent launch, or launch-time savings.
+caches. The overlap and probe-failure cases are parametrized over both discovery paths.
+With discovery skipped, the Claude web-search lookup likewise starts on a daemon thread
+before the probe returns, a probe failure raises without waiting for it, an unsuccessful
+lookup preserves an existing web-search model, and a launch that needs
+no Claude model starts no worker. The skip-preflight tests also reject starting a background
+worker. These component checks control the HTTP boundary with events; they do not establish
+live gateway timing, agent launch, or launch-time savings.
+
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

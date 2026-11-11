@@ -525,11 +525,13 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
-Overlapping the model-service listing with the gateway probe is covered only by
-component tests in `../test_cli.py`: overlap, probe failure without waiting, listing
-errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse of the process-local
-probe and listing caches. This suite does not assert live request overlap, probe/listing timing, or
-launch-time savings.
+Overlapping the model-service listing, or the web-search lookup when discovery is skipped, with
+the gateway probe is covered only by component tests in `../test_cli.py`: overlap, probe failure
+without waiting, listing errors, the `skip_model_discovery` and `skip_preflight` paths, and reuse
+of the process-local probe and listing caches. Overlap and probe-failure cases are parametrized
+over both discovery paths. An unsuccessful skipped-discovery lookup preserves the saved
+web-search model after a successful probe. This suite does not assert live request overlap,
+probe/listing timing, or launch-time savings.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned
