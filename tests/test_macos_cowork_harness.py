@@ -513,10 +513,12 @@ def test_macos_skill_install_checks_native_result(tasks, tmp_path, monkeypatch, 
     assert "diagnostic outside JSON" in logs["skill-install-3.txt"]
 
 
-@pytest.mark.parametrize("copies", [0, 1, 2])
-@pytest.mark.parametrize("matches_source", [True, False])
+@pytest.mark.parametrize(
+    "copies, matches_source, found",
+    [(0, True, False), (1, True, True), (1, False, False), (2, True, None), (2, False, False)],
+)
 def test_macos_skill_runtime_copy_must_match_installed_fixture(
-    tasks, tmp_path, copies, matches_source
+    tasks, tmp_path, copies, matches_source, found
 ):
     source = tmp_path / "installed/skills/probe-summary/references/facts.txt"
     source.parent.mkdir(parents=True)
@@ -531,10 +533,25 @@ def test_macos_skill_runtime_copy_must_match_installed_fixture(
             "Read references/facts.txt" if matches_source else "Different skill"
         )
     task = {"capability": "skill", "expectedFile": str(source)}
-    if copies == 2 and matches_source:
+    if found is None:
         with pytest.raises(RuntimeError, match="Ambiguous"):
             tasks.runtime_task(task, runtime)
         return
     result = tasks.runtime_task(task, runtime)
     expected = runtime / "copy-0/1.0.0/skills/probe-summary/references/facts.txt"
-    assert result["expectedFile"] == str(expected if copies == 1 and matches_source else source)
+    assert result == ({**task, "expectedFile": str(expected)} if found else None)
+
+
+def test_macos_skill_runtime_copy_waits_for_partial_copy(tasks, tmp_path):
+    source = tmp_path / "installed/skills/probe-summary/references/facts.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("unique-fixture-value")
+    (source.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
+    runtime = tmp_path / "claude-hostloop-plugins"
+    copy = runtime / "copy/1.0.0/skills/probe-summary/references/facts.txt"
+    copy.parent.mkdir(parents=True)
+    copy.write_bytes(source.read_bytes())
+    task = {"capability": "skill", "expectedFile": str(source)}
+    assert tasks.runtime_task(task, runtime) is None
+    (copy.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
+    assert tasks.runtime_task(task, runtime)["expectedFile"] == str(copy)

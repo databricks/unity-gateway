@@ -38,7 +38,12 @@ function Find-CoworkPlugin {
 
 function New-CoworkTask {
     param([string]$Capability, [string]$EvidenceDirectory)
-    $task = [ordered]@{ capability = $Capability }
+    $fixture = Get-Content -LiteralPath "$PSScriptRoot/task-fixture.json" -Raw | ConvertFrom-Json
+    $task = [ordered]@{
+        capability = $Capability
+        expected = "$Capability-proof-" + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+        prompt = $fixture.prompts.$Capability
+    }
     $evidence = $EvidenceDirectory
     $previousConfigDirectory = $env:CLAUDE_CONFIG_DIR
     try {
@@ -46,35 +51,20 @@ function New-CoworkTask {
         'file' {
             $folder = Join-Path $env:USERPROFILE 'Documents/CoworkProbe'
             New-Item -ItemType Directory -Path $folder -Force | Out-Null
-            $task.expected = 'proof-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
             Set-Content -LiteralPath (Join-Path $folder 'input.txt') -Value $task.expected -NoNewline
             $task.folder = $folder
             $task.expectedFile = Join-Path $folder 'input.txt'
-            $task.prompt = 'Use the Read tool to read input.txt in the selected local folder. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text. Do not guess the value.'
         }
         'skill' {
-            $marketplace = Join-Path $env:RUNNER_TEMP 'cowork-probe-marketplace'
-            $plugin = Join-Path $marketplace 'plugins/cowork-probe'
-            $skill = Join-Path $plugin 'skills/probe-summary'
+            $marketplace = Join-Path $env:RUNNER_TEMP $fixture.marketplace.name
+            $skill = Join-Path $marketplace $fixture.skillDirectory
+            $plugin = Split-Path (Split-Path $skill -Parent) -Parent
             foreach ($directory in @("$marketplace/.claude-plugin", "$plugin/.claude-plugin", "$skill/references")) {
                 New-Item -ItemType Directory -Path $directory -Force | Out-Null
             }
-            @{
-                name = 'cowork-probe-marketplace'
-                owner = @{ name = 'Unity Gateway CI' }
-                plugins = @(@{ name = 'cowork-probe'; source = './plugins/cowork-probe'; description = 'Native Cowork skill test fixture' })
-            } | ConvertTo-Json -Depth 6 | Set-Content "$marketplace/.claude-plugin/marketplace.json"
-            @{ name = 'cowork-probe'; version = '1.0.0'; author = @{ name = 'Unity Gateway CI' }; description = 'Native Cowork skill test fixture' } |
-                ConvertTo-Json | Set-Content "$plugin/.claude-plugin/plugin.json"
-            @'
----
-name: probe-summary
-description: Use when asked to produce the capability probe summary.
----
-Use the Read tool to read references/facts.txt beside this skill. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text.
-Do not guess the contents and do not use subagents.
-'@ | Set-Content "$skill/SKILL.md"
-            $task.expected = 'skill-proof-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+            $fixture.marketplace | ConvertTo-Json -Depth 6 | Set-Content "$marketplace/.claude-plugin/marketplace.json"
+            $fixture.plugin | ConvertTo-Json -Depth 6 | Set-Content "$plugin/.claude-plugin/plugin.json"
+            Set-Content -LiteralPath "$skill/SKILL.md" -Value $fixture.skillInstructions -NoNewline
             Set-Content -LiteralPath "$skill/references/facts.txt" -Value $task.expected -NoNewline
             $sessions = Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions'
             $roots = @(Get-ChildItem $sessions -Directory | ForEach-Object { Get-ChildItem $_.FullName -Directory } |
@@ -85,19 +75,18 @@ Do not guess the contents and do not use subagents.
             $commands = @(
                 @('plugin', 'validate', $marketplace),
                 @('plugin', 'marketplace', 'add', $marketplace, '--cowork', '--json'),
-                @('plugin', 'install', 'cowork-probe@cowork-probe-marketplace', '--cowork', '--json'),
+                @('plugin', 'install', $fixture.pluginId, '--cowork', '--json'),
                 @('plugin', 'list', '--cowork', '--json')
             )
             foreach ($arguments in $commands) {
                 $result = Invoke-CoworkPluginCommand -Executable $claude -Arguments $arguments `
                     -LogPath (Join-Path $evidence 'skill-install.txt')
             }
-            $installed = @(Find-CoworkPlugin -Payload $result -PluginId 'cowork-probe@cowork-probe-marketplace' |
+            $installed = @(Find-CoworkPlugin -Payload $result -PluginId $fixture.pluginId |
                 Where-Object { $_.enabled -eq $true -and $_.installPath })
             if ($installed.Count -ne 1) { throw 'Expected one enabled native skill plugin' }
             $task.expectedFile = Join-Path $installed[0].installPath 'skills/probe-summary/references/facts.txt'
-            $task.skill = 'cowork-probe:probe-summary'
-            $task.prompt = 'Use the probe-summary skill from the cowork-probe plugin to produce the capability probe summary. Reply with only its result. Do not use subagents.'
+            $task.skill = $fixture.skill
         }
         }
     } finally {

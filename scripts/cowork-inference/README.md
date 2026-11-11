@@ -1,6 +1,6 @@
 # Cowork desktop tests
 
-The `cowork-inference-windows` and `cowork-inference-macos` jobs in `.github/workflows/integration.yml` exercises real
+The `cowork-inference-windows` and `cowork-inference-macos` jobs in `.github/workflows/integration.yml` exercise real
 Claude Desktop inference, local file reads, and native skill execution through Unity Gateway
 on disposable Windows and macOS runners. All three tasks run sequentially in each blocking job.
 It runs after lint for same-repository PRs, main pushes, scheduled CI, and manual
@@ -54,8 +54,9 @@ stops Desktop before the next task. The skill is an ordinary user-authored plugi
 this does not verify Unity Catalog skill downloads or UG's downloaded-skill propagation.
 On macOS, Desktop copies installed plugins into its native runtime directory. The test
 identifies the copy by matching both the skill instructions and random reference-file bytes
-against the installed fixture, then requires a Read of that exact runtime path. Ambiguous
-copies fail. File-path comparisons remain case-sensitive on macOS.
+against the installed fixture, then requires a Read of that exact runtime path. Evidence
+stays pending until that copy exists; ambiguous copies fail. Both platforms build prompts and
+the skill fixture from `task-fixture.json`. File-path comparisons remain case-sensitive on macOS.
 
 ## Dependencies
 

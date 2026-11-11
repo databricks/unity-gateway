@@ -1,0 +1,27 @@
+{
+  "pluginId": "cowork-probe@cowork-probe-marketplace",
+  "skill": "cowork-probe:probe-summary",
+  "skillDirectory": "plugins/cowork-probe/skills/probe-summary",
+  "prompts": {
+    "file": "Use the Read tool to read input.txt in the selected local folder. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text. Do not guess the value.",
+    "skill": "Use the probe-summary skill from the cowork-probe plugin to produce the capability probe summary. Reply with only its result. Do not use subagents."
+  },
+  "marketplace": {
+    "name": "cowork-probe-marketplace",
+    "owner": {"name": "Unity Gateway CI"},
+    "plugins": [
+      {
+        "name": "cowork-probe",
+        "source": "./plugins/cowork-probe",
+        "description": "Native Cowork skill test fixture"
+      }
+    ]
+  },
+  "plugin": {
+    "name": "cowork-probe",
+    "version": "1.0.0",
+    "author": {"name": "Unity Gateway CI"},
+    "description": "Native Cowork skill test fixture"
+  },
+  "skillInstructions": "---\nname: probe-summary\ndescription: Use when asked to produce the capability probe summary.\n---\nUse the Read tool to read references/facts.txt beside this skill. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text.\nDo not guess the contents and do not use subagents.\n"
+}

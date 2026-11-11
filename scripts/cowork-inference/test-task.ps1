@@ -75,12 +75,15 @@ function Save-UI {
 }
 
 function Select-Folder {
-    Invoke-Control (Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder'))
+    $folderButton = Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder')
+    $folderButtonName = $folderButton.Current.Name
+    Invoke-Control $folderButton
     Start-Sleep -Seconds 1
     Save-UI 'folder-menu'
     $choices = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
     $folderChoice = $choices | Where-Object {
         $_.Current.IsEnabled -and -not $_.Current.IsOffscreen -and
+        $_.Current.Name -ne $folderButtonName -and
         $_.Current.Name -match '(?i)(choose|select|add|open|work in).{0,30}folder' -and
         $_.Current.ControlType.ProgrammaticName -in @('ControlType.MenuItem', 'ControlType.Button')
     } | Select-Object -First 1
@@ -98,7 +101,11 @@ function Select-Folder {
     [Windows.Forms.SendKeys]::SendWait('{ENTER}')
     Start-Sleep -Seconds 1
     Invoke-Control (Wait-Control -Names @('Select Folder', 'Select folder', 'Open') -Seconds 20 -Root $dialog)
-    $permission = Wait-Control -Names @('Allow Claude to change files in “CoworkProbe”?') -Seconds 20
+    $permission = Wait-Control -Names @(
+        'Allow Claude to change files in “CoworkProbe”?',
+        'Allow Claude to access “CoworkProbe”?',
+        'Allow Claude to work in “CoworkProbe”?'
+    ) -Seconds 20
     Invoke-Control (Wait-Control -Names @('Allow') -Seconds 10 -Root $permission)
     $report.folderSelected = $true
     Save-UI 'folder-selected'
@@ -141,9 +148,10 @@ try {
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
     do {
         Start-Sleep -Seconds 3
-        $sessionEvidence = (& $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
-            --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | ConvertFrom-Json)
+        $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
+            --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
+        $sessionEvidence = $rawEvidence | ConvertFrom-Json
         if ($sessionEvidence.status -eq 'pending') { continue }
         $report.session = $sessionEvidence
         if ($sessionEvidence.status -ne 'passed') { throw $sessionEvidence.error }
