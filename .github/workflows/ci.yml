@@ -131,19 +131,15 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        group: [gateway, claude, anthropic-mps, codex, gemini, opencode, copilot, pi]
+        group: [gateway, claude, codex, gemini, opencode, copilot, pi]
         include:
           - group: gateway
             name: Gateway API tests
-            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestModelProviderLaunch or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
+            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
             package: ''
           - group: claude
             name: Agent launch tests · Claude
             keyword: TestClaudeLaunch or TestConfigureSubset
-            package: '@anthropic-ai/claude-code'
-          - group: anthropic-mps
-            name: Anthropic MPS - Staging workspace tests
-            keyword: TestModelProviderLaunch
             package: '@anthropic-ai/claude-code'
           - group: codex
             name: Agent launch tests · Codex
@@ -169,8 +165,8 @@ jobs:
       # See the test job: hosted runners can't reach the internal pypi-proxy,
       # so resolve against public PyPI (paired with the `uv lock` step below).
       UV_INDEX_URL: https://pypi.org/simple
-      UCODE_TEST_WORKSPACE: ${{ secrets[matrix.group == 'anthropic-mps' && 'UG_ANTHROPIC_MPS_WORKSPACE' || 'UCODE_TEST_WORKSPACE'] }}
-      DATABRICKS_HOST: ${{ secrets[matrix.group == 'anthropic-mps' && 'UG_ANTHROPIC_MPS_WORKSPACE' || 'UCODE_TEST_WORKSPACE'] }}
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_HOST: ${{ secrets.UCODE_TEST_WORKSPACE }}
       # DATABRICKS_BEARER is the CI escape hatch: `databricks auth token`
       # only retrieves cached user-OAuth tokens, so on a hosted runner
       # (no databrickscfg, no cached login) it can never produce a bearer.
@@ -179,7 +175,7 @@ jobs:
       # has_valid_databricks_auth + get_databricks_token + the agents'
       # apiKeyHelper short-circuit to this value when set. Tokens are
       # short-lived (~1h); rotate when CI starts failing with 401s.
-      DATABRICKS_BEARER: ${{ matrix.group != 'anthropic-mps' && secrets.DATABRICKS_BEARER || '' }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       AGENT_PACKAGE: ${{ matrix.package }}
       TEST_KEYWORD: ${{ matrix.keyword }}
     steps:
@@ -202,25 +198,6 @@ jobs:
           uv lock
           uv tool install .
           uv sync
-      - name: Authenticate the staging Anthropic MPS service principal
-        if: ${{ matrix.group == 'anthropic-mps' }}
-        env:
-          DATABRICKS_CLIENT_ID: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_ID }}
-          DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}
-        run: |
-          uv run --no-sync python - <<'PY'
-          import os
-          from scripts.run_integration import mint_m2m_token
-
-          client_id = os.environ['DATABRICKS_CLIENT_ID'].strip()
-          client_secret = os.environ['DATABRICKS_CLIENT_SECRET'].strip()
-          if not client_id or not client_secret:
-              raise SystemExit('UG_ANTHROPIC_MPS_CLIENT_ID/SECRET must be configured.')
-          token = mint_m2m_token(os.environ['UCODE_TEST_WORKSPACE'], client_id, client_secret)
-          print(f'::add-mask::{token}')
-          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as env:
-              env.write(f'DATABRICKS_BEARER={token}\n')
-          PY
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
