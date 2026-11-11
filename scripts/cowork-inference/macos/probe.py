@@ -244,7 +244,7 @@ def main(private, capability="inference"):
                 try:
                     tasks.capture_sessions(sys.modules[__name__], task)
                 except OSError as exc:
-                    report["captureError"] = str(exc)
+                    report["sessionCaptureError"] = str(exc)
             save("result.json", json.dumps(report, indent=2))
             print(
                 "Cowork inference passed"

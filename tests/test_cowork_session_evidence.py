@@ -128,6 +128,34 @@ def test_rejects_invalid_tool_evidence(evidence, invalid):
     assert evaluate(records, task)["status"] == "failed"
 
 
+@pytest.mark.parametrize("tool_index", [0, 1], ids=["skill", "read"])
+@pytest.mark.parametrize("value", [None, [], 42, "invalid"])
+def test_malformed_tool_inputs_cannot_prove_execution(evidence, tool_index, value):
+    records, task = evidence
+    records[1]["message"]["content"][tool_index]["input"] = value
+    result = evaluate(records, task)
+    assert result["status"] == "failed"
+    assert "No successful" in result["error"]
+
+
+@pytest.mark.parametrize("value", [None, [], 42, {}])
+def test_malformed_read_paths_cannot_prove_execution(evidence, value):
+    records, task = evidence
+    records[1]["message"]["content"][1]["input"]["file_path"] = value
+    assert evaluate(records, task) == {
+        "status": "failed",
+        "error": "No successful Read of the expected file and contents",
+    }
+
+
+@pytest.mark.parametrize("record_index, field", [(1, "id"), (2, "tool_use_id")])
+@pytest.mark.parametrize("value", [None, [], {}])
+def test_malformed_tool_ids_cannot_prove_execution(evidence, record_index, field, value):
+    records, task = evidence
+    records[record_index]["message"]["content"][1][field] = value
+    assert evaluate(records, task)["status"] == "failed"
+
+
 @pytest.mark.parametrize("incomplete", ["other_prompt", "unfinished", "no_answer"])
 def test_unrelated_or_incomplete_sessions_cannot_pass(evidence, incomplete):
     records, task = evidence

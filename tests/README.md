@@ -32,7 +32,8 @@ and rejection of wrong/partial/unfinished responses. Navigation coverage include
 Cowork tab, the task screen under Claude, sidebar auto-opening, and refusal to proceed
 without Scheduled, the prompt field, and Start task together. Failure-path component tests cover
 launch, cleanup, and evidence-write errors, signal-handler restoration, temporary credential
-removal, and graceful timeout termination of a real isolated subprocess. Native app/OS
+removal, invalid UTF-8 in diagnostic transcript copies, separate UI/session capture errors,
+and graceful timeout termination of a real isolated subprocess. Native app/OS
 boundaries are controlled in these component tests; they do not establish live inference.
 
 Windows first-launch configuration has component coverage in
@@ -44,7 +45,8 @@ exercises real installation, UG configuration before first launch, and completed
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
-mismatched result IDs, missing skill calls, incomplete answers, and case-mismatched macOS paths. It tolerates unrelated
+mismatched or malformed result IDs, malformed tool inputs and file paths, missing skill calls,
+incomplete answers, and case-mismatched macOS paths. It tolerates unrelated
 non-message content and transcripts disappearing during polling without accepting invalid
 tool evidence. Native PowerShell checks and macOS harness component tests cover separate stderr
 diagnostics, failed plugin installation, and nested plugin listing formats. macOS component

@@ -408,6 +408,60 @@ def tasks(monkeypatch, tmp_path):
     return module
 
 
+@pytest.mark.skipif(os.name != "posix", reason="macOS probe uses POSIX signals and permissions")
+@pytest.mark.parametrize("capture_failure", [False, True])
+def test_task_diagnostics_preserve_report_and_independent_errors(
+    harness, tasks, monkeypatch, capture_failure
+):
+    private = harness.root / "private"
+    private.mkdir(mode=0o700)
+    evidence = harness.probe.EVIDENCE
+    (evidence / "configuration.json").write_text(json.dumps({"label": harness.probe.MODEL}))
+    task = tasks.prepare_task("file", harness.probe)
+    transcript = tasks.session_root() / "org/account/projects/session/current.jsonl"
+    transcript.parent.mkdir(parents=True)
+    if capture_failure:
+        (evidence / "file/native-session-0.jsonl").mkdir(parents=True)
+
+    def native_ui(args, **kwargs):
+        if Path(args[0]).name == "desktop-ui":
+            raise OSError("Accessibility unavailable test-bearer")
+        return subprocess.CompletedProcess(args, 0)
+
+    def launch_native(*args, **kwargs):
+        transcript.write_bytes(task["prompt"].encode("utf-8") + b" test-bearer \xff")
+        modified = transcript.stat().st_mtime + 60
+        os.utime(transcript, (modified, modified))
+        return SimpleNamespace(terminate=lambda: None, wait=lambda **kwargs: 0, poll=lambda: 0)
+
+    # Native app and Accessibility require macOS; task setup and diagnostic capture stay real.
+    monkeypatch.setattr(
+        harness.probe, "process", SimpleNamespace(run=native_ui, popen=launch_native)
+    )
+    monkeypatch.setitem(sys.modules, "tasks", tasks)
+    monkeypatch.setitem(sys.modules, harness.probe.__name__, harness.probe)
+    monkeypatch.setattr(
+        harness.probe, "sys", SimpleNamespace(platform="darwin", modules=sys.modules)
+    )
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGALRM)}
+    assert harness.probe.main(private, "file") == 1
+    report = json.loads((evidence / "file/result.json").read_text())
+    assert report["passed"] is False
+    assert report["responseAsserted"] is False
+    assert report["error"] == "Accessibility unavailable [REDACTED]"
+    assert report["captureError"] == "Accessibility unavailable [REDACTED]"
+    if capture_failure:
+        assert "native-session-0.jsonl" in report["sessionCaptureError"]
+    else:
+        assert "sessionCaptureError" not in report
+        assert (evidence / "file/native-session-0.jsonl").read_text() == (
+            task["prompt"] + " [REDACTED] \ufffd"
+        )
+    assert harness.probe.EVIDENCE == evidence
+    assert {sig: signal.getsignal(sig) for sig in handlers} == handlers
+    assert signal.alarm(0) == 0
+
+
 def test_macos_file_fixture_keeps_answer_out_of_prompt(tasks, tmp_path):
     task = tasks.prepare_task("file", SimpleNamespace(TEMP=tmp_path))
     assert Path(task["expectedFile"]).read_text() == task["expected"]

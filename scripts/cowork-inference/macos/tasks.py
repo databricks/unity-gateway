@@ -238,7 +238,10 @@ def run_task(desktop, task, report):
         if result["status"] != "passed":
             raise RuntimeError(result["error"])
         report.update(passed=True, responseAsserted=True)
-        desktop.save("session.jsonl", Path(result["transcript"]).read_text())
+        desktop.save(
+            "session.jsonl",
+            Path(result["transcript"]).read_text(encoding="utf-8", errors="replace"),
+        )
         desktop.save("response-ui.json", desktop.ui("snapshot"))
         return
     raise RuntimeError("No completed native task with successful tool evidence within 300 seconds")
@@ -250,7 +253,7 @@ def capture_sessions(desktop, task):
         try:
             if path.stat().st_mtime < started:
                 continue
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8", errors="replace")
         except FileNotFoundError:
             continue
         if task["prompt"] in text:

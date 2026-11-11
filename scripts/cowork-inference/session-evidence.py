@@ -55,13 +55,17 @@ def evaluate(records, task):
     results = {
         block["tool_use_id"]: block
         for block in blocks
-        if block.get("type") == "tool_result" and block.get("tool_use_id")
+        if block.get("type") == "tool_result"
+        and isinstance(block.get("tool_use_id"), str)
+        and block["tool_use_id"]
     }
     calls = [
         block
         for block in blocks
         if block.get("type") == "tool_use"
-        and block.get("id") in results
+        and isinstance(block.get("id"), str)
+        and block["id"] in results
+        and isinstance(block.get("input"), dict)
         and not results[block["id"]].get("is_error")
     ]
     read = next(
@@ -69,7 +73,8 @@ def evaluate(records, task):
             call
             for call in calls
             if call.get("name") == "Read"
-            and paths.normcase(paths.normpath(call.get("input", {}).get("file_path", "")))
+            and isinstance(call["input"].get("file_path"), str)
+            and paths.normcase(paths.normpath(call["input"]["file_path"]))
             == paths.normcase(paths.normpath(task["expectedFile"]))
             and task["expected"] in content_text(results[call["id"]].get("content", []))
         ),
@@ -81,8 +86,7 @@ def evaluate(records, task):
         (
             call
             for call in calls
-            if call.get("name") == "Skill"
-            and call.get("input", {}).get("skill") == task.get("skill")
+            if call.get("name") == "Skill" and call["input"].get("skill") == task.get("skill")
         ),
         None,
     )
