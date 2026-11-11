@@ -76,6 +76,10 @@ journeys use vendor model IDs.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`test_agent_claude.py` covers relay launch and subscription-status overrides when project settings
+resolve to user settings, including home, symlinks, custom config directories and unaffected launches.
+These component checks do not establish live subscription or gateway coverage.
+
 `test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:
 workspace URL/token reuse without account discovery or account CLI authentication,

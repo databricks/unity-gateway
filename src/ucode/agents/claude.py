@@ -2687,6 +2687,22 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
 
 
+def _relayed_user_credential_override() -> dict | None:
+    # Claude can load user settings as project settings when launched from home.
+    project_dir = Path.cwd() / ".claude"
+    user_dirs = {Path.home() / ".claude"}
+    if config_dir := os.environ.get("CLAUDE_CONFIG_DIR"):
+        user_dirs.add(Path(config_dir))
+    names = ("settings.json", "settings.local.json")
+    user_paths = {(directory / name).resolve() for directory in user_dirs for name in names}
+    if not any((project_dir / name).resolve() in user_paths for name in names):
+        return None
+    return {
+        "apiKeyHelper": "",
+        "env": dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+    }
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2722,7 +2738,13 @@ def _build_claude_argv(
         else []
     )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None and not server_side_web_search:
+    credential_override = _relayed_user_credential_override() if relayed else None
+    if (
+        not caller_values
+        and settings_override is None
+        and not server_side_web_search
+        and credential_override is None
+    ):
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
         return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
@@ -2736,6 +2758,8 @@ def _build_claude_argv(
         merged = _merge_claude_settings(merged, settings_override)
     if server_side_web_search:
         _enable_server_side_web_search(merged)
+    if credential_override is not None:
+        merged = _merge_claude_settings(merged, credential_override)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -2778,12 +2802,19 @@ def _claude_launch_argv(
 
 def _has_subscription_login() -> bool:
     """True when Claude Code holds a Claude subscription login that a relayed launch will use."""
+    credential_override = _relayed_user_credential_override()
+    settings_args = (
+        ["--settings", json.dumps(credential_override, separators=(",", ":"))]
+        if credential_override is not None
+        else []
+    )
     try:
         result = subprocess_cross_os.run(
             [
                 SPEC["binary"],
                 "--setting-sources",
                 _RELAYED_SETTING_SOURCES,
+                *settings_args,
                 "auth",
                 "status",
                 "--json",
