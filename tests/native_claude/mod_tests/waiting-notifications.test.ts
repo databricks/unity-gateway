@@ -42,6 +42,8 @@ test('reports, warnings, failures, mixed deliveries and unfamiliar formats stay 
   for (const text of [
     notice.replace('<status>completed', '<status>failed'),
     notice.replace('is waiting on its own background work</summary>', 'completed</summary>'),
+    // Claude 2.1.290 formats the same empty handback with a "finished" summary.
+    notice.replace('is waiting on its own background work</summary>', 'finished</summary>'),
     notice.replace('<result>', '<result>Safety review unavailable. '),
     notice.replace(/<result>[\s\S]*?<\/result>/, '<result>I need access to continue.</result>'),
     notice.replace('the result below may be interim.', 'the result below may be interim. Unread messages remain.'),
