@@ -132,10 +132,12 @@ The same flag suppresses Codex's routed-subagent model card and post-launch mode
 verification message, without changing the model injected into the spawn request.
 
 A confirmed native background-task 429 excludes that model and equivalent aliases from
-new router requests for 60 seconds. The router chooses from the remaining candidates;
+new router requests for 60 seconds. Context-window hints such as `[1m]` identify the same
+model, including for custom deployments, whose namespaces remain distinct. The router chooses from the remaining candidates;
 no candidates or a routing failure during cooldown denies the new spawn. Resumes retain
-their native behavior. A spawn guard also rejects a model rate-limited while routing was
-in flight. This launch-local cooldown does not retry the failed child.
+their native behavior. A notice received during routing also prevents an unsafe fallback
+or launch, and a rejected selection is removed from its routing card. This launch-local
+cooldown does not retry the failed child.
 Explicitly disabled routing keeps the original call. Outside cooldown, command failures
 and invalid responses also keep it and log a diagnostic.
 

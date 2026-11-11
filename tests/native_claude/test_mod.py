@@ -377,7 +377,8 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
     ) as session:
         result = session.observe()["route"]
         assert result["exitCode"] == 0, result
-        assert result["stdout"] == result["stderr"] == "", result
+        assert json.loads(result["stdout"]) == {"disabled": True}, result
+        assert result["stderr"] == "", result
 
 
 @pytest.mark.parametrize("server_mode", [None, "1"], ids=["server-default", "server-explicit"])

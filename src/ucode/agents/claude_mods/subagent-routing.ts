@@ -57,8 +57,8 @@ const explanationModelId = (model: string): string => {
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
     .replace(/^databricks-claude-/, 'system.ai.claude-')
-  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
-  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+  const canonical = original.startsWith('system.ai.') ? original.slice('system.ai.'.length) : original
+  return canonical.replace(/\[1m\]$/, '')
 }
 
 function matchesIdentityFields(value: Record<string, any>, sessionId?: string, toolUseId?: string): boolean {
@@ -490,6 +490,8 @@ export const registerSubagentRouting = (
     const { tool, tool_use_id, agentId, ...input } = e
     let route
     let denial: string | undefined
+    let routingDisabled = false
+    let routingFailed = false
     const timestamp = await now($)
     const excluded_models = [...rateLimitedUntil]
       .filter(([, until]) => timestamp !== undefined && until > timestamp)
@@ -532,9 +534,9 @@ export const registerSubagentRouting = (
       if (result.exitCode !== 0) throw new Error('Router command failed')
       const response = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
       if (typeof response?.deny === 'string' && response.deny) denial = response.deny
-      else if (response?.disabled !== true) {
-        if (response === undefined && excluded_models.length) throw new Error('Missing routing decision')
-        route = response
+      else {
+        routingDisabled = response?.disabled === true
+        if (!routingDisabled) route = response
       }
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
@@ -543,11 +545,7 @@ export const registerSubagentRouting = (
       }
     } catch {
       route = undefined
-      if (excluded_models.length) {
-        denial = 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
-      } else {
-        $.ui.log('Smart Router could not route this subagent; using its original settings.')
-      }
+      routingFailed = true
     } finally {
       spinner?.cancel()
     }
@@ -564,6 +562,14 @@ export const registerSubagentRouting = (
         })
       }
       $.ui.invalidate('ui.render')
+    }
+    if (!route && !denial && !routingDisabled) {
+      const current = await now($)
+      if (excluded_models.length || [...rateLimitedUntil.values()].some(until => current !== undefined && until > current)) {
+        denial = 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
+      } else if (routingFailed) {
+        $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      }
     }
     if (denial) return { deny: denial }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
@@ -586,6 +592,8 @@ export const registerSubagentRouting = (
     const timestamp = route ? await now($) : undefined
     if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
       // A failure notice may arrive while the routing request is in flight.
+      records.delete(e.tool_use_id)
+      $.ui.invalidate('ui.render')
       return { deny: 'The selected model is now rate-limited. Retry to select another available model.' }
     }
     // The task shows the spawn description, so the routed label is set here — after the
@@ -714,7 +722,7 @@ export const registerSubagentRouting = (
     const ids = anchors.get(e.requestId)
     if (!showModel || !ids) return original
     const { Box } = $.ui.resolve(e)
-    return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
+    return Box({ flexDirection: 'column', children: [...ids.filter((id) => records.has(id)).map((id) => card($, e, records.get(id)!)), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     routedModels.reset()
