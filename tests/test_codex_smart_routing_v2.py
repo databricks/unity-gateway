@@ -20,6 +20,35 @@ def _isolate_app_server_log(tmp_path, monkeypatch):
     monkeypatch.setattr(v2, "CODEX_APP_SERVER_LOG", tmp_path / "codex-app-server.log")
 
 
+@pytest.fixture(params=["posix", "nt"])
+def codex_launch_processes(request, monkeypatch):
+    """Configuration checks must not start or stop real agent processes."""
+    processes = []
+    monkeypatch.setattr(v2, "os", SimpleNamespace(name=request.param, environ=os.environ))
+
+    class Process:
+        def __init__(self, argv, **kwargs):
+            self.argv = argv
+            self.pid = 42000 + len(processes)
+            self.terminated = False
+            processes.append(self)
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+    def taskkill(argv, **kwargs):
+        assert argv[1:] == ["/PID", str(processes[0].pid), "/T", "/F"]
+        processes[0].terminate()
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(v2.subprocess, "Popen", Process)
+    monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
+    return processes
+
+
 def test_smart_routing_switch_message_is_boxed():
     message = v2.format_routing_notice("model-x", "Because X.")
 
@@ -418,31 +447,18 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
 
-    def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
+    def test_managed_http_headers_reach_app_server_config(
+        self, monkeypatch, codex_launch_processes
+    ):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
         # replace the whole provider block, so the admin headers must be threaded through here too —
         # otherwise they are written to config.toml but stripped from the launched inference calls.
-        processes = []
+        processes = codex_launch_processes
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setenv("CODEX_HOME", "/user/codex-home")
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
 
-        class FakeProcess:
-            def __init__(self, argv, **kwargs):
-                self.argv = argv
-                processes.append(self)
-
-            def wait(self, timeout=None):
-                return 0
-
-            def terminate(self):
-                pass
-
-            def send_signal(self, _signal):
-                pass
-
-        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_k: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
@@ -472,7 +488,7 @@ class TestLaunchCodex:
         assert "eng-ml-inference" in provider_arg
 
     def test_subagent_only_launch_enables_restart_without_first_prompt_routing(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, codex_launch_processes
     ):
         user_config = tmp_path / "config.toml"
         saved_config = (
@@ -486,26 +502,13 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        processes = []
+        processes = codex_launch_processes
         interposer_options = {}
-
-        class Process:
-            def __init__(self, argv, **kwargs):
-                self.argv = argv
-                self.terminated = False
-                processes.append(self)
-
-            def wait(self, timeout=None):
-                return 0
-
-            def terminate(self):
-                self.terminated = True
 
         def start_interposer(*args, **kwargs):
             interposer_options.update(kwargs)
             return 41002, lambda: None
 
-        monkeypatch.setattr(v2.subprocess, "Popen", Process)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda *a, **kw: True)
         monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
 
@@ -616,7 +619,9 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in routing_commands[0]
         assert "--model old" not in routing_commands[0]
 
-    def test_missing_cached_models_starts_with_bootstrap_model(self, monkeypatch):
+    def test_missing_cached_models_starts_with_bootstrap_model(
+        self, monkeypatch, codex_launch_processes
+    ):
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(
             custom_oauth, "get_databricks_token", lambda workspace, profile, **_kw: "token"
@@ -624,19 +629,6 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "agent_version", lambda binary: "unknown")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
-        monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *args, **kwargs: type(
-                "Process",
-                (),
-                {
-                    "wait": lambda self, timeout=None: 0,
-                    "terminate": lambda self: None,
-                    "kill": lambda self: None,
-                },
-            )(),
-        )
         monkeypatch.setattr(
             codex_interposer,
             "start_interposer_thread",
@@ -755,7 +747,9 @@ class TestCustomCatalogModels:
             "system.ai.gpt-5-6-luna",
         ]
 
-    def test_launch_prefers_catalog_over_cached_models(self, tmp_path, monkeypatch, capsys):
+    def test_launch_prefers_catalog_over_cached_models(
+        self, tmp_path, monkeypatch, capsys, codex_launch_processes
+    ):
         self._settings(
             tmp_path,
             monkeypatch,
@@ -767,22 +761,6 @@ class TestCustomCatalogModels:
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
         monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
         monkeypatch.setattr(codex, "ug_version", lambda: "test")
-        launched = []
-
-        class FakeProcess:
-            def __init__(self, argv, **kwargs):
-                launched.append(argv)
-
-            def wait(self, timeout=None):
-                return 0
-
-            def terminate(self):
-                pass
-
-            def kill(self):
-                pass
-
-        monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
         interposer_kwargs = {}
 
         def start_interposer(*args, **kwargs):
@@ -801,9 +779,10 @@ class TestCustomCatalogModels:
             )
 
         assert interposer_kwargs["available_models"] == ["gpt-6-astra", "gpt-6-b"]
-        catalog_override = next(arg for arg in launched[0] if arg.startswith("model_catalog_json="))
+        argv = codex_launch_processes[0].argv
+        catalog_override = next(arg for arg in argv if arg.startswith("model_catalog_json="))
         assert catalog_override == "model_catalog_json=" + json.dumps(str(tmp_path / "cli.json"))
-        hook_override = next(arg for arg in launched[0] if arg.startswith("hooks.PreToolUse="))
+        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
         assert "--model gpt-6-astra" in hook_override
         assert "--model gpt-6-b" in hook_override
         assert "gpt-5-6-sol" not in hook_override

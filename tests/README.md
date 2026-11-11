@@ -22,6 +22,8 @@ description unchanged when routing is off.
 bounded cleanup, failed startup/restart, unexpected exits, reconnect without
 rerouting, parent-only continuation, ephemeral title threads, rapid notices, and private
 internal responses. App-server stderr is retained in the TUI evidence artifacts.
+Launcher configuration checks exercise both POSIX and Windows shutdown paths with
+mock processes; they do not establish native Windows restart coverage.
 These replace obsolete tests of manual descendant unloading, permission reconstruction,
 held input, approval draining, and Escape suppression. Native Codex owns resume and
 reconnect behavior; those removed controller guarantees are no longer provided.
