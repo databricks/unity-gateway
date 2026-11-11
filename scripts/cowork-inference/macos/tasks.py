@@ -52,8 +52,9 @@ def prepare_task(capability, desktop):
         task.update(
             folder=str(folder),
             expectedFile=str(path),
-            prompt="Read input.txt in the selected local folder using a file-reading tool. "
-            "Reply with only its contents. Do not guess the contents.",
+            prompt="Use the Read tool to read input.txt in the selected local folder. "
+            "Reply with only the value stored in the file. Omit line numbers added by the tool. "
+            "Do not use Markdown, code fences, or any other text. Do not guess the value.",
         )
         return task
 
@@ -88,7 +89,9 @@ def prepare_task(capability, desktop):
     (skill / "SKILL.md").write_text(
         "---\nname: probe-summary\n"
         "description: Use when asked to produce the capability probe summary.\n---\n"
-        "Read references/facts.txt beside this skill. Reply with only its contents, unchanged.\n"
+        "Use the Read tool to read references/facts.txt beside this skill. "
+        "Reply with only the value stored in the file. Omit line numbers added by the tool. "
+        "Do not use Markdown, code fences, or any other text.\n"
         "Do not guess the contents and do not use subagents.\n"
     )
     (skill / "references/facts.txt").write_text(task["expected"])
@@ -154,15 +157,39 @@ def new_task(desktop):
     return desktop.open_cowork()
 
 
+def keyboard(desktop, action, text=""):
+    script = """on run argv
+    tell application "System Events"
+        set frontmost of (first process whose unix id is (item 1 of argv as integer)) to true
+        if item 2 of argv is "go-to-folder" then
+            keystroke "g" using {command down, shift down}
+        else if item 2 of argv is "path" then
+            keystroke (item 3 of argv)
+        else if item 2 of argv is "return" then
+            key code 36
+        end if
+    end tell
+end run"""
+    result = process.run(
+        ["/usr/bin/osascript", "-e", script, desktop.ui("pid").strip(), action, text],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
+    )
+    if result.returncode:
+        raise RuntimeError(f"Native keyboard input failed: {result.stderr.strip()}")
+
+
 def select_folder(desktop, task):
     click_first(desktop, ("Project or folder", "Work in a folder", "Choose a folder", "Add folder"))
     picker = desktop.wait_for("Add folders to this session")
     desktop.save("folder-picker.json", picker)
-    desktop.ui("key", "go-to-folder")
+    keyboard(desktop, "go-to-folder")
     desktop.wait_for(("Go to the folder:", "Go to Folder", "Go to folder:"))
-    desktop.ui("folder-path", task["folder"])
-    desktop.wait_for(task["folder"])
-    desktop.ui("key", "return")
+    keyboard(desktop, "path", task["folder"])
+    desktop.wait_for((task["folder"], "Go to:"), require_all=True)
+    keyboard(desktop, "return")
     click_first(desktop, ("Select Folder", "Choose", "Open"))
     desktop.save("folder-permission.json", desktop.ui("snapshot"))
     desktop.wait_for(
