@@ -25,12 +25,15 @@ def _claude_parent_model_ids(unmanaged_workspace, parent_schema, claude_parent_m
 
 
 @pytest.fixture
-def _parent_discovery_diagnostics(live_session, _claude_parent_model_ids):
-    debug_path = live_session.home / ".claude" / "gateway-discovery-debug.log"
-    try:
-        yield ["--debug-file", str(debug_path)]
-    finally:
-        live_session.record_claude_gateway_discovery(_claude_parent_model_ids, debug_path)
+def _discovery_diagnostics(live_session, request):
+    def capture(expected_ids):
+        debug_path = live_session.home / ".claude" / "gateway-discovery-debug.log"
+        request.addfinalizer(
+            lambda: live_session.record_claude_gateway_discovery(expected_ids, debug_path)
+        )
+        return ["--debug-file", str(debug_path)]
+
+    return capture
 
 
 def _scoped_models_visible(session, expected_ids):
@@ -111,7 +114,7 @@ def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
 @pytest.mark.live
 @pytest.mark.tui
 def test_case_11_configured_claude_provider_discovers_models_by_default(
-    live_session, workspace, claude_provider, claude_provider_model
+    live_session, workspace, claude_provider, claude_provider_model, _discovery_diagnostics
 ):
     """Scenario: configure Claude, then launch with --provider and no opt-in flag.
 
@@ -130,7 +133,13 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
         timeout=240,
     )
 
-    command = [str(session.binary), "claude", "--provider", claude_provider]
+    command = [
+        str(session.binary),
+        "claude",
+        "--provider",
+        claude_provider,
+        *_discovery_diagnostics([claude_provider_model]),
+    ]
     with AgentTerminal(session, "claude", command, "case-11-provider-default") as tui:
         tui.boot()
         screen = tui.open_model_picker(
@@ -145,7 +154,7 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
 @pytest.mark.live
 @pytest.mark.tui
 def test_case_11_fresh_claude_provider_discovers_models_by_default(
-    live_session, workspace, claude_provider, claude_provider_model
+    live_session, workspace, claude_provider, claude_provider_model, _discovery_diagnostics
 ):
     """Scenario: launch fresh Claude with --provider and no opt-in flag.
 
@@ -160,6 +169,7 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
         workspace,
         "--provider",
         claude_provider,
+        *_discovery_diagnostics([claude_provider_model]),
     ]
     with AgentTerminal(session, "claude", command, "case-11-provider-default") as tui:
         tui.boot()
@@ -175,7 +185,7 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
 @pytest.mark.live
 @pytest.mark.tui
 def test_case_13_configured_claude_model_location_overrides_saved_setup(
-    live_session, workspace, parent_schema, _claude_parent_model_ids, _parent_discovery_diagnostics
+    live_session, workspace, parent_schema, _claude_parent_model_ids, _discovery_diagnostics
 ):
     """Scenario: configure Claude, then launch with --model-location.
 
@@ -199,7 +209,7 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
         "claude",
         "--model-location",
         parent_schema,
-        *_parent_discovery_diagnostics,
+        *_discovery_diagnostics(_claude_parent_model_ids),
     ]
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
@@ -215,7 +225,7 @@ def test_case_13_configured_claude_model_location_overrides_saved_setup(
 @pytest.mark.live
 @pytest.mark.tui
 def test_case_13_fresh_claude_model_location_discovers_parent_models(
-    live_session, workspace, parent_schema, _claude_parent_model_ids, _parent_discovery_diagnostics
+    live_session, workspace, parent_schema, _claude_parent_model_ids, _discovery_diagnostics
 ):
     """Scenario: launch fresh Claude with --model-location.
 
@@ -230,7 +240,7 @@ def test_case_13_fresh_claude_model_location_discovers_parent_models(
         workspace,
         "--model-location",
         parent_schema,
-        *_parent_discovery_diagnostics,
+        *_discovery_diagnostics(_claude_parent_model_ids),
     ]
     with AgentTerminal(session, "claude", command, "case-13-location-default") as tui:
         tui.boot()
