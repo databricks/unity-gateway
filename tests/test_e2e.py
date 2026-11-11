@@ -30,7 +30,6 @@ import pytest
 from tests.conftest import e2e_state_for
 from ucode.agents import resolve_provider_models
 from ucode.databricks import (
-    build_shared_base_urls,
     build_tool_base_url,
     discover_model_services,
     fetch_ai_gateway_claude_models,
@@ -43,7 +42,6 @@ from ucode.databricks import (
     probe_unity_gateway_capabilities,
     resolve_provider_launch_model,
     service_usable_for_tool,
-    workspace_hostname,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.ui import normalize_workspace_url
@@ -163,9 +161,6 @@ class TestDatabricksAuth:
             "No valid Databricks auth found. Run `databricks auth login` first."
         )
 
-    def test_get_token_returns_non_empty_string(self, e2e_token):
-        assert isinstance(e2e_token, str) and len(e2e_token) > 10
-
 
 # ---------------------------------------------------------------------------
 # AI Gateway probe
@@ -175,10 +170,6 @@ class TestDatabricksAuth:
 class TestAiGateway:
     def test_probe_unity_gateway_capabilities_does_not_raise(self, e2e_workspace, e2e_token):
         probe_unity_gateway_capabilities(e2e_workspace, e2e_token)
-
-    def test_workspace_hostname_resolves(self, e2e_workspace):
-        hostname = workspace_hostname(e2e_workspace)
-        assert "." in hostname
 
 
 # ---------------------------------------------------------------------------
@@ -233,47 +224,6 @@ class TestModelProviderServicesDiscovery:
         assert set(codex_names) == {
             s["name"] for s in services if service_usable_for_tool("codex", s)
         }
-
-
-# ---------------------------------------------------------------------------
-# URL builders
-# ---------------------------------------------------------------------------
-
-
-class TestUrlBuilders:
-    def test_codex_url_contains_workspace(self, e2e_workspace):
-        assert e2e_workspace in build_tool_base_url("codex", e2e_workspace)
-
-    def test_claude_url_contains_workspace(self, e2e_workspace):
-        assert e2e_workspace in build_tool_base_url("claude", e2e_workspace)
-
-    def test_shared_base_urls_all_tools(self, e2e_workspace):
-        urls = build_shared_base_urls(e2e_workspace)
-        for tool in ("codex", "claude", "gemini", "opencode", "copilot", "pi"):
-            assert tool in urls
-
-
-# ---------------------------------------------------------------------------
-# State round-trip
-# ---------------------------------------------------------------------------
-
-
-class TestStateRoundTrip:
-    def test_configure_shared_state_and_reload(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace
-    ):
-        import ucode.config_io as config_io_mod
-        import ucode.state as state_mod
-        from ucode.state import load_state, save_state
-
-        monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-
-        save_state(e2e_state)
-        loaded = load_state()
-        assert loaded["workspace"] == e2e_workspace
-        assert loaded["claude_models"] == e2e_state["claude_models"]
-        assert loaded["base_urls"]["codex"] == f"{e2e_workspace}/ai-gateway/codex/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -760,26 +710,18 @@ class TestModelProviderLaunch:
     ):
         # No --model: ucode picks the only servable tier. The MPS declares no opus, so the default
         # resolves to Haiku — and the launch succeeds only because Haiku is what the MPS allows.
+        # `--model haiku` must resolve the family alias to the same declared Haiku target.
+        # (Claude Code's bare `haiku`/undated id would 403 — the gateway exact-matches.) Both
+        # resolutions launch the identical pinned model, so one launch covers them.
         _require_binary("claude")
         state, provider_models = self._resolve_anthropic_mps(e2e_state, e2e_workspace)
         launch_model = resolve_provider_launch_model(None, provider_models or {})
         assert launch_model == CI_ANTHROPIC_MODEL, (
             f"a bare launch should default to the only allowed model; got {launch_model}"
         )
-        self._launch_claude_and_assert_success(
-            tmp_path, monkeypatch, state, provider_models, launch_model, e2e_workspace, e2e_token
-        )
-
-    def test_launch_claude_model_haiku_through_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        # `--model haiku`: the family alias resolves to the one declared Haiku target, so the launch
-        # routes. (Claude Code's bare `haiku`/undated id would 403 — the gateway exact-matches.)
-        _require_binary("claude")
-        state, provider_models = self._resolve_anthropic_mps(e2e_state, e2e_workspace)
-        launch_model = resolve_provider_launch_model("haiku", provider_models or {})
-        assert launch_model == CI_ANTHROPIC_MODEL, (
-            f"--model haiku should resolve to the declared Haiku target; got {launch_model}"
+        alias_model = resolve_provider_launch_model("haiku", provider_models or {})
+        assert alias_model == CI_ANTHROPIC_MODEL, (
+            f"--model haiku should resolve to the declared Haiku target; got {alias_model}"
         )
         self._launch_claude_and_assert_success(
             tmp_path, monkeypatch, state, provider_models, launch_model, e2e_workspace, e2e_token

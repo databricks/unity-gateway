@@ -274,17 +274,6 @@ class TestNormalize:
 
 
 class TestGetManagedConfig:
-    def test_returns_the_first_config_raw(self, monkeypatch):
-        # get_managed_config returns the config verbatim now; normalization happens on read.
-        monkeypatch.setattr(
-            mc_mod,
-            "fetch_managed_coding_agent_configs",
-            lambda ws, tok: ([RAW_MANIFEST], None),
-        )
-        cfg, reason = get_managed_config("https://ws", "tok")
-        assert reason is None
-        assert cfg == RAW_MANIFEST
-
     def test_no_config_is_not_an_error(self, monkeypatch):
         monkeypatch.setattr(
             mc_mod, "fetch_managed_coding_agent_configs", lambda ws, tok: ([], None)

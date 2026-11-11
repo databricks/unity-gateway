@@ -1288,6 +1288,14 @@ The existing e2e workflow runs seven parallel shards: gateway checks plus one fo
 each of Claude, Codex, Gemini, OpenCode, Copilot, and Pi. Each agent shard installs
 its own CLI. Configure-subset checks run in the Claude shard because configuration
 invokes the Claude CLI. The `All agent tests` check requires every shard to pass.
+Deduplicated e2e checks removed with their survivors: `TestUrlBuilders` and
+`TestAiGateway::test_workspace_hostname_resolves` (covered by `TestBuildToolBaseUrl`,
+`TestBuildSharedBaseUrls`, and the `workspace_hostname` unit tests in
+`test_databricks.py`), `TestDatabricksAuth::test_get_token_returns_non_empty_string`
+(the session-scoped `e2e_token` fixture every test uses), `TestStateRoundTrip`
+(`TestSaveLoadRoundTrip` in `test_state.py`), and the separate `--model haiku`
+provider launch (its resolution assertion joined `test_launch_claude_through_provider`;
+both resolve to the same pinned model, so one launch covers them).
 Copilot's per-model greeting smoke uses Anthropic Messages for Claude, Responses for
 GPT-5+, and Chat Completions for other models. Existing
 Codex-specific, and Grok exclusions remain. `test_agent_copilot.py` covers API
