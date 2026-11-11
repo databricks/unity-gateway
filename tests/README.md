@@ -5,6 +5,13 @@ Antigravity MCP web-search evidence checks accept homepage slash variants, omit
 Offline cases retain checks for the completed MCP call, official host, scheme, page,
 meaningful query and fragment. These checks do not establish live search availability.
 
+Windows Desktop global component coverage in `test_desktop_mdm_windows.py` exercises
+real temporary publication files with simulated registry/ACL boundaries: native registry
+view, foreign policy, refresh/removal, failed publication and retry, linked plugin rejection,
+consumer-auth helpers, and deferred workspace skills. Existing macOS tests remain applicable.
+Native global OAuth, connector deduplication, and UI lifecycle remain separate validation gaps;
+the Windows native-loading experiments live on their own test branch.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
@@ -1507,3 +1514,16 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+Native Windows global deployment validation (separate test branch):
+[run 42948740241](https://github.com/databricks/unity-gateway/actions/runs/42948740241)
+passed public configure/reconfigure, standard-user read/execute and write denial,
+provisioning-credential rejection, connector/tracing withdrawal, locked-file failure/retry,
+and revert with unrelated policy/profile preservation. Live consuming-user OAuth, global
+UI inference, and MCP calls/deduplication are not covered by this deployment test.
+
+Windows Desktop MDM component tests also cover fresh setup and managed-to-unmanaged
+refresh without workspace configuration, including the feature-disabled response. They
+assert discovered Claude models, removal of obsolete managed connectors/tracing/hooks,
+retained connectors for unrestricted managed configs, and preserved policy on fetch errors
+or explicit Claude exclusion. This additional coverage is not a native Windows UI run.

@@ -1,4 +1,62 @@
-# Claude Desktop deployment through MDM on macOS
+# Claude Desktop deployment through MDM
+
+## Windows
+
+Run `ug configure --agents claude --global --profile <provisioning-profile>` from an
+elevated terminal or SYSTEM deployment script. Install UG/Python (including the base
+Python installation), Databricks CLI, and Claude CLI under native Program Files first.
+They must be owned by Administrators, SYSTEM, or TrustedInstaller, readable/executable
+by device users, and writable only by administrators. Links and reparse-point output
+paths are rejected. UG validates existing installations; it does not install shared runtimes.
+
+Workspace-managed configuration is optional, as on macOS. Without it, UG discovers
+accessible Claude models and configures inference without managed connectors or tracing.
+An explicit enabled-agent list excluding Claude is rejected. Configuration fetch errors
+and failed publication still fail the global command.
+Dedicated workspace hostnames and normal Databricks OAuth are required; PAT/custom OAuth
+deployment remains unsupported.
+Already completed CLI/file changes can remain after a later component fails; rerun configure
+after resolving the error. Ordinary user configure retains its best-effort behavior.
+
+Windows publishes:
+
+- Inference, model list, managed connectors, tool search, and optional tracing directly
+  under native-view `HKLM\SOFTWARE\Policies\Claude`, using `REG_SZ` and JSON strings.
+- `runtime.py`, optional `otel-headers.cmd`, and a protected `ownership.json` beneath
+  `%ProgramFiles%\UnityGateway\claude-desktop-mdm`.
+- A required organization plugin under `%ProgramFiles%\Claude\org-plugins\ug`, containing
+  connector guidance, warming hooks, and matching content-derived version metadata.
+
+Workspace-skill delivery is deferred. No enterprise skills or downloaded workspace-skill
+copies are installed. CLI native settings retain administrator-supplied hooks. A missing
+`parentSettingsBehavior` defaults to `merge` so Desktop's parent restrictions remain in
+effect; an existing or explicitly supplied value is preserved. Windows Desktop connector
+names match the native CLI names. CLI connectors still require the existing native OAuth
+capabilities; an undeliverable requested connector fails global configuration.
+
+Shared helpers use isolated Python, discard provisioning credentials/config overrides,
+and authenticate through the consuming user's `UG_DESKTOP_<workspace-hash>` profile.
+The CLI token/tracing helpers use that same profile. No administrator home or profile file
+is copied. Interactive OAuth and per-connector consent belong to each user. Restart Desktop
+and open new sessions after changes.
+
+Refresh removes obsolete UG-owned registry values and preserves unrelated names and types.
+Foreign inference policy and externally changed owned values are conflicts. `ug revert`
+removes recorded values, helpers, and the organization plugin; it never deletes the whole
+Claude registry key or unrelated helper-directory content. Ownership survives failed
+publication/removal so another elevated run can retry. Local `configLibrary` profiles are
+not changed by global provisioning.
+
+Component tests cover rendering, credential isolation, ownership, failure/retry, and cleanup.
+The separate [Windows deployment run](https://github.com/databricks/unity-gateway/actions/runs/42948740241)
+passed initial/repeated publication, standard-user helper access and write protection,
+rejection of inherited provisioning credentials, connector/tracing withdrawal, locked-file
+failure/retry, and revert while preserving unrelated policy and profiles.
+Live consuming-user OAuth, global UI inference, and MCP calls/deduplication remain unverified
+and are still required before fleet rollout. CI has only provisioning bearer credentials;
+these deployment checks do not establish authenticated end-user operation.
+
+## macOS
 
 Run from your MDM script or a terminal:
 
@@ -25,7 +83,7 @@ Desktop profile, marketplace, plugin registration, and credentials untouched.
 | Explicit `--global` | macOS managed plist, root organization plugin, and shared helpers |
 
 `--global` also configures the requested CLI agents under their existing scope rules.
-Windows/Linux skip Desktop under `--global`. Saved `global` scope does not change a
+Linux skips Desktop under `--global`. Saved `global` scope does not change a
 later default/user configure. Ordinary `ug revert` attempts both user and MDM cleanup.
 
 ## Prerequisites and authentication

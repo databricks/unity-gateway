@@ -30,14 +30,16 @@ from ucode.workspace import workspace_headers, workspace_id_args
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 
-def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
+def configure_claude_desktop(
+    state: dict, *, parent_schema: str | None = None, managed_config: dict | None = None
+) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
     try:
         if machine_wide_only():
-            if sys.platform != "darwin":
+            if sys.platform not in ("darwin", "win32"):
                 print_note(
-                    "Skipped Claude Desktop: --global MDM provisioning currently supports macOS only."
+                    "Skipped Claude Desktop: --global MDM provisioning supports macOS and Windows."
                 )
                 return
             from ucode.agents.desktop import mdm
@@ -46,10 +48,15 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
                 raise RuntimeError(
                     "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
                 )
-            mdm.configure(state["workspace"], state.get("profile"))
+            if sys.platform == "win32":
+                mdm.configure(
+                    state["workspace"], state.get("profile"), managed_config=managed_config
+                )
+            else:
+                mdm.configure(state["workspace"], state.get("profile"))
             if not is_dry_run():
                 print_success(
-                    "Claude Desktop MDM deployment configured. Users authenticate when they open Desktop."
+                    "Claude Desktop MDM deployment configured. Restart Desktop and open new sessions; users authenticate with their own credentials."
                 )
             return
         if is_dry_run():
@@ -57,6 +64,8 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
             return
         _configure_claude_desktop_user_level(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
+        if sys.platform == "win32" and machine_wide_only():
+            raise RuntimeError(f"Could not configure Windows Desktop globally: {exc}") from exc
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
 
 
@@ -236,7 +245,7 @@ def resolve_gateway_profile(
 
 
 def revert_claude_desktop_mdm() -> str:
-    if sys.platform != "darwin":
+    if sys.platform not in ("darwin", "win32"):
         return "unchanged"
     from ucode.agents.desktop import mdm
 
