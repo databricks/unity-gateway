@@ -1,0 +1,160 @@
+name: Desktop task validation
+on:
+  push:
+    branches: [masonc08/desktop-tasks-validation]
+permissions:
+  contents: read
+jobs:
+  cowork-inference-windows:
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1]
+    name: Cowork desktop tasks · Windows
+    runs-on: windows-latest
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    timeout-minutes: 50
+    env:
+      PYTHONUTF8: 1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: def4efd70454001cad3e027618cc9608dd85e2ec
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate Cowork test scripts
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          foreach ($script in Get-ChildItem scripts/cowork-inference/*.ps1) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          & ./scripts/cowork-inference/test-diagnostics.ps1
+          & ./scripts/cowork-inference/test-prepare-task.ps1
+      - name: Download and verify the approved Claude installer
+        shell: pwsh
+        env:
+          INSTALLER_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
+          INSTALLER_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+        run: |
+          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'An installer SHA256 is required'
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer -TimeoutSec 300
+          $digest = $env:INSTALLER_SHA256
+          & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
+            -ExpectedSha256 $digest `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+      - name: Install UG checkout and pinned Claude CLI
+        shell: pwsh
+        run: ./scripts/cowork-inference/install-dependencies.ps1
+      - name: Configure Desktop with existing CI credentials
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/cowork-inference/configure.ps1
+      - name: Assert Cowork inference through Windows UI Automation
+        id: cowork-inference
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork file read
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability file -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/file"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork skill execution
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Cowork inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cowork-inference-${{ matrix.attempt }}
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/cowork-inference/*.json
+            ${{ runner.temp }}/cowork-inference/*.png
+            ${{ runner.temp }}/cowork-inference/native-*.log
+            ${{ runner.temp }}/cowork-inference/file/
+            ${{ runner.temp }}/cowork-inference/skill/
+          if-no-files-found: warn
+
+  cowork-inference-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1]
+    name: Cowork desktop tasks · macOS
+    runs-on: macos-15-intel
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: def4efd70454001cad3e027618cc9608dd85e2ec
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - name: Install and verify Claude Desktop
+        run: bash scripts/cowork-inference/macos/install-desktop.sh
+      - name: Install UG checkout and pinned Claude CLI
+        run: bash scripts/cowork-inference/macos/install-dependencies.sh
+      - name: Configure and assert Cowork inference through macOS Accessibility
+        id: cowork-inference
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py'
+      - name: Assert Cowork file read
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability file'
+      - name: Assert Cowork skill execution
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability skill'
+      - name: Stop desktop processes
+        if: always()
+        run: |
+          pkill -f '/Applications/Claude.app/Contents/' || test "$?" = 1
+          pkill -x Terminal || test "$?" = 1
+      - name: Upload Cowork inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cowork-inference-macos-${{ matrix.attempt }}
+          retention-days: 3
+          path: ${{ runner.temp }}/macos-cowork-evidence/
+          if-no-files-found: warn
+
