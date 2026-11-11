@@ -1,6 +1,7 @@
 """Component coverage for metadata discovery and the shared MCP/Skills browser."""
 
 import asyncio
+import contextlib
 import threading
 
 import pytest
@@ -85,6 +86,7 @@ def test_streamed_mcp_metadata_is_ready_before_rows_are_emitted(monkeypatch):
         "token",
         metadata=metadata,
         on_services=on_services,
+        on_progress=lambda *_: None,
     )
     assert reason is None
     assert names == ["cat.one.tool", "cat.two.tool"]
@@ -128,6 +130,7 @@ def test_initial_and_streamed_mcp_choices_have_identical_details(monkeypatch):
     def discover(workspace, profile, *, on_services, metadata, **kwargs):
         metadata["cat.sch.docs"] = details
         on_services(["cat.sch.docs"])
+        return ["cat.sch.docs"], None
 
     monkeypatch.setattr(mcp, "discover_all_mcp_service_names", discover)
     streamed = []
@@ -271,6 +274,17 @@ def test_rendered_browser_scrolls_details_in_small_terminals(columns, rows):
             offset = len(raw)
             return "\n".join(screen.display)
 
+        async def eventually_shows(*expected):
+            # Windows delivers pipe input via an executor thread; poll rather than sleep.
+            text = rendered()
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(5):
+                    while not all(item in text for item in expected):
+                        await asyncio.sleep(0.02)
+                        text = rendered()
+            for item in expected:
+                assert item in text
+
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
             choices = [
                 CatalogChoice(
@@ -298,20 +312,11 @@ def test_rendered_browser_scrolls_details_in_small_terminals(columns, rows):
             )
             task = asyncio.create_task(question.ask_async())
             try:
-                await asyncio.sleep(0.1)
-                assert "Select" in rendered()
-                assert "UC location" in rendered()
-                assert "tool0" in rendered()
-                assert "[ ]" in rendered()
-                assert "✗" in rendered()
+                await eventually_shows("Select", "UC location", "tool0", "[ ]", "✗")
                 pipe.send_text("\x1b[6~")  # One Page Down visibly moves the detail pane
-                await asyncio.sleep(0.1)
-                text = rendered()
-                assert "Updated:" in text
-                assert "2026-10-15" in text
+                await eventually_shows("Updated:", "2026-10-15")
                 pipe.send_text("\x1b[B")  # Next choice resets details to the top
-                await asyncio.sleep(0.1)
-                assert "Full name: cat.sch.tool1" in rendered()
+                await eventually_shows("Full name: cat.sch.tool1")
                 pipe.send_text(" \r")
                 assert await asyncio.wait_for(task, 2) == ["1"]
             finally:

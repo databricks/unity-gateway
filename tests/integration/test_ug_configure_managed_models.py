@@ -181,7 +181,11 @@ def test_managed_fixture_claude_model_picker_reflects_the_config(live_session, w
 
 @pytest.mark.managed_fixture
 @pytest.mark.codex
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+@pytest.mark.parametrize(
+    "routing",
+    ["0", pytest.param("1", marks=pytest.mark.codex_smart_routing)],
+    ids=["routing-off", "routing-on"],
+)
 def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, routing):
     """Scenario: configure Codex from an injected model list containing an unknown GPT model.
 
@@ -207,7 +211,12 @@ def test_ug_configure_managed_codex_catalog_fallback(live_session, workspace, ro
     assert fallback.get("tool_mode") is None, fallback
     assert fallback.get("input_modalities") == ["text"], fallback
     assert fallback.get("context_window") == 32768, fallback
-    assert fallback.get("default_reasoning_level") == "none", fallback
+    assert fallback.get("default_reasoning_level") == "medium", fallback
+    assert fallback.get("supported_reasoning_levels") == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ], fallback
 
     session.env["ENABLE_SMART_ROUTING_V2"] = routing
     with AgentTerminal(
@@ -266,6 +275,7 @@ def test_managed_fixture_claude_smart_routing_banner(live_session, workspace):
 @pytest.mark.managed_fixture
 @pytest.mark.codex
 @pytest.mark.harness_latest
+@pytest.mark.codex_smart_routing
 def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
     """Scenario: an admin config lists Codex models with smart routing enabled, and launch uses
     the first-prompt-and-subagent selector.
@@ -273,7 +283,7 @@ def test_managed_fixture_codex_smart_routing_banner(live_session, workspace):
     Expected: `ug configure` applies the config without the personal agent selector, and the
     selector routes the first real prompt: the TUI shows the Unity Gateway Smart Router banner
     naming the selected model, the routed answer completes the file task, and the session exits
-    normally. The managed default alone routes only subagents; the skill toggle journeys cover it.
+    normally. The managed default alone leaves Codex unrouted; its launch-only test covers it.
     """
     session = live_session
     task = FileTask(session)

@@ -4,10 +4,10 @@ import json
 import re
 from decimal import ROUND_HALF_UP, Decimal
 
-from tests.integration.utils.terminal import AgentTerminal
+from tests.integration.utils.terminal import AgentTerminal, TerminalProcess
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, CodingAgent
+from .helpers.constants import CLAUDE, CODEX, MANAGED_PATHS, CodingAgent
 from .helpers.workspace import Workspace
 
 CUJ_NAME = "CUJ 5 · Budget-driven defaults"
@@ -92,12 +92,42 @@ class TestCujBudgetDefaultsBelowTier(_BudgetDefaultsBase):
 
 
 class TestCujBudgetDefaults(_BudgetDefaultsBase):
+    def _monthly_personal_spend_status(self, workspace):
+        """Read the fixed budget's monthly per-user limit; the SDK has no typed endpoint."""
+        seen, token = set(), None
+        matches = []
+        for _ in range(100):
+            params = {"page_size": "100"}
+            if token:
+                params["page_token"] = token
+            result = workspace.client.api_client.do(
+                "GET", "/api/ai-gateway/v2/budget-spend-statuses", query=params
+            )
+            for budget in result.get("budget_spend_statuses", []):
+                if budget["name"].rsplit("/", 1)[-1] == self.BUDGET_ID:
+                    matches.extend(
+                        status
+                        for status in budget["alert_spend_statuses"]
+                        if status["scope_type"] == "ALERT_CONFIGURATION_SCOPE_TYPE_PER_USER"
+                        and status["time_period"] == "MONTH"
+                    )
+            token = result.get("next_page_token")
+            if not token:
+                break
+            assert token not in seen, "Budget pagination repeated a token"
+            seen.add(token)
+        else:
+            raise AssertionError("Budget pagination exceeded 100 pages")
+        assert len(matches) == 1, f"Expected one monthly personal limit: {matches}"
+        return matches[0]
+
     def test_bare_ug_shows_luna_recommendation_and_starts_codex(self, cuj):
         """Scenario: launch bare ``ug`` with the fixed 1% Luna budget tier active.
 
-        Expected: the read-only `usage` command reports the backend's spend and threshold, then
-        the real backend recommends Codex/Luna, the launch panel displays that recommendation, and
-        the native Codex TUI starts and exits normally, without budget writes or an inference task.
+        Expected: read-only `usage --all` reports the fixed budget's monthly personal spend,
+        threshold, and percentage within live readings before and after the command. The real
+        backend recommends Codex/Luna, the launch panel displays that recommendation, and the
+        native Codex TUI starts and exits normally, without budget writes or an inference task.
         Applying the recommended Luna model over the managed Sol default is outside this coverage.
         """
         session, workspace, _ = cuj
@@ -129,31 +159,33 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
             ]
         )
 
-        before_usage = workspace.client.api_client.do(
+        before_usage = self._monthly_personal_spend_status(workspace)
+        # Use the full list so other budgets cannot displace the fixed budget from the top five.
+        usage = session.run("usage", "--all", timeout=120)
+        after_usage = self._monthly_personal_spend_status(workspace)
+        recommendation = workspace.client.api_client.do(
             "POST", path=config_path + ":recommendModel", body={}
         )
-        usage = session.run("usage", timeout=120)
-        after_usage = workspace.client.api_client.do(
-            "POST", path=config_path + ":recommendModel", body={}
-        )
-        for recommendation in (before_usage, after_usage):
-            assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
-            assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
+        assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
+        assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
 
+        output = session.redact(usage.stdout + usage.stderr, strip_ansi=True)
+        assert "Your Unity Gateway spend limits" in output, output
         match = re.search(
-            r"Budget spend:\s*\$([\d,]+\.\d{2})\s+of\s+\$([\d,]+\.\d{2})\s+\((\d+)%\)",
-            session.redact(usage.stdout + usage.stderr),
+            rf"([\d.]+)% used\s+Monthly personal limit \(budget {self.BUDGET_ID[:8]}\)"
+            r"\s+\$([\d,]+\.\d{2}) of \$([\d,]+\.\d{2}) used",
+            output,
         )
-        assert match, usage.stdout + usage.stderr
-        displayed_spend, displayed_threshold, displayed_percent = match.groups()
+        assert match, output
+        displayed_percent, displayed_spend, displayed_threshold = match.groups()
         displayed_spend = Decimal(displayed_spend.replace(",", ""))
         displayed_threshold = Decimal(displayed_threshold.replace(",", ""))
         cent = Decimal("0.01")
 
-        before_spend = Decimal(str(before_usage["current_spend"]))
-        after_spend = Decimal(str(after_usage["current_spend"]))
-        before_threshold = Decimal(str(before_usage["effective_threshold"]))
-        after_threshold = Decimal(str(after_usage["effective_threshold"]))
+        before_spend = Decimal(str(before_usage["spend"]))
+        after_spend = Decimal(str(after_usage["spend"]))
+        before_threshold = Decimal(str(before_usage["threshold"]))
+        after_threshold = Decimal(str(after_usage["threshold"]))
         assert before_spend <= after_spend, (before_usage, after_usage)
         assert before_threshold == after_threshold, (before_usage, after_usage)
         assert displayed_threshold == before_threshold.quantize(cent, rounding=ROUND_HALF_UP)
@@ -163,9 +195,9 @@ class TestCujBudgetDefaults(_BudgetDefaultsBase):
             <= after_spend.quantize(cent, rounding=ROUND_HALF_UP)
         ), (before_usage, after_usage, displayed_spend)
         assert (
-            int(format(float(before_spend / before_threshold), ".0%").removesuffix("%"))
-            <= int(displayed_percent)
-            <= int(format(float(after_spend / after_threshold), ".0%").removesuffix("%"))
+            Decimal(str(before_usage["percent_consumed"]))
+            <= Decimal(displayed_percent)
+            <= Decimal(str(after_usage["percent_consumed"]))
         ), (before_usage, after_usage, usage)
 
         with AgentTerminal(session, CODEX, [str(session.binary)], "budget-luna") as tui:
@@ -231,3 +263,90 @@ class TestCujBudgetDefaultsExplicitClaude(_BudgetDefaultsBase):
                 "Claude's native Sonnet model header",
             )
             tui.exit_normally()
+
+
+class TestCujBudgetDefaultsExplicitClaudeModel(_BudgetDefaultsBase):
+    def test_ug_claude_model_flag_keeps_settings_under_budget_tier(self, cuj):
+        """Scenario: above the tier, launch ``ug claude --model <Sonnet id>``, then plain
+        ``ug claude``.
+
+        Expected: the backend still recommends Codex/Luna and the launch displays it, and Claude's
+        native header selects Sonnet. Neither launch changes the user settings file or the
+        OS-managed settings file: both stay byte-identical to what ``ug configure`` wrote, with
+        Sonnet as ``ANTHROPIC_MODEL``. Configure runs in a terminal so it writes the OS-managed
+        file. The workspace publishes Sonnet as its only Claude model, so
+        the explicit model equals the admin default; this checks that an explicit ``--model``
+        writes no file, not that it switches models. No task is submitted.
+        """
+        session, workspace, _ = cuj
+        config = workspace.config()
+        claude = Workspace.agent_configs(config)[CodingAgent.CLAUDE_CODE]
+        assert claude["default_models"]["default_model"] == self.SONNET_MODEL, config
+        assert claude["models"]["model_services"] == [self.SONNET_MODEL], config
+
+        # Unlike `session.configure`, a terminal lets configure write the OS-managed file through
+        # the runner's passwordless sudo, as an interactive user's configure does.
+        with TerminalProcess(
+            session,
+            "ug",
+            [
+                str(session.binary),
+                "configure",
+                "--workspace",
+                self.WORKSPACE_URL,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ],
+            "configure-with-managed-settings",
+        ) as terminal:
+            terminal.finish(timeout=240)
+        recommendation = workspace.client.api_client.do(
+            "POST", path="/api/ai-gateway/v2/coding-agent-configs:recommendModel", body={}
+        )
+        assert recommendation.get("recommended_agent") == CodingAgent.CODEX, recommendation
+        assert recommendation.get("recommended_model") == self.LUNA_MODEL, recommendation
+
+        user_settings = session.home / ".claude" / "ucode-settings.json"
+        managed_settings = MANAGED_PATHS[0]
+        assert managed_settings.is_file(), "configure in a terminal wrote no managed settings"
+        configured = {path: path.read_bytes() for path in (user_settings, managed_settings)}
+        for path, content in configured.items():
+            assert json.loads(content)["env"]["ANTHROPIC_MODEL"] == self.SONNET_MODEL, path
+
+        with AgentTerminal(
+            session,
+            CLAUDE,
+            [str(session.binary), CLAUDE, "--model", self.SONNET_MODEL],
+            "explicit-claude-model",
+        ) as tui:
+            tui.boot(timeout=240)
+            transcript = session.redact(
+                "".join(tui.output) + "\n" + tui.visible,
+                strip_ansi=True,
+            )
+            assert re.search(
+                rf"Recommended agent is Codex with model {re.escape(self.LUNA_MODEL)}\.",
+                transcript,
+            ), (
+                "Claude launch did not display the backend recommendation "
+                f"for {self.LUNA_MODEL!r}:\n{transcript}"
+            )
+            tui.wait_for(
+                lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
+                "Claude's native Sonnet model header",
+            )
+            tui.exit_normally()
+        for path, content in configured.items():
+            assert path.read_bytes() == content, f"`--model` launch rewrote {path}"
+
+        with AgentTerminal(
+            session, CLAUDE, [str(session.binary), CLAUDE], "plain-claude-after-model"
+        ) as tui:
+            tui.boot(timeout=240)
+            tui.wait_for(
+                lambda text: re.search(r"Claude Sonnet 4\.6\s*·", text),
+                "Claude's native Sonnet model header",
+            )
+            tui.exit_normally()
+        for path, content in configured.items():
+            assert path.read_bytes() == content, f"plain launch rewrote {path}"

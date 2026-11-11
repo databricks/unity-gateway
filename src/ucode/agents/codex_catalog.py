@@ -13,9 +13,12 @@ from pathlib import Path
 from ucode.codex_config import ModelVisibility
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.string_utils import model_picker_label
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
+_GPT_FALLBACK_EFFORTS = ("low", "medium", "high")
+_PRE_REASONING_GPT_PREFIXES = ("gpt-3", "gpt-4", "databricks-gpt-3", "databricks-gpt-4")
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -25,6 +28,8 @@ _HOSTED_CAPABILITIES = {
     "glm-5-3": (["text"], ["low", "high", "max"]),
     "glm-5-3-flash": (["text", "image"], ["low", "high", "max"]),
     "kimi-k3": (["text", "image"], ["low", "high", "max"]),
+    "deepseek-v4-1-flash": (["text", "image"], ["low", "high", "xhigh", "max"]),
+    "deepseek-v4-1-flash-1017": (["text", "image"], ["low", "high", "xhigh", "max"]),
 }
 _HOSTED_DEFAULTS = {
     "input_modalities": ["text"],
@@ -56,6 +61,12 @@ def _model_key(slug: str) -> str:
     return codex_model_id(slug).removeprefix("system.ai.").replace(".", "-")
 
 
+def _reasoning_levels(efforts) -> list[dict]:
+    return [
+        {"effort": effort, "description": f"{effort.capitalize()} reasoning"} for effort in efforts
+    ]
+
+
 def build_codex_catalog(
     bundled_models: list[dict],
     names: list[str],
@@ -65,8 +76,9 @@ def build_codex_catalog(
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
-    identity/visibility/order. Only requested slugs are visible. Hidden aliases
-    for selected GPTs support the smart router's native-ID translation.
+    slug/visibility/order. Services without native metadata get a picker label from their
+    last name segment, or the full id when labels collide. Only requested slugs are visible.
+    Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
     by_slug = {model["slug"]: model for model in bundled_models}
     by_key = {_model_key(slug): model for slug, model in by_slug.items()}
@@ -76,13 +88,16 @@ def build_codex_catalog(
         if native is not None:
             model = copy.deepcopy(native)
         else:
-            if _model_key(name).startswith(("gpt-", "databricks-gpt-")):
-                if warn is not None:
-                    warn(
-                        f"Codex is missing metadata for managed GPT model '{name}', so UG is "
-                        "falling back to default metadata. Try updating Codex with "
-                        "`ug codex update`."
-                    )
+            key = _model_key(name)
+            missing_gpt = key.startswith(("gpt-", "databricks-gpt-"))
+            # Pre-GPT-5 models reject reasoning efforts, so they keep the none-only default.
+            missing_reasoning_gpt = missing_gpt and not key.startswith(_PRE_REASONING_GPT_PREFIXES)
+            if missing_gpt and warn is not None:
+                warn(
+                    f"Codex is missing metadata for managed GPT model '{name}', so UG is "
+                    "falling back to default metadata. Try updating Codex with "
+                    "`ug codex update`."
+                )
             baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
             if baseline is None:
                 raise RuntimeError(
@@ -91,6 +106,11 @@ def build_codex_catalog(
                 )
             model = copy.deepcopy(baseline)
             model.update(copy.deepcopy(_HOSTED_DEFAULTS))
+            if missing_reasoning_gpt:
+                model.update(
+                    default_reasoning_level="medium",
+                    supported_reasoning_levels=_reasoning_levels(_GPT_FALLBACK_EFFORTS),
+                )
             capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
             if capabilities:
                 modalities, efforts = capabilities
@@ -99,20 +119,22 @@ def build_codex_catalog(
                     context_window=1048576,
                     max_context_window=1048576,
                     default_reasoning_level=efforts[-1],
-                    supported_reasoning_levels=[
-                        {"effort": effort, "description": f"{effort.capitalize()} reasoning"}
-                        for effort in efforts
-                    ],
+                    supported_reasoning_levels=_reasoning_levels(efforts),
                 )
             model["description"] = f"{name} served on the Databricks AI Gateway."
+            model["display_name"] = model_picker_label(name.rsplit(".", 1)[-1])
         model.update(
             slug=name,
-            display_name=name,
             visibility=ModelVisibility.LIST,
             supported_in_api=True,
             priority=len(models),
         )
         models.append(model)
+    labels = [model["display_name"] for model in models]
+    for model in models:
+        # Readable labels may collide across catalogs/schemas; the full id is unique.
+        if labels.count(model["display_name"]) > 1:
+            model["display_name"] = model["slug"]
     requested = set(names)
     aliases = {}
     for model in models:

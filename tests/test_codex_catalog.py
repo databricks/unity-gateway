@@ -43,10 +43,33 @@ def test_gpt_metadata_preserved_with_admin_identity_and_order(bundled):
                 assert model[key] == value
         assert model["priority"] == priority
         assert model["visibility"] == "list"
-        assert model["display_name"] == names[priority]
+        assert model["display_name"] == native["display_name"]
         assert model["supported_in_api"] is True
     models[0]["future_field"]["nested"].append(2)
     assert bundled == original
+
+
+def test_hosted_services_get_readable_labels_and_keep_full_slugs(bundled):
+    names = ["system.ai.kimi-k3", "main.team.custom", "plain"]
+    models = catalog.build_codex_catalog(bundled, names)["models"]
+    assert [(m["slug"], m["display_name"]) for m in models] == [
+        ("system.ai.kimi-k3", "Kimi K3"),
+        ("main.team.custom", "Custom"),
+        ("plain", "Plain"),
+    ]
+
+
+def test_duplicate_labels_fall_back_to_full_ids_but_not_hidden_aliases(bundled):
+    names = ["system.ai.kimi-k3", "main.team.kimi-k3", "system.ai.other", "system.ai.gpt-6-astra"]
+    models = catalog.build_codex_catalog(bundled, names)["models"]
+    assert [m["display_name"] for m in models[:4]] == [
+        "system.ai.kimi-k3",
+        "main.team.kimi-k3",
+        "Other",
+        "gpt-6-astra",
+    ]
+    assert models[4]["slug"] == "gpt-6-astra"
+    assert models[4]["visibility"] == "hide"
 
 
 def test_only_selected_gpt_models_get_hidden_routing_aliases(bundled):
@@ -69,20 +92,42 @@ def test_missing_gpt_uses_generic_compatibility_metadata(bundled, name):
     assert model["tool_mode"] is None
     assert model["input_modalities"] == ["text"]
     assert model["context_window"] == 32768
-    assert model["default_reasoning_level"] == "none"
+    assert model["default_reasoning_level"] == "medium"
+    assert model["supported_reasoning_levels"] == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ]
     assert warnings == [
         f"Codex is missing metadata for managed GPT model '{name}', so UG is falling "
         "back to default metadata. Try updating Codex with `ug codex update`."
     ]
 
 
+@pytest.mark.parametrize("name", ["system.ai.gpt-4o", "gpt-4.1", "databricks-gpt-4o-mini"])
+def test_missing_pre_reasoning_gpt_keeps_none_only_reasoning(bundled, name):
+    model = catalog.build_codex_catalog(bundled, [name])["models"][0]
+
+    assert model["default_reasoning_level"] == "none"
+    assert model["supported_reasoning_levels"] == [
+        {"effort": "none", "description": "Default model behavior"}
+    ]
+
+
 def test_missing_managed_gpt_keeps_hidden_native_alias(bundled):
-    models = catalog.build_codex_catalog(bundled, ["system.ai.gpt-99"])["models"]
+    models = catalog.build_codex_catalog(bundled, ["system.ai.gpt-6-1-sol"])["models"]
 
     assert [(model["slug"], model["visibility"]) for model in models] == [
-        ("system.ai.gpt-99", "list"),
-        ("gpt-99", "hide"),
+        ("system.ai.gpt-6-1-sol", "list"),
+        ("gpt-6.1-sol", "hide"),
     ]
+    assert models[1]["default_reasoning_level"] == "medium"
+    assert models[1]["supported_reasoning_levels"] == [
+        {"effort": "low", "description": "Low reasoning"},
+        {"effort": "medium", "description": "Medium reasoning"},
+        {"effort": "high", "description": "High reasoning"},
+    ]
+    assert models[1]["supported_reasoning_levels"] is not models[0]["supported_reasoning_levels"]
 
 
 def test_legacy_gpt_alias_uses_native_metadata(bundled):
@@ -103,6 +148,9 @@ def test_generic_non_gpt_uses_conservative_ordinary_tool_defaults(bundled):
     assert first["input_modalities"] == ["text"]
     assert first["context_window"] == first["max_context_window"] == 32768
     assert first["default_reasoning_level"] == "none"
+    assert first["supported_reasoning_levels"] == [
+        {"effort": "none", "description": "Default model behavior"}
+    ]
     assert first["default_reasoning_summary"] == "none"
     assert first["supports_search_tool"] is False
     assert first["use_responses_lite"] is False
@@ -120,6 +168,8 @@ def test_generic_non_gpt_uses_conservative_ordinary_tool_defaults(bundled):
         ("glm-5-3", ["text"], ["low", "high", "max"]),
         ("system.ai.glm-5-3-flash", ["text", "image"], ["low", "high", "max"]),
         ("system.ai.kimi-k3", ["text", "image"], ["low", "high", "max"]),
+        ("system.ai.deepseek-v4-1-flash", ["text", "image"], ["low", "high", "xhigh", "max"]),
+        ("system.ai.deepseek-v4-1-flash-1017", ["text", "image"], ["low", "high", "xhigh", "max"]),
     ],
 )
 def test_known_hosted_capabilities(bundled, name, modalities, efforts):
