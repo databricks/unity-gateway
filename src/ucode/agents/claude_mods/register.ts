@@ -289,7 +289,7 @@ export function register(on: On, options: PluginOptions): void {
         : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!effortState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
         Text({ bold: true, children: ['Choose your main model'] }),
-        Text({ dimColor: true, children: ['Leads your session. Auto routes subagent tasks.'] }),
+        Text({ dimColor: true, children: ['Your main conversation uses this model. Smart Routing selects models for subagent tasks.'] }),
         Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
           Button({key:'auto-main-model-' + index,
             plain:true, autoFocus:item.model === model ? true : undefined,
