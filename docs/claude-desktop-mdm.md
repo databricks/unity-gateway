@@ -45,9 +45,13 @@ publication/removal so another elevated run can retry. Local `configLibrary` pro
 not changed by global provisioning.
 
 Component tests cover rendering, credential isolation, ownership, failure/retry, and cleanup.
-Native global authentication, connector deduplication, and full UI lifecycle validation are
-still required before fleet rollout. The separate native-loading test branch establishes
-the organization-plugin contract, not this global publisher's end-to-end correctness.
+The separate [Windows deployment run](https://github.com/databricks/unity-gateway/actions/runs/42948740241)
+passed initial/repeated publication, standard-user helper access and write protection,
+rejection of inherited provisioning credentials, connector/tracing withdrawal, locked-file
+failure/retry, and revert while preserving unrelated policy and profiles.
+Live consuming-user OAuth, global UI inference, and MCP calls/deduplication remain unverified
+and are still required before fleet rollout. CI has only provisioning bearer credentials;
+these deployment checks do not establish authenticated end-user operation.
 
 ## macOS
 

@@ -1982,3 +1982,10 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+Native Windows global deployment validation (separate test branch):
+[run 42948740241](https://github.com/databricks/unity-gateway/actions/runs/42948740241)
+passed public configure/reconfigure, standard-user read/execute and write denial,
+provisioning-credential rejection, connector/tracing withdrawal, locked-file failure/retry,
+and revert with unrelated policy/profile preservation. Live consuming-user OAuth, global
+UI inference, and MCP calls/deduplication are not covered by this deployment test.

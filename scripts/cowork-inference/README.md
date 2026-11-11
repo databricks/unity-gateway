@@ -130,3 +130,9 @@ Results explicitly report live consumer OAuth and MCP calls as unverified. This 
 machine-deployment coverage; it does not drive global-policy inference through the UI.
 A consuming-user Databricks browser login is required for that remaining coverage.
 The existing user-scope accessibility inference job remains unchanged.
+
+The [November 11 deployment run](https://github.com/databricks/unity-gateway/actions/runs/42948740241)
+passed every deployment assertion above, including standard-user isolation and complete
+update/failure/retry/revert checks. Live consumer OAuth, UI inference through global policy,
+and MCP calls/deduplication remain unverified. Native testing exposed and fixed subprocess
+text-input handling and inherited PowerShell module-path incompatibility in ACL validation.
