@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand, startStatusBandTurn } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -10,7 +10,6 @@ import {
   RECIPE_FIELD,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
-import { startStatusBandTurn } from './smart-routing-status.ts';
 import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 
@@ -154,19 +153,27 @@ export function register(on: On, options: PluginOptions): void {
 
   // Claude permits one unmatched turn.step handler, so orchestration and savings share it.
   on('turn.step', async function* ($, e, forward) {
+    let current: Environment = {};
+    if (options.orchestratorInstructions || enabled) {
+      try { current = await readSessionEnvironment($); } catch {}
+    }
     async function* next(request: typeof e) {
       const agent = str(request.agentId);
       let trackSavings = false;
       let baseline: string | null = null;
       try {
-        trackSavings = await ready($);
-        if (trackSavings) {
-          if (agent === null) {
-            lastMainModel = str(request.model) ?? lastMainModel;
+        trackSavings = await ready($, current);
+        // Keep selection history while accounting is off. A request may override its
+        // model without changing the user's selection for later main/child work.
+        if (enabled) {
+          const selected = await mainModel($);
+          if (agent === null && selected) {
+            lastMainModel = selected;
             firstMainModel ??= lastMainModel;
             firstPromptSeen = true;
             userSwitched ||= lastMainModel !== firstMainModel;
-          } else baseline = lastMainModel ?? (await mainModel($));
+            dirty = true;
+          } else baseline = selected ?? lastMainModel;
         }
       } catch {
         trackSavings = false;
@@ -184,7 +191,8 @@ export function register(on: On, options: PluginOptions): void {
       } catch {}
       return result;
     }
-    const active = await readOrchestratorState($, options);
+    const active = Boolean(options.orchestratorInstructions) && isRoutingEnabled(current)
+      && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
     if (active !== orchestratorActive) {
       orchestratorActive = active;
       // A CLI/skill toggle changes the session file without notifying this process.
@@ -282,11 +290,11 @@ const entries = new Map<string, Entry>();
 // when the user submits the first prompt so a preceding /model choice is honored.
 let startModel: string | null = null;
 let firstPromptSeen = false;
-// The model the main loop last named, used as the subagent request's baseline.
+// The selected main model, used as the subagent request's baseline.
 let lastMainModel: string | null = null;
-// The model the main loop's first request named (first-prompt routing's pick).
+// The selected model at the first main request (first-prompt routing's pick).
 let firstMainModel: string | null = null;
-// Whether a main request has since named another model, which only the user does.
+// Whether the selected main model has changed since the first request.
 let userSwitched = false;
 let seeding: Promise<void> | undefined;
 let estimate: Estimate | null = null;
@@ -370,10 +378,10 @@ async function readSavingsFlag($: EngineInterface): Promise<string | undefined> 
   }
 }
 
-async function readSavingsState($: EngineInterface): Promise<boolean> {
+async function readSavingsState($: EngineInterface, snapshot?: Environment): Promise<boolean> {
   if (!enabled) return false;
   try {
-    const current = await readSessionEnvironment($);
+    const current = snapshot ?? await readSessionEnvironment($);
     return current.ENABLE_SMART_ROUTING_SAVINGS === '1';
   } catch {
     return false;
@@ -382,12 +390,12 @@ async function readSavingsState($: EngineInterface): Promise<boolean> {
 
 // State is seeded once per module instance, by whichever hook runs first;
 // concurrent hooks wait on the same load.
-async function ready($: any): Promise<boolean> {
+async function ready($: any, snapshot?: Environment): Promise<boolean> {
   try {
-    if (!await readSavingsState($)) return false;
+    if (!enabled) return false;
     seeding ??= loadUsage($);
     await seeding;
-    return true;
+    return await readSavingsState($, snapshot);
   } catch {
     return false;
   }
@@ -412,26 +420,12 @@ function estimateOf(value: any): Estimate | null {
   return amount && percent ? { saved: value.saved, amount, percent } : null;
 }
 
-// The pricer's last stdout line; a failed run drops the estimate, which would be stale.
-async function runPricer($: any): Promise<Estimate | null> {
-  try {
-    const run = await $.process.run([...pricer, '--usage', usagePath], {
-      timeoutMs: PRICER_TIMEOUT_MS,
-    });
-    if (run?.exitCode === 0) {
-      const out = JSON.parse(String(run.stdout ?? '').trim().split('\n').pop() ?? '');
-      if (out && typeof out === 'object') return estimateOf(out.savings);
-    }
-  } catch {}
-  return null;
-}
-
 async function writeAndPrice($: any): Promise<void> {
   dirty = false;
   try {
-    await $.fs.write(
-      usagePath,
-      JSON.stringify({
+    const run = await $.process.run([...pricer, '--usage', usagePath, '--write-usage'], {
+      timeoutMs: PRICER_TIMEOUT_MS,
+      stdin: JSON.stringify({
         version: USAGE_VERSION,
         start_model: startModel,
         main_model: lastMainModel,
@@ -440,14 +434,16 @@ async function writeAndPrice($: any): Promise<void> {
         user_switched: userSwitched,
         entries: Array.from(entries.values()),
       }),
-    );
+    });
+    if (run?.exitCode !== 0) throw new Error('Could not persist savings usage.');
+    const out = JSON.parse(String(run.stdout ?? '').trim().split('\n').pop() ?? '');
+    setEstimate($, estimateOf(out?.savings));
   } catch (error) {
     // Retry at the next turn.complete rather than pricing a file that is not there.
     dirty = true;
     setEstimate($, null);
     throw error;
   }
-  setEstimate($, await runPricer($));
 }
 
 function setEstimate($: EngineInterface, next: Estimate | null): void {

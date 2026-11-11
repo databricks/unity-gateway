@@ -242,15 +242,18 @@ in effect when it ran.
 Under first-prompt routing, requests before the user changes the main model are priced
 against the model selected when the first prompt was submitted, before the router's
 `/model` command. A manual selection before that prompt becomes the baseline. Later
-model changes affect only subsequent usage. Claude's native `$.session.model()` returns
+model changes affect only subsequent usage, including changes made during a turn with
+savings disabled. Request-specific model overrides leave the selected main model unchanged.
+Claude's native `$.session.model()` returns
 the resolved model ID, including for configured family aliases such as `sonnet`.
 
-After each turn the mod writes those sums to `savings_usage`, a file in the launch's
-temporary directory. It then runs the `savings_pricer` argv
-(`python -P -m ucode.smart_routing.savings`), which prices the sums from the
+After each turn the mod passes a snapshot of those sums on stdin to `savings_pricer`
+(`python -P -m ucode.smart_routing.savings --write-usage`). The pricer atomically replaces
+`savings_usage` in the launch's temporary directory, then prices the sums from the
 workspace's cached endpoint rates and prints the estimate's parts (direction, amount,
 percent) as one JSON line. Each savings-enabled routed launch
-refreshes that cache on a background thread. The cache key includes the workspace ID
+refreshes that cache on a background thread. Concurrent refreshes merge their model sets
+under a file lock. The cache key includes the workspace ID
 on shared hosts, since dollar rates can differ between organizations. An estimate is hidden, not undercounted,
 when any served or baseline model has no rate. The orchestrator version is passed
 as `orchestrator_version`.

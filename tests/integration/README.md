@@ -1852,11 +1852,15 @@ Those component sessions explicitly allow Agent in the default permission mode; 
 do not exercise the auto-mode safety classifier. Alias checks also accept the context
 selector retained by Claude 2.1.290.
 Native model commands and a blocked-prompt replay verify baseline capture before routing
-and preserve prior usage after later model changes. CLI off/on excludes disabled turns
-from native usage totals. Native UI component tests cover mounted-row updates after
+and preserve prior usage after later model changes, including switching away and back
+while accounting is off. Request-specific model overrides retain the selected main/child
+baseline in native SDK tests. CLI off/on excludes disabled turns from native usage totals.
+Native UI component tests cover mounted-row updates after
 CLI toggles and hiding stale estimates on failed usage writes. Pricer subprocesses read
-the saved session controls. Pricing tests keep shared-host workspace cache paths and
-model versions distinct; shared-host launch wiring is not covered.
+the saved session controls and validate snapshot persistence/rejection. Pricing tests keep
+shared-host workspace cache paths and concurrently refreshed model sets distinct, reject
+empty prices and distinguish zero savings from sub-cent amounts. Shared-host launch wiring
+is not covered.
 Live savings accumulation, display, and session off/on are not covered by the
 integration suite.
 

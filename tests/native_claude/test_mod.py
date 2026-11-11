@@ -311,7 +311,10 @@ def test_savings_baseline_uses_manual_model_before_first_prompt(native_binary, t
     assert recorded["entries"][0]["served"] == selected
 
 
-def test_savings_baseline_survives_routed_replay_and_later_model_change(native_binary, tmp_path):
+@pytest.mark.parametrize("accounting_off", [False, True])
+def test_savings_baseline_survives_routed_replay_and_later_model_change(
+    native_binary, tmp_path, request, accounting_off
+):
     """Exercise the native block/model/replay sequence used by the PTY, then a user switch."""
     root = tmp_path / "session"
     options = _savings_options(root, first_prompt=True)
@@ -326,7 +329,19 @@ def test_savings_baseline_survives_routed_replay_and_later_model_change(native_b
         "    marker.write_text('blocked')\n"
         "    print(json.dumps({'decision': 'block', 'reason': 'First prompt captured'}))\n"
     )
-    selected, routed, later = "claude-haiku-4-5", "claude-opus-4-8", "claude-sonnet-4-6"
+    selected, routed, later = "claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "1",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
+        "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_SMART_ROUTING_SAVINGS": "1",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": selected,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": routed,
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": later,
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    request.addfinalizer(lambda: shutil.rmtree(controls.parent))
     replies = [
         {
             "content": [{"type": "text", "text": "done"}],
@@ -337,17 +352,19 @@ def test_savings_baseline_survives_routed_replay_and_later_model_change(native_b
             "usage": {"input_tokens": 20, "output_tokens": 7},
         },
     ]
+    if accounting_off:
+        replies.append(
+            {
+                "content": [{"type": "text", "text": "third done"}],
+                "usage": {"input_tokens": 30, "output_tokens": 11},
+            }
+        )
     with (
         messages_api(replies) as (api, requests),
         Session(
             native_binary,
             root,
-            {
-                "ENABLE_SMART_ROUTING_SAVINGS": "1",
-                "ANTHROPIC_DEFAULT_HAIKU_MODEL": selected,
-                "ANTHROPIC_DEFAULT_OPUS_MODEL": routed,
-                "ANTHROPIC_DEFAULT_SONNET_MODEL": later,
-            },
+            env,
             api=api,
             options=options,
             hooks={
@@ -364,31 +381,47 @@ def test_savings_baseline_survives_routed_replay_and_later_model_change(native_b
             },
         ) as session,
     ):
-        session.send("/model haiku")
+        session.send("/model opus")
         blocked_result = session.send("Reply with done.")
         assert blocked_result["num_turns"] == 0
         assert "First prompt captured" in blocked_result["result"]
         assert blocked.read_text() == "blocked"
         assert requests == []
         # The PTY sends this native command after the hook has blocked the prompt.
-        session.send("/model opus")
+        session.send("/model sonnet")
         assert session.send("Reply with done.")["result"] == "done"
         first = _recorded_usage(Path(options["savings_usage"]), 1, output_tokens=5)
-        session.send("/model sonnet")
-        assert session.send("Now reply with second done.")["result"] == "second done"
-        recorded = _recorded_usage(Path(options["savings_usage"]), 2, output_tokens=12)
+        steps = [("disable" if accounting_off else None, "haiku", "second done")]
+        if accounting_off:
+            steps.append(("enable", "sonnet", "third done"))
+        for action, model, answer in steps:
+            if action:
+                toggle = subprocess.run(
+                    [sys.executable, "-m", "ucode.cli", "claude", f"--{action}-smart-routing"],
+                    env=env,
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                assert toggle.returncode == 0, toggle.stderr
+            session.send(f"/model {model}")
+            assert session.send(f"Now reply with {answer}.")["result"] == answer
+        recorded = _recorded_usage(
+            Path(options["savings_usage"]), 2, output_tokens=16 if accounting_off else 12
+        )
 
-    assert [request["model"] for request in requests] == [routed, later]
+    expected_models = [routed, later, routed] if accounting_off else [routed, later]
+    assert [request["model"] for request in requests] == expected_models
     assert first["start_model"] == recorded["start_model"] == selected
     assert recorded["first_main_model"] == routed
     assert recorded["first_prompt_seen"] is True
     assert recorded["user_switched"] is True
-    earlier = next(entry for entry in recorded["entries"] if entry["served"] == routed)
+    earlier = next(entry for entry in recorded["entries"] if entry["before_user_switch"])
     assert first["entries"] == [earlier]
     assert earlier["before_user_switch"] is True
-    current = next(entry for entry in recorded["entries"] if entry["served"] == later)
-    assert current["before_user_switch"] is False
-    assert current["baseline"] == later
+    current = next(entry for entry in recorded["entries"] if not entry["before_user_switch"])
+    assert current["served"] == current["baseline"] == (routed if accounting_off else later)
 
 
 def test_savings_tracking_obeys_cli_session_controls(native_binary, tmp_path):

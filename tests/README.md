@@ -249,7 +249,8 @@ picker while retaining the catalog's display label.
 
 Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's token sums
 (per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
-JSON line). `test_smart_routing_pricing.py` covers endpoint rates, distinct model versions,
+JSON line, snapshot persistence/rejection and zero-dollar display). `test_smart_routing_pricing.py`
+covers endpoint rates, concurrent refreshes of distinct model sets, empty-price rejection,
 and distinct price-cache paths for workspaces sharing a host. Shared-host launch wiring
 is not covered by these component checks.
 The pricer subprocess checks explicit opt-in; unset, empty, zero, and invalid values
@@ -265,7 +266,9 @@ These sessions explicitly allow Agent in the default permission
 mode, keeping auto-mode classifier requests out of the prepared model responses.
 Alias checks accept the context selector retained by Claude 2.1.290. Native model commands
 and a blocked-prompt replay check the pre-routing baseline and preserve earlier usage after
-a later model change. CLI off/on controls exclude disabled turns from the totals; pricer
+a later model change, including switching away and back while accounting is off. Native SDK
+checks keep request-specific model overrides out of the selected main/child baseline.
+CLI off/on controls exclude disabled turns from the totals; pricer
 subprocesses honor the saved
 controls and fall back to inherited settings when the file is malformed. Native UI
 component tests check that off/on hides/restores a mounted row and failed usage writes

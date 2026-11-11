@@ -6,7 +6,8 @@ otherwise have run on the baseline main-agent model::
     saved = sum(tokens * price(baseline)) - sum(tokens * price(model that served them))
 
 per token class. The mod (``agents/claude_mods/register.ts``) sums each turn request's usage by
-(agent, baseline, served) and runs this module on that file after every turn; it prints one JSON
+(agent, baseline, served) and sends this module a snapshot after every turn; it persists the
+snapshot atomically and prints one JSON
 line with the segment the mod draws. A main-agent request is its own baseline, and a subagent's is
 the main model in effect when it ran, so switching models with ``/model`` never reprices earlier
 work. Under first-prompt routing, where the router also picks the main model, requests from before
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
@@ -36,7 +38,7 @@ from ucode.smart_routing.pricing import (
 from ucode.smart_routing.session_env import effective_environment
 
 MODULE = "ucode.smart_routing.savings"
-# The file the mod writes its token sums to, in the launch directory; the mod reads its path from
+# The file holding the mod's token sums, in the launch directory; the mod reads its path from
 # the plugin options, so only the version is shared with it.
 USAGE_FILENAME = "savings-usage.json"
 _USAGE_VERSION = 1
@@ -126,7 +128,9 @@ def savings_segment(saved: Decimal, baseline: Decimal) -> dict[str, object]:
     percent = (abs(saved) / baseline * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP)
     magnitude = abs(saved)
     amount = (
-        "<$0.01" if magnitude < _CENT else f"${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
+        "<$0.01"
+        if 0 < magnitude < _CENT
+        else f"${magnitude.quantize(_CENT, rounding=ROUND_HALF_UP):,}"
     )
     return {"saved": saved >= 0, "amount": amount, "percent": f"{percent}%"}
 
@@ -150,17 +154,39 @@ def main(argv: list[str] | None = None) -> int:
         prog=MODULE, description="Price the Claude mod's token sums as a JSON line."
     )
     parser.add_argument("--usage", type=Path, required=True)
+    parser.add_argument(
+        "--write-usage", action="store_true", help="Save the JSON snapshot on stdin."
+    )
     parser.add_argument("--price-cache", type=Path, required=True)
     parser.add_argument("--baseline-session-start", action="store_true")
     args = parser.parse_args(argv)
+    enabled = (
+        effective_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR) == "1"
+    )
+    if args.write_usage:
+        try:
+            if not enabled:
+                raise ValueError("savings accounting is disabled")
+            document = json.loads(sys.stdin.buffer.read())
+            if (
+                not isinstance(document, dict)
+                or document.get("version") != _USAGE_VERSION
+                or not isinstance(document.get("entries"), list)
+            ):
+                raise ValueError("unsupported savings usage snapshot")
+            from ucode.config_io import atomic_write_json
+
+            atomic_write_json(args.usage, document)
+        except Exception:  # noqa: BLE001 - keep the snapshot in the mod for a later write
+            print(json.dumps({"savings": None}))
+            return 1
     line = (
         usage_output(
             args.usage,
             price_cache=args.price_cache,
             baseline_session_start=args.baseline_session_start,
         )
-        if effective_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTING_SAVINGS_ENV_VAR)
-        == "1"
+        if enabled
         else json.dumps({"savings": None})
     )
     print(line)

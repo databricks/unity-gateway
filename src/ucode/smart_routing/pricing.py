@@ -26,6 +26,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from ucode.os_compatibility.file_lock_cross_os import (
+    acquire_exclusive_file_lock,
+    release_file_lock,
+)
+
 _PRICE_CACHE_VERSION = 1
 _MILLION = Decimal(1_000_000)
 _CONTEXT_SUFFIX_RE = re.compile(r"\[[^\]]*\]$")
@@ -228,24 +233,33 @@ def price_cache_path(app_dir: Path, workspace: str) -> Path:
 def write_price_cache(
     path: Path, prices: Mapping[str, ModelPrice], *, now: float | None = None
 ) -> None:
-    """Atomically replace the price cache so a concurrent pricer never reads a partial file.
+    """Merge refreshed rates without losing models fetched by another launch.
 
     ``prices`` is keyed by any spelling of the model id; entries are stored under ``model_key``.
     """
-    payload = {
-        "version": _PRICE_CACHE_VERSION,
-        "fetched_at": now if now is not None else time.time(),
-        "models": {model_key(model): _dump_price(price) for model, price in prices.items()},
-    }
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, separators=(",", ":"))
-        os.replace(temporary, path)
-    except BaseException:
-        Path(temporary).unlink(missing_ok=True)
-        raise
+    with path.with_name(f"{path.name}.lock").open("a") as lock:
+        acquire_exclusive_file_lock(lock, timeout=5)
+        try:
+            merged = read_price_cache(path) or {}
+            merged.update({model_key(model): price for model, price in prices.items()})
+            payload = {
+                "version": _PRICE_CACHE_VERSION,
+                "fetched_at": now if now is not None else time.time(),
+                "models": {model: _dump_price(price) for model, price in merged.items()},
+            }
+            fd, temporary = tempfile.mkstemp(
+                dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(payload, handle, separators=(",", ":"))
+                os.replace(temporary, path)
+            except BaseException:
+                Path(temporary).unlink(missing_ok=True)
+                raise
+        finally:
+            release_file_lock(lock)
 
 
 def read_price_cache(path: Path) -> dict[str, ModelPrice] | None:
@@ -262,7 +276,9 @@ def read_price_cache(path: Path) -> dict[str, ModelPrice] | None:
     prices = {
         key: price
         for key, raw in models.items()
-        if isinstance(key, str) and (price := _load_price(raw)) is not None
+        if isinstance(key, str)
+        and (price := _load_price(raw)) is not None
+        and (price.input is not None or price.output is not None)
     }
     if not prices:
         return None

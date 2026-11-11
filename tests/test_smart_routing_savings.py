@@ -253,8 +253,9 @@ class TestSavingsSegment:
             "$0.04", "10%"
         )
 
-    def test_sub_cent_amounts_are_not_shown_as_zero(self):
-        assert savings.savings_segment(Decimal("0.004"), Decimal("1")) == saved("<$0.01", "0%")
+    @pytest.mark.parametrize("value,amount", [("0.004", "<$0.01"), ("0", "$0.00")])
+    def test_formats_sub_cent_and_zero_amounts(self, value, amount):
+        assert savings.savings_segment(Decimal(value), Decimal("1")) == saved(amount, "0%")
 
 
 class TestPricerCommand:
@@ -266,6 +267,7 @@ class TestPricerCommand:
         first_prompt: bool = False,
         flag: str | None = "1",
         controls: Path | None = None,
+        snapshot: bytes | None = None,
     ):
         argv = savings.pricer_argv(
             python=sys.executable, price_cache=price_cache, baseline_session_start=first_prompt
@@ -277,23 +279,43 @@ class TestPricerCommand:
             env["UCODE_SESSION_ENV_FILE"] = str(controls)
         if flag is not None:
             env["ENABLE_SMART_ROUTING_SAVINGS"] = flag
+        if snapshot is not None:
+            argv.append("--write-usage")
         # The line must survive an ASCII stdout locale.
         return subprocess.run(
             [*argv, "--usage", str(usage)],
             capture_output=True,
             env=env,
+            input=snapshot,
             timeout=30,
             check=False,
         )
 
-    def test_prints_exactly_one_json_line(self, tmp_path, price_cache):
+    @pytest.mark.parametrize("persist", [False, True])
+    def test_prints_exactly_one_json_line(self, tmp_path, price_cache, persist):
         usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        snapshot = usage.read_bytes() if persist else None
+        if persist:
+            usage.write_text('{"version":1,"entries":[]}', encoding="utf-8")
 
-        result = self.run(price_cache, usage)
+        result = self.run(price_cache, usage, snapshot=snapshot)
 
         assert result.returncode == 0, result.stderr
         assert result.stdout.count(b"\n") == 1
         assert json.loads(result.stdout.decode("utf-8")) == {"savings": saved("$0.18", "60%")}
+        if snapshot is not None:
+            assert json.loads(usage.read_bytes()) == json.loads(snapshot)
+
+    @pytest.mark.parametrize("snapshot", [b"invalid", b"[]", b'{"version":999,"entries":[]}'])
+    def test_rejected_snapshot_preserves_usage(self, tmp_path, price_cache, snapshot):
+        usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        previous = usage.read_bytes()
+
+        result = self.run(price_cache, usage, snapshot=snapshot)
+
+        assert result.returncode == 1
+        assert json.loads(result.stdout) == {"savings": None}
+        assert usage.read_bytes() == previous
 
     def test_never_fails_the_mod(self, tmp_path, price_cache):
         result = self.run(price_cache, tmp_path / "missing.json", first_prompt=True)
@@ -308,17 +330,21 @@ class TestPricerCommand:
         assert result.returncode == 0, result.stderr
         assert json.loads(result.stdout) == {"savings": None}
 
-    def test_pricer_obeys_session_controls(self, tmp_path, price_cache):
+    @pytest.mark.parametrize("persist", [False, True])
+    def test_pricer_obeys_session_controls(self, tmp_path, price_cache, persist):
         usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        snapshot = usage.read_bytes() if persist else None
         controls = tmp_path / "session-env.json"
         for overrides, expected in (
             ({"ENABLE_SMART_ROUTING_SAVINGS": "0"}, None),
             ({}, saved("$0.18", "60%")),
         ):
             controls.write_text(json.dumps(overrides))
-            result = self.run(price_cache, usage, controls=controls)
-            assert result.returncode == 0, result.stderr
+            result = self.run(price_cache, usage, controls=controls, snapshot=snapshot)
+            assert result.returncode == (1 if persist and expected is None else 0), result.stderr
             assert json.loads(result.stdout) == {"savings": expected}
+            if snapshot is not None:
+                assert json.loads(usage.read_bytes()) == json.loads(snapshot)
 
         controls.write_text("invalid JSON")
         fallback = self.run(price_cache, usage, controls=controls)
