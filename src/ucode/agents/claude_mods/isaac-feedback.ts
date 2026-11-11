@@ -4,7 +4,7 @@ import { envBool } from './constants.ts';
 const FEEDBACK_PANE = 'smart-router-feedback';
 const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 // Pass this with /smart-router off when the reason was already collected outside this form and
-// saved through Isaac, so the form doesn't ask again. Only honored when ISAAC_LAUNCH_MODE=omni.
+// saved through Isaac, so the form doesn't ask again. Currently only honored when ISAAC_LAUNCH_MODE=omni.
 const FEEDBACK_COLLECTED_FLAG = '--feedback-collected';
 type FeedbackCategory = 'smart-routing' | 'other';
 
