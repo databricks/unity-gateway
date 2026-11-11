@@ -26,6 +26,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
@@ -35,6 +36,7 @@ from urllib.parse import quote, urlencode, urlparse
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
@@ -414,11 +416,10 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
-        except OSError as exc:
-            # A socket read timeout raises a bare TimeoutError (an OSError), not a
-            # URLError, so it must be caught explicitly or it escapes the whole
-            # discovery flow. Surface it as a reason like every other failure.
-            _debug(f"GET {url}", f"OSError: {exc}")
+        except (OSError, HTTPException) as exc:
+            # Read timeouts, malformed headers, and truncated bodies can escape urllib
+            # without a URLError wrapper. Use the caller's existing retry budget.
+            _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
             reason = f"network error: {exc}"
             if attempt == max_retries:
                 return None, reason
@@ -688,6 +689,22 @@ def list_workspace_budgets(workspace: str, token: str) -> tuple[list[dict], str 
     if not budgets:
         return [], "workspace budget listing returned no budgets"
     return budgets, None
+
+
+def get_usage_dashboard_url(workspace: str, token: str) -> str | None:
+    """Return the caller's published usage dashboard URL, if available.
+
+    This optional link must not prevent displaying spend limits when the dashboard
+    is absent, inaccessible, or temporarily unavailable.
+    """
+    url = f"https://{workspace_hostname(workspace)}/api/ai-gateway/v2/usage-analytics-dashboard"
+    payload, reason = _http_get_json(url, token)
+    if reason is not None or not isinstance(payload, dict):
+        return None
+    dashboard_url = payload.get("dashboard_url")
+    if isinstance(dashboard_url, str) and dashboard_url.strip():
+        return dashboard_url.strip()
+    return None
 
 
 def get_current_user_name(workspace: str, token: str) -> str | None:
@@ -2773,14 +2790,14 @@ AIGW_MCP_SERVICES_SEGMENT = "/ai-gateway/mcp-services/"
 _MCP_SERVICE_NAME_PREFIX = "mcp-services/"
 
 
-def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
+def _mcp_service_full_name(service: dict, required_prefix: str | None) -> str | None:
     """Extract the full UC name from one mcp-service entry, or None if it
     doesn't live under ``required_prefix`` or isn't ACTIVE."""
     name = service.get("name")
     if not isinstance(name, str):
         return None
     name = name.strip().removeprefix(_MCP_SERVICE_NAME_PREFIX)
-    if not name.startswith(required_prefix):
+    if required_prefix is not None and not name.startswith(required_prefix):
         return None
     status = ((service.get("config") or {}).get("connection") or {}).get("status")
     if status is not None and status != "ACTIVE":
@@ -2791,12 +2808,19 @@ def _mcp_service_full_name(service: dict, required_prefix: str) -> str | None:
 def list_mcp_services(
     workspace: str,
     token: str,
-    parent: str = "system.ai",
+    parent: str | None = "system.ai",
     *,
     max_pages: int = 100,
     metadata: dict[str, dict] | None = None,
+    on_services: Callable[[list[str]], None] | None = None,
+    deadline: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
+
+    ``parent=None`` uses the existing metastore-wide list endpoint. That scope is
+    currently documented as internal-only by UC; the workspace picker uses it
+    opportunistically and can fall back to its schema walk if unavailable.
 
     ``metadata``, when provided, receives each accepted service's description and audit
     fields from the same list response. No per-service requests are made.
@@ -2814,39 +2838,60 @@ def list_mcp_services(
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
     """
     hostname = workspace_hostname(workspace)
-    expected_prefix = parent + "."
-    names: list[str] = []
+    expected_prefix = parent + "." if parent is not None else None
+    seen_names: set[str] = set()
     page_token: str | None = None
     seen_tokens: set[str] = set()
     for _ in range(max_pages):
-        params: dict[str, str] = {"parent": f"schemas/{parent}", "view": "BASIC"}
+        if cancel_event is not None and cancel_event.is_set():
+            return sorted(seen_names), "MCP listing cancelled"
+        if deadline is not None and time.monotonic() >= deadline:
+            return sorted(seen_names), "deadline exceeded while listing MCP services"
+        params: dict[str, str] = {"view": "BASIC"}
+        if parent is not None:
+            params["parent"] = f"schemas/{parent}"
+        else:
+            params["page_size"] = str(_UC_LIST_PAGE_SIZE)
         if page_token:
             params["page_token"] = page_token
         url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
-        payload, reason = _http_get_json(url, token, timeout=30)
+        timeout = max(1, min(10, int(deadline - time.monotonic() + 1))) if deadline else 30
+        payload, reason = _http_get_json(url, token, timeout=timeout)
         if payload is None:
-            # First-page failure surfaces the reason (e.g. HTTP 404 for an invalid
-            # location); a mid-pagination blip keeps whatever we already collected.
-            if not names:
-                return [], reason
+            # An interrupted metastore listing is incomplete, even if earlier pages
+            # returned services. Keep the scoped caller's existing behavior.
+            if parent is None or not seen_names:
+                return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
+        new_names: list[str] = []
         for service in data.get("mcp_services") or []:
             if not isinstance(service, dict):
                 continue
             full_name = _mcp_service_full_name(service, expected_prefix)
             if full_name:
-                names.append(full_name)
+                if full_name not in seen_names:
+                    seen_names.add(full_name)
+                    new_names.append(full_name)
                 if metadata is not None:
                     metadata[full_name] = {
                         key: service.get(key)
                         for key in ("comment", "created_by", "create_time", "update_time")
                     }
+        if on_services is not None and new_names:
+            on_services(sorted(new_names))
         page_token = data.get("next_page_token") or None
-        if not page_token or page_token in seen_tokens:
+        if not page_token:
+            break
+        if page_token in seen_tokens:
+            if parent is None:
+                return sorted(seen_names), "MCP listing repeated a page token"
             break
         seen_tokens.add(page_token)
-    return sorted(set(names)), None
+    else:
+        if parent is None:
+            return sorted(seen_names), f"MCP listing exceeded {max_pages} pages"
+    return sorted(seen_names), None
 
 
 def build_mcp_service_url(workspace: str, full_name: str) -> str:
@@ -2909,20 +2954,17 @@ def build_skills_mcp_url(workspace: str, locations: list[str]) -> str:
     return base + "?" + urlencode([("schema", loc) for loc in locations])
 
 
-# Maps the gateway routing dialect a coding tool speaks to the Model Provider
-# Service `provider_type`s it can be backed by. claude speaks Anthropic's API,
-# which the `anthropic`, `amazon_bedrock`, and `bedrock_mantle` provider types
-# serve (Bedrock just exposes different model ids); codex speaks OpenAI's, which
-# the `openai`, `azure_openai`, `microsoft_foundry`, `amazon_bedrock`, and
-# `bedrock_mantle` provider types all serve (the gateway fronts them with the
-# OpenAI surface); gemini speaks Google's, served by a Gemini Enterprise
-# provider. copilot speaks Anthropic's for the Claude targets of anthropic, Bedrock and
-# microsoft_foundry services, and OpenAI's for the other targets of openai, azure_openai and
-# microsoft_foundry services, on the gateway's native route for each API. Tags are the short form produced by `_provider_type_tag`
-# (e.g. `amazon_bedrock`).
+# MPS routes preserve each tool's native API; custom providers must expose that same API.
 _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
-    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle"),
-    "codex": ("openai", "azure_openai", "microsoft_foundry", "amazon_bedrock", "bedrock_mantle"),
+    "claude": ("anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"),
+    "codex": (
+        "openai",
+        "azure_openai",
+        "microsoft_foundry",
+        "amazon_bedrock",
+        "bedrock_mantle",
+        "custom",
+    ),
     "gemini": ("gemini_enterprise",),
     "antigravity": ("gemini_enterprise",),
     "copilot": (
@@ -2936,9 +2978,6 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
 }
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
 _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
-
-# Agents that can only use a Bedrock service's Claude targets.
-_CLAUDE_ONLY_BEDROCK_TOOLS = ("claude", "copilot", "vscode")
 
 # Provider types that expose Bedrock-style model ids (e.g.
 # `us.anthropic.claude-sonnet-4-6`, or region-less `anthropic.claude-*` on
@@ -3172,14 +3211,7 @@ def list_tool_provider_services(
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
-    """Why ``tool`` can't route through ``service``, or None when it can.
-
-    Beyond the provider-type match, only claude (Anthropic) or codex (OpenAI) can use a relayed (subscription) service, and
-    claude and copilot can use a Bedrock service only if it has a Claude target — otherwise there's
-    no routable model id to pin — or is ``allow_all_targets``, in which case the model id comes
-    from elsewhere (the managed config's default or ``--model``). (Anthropic services use canonical
-    names, so any match is usable.)
-    """
+    """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
         supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
@@ -3199,17 +3231,25 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
-    if (
-        tool in _CLAUDE_ONLY_BEDROCK_TOOLS
-        and provider_type in BEDROCK_PROVIDER_TYPES
-        and not service.get("allow_all_targets")
-        and not map_claude_family_models(service.get("targets") or [])
-    ):
+    if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
-            f"Model provider service '{service_name}' exposes no Claude models — "
-            f"add Claude targets to it, enable allow_all_targets, or pick a different service."
+            f"Model provider service '{service_name}' exposes no compatible models for {tool} — "
+            "add compatible targets, enable allow_all_targets, or pick a different service."
         )
     return None
+
+
+def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
+    """Return declared targets compatible with the tool's provider API."""
+    targets = service.get("targets") or []
+    if tool in ("claude", "codex"):
+        # MPS requests pass through without API translation.
+        api_type = API_ANTHROPIC_MESSAGES if tool == "claude" else API_OPENAI_RESPONSES
+        target_api_types = service.get("target_api_types") or {}
+        return [target for target in targets if api_type in (target_api_types.get(target) or ())]
+    if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
+        return [target for target in targets if _bedrock_target_family(target) is not None]
+    return targets
 
 
 def service_usable_for_tool(tool: str, service: dict) -> bool:
@@ -3323,13 +3363,14 @@ _CLAUDE_LAUNCH_TIER_PREFERENCE = ("sonnet", "opus", "haiku")
 
 
 def resolve_provider_launch_model(model: str | None, provider_models: dict[str, str]) -> str | None:
-    """Pick the model a provider-routed Claude session starts on, or None if it declares no tier.
+    """Pick the model a provider-routed Claude session starts on, or None if it declares none.
 
     ``provider_models`` maps the Claude families a service declares to their target ids (see
     ``map_claude_family_models``). With an explicit ``model`` (``ucode claude --model``) the user's
     choice wins: a family alias resolves to that tier's declared target (erroring when the service
     doesn't offer it), any other value is trusted as a raw target id the service allows. Without one,
-    pin the service's preferred offered tier (``_CLAUDE_LAUNCH_TIER_PREFERENCE``).
+    pin the service's preferred offered tier (``_CLAUDE_LAUNCH_TIER_PREFERENCE``), falling back
+    to ``default`` for custom deployment names with no recognizable family.
 
     We always pin a concrete offered target rather than letting Claude Code fall back to its own
     launch default: that default (observed: ``claude-sonnet-5``) isn't guaranteed to be in a curated
@@ -3340,7 +3381,9 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
         if model in ANTHROPIC_FAMILIES:
             target = provider_models.get(model)
             if not target:
-                available = ", ".join(sorted(provider_models)) or "none"
+                available = (
+                    ", ".join(sorted(set(provider_models) & set(ANTHROPIC_FAMILIES))) or "none"
+                )
                 raise RuntimeError(
                     f"This Model Provider Service does not offer a '{model}' model "
                     f"(available families: {available})."
@@ -3353,7 +3396,7 @@ def resolve_provider_launch_model(model: str | None, provider_models: dict[str, 
             for fam in _CLAUDE_LAUNCH_TIER_PREFERENCE
             if provider_models.get(fam)
         ),
-        None,
+        provider_models.get("default"),
     )
 
 
@@ -3367,52 +3410,12 @@ _PROBE_FAILED = object()
 # enough time to enumerate them; a slow workspace still degrades to partial
 # results once the budget is exceeded instead of hanging indefinitely.
 _MCP_SERVICES_WALK_DEADLINE_SECONDS = 30.0
+_MCP_SERVICES_WALK_TIMEOUT_REASON = "deadline exceeded while listing MCP services"
 # Skip UC catalogs whose schemas almost never carry user-callable functions
 # you'd want to expose as agent tools.
 _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
     {"__databricks_internal", "hive_metastore", "samples", "system"}
 )
-
-
-def _collect_concurrently[T, R](
-    items: list[T],
-    run: Callable[[T], R],
-    on_result: Callable[[R, T], None],
-    *,
-    max_workers: int,
-    should_stop: Callable[[], bool],
-) -> None:
-    """Run `run` over `items` on daemon workers that are never joined, so a slow or stuck
-    call can't block process exit. Results go to `on_result` on the calling thread until
-    every item is drained or `should_stop()` returns True."""
-    pending: queue.Queue[T] = queue.Queue()
-    for item in items:
-        pending.put(item)
-    results: queue.Queue[tuple[Any, T]] = queue.Queue()
-
-    def worker() -> None:
-        while not should_stop():
-            try:
-                item = pending.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                results.put((run(item), item))
-            except Exception:  # noqa: BLE001
-                results.put((_PROBE_FAILED, item))
-
-    for _ in range(max(1, min(max_workers, len(items)))):
-        threading.Thread(target=worker, daemon=True).start()
-
-    remaining = len(items)
-    while remaining > 0 and not should_stop():
-        try:
-            result, item = results.get(timeout=_WALK_POLL_INTERVAL)
-        except queue.Empty:
-            continue
-        remaining -= 1
-        if result is not _PROBE_FAILED:
-            on_result(result, item)
 
 
 def _paginated_json_items(
@@ -3471,17 +3474,18 @@ def walk_catalog_schemas[T](
 ) -> str | None:
     """Discover every user `<catalog>.<schema>` in the workspace and probe each one in parallel.
 
-    Catalogs and their schemas are listed (skipping `skip_catalogs` and `information_schema`), then
-    each schema is probed concurrently until `deadline` (an absolute `time.monotonic()` value)
-    passes or `cancel_event` is set, so a slow workspace returns partial results instead of hanging.
+    Catalogs are listed first. Schema listings and per-schema probes then share a bounded worker
+    pool, so a service or skill can appear while other catalogs are still being enumerated.
+    Work stops at `deadline` (an absolute `time.monotonic()` value) or on cancellation.
     The caller supplies two callables and owns whatever they accumulate:
 
       - `probe(catalog, schema) -> result`: fetch one schema's data (e.g. its MCP services).
       - `collect(result, done, total)`: handle each probe result as it lands — accumulating,
-        de-duping, streaming — where `done`/`total` are the completed and total schema counts.
+        de-duping, streaming. `total` is the number of schemas discovered so far and may grow
+        while catalog listings continue.
 
-    Returns None once the probes run, or a short reason string if there are no catalogs or schemas
-    to probe."""
+    Returns None when every discovered schema was probed, or a reason when discovery is empty or
+    the deadline leaves work unfinished."""
     cancel_event = cancel_event or threading.Event()
 
     def should_stop() -> bool:
@@ -3508,49 +3512,80 @@ def walk_catalog_schemas[T](
     if time.monotonic() > deadline:
         return "deadline exceeded while listing UC catalogs"
 
-    schema_refs: list[tuple[str, str]] = []
-
-    def collect_schemas(result, catalog):
-        schemas, _ = result
-        for schema in schemas:
-            schema_name = schema.get("name")
-            if isinstance(schema_name, str) and schema_name and schema_name != "information_schema":
-                schema_refs.append((catalog, schema_name))
-
-    _collect_concurrently(
-        catalog_names,
-        lambda cat: _paginated_json_items(
-            f"https://{hostname}/api/2.1/unity-catalog/schemas",
-            token,
-            items_key="schemas",
-            extra_params={"catalog_name": cat},
-            timeout=_UC_LIST_HTTP_TIMEOUT,
-        ),
-        collect_schemas,
-        max_workers=max_workers,
-        should_stop=should_stop,
-    )
-
-    if not schema_refs:
-        if time.monotonic() > deadline:
-            return "deadline exceeded while listing UC schemas"
-        return "no UC schemas found"
-
-    schemas_total = len(schema_refs)
+    catalog_jobs: queue.Queue[str] = queue.Queue()
+    probe_jobs: queue.Queue[tuple[str, str]] = queue.Queue()
+    results: queue.Queue[tuple[str, Any, str]] = queue.Queue()
+    finished = threading.Event()
+    worker_count = max(1, max_workers)
+    catalog_workers = max(1, worker_count // 2)
+    catalogs_remaining = len(catalog_names)
+    schemas_total = 0
     schemas_done = 0
 
-    def collect_probe(result, _ref):
-        nonlocal schemas_done
-        schemas_done += 1
-        collect(result, schemas_done, schemas_total)
+    for catalog in catalog_names:
+        catalog_jobs.put(catalog)
 
-    _collect_concurrently(
-        schema_refs,
-        lambda ref: probe(*ref),
-        collect_probe,
-        max_workers=max_workers,
-        should_stop=should_stop,
-    )
+    def worker(list_catalogs: bool) -> None:
+        while not finished.is_set() and not should_stop():
+            if list_catalogs:
+                try:
+                    catalog = catalog_jobs.get_nowait()
+                except queue.Empty:
+                    list_catalogs = False
+                    continue
+                kind = "catalog"
+            else:
+                try:
+                    catalog, schema = probe_jobs.get(timeout=_WALK_POLL_INTERVAL)
+                except queue.Empty:
+                    continue
+                kind = "probe"
+            try:
+                if kind == "catalog":
+                    value = _paginated_json_items(
+                        f"https://{hostname}/api/2.1/unity-catalog/schemas",
+                        token,
+                        items_key="schemas",
+                        extra_params={"catalog_name": catalog},
+                        timeout=_UC_LIST_HTTP_TIMEOUT,
+                    )
+                else:
+                    value = probe(catalog, schema)
+            except Exception:  # noqa: BLE001
+                value = _PROBE_FAILED
+            results.put((kind, value, catalog))
+
+    # Reserve workers for catalog enumeration so a busy catalog's probes cannot hide later
+    # catalogs. Once catalogs are exhausted, those workers help drain the probe queue.
+    for index in range(worker_count):
+        threading.Thread(target=worker, args=(index < catalog_workers,), daemon=True).start()
+
+    try:
+        while (catalogs_remaining or schemas_done < schemas_total) and not should_stop():
+            try:
+                kind, value, catalog = results.get(timeout=_WALK_POLL_INTERVAL)
+            except queue.Empty:
+                continue
+            if kind == "catalog":
+                catalogs_remaining -= 1
+                if value is not _PROBE_FAILED:
+                    schemas, _ = value
+                    for schema in schemas:
+                        name = schema.get("name")
+                        if isinstance(name, str) and name and name != "information_schema":
+                            schemas_total += 1
+                            probe_jobs.put((catalog, name))
+            else:
+                schemas_done += 1
+                if value is not _PROBE_FAILED:
+                    collect(value, schemas_done, schemas_total)
+    finally:
+        finished.set()
+
+    if time.monotonic() > deadline and (catalogs_remaining or schemas_done < schemas_total):
+        return "deadline exceeded while listing UC schemas"
+    if not schemas_total:
+        return "no UC schemas found"
 
     return None
 
@@ -3565,22 +3600,39 @@ def list_all_mcp_services(
     cancel_event: threading.Event | None = None,
     metadata: dict[str, dict] | None = None,
 ) -> tuple[list[str], str | None]:
-    """Return sorted unique MCP-service full names across every `<catalog>.<schema>`
-    in the workspace. The mcp-services API is one-schema-per-call, so this walks
-    catalogs -> schemas -> mcp-services in parallel under a wall-clock budget,
-    returning partial results once `deadline_seconds` is exceeded.
+    """Return sorted unique MCP-service full names across the workspace.
 
-    `on_progress`, if given, is called as each schema's listing completes with
-    `(schemas_done, schemas_total, services_found)` so callers can render a live
-    count. `on_services`, if given, is called with each schema's newly-found service
-    names (deduped against everything emitted so far) so callers can stream results
-    into a picker as the walk progresses instead of waiting for the full result. Both
-    are invoked serially from the draining thread (not the workers).
+    Try the paginated metastore listing first, then fall back to the schema walk
+    if the first page is unavailable. Both paths share the wall-clock budget.
 
-    This walk is the slow, workspace-wide counterpart to `list_mcp_services`
-    (single schema)."""
+    `on_services` streams newly found names per page on the fast path, with metadata
+    ready before each callback. `on_progress` retains its schema-count contract by
+    selecting the fallback walk when provided."""
     deadline = time.monotonic() + deadline_seconds
     names: set[str] = set()
+
+    # `on_progress` reports schemas (not pages), so preserve its existing
+    # semantics by using the schema walk for callers that request it.
+    if on_progress is None:
+        fast_names, fast_reason = list_mcp_services(
+            workspace,
+            token,
+            parent=None,
+            metadata=metadata,
+            on_services=on_services,
+            deadline=deadline,
+            cancel_event=cancel_event,
+        )
+        if fast_reason is None:
+            return fast_names, None if fast_names else "no MCP services found"
+        if (
+            fast_names
+            or time.monotonic() >= deadline
+            or (cancel_event is not None and cancel_event.is_set())
+        ):
+            return fast_names, fast_reason
+        if _looks_like_definitive_auth_failure(fast_reason):
+            return [], fast_reason
 
     def probe(catalog, schema):
         details: dict[str, dict] = {}
@@ -3603,10 +3655,10 @@ def list_all_mcp_services(
         workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
     )
     if reason is not None:
+        if reason.startswith("deadline exceeded"):
+            return sorted(names), _MCP_SERVICES_WALK_TIMEOUT_REASON
         return [], reason
     if not names:
-        if time.monotonic() > deadline:
-            return [], "deadline exceeded while listing MCP services"
         return [], "no MCP services found"
     return sorted(names), None
 

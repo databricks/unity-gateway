@@ -236,6 +236,25 @@ class TestConfigureWiresAiToolsInstall:
             "claude", state, None, provider="main.default.relay", provider_models=None, relayed=True
         )
 
+    def test_configure_selected_tools_records_failures_without_raising(self, monkeypatch):
+        # The CLI fails a `--global` run once every agent and the MCP/skills setup have run, so the
+        # dispatcher reports failures through `last_configured_tools` instead of raising.
+        from ucode import managed_files
+
+        def configure_one(tool, state, provider, **_kw):
+            if tool == "claude":
+                raise RuntimeError("needs a managed file")
+            return state
+
+        monkeypatch.setattr(agents_mod, "_configure_one", configure_one)
+        monkeypatch.setattr(agents_mod, "save_state", lambda _state: None)
+        managed_files.set_machine_wide_only(True)
+
+        state = agents_mod.configure_selected_tools({}, ["claude", "codex"])
+
+        assert state["last_configured_tools"] == ["codex"]
+        assert state["available_tools"] == ["codex"]
+
     def test_configure_selected_tools_triggers_install(self, monkeypatch):
         captured = self._stub_configure(monkeypatch)
         agents_mod.configure_selected_tools(
@@ -418,7 +437,14 @@ class TestResolveProviderModels:
         # match the declared targets → gateway 403 "not in the allowed models list").
         self._patch(
             monkeypatch,
-            {"provider_type": "anthropic", "targets": ["claude-sonnet-5", "claude-haiku-4-5"]},
+            {
+                "provider_type": "anthropic",
+                "targets": ["claude-sonnet-5", "claude-haiku-4-5"],
+                "target_api_types": {
+                    "claude-sonnet-5": ("anthropic/v1/messages",),
+                    "claude-haiku-4-5": ("anthropic/v1/messages",),
+                },
+            },
             None,
         )
         models, error, relayed = agents_mod.resolve_provider_models(
@@ -429,9 +455,11 @@ class TestResolveProviderModels:
         assert relayed is False
 
     def test_anthropic_with_no_claude_targets_pins_nothing(self, monkeypatch):
-        # No Claude-family targets → no pins (the `or None` fallback), leaving Claude Code's
-        # defaults in place rather than an empty dict.
-        self._patch(monkeypatch, {"provider_type": "anthropic", "targets": []}, None)
+        self._patch(
+            monkeypatch,
+            {"provider_type": "anthropic", "targets": [], "allow_all_targets": True},
+            None,
+        )
         models, error, relayed = agents_mod.resolve_provider_models(
             "claude", self._STATE, "main.a.empty"
         )
@@ -440,7 +468,14 @@ class TestResolveProviderModels:
     def test_relayed_allow_all_pins_nothing(self, monkeypatch):
         # allow_all relay declares no Claude targets: nothing pinned, still flagged relayed.
         self._patch(
-            monkeypatch, {"provider_type": "anthropic", "targets": [], "relayed": True}, None
+            monkeypatch,
+            {
+                "provider_type": "anthropic",
+                "targets": [],
+                "relayed": True,
+                "allow_all_targets": True,
+            },
+            None,
         )
         models, error, relayed = agents_mod.resolve_provider_models(
             "claude", self._STATE, "main.a.relayed"
@@ -456,6 +491,10 @@ class TestResolveProviderModels:
             {
                 "provider_type": "anthropic",
                 "targets": ["claude-opus-4-8", "claude-haiku-4-5"],
+                "target_api_types": {
+                    "claude-opus-4-8": ("anthropic/v1/messages",),
+                    "claude-haiku-4-5": ("anthropic/v1/messages",),
+                },
                 "relayed": True,
             },
             None,
@@ -471,6 +510,10 @@ class TestResolveProviderModels:
         service = {
             "provider_type": "amazon_bedrock",
             "targets": ["us.anthropic.claude-sonnet-4-6", "global.anthropic.claude-opus-4-8"],
+            "target_api_types": {
+                "us.anthropic.claude-sonnet-4-6": ("anthropic/v1/messages",),
+                "global.anthropic.claude-opus-4-8": ("anthropic/v1/messages",),
+            },
         }
         self._patch(monkeypatch, service, None)
         models, error, relayed = agents_mod.resolve_provider_models(
@@ -490,6 +533,10 @@ class TestResolveProviderModels:
                 "global.anthropic.claude-opus-4-8",
                 "openai.gpt-oss-120b-1:0",
             ],
+            "target_api_types": {
+                "global.anthropic.claude-opus-4-8": ("anthropic/v1/messages",),
+                "openai.gpt-oss-120b-1:0": ("openai/v1/responses",),
+            },
         }
         self._patch(monkeypatch, service, None)
 
@@ -501,6 +548,26 @@ class TestResolveProviderModels:
         assert models == {"opus": "global.anthropic.claude-opus-4-8"}
         assert relayed is False
 
+    def test_foundry_preserves_deployment_ids_and_filters_other_apis(self, monkeypatch):
+        service = {
+            "provider_type": "microsoft_foundry",
+            "targets": ["team-claude-sonnet-5-5", "claude-sonnet-99", "gpt-5-nano"],
+            "target_api_types": {
+                "team-claude-sonnet-5-5": ("anthropic/v1/messages",),
+                "claude-sonnet-99": ("openai/v1/responses",),
+                "gpt-5-nano": ("openai/v1/responses",),
+            },
+        }
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.a.foundry"
+        )
+
+        assert error is None
+        assert models == {"sonnet": "team-claude-sonnet-5-5"}
+        assert relayed is False
+
     def test_invalid_provider_returns_error(self, monkeypatch):
         self._patch(monkeypatch, None, "boom")
         models, error, relayed = agents_mod.resolve_provider_models(
@@ -509,6 +576,38 @@ class TestResolveProviderModels:
         assert models is None
         assert error == "boom"
         assert relayed is False
+
+    @pytest.mark.parametrize(
+        "provider_type",
+        ["anthropic", "amazon_bedrock", "bedrock_mantle", "microsoft_foundry", "custom"],
+    )
+    @pytest.mark.parametrize("family_model", [None, "claude-sonnet-5-5"])
+    def test_custom_messages_deployment_is_launch_default(
+        self, monkeypatch, provider_type, family_model
+    ):
+        service = {
+            "provider_type": provider_type,
+            "targets": ["gpt-5.4", "team-coding", "backup-coding"],
+            "target_api_types": {
+                "gpt-5.4": ("openai/v1/responses",),
+                "team-coding": ("anthropic/v1/messages",),
+                "backup-coding": ("anthropic/v1/messages",),
+            },
+        }
+        if family_model:
+            service["targets"].append(family_model)
+            service["target_api_types"][family_model] = ("anthropic/v1/messages",)
+        self._patch(monkeypatch, service, None)
+
+        models, error, relayed = agents_mod.resolve_provider_models(
+            "claude", self._STATE, "main.a.custom"
+        )
+
+        assert error is None
+        assert relayed is False
+        assert models is not None
+        assert db_mod.resolve_provider_launch_model(None, models) == (family_model or "team-coding")
+        assert db_mod.resolve_provider_launch_model("backup-coding", models) == "backup-coding"
 
     @pytest.mark.parametrize("tool", ["gemini", "codex"])
     def test_non_claude_pins_no_family_map(self, monkeypatch, tool):
@@ -599,6 +698,20 @@ class TestPersistedModelLocation:
         }
 
         agents_mod.configure_selected_tools(state, ["claude"], install_ai_tools=False)
+
+        assert calls[0][1]["provider"] == "main.default.mps"
+        assert "parent_schema" not in calls[0][1]
+
+    def test_explicit_provider_wins_over_saved_location(self, monkeypatch):
+        calls = self._capture(monkeypatch)
+        monkeypatch.setattr(
+            agents_mod, "resolve_provider_models", lambda *_a: ({"opus": "x"}, None, False)
+        )
+        state = {**self._STATE, "model_locations": {"claude": "main.models"}}
+
+        agents_mod.configure_selected_tools(
+            state, ["claude"], install_ai_tools=False, providers={"claude": "main.default.mps"}
+        )
 
         assert calls[0][1]["provider"] == "main.default.mps"
         assert "parent_schema" not in calls[0][1]
@@ -1307,7 +1420,9 @@ class TestConfigureToolUserScope:
         managed_files.set_config_scope("user")
 
         if exists:
-            with pytest.raises(RuntimeError, match=r"--user.*managed settings exist.*--global"):
+            with pytest.raises(
+                RuntimeError, match=r"--user.*managed settings exist.*without --user"
+            ):
                 agents_mod.refuse_user_scope_over_managed_files([tool])
         else:
             agents_mod.refuse_user_scope_over_managed_files([tool])
@@ -1330,8 +1445,13 @@ class TestConfigureToolUserScope:
 
     def test_managed_config_blocks_user_scope(self):
         managed_files.set_config_scope("user")
-        with pytest.raises(RuntimeError, match=r"--user.*publishes a managed config.*--global"):
+        with pytest.raises(
+            RuntimeError,
+            match=r"--user.*publishes a managed config.*without --user.*administrator.*--global",
+        ) as excinfo:
             agents_mod.refuse_user_scope_over_managed_config("https://ws.example.com", {"x": 1})
+        # `--global` writes only machine-wide settings now, so it is no longer the default.
+        assert "the default" not in str(excinfo.value)
 
     @pytest.mark.parametrize("scope", ["user", "global"])
     def test_no_managed_config_does_not_block(self, scope):

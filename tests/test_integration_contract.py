@@ -111,6 +111,44 @@ def _ci_marker_expression(job, agent, *, smart_routing=False):
     )
 
 
+def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
+    jobs = _integration_jobs()
+    job = jobs["codex-desktop-macos"]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-desktop-macos" in {name.strip() for name in needs.group(1).split(",")}
+    assert "runs-on: macos-latest" in job
+    assert "continue-on-error:" not in job
+    assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
+    assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
+    assert "shasum -a 256 -c" in job
+    assert "--macos-desktop" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
+def test_latest_harness_runs_the_newest_signed_chatgpt_app():
+    workflow = _workflow("harness-latest.yml")
+    entry = re.search(
+        r"(?m)^          - suite: desktop\n            runner: (.+)\n            managed: true\n"
+        r"            marker: (.+)$",
+        workflow,
+    )
+    assert entry is not None
+    assert entry.group(1) == "macos-latest"
+    assert "codex-app-prod/appcast.xml" in workflow
+    # No hash exists for an unseen build, so Apple's signature checks stand in for it.
+    assert "codesign --verify --deep --strict /Applications/ChatGPT.app" in workflow
+    assert "spctl --assess --type execute /Applications/ChatGPT.app" in workflow
+    assert re.search(r"(?m)^          OPENAI_TEAM_ID: [A-Z0-9]{10}$", workflow)
+    assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
+    assert "${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }}" in workflow
+    assert _collect_integration_cases(entry.group(2)) == {
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
 def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     jobs = _integration_jobs()
     job = jobs["soft-fail"]
@@ -463,6 +501,7 @@ FORK_GUARD = (
 )
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
+    "cowork-inference-windows",
     "workspace",
     "smoke",
     "headless-windows",
@@ -473,6 +512,7 @@ SKIPPED_ON_FORK_PRS = {
     "antigravity",
     "managed",
     "managed-opencode",
+    "codex-desktop-macos",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -698,17 +738,20 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "installation",
         "installation-windows",
         "headless-windows",
+        "cowork-inference-windows",
         "workspace",
         "smoke",
         "full",
         "antigravity",
         "managed",
+        "codex-desktop-macos",
         "dedicated-cuj-plan",
         "dedicated-cuj",
     ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
-def test_integration_ci_gate_requires_every_job(failed_job, job_result):
+@pytest.mark.parametrize("cowork_expected", ["success", "skipped"])
+def test_integration_ci_gate_requires_every_job(failed_job, job_result, cowork_expected):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
@@ -719,24 +762,28 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "installation",
             "installation-windows",
             "headless-windows",
+            "cowork-inference-windows",
             "workspace",
             "smoke",
             "full",
             "antigravity",
             "managed",
+            "codex-desktop-macos",
             "dedicated-cuj-plan",
             "dedicated-cuj",
         )
     }
+    results["cowork-inference-windows"]["result"] = cowork_expected
     results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],
-        env={"RESULTS": json.dumps(results)},
+        env={"RESULTS": json.dumps(results), "COWORK_EXPECTED": cowork_expected},
         capture_output=True,
         text=True,
         timeout=10,
     )
-    if job_result == "success":
+    expected_result = cowork_expected if failed_job == "cowork-inference-windows" else "success"
+    if job_result == expected_result:
         assert result.returncode == 0, result.stderr
         assert "All integration jobs passed:" in result.stdout
     else:
@@ -918,3 +965,52 @@ def test_live_suites_use_fresh_id_for_random_ids():
         if path != helper and "uuid4(" in path.read_text(encoding="utf-8")
     ]
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
+
+
+def test_cowork_ci_permissions_and_required_gate():
+    jobs = _integration_jobs()
+    job = jobs["cowork-inference-windows"]
+    assert "github.event_name != 'merge_group'" in job
+    assert "inputs.ug_version == 'checkout'" in job
+    assert "inputs.claude_version == '2.1.290'" in job
+    assert "inputs.dependency == ''" in job
+    assert "id-token:" not in job
+    assert "continue-on-error:" not in job
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "cowork-inference-windows" in {name.strip() for name in needs.group(1).split(",")}
+    for caller in ("ci.yml", "fork-integration.yml"):
+        integration = _workflow(caller).split("\n  integration:\n", 1)[1].split("\n  #", 1)[0]
+        integration = re.split(r"\n  [a-z-]+:\n", integration, maxsplit=1)[0]
+        assert "id-token:" not in integration
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
+@pytest.mark.parametrize(
+    ("event", "integration_result", "passes"),
+    [
+        ("pull_request", "success", True),
+        ("pull_request", "failure", False),
+        ("pull_request", "cancelled", False),
+        ("pull_request", "skipped", False),
+        ("push", "failure", False),
+        ("merge_group", "skipped", True),
+    ],
+)
+def test_required_e2e_enforces_integration_result(event, integration_result, passes):
+    required = _workflow("ci.yml").split("\n  required-e2e:\n", 1)[1]
+    script = required.split("        run: ", 1)[1].strip()
+    result = subprocess.run(
+        ["/bin/bash", "-c", script],
+        env={
+            **os.environ,
+            "EVENT_NAME": event,
+            "RESULT": "success",
+            "INTEGRATION_RESULT": integration_result,
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert (result.returncode == 0) is passes, result.stderr

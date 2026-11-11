@@ -14,6 +14,8 @@ import {
   type Reply,
 } from "./formats";
 import { streamEvents } from "./gateway";
+import { listen, type OtelSetting, otelEndpoint, otelSettings, startReceiver } from "./otel";
+import { DEFAULT_MODEL_SETTING, syncSettings } from "./settings";
 
 // ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
 const APIS = ["anthropic", "completions", "responses"] as const;
@@ -35,6 +37,10 @@ export interface Settings {
   readonly provider: string;
   /** Headers for every gateway request: the workspace admin's, and the selected workspace on a host that serves several. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** Where Copilot's agents export traces when the workspace traces Copilot. */
+  readonly otel?: OtelSetting;
+  /** The workspace's default model, one of `models`, for new chat conversations. */
+  readonly defaultModel?: string;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -56,6 +62,13 @@ const managedHeaders = (value: unknown): Record<string, string> =>
     ),
   );
 
+const otelSetting = (value: unknown): OtelSetting | undefined => {
+  const { port, secret } = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536 && typeof secret === "string" && /^[\w-]+$/.test(secret)
+    ? { port, secret }
+    : undefined;
+};
+
 /** `ug configure` writes this file into the extension it packs, so each install carries its own setup. */
 export const CONFIG_FILE = "ug-config.json";
 
@@ -73,23 +86,28 @@ export const readConfig = (text: string | undefined): Settings => {
   const get = (key: string) => config[key];
   const models = get("models");
   const headers = managedHeaders(get("headers"));
+  const otel = otelSetting(get("otel"));
+  const defaultModel = get("defaultModel");
+  const kept: ModelSetting[] = (Array.isArray(models) ? models : [])
+    .filter(
+      (model): model is ModelSetting =>
+        typeof model?.id === "string" && model.id !== "" && APIS.includes(model.api),
+    )
+    .map((model) => ({
+      id: model.id,
+      ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
+      ...(typeof model.family === "string" && model.family ? { family: model.family } : {}),
+      api: model.api,
+      ...tokenLimits(model),
+    }));
   return {
     workspace: String(get("workspace") ?? "").replace(/\/+$/, ""),
-    models: (Array.isArray(models) ? models : [])
-      .filter(
-        (model): model is ModelSetting =>
-          typeof model?.id === "string" && model.id !== "" && APIS.includes(model.api),
-      )
-      .map((model) => ({
-        id: model.id,
-        ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
-        ...(typeof model.family === "string" && model.family ? { family: model.family } : {}),
-        api: model.api,
-        ...tokenLimits(model),
-      })),
+    models: kept,
     authCommand: String(get("authCommand") ?? ""),
     provider: typeof get("provider") === "string" ? String(get("provider")) : "",
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
+    ...(otel ? { otel } : {}),
+    ...(typeof defaultModel === "string" && kept.some((model) => model.id === defaultModel) ? { defaultModel } : {}),
   };
 };
 
@@ -201,4 +219,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const headers = () => requestHeaders(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version, settings.headers);
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
   context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
+  const warn = (line: string) => output.warn(line);
+  if (settings.otel && settings.workspace && settings.authCommand) {
+    const receiver = startReceiver(settings.otel, settings.workspace, new Tokens(settings.authCommand), headers, warn);
+    listen(receiver, settings.otel.port, warn);
+    context.subscriptions.push({ dispose: () => receiver.close() });
+  }
+  // This also removes what an earlier configure had the extension write and this one doesn't.
+  const wanted = {
+    ...(settings.otel ? otelSettings(otelEndpoint(settings.otel)) : {}),
+    ...(settings.defaultModel ? { [DEFAULT_MODEL_SETTING]: settings.defaultModel } : {}),
+  };
+  syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
+    (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
+  );
 }

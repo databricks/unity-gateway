@@ -755,7 +755,7 @@ def _patch_mcp_choices(monkeypatch, *values: str, categories: set[str] | None = 
     monkeypatch.setattr(
         mcp,
         "discover_all_mcp_service_names",
-        lambda workspace, profile=None, on_progress=None: [],
+        lambda workspace, profile=None, **kwargs: ([], None),
     )
 
 
@@ -1316,7 +1316,7 @@ class TestConfigureMcpCommand:
             walk_calls.append(workspace)
             if on_services is not None:
                 on_services(["mycat.myschema.weather"])
-            return ["mycat.myschema.weather"]
+            return ["mycat.myschema.weather"], None
 
         monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
 
@@ -1328,6 +1328,38 @@ class TestConfigureMcpCommand:
         assert [c.value for c in appended] == [
             f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}mycat.myschema.weather"
         ]
+
+    def test_workspace_wide_walk_shows_timeout_after_partial_results(self, monkeypatch):
+        def fake_walk(workspace, profile=None, *, on_services, **kwargs):
+            on_services(["main.tools.linear"])
+            return ["main.tools.linear"], "deadline exceeded while listing MCP services"
+
+        monkeypatch.setattr(mcp, "discover_all_mcp_service_names", fake_walk)
+        appended: list = []
+        message = mcp._mcp_services_background_loader(WS, None, set(), additive=True)(
+            appended.extend, threading.Event()
+        )
+
+        assert [choice.value for choice in appended] == [
+            f"{mcp.MCP_ADD_PREFIX}{mcp.MCP_SERVICE_SELECTION_PREFIX}main.tools.linear"
+        ]
+        assert message is not None
+        assert "Timed out after 30s" in message
+        assert "ug mcp add --names" in message
+
+    def test_workspace_wide_walk_reports_incomplete_listing(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "discover_all_mcp_service_names",
+            lambda *args, **kwargs: ([], "HTTP 503 Service Unavailable"),
+        )
+        message = mcp._mcp_services_background_loader(WS, None, set(), additive=True)(
+            lambda choices: None, threading.Event()
+        )
+
+        assert message is not None
+        assert "Discovery stopped before the full list loaded" in message
+        assert "ug mcp add --names" in message
 
     def test_mcp_service_choice_known_vs_unknown(self):
         # Unregistered -> an add-choice; already-registered -> a removable toggle in replace
@@ -3355,6 +3387,20 @@ class TestPurgeCrossWorkspaceSkillsEntry:
             monkeypatch.setattr(getattr(mcp, client), "write_user_mcp_servers", make(client))
         return writes
 
+    def test_global_flag_leaves_cross_workspace_residue(self, monkeypatch):
+        # `ug configure --global` writes no per-user MCP registrations, removals included.
+        foreign = {"name": "old", "url": "https://other.databricks.com/x", "clients": ["claude"]}
+        state = {"workspace": WS, "mcp_servers": [foreign]}
+        monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "codex"])
+        writes = self._capture_batched_writes(monkeypatch, ["claude", "codex"])
+        monkeypatch.setattr(mcp, "save_state", lambda s: pytest.fail("must not rewrite the record"))
+        managed_files.set_machine_wide_only(True)
+
+        mcp.purge_cross_workspace_mcp_residue(state, WS)
+
+        assert all(calls == [] for calls in writes.values())
+        assert state["mcp_servers"] == [foreign]
+
     def test_workspace_switch_removes_residue_once_per_client(self, monkeypatch):
         from ucode import state as state_mod
 
@@ -3677,6 +3723,37 @@ class TestReconcileManagedMcpServers:
         assert out[0]["clients"] == ["claude", "codex"]
         assert applied["prev"] == [] and applied["working"] == out
         assert saved["managed_mcp_servers"] == out
+
+    def test_global_flag_skips_user_scope_fallback(self, monkeypatch, capsys):
+        # `ug configure --global` writes no per-user MCP registrations: a server that no managed file
+        # delivers is reported, and the saved fallback list stays as the last run left it.
+        previous = [{"name": "old", "url": "u", "auth": "proxy", "clients": ["claude"]}]
+        state = {"workspace": WS, "profile": None, "managed_mcp_servers": list(previous)}
+        applied: dict = {}
+        saved: dict = {}
+        self._wire(
+            monkeypatch,
+            state=state,
+            configured=["claude", "codex"],
+            resolved=[{"name": "system-ai-github", "url": "u", "auth": "proxy"}],
+            applied=applied,
+            saved=saved,
+            setup_calls=[],
+        )
+        monkeypatch.setattr(
+            mcp, "remove_client_mcp_server", lambda *a: pytest.fail("must not touch user scope")
+        )
+        managed_files.set_machine_wide_only(True)
+
+        out = mcp.reconcile_managed_mcp_servers(
+            {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude", "codex"}
+        )
+
+        assert [s["name"] for s in out] == ["system-ai-github"]
+        assert applied == {}
+        assert "managed_mcp_servers" not in saved
+        assert state["managed_mcp_servers"] == previous
+        assert "system-ai-github" in " ".join(capsys.readouterr().out.split())
 
     def test_location_config_registers(self, monkeypatch):
         state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
@@ -4173,7 +4250,7 @@ class TestSingleSourceSkipsPrompt:
         monkeypatch.setattr(
             mcp,
             "discover_all_mcp_service_names",
-            lambda workspace, profile=None, on_progress=None, on_services=None: [],
+            lambda workspace, profile=None, **kwargs: ([], None),
         )
         captured: dict = {}
 

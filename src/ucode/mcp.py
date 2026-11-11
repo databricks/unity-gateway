@@ -21,6 +21,8 @@ from ucode.agents import antigravity, claude, codex, copilot, cursor, gemini, ki
 from ucode.config_io import read_json_safe, read_toml_safe
 from ucode.constants import MCP_CLEANUP_SCOPES, MCP_USER_SCOPE
 from ucode.databricks import (
+    _MCP_SERVICES_WALK_DEADLINE_SECONDS,
+    _MCP_SERVICES_WALK_TIMEOUT_REASON,
     AIGW_MCP_SERVICES_SEGMENT,
     AuthTokenError,
     PermissionDeniedError,
@@ -37,7 +39,11 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
-from ucode.managed_files import ManagedFileWriteUnavailable, explicit_managed_writes
+from ucode.managed_files import (
+    ManagedFileWriteUnavailable,
+    explicit_managed_writes,
+    machine_wide_only,
+)
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
@@ -546,12 +552,13 @@ def discover_all_mcp_service_names(
     on_services: Callable[[list[str]], None] | None = None,
     cancel_event: threading.Event | None = None,
     metadata: dict[str, dict] | None = None,
-) -> list[str]:
+) -> tuple[list[str], str | None]:
     """All MCP services across every `<catalog>.<schema>` in the workspace. This
     walks the workspace (see `list_all_mcp_services`) and is the workspace-wide
     counterpart to `discover_mcp_service_names`. `on_progress` is forwarded to
     the walk for live count reporting, and `on_services` to stream newly-found
-    service names into the picker as the walk progresses."""
+    service names into the picker as the walk progresses. Returns names and an optional
+    incomplete-discovery reason."""
     token = get_databricks_token(workspace, profile)
     kwargs = {"metadata": metadata} if metadata is not None else {}
     names, reason = list_all_mcp_services(
@@ -563,7 +570,7 @@ def discover_all_mcp_service_names(
         **kwargs,
     )
     raise_for_invalid_access_token(workspace, reason)
-    return names
+    return names, reason
 
 
 def _normalize_workspace_title(text: str) -> str:
@@ -908,7 +915,9 @@ def prompt_for_mcp_server_choices(
     additive: bool = False,
     managed_names: set[str] | None = None,
     service_metadata: dict[str, dict] | None = None,
-    background_loader: Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]
+    background_loader: Callable[
+        [Callable[[list[questionary.Choice]], None], threading.Event], str | None
+    ]
     | None = None,
 ) -> list[str] | None | _Back:
     """Show the MCP server picker. Returns the list of selected values, `None`
@@ -922,7 +931,7 @@ def prompt_for_mcp_server_choices(
     non-toggleable in either mode, since there is nothing to add and ug can't remove them here.
 
     ``background_loader`` streams more choices in after the picker opens (see
-    `scrolling_checkbox`) — used to load the workspace-wide MCP-services walk without
+    `scrolling_checkbox`) — used to load the workspace-wide MCP-service pages without
     blocking on it up front."""
     instruction = "(space toggle, ^A all, enter save, type filter, pgup/pgdn details)"
     if allow_back:
@@ -984,7 +993,12 @@ def _is_app_mcp_server(server: dict) -> bool:
 
 
 def _resolve_managed_mcp_servers(
-    selector: dict, workspace: str, profile: str | None, clients: list[str]
+    selector: dict,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    token: str | None = None,
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
@@ -1003,6 +1017,10 @@ def _resolve_managed_mcp_servers(
     """
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
+        if token is not None:
+            return _resolve_location_mcp_servers(
+                workspace, profile, clients, location, [], token=token
+            )
         return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
     names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
     if not names:
@@ -1246,6 +1264,26 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         if is_eligible and written:
             delivered.update((name, agent) for name in entries)
 
+    if machine_wide_only():
+        # `ug configure --global` leaves per-user MCP registrations alone, so neither the fallback
+        # nor the cleanup below runs, and the saved fallback list stays as the last run left it.
+        skipped = sorted(
+            {
+                name
+                for server in working
+                if (name := _server_name(server))
+                for client in _mcp_server_clients(server)
+                if client in clients and (name, client) not in delivered
+            }
+        )
+        if skipped:
+            print_warning(
+                "Skipped your workspace's MCP servers that can only be registered in per-user "
+                f"settings: {', '.join(skipped)}. Run `ug configure` without --global to register "
+                "them."
+            )
+        return working
+
     # Drop prior user-scope registrations for servers now on a managed file, but keep a (name,
     # client) the developer also owns in their own mcp_servers (managed precedence covers it; Codex
     # drops that copy itself when its transport differs, see codex.reconcile_managed_mcp).
@@ -1429,17 +1467,17 @@ def _mcp_services_background_loader(
     known_names: set[str],
     additive: bool,
     managed_names: set[str] | None = None,
-) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], None]:
-    """Return a picker `background_loader` that runs the workspace-wide MCP-services walk and
-    streams each schema's newly-found services into the open picker as choices, so the walk
-    never blocks the picker from opening. Deduping against already-shown rows (e.g. the fast
-    `system.ai` list) is handled by the picker's append."""
+) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
+    """Stream each page of workspace-wide MCP services into the open picker.
+
+    The catalog/schema walk remains a fallback when the metastore listing is unavailable.
+    The picker deduplicates rows already shown by the fast `system.ai` list."""
 
     metadata: dict[str, dict] = {}
 
     def loader(
         append: Callable[[list[questionary.Choice]], None], cancel_event: threading.Event
-    ) -> None:
+    ) -> str | None:
         def on_services(new_names: list[str]) -> None:
             append(
                 [
@@ -1450,13 +1488,24 @@ def _mcp_services_background_loader(
                 ]
             )
 
-        discover_all_mcp_service_names(
+        names, reason = discover_all_mcp_service_names(
             workspace,
             profile,
             on_services=on_services,
             cancel_event=cancel_event,
             metadata=metadata,
         )
+        if not cancel_event.is_set() and reason not in (None, "no MCP services found"):
+            detail = (
+                f"Timed out after {int(_MCP_SERVICES_WALK_DEADLINE_SECONDS)}s"
+                if reason == _MCP_SERVICES_WALK_TIMEOUT_REASON
+                else "Discovery stopped before the full list loaded"
+            )
+            return (
+                f"⚠️ {detail}; found {len(names)} MCP services. "
+                "Use `ug mcp add --names <catalog.schema.service>` to add a known service."
+            )
+        return None
 
     return loader
 
@@ -1773,6 +1822,10 @@ def _batch_remove_stale_servers(batch_remove: dict[str, set[str]]) -> set[str]:
 def purge_cross_workspace_mcp_residue(
     state: dict, workspace: str, *, same_host_switch: bool = False
 ) -> None:
+    if machine_wide_only():
+        # `ug configure --global` leaves per-user MCP registrations, and their saved records, alone;
+        # the next run without --global purges them.
+        return
     installed = set(available_mcp_clients())
     # Collect every removal as {client: {names}} and apply it as one batched write per client below,
     # rather than a CLI/config removal per server (see `_batch_remove_stale_servers`).
@@ -1850,6 +1903,8 @@ def _resolve_location_mcp_servers(
     location: str,
     original_servers: list[dict],
     services: set[str] | None = None,
+    *,
+    token: str | None = None,
 ) -> list[dict]:
     """Build the desired MCP server list for ``--location <cat>.<schema>``.
 
@@ -1871,7 +1926,7 @@ def _resolve_location_mcp_servers(
     if location.count(".") != 1 or not all(part.strip() for part in location.split(".")):
         raise RuntimeError(f"--location must be `<catalog>.<schema>`, got `{location}`.")
 
-    token = get_databricks_token(workspace, profile)
+    token = token if token is not None else get_databricks_token(workspace, profile)
     with spinner(f"Discovering MCP services in {location}..."):
         names, reason = list_mcp_services(workspace, token, parent=location)
 
@@ -2243,7 +2298,7 @@ def configure_mcp_command(
     original_by_name = _servers_by_name(picker_servers)
 
     # Single source (MCP services), so there's no "choose sources" step — discover the fast
-    # `system.ai` list, show the picker immediately, and let the workspace-wide walk stream in
+    # `system.ai` list, show the picker immediately, and let workspace-wide pages stream in
     # behind it via the background loader so the picker never blocks on it.
     discovered = _discover_selected_mcp_sources(workspace, profile, {MCP_SERVICES_SOURCE})
     services_loader = _mcp_services_background_loader(

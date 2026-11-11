@@ -36,7 +36,7 @@ on:
         required: true
       antigravity_build:
         description: Exact Antigravity CLI build, <version>-<build id> (Linux lane)
-        default: 1.4.9-4962164969177088
+        default: 1.5.4-5037094733742080
         required: true
       dependency:
         description: Optional exact dependency for reproduction (e.g. tomlkit==0.14.0)
@@ -62,7 +62,7 @@ env:
   CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}
   OPENCODE_VERSION: ${{ inputs.opencode_version || '1.18.31' }}
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
-  ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.4.9-4962164969177088' }}
+  ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
 
 jobs:
@@ -148,6 +148,75 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+
+  cowork-inference-windows:
+    name: Cowork inference · Windows
+    runs-on: windows-latest
+    if: ${{ github.event_name != 'merge_group' && (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.dependency == '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    timeout-minutes: 25
+    env:
+      PYTHONUTF8: 1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Validate Cowork test scripts
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          foreach ($script in Get-ChildItem scripts/cowork-inference/*.ps1) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          & ./scripts/cowork-inference/test-diagnostics.ps1
+      - name: Download and verify the approved Claude installer
+        shell: pwsh
+        env:
+          INSTALLER_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
+          INSTALLER_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+        run: |
+          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'An installer SHA256 is required'
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer -TimeoutSec 300
+          $digest = $env:INSTALLER_SHA256
+          & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
+            -ExpectedSha256 $digest `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+      - name: Install UG and pinned Claude CLI
+        shell: pwsh
+        run: ./scripts/cowork-inference/install-dependencies.ps1
+      - name: Configure Desktop with existing CI credentials
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/cowork-inference/configure.ps1
+      - name: Assert Cowork inference through Windows UI Automation
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Cowork inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cowork-inference
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/cowork-inference/*.json
+            ${{ runner.temp }}/cowork-inference/*.png
+            ${{ runner.temp }}/cowork-inference/native-*.log
+          if-no-files-found: warn
 
   workspace:
     name: Workspace validation
@@ -642,20 +711,83 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, workspace, smoke, full, antigravity, managed, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, workspace, smoke, full, antigravity, managed, codex-desktop-macos, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
+          COWORK_EXPECTED: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && inputs.dependency == '' && 'success' || 'skipped' }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
-          failed = [job for job, result in results.items() if result["result"] != "success"]
+          expected = {"cowork-inference-windows": os.environ["COWORK_EXPECTED"]}
+          failed = [job for job, result in results.items()
+                    if result["result"] != expected.get(job, "success")]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
           print("All integration jobs passed: " + ", ".join(results))
           PY
+
+  # OpenAI's appcast keeps every versioned macOS build, so the desktop app can be pinned by hash.
+  codex-desktop-macos:
+    name: Codex desktop inference · macOS
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      DEPENDENCY: ${{ inputs.dependency }}
+      CHATGPT_APP_VERSION: 26.1103.31037
+      CHATGPT_APP_SHA256: 7bad147d40446192757dbfdd71e26529146823ade2bcc52b3d6e6525de816613
+      TEST_MARKER: managed_fixture and macos_desktop and codex
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+        with:
+          version: 0.13.5
+          enable-cache: ${{ inputs.ref == '' }}
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Install the pinned ChatGPT desktop app
+        run: |
+          zip="$RUNNER_TEMP/ChatGPT.zip"
+          curl -fsSL --retry 3 -o "$zip" "https://persistent.oaistatic.com/codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip"
+          echo "$CHATGPT_APP_SHA256  $zip" | shasum -a 256 -c
+          ditto -x -k "$zip" /Applications
+      - name: Complete a Codex turn in the desktop app against the managed e2e workspace
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.E2E_ADMIN_WORKSPACE }}
+          DATABRICKS_CLIENT_ID: ${{ secrets.E2E_ADMIN_SP_CLIENT_ID }}
+          DATABRICKS_CLIENT_SECRET: ${{ secrets.E2E_ADMIN_SP_CLIENT_SECRET }}
+        run: |
+          args=(--codex-version "$CODEX_VERSION")
+          if [[ -n "$DEPENDENCY" ]]; then
+            args+=(--dependency "$DEPENDENCY")
+          fi
+          uv run --no-project --python 3.12 python scripts/run_integration.py \
+            --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
+            --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            --macos-desktop "${args[@]}" -- -m "$TEST_MARKER"
+      - name: Upload macOS desktop evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: integration-codex-desktop-macos
+          include-hidden-files: true
+          path: |
+            ${{ runner.temp }}/ug-integration/*.json
+            ${{ runner.temp }}/ug-integration/*.txt
+            ${{ runner.temp }}/ug-integration/*.xml
+            ${{ runner.temp }}/ug-integration/*.log
+            ${{ runner.temp }}/ug-integration/artifacts/

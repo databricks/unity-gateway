@@ -70,7 +70,8 @@ before their existing installed `ug configure`, then compare the entire profile 
 JSON with the expected structure and values. This includes model labels, helper arguments and
 refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
 the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
-CUJ2 expects its model ID as the label. Actual and expected profile JSON are retained in
+CUJ2 requires `Claude Haiku 4.5` for its dated Anthropic target, including when discovery
+echoes that target ID as the display name. Actual and expected profile JSON are retained in
 `desktop-profile.json` for failures.
 Both also require the personal profile's bytes to survive and metadata to retain its entry.
 They do not launch Desktop or execute the credential helper.
@@ -85,6 +86,12 @@ CUJ2's Claude and Codex MPS inference cases ask for a short greeting. Each requi
 native parent turn matching that prompt, a nonempty answer, the expected provider/model and
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
+
+CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
+Responses and Chat Completions native APIs; its workspace's Codex default must match.
+CUJ1 and CUJ6 use `system.ai.gpt-6-luna` for the Codex Luna selection. Provision the CUJ1
+and CUJ6 phase A model lists, plus the CUJ6 phase C model list and default, before running
+these cases. Tests only validate the published fixtures; they never update them.
 
 ## Smart-routing CUJ
 

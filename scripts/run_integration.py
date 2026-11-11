@@ -35,7 +35,7 @@ AGENT_PACKAGES = {
 # Agents not published on npm: installed from a pinned native build (see install_native_agent).
 NATIVE_AGENT_BINARIES = {"antigravity": "agy"}
 # Antigravity CLI release archives, keyed by (sys.platform, machine); `{build}` is
-# `<version>-<build id>`, e.g. 1.4.9-4962164969177088 (the path in Google's release manifest).
+# `<version>-<build id>`, e.g. 1.5.4-5037094733742080 (the path in Google's release manifest).
 ANTIGRAVITY_RELEASE_URL = (
     "https://storage.googleapis.com/antigravity-public/antigravity-cli/{build}/{path}"
 )
@@ -49,9 +49,9 @@ ANTIGRAVITY_ARCHIVES = {
 # (`<updater>/manifests/<platform>.json`). A build without an entry needs --antigravity-sha512.
 ANTIGRAVITY_SHA512 = {
     (
-        "1.4.9-4962164969177088",
+        "1.5.4-5037094733742080",
         "linux-x64/cli_linux_x64.tar.gz",
-    ): "96a259b7475ae70a5b002ea8a83b804bba9b6ad2171af0cd0839b3959d9e6046ba36e181bc2d5597522aeceaacc06023564c46232fdb958f26f8c72267d9f0fd",
+    ): "1431a409ef7c7bce23f4abf03f988afab728ba87d91d24ed7db0d5eea3ab71a4b590bf0bf2c79cec84f79b32b674ea38df0417356ce8d5d4f698cd62ea9ee6be",
     (
         "1.4.9-4962164969177088",
         "linux-arm/cli_linux_arm64.tar.gz",
@@ -68,7 +68,13 @@ ANTIGRAVITY_SHA512 = {
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
 # Claude exports no spans on Windows, where ug writes no machine-wide Claude settings.
-WINDOWS_UNSUPPORTED_MODULES = {"test_ug_claude_tracing.py"}
+WINDOWS_UNSUPPORTED_MODULES = {
+    "test_ug_claude_tracing.py",
+    # Uses sudo and the Linux/macOS OS-managed settings paths.
+    "test_ug_configure_scope.py",
+}
+# Drive the installed ChatGPT desktop app, so they run only with --macos-desktop (the macOS CI job).
+MACOS_ONLY_MODULES = {"test_ug_codex_desktop_macos.py"}
 WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
@@ -114,12 +120,14 @@ def managed_policy_paths(
     selected = set(agents)
     paths: list[Path] = []
     if platform_name == "nt":
+        program_data = environment.get("PROGRAMDATA", "").strip()
+        if not program_data:
+            raise RuntimeError(
+                "Cannot verify Unity Gateway workspace policy because PROGRAMDATA is unavailable."
+            )
+        # Unity Gateway's installed workspace policy affects every agent.
+        paths.append(Path(program_data) / "UnityGateway" / "managed-settings.json")
         if "codex" in selected:
-            program_data = environment.get("PROGRAMDATA", "").strip()
-            if not program_data:
-                raise RuntimeError(
-                    "Cannot verify Codex system policy because PROGRAMDATA is unavailable."
-                )
             codex_system = Path(program_data) / "OpenAI" / "Codex"
             paths.extend([codex_system / "requirements.toml", codex_system / "config.toml"])
         if "claude" in selected:
@@ -168,6 +176,7 @@ def integration_test_targets(
     agents: Iterable[str],
     *,
     platform_name: str,
+    macos_desktop: bool,
     installation_only: bool,
     headless_only: bool,
 ) -> list[str]:
@@ -183,11 +192,13 @@ def integration_test_targets(
         modules = [
             str(module)
             for module in sorted(suite.glob("test_*.py"))
-            if module.name not in WINDOWS_UNSUPPORTED_MODULES
+            if module.name not in WINDOWS_UNSUPPORTED_MODULES | MACOS_ONLY_MODULES
         ]
         # pytest matches --deselect against node IDs relative to the suite's pytest.ini.
         deselected = [f"--deselect={node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
         return [*modules, *deselected]
+    if not macos_desktop:
+        return [str(suite), *(f"--ignore={suite / name}" for name in sorted(MACOS_ONLY_MODULES))]
     return [str(suite)]
 
 
@@ -286,7 +297,7 @@ def exact_antigravity_build(value: str) -> str:
     if not re.fullmatch(r"\d+\.\d+\.\d+-\d+", value):
         raise argparse.ArgumentTypeError(
             "Use an exact Antigravity build, <version>-<build id>, for example "
-            "1.4.9-4962164969177088 (from the release manifest's url)."
+            "1.5.4-5037094733742080 (from the release manifest's url)."
         )
     return value
 
@@ -385,7 +396,7 @@ def arguments(
     parser.add_argument(
         "--antigravity-build",
         type=exact_antigravity_build,
-        help="Exact Antigravity CLI build to download (Linux and macOS), e.g. 1.4.9-4962164969177088.",
+        help="Exact Antigravity CLI build to download (Linux and macOS), e.g. 1.5.4-5037094733742080.",
     )
     parser.add_argument(
         "--antigravity-sha512",
@@ -413,24 +424,79 @@ def arguments(
         help="Existing relayed (subscription-relay) Anthropic MPS for the hybrid-routing CUJ.",
     )
     parser.add_argument(
+        "--claude-foundry-provider",
+        default="main.ucode.ci_foundry_claude_mps",
+        help="Existing Microsoft Foundry MPS serving Claude over Anthropic Messages.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-model",
+        default="claude-haiku-5-5",
+        help="Haiku deployment used by the Microsoft Foundry headless journey.",
+    )
+    parser.add_argument(
+        "--claude-foundry-provider-default-model",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the Microsoft Foundry MPS.",
+    )
+    parser.add_argument(
+        "--claude-custom-provider",
+        default="main.ucode.ci_custom_foundry_claude_mps",
+        help="Existing custom MPS serving Foundry Messages for the Claude file task.",
+    )
+    parser.add_argument(
+        "--claude-custom-provider-model",
+        default="claude-sonnet-5-5",
+        help="Sonnet deployment selected by a plain launch through the custom Foundry MPS.",
+    )
+    parser.add_argument(
         "--claude-provider-model",
         default="claude-haiku-4-5-20251001",
         help="Only model exposed by the Anthropic MPS discovery fixture.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-provider",
-        default="main.ucode.ci_bedrock_mason_all_models",
-        help="Bedrock MPS with allow_all_targets and no declared targets, for the #811 CUJ.",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+        help="Bedrock runtime MPS (UC service credential) with allow_all_targets and no declared targets, for the #811 CUJ.",
     )
     parser.add_argument(
         "--claude-bedrock-allow-all-model",
-        default="us.anthropic.claude-sonnet-4-6",
+        default="us.anthropic.claude-sonnet-5-5",
         help="Explicit Bedrock model id the allow_all CUJ pins (the service declares no targets).",
     )
     parser.add_argument(
         "--claude-bedrock-provider",
-        default="main.ucode.ci_bedrock_mason_filtered_models",
-        help="AWS Bedrock Anthropic MPS with a restricted allowed-models set (Sonnet + Opus), selected in the configure CUJ.",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_filtered_models",
+        help="AWS Bedrock runtime MPS (UC service credential) with a restricted allowed-models set (Sonnet 5.5 + Opus 5.5), selected in the configure CUJ.",
+    )
+    parser.add_argument(
+        "--claude-bedrock-mantle-provider",
+        default="main.ucode.ci_bedrock_mantle_svc_cred_claude",
+        help="Bedrock Mantle MPS (UC service credential, us-east-1) with allow_all_targets, serving Claude.",
+    )
+    parser.add_argument(
+        "--claude-bedrock-mantle-model",
+        default="anthropic.claude-opus-5-5",
+        help="Mantle model id the Claude Mantle CUJ pins.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-runtime-provider",
+        default="main.ucode.ci_bedrock_runtime_svc_cred_all_models",
+        help="Bedrock runtime MPS (UC service credential) with allow_all_targets, serving GPT-5.6 over Responses.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-runtime-model",
+        default="us.openai.gpt-5.6-terra",
+        help="Bedrock inference-profile id the Codex runtime CUJ pins.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-mantle-provider",
+        default="main.ucode.ci_bedrock_mantle_svc_cred_gpt",
+        help="Bedrock Mantle MPS (UC service credential, us-west-2) with allow_all_targets, serving GPT-5.6 over Responses.",
+    )
+    parser.add_argument(
+        "--codex-bedrock-mantle-model",
+        default="openai.gpt-5.6-terra",
+        help="Mantle model id the Codex Mantle CUJ pins.",
     )
     parser.add_argument(
         "--antigravity-provider",
@@ -450,8 +516,18 @@ def arguments(
         help="Existing OpenAI MPS selected in the configure CUJ.",
     )
     parser.add_argument(
+        "--codex-custom-provider",
+        default="main.ucode.ci_custom_azure_openai_mps",
+        help="Existing custom MPS serving Azure OpenAI Responses for the Codex file task.",
+    )
+    parser.add_argument(
+        "--codex-custom-provider-model",
+        default="gpt-6-luna",
+        help="Deployment used by the Codex custom-provider file task.",
+    )
+    parser.add_argument(
         "--codex-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Model allowed by the OpenAI MPS selected in the configure CUJ.",
     )
     parser.add_argument(
@@ -461,7 +537,7 @@ def arguments(
     )
     parser.add_argument(
         "--codex-azure-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Reasoning-capable model allowed by the Azure OpenAI MPS.",
     )
     parser.add_argument(
@@ -471,7 +547,7 @@ def arguments(
     )
     parser.add_argument(
         "--codex-foundry-provider-model",
-        default="gpt-5-nano",
+        default="gpt-6-luna",
         help="Reasoning-capable model allowed by the Microsoft Foundry MPS.",
     )
     parser.add_argument(
@@ -514,6 +590,11 @@ def arguments(
         "--headless-only",
         action="store_true",
         help="Run one real noninteractive prompt journey for each selected agent.",
+    )
+    mode.add_argument(
+        "--macos-desktop",
+        action="store_true",
+        help="Also collect the journeys that drive the installed ChatGPT desktop app.",
     )
     parser.add_argument(
         "pytest_args", nargs=argparse.REMAINDER, help="After --, pass pytest filters."
@@ -717,15 +798,28 @@ def main() -> int:
             "copilot_model": args.copilot_model,
             "antigravity_model": args.antigravity_model,
             "claude_provider": args.claude_provider,
+            "claude_custom_provider": args.claude_custom_provider,
             "claude_relayed_provider": args.claude_relayed_provider,
+            "claude_foundry_provider": args.claude_foundry_provider,
+            "claude_foundry_provider_model": args.claude_foundry_provider_model,
+            "claude_foundry_provider_default_model": args.claude_foundry_provider_default_model,
             "claude_provider_model": args.claude_provider_model,
+            "claude_custom_provider_model": args.claude_custom_provider_model,
             "claude_bedrock_allow_all_provider": args.claude_bedrock_allow_all_provider,
             "claude_bedrock_allow_all_model": args.claude_bedrock_allow_all_model,
             "claude_bedrock_provider": args.claude_bedrock_provider,
+            "claude_bedrock_mantle_provider": args.claude_bedrock_mantle_provider,
+            "claude_bedrock_mantle_model": args.claude_bedrock_mantle_model,
+            "codex_bedrock_runtime_provider": args.codex_bedrock_runtime_provider,
+            "codex_bedrock_runtime_model": args.codex_bedrock_runtime_model,
+            "codex_bedrock_mantle_provider": args.codex_bedrock_mantle_provider,
+            "codex_bedrock_mantle_model": args.codex_bedrock_mantle_model,
             "antigravity_provider": args.antigravity_provider,
             "antigravity_provider_models": args.antigravity_provider_models,
             "codex_provider": args.codex_provider,
+            "codex_custom_provider": args.codex_custom_provider,
             "codex_provider_model": args.codex_provider_model,
+            "codex_custom_provider_model": args.codex_custom_provider_model,
             "codex_azure_provider": args.codex_azure_provider,
             "codex_azure_provider_model": args.codex_azure_provider_model,
             "codex_foundry_provider": args.codex_foundry_provider,
@@ -1030,16 +1124,29 @@ def main() -> int:
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
+                "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER": args.claude_custom_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER": args.claude_foundry_provider,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_MODEL": args.claude_foundry_provider_model,
+                "UG_INTEGRATION_CLAUDE_FOUNDRY_PROVIDER_DEFAULT_MODEL": args.claude_foundry_provider_default_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_PROVIDER": args.claude_bedrock_provider,
                 "UG_INTEGRATION_CLAUDE_OAUTH_TOKEN": oauth_token,
                 "UG_INTEGRATION_CLAUDE_PROVIDER_MODEL": args.claude_provider_model,
+                "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER_MODEL": args.claude_custom_provider_model,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_PROVIDER": args.claude_bedrock_allow_all_provider,
                 "UG_INTEGRATION_CLAUDE_BEDROCK_ALLOW_ALL_MODEL": args.claude_bedrock_allow_all_model,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_PROVIDER": args.claude_bedrock_mantle_provider,
+                "UG_INTEGRATION_CLAUDE_BEDROCK_MANTLE_MODEL": args.claude_bedrock_mantle_model,
+                "UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_PROVIDER": args.codex_bedrock_runtime_provider,
+                "UG_INTEGRATION_CODEX_BEDROCK_RUNTIME_MODEL": args.codex_bedrock_runtime_model,
+                "UG_INTEGRATION_CODEX_BEDROCK_MANTLE_PROVIDER": args.codex_bedrock_mantle_provider,
+                "UG_INTEGRATION_CODEX_BEDROCK_MANTLE_MODEL": args.codex_bedrock_mantle_model,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER": args.antigravity_provider,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS": args.antigravity_provider_models,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
+                "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER": args.codex_custom_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
+                "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL": args.codex_custom_provider_model,
                 "UG_INTEGRATION_CODEX_AZURE_PROVIDER": args.codex_azure_provider,
                 "UG_INTEGRATION_CODEX_AZURE_PROVIDER_MODEL": args.codex_azure_provider_model,
                 "UG_INTEGRATION_CODEX_FOUNDRY_PROVIDER": args.codex_foundry_provider,
@@ -1071,6 +1178,7 @@ def main() -> int:
             suite,
             agents,
             platform_name=os.name,
+            macos_desktop=args.macos_desktop,
             installation_only=args.installation_only,
             headless_only=args.headless_only,
         )

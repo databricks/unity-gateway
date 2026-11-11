@@ -3,8 +3,9 @@
 Configure-only, like Cursor (it stays out of `agents.__init__._MODULES`): `ug configure --agents
 vscode` packs the extension that ships with ug into a vsix, together with a `ug-config.json` that
 holds the workspace, its models and the auth command, and installs it with VS Code's `code` command.
-The extension reads that file from its own folder, so ug never edits the user's settings.json.
-`ug revert` uninstalls the extension.
+The extension reads that file from its own folder and writes the user settings it needs itself.
+`ug revert` removes those settings from the user's settings.json, which an uninstalled extension
+can't do, then uninstalls the extension.
 
 The models are the Copilot CLI's, from one source: the catalog `ug configure` discovered for the
 workspace, a Model Provider Service (`--provider`), or the model services of a Unity Catalog schema
@@ -15,7 +16,9 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import zipfile
@@ -32,8 +35,10 @@ from ucode.agents.copilot import (
     location_catalog,
     managed_http_headers,
     provider_service_catalog,
+    resolve_copilot_model,
     unservable_static_models,
 )
+from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
 from ucode.databricks import build_auth_shell_command
 from ucode.managed_files import OS, current_os
@@ -199,7 +204,8 @@ def _catalog(state: dict, provider: str | None, location: str | None) -> list[Co
     if not catalog:
         reason = (state.get("_discovery_reasons") or {}).get("copilot")
         raise RuntimeError(
-            f"No Claude or GPT models for VS Code ({reason or 'the workspace has none'})."
+            "No Claude, GPT, GLM, Kimi or DeepSeek models for VS Code "
+            f"({reason or 'the workspace has none'})."
         )
     return catalog
 
@@ -208,7 +214,10 @@ def model_entries(
     state: dict, *, provider: str | None = None, location: str | None = None
 ) -> list[dict[str, object]]:
     """The models of the chosen source, each with the API the extension calls it on."""
-    catalog = _catalog(state, provider, location)
+    return _entries(_catalog(state, provider, location), provider)
+
+
+def _entries(catalog: list[CopilotModel], provider: str | None) -> list[dict[str, object]]:
     if provider:
         # A service's targets are the provider's own ids, which is what its users know it by, and
         # several of them differ only by a region the label would drop.
@@ -220,6 +229,130 @@ def model_entries(
         _model_entry(model, model.id if counts[label] > 1 else label)
         for model, label in labels.items()
     ]
+
+
+def managed_default_model(state: dict, catalog: list[CopilotModel]) -> str | None:
+    """The id in ``catalog`` of the workspace's managed default model, or None when there is none
+    or ``catalog`` doesn't have it."""
+    default = state.get("copilot_default_model")
+    if not isinstance(default, str) or not default:
+        return None
+    try:
+        return resolve_copilot_model(default, catalog).id
+    except RuntimeError:
+        return None
+
+
+# The extension's trace receiver, kept across configures so VS Code's settings keep pointing at it.
+OTEL_RECEIVER_STATE_KEY = "copilot_vscode_otel"
+
+
+def otel_receiver(state: dict) -> dict[str, object]:
+    """The loopback port and path secret of the extension's trace receiver, picked once."""
+    saved = state.get(OTEL_RECEIVER_STATE_KEY)
+    if (
+        isinstance(saved, dict)
+        and isinstance(saved.get("port"), int)
+        and isinstance(saved.get("secret"), str)
+    ):
+        return {"port": saved["port"], "secret": saved["secret"]}
+    with socket.socket() as probe:
+        probe.bind((LOOPBACK_HOST, 0))
+        port = probe.getsockname()[1]
+    receiver: dict[str, object] = {"port": port, "secret": secrets.token_urlsafe(24)}
+    state[OTEL_RECEIVER_STATE_KEY] = receiver
+    return receiver
+
+
+# What the extension writes to the user settings from ug-config.json; see otelSettings in
+# vscode-extension/src/otel.ts and DEFAULT_MODEL_SETTING in vscode-extension/src/settings.ts.
+_OTEL_SETTINGS = {
+    "github.copilot.chat.otel": {
+        "enabled": True,
+        "exporterType": "otlp-http",
+        "protocol": "http/protobuf",
+    },
+    "chat.agentHost.otel": {"enabled": True, "exporterType": "otlp-http"},
+}
+DEFAULT_MODEL_SETTING = "chat.defaultModel"
+
+
+def written_settings(config: dict) -> list[dict[str, object]]:
+    """The groups of user settings the extension writes from ``config``. ug removes a group only
+    while the first setting in it still holds ug's value."""
+    groups: list[dict[str, object]] = []
+    otel = config.get("otel")
+    if isinstance(otel, dict) and "port" in otel and "secret" in otel:
+        endpoint = f"http://{LOOPBACK_HOST}:{otel['port']}/{otel['secret']}"
+        for prefix, values in _OTEL_SETTINGS.items():
+            # The endpoint first: it names ug's receiver, unlike the other values.
+            group: dict[str, object] = {f"{prefix}.otlpEndpoint": endpoint}
+            group.update({f"{prefix}.{key}": value for key, value in values.items()})
+            groups.append(group)
+    default_model = config.get("defaultModel")
+    if isinstance(default_model, str) and default_model:
+        groups.append({DEFAULT_MODEL_SETTING: default_model})
+    return groups
+
+
+def user_dir(insiders: bool) -> Path:
+    """VS Code's user folder, which holds the user settings.json and one per profile."""
+    name = "Code - Insiders" if insiders else "Code"
+    system = current_os()
+    if system is OS.MACOS:
+        return Path.home() / "Library" / "Application Support" / name / "User"
+    if system is OS.WINDOWS:
+        appdata = os.environ.get("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / name / "User"
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / name / "User"
+
+
+def _installed_config(folder: str, version: str) -> dict:
+    path = extensions_dir(folder) / f"{EXTENSION_ID}-{version}" / CONFIG_FILE
+    try:
+        config = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def remove_written_settings(user: Path, config: dict) -> None:
+    """Remove from each settings.json under ``user`` the values the extension wrote from
+    ``config`` that the developer hasn't changed since."""
+    groups = written_settings(config)
+    if not groups:
+        return
+    for path in [user / "settings.json", *sorted(user.glob("profiles/*/settings.json"))]:
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            # Comments or trailing commas, which a rewrite would drop.
+            ours = [key for group in groups for key in group]
+            print_warning(
+                f"Couldn't edit {path}. Remove the settings ug's VS Code extension wrote there "
+                f"if they're still set: {', '.join(ours)}."
+            )
+            continue
+        if not isinstance(settings, dict):
+            continue
+        stale = [
+            key
+            for group in groups
+            if settings.get(next(iter(group))) == next(iter(group.values()))
+            for key, value in group.items()
+            if key in settings and settings[key] == value
+        ]
+        if not stale:
+            continue
+        for key in stale:
+            del settings[key]
+        try:
+            # VS Code writes settings.json with 4-space indents.
+            path.write_text(json.dumps(settings, indent=4) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print_warning(f"Couldn't edit {path}: {exc}. Remove {', '.join(stale)} yourself.")
 
 
 def auth_command(state: dict) -> str:
@@ -250,8 +383,9 @@ def next_steps() -> list[str]:
 def configure(state: dict, *, provider: str | None = None, location: str | None = None) -> bool:
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
     Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
-    workspace's managed headers and its selection on a host that serves several workspaces. Returns
-    False, after a warning, if any step fails."""
+    workspace's managed headers, its managed default model and its selection on a host that serves
+    several workspaces, and when the workspace traces Copilot, the trace receiver. Returns False, after a warning, if any
+    step fails."""
     code = find_code()
     if code is None:
         print_note(
@@ -261,11 +395,12 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
         )
         return False
     try:
-        models = model_entries(state, provider=provider, location=location)
+        catalog = _catalog(state, provider, location)
     except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(f"{exc} VS Code was left unchanged.")
         return False
+    models = _entries(catalog, provider)
     config: dict[str, object] = {
         "workspace": state["workspace"],
         "authCommand": auth_command(state),
@@ -273,11 +408,16 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
+    # The extension makes it VS Code's default for new chats, unless the developer set their own.
+    if default_model := managed_default_model(state, catalog):
+        config["defaultModel"] = default_model
     headers = managed_http_headers(state)
     # Last, so an admin header can't select another workspace.
     headers.update(workspace_headers(state["workspace"]))
     if headers:
         config["headers"] = headers
+    if state.get("copilot_otel_tracing"):
+        config["otel"] = otel_receiver(state)
     source = f" from {provider or location}" if provider or location else ""
     try:
         print_kv(
@@ -294,7 +434,8 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
 
 
 def revert() -> str:
-    """Uninstall the extension, and its config with it: "removed" or "unchanged"."""
+    """Remove the user settings the extension wrote, then uninstall it and its config with it:
+    "removed" or "unchanged"."""
     removed = False
     for command, folder in CODE_COMMANDS:
         # Look on disk first, so revert runs `code` only for people who set VS Code up.
@@ -302,8 +443,11 @@ def revert() -> str:
             continue
         code = _find_command(command)
         # VS Code can leave an uninstalled extension's folder behind until it next starts.
-        if code is None or installed_version(code) is None:
+        if code is None or (version := installed_version(code)) is None:
             continue
+        remove_written_settings(
+            user_dir(insiders=command == "code-insiders"), _installed_config(folder, version)
+        )
         result = _run_code(code, "--uninstall-extension", EXTENSION_ID)
         if result.returncode == 0:
             removed = True
