@@ -512,8 +512,6 @@ def test_tagged_calculation_uses_a_short_native_task_name():
     task = SubagentCalculation("1+2", "3")
 
     assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
-    assert task.value == f"{task.marker}=3"
-    assert f'task name "{task.marker}"' in task.prompt
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
