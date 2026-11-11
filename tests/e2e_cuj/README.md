@@ -154,7 +154,9 @@ waits for that exact notice to render stably, presses Enter (continue), and obse
 before continuing. Later occurrences are handled the same way; any other dialog still fails.
 After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
 until no background work remains, including a child resumed after its initial answer.
-Only then does the test close the task view and submit `/exit`.
+Only then does the test close the task view and submit `/exit`. If Claude's exit dialog lists
+only scheduled reminders (for example one the model set to check on the finished subagent),
+the test confirms "Exit and stop tasks"; any listed agent or other work fails the case.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The Claude and Codex explicit-model precedence cases both run; the routing-disabled case

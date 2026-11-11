@@ -60,6 +60,20 @@ def _claude_background_task_detail(text):
     )
 
 
+def _claude_exit_pending_work(text):
+    """Return the work Claude's exit confirmation would stop, or None without that dialog."""
+    dialog = re.search(
+        r"(?ms)^[ \t]*Background work is running[ \t]*\n"
+        r"[ \t]*The following will stop when you exit:[ \t]*\n(.*?)"
+        r"^[ \t]*[›❯>][ \t]*1\. Exit and stop tasks[ \t]*$.*"
+        r"^[ \t]*Enter to confirm · Esc to cancel[ \t]*$",
+        text,
+    )
+    if dialog is None:
+        return None
+    return [line.strip() for line in dialog[1].splitlines() if line.strip()]
+
+
 def _claude_background_tasks_complete(text):
     if re.search(r"(?m)^\s*No tasks currently running\s*$", text):
         return True
@@ -696,4 +710,17 @@ class AgentTerminal(TerminalProcess):
 
     def exit_normally(self):
         self.submit("/exit")
+        deadline = time.monotonic() + 30
+        while not self.ended and time.monotonic() < deadline:
+            self.read()
+            pending = _claude_exit_pending_work(self.visible)
+            if pending is None:
+                continue
+            # The model may schedule a reminder to check on a subagent that has since
+            # finished; stopping it loses no work. Agents or anything else still fail.
+            assert pending and all(item.startswith("scheduled task ·") for item in pending), (
+                f"Exit would stop unfinished background work:\n{self.visible}"
+            )
+            self.send("\r", "exit and stop only leftover scheduled reminders")
+            break
         self.finish(timeout=30)

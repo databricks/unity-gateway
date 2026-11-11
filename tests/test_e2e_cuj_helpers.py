@@ -395,6 +395,54 @@ assert sys.stdin.readline().strip() == "/exit"
             assert not any("/exit" in action["keys"] for action in tui.actions)
 
 
+@requires_pty
+@pytest.mark.parametrize(
+    "pending, stops",
+    [
+        (["scheduled task · Runs once in 1m · wait for subagent"], True),
+        (["scheduled task · Runs once in 1m", "scheduled task · Runs once in 5m"], True),
+        (["ug_subagent_one · running"], False),
+        (["scheduled task · Runs once in 1m", "ug_subagent_one · running"], False),
+    ],
+)
+def test_claude_exit_stops_only_leftover_scheduled_reminders(tmp_path, pending, stops):
+    """Claude's exit dialog is confirmed only when scheduled reminders are all that remain."""
+    dialog = (
+        "Background work is running\n"
+        "The following will stop when you exit:\n"
+        + "".join(f"{item}\n" for item in pending)
+        + "❯ 1. Exit and stop tasks\n"
+        "  2. Move to background and exit\n"
+        "  3. Stay\n"
+        "Enter to confirm · Esc to cancel"
+    )
+    script = tmp_path / "ug"
+    script.write_text(
+        f"""#!{sys.executable}
+import sys
+import tty
+
+print("❯", flush=True)
+assert sys.stdin.readline().strip() == "/exit"
+tty.setraw(sys.stdin.fileno())
+print("\\x1b[2J\\x1b[H" + {dialog!r}.replace("\\n", "\\r\\n"), flush=True)
+assert sys.stdin.read(1) == "\\r"
+"""
+    )
+    script.chmod(0o755)
+    session = UserSession(tmp_path, script, tmp_path / "artifacts", "token")
+    with Terminal(session, "exit-dialog", [], agent=CLAUDE) as tui:
+        tui.wait_for(lambda text: "❯" in text, "the prompt")
+        if stops:
+            tui.exit_normally()
+            assert tui.child.exitstatus == 0
+        else:
+            with pytest.raises(AssertionError, match="unfinished background work"):
+                tui.exit_normally()
+            assert not tui.ended
+            assert not any("scheduled reminders" in action["reason"] for action in tui.actions)
+
+
 def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     healthy = "\n".join(
