@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -62,6 +63,7 @@ def validate(path: Path, *, required: bool = False) -> None:
     powershell = system_cross_os.windows_system32_dir() / "WindowsPowerShell/v1.0/powershell.exe"
     result = subprocess_cross_os.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", _CHECK_ACLS],
+        env={**os.environ, "PSModulePath": str(powershell.parent / "Modules")},
         input=json.dumps([str(p) for p in paths]),
         text=True,
         capture_output=True,
