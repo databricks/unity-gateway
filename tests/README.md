@@ -14,6 +14,8 @@ Contract tests check that staging and existing lanes partition coverage, share t
 same MPS fixture, and use separate workspace credentials. They also check staging's
 managed runners and package proxies. Subscription relay, Bedrock, Foundry, and
 dedicated CUJ2 retain their existing fixtures.
+Managed Claude defaults checks read the platform's actual machine settings file
+directly, including `Program Files/ClaudeCode/managed-settings.json` on Windows.
 
 Runner component tests cover workspace OAuth token requests and HTTP-error diagnostics,
 including redaction of the client secret and encoded Basic credential before truncation.

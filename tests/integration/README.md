@@ -1679,6 +1679,9 @@ to be listed. The fixture itself has no managed smart-routing setting.
 
 The Claude parent-schema defaults case expects discovered numbered GPT models to carry
 `[1m]` in the picker and retain its catalog display label.
+Both Claude defaults cases read the actual machine settings file for Linux,
+macOS, or Windows directly with Python; all default, header, and picker assertions
+apply to both per-user and machine settings.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with

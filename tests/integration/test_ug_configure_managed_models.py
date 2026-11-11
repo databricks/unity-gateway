@@ -6,7 +6,10 @@ tests/AGENTS.md rule 4.
 """
 
 import json
+import os
 import re
+import sys
+from pathlib import Path
 
 import pytest
 from utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
@@ -25,6 +28,20 @@ MANAGED_CLAUDE_DEFAULT_ENV_KEYS = {
     "default_sonnet_model": "ANTHROPIC_DEFAULT_SONNET_MODEL",
     "default_haiku_model": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
 }
+if sys.platform == "win32":
+    CLAUDE_MANAGED_SETTINGS_PATH = (
+        Path(
+            os.environ.get("ProgramW6432") or os.environ.get("ProgramFiles") or r"C:\Program Files"
+        )
+        / "ClaudeCode"
+        / "managed-settings.json"
+    )
+elif sys.platform == "darwin":
+    CLAUDE_MANAGED_SETTINGS_PATH = Path(
+        "/Library/Application Support/ClaudeCode/managed-settings.json"
+    )
+else:
+    CLAUDE_MANAGED_SETTINGS_PATH = Path("/etc/claude-code/managed-settings.json")
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
 FIRST_PROMPT_SELECTOR = "first_prompt_and_subagent_no_orch_v0"
@@ -63,11 +80,7 @@ def test_managed_claude_mps_defaults_accompany_discovery(live_session, workspace
         terminal.finish(timeout=240)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-    os_managed_settings = json.loads(
-        session.run(
-            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
-        ).stdout
-    )
+    os_managed_settings = json.loads(CLAUDE_MANAGED_SETTINGS_PATH.read_text(encoding="utf-8"))
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Provider-Service: {MANAGED_CLAUDE_PROVIDER_SERVICE}"
@@ -125,11 +138,7 @@ def test_managed_claude_parent_schema_defaults_accompany_discovery(live_session,
         terminal.finish(timeout=240)
 
     private_settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-    os_managed_settings = json.loads(
-        session.run(
-            "/etc/claude-code/managed-settings.json", binary=session.which("cat"), timeout=30
-        ).stdout
-    )
+    os_managed_settings = json.loads(CLAUDE_MANAGED_SETTINGS_PATH.read_text(encoding="utf-8"))
     for settings in (private_settings, os_managed_settings):
         env = settings.get("env") or {}
         expected_header = f"Databricks-Model-Service-Parent-Schema: {parent_schema}"
