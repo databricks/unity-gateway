@@ -95,6 +95,19 @@ function Select-Folder {
     Save-UI 'folder-selected'
 }
 
+function Approve-ReferenceRead {
+    if ($Capability -ne 'code-enterprise') { return }
+    $request = Find-Control -Names @('Permission request: read')
+    if (-not $request) { return }
+    if (-not (Find-Control -Names @($task.expectedFile) -Root $request)) {
+        throw 'Code requested permission to read an unexpected file'
+    }
+    if ($report.referenceReadApproved) { throw 'Code requested the reference read more than once' }
+    Save-UI 'reference-read-permission'
+    Invoke-Control (Wait-Control -Names @('Allow once 3') -Seconds 10 -Root $request)
+    $report.referenceReadApproved = $true
+}
+
 try {
     $task = Get-Content -LiteralPath $taskPath -Raw | ConvertFrom-Json
     $task.startedAfter = $started.ToUniversalTime().ToString('o')
@@ -135,11 +148,13 @@ try {
     $submitName = if ($surface -eq 'Code') { 'Send' } else { 'Start task' }
     Invoke-Control (Wait-Control -Names @($submitName))
     $report.submitted = $true
+    Save-UI 'submitted'
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
     do {
         Start-Sleep -Seconds 3
+        Approve-ReferenceRead
         $sessionEvidence = (& $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
-            --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') --sessions-root (Join-Path $env:USERPROFILE '.claude/projects') | ConvertFrom-Json)
+            --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p') --sessions-root (Join-Path $env:USERPROFILE '.claude/projects') | ConvertFrom-Json)
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
         if ($sessionEvidence.status -eq 'pending') { continue }
         $report.session = $sessionEvidence

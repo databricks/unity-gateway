@@ -34,7 +34,14 @@ trust dialog before submission. The driver now checks that dialog's folder and c
 `Trust workspace` before waiting for the prompt. No global publisher has been validated
 by these results.
 
-Branch pushes currently select only Code on Desktop 2.42304.2 to validate that driver
+Run `42940705374` submitted the Code task and reached a native `Permission request: read`
+for the enterprise skill's reference file. It timed out awaiting that user decision.
+The driver now verifies the exact reference path and selects `Allow once`, never
+`Always allow`. A successful run therefore proves execution with explicit native consent,
+not a permission-free read. Transcript discovery includes Desktop's Code and Cowork data
+under `Claude-3p`, correlating the unique prompt before considering any result.
+
+Branch pushes currently select only Code on Desktop 2.42304.2 to validate the driver
 change. Manual dispatch selects one native case or all five, and either pinned Desktop
 version. Failed native contracts remain available; narrower runs are explicit subsets.
 
