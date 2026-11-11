@@ -52,3 +52,16 @@ jobs:
               if payload.get("error") not in ("invalid_client", "invalid_request"):
                   raise SystemExit("Expected OAuth to reject the missing client credentials")
               print("PASS: staging OAuth is reachable; missing client credentials were rejected")
+      - name: Check internal Python and npm package proxies
+        shell: python
+        run: |
+          from urllib.request import urlopen
+
+          urls = (
+              "https://pypi-proxy.cloud.databricks.com/simple/pytest/",
+              "https://npm-proxy.cloud.databricks.com/@anthropic-ai%2fclaude-code/2.1.290",
+              "https://npm-proxy.cloud.databricks.com/@github%2fcopilot/1.0.91",
+          )
+          for url in urls:
+              with urlopen(url, timeout=30) as response:
+                  print(f"Internal package proxy: HTTP {response.status} {url}")
