@@ -14,6 +14,8 @@ modes, retained host Usage notes, and unchanged descriptions when routing is off
 `test_codex_routing_reload.py` covers restart configuration, bounded process-tree
 cleanup, early wrapper exit, transient control-file failures, stalled Ctrl+C,
 malformed control messages, and root-only recovery without rerouting the first prompt.
+Regression cases cover bounded cleanup and diagnostics after Windows taskkill timeouts
+or launch errors, and replacing a root after failed recovery without reusing stale notices.
 Managed-config checks require path-specific repair instructions, including user-only
 and administrator-managed installations. Mock launcher checks cover POSIX and Windows;
 real subprocess checks require descendant port release.

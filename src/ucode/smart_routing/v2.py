@@ -863,14 +863,24 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
 
 def _stop_codex_process(process, *, process_tree: bool = False, port: int | None = None) -> None:
     stopped = None
+    tree_error = None
     if process_tree and os.name == "nt":
-        stopped = subprocess_cross_os.run(
-            [str(windows_system32_dir() / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
-        )
+        try:
+            stopped = subprocess_cross_os.run(
+                [
+                    str(windows_system32_dir() / "taskkill.exe"),
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            tree_error = f"taskkill failed: {exc}"
     elif process_tree:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGTERM)
@@ -888,26 +898,28 @@ def _stop_codex_process(process, *, process_tree: bool = False, port: int | None
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
         if stopped is not None and stopped.returncode:
             # Killing only the wrapper can leave descendants running.
-            detail = (stopped.stderr or stopped.stdout).strip()
-            raise RuntimeError(
-                f"Could not stop the Codex app-server process tree: {detail}"
-            ) from None
+            tree_error = (stopped.stderr or stopped.stdout).strip()
     finally:
         if process_tree and os.name != "nt":
             # The wrapper can exit before descendants release the listener.
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-    if port is None:
-        return
-    deadline = time.monotonic() + PROCESS_SHUTDOWN_TIMEOUT_SECONDS
-    while time.monotonic() < deadline:
-        try:
-            with socket.create_connection((LOOPBACK_HOST, port), timeout=0.1):
-                pass
-        except OSError:
-            return
-        time.sleep(0.05)
-    raise RuntimeError(f"Codex app-server port {port} is still in use after shutdown.")
+    if port is not None:
+        deadline = time.monotonic() + PROCESS_SHUTDOWN_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection((LOOPBACK_HOST, port), timeout=0.1):
+                    pass
+            except OSError:
+                break
+            time.sleep(0.05)
+        else:
+            detail = f" {tree_error}" if tree_error is not None else ""
+            raise RuntimeError(
+                f"Codex app-server port {port} is still in use after shutdown.{detail}"
+            )
+    if tree_error is not None:
+        raise RuntimeError(f"Could not stop the Codex app-server process tree: {tree_error}")
 
 
 def launch_codex(

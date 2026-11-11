@@ -134,7 +134,10 @@ def test_restart_continues_same_root_once_and_never_a_viewed_child(child):
     assert resumed(continuation, 4, {"id": "root"}) is None
 
 
-def test_failed_resume_keeps_recovery_pending_and_rapid_toggles_use_latest_recipe():
+@pytest.mark.parametrize("replacement_method", ["thread/start", "thread/resume"])
+def test_failed_resume_keeps_recovery_pending_and_rapid_toggles_use_latest_recipe(
+    replacement_method,
+):
     notices = SimpleQueue()
     continuation = RestartContinuation(notices)
     resumed(continuation, 1, {"id": "root"}, method="thread/start")
@@ -146,6 +149,28 @@ def test_failed_resume_keeps_recovery_pending_and_rapid_toggles_use_latest_recip
     assert "Smart Router is now on" in request["params"]["input"][0]["text"]
     assert continuation.recipe == "custom"
     assert notices.empty()
+    assert continuation.take_response({"id": request["id"], "result": {}})
+
+    notices.put("DISABLED")
+    assert resumed(continuation, 4, {"id": "root"}, error=True) is None
+    assert not notices.empty()
+    assert (
+        resumed(continuation, 5, {"id": "replacement", "source": "cli"}, method=replacement_method)
+        is None
+    )
+    assert continuation.root_id == "replacement"
+    assert notices.empty()
+    assert continuation.turn_id is None
+    assert continuation.recipe is None
+
+    notices.put("custom")
+    notices.put("DISABLED")
+    request = resumed(continuation, 6, {"id": "replacement", "source": "cli"})
+    assert request["params"]["threadId"] == "replacement"
+    assert "Smart Router is now off" in request["params"]["input"][0]["text"]
+    assert continuation.recipe == "DISABLED"
+    assert notices.empty()
+    assert resumed(continuation, 7, {"id": "replacement", "source": "cli"}) is None
 
 
 def test_temporary_title_thread_does_not_replace_conversation_root():
@@ -536,8 +561,20 @@ subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
         process.wait(timeout=5)
 
 
-@pytest.mark.parametrize("returncode,wait_times_out", [(0, False), (128, False), (1, True)])
-def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, wait_times_out):
+@pytest.mark.parametrize(
+    "taskkill_result,diagnostic",
+    [
+        (0, None),
+        (128, "Access denied"),
+        (1, "Access denied"),
+        (subprocess.TimeoutExpired("taskkill.exe", 5), "taskkill.exe.*timed out"),
+        (OSError("taskkill.exe unavailable"), "taskkill.exe unavailable"),
+    ],
+)
+@pytest.mark.parametrize("wait_times_out", [False, True])
+def test_windows_shutdown_stops_native_process_tree(
+    monkeypatch, taskkill_result, diagnostic, wait_times_out
+):
     calls = []
     waits = []
 
@@ -553,14 +590,27 @@ def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, wai
 
     def taskkill(argv, **kwargs):
         calls.append((argv, kwargs))
-        return SimpleNamespace(returncode=returncode, stderr="Access denied", stdout="")
+        if isinstance(taskkill_result, Exception):
+            raise taskkill_result
+        return SimpleNamespace(returncode=taskkill_result, stderr="Access denied", stdout="")
 
     monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
-    if wait_times_out:
-        with pytest.raises(RuntimeError, match="Could not stop.*Access denied"):
-            v2._stop_codex_process(process, process_tree=True)
+    port_checks = []
+
+    def port_closed(address, **kwargs):
+        port_checks.append((address, kwargs))
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(v2.socket, "create_connection", port_closed)
+    reports_failure = isinstance(taskkill_result, Exception) or (
+        wait_times_out and taskkill_result != 0
+    )
+    if reports_failure:
+        with pytest.raises(RuntimeError, match=f"Could not stop.*{diagnostic}"):
+            v2._stop_codex_process(process, process_tree=True, port=12345)
     else:
-        v2._stop_codex_process(process, process_tree=True)
+        v2._stop_codex_process(process, process_tree=True, port=12345)
+    assert port_checks == [((v2.LOOPBACK_HOST, 12345), {"timeout": 0.1})]
     # A failed taskkill still kills and reaps the wrapper before reporting.
     assert kills == ([1] if wait_times_out else [])
     assert waits == [{"timeout": v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS}] * (1 + len(kills))

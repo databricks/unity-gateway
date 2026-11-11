@@ -83,8 +83,15 @@ class RestartContinuation:
         thread_id = thread.get("id")
         if not isinstance(thread_id, str):
             return None
-        if not self.notices.empty() and self.root_id is not None and thread_id != self.root_id:
-            return None
+        if self.root_id is not None and thread_id != self.root_id:
+            if not self.notices.empty() and method != "thread/start" and source != "cli":
+                return None
+            while True:
+                try:
+                    self.notices.get_nowait()
+                except Empty:
+                    break
+            self.recipe = None
         self.root_id = thread_id
         if method != "thread/resume":
             return None
