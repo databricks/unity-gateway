@@ -48,12 +48,17 @@ func key(_ code: CGKeyCode, flags: CGEventFlags = []) {
     }
     down.flags = flags
     up.flags = flags
-    down.post(tap: .cghidEventTap)
-    up.post(tap: .cghidEventTap)
+    down.postToPid(app.processIdentifier)
+    up.postToPid(app.processIdentifier)
 }
 
 if arguments.count == 2 && operation == "key" {
     app.activate(options: [.activateIgnoringOtherApps])
+    let deadline = Date().addingTimeInterval(5)
+    while NSWorkspace.shared.frontmostApplication?.processIdentifier != app.processIdentifier {
+        guard Date() < deadline else { fail("Claude did not become the foreground application") }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    }
     switch arguments[1] {
     case "go-to-folder": key(5, flags: [.maskCommand, .maskShift])
     case "return": key(36)

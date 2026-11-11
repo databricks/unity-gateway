@@ -50,7 +50,7 @@ function New-CoworkTask {
             Set-Content -LiteralPath (Join-Path $folder 'input.txt') -Value $task.expected -NoNewline
             $task.folder = $folder
             $task.expectedFile = Join-Path $folder 'input.txt'
-            $task.prompt = 'Read input.txt in the selected local folder using a file-reading tool. Reply with only its contents. Do not guess the contents.'
+            $task.prompt = 'Use the Read tool to read input.txt in the selected local folder. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text. Do not guess the value.'
         }
         'skill' {
             $marketplace = Join-Path $env:RUNNER_TEMP 'cowork-probe-marketplace'
@@ -71,7 +71,7 @@ function New-CoworkTask {
 name: probe-summary
 description: Use when asked to produce the capability probe summary.
 ---
-Read references/facts.txt beside this skill. Reply with only its contents, unchanged.
+Use the Read tool to read references/facts.txt beside this skill. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text.
 Do not guess the contents and do not use subagents.
 '@ | Set-Content "$skill/SKILL.md"
             $task.expected = 'skill-proof-' + [Guid]::NewGuid().ToString('N').Substring(0, 12)

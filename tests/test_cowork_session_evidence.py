@@ -196,3 +196,10 @@ def test_transcript_permission_errors_are_not_hidden(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_text", denied)
     with pytest.raises(PermissionError, match="unreadable transcript"):
         inspect_sessions(tmp_path, {"startedAfter": "1970-01-01T00:00:00+00:00"})
+
+
+@pytest.mark.parametrize("template", ["1\t{}", "```\n1\t{}\n```"])
+def test_tool_display_format_is_not_the_file_value(evidence, template):
+    records, task = evidence
+    records[-1]["message"]["content"][0]["text"] = template.format(task["expected"])
+    assert evaluate(records, task)["status"] == "failed"

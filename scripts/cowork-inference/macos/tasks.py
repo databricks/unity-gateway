@@ -52,8 +52,9 @@ def prepare_task(capability, desktop):
         task.update(
             folder=str(folder),
             expectedFile=str(path),
-            prompt="Read input.txt in the selected local folder using a file-reading tool. "
-            "Reply with only its contents. Do not guess the contents.",
+            prompt="Use the Read tool to read input.txt in the selected local folder. "
+            "Reply with only the value stored in the file. Omit line numbers added by the tool. "
+            "Do not use Markdown, code fences, or any other text. Do not guess the value.",
         )
         return task
 
@@ -88,7 +89,9 @@ def prepare_task(capability, desktop):
     (skill / "SKILL.md").write_text(
         "---\nname: probe-summary\n"
         "description: Use when asked to produce the capability probe summary.\n---\n"
-        "Read references/facts.txt beside this skill. Reply with only its contents, unchanged.\n"
+        "Use the Read tool to read references/facts.txt beside this skill. "
+        "Reply with only the value stored in the file. Omit line numbers added by the tool. "
+        "Do not use Markdown, code fences, or any other text.\n"
         "Do not guess the contents and do not use subagents.\n"
     )
     (skill / "references/facts.txt").write_text(task["expected"])
@@ -161,7 +164,7 @@ def select_folder(desktop, task):
     desktop.ui("key", "go-to-folder")
     desktop.wait_for(("Go to the folder:", "Go to Folder", "Go to folder:"))
     desktop.ui("folder-path", task["folder"])
-    desktop.wait_for(task["folder"])
+    desktop.wait_for((task["folder"], "Go to:"), require_all=True)
     desktop.ui("key", "return")
     click_first(desktop, ("Select Folder", "Choose", "Open"))
     desktop.save("folder-permission.json", desktop.ui("snapshot"))
