@@ -42,7 +42,9 @@ from ucode.databricks import (
 )
 from ucode.managed_config import MCP_SOURCE_NAME, MCP_SOURCE_SCHEMA, mcp_source_kind
 from ucode.managed_files import (
+    OS,
     ManagedFileWriteUnavailable,
+    current_os,
     explicit_managed_writes,
     machine_wide_only,
 )
@@ -1445,6 +1447,12 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
             }
         )
         if skipped:
+            if current_os() is OS.WINDOWS and "claude" in clients:
+                raise RuntimeError(
+                    "Windows global configure could not deliver every requested MCP server: "
+                    + ", ".join(skipped)
+                    + ". The CLI requires native OAuth support for these managed connectors."
+                )
             print_warning(
                 "Skipped your workspace's MCP servers that can only be registered in per-user "
                 f"settings: {', '.join(skipped)}. Run `ug configure` without --global to register "
