@@ -403,6 +403,13 @@ class TestCopilotModels:
 
         assert code.config["defaultModel"] == self.GPT
 
+    def test_follows_budget_tiers_only_when_the_managed_config_has_them(self, code):
+        assert vscode.configure(self._state(copilot_smart_defaults=True))
+        assert code.config["smartDefaults"] is True
+
+        assert vscode.configure(self._state())
+        assert "smartDefaults" not in code.config
+
     @pytest.mark.parametrize(
         "managed", [{}, {"copilot_default_model": "system.ai.claude-opus-5-5"}]
     )
@@ -541,6 +548,28 @@ class TestRevertSettings:
         assert vscode.revert() == "removed"
 
         assert path.read_text() == text
+
+    @pytest.mark.parametrize("managed_default", [{}, {"copilot_default_model": GPT}])
+    def test_removes_a_default_model_a_budget_tier_set(self, code, managed_default):
+        assert vscode.configure({**STATE, "copilot_smart_defaults": True, **managed_default})
+        tier = self._settings({"chat.defaultModel": "system.ai.claude-sonnet-5-5"})
+        mine = self._settings({"chat.defaultModel": "gpt-mine"}, profile="-1a2b3c")
+
+        assert vscode.revert() == "removed"
+
+        assert json.loads(tier.read_text()) == {}
+        assert json.loads(mine.read_text()) == {"chat.defaultModel": "gpt-mine"}
+
+    def test_names_the_default_model_for_settings_it_cant_edit_when_following_tiers(
+        self, code, capsys
+    ):
+        assert vscode.configure({**STATE, "copilot_smart_defaults": True})
+        path = self._settings({})
+        path.write_text('{\n  // mine\n  "chat.defaultModel": "system.ai.gpt-6-luna"\n}\n')
+
+        assert vscode.revert() == "removed"
+
+        assert "chat.defaultModel" in _printed(capsys)
 
     @pytest.mark.parametrize(
         ("system", "insiders", "expected"),

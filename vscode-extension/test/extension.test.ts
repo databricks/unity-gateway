@@ -193,6 +193,13 @@ describe("readConfig", () => {
     }
   });
 
+  it("follows budget tiers only when the config says true", () => {
+    assert.equal(readConfig(JSON.stringify({ smartDefaults: true })).smartDefaults, true);
+    for (const smartDefaults of [false, "true", 1, null]) {
+      assert.equal(readConfig(JSON.stringify({ smartDefaults })).smartDefaults, undefined, JSON.stringify(smartDefaults));
+    }
+  });
+
   it("gives no models for a missing or malformed file", () => {
     const none = { workspace: "", authCommand: "", models: [], provider: "" };
     for (const text of [undefined, "", "{", "[]", "null", '"text"']) {

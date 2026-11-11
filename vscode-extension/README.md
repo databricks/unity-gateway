@@ -36,6 +36,16 @@ start on it. A `chat.defaultModel` the developer set themselves stays, and the e
 value once a configure drops `defaultModel`. Deleting the extension's value only lasts until VS Code next
 starts, when the managed default is set again; to start on another model, set `chat.defaultModel` to it.
 
+When the managed config has budget tiers (`smart_defaults`), `ug-config.json` also holds `smartDefaults: true`.
+The extension then asks the gateway for the caller's recommendation (`POST
+/api/ai-gateway/v2/coding-agent-configs:recommendModel`, as `ug copilot` does at launch) when VS Code starts and
+every 15 minutes after. When the tier is for GitHub Copilot and its model is one of `models` (matched as
+`ug copilot --model` matches), new chats start on that model; otherwise they start on `defaultModel`. A tier for
+another agent is ignored. The same developer-wins rule applies, and an open chat keeps its model. When the first
+check fails, the extension uses `defaultModel`. A later failed check keeps the current value. Failures are logged
+once each to the output channel. `ug revert` also removes a `chat.defaultModel` that names one of `models`.
+Budget limits are enforced by the gateway, not here: a tier changes only the model new chats start on.
+
 The token is kept in memory until it nears expiry, and fetched again when the gateway answers 401.
 Token fetches and failed requests are logged to the **Unity Gateway** output channel.
 

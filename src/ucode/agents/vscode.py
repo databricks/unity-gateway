@@ -295,6 +295,19 @@ def written_settings(config: dict) -> list[dict[str, object]]:
     return groups
 
 
+def tier_default_models(config: dict) -> set[str]:
+    """The ids the extension may set ``chat.defaultModel`` to from a budget tier: any of
+    ``config``'s models when it follows the workspace's tiers, else none."""
+    if config.get("smartDefaults") is not True:
+        return set()
+    models = config.get("models")
+    return {
+        model["id"]
+        for model in (models if isinstance(models, list) else [])
+        if isinstance(model, dict) and isinstance(model.get("id"), str)
+    }
+
+
 def user_dir(insiders: bool) -> Path:
     """VS Code's user folder, which holds the user settings.json and one per profile."""
     name = "Code - Insiders" if insiders else "Code"
@@ -318,9 +331,15 @@ def _installed_config(folder: str, version: str) -> dict:
 
 def remove_written_settings(user: Path, config: dict) -> None:
     """Remove from each settings.json under ``user`` the values the extension wrote from
-    ``config`` that the developer hasn't changed since."""
+    ``config`` that the developer hasn't changed since. A ``chat.defaultModel`` naming one of
+    ``config``'s models goes too when the extension follows budget tiers, since a tier can have
+    set it to any of them."""
     groups = written_settings(config)
-    if not groups:
+    tier_models = tier_default_models(config)
+    ours = [key for group in groups for key in group]
+    if tier_models and DEFAULT_MODEL_SETTING not in ours:
+        ours.append(DEFAULT_MODEL_SETTING)
+    if not ours:
         return
     for path in [user / "settings.json", *sorted(user.glob("profiles/*/settings.json"))]:
         try:
@@ -329,7 +348,6 @@ def remove_written_settings(user: Path, config: dict) -> None:
             continue
         except (OSError, ValueError):
             # Comments or trailing commas, which a rewrite would drop.
-            ours = [key for group in groups for key in group]
             print_warning(
                 f"Couldn't edit {path}. Remove the settings ug's VS Code extension wrote there "
                 f"if they're still set: {', '.join(ours)}."
@@ -344,6 +362,13 @@ def remove_written_settings(user: Path, config: dict) -> None:
             for key, value in group.items()
             if key in settings and settings[key] == value
         ]
+        current = settings.get(DEFAULT_MODEL_SETTING)
+        if (
+            isinstance(current, str)
+            and current in tier_models
+            and DEFAULT_MODEL_SETTING not in stale
+        ):
+            stale.append(DEFAULT_MODEL_SETTING)
         if not stale:
             continue
         for key in stale:
@@ -384,8 +409,9 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     """Install the extension with this workspace's setup and the models of ``provider`` (a Model
     Provider Service), ``location`` (a ``<catalog>.<schema>``) or else the Copilot CLI's, with the
     workspace's managed headers, its managed default model and its selection on a host that serves
-    several workspaces, and when the workspace traces Copilot, the trace receiver. Returns False, after a warning, if any
-    step fails."""
+    several workspaces, and when the workspace traces Copilot, the trace receiver. When the managed
+    config has budget tiers, the extension also moves new chats to the tier's model. Returns False,
+    after a warning, if any step fails."""
     code = find_code()
     if code is None:
         print_note(
@@ -411,6 +437,8 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     # The extension makes it VS Code's default for new chats, unless the developer set their own.
     if default_model := managed_default_model(state, catalog):
         config["defaultModel"] = default_model
+    if state.get("copilot_smart_defaults"):
+        config["smartDefaults"] = True
     headers = managed_http_headers(state)
     # Last, so an admin header can't select another workspace.
     headers.update(workspace_headers(state["workspace"]))

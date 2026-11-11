@@ -852,6 +852,14 @@ Managed smart defaults are covered by `test_managed_config.py`, `test_cli.py`,
 without tier rules, applying recommendations when tiers exist, and serializing the current
 API field. These are unit/component checks; live request-count coverage is not included.
 
+Copilot in VS Code follows the same tiers. `test_managed_resolve.py` and `test_agent_vscode.py` cover
+`ug configure` writing `smartDefaults` into `ug-config.json` only when the config has tiers, and
+`ug revert` removing a tier-written `chat.defaultModel`. The extension's `recommend.test.ts`
+(`npm test` in `vscode-extension/`) covers the `recommendModel` request (401 retry, silent 404,
+errors), matching the tier's model to the extension's models, ignoring another agent's tier, the
+15-minute re-check writing only on change, and the fallback to `defaultModel`. No test runs a real
+VS Code against a live tier.
+
 `test_usage.py`, `test_budget.py`, and `test_cli.py` cover budget usage without an
 opt-in, including the five highest usage percentages, stable ties, missing percentages
 ordered last, and the full listing with `--all`.

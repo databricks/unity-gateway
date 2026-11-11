@@ -108,6 +108,22 @@ class TestVsCodeIntegration:
         managed = {"enabled_agents": {"claude": {"vscode_integration_enabled": False}}}
         assert "copilot_vscode_integration" not in managed_state_overrides(managed, "claude")
 
+    def test_budget_tiers_turn_on_copilot_smart_defaults(self):
+        tier = {
+            "spending_percentage": 0.8,
+            "recommended_agent": "copilot",
+            "recommended_model": "m",
+        }
+        managed = {"enabled_agents": {"copilot": {}}, "smart_defaults": {"tiers": [tier]}}
+        assert managed_state_overrides(managed, "copilot")["copilot_smart_defaults"] is True
+        assert resolve_state(managed, _state(), "copilot")["copilot_smart_defaults"] is True
+        assert "copilot_smart_defaults" not in managed_state_overrides(managed, "claude")
+
+    def test_no_budget_tiers_leave_copilot_smart_defaults_off(self):
+        for smart_defaults in (None, {}, {"budget_id": "b"}, {"budget_id": "b", "tiers": []}):
+            managed = {"enabled_agents": {"copilot": {}}, "smart_defaults": smart_defaults}
+            assert "copilot_smart_defaults" not in managed_state_overrides(managed, "copilot")
+
 
 class TestHttpHeaders:
     def test_state_override_carries_manifest_headers(self):

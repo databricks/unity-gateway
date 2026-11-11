@@ -15,6 +15,7 @@ import {
 } from "./formats";
 import { streamEvents } from "./gateway";
 import { listen, type OtelSetting, otelEndpoint, otelSettings, startReceiver } from "./otel";
+import { fetchRecommendation, RECHECK_INTERVAL_MS, SmartDefaults } from "./recommend";
 import { DEFAULT_MODEL_SETTING, syncSettings } from "./settings";
 
 // ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
@@ -41,6 +42,8 @@ export interface Settings {
   readonly otel?: OtelSetting;
   /** The workspace's default model, one of `models`, for new chat conversations. */
   readonly defaultModel?: string;
+  /** Whether the workspace's config has budget tiers, which can move new chats to another of `models`. */
+  readonly smartDefaults?: boolean;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -108,6 +111,7 @@ export const readConfig = (text: string | undefined): Settings => {
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(otel ? { otel } : {}),
     ...(typeof defaultModel === "string" && kept.some((model) => model.id === defaultModel) ? { defaultModel } : {}),
+    ...(get("smartDefaults") === true ? { smartDefaults: true } : {}),
   };
 };
 
@@ -220,17 +224,36 @@ export function activate(context: vscode.ExtensionContext): void {
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
   context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
   const warn = (line: string) => output.warn(line);
-  if (settings.otel && settings.workspace && settings.authCommand) {
-    const receiver = startReceiver(settings.otel, settings.workspace, new Tokens(settings.authCommand), headers, warn);
+  const tokens = settings.workspace && settings.authCommand ? new Tokens(settings.authCommand) : undefined;
+  if (settings.otel && tokens) {
+    const receiver = startReceiver(settings.otel, settings.workspace, tokens, headers, warn);
     listen(receiver, settings.otel.port, warn);
     context.subscriptions.push({ dispose: () => receiver.close() });
   }
   // This also removes what an earlier configure had the extension write and this one doesn't.
-  const wanted = {
-    ...(settings.otel ? otelSettings(otelEndpoint(settings.otel)) : {}),
-    ...(settings.defaultModel ? { [DEFAULT_MODEL_SETTING]: settings.defaultModel } : {}),
-  };
-  syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
-    (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
-  );
+  const sync = (defaultModel: string | undefined) =>
+    syncSettings(
+      vscode.workspace.getConfiguration(),
+      context.globalState,
+      {
+        ...(settings.otel ? otelSettings(otelEndpoint(settings.otel)) : {}),
+        ...(defaultModel ? { [DEFAULT_MODEL_SETTING]: defaultModel } : {}),
+      },
+      warn,
+      new Set([DEFAULT_MODEL_SETTING]),
+    ).catch((error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`));
+  if (settings.smartDefaults && tokens) {
+    const smartDefaults = new SmartDefaults(
+      () => fetchRecommendation(settings.workspace, tokens, headers()),
+      settings.models.map((model) => model.id),
+      settings.defaultModel,
+      sync,
+      (line) => output.info(line),
+    );
+    void smartDefaults.check();
+    const timer = setInterval(() => void smartDefaults.check(), RECHECK_INTERVAL_MS);
+    context.subscriptions.push({ dispose: () => clearInterval(timer) });
+  } else {
+    void sync(settings.defaultModel);
+  }
 }
