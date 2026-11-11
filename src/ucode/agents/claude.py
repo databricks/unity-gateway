@@ -1648,6 +1648,24 @@ def write_tool_config(
         managed_http_headers=state.get("claude_http_headers"),
     )
     source_scoped_defaults = bool((provider or parent_schema) and coding_agent_config_defaults)
+    windows_global = machine_wide_only() and current_os() is OS.WINDOWS
+    if windows_global:
+        from ucode.agents.desktop import mdm
+
+        user_auth = [
+            "--host",
+            state["workspace"],
+            "--profile",
+            mdm.user_auth_profile(state["workspace"]),
+        ]
+        if not relayed:
+            overlay["apiKeyHelper"] = subprocess_cross_os.shell_command(
+                [*mdm.windows_runtime_argv(), "auth-token", *user_auth, "--browser-login"]
+            )
+        if "otelHeadersHelper" in overlay:
+            overlay["otelHeadersHelper"] = subprocess_cross_os.shell_command(
+                [*mdm.windows_runtime_argv(), "otel-headers", *user_auth]
+            )
     family_defaults = get_family_defaults(
         state, managed_config=managed_config_present, provider=provider, parent_schema=parent_schema
     )
@@ -1765,6 +1783,8 @@ def write_tool_config(
                 if isinstance(existing_default, str):
                     target_env[key] = existing_default
         merged = deep_merge_dict(base, overlay_for_merge)
+        if windows_global:
+            merged.setdefault("parentSettingsBehavior", "merge")
         for key in stale_picker_keys:
             merged.pop(key, None)
         overlay_custom_headers = overlay_for_merge["env"][ANTHROPIC_CUSTOM_HEADERS_ENV_KEY]
@@ -1889,6 +1909,7 @@ def write_tool_config(
         [
             *managed_file_keys,
             *passthrough.paths,
+            *([["parentSettingsBehavior"]] if windows_global else []),
             # Owned while withdrawing, so a revert can restore the baseline's deny.
             *([CLAUDE_PERMISSIONS_DENY_PATH] if withdraws_web_search else []),
         ],

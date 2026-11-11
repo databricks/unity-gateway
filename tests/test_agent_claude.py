@@ -1155,6 +1155,29 @@ class TestWriteToolConfigManagedSettings:
         assert private_writes == []
         assert managed_writes == []
 
+    @pytest.mark.parametrize("parent_behavior", [None, "replace"])
+    def test_windows_global_auth_is_user_scoped_and_parent_policy_is_preserved(
+        self, monkeypatch, parent_behavior
+    ):
+        from ucode.agents.desktop import mdm
+
+        private_writes, managed_writes = [], []
+        existing = {"parentSettingsBehavior": parent_behavior} if parent_behavior else {}
+        self._patch(monkeypatch, private_writes, managed_writes, {str(FAKE_MANAGED_PATH): existing})
+        monkeypatch.setattr(claude, "current_os", lambda: managed_files.OS.WINDOWS)
+        managed_files.set_machine_wide_only(True)
+        state = {"workspace": WS, "profile": "PROVISIONER", "claude_otel_tracing": True}
+
+        claude.write_tool_config(state, "databricks-claude-sonnet-4")
+
+        assert not private_writes
+        settings = json.loads(managed_writes[0][1])
+        assert settings["parentSettingsBehavior"] == (parent_behavior or "merge")
+        for key in ("apiKeyHelper", "otelHeadersHelper"):
+            assert "runtime.py" in settings[key] and "-I" in settings[key]
+            assert mdm.user_auth_profile(WS) in settings[key]
+            assert "PROVISIONER" not in settings[key]
+
     @pytest.mark.parametrize("opt_out", ["env", "user_scope"])
     def test_skip_env_bypasses_managed_file(self, monkeypatch, opt_out):
         private_writes: list = []

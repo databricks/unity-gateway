@@ -17,6 +17,12 @@ Native CLI and Code enterprise skill execution and Cowork organization-plugin ex
 passed. Code requires explicit one-time reference-read consent. These prerequisite
 results do not validate a Windows global publisher, which is not yet implemented.
 
+Windows global Desktop publication has component coverage in
+`../test_desktop_mdm_windows.py`. Registry/ACL boundaries are simulated there; those tests
+do not establish native global OAuth, connector deduplication, or UI lifecycle coverage.
+The native Windows accessibility experiments remain on a separate test branch. Workspace
+skill delivery is deferred from the Windows global implementation.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,

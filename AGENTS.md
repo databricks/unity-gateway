@@ -221,7 +221,16 @@ continues other cleanup, and retains UG state for retry. Revert has no scope fla
 builds require manual migration; remove prior UG marketplace registrations to avoid duplicate
 skills/hooks. Restart Desktop after updates. Native organization-plugin delivery remains a
 validation gap. See the deployment guide before migration or rollout.
-Windows MDM and shared-runtime installation remain unsupported. See docs/claude-desktop-mdm.md.
+Windows explicit global setup publishes native-view HKLM Desktop policy, a required
+organization plugin with connector guidance/hooks, and isolated shared Python helpers under
+Program Files. Workspace-skill delivery is deferred. Native settings default a missing
+`parentSettingsBehavior` to `merge`; existing/admin-supplied values are preserved. CLI and
+Desktop helpers use the consuming user's deterministic OAuth profile, with provisioning
+credentials/config overrides removed. Protected ownership tracks registry values across
+configure/revert; unrelated policy and local profiles are preserved. Windows global Desktop
+or required MCP failures propagate, while ordinary user setup remains best-effort. Shared
+runtime installation is still external. Native global auth/MCP/UI validation remains required;
+see docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;
 custom registration names and full proxy URLs are preserved. Its name and display name
 are `ug`, with plugin ID `ug@unity-gateway-cowork`. Reconfigure removes the old

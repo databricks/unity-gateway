@@ -1160,7 +1160,7 @@ def _setup_single_agent(
     if apply_managed and tool == "claude":
         from ucode.agents.desktop.setup import configure_claude_desktop
 
-        configure_claude_desktop(state, parent_schema=parent_schema)
+        configure_claude_desktop(state, parent_schema=parent_schema, managed_config=managed)
     if apply_managed and tool in _FRESH_POLICY_AGENTS and not is_dry_run():
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
@@ -1486,7 +1486,9 @@ def _configure_workspace_command(
                     if tool_name == "claude":
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
-                        configure_claude_desktop(configured, parent_schema=parent_schema)
+                        configure_claude_desktop(
+                            configured, parent_schema=parent_schema, managed_config=managed
+                        )
                 else:
                     failed_tools.append(tool_name)
         if not configured_tools:
@@ -3653,6 +3655,8 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
     try:
         registered = reconcile_managed_mcp_servers(managed, agents)
     except McpServiceListingRateLimited:
+        if machine_wide_only() and sys.platform == "win32" and "claude" in agents:
+            raise
         # A transient 429 while discovering the workspace's MCP services: skip MCP setup for this
         # run (existing servers are left untouched) with an info note instead of a hard failure, so
         # `ug configure` still completes. The next configure retries.
@@ -3663,6 +3667,8 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
         return None
     except RuntimeError as exc:
         # A denied machine-wide write fails `ug configure`, like the agents' own settings.
+        if machine_wide_only() and sys.platform == "win32" and "claude" in agents:
+            raise
         if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
             raise
         print_warning(f"Could not register your workspace's MCP servers: {exc}")

@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager, suppress
 from copy import deepcopy
@@ -222,6 +223,17 @@ def claude_desktop_org_plugin_path() -> Path | None:
     return None
 
 
+def windows_desktop_mdm_root() -> Path:
+    return system_cross_os.windows_program_files_dir() / "UnityGateway" / "claude-desktop-mdm"
+
+
+def windows_desktop_mdm_files() -> set[Path]:
+    return {
+        windows_desktop_mdm_root() / name
+        for name in ("runtime.py", "otel-headers.cmd", "ownership.json")
+    }
+
+
 def replace_privileged_bundle(path: Path, source: Path | None) -> None:
     """Copy or remove UG's Desktop organization plugin."""
     if path != claude_desktop_org_plugin_path():
@@ -231,6 +243,9 @@ def replace_privileged_bundle(path: Path, source: Path | None) -> None:
     for folder in (path, *path.parents):
         if folder.is_symlink() or folder.is_junction():
             raise RuntimeError(f"Refusing linked Desktop plugin path: {folder}")
+    if current_os() is OS.WINDOWS:
+        _replace_windows_desktop_bundle(path, source)
+        return
     if current_os() is not OS.MACOS:
         raise RuntimeError("System Desktop plugins require macOS.")
     if source is None and not path.exists():
@@ -247,6 +262,42 @@ def replace_privileged_bundle(path: Path, source: Path | None) -> None:
         raise ManagedFileWriteUnavailable(
             f"Could not update Desktop plugin at {path}: {detail}. Resolve the error and retry."
         ) from exc
+
+
+def _replace_windows_desktop_bundle(path: Path, source: Path | None) -> None:
+    from ucode.os_compatibility import windows_machine_paths
+
+    if not system_cross_os.is_admin():
+        raise PermissionError("administrator rights are required")
+    windows_machine_paths.validate(path)
+    windows_machine_paths.validate_tree(path)
+    if source is None and not path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    windows_machine_paths.validate(path.parent, required=True)
+    staging = path.parent / f".ug-plugin-{uuid.uuid4().hex}"
+    staging.mkdir()
+    replacement = staging / "new"
+    backup = staging / "previous"
+    published = False
+    try:
+        if source is not None:
+            windows_machine_paths.validate_tree(source)
+            shutil.copytree(source, replacement)
+            windows_machine_paths.validate(replacement, required=True)
+        if path.exists():
+            path.rename(backup)
+        try:
+            if source is not None:
+                replacement.rename(path)
+        except OSError:
+            if backup.exists():
+                backup.rename(path)
+            raise
+        published = True
+    finally:
+        if published or not backup.exists():
+            shutil.rmtree(staging)
 
 
 def reconcile_privileged_files(files: Mapping[Path, str | None], *, display: str) -> None:
@@ -281,8 +332,17 @@ def remove_privileged_tree(root: Path, *, empty_only: bool = False) -> None:
     if root.is_symlink():
         raise RuntimeError(f"Refusing to remove {root} through a symlink.")
     if current_os() is OS.WINDOWS:
-        if root != _windows_claude_header_mod_root() or root.is_junction():
+        if (
+            root not in {_windows_claude_header_mod_root(), windows_desktop_mdm_root()}
+            or root.is_junction()
+        ):
             raise RuntimeError(f"Refusing to remove unexpected folder {root}.")
+        if root == windows_desktop_mdm_root():
+            from ucode.os_compatibility import windows_machine_paths
+
+            windows_machine_paths.validate(root)
+            if not empty_only:
+                raise RuntimeError("Desktop runtime directories may only be removed when empty.")
         if root.exists():
             if not system_cross_os.is_admin():
                 raise PermissionError("administrator rights are required")
@@ -1644,8 +1704,12 @@ def _validate_windows_target(path: Path) -> None:
         _windows_claude_header_mod_root() / name for name in CLAUDE_HEADER_MOD_FILES
     }
     targets = {windows_claude_managed_settings_path(), windows_codex_managed_settings_path()}
-    if path not in targets | header_mod_files:
+    if path not in targets | header_mod_files | windows_desktop_mdm_files():
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
+    if path in windows_desktop_mdm_files():
+        from ucode.os_compatibility import windows_machine_paths
+
+        windows_machine_paths.validate(path)
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
     if path == windows_codex_managed_settings_path():
