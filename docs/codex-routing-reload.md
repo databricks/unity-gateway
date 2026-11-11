@@ -118,17 +118,22 @@ TUI after Ctrl+C gets bounded cleanup.
 A real subprocess-tree check requires the descendant's listening port to be released
 on both Linux and Windows. Live Windows restart coverage comes from the installed-wheel journey.
 
-Linux Codex 0.165.0 installed-wheel checks passed against the selected
-`eng-ml-inference` profile:
+Earlier Linux Codex 0.165.0 installed-wheel checks passed against the selected
+`eng-ml-inference` profile before the command-completion receipt assertions were added:
 
 - The routing-only skill journey toggles off and back on, completes real child
   calculations in each state, and exits normally.
 - `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
   toggles off with two busy children and on with three. All original IDs and
-  permissions survive; resumed child commands write exclusive completion receipts
-  before the children deliver their own final answers. Successful
+  permissions survive; resumed children deliver their own final answers. Successful
   parent, existing-child, and new-child inference carries both the expected recipe
   header and body metadata after each restart. The real TUI exits normally.
+
+The strengthened busy-child journey now requires exclusive command-completion receipts.
+The latest local run completed both restarts and all five resumed child commands,
+but failed the final new-child routing display check. The selected workspace's
+router returned HTTP 422 for the offered models, also reproduced through a direct
+API call without UG or the recorder. The full strengthened journey has not passed locally.
 
 The busy-child check exposed and now guards against title threads replacing the
 saved root, a native server surviving its npm launcher's forced shutdown, and a

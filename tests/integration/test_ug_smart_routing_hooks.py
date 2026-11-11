@@ -111,16 +111,21 @@ def _run_calculation(
     tui.submit(task.prompt)
 
     if routed:
-        tui.wait_for(
-            lambda screen: _routing_display_for_task(
-                screen,
-                task.marker,
-                agent=agent,
-                orchestrator_on=orchestration_enabled,
-            ),
-            f"the Smart Router subagent display for {task.marker}",
-            timeout=120,
-        )
+        try:
+            tui.wait_for(
+                lambda screen: _routing_display_for_task(
+                    screen,
+                    task.marker,
+                    agent=agent,
+                    orchestrator_on=orchestration_enabled,
+                ),
+                f"the Smart Router subagent display for {task.marker}",
+                timeout=120,
+            )
+        finally:
+            session.record(
+                f"routing-decisions-{task.marker}.json", _routing_decisions(session, agent)
+            )
     tui.wait_for_task(task, timeout=180)
     # A parent may report the requested value while its background child is still
     # running. Require the child's own persisted answer before asserting completion.
