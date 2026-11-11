@@ -82,6 +82,73 @@ def harness(monkeypatch, tmp_path):
     return SimpleNamespace(**modules, root=tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("layout", "missing_control"),
+    [
+        ("cowork-tab", None),
+        ("claude-tab", None),
+        ("sidebar-cowork", None),
+        ("sidebar-claude", None),
+        ("sidebar-auto-opens", None),
+        ("claude-tab", "Scheduled"),
+        ("claude-tab", "Write your prompt to Claude"),
+        ("claude-tab", "Start task"),
+    ],
+)
+def test_cowork_navigation_requires_complete_task_screen(
+    harness, monkeypatch, layout, missing_control
+):
+    task_rows = [
+        ["AXRadioButton", "", "Claude", "1", "", "1", "0"],
+        ["AXButton", "Scheduled", "", "", "", "1", "0"],
+        ["AXTextArea", "", "Write your prompt to Claude", "\n", "", "1", "0"],
+        ["AXButton", "", "Start task", "", "", "0", "0"],
+    ]
+    task_snapshot = json.dumps([row for row in task_rows if missing_control not in row])
+    cowork_tab = json.dumps([["AXButton", "", "Cowork", "", "", "1", "0"]])
+    snapshot = task_snapshot if layout == "claude-tab" else cowork_tab
+    if layout.startswith("sidebar-"):
+        snapshot = json.dumps([["AXButton", "", "Show sidebar", "", "", "1", "0"]])
+    now = 0
+
+    def advance(seconds):
+        nonlocal now
+        now += seconds
+
+    def native_ui(args, **kwargs):
+        nonlocal snapshot
+        operation, *labels = args[1:]
+        if operation == "snapshot":
+            return subprocess.CompletedProcess(args, 0, stdout=snapshot)
+        if operation == "click" and labels == ["Show sidebar"]:
+            snapshot = cowork_tab if layout == "sidebar-cowork" else task_snapshot
+            if layout == "sidebar-auto-opens":
+                return subprocess.CompletedProcess(
+                    args, 1, stderr="Control unavailable: Show sidebar"
+                )
+        elif operation == "click" and labels == ["Cowork"]:
+            snapshot = task_snapshot
+        else:
+            pytest.fail(f"Unexpected native UI action: {args[1:]}")
+        return subprocess.CompletedProcess(args, 0, stdout="clicked")
+
+    # Native Accessibility is unavailable here; navigation and readiness checks stay real.
+    monkeypatch.setattr(harness.probe, "process", SimpleNamespace(run=native_ui))
+    monkeypatch.setattr(
+        harness.probe, "time", SimpleNamespace(monotonic=lambda: now, sleep=advance)
+    )
+    if missing_control:
+        with pytest.raises(RuntimeError, match="Timed out waiting for"):
+            harness.probe.open_cowork()
+        assert now == 60
+        assert (harness.root / "macos-cowork-evidence/last-ui.json").read_text() == task_snapshot
+    else:
+        assert harness.probe.open_cowork() == task_snapshot
+        assert now == 0
+        navigation = (harness.root / "macos-cowork-evidence/navigation-ui.json").read_text()
+        assert matches_labels(navigation, ("Cowork", "Scheduled"), enabled=True)
+
+
 @pytest.mark.parametrize("recovers", [True, False])
 def test_accessibility_timeout_uses_remaining_wait_budget(harness, monkeypatch, recovers):
     now = 0

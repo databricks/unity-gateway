@@ -27,7 +27,9 @@ installed UG through its CLI, and asserts a completed exact-answer task on
 integration gate. Apple Silicon, Code-tab, MCP, and file operations remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
-and rejection of wrong/partial/unfinished responses. Failure-path component tests cover
+and rejection of wrong/partial/unfinished responses. Navigation coverage includes the
+Cowork tab, the task screen under Claude, sidebar auto-opening, and refusal to proceed
+without Scheduled, the prompt field, and Start task together. Failure-path component tests cover
 launch, cleanup, and evidence-write errors, signal-handler restoration, temporary credential
 removal, and graceful timeout termination of a real isolated subprocess. Native app/OS
 boundaries are controlled in these component tests; they do not establish live inference.

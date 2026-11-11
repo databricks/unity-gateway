@@ -54,6 +54,22 @@ def wait_for(label, timeout=60, require_all=False, enabled=False):
     raise RuntimeError(f"Timed out waiting for {label}")
 
 
+def open_cowork():
+    navigation_labels = ("Cowork", "Scheduled")
+    navigation = wait_for((*navigation_labels, "Show sidebar"), enabled=True)
+    if not matches_labels(navigation, navigation_labels, enabled=True):
+        try:
+            ui("click", "Show sidebar", wait_until_enabled=False)
+        except RuntimeError as exc:
+            if str(exc) != "Control unavailable: Show sidebar":
+                raise
+        navigation = wait_for(navigation_labels, enabled=True)
+    save("navigation-ui.json", navigation)
+    if matches_labels(navigation, "Cowork", enabled=True):
+        ui("click", "Cowork")
+    return wait_for(("Scheduled", "Write your prompt to Claude", "Start task"), require_all=True)
+
+
 def configured_model_label(profile):
     models = profile["inferenceModels"]
     targets = [model for model in models if model["name"] == MODEL]
@@ -146,21 +162,9 @@ def main(private):
         wait_for("Continue")
         ui("click", "Continue")
         print("Gateway onboarding accepted", flush=True)
-        navigation = wait_for(("Cowork", "Show sidebar"), timeout=60, enabled=True)
-        if not matches_labels(navigation, "Cowork"):
-            try:
-                ui("click", "Show sidebar", wait_until_enabled=False)
-            except RuntimeError as exc:
-                if str(exc) != "Control unavailable: Show sidebar":
-                    raise
-                wait_for("Cowork", timeout=10, enabled=True)
-        wait_for("Cowork", timeout=60)
-        save("navigation-ui.json", ui("snapshot"))
-        ui("click", "Cowork")
-        wait_for("Scheduled")
+        snapshot = open_cowork()
         report["coworkActivated"] = True
-        print("Cowork selected", flush=True)
-        snapshot = wait_for("Write your prompt to Claude", timeout=60)
+        print("Cowork task screen ready", flush=True)
         save("cowork-ui.json", snapshot)
         expected_labels = {
             f"Model: {model_label}{suffix}"

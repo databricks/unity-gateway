@@ -15,6 +15,8 @@ Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
 `../test_macos_cowork_harness.py` separately covers bounded Accessibility retries,
 ambiguous model labels, private logs, and launch/timeout/cleanup/evidence-write failures.
+Navigation checks cover both Cowork and Claude task layouts, sidebar auto-opening,
+and failure when any required task control is missing.
 Those component tests control native boundaries and use an isolated subprocess for
 termination checks; they do not replace the native desktop inference jobs.
 

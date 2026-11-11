@@ -85,6 +85,10 @@ Accessibility authorization; it does not modify TCC or macOS security settings.
 A missing permission fails the job. UG configures the app through its public CLI,
 then the test accepts gateway onboarding, opens Cowork, verifies the configured
 model, sends the prompt, and requires both the exact answer and completion marker.
+Navigation supports the Cowork tab and the task screen exposed under Claude in the
+updated UI. It requires Scheduled, the prompt field, and Start task together before
+proceeding; a tab name alone does not establish readiness. Start task may remain
+disabled until the prompt is entered, and submission still waits for it to be enabled.
 JSON snapshots preserve multiline control values. Controls wait for an enabled exact label;
 individual Accessibility timeouts retry only within the current wait's remaining budget.
 Response assertions wait up to four minutes. The target model must have a unique display
@@ -102,8 +106,9 @@ credentials. An always-run workflow step also stops Claude and Terminal. Artifac
 sanitized diagnostics, installer provenance, UI snapshots, and screenshots, with
 three-day retention. Configuration and credential files are never uploaded.
 
-`tests/test_macos_cowork_harness.py` checks redaction, private log permissions, control
-readiness, bounded Accessibility retries, unambiguous model labels, and rejection of
-partial, incorrect, or unfinished responses. Component tests cover launch, cleanup,
-and evidence-write failures, plus graceful termination of a real isolated subprocess.
+`tests/test_macos_cowork_harness.py` checks redaction, private log permissions, both
+navigation layouts, missing task controls, bounded Accessibility retries, unambiguous
+model labels, and rejection of partial, incorrect, or unfinished responses. Component
+tests cover launch, cleanup, and evidence-write failures, plus graceful termination of
+a real isolated subprocess.
 These checks do not replace running the native macOS job.
