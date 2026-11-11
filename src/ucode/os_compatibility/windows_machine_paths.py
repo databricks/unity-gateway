@@ -63,6 +63,7 @@ def validate(path: Path, *, required: bool = False) -> None:
     result = subprocess_cross_os.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", _CHECK_ACLS],
         input=json.dumps([str(p) for p in paths]),
+        text=True,
         capture_output=True,
         timeout=30,
         check=False,
