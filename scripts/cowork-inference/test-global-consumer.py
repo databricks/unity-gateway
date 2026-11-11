@@ -54,6 +54,9 @@ assert auth_result.returncode != 0, (
     "Fresh consumer unexpectedly inherited provisioning authentication"
 )
 assert not auth_result.stdout.strip(), "Failed authentication wrote a credential to stdout"
+assert "Databricks authentication expired" in auth_result.stderr, (
+    "Expected missing user authentication, not a helper startup/configuration failure"
+)
 print(
     json.dumps(
         {
