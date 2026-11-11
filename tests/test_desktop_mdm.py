@@ -392,6 +392,7 @@ def test_platform_guard(monkeypatch, platform):
 def test_shared_runtime_checks_access_but_retains_virtualenv_path(monkeypatch, tmp_path, private):
     executable = tmp_path / "venv/bin/python"
     resolved = tmp_path / "system/python"
+    monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform="darwin"))
     monkeypatch.setattr(Path, "exists", lambda p: True)
     monkeypatch.setattr(Path, "is_file", lambda p: True)
     monkeypatch.setattr(Path, "is_dir", lambda p: False)
@@ -500,6 +501,7 @@ def test_runtime_probe_reads_installed_package_path(monkeypatch):
 
 
 def test_runtime_rejects_untrusted_cli_before_version_discovery(monkeypatch, tmp_path):
+    monkeypatch.setattr(mdm, "sys", SimpleNamespace(platform="darwin"))
     candidate = tmp_path / "databricks"
     candidate.write_text("untrusted test file")
     candidate.chmod(0o777)

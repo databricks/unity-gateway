@@ -3810,6 +3810,7 @@ class TestReconcileManagedMcpServers:
         monkeypatch.setattr(
             mcp, "remove_client_mcp_server", lambda *a: pytest.fail("must not touch user scope")
         )
+        monkeypatch.setattr(mcp, "current_os", lambda: managed_files.OS.MACOS)
         managed_files.set_machine_wide_only(True)
 
         out = mcp.reconcile_managed_mcp_servers(
@@ -3820,6 +3821,42 @@ class TestReconcileManagedMcpServers:
         assert applied == {}
         assert "managed_mcp_servers" not in saved
         assert state["managed_mcp_servers"] == previous
+        assert "system-ai-github" in " ".join(capsys.readouterr().out.split())
+
+    def _wire_windows_global(self, monkeypatch, *, server_clients):
+        state = {"workspace": WS, "profile": None, "managed_mcp_servers": []}
+        self._wire(
+            monkeypatch,
+            state=state,
+            configured=["claude", "codex"],
+            resolved=[],
+            applied={},
+            saved={},
+            setup_calls=[],
+        )
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_managed_mcp_servers",
+            lambda *a: [
+                {"name": "system-ai-github", "url": "u", "auth": "proxy", "clients": server_clients}
+            ],
+        )
+        monkeypatch.setattr(mcp, "current_os", lambda: managed_files.OS.WINDOWS)
+        managed_files.set_machine_wide_only(True)
+
+    def test_windows_global_fails_when_a_claude_server_is_undelivered(self, monkeypatch):
+        self._wire_windows_global(monkeypatch, server_clients=["claude", "codex"])
+        with pytest.raises(RuntimeError, match="Claude MCP server: system-ai-github"):
+            mcp.reconcile_managed_mcp_servers(
+                {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude", "codex"}
+            )
+
+    def test_windows_global_only_warns_for_undelivered_codex_server(self, monkeypatch, capsys):
+        self._wire_windows_global(monkeypatch, server_clients=["codex"])
+        out = mcp.reconcile_managed_mcp_servers(
+            {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude", "codex"}
+        )
+        assert [s["name"] for s in out] == ["system-ai-github"]
         assert "system-ai-github" in " ".join(capsys.readouterr().out.split())
 
     def test_location_config_registers(self, monkeypatch):
