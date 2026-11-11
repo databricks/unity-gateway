@@ -39,13 +39,11 @@ Native results from November 11, 2026:
   2.1.308) in [run 42939759711](https://github.com/databricks/unity-gateway/actions/runs/42939759711).
 
 Neither tested Cowork layout satisfies the global plan's requirement for one usable
-skill per session. No Windows global publisher has been implemented or validated.
+skill per session. Skills are deferred from the Windows global publisher; the earlier skill results do not validate that publisher.
 The parser correlates the unique prompt across native session roots, preserves matching
 incomplete transcripts for diagnosis, and keeps those incomplete results pending.
 
-Branch pushes currently select only Code on Desktop 2.42304.2. Manual dispatch
-selects one native case or all five, and either pinned Desktop
-version. Failed native contracts remain available; narrower runs are explicit subsets.
+Skill probes require manual dispatch, selecting one native case or all five and either pinned Desktop version. Failed native contracts remain available; narrower runs are explicit subsets.
 
 The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
 Claude Desktop inference through Unity Gateway on a disposable Windows runner.
@@ -113,3 +111,22 @@ token. No Claude.ai login is used. The test verifies the configured provider/mod
 and desktop response; it does not independently trace gateway HTTP requests.
 macOS, Code-tab, MCP, file operations, and Cowork VM readiness are outside this
 test's inference-only coverage.
+
+## Windows global deployment lifecycle
+
+`windows-global-deployment.yml` runs on the separate native-test branch. It installs
+UG, Python, Claude CLI, and Databricks CLI under protected Program Files directories
+and runs `test-global.ps1` through the installed public CLI. Administrator config inputs
+are checked in under `tests/fixtures/managed_config/windows_desktop_global*.json`.
+
+The test requires native registry values/types, matching CLI/Desktop connector names,
+parent merge policy, required plugin manifest/version and shared-runtime hooks. It checks
+repeat configure, connector/tracing withdrawal, a real locked-file failure and retry,
+and revert while preserving unrelated administrator values/subkeys and a user profile.
+A new standard Windows account must read/run the helper, fail to modify it, and fail
+authentication without its own OAuth cache despite inherited CI provisioning credentials.
+
+Results explicitly report live consumer OAuth and MCP calls as unverified. This is
+machine-deployment coverage; it does not drive global-policy inference through the UI.
+A consuming-user Databricks browser login is required for that remaining coverage.
+The existing user-scope accessibility inference job remains unchanged.

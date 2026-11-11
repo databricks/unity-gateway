@@ -6,7 +6,7 @@ CLI/Code enterprise skill loading and Cowork enterprise/organization-plugin load
 These native capability inputs do not substitute for managed workspace bundles or
 global configure lifecycle tests. See `../../scripts/cowork-inference/README.md`.
 Manual dispatch selects any native case or all five on Desktop 2.42304.2 or 3.6556.2.
-Branch pushes currently select Code only; the blocking suite's pin is unchanged.
+Skill probes require manual dispatch; the blocking suite's pin is unchanged.
 Both tested Desktop versions reject enterprise reference reads in Cowork and expose
 duplicate skills with both sources installed. See the native test README for run evidence.
 The Code driver confirms workspace trust and grants a one-time native Read permission
@@ -15,13 +15,19 @@ The parser preserves matching incomplete transcripts for diagnosis while keeping
 status pending; unrelated sessions are excluded.
 Native CLI and Code enterprise skill execution and Cowork organization-plugin execution
 passed. Code requires explicit one-time reference-read consent. These prerequisite
-results do not validate a Windows global publisher, which is not yet implemented.
+results predate the Windows global publisher and do not validate it.
 
 Windows global Desktop publication has component coverage in
 `../test_desktop_mdm_windows.py`. Registry/ACL boundaries are simulated there; those tests
 do not establish native global OAuth, connector deduplication, or UI lifecycle coverage.
 The native Windows accessibility experiments remain on a separate test branch. Workspace
 skill delivery is deferred from the Windows global implementation.
+
+The branch-only `windows-global-deployment.yml` exercises installed UG's public global
+configure/reconfigure/update/revert flow with checked-in administrator config inputs.
+It checks native registry types, unrelated policy/profile preservation, shared runtime
+access from a real standard Windows account, credential isolation, and failed-update retry.
+It does not establish live consumer OAuth, UI inference, or MCP calls/deduplication.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.

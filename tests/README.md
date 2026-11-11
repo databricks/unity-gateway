@@ -7,7 +7,7 @@ They require successful native Skill and Read calls and completed hidden-file an
 prompt/session isolation, and hook counts. See that script directory's README for
 fixture boundaries and coverage still requiring the Windows global publisher.
 Manual dispatch selects any native case or all five on Desktop 2.42304.2 or 3.6556.2.
-Branch pushes currently select Code only; the blocking suite's pin is unchanged.
+Skill probes require manual dispatch; the blocking suite's pin is unchanged.
 Both tested Desktop versions reject enterprise reference reads in Cowork and expose
 duplicate skills with both sources installed. See the native test README for run evidence.
 The Code driver confirms workspace trust and grants a one-time native Read permission
@@ -16,7 +16,7 @@ The parser preserves matching incomplete transcripts for diagnosis while keeping
 status pending; unrelated sessions are excluded.
 Native CLI and Code enterprise skill execution and Cowork organization-plugin execution
 passed. Code requires explicit one-time reference-read consent. These prerequisite
-results do not validate a Windows global publisher, which is not yet implemented.
+results predate the Windows global publisher and do not validate it.
 
 Windows Desktop global component coverage in `test_desktop_mdm_windows.py` exercises
 real temporary publication files with simulated registry/ACL boundaries: native registry
@@ -24,6 +24,12 @@ view, foreign policy, refresh/removal, failed publication and retry, linked plug
 consumer-auth helpers, and deferred workspace skills. Existing macOS tests remain applicable.
 Native global OAuth, connector deduplication, and UI lifecycle remain separate validation gaps;
 the Windows native-loading experiments live on their own test branch.
+
+The branch-only `windows-global-deployment.yml` exercises installed UG's public global
+configure/reconfigure/update/revert flow with checked-in administrator config inputs.
+It checks native registry types, unrelated policy/profile preservation, shared runtime
+access from a real standard Windows account, credential isolation, and failed-update retry.
+It does not establish live consumer OAuth, UI inference, or MCP calls/deduplication.
 
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.

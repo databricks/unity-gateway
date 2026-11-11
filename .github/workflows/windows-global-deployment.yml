@@ -1,0 +1,77 @@
+name: Windows global deployment
+
+on:
+  push:
+    branches: [masonc08/windows-global-native-tests]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deployment:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      PYTHONUTF8: 1
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        with:
+          version: 1.17.0
+      - name: Validate Cowork test scripts
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          foreach ($script in Get-ChildItem scripts/cowork-inference/*.ps1) {
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors.Count) { throw ($errors | Out-String) }
+          }
+          & ./scripts/cowork-inference/test-diagnostics.ps1
+      - name: Require a clean machine configuration
+        shell: pwsh
+        run: |
+          python -c "from scripts.run_integration import managed_policy_paths, present_policy_paths, present_registry_policies; found = present_policy_paths(managed_policy_paths(['claude'])) + present_registry_policies(['claude']); raise SystemExit('Existing machine configuration: ' + ', '.join(found) if found else 0)"
+          if ($LASTEXITCODE -ne 0) { throw 'Machine configuration preflight failed' }
+      - name: Download and verify the approved Claude installer
+        shell: pwsh
+        env:
+          INSTALLER_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
+          INSTALLER_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+        run: |
+          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
+            throw 'An installer SHA256 is required'
+          }
+          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
+          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer -TimeoutSec 300
+          $digest = $env:INSTALLER_SHA256
+          & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
+            -ExpectedSha256 $digest `
+            -OutputDirectory "$env:RUNNER_TEMP/windows-global"
+      - name: Install UG and pinned Claude CLI
+        shell: pwsh
+        run: |
+          ./scripts/cowork-inference/install-dependencies.ps1 -SharedRuntime
+          (Join-Path ([Environment]::GetEnvironmentVariable('ProgramW6432')) 'UnityGatewayNativeTest/ug/Scripts') | Add-Content $env:GITHUB_PATH
+      - name: Exercise global publication and standard-user isolation
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: ./scripts/cowork-inference/test-global.ps1 -OutputDirectory "$env:RUNNER_TEMP/windows-global"
+      - name: Upload redacted deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: windows-global-deployment
+          retention-days: 3
+          path: ${{ runner.temp }}/windows-global/
+          if-no-files-found: warn
