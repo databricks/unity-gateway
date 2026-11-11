@@ -276,9 +276,11 @@ def _vscode_archive(*, copilot=True):
     buffer = io.BytesIO()
     files = {"VSCode-linux-x64/bin/code": b"#!/bin/sh\necho 1.144.0\n"}
     if copilot:
+        # The real file is UTF-8 with localized text, not the Windows code page.
         files["VSCode-linux-x64/resources/app/extensions/copilot/package.json"] = json.dumps(
-            {"version": "0.72.0"}
-        ).encode()
+            {"version": "0.72.0", "description": "\u0440\u0443\u0441\u0441\u043a\u0438\u0439"},
+            ensure_ascii=False,
+        ).encode("utf-8")
     with tarfile.open(fileobj=buffer, mode="w:gz") as bundle:
         for name, data in files.items():
             info = tarfile.TarInfo(name)
@@ -318,7 +320,9 @@ def test_vscode_windows_install_finds_code_cmd_and_the_versioned_copilot_chat(
         bundle.writestr("bin/code.cmd", b"@echo off")
         bundle.writestr(
             "2c33b50b16/resources/app/extensions/copilot/package.json",
-            json.dumps({"version": "0.72.0"}),
+            json.dumps(
+                {"version": "0.72.0", "description": "\u0440\u0443\u0441"}, ensure_ascii=False
+            ),
         )
     payload = buffer.getvalue()
     _serve(monkeypatch, payload)

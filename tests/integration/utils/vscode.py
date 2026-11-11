@@ -76,7 +76,9 @@ class UnknownScreen(AssertionError):
 def vscode_user_dir(session) -> Path:
     """VS Code's user data folder for the session's home."""
     if os.name == "nt":
-        return Path(session.env["APPDATA"]) / "Code"
+        # Like ug and VS Code, fall back to USERPROFILE when APPDATA is unset.
+        appdata = session.env.get("APPDATA") or session.home / "AppData" / "Roaming"
+        return Path(appdata) / "Code"
     return Path(session.env["XDG_CONFIG_HOME"]) / "Code"
 
 
@@ -513,14 +515,14 @@ def copilot_chat_version(session) -> str:
         *root.glob("resources/app/extensions/copilot/package.json"),
         *root.glob("*/resources/app/extensions/copilot/package.json"),
     ]
-    return json.loads(package.read_text())["version"]
+    return json.loads(package.read_text(encoding="utf-8"))["version"]
 
 
 def ug_extension_config(session) -> dict:
     """The ug-config.json inside the one installed ug extension."""
     folders = sorted((session.home / ".vscode/extensions").glob("databricks.unity-gateway-*"))
     assert len(folders) == 1, folders
-    return json.loads((folders[0] / "ug-config.json").read_text())
+    return json.loads((folders[0] / "ug-config.json").read_text(encoding="utf-8"))
 
 
 def model_label(config: dict, model: str) -> str:

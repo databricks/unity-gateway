@@ -15,7 +15,7 @@ SAVE_TIMEOUT_S = 120
 def _replay(path: Path) -> dict | None:
     """Rebuild a session from its log: a snapshot (kind 0), then sets (1), splices (2), deletes (3)."""
     state = None
-    for line in path.read_text().splitlines():
+    for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         record = json.loads(line)
