@@ -192,7 +192,7 @@ These component checks do not establish native or live subscription/gateway beha
 sudo runs the provisioning script (`e2e_mdm/linux-provision.sh`, a twin of
 `scripts/mdm/macos-provision.sh`, or the macOS script itself), the machine-wide files are checked, the
 user's sudo is removed, and `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex` run headless. Nothing may
-ask for a password (`sudo -n`, no stdin, no tty, and a `SUDO_ASKPASS` trap that records any prompt), and
+ask for a password (`sudo -n`, no stdin, no tty), and
 the launches must leave every machine-wide file byte- and stat-identical and write only user-owned
 files in the user's home.
 
@@ -203,6 +203,8 @@ service principal's token uses the scopes the provisioning script requests. Run 
 `pytest -c tests/e2e_mdm/pytest.ini --confcutdir=tests/e2e_mdm --rootdir=. tests/e2e_mdm`.
 `test_mdm_provision_scripts.py`, in the default run, fails when the Linux twin's install, token
 request or `ug configure` lines stop matching the macOS script's.
+`test_mdm_e2e_harness.py` checks that a timed-out command's failure masks a minted credential in
+its command and output.
 
 `test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:

@@ -15,7 +15,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 from base64 import b64encode
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -110,37 +110,47 @@ def scrub(text: str) -> str:
     return text
 
 
-def run(argv, *, timeout, extra_env=None, check=False) -> Run:
+def run(argv, *, timeout, extra_env=None, check=False, merge_stderr=True) -> Run:
     """Run a command with no stdin and no controlling terminal, so a password prompt cannot wait."""
-    proc = subprocess.run(
-        [str(a) for a in argv],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=timeout,
-        start_new_session=True,
-        env={**os.environ, **(extra_env or {})},
-    )
+    argv = [str(a) for a in argv]
+    try:
+        proc = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            start_new_session=True,
+            env={**os.environ, **(extra_env or {})},
+        )
+    except subprocess.TimeoutExpired as exc:
+        partial = (exc.output or b"").decode(errors="replace")
+    else:
+        partial = None
+    # Outside the except block, so the failure doesn't chain TimeoutExpired, whose message holds
+    # argv and with it any minted bearer, which GitHub doesn't mask.
+    if partial is not None:
+        pytest.fail(
+            f"{scrub(str(argv[:4]))} timed out after {timeout}s:\n{scrub(partial)[-4000:]}",
+            pytrace=False,
+        )
     result = Run(proc.returncode, scrub(proc.stdout))
     if check and result.returncode:
-        pytest.fail(
-            f"{argv[:4]} exited {result.returncode}:\n{result.output[-4000:]}", pytrace=False
-        )
+        detail = result.output + scrub(proc.stderr or "")
+        pytest.fail(f"{argv[:4]} exited {result.returncode}:\n{detail[-4000:]}", pytrace=False)
     return result
 
 
-def sudo(*argv, timeout=60, check=True) -> Run:
-    return run(["sudo", "-n", *argv], timeout=timeout, check=check)
+def sudo(*argv, timeout=60, check=True, merge_stderr=True) -> Run:
+    return run(["sudo", "-n", *argv], timeout=timeout, check=check, merge_stderr=merge_stderr)
 
 
 @dataclass
 class Machine:
-    askpass: Path
-    marker: Path
     workspace: str
     client_id: str
-    client_secret: str
+    client_secret: str = field(repr=False)
 
     def env(self, home: str, **extra) -> list[str]:
         values = {
@@ -148,7 +158,6 @@ class Machine:
             "PATH": SAFE_PATH,
             "TERM": "dumb",
             "LANG": "C.UTF-8",
-            "SUDO_ASKPASS": str(self.askpass),
             **{k: os.environ[k] for k in PASSTHROUGH if k in os.environ},
             **extra,
         }
@@ -161,9 +170,6 @@ class Machine:
             ["sudo", "-n", "-u", USER, "-H", "env", "-i", *self.env(home, **extra), *in_home],
             timeout=timeout,
         )
-
-    def password_requested(self) -> bool:
-        return self.marker.exists()
 
     def mint_bearer(self) -> str:
         # Stands in for the developer's own OAuth sign-in, limited to the two APIs a launch uses.
@@ -187,7 +193,7 @@ class Machine:
 def snapshot(roots) -> dict:
     """Mode, owner, size, inode, mtime, ctime and content hash of every file, read as root."""
     spec = json.dumps([[str(path), digest] for path, digest in roots])
-    result = sudo(sys.executable, "-I", "-c", WALKER, spec, timeout=300)
+    result = sudo(sys.executable, "-I", "-c", WALKER, spec, timeout=300, merge_stderr=False)
     return json.loads(result.output)
 
 
@@ -216,23 +222,12 @@ def machine():
     dirty = [p for p in (POLICY, CLAUDE_SETTINGS, CODEX_SETTINGS) if p.exists()]
     assert not dirty and not HOME.exists(), f"Not a clean host: {dirty or HOME}"
 
-    work = Path(tempfile.mkdtemp(prefix="ug-mdm-e2e-", dir="/tmp"))
-    work.chmod(0o1777)
-    # sudo only runs an askpass helper for `sudo -A`; plain sudo with no tty and no NOPASSWD fails
-    # with "a password is required", which the tests also reject.
-    askpass = work / "askpass"
-    marker = work / "password-requested"
-    askpass.write_text(f'#!/bin/sh\necho "$@" >> {marker}\nexit 1\n')
-    askpass.chmod(0o755)
     yield Machine(
-        askpass,
-        marker,
         values["UG_MDM_E2E_WORKSPACE"].rstrip("/"),
         values["UG_MDM_E2E_CLIENT_ID"],
         values["UG_MDM_E2E_CLIENT_SECRET"],
     )
     sudo("rm", "-f", str(SUDOERS), check=False)
-    shutil.rmtree(work, ignore_errors=True)
 
 
 def create_user() -> None:
@@ -300,7 +295,7 @@ def provisioned(machine, admin):
 class Demoted:
     machine_wide: dict
     home: dict
-    bearer: str
+    bearer: str = field(repr=False)
 
 
 @pytest.fixture(scope="module")

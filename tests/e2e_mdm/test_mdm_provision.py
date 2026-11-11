@@ -4,6 +4,7 @@ Stages run in file order: provision, machine-wide files, demote, launch Claude, 
 """
 
 import json
+import re
 import stat
 import tomllib
 
@@ -42,6 +43,8 @@ LAUNCH = {
     "claude": ["ug", "claude", "-p", PROMPT, "--max-turns", "1"],
     "codex": ["ug", "codex", "exec", "--skip-git-repo-check", PROMPT],
 }
+# A Databricks OAuth token, such as the one the provisioning script mints and exports.
+JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 
 
 def assert_root_owned(path, mode=0o644):
@@ -53,7 +56,6 @@ def assert_root_owned(path, mode=0o644):
 
 def test_provisioning_runs_without_a_password(machine, provisioned):
     assert provisioned.returncode == 0, provisioned.output[-4000:]
-    assert not machine.password_requested()
     assert "password" not in provisioned.output.lower(), provisioned.output[-4000:]
     # Configure exits 0 even when it skips an agent, so read its summary.
     assert "Failed to configure" not in provisioned.output, provisioned.output[-4000:]
@@ -97,10 +99,14 @@ def test_codex_machine_wide_config(machine, provisioned):
 
 
 def test_no_credentials_written_machine_wide(machine, provisioned):
+    leaked = []
     for root in MACHINE_WIDE_ROOTS:
         for path in root.rglob("*") if root.exists() else ():
             if path.is_file():
-                assert machine.client_secret not in path.read_text(errors="ignore"), path
+                text = path.read_text(errors="ignore")
+                if machine.client_secret in text or JWT.search(text):
+                    leaked.append(str(path))
+    assert not leaked, leaked
 
 
 def test_provisioning_left_the_user_home_untouched(demoted):
@@ -111,7 +117,6 @@ def test_provisioning_left_the_user_home_untouched(demoted):
 def test_user_cannot_sudo_after_demotion(machine, demoted):
     result = machine.as_user(["sudo", "-n", "true"])
     assert result.returncode != 0
-    assert not machine.password_requested()
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -124,7 +129,6 @@ def test_demoted_user_launches_agent(machine, demoted, agent):
     )
     assert result.returncode == 0, result.output[-4000:]
     assert ANSWER in result.output, result.output[-4000:]
-    assert not machine.password_requested()
     assert "password" not in result.output.lower(), result.output[-4000:]
 
     assert machine_snapshot() == demoted.machine_wide

@@ -839,7 +839,8 @@ jobs:
   # scripts/mdm/macos-provision.sh.
   mdm-provision:
     name: MDM provisioning · ${{ matrix.os == 'macos-15' && 'macOS' || 'Linux' }}
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    # The scripts install the checkout and the latest Claude Code and Codex, so skip pinned runs.
+    if: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.codex_version == '' || inputs.codex_version == '0.154.0') && (inputs.dependency == '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
