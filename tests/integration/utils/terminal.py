@@ -252,6 +252,7 @@ class TerminalProcess:
             / ".ucode"
             / ("claude-v2-pty.log" if self.agent == "claude" else "codex-v2-interposer.log")
         )
+        app_server_log = self.session.home / ".ucode/codex-app-server.log"
         self.session.record(
             f"{self.name}.json",
             {
@@ -264,6 +265,9 @@ class TerminalProcess:
                 "signalstatus": self.child.signalstatus,
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
+                "app_server_log": app_server_log.read_text()
+                if self.agent == "codex" and app_server_log.is_file()
+                else None,
                 "agent_sessions": agent_sessions(self.session, self.agent)
                 if self.agent in ("claude", "codex", "copilot")
                 else {},

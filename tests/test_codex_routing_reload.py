@@ -3,9 +3,16 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
+import signal
+import socket
 import subprocess
+import sys
+import time
 import tomllib
+from contextlib import suppress
 from queue import SimpleQueue
+from types import SimpleNamespace
 
 import pytest
 from websockets.asyncio.client import connect
@@ -114,6 +121,18 @@ def test_failed_resume_keeps_recovery_pending_and_rapid_toggles_use_latest_recip
     assert "Smart Router is now on" in request["params"]["input"][0]["text"]
     assert continuation.recipe == "custom"
     assert notices.empty()
+
+
+def test_temporary_title_thread_does_not_replace_conversation_root():
+    notices = SimpleQueue()
+    continuation = RestartContinuation(notices)
+    resumed(continuation, 1, {"id": "root"}, method="thread/start")
+    continuation.before_tui({"id": 2, "method": "thread/start", "params": {"ephemeral": True}})
+    assert continuation.after_resume({"id": 2, "result": {"thread": {"id": "title"}}}) is None
+    assert continuation.root_id == "root"
+    notices.put("DISABLED")
+    request = resumed(continuation, 3, {"id": "root"})
+    assert request["params"]["threadId"] == "root"
 
 
 @pytest.mark.parametrize("continuation_error", [False, True])
@@ -254,6 +273,7 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
     controls = tmp_path / "env.json"
     controls.write_text("{}")
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    monkeypatch.setattr(v2, "CODEX_APP_SERVER_LOG", tmp_path / "app-server.log")
     monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, "/test/python")
     monkeypatch.setattr(v2, "launch_token", lambda *_: "test-token")
     monkeypatch.setattr(v2, "_prepare_smart_router_session", lambda *_: controls)
@@ -274,7 +294,9 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
             if failure == "spawn" and len(processes) == 2:
                 raise OSError("failed to spawn app-server")
             self.argv = argv
+            self.pid = 41000 + len(processes)
             self.env = kwargs.get("env")
+            self.starts_session = kwargs.get("start_new_session", False)
             self.terminated = False
             self.killed = False
             self.signals = []
@@ -313,8 +335,15 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
         interposer_options.update(kwargs)
         return 41002, lambda: stopped.append(True)
 
+    def taskkill(argv, **kwargs):
+        assert argv[1:] == ["/PID", argv[2], "/T", "/F"]
+        process = next(process for process in processes if str(process.pid) == argv[2])
+        process.terminate()
+        return SimpleNamespace(returncode=0)
+
     monkeypatch.setattr(v2, "_wait_for_app_server", ready)
     monkeypatch.setattr(v2.subprocess_cross_os, "popen", Process)
+    monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
     monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
     expected = (
         SystemExit
@@ -345,6 +374,7 @@ def test_launcher_restarts_only_server_and_cleans_up_owned_processes(
         assert len(processes) == 4  # three server processes, one TUI
         assert all(server.argv[-2:] == ["--listen", "ws://127.0.0.1:41001"] for server in servers)
         assert all(server.env["CODEX_HOME"] == str(tmp_path) for server in servers)
+        assert all(server.starts_session == (os.name != "nt") for server in servers)
         configs = [tomllib.loads("\n".join(server.argv[3:-2:2])) for server in servers]
         assert [
             config["responses_api_metadata"]["smart_router_recipe_name"] for config in configs
@@ -378,3 +408,72 @@ def test_shutdown_kills_unresponsive_server_with_bounded_wait():
 
     v2._stop_codex_process(Process())
     assert calls == ["terminate", "wait", "kill", "wait"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups; Windows uses taskkill")
+def test_forced_shutdown_releases_native_descendants_listening_port(tmp_path, monkeypatch):
+    ready = tmp_path / "ready"
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    child = """
+import signal, socket, sys, time
+from pathlib import Path
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+listener = socket.socket()
+listener.bind(('127.0.0.1', int(sys.argv[2])))
+listener.listen()
+Path(sys.argv[1]).touch()
+time.sleep(60)
+"""
+    wrapper = """
+import signal, subprocess, sys
+signal.signal(signal.SIGTERM, lambda *_: None)
+subprocess.Popen([sys.executable, '-c', *sys.argv[1:]]).wait()
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", wrapper, child, str(ready), str(port)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists():
+            assert process.poll() is None
+            assert time.monotonic() < deadline, "native descendant did not bind its port"
+            time.sleep(0.01)
+        monkeypatch.setattr(v2, "PROCESS_SHUTDOWN_TIMEOUT_SECONDS", 0.1)
+        v2._stop_codex_process(process, process_tree=True)
+        with socket.socket() as replacement:
+            replacement.bind(("127.0.0.1", port))
+    finally:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("returncode,exited", [(0, None), (128, 0), (1, None)])
+def test_windows_shutdown_stops_native_process_tree(monkeypatch, returncode, exited):
+    calls = []
+    waits = []
+    process = SimpleNamespace(pid=42, poll=lambda: exited, wait=lambda **kw: waits.append(kw))
+    monkeypatch.setattr(v2, "os", SimpleNamespace(name="nt"))
+
+    def taskkill(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=returncode)
+
+    monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
+    if returncode and exited is None:
+        with pytest.raises(RuntimeError, match="Could not stop"):
+            v2._stop_codex_process(process, process_tree=True)
+        assert not waits
+    else:
+        v2._stop_codex_process(process, process_tree=True)
+        assert waits == [{"timeout": v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS}]
+    argv, options = calls[0]
+    assert argv[0].endswith("taskkill.exe")
+    assert argv[1:] == ["/PID", "42", "/T", "/F"]
+    assert options["timeout"] == v2.PROCESS_SHUTDOWN_TIMEOUT_SECONDS

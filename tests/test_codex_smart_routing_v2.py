@@ -15,6 +15,11 @@ from ucode.smart_routing import codex_interposer, codex_routing, v2
 WS = "https://example.databricks.com"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_app_server_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(v2, "CODEX_APP_SERVER_LOG", tmp_path / "codex-app-server.log")
+
+
 def test_smart_routing_switch_message_is_boxed():
     message = v2.format_routing_notice("model-x", "Because X.")
 
@@ -275,6 +280,7 @@ class TestLaunchCodex:
         class FakeProcess:
             def __init__(self, argv, **kwargs):
                 self.argv = argv
+                self.pid = 42000 + len(processes)
                 self.kwargs = kwargs
                 self.terminated = False
                 processes.append(self)
@@ -292,6 +298,13 @@ class TestLaunchCodex:
                 raise AssertionError("test does not interrupt the TUI")
 
         monkeypatch.setattr(v2.subprocess, "Popen", FakeProcess)
+
+        def taskkill(argv, **kwargs):
+            assert argv[1:] == ["/PID", str(processes[0].pid), "/T", "/F"]
+            processes[0].terminate()
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
 
         def get_token(workspace, profile, **_kw):
             token_calls.append((workspace, profile))

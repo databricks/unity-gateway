@@ -57,7 +57,11 @@ class RestartContinuation:
         self.recipe: str | None = None
 
     def before_tui(self, message: dict) -> None:
-        if message.get("method") in ("thread/start", "thread/resume") and "id" in message:
+        if (
+            message.get("method") in ("thread/start", "thread/resume")
+            and "id" in message
+            and not message.get("params", {}).get("ephemeral")
+        ):
             self.requests[message["id"]] = message["method"]
 
     def after_resume(self, message: dict) -> dict | None:
@@ -98,11 +102,13 @@ class RestartContinuation:
                         "text": (
                             f"Smart Router is now {state}. UG restarted the app-server to update request "
                             "attribution. Do not repeat the routing toggle command. Continue the previous "
-                            "unfinished task. Existing children are saved but stopped: use list_agents and "
-                            "followup_task to resume their existing assignments. Do not spawn replacement "
+                            "unfinished task. Existing children are saved but stopped. First use list_agents "
+                            "to check saved children. Use "
+                            "followup_task to resume every unfinished child assignment, even if the latest "
+                            "user prompt only changed Smart Router. Do not spawn replacement "
                             "agents. Running commands were interrupted; inspect any completed effects before "
-                            "retrying them. If the previous task was only changing Smart Router, confirm "
-                            "the new state and stop."
+                            "retrying them. Only after checking children, if no unfinished parent or child "
+                            "work remains, confirm the new state and stop."
                         ),
                     }
                 ],

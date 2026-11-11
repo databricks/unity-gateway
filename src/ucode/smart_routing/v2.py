@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.request
 from collections.abc import Callable, Mapping, MutableMapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import SimpleQueue
@@ -52,6 +53,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.os_compatibility.system_cross_os import windows_system32_dir
 from ucode.skills import (
     SMART_ROUTER_ORCHESTRATOR_SKILL,
     SMART_ROUTER_SKILL,
@@ -74,6 +76,7 @@ from ucode.ui import print_note, print_warning
 LEGACY_STATE_KEY = "smart_routing_enabled"
 
 CODEX_INTERPOSER_LOG = APP_DIR / "codex-v2-interposer.log"
+CODEX_APP_SERVER_LOG = APP_DIR / "codex-app-server.log"
 
 # Native v2's default role hints assume direct tools even when code mode exposes them.
 CODEX_V2_COLLABORATION_GUIDANCE = """Use collaboration tools through the interface in their tool definitions. When listed in the code executor's `tools` namespace, invoke their exact declared names through `functions.exec`. When exposed as direct tools, call them directly.
@@ -858,12 +861,27 @@ def _v2_hooks(state: dict, available_models: list[str]) -> dict:
     return doc["hooks"]
 
 
-def _stop_codex_process(process) -> None:
-    process.terminate()
+def _stop_codex_process(process, *, process_tree: bool = False) -> None:
+    if process_tree and os.name == "nt":
+        stopped = subprocess_cross_os.run(
+            [str(windows_system32_dir() / "taskkill.exe"), "/PID", str(process.pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+        )
+        if stopped.returncode and process.poll() is None:
+            raise RuntimeError("Could not stop the Codex app-server process tree.")
+    else:
+        process.terminate()
     try:
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        process.kill()
+        if process_tree and os.name != "nt":
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
         process.wait(timeout=PROCESS_SHUTDOWN_TIMEOUT_SECONDS)
 
 
@@ -936,19 +954,22 @@ def launch_codex(
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
     def start_app_server(enabled: bool):
-        return subprocess_cross_os.popen(
-            [
-                binary,
-                "app-server",
-                *codex_config_args(routing_config(overlay, enabled)),
-                "--listen",
-                app_server_url,
-            ],
-            env=os.environ.copy(),
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        CODEX_APP_SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with CODEX_APP_SERVER_LOG.open("a", encoding="utf-8") as stderr:
+            return subprocess_cross_os.popen(
+                [
+                    binary,
+                    "app-server",
+                    *codex_config_args(routing_config(overlay, enabled)),
+                    "--listen",
+                    app_server_url,
+                ],
+                env=os.environ.copy(),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=stderr,
+                start_new_session=os.name != "nt",
+            )
 
     app_server = start_app_server(enabled=True)
     restart_notices: SimpleQueue[str] = SimpleQueue()
@@ -991,15 +1012,16 @@ def launch_codex(
                     tui = None
                     break
                 except subprocess.TimeoutExpired:
-                    if app_server.poll() is not None:
+                    if (exit_code := app_server.poll()) is not None:
                         raise RuntimeError(
-                            "Codex app-server exited unexpectedly. Restart ug codex and resume "
+                            f"Codex app-server exited unexpectedly (code {exit_code}); "
+                            f"see {CODEX_APP_SERVER_LOG}. Restart ug codex and resume "
                             "your saved conversation."
                         ) from None
                     enabled = session_routing_enabled(session_env_path)
                     if enabled == applied:
                         continue
-                    _stop_codex_process(app_server)
+                    _stop_codex_process(app_server, process_tree=True)
                     restart_notices.put(
                         routing_config(overlay, enabled)["responses_api_metadata"][
                             "smart_router_recipe_name"
@@ -1025,5 +1047,5 @@ def launch_codex(
                 if stop_interposer is not None:
                     stop_interposer()
             finally:
-                _stop_codex_process(app_server)
+                _stop_codex_process(app_server, process_tree=True)
     sys.exit(returncode)

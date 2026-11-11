@@ -565,8 +565,9 @@ intentional requirement ensures native v2 provides readable delegated assignment
 and supports native conversation resume;
 UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
 and newer. The general integration CI baseline remains 0.154.0; routing cases use
-0.165.0. The restart path does not raise either version requirement; native restart
-checks so far used 0.167.0.
+0.165.0. The restart path does not raise either version requirement. Linux Codex
+0.165.0 passed installed-wheel off/on skill and busy-child attribution checks;
+native macOS/Windows and Codex 0.164.0 restart validation remain outstanding.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
 version is still unknown, UG stops without offering or running an update and asks

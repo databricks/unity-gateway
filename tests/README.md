@@ -20,7 +20,8 @@ description unchanged when routing is off.
 
 `test_codex_routing_reload.py` covers app-server restarts, off/on recipe config,
 bounded cleanup, failed startup/restart, unexpected exits, reconnect without
-rerouting, parent-only continuation, rapid notices, and private internal responses.
+rerouting, parent-only continuation, ephemeral title threads, rapid notices, and private
+internal responses. App-server stderr is retained in the TUI evidence artifacts.
 These replace obsolete tests of manual descendant unloading, permission reconstruction,
 held input, approval draining, and Escape suppression. Native Codex owns resume and
 reconnect behavior; those removed controller guarantees are no longer provided.
@@ -32,14 +33,16 @@ command, a child-owned answer, and a working parent follow-up.
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
 retains the installed-wheel busy-child off/on journey. It requires stable IDs and
 permissions, child-owned answers, and matching recipe fields on successful parent,
-existing-child, and new-child inference. Neither installed-wheel journey has passed
-for the new restart implementation yet. Earlier live results on Codex
+existing-child, and new-child inference. The busy-child journey and routing-only
+off/on skill journey passed on Linux Codex 0.165.0 against the selected `eng-ml-inference` profile. They preserve the
+existing restart, inference, identity, permission, and normal-exit assertions.
+Navigation passed the Linux Codex 0.165.0 CI journey. Earlier live results on
 0.164.0/0.165.0/0.167.0 tested the removed in-process controller.
 
 Separate Linux Codex 0.167.0 native checks passed same-ID child recovery with
 saved tool history and root sandbox preservation, plus real TUI reconnect and
-inference before/after restart. Selected-workspace attribution remains unverified
-because host-managed provider configuration overrides launch settings.
+inference before/after restart. Selected-workspace attribution is now covered by
+the Linux 0.165.0 installed-wheel busy-child journey.
 See [restart behavior and validation limits](../docs/codex-routing-reload.md).
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
