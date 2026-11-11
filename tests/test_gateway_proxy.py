@@ -759,3 +759,59 @@ class TestCodexRelayProxy:
         assert sent["ChatGPT-Account-ID"] == "acct"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
+
+
+class TestProxyMetrics:
+    def test_auth_retry_records_both_headers_and_only_forwarded_body(self, metrics_recorder):
+        from ucode import metrics
+
+        metrics.set_context(agent="codex")
+        client = _FakeClient([_FakeResp(401, b"rejected"), _FakeResp(200, b"answer")])
+        handler = _handle_handler(client, _FakeCache(), _Collect())
+        handler.metrics_workspace = "https://example.databricks.com"
+        handler.metrics_proxy_mode = "relay"
+        handler._handle()
+        rows = list(metrics_recorder.pending)
+        headers = [a for _, n, _, a in rows if n == "proxy_upstream_headers_duration_ms"]
+        assert [(a["attempt"], a["http_status_code"]) for a in headers] == [(1, 401), (2, 200)]
+        assert all(a["agent"] == "codex" and a["proxy_mode"] == "relay" for a in headers)
+        assert sum(v for _, n, v, _ in rows if n == "proxy_auth_retry_count") == 1
+        assert [v for _, n, v, _ in rows if n == "proxy_response_bytes"] == [6]
+        assert sum(n == "proxy_first_byte_duration_ms" for _, n, _, _ in rows) == 1
+        assert not any(n == "ug_cli_error" for _, n, _, _ in rows)
+
+    def test_terminal_rejection_emits_one_error_after_retry(self, metrics_recorder):
+        client = _FakeClient([_FakeResp(401), _FakeResp(403, b"denied")])
+        handler = _handle_handler(client, _FakeCache(), _Collect())
+        handler._handle()
+        errors = [a for _, n, _, a in metrics_recorder.pending if n == "ug_cli_error"]
+        assert len(errors) == 1
+        assert errors[0]["phase"] == "agent_session"
+        assert errors[0]["http_status_code"] == 403
+        assert errors[0]["error_code"] == "http_403"
+
+    def test_disconnect_marks_request_and_counts_only_written_body(self, metrics_recorder):
+        class Cancelled(_Collect):
+            def write(self, data):
+                if data == b"answer":
+                    raise BrokenPipeError()
+                return super().write(data)
+
+        handler = _handle_handler(
+            _FakeClient([_FakeResp(200, b"answer")]), _FakeCache(), Cancelled()
+        )
+        handler._handle()
+        rows = list(metrics_recorder.pending)
+        labels = next(a for _, n, _, a in rows if n == "proxy_request_duration_ms")
+        assert labels["client_disconnected"] is True
+        assert [v for _, n, v, _ in rows if n == "proxy_response_bytes"] == [0]
+        assert not any(n == "ug_cli_error" for _, n, _, _ in rows)
+
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_relay_factory_sets_explicit_mode(self, monkeypatch, agent):
+        start = Mock(return_value=None)
+        monkeypatch.setattr(gateway_proxy, "_start_proxy", start)
+        gateway_proxy.start_relay_proxy(
+            "https://example.databricks.com", lambda _: "fake", 0, agent=agent
+        )
+        assert start.call_args.kwargs["metrics_proxy_mode"] == "relay"
