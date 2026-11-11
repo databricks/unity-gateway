@@ -64,7 +64,7 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
         "--disable-databricks-ai-tools",
         timeout=240,
     )
-    selector = "Choose your main model"
+    selector = "Choose your main model for Smart Routing"
     decisions = session.home / ".ucode/claude-smart-routing-decisions.jsonl"
 
     # A user-owned observer reports native state without changing model or routing.
@@ -109,7 +109,7 @@ export function register(on) {
         )
         tui.send("\x1b[B\r", "choose the second main model")
         tui.wait_for(
-            lambda s: selector not in s and f"Auto({labels[1]}) saved" in s, "the saved main model"
+            lambda s: selector not in s and f"Auto ({labels[1]}) saved" in s, "the saved main model"
         )
 
         tui.submit("/auto")
@@ -145,7 +145,7 @@ export function register(on) {
         tui.wait_for(lambda s: selector in s, "the preference-only selector")
         tui.send("\x1b[A\r", "save the first main model without enabling Auto")
         tui.wait_for(
-            lambda s: selector not in s and f"Auto({labels[0]}) saved" in s,
+            lambda s: selector not in s and f"Auto ({labels[0]}) saved" in s,
             "the preference confirmation",
         )
         before = read_jsonl(decisions)
@@ -161,7 +161,7 @@ export function register(on) {
         assert_completed_task_model(session, "claude", manual.value, models[1])
         assert read_jsonl(decisions) == before
         # Toasts/transcript confirmations may say Auto; only the footer is checked.
-        assert "Auto(" not in "\n".join(tui.visible.splitlines()[-4:])
+        assert "Auto (" not in "\n".join(tui.visible.splitlines()[-4:])
         tui.wait_for_background_tasks()
         original = snapshot(tui, "original")
         tui.exit_normally()

@@ -5,7 +5,8 @@ per-main-model aliases, managed allow/deny policy, migration of the old shared a
 complete catalog selection, cancellation/reselection, and routing activation only
 while a configured Auto variant is selected. The native mod tests check actual
 model-command dispatch and that another session's saved preference cannot change
-the active inference target or indicator.
+the active inference target or indicator. The selector is labeled “Choose your main model
+for Smart Routing”; the active indicator uses `Auto (model name)`.
 
 `native_claude/test_auto_profile.py` (relative to the tests directory) drives two real
 Claude terminals with the production UG mod. It checks a single checked Auto row,

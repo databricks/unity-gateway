@@ -154,7 +154,7 @@ export function register(on) {
         tui.boot(timeout=45)
         tui.submit("/model")
         tui.choose("Select model", "Auto")
-        heading = "Choose your main model"
+        heading = "Choose your main model for Smart Routing"
         tui.wait_for(
             lambda s: heading in s and "h/l to adjust effort" in pane_text(s),
             "the Auto effort pane",
@@ -165,7 +165,7 @@ export function register(on) {
         tui.wait_for(lambda s: "Medium effort" in s, "the lower draft effort")
         tui.send("l\r", "save model with high effort")
         tui.wait_for(
-            lambda s: heading not in s and "Auto(Opus 5.5) saved" in s, "saved Auto effort"
+            lambda s: heading not in s and "Auto (Opus 5.5) saved" in s, "saved Auto effort"
         )
         current = observe(tui, "selected")
         assert current["model"] == catalog["models"][0]["autoModel"], current

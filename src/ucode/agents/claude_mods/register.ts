@@ -48,7 +48,7 @@ type AutoEffortState = {model?: string; drafts: Record<string, string>; native: 
 async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoEffortState): Promise<void> {
   state.model = await mainModel($, auto);
   state.drafts = {};
-  await $.ui.open({ id: 'auto-main', title: 'Choose your main model', focus: true, closeOnEscape: true, rows: 18 });
+  await $.ui.open({ id: 'auto-main', title: 'Choose your main model for Smart Routing', focus: true, closeOnEscape: true, rows: 18 });
   $.ui.invalidate('ui.render');
 }
 
@@ -281,14 +281,14 @@ export function register(on: On, options: PluginOptions): void {
         }
         await $.ui.close({ id: 'auto-main' });
         $.ui.invalidate('ui.render');
-        $.ui.toast(`Auto(${selected.label}) saved`);
+        $.ui.toast(`Auto (${selected.label}) saved`);
       };
       const symbols: Record<string,string> = {low:'○',medium:'◐',high:'●',xhigh:'◉',max:'✦',auto:'○'};
       const hint = !active ? 'Select Auto in /model to adjust effort'
         : !profile.levels.length ? `Effort not supported for ${row.label}`
         : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!effortState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
-        Text({ bold: true, children: ['Choose your main model'] }),
+        Text({ bold: true, children: ['Choose your main model for Smart Routing'] }),
         Text({ dimColor: true, children: ['Your main conversation uses this model. Smart Routing selects models for subagent tasks.'] }),
         Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
           Button({key:'auto-main-model-' + index,

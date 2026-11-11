@@ -525,7 +525,7 @@ so these logs may still contain sensitive details. Claude's audit format is unch
 
 After upgrading UG, run `ug configure --agent claude` once to add Auto to the native model configuration,
 then launch normally with `ug claude`. The native `/model` picker includes **Auto**:
-“Pairs your main model with smart task routing for quality at lower cost.” Selecting it
+“Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
 enables UG's existing subagent router and opens the complete native main-agent model selector.
 `/auto` opens the same selector without a model request. All available models
 appear in catalog order in one scrollable list.
@@ -533,7 +533,7 @@ appear in catalog order in one scrollable list.
 Fresh sessions default to Auto, with Opus 5.5 as the main model when available;
 otherwise the first available model is used. A saved or explicit ordinary model
 stays selected and disables routing. Claude's standard model display is retained.
-A separate `Auto(model name)` hint appears only while `/model` is Auto. Choosing
+A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosing
 a main model through `/auto` switches the underlying native Auto variant and its
 context/effort profile immediately, keeping the checkmark on Auto. If a regular
 model is selected, `/auto` only saves the next-Auto preference and does not enable

@@ -213,7 +213,7 @@ def _toggle_routing(tui, session, agent: str, enabled: bool, orchestration_enabl
             tui.choose("Select model", "Auto")
         else:
             tui.submit(f"/model {CLAUDE_MODELS[0]}")
-        selector = "Choose your main model"
+        selector = "Choose your main model for Smart Routing"
         if enabled:
             tui.wait_for(lambda screen: selector in screen, "the Auto main-model selector")
             tui.send("\r", "keep Auto's main model")

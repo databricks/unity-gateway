@@ -110,7 +110,7 @@ test('Auto sends the main model and retains the native model display with a sepa
   await step($);
   expect(state.forwarded[0].model).toBe('opus');
   expect(state.selected).toBe('ug-auto-opus');
-  expect(await hint($, state)).toBe('native · Auto(Opus 5.5)');
+  expect(await hint($, state)).toBe('native · Auto (Opus 5.5)');
   await step($, 'child');
   expect(state.forwarded[1].model).toBe('native');
 });
@@ -132,7 +132,7 @@ test('/auto changes only the main preference and offers the complete catalog', {
   await step($);
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
   expect(state.forwarded[0].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto(Astra 6.0)');
+  expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
 });
 
 test('cancellation and a removed saved model preserve a valid default', {options}, async ($, on) => {
@@ -208,9 +208,9 @@ test('/auto switches the native identity while Auto is selected', {options}, asy
   expect(state.questions.length).toBe(1);
   await step($);
   expect(state.forwarded[0].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto(Astra 6.0)');
+  expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
   state.saved = 'opus'; // Another session's persisted preference cannot change this profile.
   await step($);
   expect(state.forwarded[1].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto(Astra 6.0)');
+  expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
 });

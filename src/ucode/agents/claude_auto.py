@@ -11,7 +11,7 @@ from ucode.databricks import AnthropicModelCatalog
 
 AUTO_MODEL = "ug-auto"  # Legacy identity, accepted during migration only.
 AUTO_PREFIX = "ug-auto-"
-AUTO_DESCRIPTION = "Pairs your main model with smart task routing for quality at lower cost."
+AUTO_DESCRIPTION = "Delivers frontier-model quality at lower cost through Smart Routing."
 
 
 def is_auto_model(model: str) -> bool:

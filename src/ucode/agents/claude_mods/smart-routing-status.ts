@@ -76,7 +76,7 @@ export const registerStatusBand = (on: On, auto?: { model: string; mainModel: st
     if (auto) {
       const selected = await $.session.model()
       const main = auto.models.find((row) => row.autoModel === selected)
-      state = main ? `Auto(${main.label})${agents}` : ''
+      state = main ? `Auto (${main.label})${agents}` : ''
     }
     const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
     return next({ ...e, props: { ...e.props, tail } })

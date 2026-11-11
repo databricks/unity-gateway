@@ -156,7 +156,7 @@ export function register(on) {
         tui.wait_for(lambda s: "Select model" not in s, "the closed picker")
         return screen
 
-    selector = "Choose your main model"
+    selector = "Choose your main model for Smart Routing"
     with launch("a") as a, launch("b") as b:
         a.boot(timeout=45)
         b.boot(timeout=45)
@@ -167,7 +167,7 @@ export function register(on) {
         a.wait_for(lambda s: selector in s, "UG's main-model selector")
         a.send("\x1b[B\r", "select " + alternate_label)
         a.wait_for(
-            lambda s: selector not in s and f"Auto({alternate_label}) saved" in s,
+            lambda s: selector not in s and f"Auto ({alternate_label}) saved" in s,
             "the native model switch",
         )
         changed = observe(a, "changed")
@@ -200,7 +200,7 @@ export function register(on) {
         a.wait_for(lambda s: selector in s, "the preference-only selector")
         a.send("\x1b[A\r", "choose Opus without enabling Auto")
         a.wait_for(
-            lambda s: selector not in s and "Auto(Opus 5.5) saved" in s, "the saved preference"
+            lambda s: selector not in s and "Auto (Opus 5.5) saved" in s, "the saved preference"
         )
         preference = observe(a, "preference")
         assert preference["model"] == models[0]
