@@ -1641,3 +1641,10 @@ Copilot CLI registry label checks cover human-readable labels for qualified cata
 duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names
 remain raw so regional target distinctions are preserved. Native picker and inference validation
 remain separate from these component checks.
+
+Native Windows global deployment validation (separate test branch):
+[run 42948740241](https://github.com/databricks/unity-gateway/actions/runs/42948740241)
+passed public configure/reconfigure, standard-user read/execute and write denial,
+provisioning-credential rejection, connector/tracing withdrawal, locked-file failure/retry,
+and revert with unrelated policy/profile preservation. Live consuming-user OAuth, global
+UI inference, and MCP calls/deduplication are not covered by this deployment test.
