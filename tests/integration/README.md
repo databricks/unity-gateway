@@ -1996,3 +1996,9 @@ passed public configure/reconfigure, standard-user read/execute and write denial
 provisioning-credential rejection, connector/tracing withdrawal, locked-file failure/retry,
 and revert with unrelated policy/profile preservation. Live consuming-user OAuth, global
 UI inference, and MCP calls/deduplication are not covered by this deployment test.
+
+Windows Desktop MDM component tests also cover fresh setup and managed-to-unmanaged
+refresh without workspace configuration, including the feature-disabled response. They
+assert discovered Claude models, removal of obsolete managed connectors/tracing/hooks,
+retained connectors for unrestricted managed configs, and preserved policy on fetch errors
+or explicit Claude exclusion. This additional coverage is not a native Windows UI run.

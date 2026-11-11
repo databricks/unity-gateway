@@ -287,11 +287,58 @@ def test_windows_rendering_uses_consumer_auth_and_has_no_managed_skills(machine,
             assert b"provisioning-secret" not in path.read_bytes()
 
 
-def test_missing_managed_config_retains_previous_deployment(machine, workspace, monkeypatch):
+@pytest.mark.parametrize("previously_managed", [False, True])
+@pytest.mark.parametrize("reason", [None, "FEATURE_DISABLED: coding agent configs unavailable"])
+def test_windows_setup_without_managed_config_discovers_models(
+    machine, workspace, monkeypatch, previously_managed, reason
+):
+    if previously_managed:
+        mdm.configure("https://workspace.example", "admin")
+    monkeypatch.setattr(
+        managed_config, "fetch_managed_coding_agent_configs", lambda *a: ([], reason)
+    )
+    monkeypatch.setattr(setup, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(setup, "machine_wide_only", lambda: True)
+
+    setup.configure_claude_desktop({"workspace": "https://workspace.example", "profile": "admin"})
+
+    policy = machine.registry.values
+    assert policy["inferenceProvider"] == ("gateway", 1)
+    assert [model["name"] for model in json.loads(policy["inferenceModels"][0])] == [
+        "system.ai.claude-haiku-4-5"
+    ]
+    assert json.loads(policy["managedMcpServers"][0]) == []
+    assert "otlpEndpoint" not in policy
+    assert not (machine.runtime / "otel-headers.cmd").exists()
+    assert not (machine.plugin / "hooks/hooks.json").exists()
+    assert policy["unrelatedControl"] == (7, 4)
+    assert (machine.runtime / "runtime.py").exists()
+
+
+def test_windows_unrestricted_managed_config_retains_connectors(machine, workspace):
+    manifest, _ = workspace
+    manifest["enabled_agents"] = []
+    mdm.configure("https://workspace.example", "admin")
+    servers = json.loads(machine.registry.values["managedMcpServers"][0])
+    assert [server["name"] for server in servers] == ["system-ai-github"]
+
+
+@pytest.mark.parametrize("failure", ["fetch_denied", "claude_disabled"])
+def test_windows_config_errors_preserve_previous_deployment(
+    machine, workspace, monkeypatch, failure
+):
+    manifest, _ = workspace
     mdm.configure("https://workspace.example", "admin")
     before = dict(machine.registry.values)
-    monkeypatch.setattr(managed_config, "fetch_managed_coding_agent_configs", lambda *a: ([], None))
-    with pytest.raises(RuntimeError, match="requires a workspace managed configuration"):
+    if failure == "fetch_denied":
+        monkeypatch.setattr(
+            managed_config, "fetch_managed_coding_agent_configs", lambda *a: (None, "denied")
+        )
+        error = "Could not read workspace configuration"
+    else:
+        manifest["enabled_agents"] = [{"agent": "CODING_AGENT_CODEX", "config": {}}]
+        error = "does not enable Claude"
+    with pytest.raises(RuntimeError, match=error):
         mdm.configure("https://workspace.example", "admin")
     assert machine.registry.values == before
 
