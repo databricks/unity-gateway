@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('cli-enterprise', 'code-enterprise', 'cowork-enterprise', 'cowork-org')][string]$Capability,
+    [Parameter(Mandatory)][ValidateSet('cli-enterprise', 'code-enterprise', 'cowork-enterprise', 'cowork-org', 'cowork-both')][string]$Capability,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
 
@@ -24,6 +24,14 @@ $events = Join-Path $root 'events'
 New-Item -ItemType Directory -Path $events | Out-Null
 $folder = Join-Path $env:USERPROFILE 'Documents/NativeCodeProbe'
 New-Item -ItemType Directory -Path $folder | Out-Null
+foreach ($path in @(
+    (Join-Path $env:USERPROFILE '.claude/skills/probe-summary'),
+    (Join-Path $env:USERPROFILE '.agents/skills/probe-summary'),
+    (Join-Path $folder '.claude/skills/probe-summary')
+)) {
+    if (Test-Path -LiteralPath $path) { throw "Personal/project skill would contaminate native loading: $path" }
+}
+if ($env:CLAUDE_CONFIG_DIR) { throw 'Native default-directory contracts require an unset CLAUDE_CONFIG_DIR' }
 $task = [ordered]@{
     capability = 'skill'
     nativeCase = $Capability
@@ -32,11 +40,12 @@ $task = [ordered]@{
     folder = $folder
     eventsDirectory = $events
     startedAfter = [DateTime]::UtcNow.ToString('o')
-    requireHooks = $Capability -eq 'cowork-org'
+    requireHooks = $Capability -in @('cowork-org', 'cowork-both')
+    requireInventory = $Capability -ne 'cli-enterprise'
 }
 $task.prompt = 'Case ' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + ': Invoke the probe-summary skill using the Skill tool, then follow its instructions. Reply only with its result. Do not use subagents.'
 $skill = Join-Path $enterpriseRoot 'probe-summary'
-if ($Capability -eq 'cowork-org') {
+if ($Capability -in @('cowork-org', 'cowork-both')) {
     $plugin = Join-Path $orgRoot 'ug-native-contract'
     $skill = Join-Path $plugin 'skills/probe-summary'
     foreach ($directory in @("$plugin/.claude-plugin", "$plugin/hooks")) {
@@ -83,6 +92,10 @@ Use the Read tool to read references/facts.txt beside this SKILL.md.
 Reply only with its exact contents. Do not guess the contents or use subagents.
 '@ | Set-Content -LiteralPath "$skill/SKILL.md" -Encoding utf8
 Set-Content -LiteralPath "$skill/references/facts.txt" -Value $task.expected -NoNewline -Encoding utf8
+if ($Capability -eq 'cowork-both') {
+    New-Item -ItemType Directory -Path $enterpriseRoot -Force | Out-Null
+    Copy-Item -LiteralPath $skill -Destination (Join-Path $enterpriseRoot 'probe-summary') -Recurse
+}
 $task.expectedFile = Join-Path $skill 'references/facts.txt'
 $task | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'task.json') -Encoding utf8
 @{ nativeCase = $Capability; skill = $task.skill; source = $skill; fixture = 'administrator-authored input; not a managed workspace bundle' } |

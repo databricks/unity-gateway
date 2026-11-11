@@ -3,6 +3,7 @@
 import argparse
 import json
 import ntpath
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -24,6 +25,15 @@ def content_text(content):
 
 
 def evaluate(records, task):
+    listings = [
+        record["attachment"].get("content", "")
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("attachment"), dict)
+        and record["attachment"].get("type") == "skill_listing"
+    ]
+    inventory = re.findall(r"^- (.+?): ", listings[-1], re.MULTILINE) if listings else []
+    matching_skills = [name for name in inventory if name.split(":")[-1] == "probe-summary"]
     messages = [
         record["message"]
         for record in records
@@ -41,6 +51,12 @@ def evaluate(records, task):
     if start is None:
         return {"status": "pending"}
     messages = messages[start:]
+    if task.get("requireInventory") and listings and matching_skills != [task["skill"]]:
+        return {
+            "status": "failed",
+            "error": "Expected exactly one native inventory entry for the skill",
+            "matchingSkills": matching_skills,
+        }
     answers = [
         content_text(message.get("content", []))
         for message in messages
@@ -49,6 +65,8 @@ def evaluate(records, task):
     answers = [answer for answer in answers if answer.strip()]
     if not answers:
         return {"status": "pending"}
+    if task.get("requireInventory") and not listings:
+        return {"status": "failed", "error": "Native skill inventory is missing"}
     answer = answers[-1].strip()
     if answer != task["expected"]:
         return {
@@ -122,6 +140,7 @@ def evaluate(records, task):
         "skillToolId": skill["id"] if skill else None,
         "engineVersions": versions,
         "hooks": hooks,
+        "matchingSkills": matching_skills,
     }
 
 

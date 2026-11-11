@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('code-enterprise', 'cowork-enterprise', 'cowork-org')][string]$Capability,
+    [Parameter(Mandatory)][ValidateSet('code-enterprise', 'cowork-enterprise', 'cowork-org', 'cowork-both')][string]$Capability,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
 
@@ -75,7 +75,7 @@ function Save-UI {
 }
 
 function Select-Folder {
-    Invoke-Control (Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Add folder'))
+    Invoke-Control (Wait-Control -Names @('Project or folder', 'Work in a folder', 'Choose a folder', 'Select a folder', 'Select folder…', 'Add folder'))
     Start-Sleep -Seconds 1
     Save-UI 'folder-menu'
     $choices = $script:window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
@@ -119,16 +119,20 @@ try {
     $script:window = [Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
     $surface = if ($Capability -eq 'code-enterprise') { 'Code' } else { 'Cowork' }
     Invoke-Control (Wait-Control -Names @($surface))
+    if ($surface -eq 'Code') { $null = Wait-Control -Names @('Local') }
     Save-UI 'cowork-open'
-    $newTask = Find-Control -Names @('New', 'New task', 'New Task', 'New session')
-    if ($newTask) { Invoke-Control $newTask }
+    if ($surface -eq 'Cowork') {
+        $newTask = Find-Control -Names @('New', 'New task', 'New Task')
+        if ($newTask) { Invoke-Control $newTask }
+    }
     $configuration = Get-Content (Join-Path (Split-Path $evidence -Parent) 'configuration.json') -Raw | ConvertFrom-Json
     if ($Capability -ne 'code-enterprise') { $null = Wait-Control -Names @("Model: $($configuration.targetModelLabel)") }
     $report.model = $configuration.targetModel
-    $editor = Wait-Control -Names @('Write your prompt to Claude', 'Ask Claude to code...')
+    $editorName = if ($surface -eq 'Code') { 'Prompt' } else { 'Write your prompt to Claude' }
+    $editor = Wait-Control -Names @($editorName)
     Save-UI 'new-task'
     if ($Capability -eq 'code-enterprise') { Select-Folder }
-    $editor = Wait-Control -Names @('Write your prompt to Claude', 'Ask Claude to code...')
+    $editor = Wait-Control -Names @($editorName)
     $valuePattern = $null
     if ($editor.TryGetCurrentPattern([Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
         $valuePattern.SetValue($task.prompt)
@@ -137,7 +141,8 @@ try {
         [Windows.Forms.Clipboard]::SetText($task.prompt)
         [Windows.Forms.SendKeys]::SendWait('^v')
     }
-    Invoke-Control (Wait-Control -Names @('Start task', 'Start session', 'Send message'))
+    $submitName = if ($surface -eq 'Code') { 'Send' } else { 'Start task' }
+    Invoke-Control (Wait-Control -Names @($submitName))
     $report.submitted = $true
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
     do {

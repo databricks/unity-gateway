@@ -7,12 +7,7 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $taskPath = Join-Path $env:RUNNER_TEMP 'native-contract/task.json'
 $task = Get-Content -LiteralPath $taskPath -Raw | ConvertFrom-Json
 $python = Join-Path (Split-Path $env:UG_COWORK_TEST_BINARY -Parent) 'python.exe'
-$npm = (Get-Command npm.cmd -ErrorAction Stop).Source
-$npmRoot = (& $npm root -g | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Could not locate the pinned CLI installation' }
-$binaries = @(Get-ChildItem -LiteralPath (Join-Path $npmRoot '@anthropic-ai') -Recurse -File -Filter 'claude.exe')
-if ($binaries.Count -ne 1) { throw 'Expected exactly one installed native Claude binary' }
-$claude = $binaries[0].FullName
+$claude = (Get-Command claude.cmd -ErrorAction Stop).Source
 $report = [ordered]@{ passed = $false; executable = $claude }
 $process = $null
 $raw = Join-Path $env:RUNNER_TEMP 'native-contract'
@@ -20,8 +15,8 @@ try {
     $report.version = (& $claude --version | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $report.version -notmatch '^2\.1\.290\b') { throw 'Unexpected CLI version' }
     $configuration = Get-Content (Join-Path (Split-Path $OutputDirectory -Parent) 'configuration.json') -Raw | ConvertFrom-Json
-    $arguments = '-p "' + $task.prompt + '" --model "' + $configuration.targetModel + '" --output-format stream-json --verbose --allowedTools Skill,Read'
-    $process = Start-Process -FilePath $claude -ArgumentList $arguments -WorkingDirectory $task.folder -PassThru `
+    $arguments = '-NoProfile -File "' + "$PSScriptRoot/invoke-native-cli.ps1" + '" -TaskPath "' + $taskPath + '" -Model "' + $configuration.targetModel + '" -Executable "' + $claude + '"'
+    $process = Start-Process -FilePath "$PSHOME/pwsh.exe" -ArgumentList $arguments -WorkingDirectory $task.folder -PassThru `
         -RedirectStandardOutput (Join-Path $raw 'cli-stdout.jsonl') -RedirectStandardError (Join-Path $raw 'cli-stderr.log')
     if (-not $process.WaitForExit(300000)) { throw 'Native CLI task timed out after 300 seconds' }
     $report.exitCode = $process.ExitCode

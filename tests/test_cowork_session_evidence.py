@@ -102,6 +102,38 @@ def test_repeated_skill_invocation_fails_duplicate_check(evidence):
     assert evaluate(records, task)["status"] == "failed"
 
 
+@pytest.mark.parametrize(
+    "names,passed",
+    [
+        (["ug-native-contract:probe-summary"], True),
+        (["probe-summary", "ug-native-contract:probe-summary"], False),
+        (["ug-native-contract:probe-summary", "ug-native-contract:probe-summary"], False),
+        ([], False),
+    ],
+)
+def test_native_inventory_requires_one_intended_source(evidence, names, passed):
+    records, task = evidence
+    task.update(requireInventory=True, skill="ug-native-contract:probe-summary")
+    records[1]["message"]["content"][0]["input"]["skill"] = task["skill"]
+    records.append(
+        {
+            "attachment": {
+                "type": "skill_listing",
+                "content": "\n".join(f"- {name}: description" for name in names),
+            }
+        }
+    )
+    assert evaluate(records, task)["status"] == ("passed" if passed else "failed")
+
+
+def test_unrelated_session_inventory_cannot_fail_the_task(evidence):
+    records, task = evidence
+    task["requireInventory"] = True
+    records[0]["message"]["content"] = "unrelated prompt"
+    records.append({"attachment": {"type": "skill_listing", "content": ""}})
+    assert evaluate(records, task)["status"] == "pending"
+
+
 @pytest.mark.parametrize("allow_cache", [False, True])
 def test_only_org_plugin_can_use_native_cache_path(evidence, allow_cache):
     records, task = evidence

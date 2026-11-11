@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        capability: [cli-enterprise, code-enterprise, cowork-enterprise, cowork-org]
+        capability: [cli-enterprise, code-enterprise, cowork-both]
     env:
       PYTHONUTF8: 1
       CAPABILITY: ${{ matrix.capability }}
@@ -38,6 +38,11 @@ jobs:
             if ($errors.Count) { throw ($errors | Out-String) }
           }
           & ./scripts/cowork-inference/test-diagnostics.ps1
+      - name: Require a clean machine configuration
+        shell: pwsh
+        run: |
+          python -c "from scripts.run_integration import managed_policy_paths, present_policy_paths, present_registry_policies; found = present_policy_paths(managed_policy_paths(['claude'])) + present_registry_policies(['claude']); raise SystemExit('Existing machine configuration: ' + ', '.join(found) if found else 0)"
+          if ($LASTEXITCODE -ne 0) { throw 'Machine configuration preflight failed' }
       - name: Download and verify the approved Claude installer
         shell: pwsh
         env:
