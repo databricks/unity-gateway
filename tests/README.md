@@ -19,6 +19,21 @@ UG's profile, while missing packages, timeouts, launch errors, and query failure
 it absent. Query failures report their actual cause instead of asking users to open
 an app that is already installed. Native Cowork CI still requires completed inference.
 
+Native macOS Cowork inference is covered by `cowork-inference-macos` in
+`.github/workflows/integration.yml`, alongside the Windows job. On a disposable
+`macos-15-intel` runner it installs signed Claude Desktop 4.23118.0, configures
+installed UG through its CLI, and asserts a completed exact-answer task on
+`system.ai.claude-haiku-4-5` through macOS Accessibility. Both jobs block the
+integration gate. Apple Silicon, Code-tab, MCP, and file operations remain uncovered.
+`test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
+fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
+and rejection of wrong/partial/unfinished responses. Navigation coverage includes the
+Cowork tab, the task screen under Claude, sidebar auto-opening, and refusal to proceed
+without Scheduled, the prompt field, and Start task together. Failure-path component tests cover
+launch, cleanup, and evidence-write errors, signal-handler restoration, temporary credential
+removal, and graceful timeout termination of a real isolated subprocess. Native app/OS
+boundaries are controlled in these component tests; they do not establish live inference.
+
 Windows first-launch configuration has component coverage in
 `test_desktop_setup.py`: an installed MSIX creates the missing Desktop profile
 store; absent installations, package-query failures, and timeouts leave it absent.
@@ -26,8 +41,9 @@ The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
 `system.ai.claude-haiku-4-5` inference through the desktop UI. CI contract checks
 verify workspace-credential event guards, installation without OIDC permissions,
-and required Cowork success in the integration gate. Unsupported release/version dispatches allow an
-explicit skip; failure, cancellation, and unexpected skips fail the gate.
+and required Cowork success in the integration gate. Desktop jobs always test the checkout
+with pinned dependencies; manual CLI version/dependency inputs apply to CLI jobs only.
+Failure, cancellation, and skips fail the integration gate.
 
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected

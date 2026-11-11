@@ -152,7 +152,7 @@ jobs:
   cowork-inference-windows:
     name: Cowork inference · Windows
     runs-on: windows-latest
-    if: ${{ github.event_name != 'merge_group' && (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.dependency == '') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 25
     env:
       PYTHONUTF8: 1
@@ -189,7 +189,7 @@ jobs:
           & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
             -ExpectedSha256 $digest `
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
-      - name: Install UG and pinned Claude CLI
+      - name: Install UG checkout and pinned Claude CLI
         shell: pwsh
         run: ./scripts/cowork-inference/install-dependencies.ps1
       - name: Configure Desktop with existing CI credentials
@@ -216,6 +216,45 @@ jobs:
             ${{ runner.temp }}/cowork-inference/*.json
             ${{ runner.temp }}/cowork-inference/*.png
             ${{ runner.temp }}/cowork-inference/native-*.log
+          if-no-files-found: warn
+
+  cowork-inference-macos:
+    name: Cowork inference · macOS
+    runs-on: macos-15-intel
+    if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22.19.0
+      - name: Install and verify Claude Desktop
+        run: bash scripts/cowork-inference/macos/install-desktop.sh
+      - name: Install UG checkout and pinned Claude CLI
+        run: bash scripts/cowork-inference/macos/install-dependencies.sh
+      - name: Configure and assert Cowork inference through macOS Accessibility
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py'
+      - name: Stop desktop processes
+        if: always()
+        run: |
+          pkill -f '/Applications/Claude.app/Contents/' || test "$?" = 1
+          pkill -x Terminal || test "$?" = 1
+      - name: Upload Cowork inference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cowork-inference-macos
+          retention-days: 3
+          path: ${{ runner.temp }}/macos-cowork-evidence/
           if-no-files-found: warn
 
   workspace:
@@ -711,22 +750,20 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, workspace, smoke, full, antigravity, managed, codex-desktop-macos, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, antigravity, managed, codex-desktop-macos, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
-          COWORK_EXPECTED: ${{ (inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && inputs.dependency == '' && 'success' || 'skipped' }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
-          expected = {"cowork-inference-windows": os.environ["COWORK_EXPECTED"]}
           failed = [job for job, result in results.items()
-                    if result["result"] != expected.get(job, "success")]
+                    if result["result"] != "success"]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
           print("All integration jobs passed: " + ", ".join(results))
