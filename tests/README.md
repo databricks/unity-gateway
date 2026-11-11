@@ -333,8 +333,7 @@ CUJs never republish configuration or create a remote reservation.
 CUJ helper tests also verify that unsupported agent names fail rather than defaulting to Codex.
 Offline PTY checks verify that the Claude background-task wait observes "No tasks currently
 running", a native task menu containing only completed rows, or a completed task detail panel
-before sending `/exit`, without stopping tasks. The exit step confirms Claude's exit dialog only
-when every listed item is a scheduled reminder; a listed agent or other work fails. Detail panels
+before sending `/exit`, without stopping tasks or confirming an exit dialog. Detail panels
 accept native and routed agent-type titles and require the native footer and completed status.
 Running/scheduled sections, incomplete row counts, and completed-task text outside the native
 task view cannot satisfy the wait.
