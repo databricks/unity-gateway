@@ -18,35 +18,33 @@ MCP deduplication, or the configure/update/revert lifecycle. Those checks must e
 the Windows publisher once native source selection is established. Test changes remain
 on their own branch for a later PR; the existing blocking inference job is unchanged.
 
-Initial run `42937812763` passed organization-plugin skill execution and both hooks on
-embedded engine 2.1.299. Cowork discovered the enterprise skill but its native Read hook
-rejected the Program Files reference as outside connected folders. CLI and Code probes
-hit driver issues (npm command lookup and Code-specific folder controls).
-Run `42938900415` passed bare CLI enterprise skill execution on CLI 2.1.290. Its
-combined-source Cowork inventory contained both `probe-summary` and
-`ug-native-contract:probe-summary`, failing the single-entry assertion. Code still
-failed before submission because the folder picker matched its confirmation control
-instead of its window. The next selected subset fixes that picker on Desktop 2.42304.2
-and checks enterprise-only and combined-source Cowork on Desktop 3.6556.2.
-Run `42939759711` reproduced both Cowork failures on that newer Desktop, with embedded
-engine 2.1.308. Code reached the correct folder and stopped at the visible workspace
-trust dialog before submission. The driver now checks that dialog's folder and clicks
-`Trust workspace` before waiting for the prompt. No global publisher has been validated
-by these results.
+Native results from November 11, 2026:
 
-Run `42940705374` submitted the Code task and reached a native `Permission request: read`
-for the enterprise skill's reference file. It timed out awaiting that user decision.
-The driver now verifies the exact reference path and selects `Allow once`, never
-`Always allow`. A successful run therefore proves execution with explicit native consent,
-not a permission-free read. Transcript discovery includes Desktop's Code and Cowork data
-under `Claude-3p`, correlating the unique prompt before considering any result.
-Run `42942028988` left the same consent control visible after accessibility invocation;
-that did not establish a second native read request. The driver now clicks the identified
-button and requires the prompt to close. Matching incomplete transcripts are retained for
-failure diagnosis, without treating them as successful tasks.
+- Bare CLI 2.1.290 passed enterprise skill inventory, invocation, reference Read, and
+  hidden-file answer in [run 42938900415](https://github.com/databricks/unity-gateway/actions/runs/42938900415).
+- Desktop Code 2.42304.2, embedded engine 2.1.299, passed the same checks in
+  [run 42942745530](https://github.com/databricks/unity-gateway/actions/runs/42942745530).
+  The native inventory contained only `probe-summary`. The driver confirms trust for
+  the test workspace, verifies the exact reference path in the native Read request,
+  and clicks `Allow once`. This proves execution with explicit native consent, not a
+  permission-free read; persistent permissions remain unchanged.
+- Cowork organization-plugin skill execution and both hooks passed on Desktop
+  2.42304.2, embedded engine 2.1.299, in
+  [run 42937812763](https://github.com/databricks/unity-gateway/actions/runs/42937812763).
+- Cowork enterprise-only delivery failed: discovery and Skill invocation worked, but
+  the native Read hook rejected the Program Files reference as outside connected folders.
+  Installing both copies failed the inventory assertion because `probe-summary` and
+  `ug-native-contract:probe-summary` were both visible. These failures occurred on
+  Desktop 2.42304.2 (embedded 2.1.299) and reproduced on Desktop 3.6556.2 (embedded
+  2.1.308) in [run 42939759711](https://github.com/databricks/unity-gateway/actions/runs/42939759711).
 
-Branch pushes currently select only Code on Desktop 2.42304.2 to validate the driver
-change. Manual dispatch selects one native case or all five, and either pinned Desktop
+Neither tested Cowork layout satisfies the global plan's requirement for one usable
+skill per session. No Windows global publisher has been implemented or validated.
+The parser correlates the unique prompt across native session roots, preserves matching
+incomplete transcripts for diagnosis, and keeps those incomplete results pending.
+
+Branch pushes currently select only Code on Desktop 2.42304.2. Manual dispatch
+selects one native case or all five, and either pinned Desktop
 version. Failed native contracts remain available; narrower runs are explicit subsets.
 
 The `cowork-inference-windows` job in `.github/workflows/integration.yml` exercises real
