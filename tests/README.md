@@ -1,5 +1,8 @@
 # Test suites and user journeys
 
+Subagent calculation journeys use short native task names. Offline evidence checks
+still reject mistyped markers and wrong results in either the parent or child answer.
+These checks do not establish the live model's copying-error rate.
 Antigravity MCP web-search evidence checks accept homepage slash variants, omit
 `utm_source` attribution, and separate closing Markdown from sentence punctuation.
 Offline cases retain checks for the completed MCP call, official host, scheme, page,

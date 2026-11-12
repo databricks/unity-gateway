@@ -1,6 +1,7 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import re
 
 import pytest
 
@@ -541,6 +542,24 @@ def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(mon
         20,
         20,
     ]
+
+
+def test_tagged_calculation_uses_a_short_native_task_name():
+    task = SubagentCalculation("1+2", "3")
+
+    assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("child", [False, True])
+def test_tagged_calculation_rejects_mistyped_marker_and_wrong_result(tmp_path, agent, child):
+    session = _Session(tmp_path)
+    task = SubagentCalculation("1+2", "3")
+
+    for answer in (task.marker[:-1] + "=3", task.marker + "=4"):
+        _write_answer(tmp_path, agent, child=child, value=answer)
+
+        assert not task.completed(session, agent, child=child)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
