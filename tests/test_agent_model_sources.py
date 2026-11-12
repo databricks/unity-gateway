@@ -4,9 +4,14 @@ import pytest
 
 import ucode.databricks as db_mod
 from ucode.agents import claude, codex, copilot, model_sources
+from ucode.managed_resolve import STATIC_MODEL_LIST_TOOLS
 from ucode.state import get_managed_model_source_expansions, set_managed_model_source_expansions
 
 WS = "https://example.cloud.databricks.com"
+
+
+def test_source_model_agents_cover_static_model_list_tools():
+    assert set(model_sources._SOURCE_MODEL_AGENTS) == set(STATIC_MODEL_LIST_TOOLS)
 
 
 @pytest.mark.parametrize("tool", ["claude", "copilot", "codex"])

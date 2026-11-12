@@ -1560,6 +1560,8 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 `test_agent_model_sources.py` and `test_cli.py` cover managed schema and MPS wildcard model sources.
+The source-agent registry is checked against all static-model-list agents; `ty` checks each
+registered module's `source_models` signature against `ModelSourceAgent`.
 Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, provider
 catalogs follow service type, and failed discovery fails closed during configure. Launch uses
 matching last-configure expansions on live failures; tests cover malformed or missing fallbacks,

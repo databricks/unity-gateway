@@ -2046,7 +2046,9 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 Managed schema/MPS wildcard expansion has component coverage in `../test_agent_model_sources.py` and
-`../test_cli.py`, including provider-type catalog selection, mixed source ordering, schema IDs,
+`../test_cli.py`. A registry coverage check requires every static-model-list agent to register;
+`ty` checks each module's `source_models` signature against `ModelSourceAgent`.
+Other checks include provider-type catalog selection, mixed source ordering, schema IDs,
 Copilot alias normalization, duplicate removal, configure fail-closed behavior, launch fallback to
 validated per-workspace last-configure results, workspace isolation, and continuing after a wildcard
 failure. Dedicated CLI cases for multi-agent expansion persistence and detailed no-agent failure

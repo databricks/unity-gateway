@@ -1,8 +1,27 @@
 """Expand managed schema and provider wildcards into model IDs."""
 
+from typing import Protocol
+
 from ucode.agents import claude, codex, copilot
 from ucode.databricks import list_model_provider_service_targets
 from ucode.ui import print_warning
+
+
+class ModelSourceAgent(Protocol):
+    def source_models(
+        self,
+        workspace: str,
+        token: str,
+        *,
+        parent_schema: str | None = None,
+    ) -> tuple[list[str], str | None]: ...
+
+
+_SOURCE_MODEL_AGENTS: dict[str, ModelSourceAgent] = {
+    "claude": claude,
+    "codex": codex,
+    "copilot": copilot,
+}
 
 
 def is_model_source_wildcard(source: str) -> bool:
@@ -15,12 +34,7 @@ def _expand_wildcard_source(
 ) -> tuple[list[str], str | None]:
     source_name = source[:-2]
     if len(source.split(".")) == 3:
-        source_models = {
-            "claude": claude.source_models,
-            "codex": codex.source_models,
-            "copilot": copilot.source_models,
-        }[tool]
-        return source_models(workspace, token, parent_schema=source_name)
+        return _SOURCE_MODEL_AGENTS[tool].source_models(workspace, token, parent_schema=source_name)
     return list_model_provider_service_targets(workspace, token, source_name)
 
 
