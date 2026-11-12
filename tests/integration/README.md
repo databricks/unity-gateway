@@ -1085,7 +1085,10 @@ workspace smart-routing warning ("enabled for Codex in this workspace, but it is
 only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
-smart routing overrides individual routing env vars.
+smart routing overrides individual routing env vars. The shared Claude fixtures omit GLM. Only
+`test_smart_router_routes_claude_subagent_at_launch[subagent_only_v0-glm]` loads
+`claude_smart_routing_glm.json`, which offers only GLM, so that case's parent and routed child run
+on GLM; the off and back-on journeys keep their six cases.
 Claude's toggle variants are temporarily non-blocking on both CI platforms; see
 [Soft-fail tests](#soft-fail-tests). Their assertions and local
 selection are unchanged. Codex toggles and the direct hook journeys remain required.
@@ -1532,8 +1535,8 @@ not provide that setup or affect unit tests, installation checks, or dedicated C
 
 Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claude_subagent_at_launch`,
 `test_smart_router_skill_turns_claude_subagent_routing_off` and
-`test_smart_router_skill_turns_claude_subagent_routing_back_on`) and their six variants each carry
-`soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
+`test_smart_router_skill_turns_claude_subagent_routing_back_on`) carry `soft_fail`: six variants
+each, plus the launch test's `subagent_only_v0-glm` case. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
 Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
 They use `continue-on-error`, stay outside `All integration tests`, and upload separate
