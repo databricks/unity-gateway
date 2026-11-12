@@ -2055,6 +2055,8 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 `ty` checks registered modules' `source_models` signatures against `ModelSourceAgent`.
+Copilot schema wildcards use UC model-service entries and the existing Copilot catalog builder,
+which includes Claude, GPT, and supported open models while filtering incompatible APIs.
 Managed wildcard expansion, launch fallback, workspace-cache isolation, and wildcard configure
 failures lack dedicated component coverage. No installed-agent journey currently covers mixed
 wildcard sources or proves inference with qualified MPS models.

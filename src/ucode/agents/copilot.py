@@ -72,6 +72,7 @@ from ucode.databricks import (
     build_copilot_base_url,
     build_tool_base_url,
     list_anthropic_model_catalog,
+    list_model_service_entries,
     list_provider_service_models,
     model_version_sort_key,
     resolve_provider_service,
@@ -388,8 +389,8 @@ def source_models(
     *,
     parent_schema: str | None = None,
 ) -> tuple[list[str], str | None]:
-    catalog = list_anthropic_model_catalog(workspace, token, parent_schema=parent_schema)
-    return [unwrap_anthropic_gateway_model(model) for model in catalog.model_ids], catalog.error_msg
+    entries, reason = list_model_service_entries(workspace, token, parent_schema=parent_schema)
+    return [model.id for model in build_copilot_catalog(entries)], reason
 
 
 def provider_service_catalog(
