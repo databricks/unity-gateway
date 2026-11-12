@@ -61,8 +61,8 @@ from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
     SCHEMA_MODEL_CATALOGS,
-    expand_wildcard_sources,
     is_model_source_wildcard,
+    resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
@@ -1116,7 +1116,7 @@ def _expand_managed_model_sources(
     if tool not in SCHEMA_MODEL_CATALOGS or not wildcards:
         return managed, {}
     token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
-    expanded, live_expansions = expand_wildcard_sources(
+    expanded, live_expansions = resolve_model_sources(
         sources, tool, state["workspace"], token, fallbacks=fallbacks
     )
     if not expanded:

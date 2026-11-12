@@ -62,7 +62,7 @@ def _expand_wildcard_source(
     ], reason
 
 
-def expand_wildcard_sources(
+def resolve_model_sources(
     sources: list[str],
     tool: str,
     workspace: str,
