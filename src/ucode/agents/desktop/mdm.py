@@ -26,6 +26,7 @@ from ucode.managed_resolve import (
 from ucode.mcp import _resolve_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.skills_download import _fetch_bundles, _resolve_managed_skills, _write_bundle
+from ucode.state import desktop_uses_claude_subscription_relay
 from ucode.ui import print_note
 from ucode.workspace import split_workspace_key, workspace_id_args
 
@@ -307,7 +308,7 @@ def configure(workspace: str, profile: str | None) -> None:
         "--profile",
         user_profile,
     ]
-    if state.get("claude_relayed"):
+    if desktop_uses_claude_subscription_relay(state):
         helper_args += ["--relay", "--claude-binary", runtime["claude"]]
     rendered = claude_config.render_profile(
         **settings,
