@@ -35,6 +35,9 @@ Codex serializes the latter inside
 Off sets both to `DISABLED`; on restores the launch recipe. New roots and resumed
 children inherit the current routing setting.
 
+Opening an unfamiliar saved root also refreshes its attribution. If that root
+and its children are idle and routing has not changed, UG starts no continuation.
+
 `ug configure` removes persisted recipe headers because OS-managed headers can
 outrank session configuration. Old installations with pinned managed headers need
 `ug configure --global` with `UG_SKIP_OS_SETTINGS` unset, or an administrator to
@@ -108,7 +111,7 @@ child requests with current attribution. Separate journeys cover ordinary naviga
 and installed-skill off/on toggles. A recording test fixture forwards real gateway
 traffic unchanged; it is not part of the production request path.
 
-On 2026-11-12, 760 focused component/contract tests and the lint gate passed.
+On 2026-11-12, 761 focused component/contract tests and the lint gate passed.
 Installed-wheel validation ran inside a fresh Linux Arclet against the explicitly
 selected `eng-ml-inference` profile with router `m2-r315-quality-20260929`:
 

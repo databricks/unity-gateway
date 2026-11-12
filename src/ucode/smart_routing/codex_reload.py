@@ -435,9 +435,11 @@ class RoutingReload:
             roots = {self.root}
             interrupted_children: dict[str, set[str]] = {}
             interrupted_roots = set()
+            routing_changed = False
             while True:
                 await self.unload(roots, interrupted_children, interrupted_roots)
                 enabled = self.enabled()
+                routing_changed |= enabled != self.applied
                 config = routing_config(self.config, enabled)
                 for root in sorted(roots):
                     settings = self.conversations[root]
@@ -461,6 +463,7 @@ class RoutingReload:
                         break
                     if (
                         root == self.root
+                        and routing_changed
                         or root in interrupted_roots
                         or root in interrupted_children
                     ):

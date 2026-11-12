@@ -23,6 +23,8 @@ body metadata, late descendants, unrelated roots, per-root permissions, approval
 replies behind queued input, Escape, rapid toggles, navigation, reload failures,
 malformed frames, and transient control-file errors. Launcher checks require one
 app-server across toggles and bounded process-tree cleanup on final exit.
+Repeated resumes restore loaded state before another unload; opening idle history
+refreshes attribution without starting work.
 Unknown sandbox types leave untoggled sessions running and block an unsupported
 reload before interruption; timeout diagnostics identify the timeout.
 Managed-config checks retain path-specific repair instructions for pinned headers.

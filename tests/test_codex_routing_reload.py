@@ -99,6 +99,7 @@ class Peer:
                 )
                 return
             result = {"thread": {"id": params["threadId"], "parentThreadId": None}}
+            self.loaded[params["threadId"]] = result["thread"]
         elif method == "turn/start":
             turn = {"id": "continuation-turn"}
             self.controller.observe(
@@ -133,7 +134,7 @@ def test_reload_catches_late_descendants_and_preserves_unrelated_session(tmp_pat
             m["params"]["threadId"] for m in engine.calls if m["method"] == "turn/interrupt"
         ]
         assert interrupted == ["root", "child", "late"]
-        assert set(engine.loaded) == {"other"}
+        assert set(engine.loaded) == {"root", "other"}
         resumed = next(m for m in engine.calls if m["method"] == "thread/resume")
         config = resumed["params"]["config"]
         assert config["model_providers"]["Databricks"]["http_headers"] == {
@@ -488,6 +489,17 @@ def test_toggle_during_resume_is_applied_before_continuation(tmp_path):
             if call["method"] == "thread/resume"
         ]
         assert recipes == ["DISABLED", "stable"]
+        transitions = [
+            (call["method"], call["params"]["threadId"])
+            for call in engine.calls
+            if call["method"] in {"thread/unsubscribe", "thread/resume"}
+        ]
+        first_resume = transitions.index(("thread/resume", "root"))
+        assert transitions[first_resume:] == [
+            ("thread/resume", "root"),
+            ("thread/unsubscribe", "root"),
+            ("thread/resume", "root"),
+        ]
         continuations = [call for call in engine.calls if call["method"] == "turn/start"]
         assert len(continuations) == 1
         assert "Smart Router is now on" in continuations[0]["params"]["input"][0]["text"]
@@ -624,6 +636,33 @@ def test_reconnected_root_is_reloaded_even_when_controls_have_not_changed(tmp_pa
         finally:
             watcher.cancel()
             await asyncio.gather(watcher, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_resuming_idle_history_refreshes_attribution_without_starting_work(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        controller.root = None
+        controller.active.clear()
+        engine.loaded.clear()
+        engine.add("history", None, active=False)
+        await controller.before_tui(
+            {"id": 22, "method": "thread/resume", "params": {"threadId": "history"}}
+        )
+        controller.observe({"id": 22, "result": {"thread": {"id": "history"}}})
+        assert controller.reload_requested
+        await controller.reload()
+        assert not controller.reload_requested
+        assert controller.ready.is_set()
+        assert set(engine.loaded) == {"history"}
+        assert not any(call["method"] in {"turn/interrupt", "turn/start"} for call in engine.calls)
+        resumed = next(call for call in engine.calls if call["method"] == "thread/resume")
+        assert resumed["params"]["threadId"] == "history"
+        assert (
+            resumed["params"]["config"]["responses_api_metadata"]["smart_router_recipe_name"]
+            == "stable"
+        )
 
     asyncio.run(scenario())
 
