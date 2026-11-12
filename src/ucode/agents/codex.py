@@ -644,10 +644,9 @@ def write_tool_config(
 
     def compose_managed(base: dict) -> dict:
         compose(base, include_catalog=False)
-        ours = _managed_catalog_path()
         if managed_catalog_path is not None:
             base["model_catalog_json"] = str(managed_catalog_path)
-        elif ours is not None and base.get("model_catalog_json") == str(ours):
+        elif _named_managed_catalog(base):
             base.pop("model_catalog_json")
         return base
 
@@ -1205,6 +1204,12 @@ def _reconcile_managed_config(
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    named = _named_managed_catalog(managed_before)
+    # ug's enforced list outranks the local one, so a dropped or changed list must be written.
+    if named and (
+        catalog is None or catalog_slugs(read_json_safe(named)) != catalog_slugs(catalog)
+    ):
+        conflicts.append("model_catalog_json")
     if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
@@ -1245,6 +1250,12 @@ def _managed_catalog_path() -> Path | None:
     return path.parent / MANAGED_MODEL_CATALOG_NAME
 
 
+def _named_managed_catalog(doc: dict) -> Path | None:
+    """ug's machine-wide catalog, when ``doc`` points Codex at it."""
+    ours = _managed_catalog_path()
+    return ours if ours is not None and doc.get("model_catalog_json") == str(ours) else None
+
+
 def _write_managed_catalog(catalog: dict | None) -> None:
     """Write (or, for None, remove) ug's machine-wide catalog through the privileged writer."""
     path = _managed_catalog_path()
@@ -1261,7 +1272,15 @@ def _write_managed_catalog(catalog: dict | None) -> None:
 
 
 def _remove_managed_catalog() -> None:
-    """Remove ug's machine-wide catalog once nothing references it; a failure only warns."""
+    """Remove ug's machine-wide catalog unless the managed file still names it; a failure only
+    warns."""
+    path = codex_managed_config_path()
+    try:
+        text = read_managed_file(path) if path is not None else None
+        if text is not None and _named_managed_catalog(_parse_managed_config(text)):
+            return
+    except RuntimeError:
+        return  # An unreadable managed file may still name it.
     try:
         _write_managed_catalog(None)
     except ManagedFileWriteUnavailable as exc:

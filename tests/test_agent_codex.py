@@ -2141,19 +2141,67 @@ class TestCodexManagedConfig:
             codex.CODEX_MODEL_CATALOG_PATH
         )
 
-    def test_revert_removes_managed_catalog(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("restored", [True, False])
+    def test_revert_removes_managed_catalog_once_unreferenced(
+        self, tmp_path, monkeypatch, restored
+    ):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
         codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
 
+        # Without ug's backup record (another user configured, or ~/.ucode was wiped), revert
+        # restores nothing; deleting the catalog the file still names would break every user's Codex.
         def fake_revert(*args, **kwargs):
+            if not restored:
+                return "unchanged"
             managed_path.unlink()
             return "removed"
 
         monkeypatch.setattr(codex, "revert_managed_file", fake_revert)
 
-        assert codex.revert_managed_config() == "removed"
-        assert not catalog_path.exists()
+        codex.revert_managed_config()
+
+        assert catalog_path.exists() is not restored
+
+    @pytest.mark.parametrize(
+        ("state", "kwargs"),
+        [({"codex_static_models": ["gpt-6"]}, {}), ({}, {"provider": "main.default.openai"})],
+    )
+    def test_headless_launch_repairs_stale_managed_catalog(
+        self, tmp_path, monkeypatch, state, kwargs
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        new_catalog = {"models": [{"slug": "gpt-6", "visibility": "list"}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: new_catalog)
+        # No terminal: only a conflict makes the run write the machine-wide files.
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+
+        codex.write_tool_config({"workspace": WS, **state}, **kwargs)
+
+        if state:
+            assert read_toml_safe(managed_path)["model_catalog_json"] == str(catalog_path)
+            assert json.loads(catalog_path.read_text()) == new_catalog
+        else:
+            assert "model_catalog_json" not in read_toml_safe(managed_path)
+            assert not catalog_path.exists()
+
+    def test_headless_launch_leaves_catalog_with_only_new_metadata(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        # A Codex upgrade changes model details, not the admin's list: no sudo, no failed launch.
+        upgraded = {"models": [{"slug": "gpt-5", "visibility": "list", "context_window": 1}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: upgraded)
+        monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
+        monkeypatch.setattr(
+            codex, "reconcile_privileged_files", lambda *a, **k: pytest.fail("wrote catalog")
+        )
+
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+
+        assert json.loads(catalog_path.read_text()) == self.CATALOG
 
     def test_global_flag_rejects_relay_legacy_and_missing_managed_file(self, tmp_path, monkeypatch):
         config_path, managed_path = self._patch(tmp_path, monkeypatch)
