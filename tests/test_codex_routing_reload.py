@@ -402,6 +402,56 @@ def test_rejected_permission_update_cannot_change_resumed_permissions(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("source", ["response", "notification"])
+def test_accepted_settings_replace_prior_turn_overrides_on_recovery(tmp_path, source):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        await controller.before_tui(
+            {
+                "id": 80,
+                "method": "turn/start",
+                "params": {
+                    "threadId": "root",
+                    "input": [{"type": "text", "text": "Earlier task"}],
+                    "model": "old-model",
+                    "approvalPolicy": "never",
+                    "collaborationMode": {"mode": "plan", "settings": {"model": "plan-model"}},
+                },
+            }
+        )
+        controller.observe({"id": 80, "result": {"turn": {"id": "root-turn"}}})
+        assert controller.turn_settings["collaborationMode"]["settings"]["model"] == "plan-model"
+        accepted = {"model": "new-model", "approvalPolicy": "on-request"}
+        if source == "response":
+            await controller.before_tui(
+                {
+                    "id": 81,
+                    "method": "thread/settings/update",
+                    "params": {"threadId": "root", **accepted},
+                }
+            )
+            controller.observe({"id": 81, "result": {}})
+        else:
+            controller.observe(
+                {
+                    "method": "thread/settings/updated",
+                    "params": {"threadId": "root", "threadSettings": accepted},
+                }
+            )
+        await controller.reload()
+        resumed = next(call["params"] for call in engine.calls if call["method"] == "thread/resume")
+        continued = next(call["params"] for call in engine.calls if call["method"] == "turn/start")
+        for params in (resumed, continued):
+            assert params["model"] == "new-model"
+            assert params["approvalPolicy"] == "on-request"
+        assert continued["collaborationMode"] == {
+            "mode": "plan",
+            "settings": {"model": "new-model"},
+        }
+
+    asyncio.run(scenario())
+
+
 def test_switching_roots_reloads_each_tree_with_its_own_settings(tmp_path):
     async def scenario():
         controller, engine, _, controls = make_controller(tmp_path)
@@ -590,7 +640,8 @@ def test_recipe_headers_are_case_insensitive_and_launch_config_is_immutable():
     assert config == original
 
 
-def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp_path):
+@pytest.mark.parametrize("arrival", ["before_reload", "during_reload"])
+def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp_path, arrival):
     async def scenario():
         controller, engine, _, _ = make_controller(tmp_path)
         pending = {
@@ -602,17 +653,74 @@ def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp
             },
         }
 
-        async def user_input():
+        forwarded = None
+        if arrival == "before_reload":
             controller.buffer_input(pending)
+
+        async def user_input():
+            nonlocal forwarded
+            engine.on_list = None
+            if arrival == "during_reload":
+                controller.buffer_input(pending)
+            forwarded = asyncio.create_task(controller.before_tui(pending))
+            await asyncio.sleep(0)
+            assert not forwarded.done()
 
         engine.on_list = user_input
         await controller.reload()
         assert not any(call["method"] == "turn/start" for call in engine.calls)
-        forwarded = await controller.before_tui(pending)
-        texts = [item["text"] for item in forwarded["params"]["input"]]
+        assert forwarded is not None
+        message = await forwarded
+        texts = [item["text"] for item in message["params"]["input"]]
         assert "Existing interrupted agents" in texts[0]
         assert texts[1] == "Change the next step"
         assert not controller.continuations
+
+    asyncio.run(scenario())
+
+
+def test_reload_waits_for_resume_preflight_and_accepted_response(tmp_path):
+    async def scenario():
+        controller, engine, _, controls = make_controller(tmp_path)
+        engine.add("history", None, active=False)
+        listing = asyncio.Event()
+        release = asyncio.Event()
+
+        async def hold_preflight():
+            engine.on_list = None
+            listing.set()
+            await release.wait()
+
+        engine.on_list = hold_preflight
+        forwarding = asyncio.create_task(
+            controller.before_tui(
+                {"id": 90, "method": "thread/resume", "params": {"threadId": "history"}}
+            )
+        )
+        await asyncio.wait_for(listing.wait(), 1)
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        reloading = asyncio.create_task(controller.reload())
+        await asyncio.sleep(0)
+        assert not controller.client_idle.is_set()
+        assert [call["method"] for call in engine.calls] == ["thread/loaded/list"]
+        release.set()
+        await asyncio.wait_for(forwarding, 1)
+        assert not reloading.done()
+        assert not controller.client_idle.is_set()
+        controller.observe(
+            {"id": 90, "result": {"thread": engine.loaded["history"], "model": "history-model"}}
+        )
+        await asyncio.wait_for(reloading, 1)
+        resumed = {
+            call["params"]["threadId"]: call["params"]
+            for call in engine.calls
+            if call["method"] == "thread/resume"
+        }
+        assert resumed["history"]["model"] == "history-model"
+        assert all(
+            params["config"]["responses_api_metadata"]["smart_router_recipe_name"] == "DISABLED"
+            for params in resumed.values()
+        )
 
     asyncio.run(scenario())
 
@@ -640,29 +748,45 @@ def test_reconnected_root_is_reloaded_even_when_controls_have_not_changed(tmp_pa
     asyncio.run(scenario())
 
 
-def test_resuming_idle_history_refreshes_attribution_without_starting_work(tmp_path):
+@pytest.mark.parametrize("loaded", [False, True])
+@pytest.mark.parametrize("unsupported_sandbox", [False, True])
+def test_resuming_idle_history_refreshes_attribution_without_starting_work(
+    tmp_path, loaded, unsupported_sandbox
+):
     async def scenario():
         controller, engine, _, _ = make_controller(tmp_path)
         controller.root = None
         controller.active.clear()
         engine.loaded.clear()
-        engine.add("history", None, active=False)
-        await controller.before_tui(
+        if loaded:
+            engine.add("history", None, active=False)
+        forwarded = await controller.before_tui(
             {"id": 22, "method": "thread/resume", "params": {"threadId": "history"}}
         )
-        controller.observe({"id": 22, "result": {"thread": {"id": "history"}}})
-        assert controller.reload_requested
-        await controller.reload()
+        assert (
+            forwarded["params"]["config"]["responses_api_metadata"]["smart_router_recipe_name"]
+            == "stable"
+        )
+        engine.loaded["history"] = {"id": "history", "parentThreadId": None}
+        result = {"thread": engine.loaded["history"]}
+        if unsupported_sandbox:
+            result["sandbox"] = {"type": "externalSandbox"}
+        controller.observe({"id": 22, "result": result})
+        assert controller.reload_requested == loaded
+        if loaded and unsupported_sandbox:
+            with pytest.raises(RuntimeError, match="sandbox profile: externalSandbox"):
+                await controller.reload()
+            assert not any(
+                call["method"] in {"thread/unsubscribe", "turn/interrupt"} for call in engine.calls
+            )
+            return
+        if loaded:
+            await controller.reload()
         assert not controller.reload_requested
         assert controller.ready.is_set()
         assert set(engine.loaded) == {"history"}
         assert not any(call["method"] in {"turn/interrupt", "turn/start"} for call in engine.calls)
-        resumed = next(call for call in engine.calls if call["method"] == "thread/resume")
-        assert resumed["params"]["threadId"] == "history"
-        assert (
-            resumed["params"]["config"]["responses_api_metadata"]["smart_router_recipe_name"]
-            == "stable"
-        )
+        assert sum(call["method"] == "thread/unsubscribe" for call in engine.calls) == int(loaded)
 
     asyncio.run(scenario())
 
@@ -701,7 +825,9 @@ def test_agent_navigation_preserves_tree_and_root_settings(tmp_path, parent_meta
             assert controller.root_for(selected) == "root"
             assert controller.settings == original_settings
             assert not controller.reload_requested
-        assert not engine.calls
+        assert [call["method"] for call in engine.calls] == (
+            [] if parent_metadata == "previously_observed" else ["thread/loaded/list"]
+        )
         assert set(controller.active) == {"root", "child", "grandchild"}
 
         controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
@@ -1034,6 +1160,11 @@ def test_launcher_keeps_one_server_across_toggles_and_cleans_up_owned_processes(
     monkeypatch.setattr(v2.subprocess_cross_os, "popen", Process)
     monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
     monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
+
+    def port_closed(*args, **kwargs):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(v2.socket, "create_connection", port_closed)
     expected = SystemExit if failure in (None, "interrupt", "interrupt-timeout") else RuntimeError
     with pytest.raises(expected) as exc:
         v2.launch_codex(
@@ -1288,5 +1419,51 @@ def test_unknown_sandbox_keeps_session_running_until_reload(tmp_path):
         assert not any(call["method"] == "turn/interrupt" for call in engine.calls)
         controller.remember_settings({"sandbox": {"type": "workspaceWrite"}})
         assert controller.settings.unsupported_sandbox is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "method,reply",
+    [
+        ("thread/loaded/list", {"result": {}}),
+        ("thread/loaded/list", {"result": {"data": None}}),
+        ("thread/loaded/list", {"result": {"data": [None]}}),
+        ("thread/loaded/list", {"result": {"data": [], "nextCursor": 1}}),
+        ("thread/loaded/list", {"result": {"data": [], "nextCursor": "repeated"}}),
+        ("thread/loaded/list", {"result": []}),
+        ("thread/loaded/list", {"error": "unavailable"}),
+        ("thread/read", {"result": {}}),
+        ("thread/read", {"result": {"thread": {"id": "wrong-thread"}}}),
+        ("thread/resume", {"result": {}}),
+        ("thread/resume", {"result": {"thread": []}}),
+        ("turn/start", {"result": {}}),
+        ("turn/start", {"result": {"turn": []}}),
+        ("turn/start", {"result": {"turn": {"id": None}}}),
+    ],
+)
+def test_malformed_reload_reply_reports_recovery_before_disconnect(tmp_path, method, reply):
+    async def scenario():
+        controller, engine, tui, controls = make_controller(tmp_path)
+        controller.parents.pop("child")
+        send = engine.send
+
+        async def malformed(raw):
+            message = json.loads(raw)
+            if message["method"] == method:
+                controller.observe({"id": message["id"], **reply})
+                return
+            await send(raw)
+
+        engine.send = malformed
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        with pytest.raises(RuntimeError, match=method):
+            await asyncio.wait_for(controller.watch(), 1)
+        error = tui.calls[-1]["params"]["error"]["message"]
+        assert method in error
+        assert "ug codex -- resume root" in error
+        assert not controller.ready.is_set()
+        assert not controller.pending
+        assert not any(call["method"] == "turn/start" for call in engine.calls)
 
     asyncio.run(scenario())

@@ -371,7 +371,7 @@ async def _serve(
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
         finally:
-            await tui.close(code=1012, reason="Codex app-server disconnected; reconnect to resume")
+            await tui.close(code=1012, reason="Codex session disconnected; reconnect to resume")
 
     server = await serve(handler, host, port, max_size=None)
     bound_port = server.sockets[0].getsockname()[1]

@@ -90,6 +90,7 @@ class RoutingReload:
         self.active: dict[str, str] = {}
         self.pending: dict[str, asyncio.Future[dict]] = {}
         self.client_requests: dict[str | int, tuple[str, dict]] = {}
+        self.loaded_resumes: set[str | int] = set()
         self.client_idle = asyncio.Event()
         self.client_idle.set()
         self.settings = ConversationSettings()
@@ -161,6 +162,7 @@ class RoutingReload:
             if "id" in message:
                 await self.tui.send(json.dumps({"id": message["id"], "result": {}}))
             return None
+        self.buffer_input(message)
         await self.ready.wait()
         method = message["method"]
         params = message.setdefault("params", {})
@@ -170,9 +172,23 @@ class RoutingReload:
             continuation = self.continuations.pop(tid, None)
             if continuation:
                 params["input"] = [{"type": "text", "text": continuation}, *params.get("input", [])]
+        self.remember_request(message)
         if method in {"thread/start", "thread/resume"} and not self.parents.get(
             params.get("threadId")
         ):
+            tid = params.get("threadId")
+            if (
+                method == "thread/resume"
+                and identity is not None
+                and tid != self.root
+                and tid not in self.conversations
+            ):
+                try:
+                    if tid in await self.loaded_threads():
+                        self.loaded_resumes.add(identity)
+                except (OSError, ValueError, RuntimeError, TimeoutError) as exc:
+                    await self.report_failure(exc)
+                    raise
             # New roots and resumed roots must not inherit the app-server's launch recipe.
             config = routing_config(self.config, self.enabled())
             overrides = copy.deepcopy(params.get("config") or {})
@@ -217,26 +233,35 @@ class RoutingReload:
 
     def remember_settings(self, source: dict, settings: ConversationSettings | None = None) -> None:
         settings = settings or self.settings
-        if "input" in source:
-            settings.turn.update(
-                {
-                    key: copy.deepcopy(source[key])
-                    for key in (
-                        "model",
-                        "effort",
-                        "collaborationMode",
-                        "serviceTier",
-                        "multiAgentMode",
-                        "approvalPolicy",
-                        "approvalsReviewer",
-                        "cwd",
-                        "runtimeWorkspaceRoots",
-                        "permissions",
-                        "sandboxPolicy",
-                    )
-                    if key in source
-                }
-            )
+        settings.turn.update(
+            {
+                key: copy.deepcopy(source[key])
+                for key in (
+                    "model",
+                    "effort",
+                    "collaborationMode",
+                    "serviceTier",
+                    "multiAgentMode",
+                    "approvalPolicy",
+                    "approvalsReviewer",
+                    "cwd",
+                    "runtimeWorkspaceRoots",
+                    "permissions",
+                    "sandboxPolicy",
+                )
+                if key in source
+            }
+        )
+        collaboration = settings.turn.get("collaborationMode")
+        collaboration_settings = (
+            collaboration.get("settings") if isinstance(collaboration, dict) else None
+        )
+        if (
+            isinstance(collaboration_settings, dict)
+            and isinstance(source.get("model"), str)
+            and "collaborationMode" not in source
+        ):
+            collaboration_settings["model"] = source["model"]
         for key in (
             "model",
             "modelProvider",
@@ -301,7 +326,6 @@ class RoutingReload:
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             thread = None
         if isinstance(thread, dict) and isinstance(thread.get("id"), str):
-            tid = thread["id"]
             self.remember_thread(thread)
         if "method" not in message and identity in self.client_requests:
             requested_method, requested = self.client_requests.pop(identity)
@@ -321,7 +345,11 @@ class RoutingReload:
                         self.conversations[self.root] = self.settings
                     self.root = tid
                     self.settings = self.conversations.setdefault(tid, ConversationSettings())
-                    if requested_method == "thread/resume" and not known_root:
+                    if (
+                        requested_method == "thread/resume"
+                        and not known_root
+                        and identity in self.loaded_resumes
+                    ):
                         # Resuming a loaded thread can ignore config overrides on reconnect.
                         self.reload_requested = True
                 target = thread.get("id") if isinstance(thread, dict) else requested.get("threadId")
@@ -331,6 +359,7 @@ class RoutingReload:
                 if settings is not None:
                     self.remember_settings(requested, settings)
                     self.remember_settings(result, settings)
+            self.loaded_resumes.discard(identity)
         method = message.get("method")
         method = method if isinstance(method, str) else None
         tid = params.get("threadId")
@@ -372,6 +401,7 @@ class RoutingReload:
         source = thread.get("source")
         subagent = source.get("subAgent") if isinstance(source, dict) else None
         spawn = subagent.get("thread_spawn", {}) if isinstance(subagent, dict) else {}
+        spawn = spawn if isinstance(spawn, dict) else {}
         self.parents[tid] = (
             thread.get("parentThreadId") or spawn.get("parent_thread_id") or self.parents.get(tid)
         )
@@ -388,8 +418,25 @@ class RoutingReload:
             )
             response = await asyncio.wait_for(future, timeout)
             if "error" in response:
-                raise RuntimeError(f"{method}: {response['error'].get('message', 'failed')}")
-            return response.get("result", {})
+                error = response["error"]
+                detail = (
+                    error.get("message", "failed")
+                    if isinstance(error, dict)
+                    else "invalid error response"
+                )
+                raise RuntimeError(f"{method}: {detail}")
+            result = response.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError(f"{method}: expected an object result")
+            if method in {"thread/read", "thread/resume"}:
+                thread = result.get("thread")
+                if not isinstance(thread, dict) or thread.get("id") != params["threadId"]:
+                    raise RuntimeError(f"{method}: expected the requested conversation")
+            if method == "turn/start":
+                turn = result.get("turn")
+                if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
+                    raise RuntimeError("turn/start: expected a turn ID")
+            return result
         finally:
             self.pending.pop(identity, None)
 
@@ -405,15 +452,28 @@ class RoutingReload:
     def belongs_to_root(self, thread: str) -> bool:
         return self.root_for(thread) is not None
 
-    async def loaded_tree(self) -> list[str]:
+    async def loaded_threads(self) -> list[str]:
         loaded = []
         cursor = None
+        cursors = set()
         while True:
             page = await self.rpc("thread/loaded/list", {"cursor": cursor, "limit": 100})
-            loaded.extend(page["data"])
+            threads = page.get("data")
+            if not isinstance(threads, list) or not all(
+                isinstance(tid, str) and tid for tid in threads
+            ):
+                raise RuntimeError("thread/loaded/list: expected a list of conversation IDs")
+            loaded.extend(threads)
             cursor = page.get("nextCursor")
+            if cursor is not None and (not isinstance(cursor, str) or cursor in cursors):
+                raise RuntimeError("thread/loaded/list: invalid pagination cursor")
             if not cursor:
                 break
+            cursors.add(cursor)
+        return loaded
+
+    async def loaded_tree(self) -> list[str]:
+        loaded = await self.loaded_threads()
         for tid in loaded:
             if tid not in self.parents:
                 thread = (await self.rpc("thread/read", {"threadId": tid}))["thread"]

@@ -58,6 +58,11 @@ def codex_launch_processes(request, monkeypatch):
 
     monkeypatch.setattr(v2.subprocess, "Popen", Process)
     monkeypatch.setattr(v2.subprocess_cross_os, "run", taskkill)
+
+    def port_closed(*args, **kwargs):
+        raise ConnectionRefusedError
+
+    monkeypatch.setattr(v2.socket, "create_connection", port_closed)
     return processes
 
 
@@ -381,6 +386,11 @@ class TestLaunchCodex:
         monkeypatch.setattr(custom_oauth, "get_databricks_token", get_token)
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
+
+        def port_closed(*args, **kwargs):
+            raise ConnectionRefusedError
+
+        monkeypatch.setattr(v2.socket, "create_connection", port_closed)
 
         def start_interposer(*args, **kwargs):
             interposer_args["args"] = args

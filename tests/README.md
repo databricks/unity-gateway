@@ -23,10 +23,15 @@ body metadata, late descendants, unrelated roots, per-root permissions, approval
 replies behind queued input, Escape, rapid toggles, navigation, reload failures,
 malformed frames, and transient control-file errors. Launcher checks require one
 app-server across toggles and bounded process-tree cleanup on final exit.
-Repeated resumes restore loaded state before another unload; opening idle history
-refreshes attribution without starting work.
-Unknown sandbox types leave untoggled sessions running and block an unsupported
-reload before interruption; timeout diagnostics identify the timeout.
+Accepted model and permission updates replace older continuation overrides, including
+nested collaboration-mode models. Reloads drain resume preflight and accepted responses.
+Queued input receives recovery context even when enqueued before the reload begins.
+Fresh history receives current attribution on its initial resume; only already-loaded
+unknown roots require an unload. Idle history never starts work. Native history
+selection still needs live validation. Unsupported sandboxes remain usable until
+an actual reload, which fails before interruption. Malformed RPC results and timeouts
+report recovery instructions. Mocked launcher fixtures isolate shutdown socket probes
+from unrelated listeners; real process-tree cleanup retains separate socket coverage.
 Managed-config checks retain path-specific repair instructions for pinned headers.
 These component checks simulate protocol races; they do not establish live coverage.
 

@@ -35,8 +35,10 @@ Codex serializes the latter inside
 Off sets both to `DISABLED`; on restores the launch recipe. New roots and resumed
 children inherit the current routing setting.
 
-Opening an unfamiliar saved root also refreshes its attribution. If that root
-and its children are idle and routing has not changed, UG starts no continuation.
+Opening an unfamiliar saved root applies current attribution on its initial resume.
+UG first checks whether that conversation is already loaded; only an already-loaded
+root needs an additional unload/resume. If that root and its children are idle and
+routing has not changed, UG starts no continuation.
 
 `ug configure` removes persisted recipe headers because OS-managed headers can
 outrank session configuration. Old installations with pinned managed headers need
@@ -56,7 +58,9 @@ metadata, and the recipe header may be absent. It must never carry a stale value
    and descendants. It discovers late children before unsubscribing and waits
    until the affected trees are unloaded. Unrelated conversations stay loaded.
 3. UG resumes each affected root under its saved ID with the current attribution
-   and its captured model, working directory, sandbox, and approval settings.
+   and its latest accepted model, working directory, sandbox, and approval settings.
+   Automatic continuation uses those same settings, including the model nested in
+   collaboration mode.
 4. A continuation asks the parent to resume unfinished children with
    `followup_task`, without spawning replacements or repeating the toggle.
    Children can be absent from `list_agents` until reopened; the parent recovers
@@ -65,13 +69,15 @@ metadata, and the recipe header may be absent. It must never carry a stale value
    the setting and stops.
 
 User input waits behind the reload; approval replies can still pass through.
-Queued user input receives recovery context instead of a competing continuation.
+Queued user input receives recovery context instead of a competing continuation,
+even when it entered the queue before the reload began.
 Escape cancels automatic continuation. Temporary title threads and ordinary
 `/subagents` navigation do not replace the root or trigger a reload.
 The first-prompt routing decision is retained across TUI reconnects.
 
 The reload timeout is 30 seconds; individual RPCs have a 10-second timeout.
-Failures report the saved root ID and block held input on that connection.
+Failures, including malformed RPC responses, report the saved root ID and block
+held input on that connection.
 Diagnostics are retained in `~/.ucode/codex-v2-interposer.log` and
 `~/.ucode/codex-app-server.log`. Unsupported sandbox profiles leave ordinary
 sessions running; a toggle fails before interruption if UG cannot preserve that
@@ -111,9 +117,11 @@ child requests with current attribution. Separate journeys cover ordinary naviga
 and installed-skill off/on toggles. A recording test fixture forwards real gateway
 traffic unchanged; it is not part of the production request path.
 
-On 2026-11-12, 761 focused component/contract tests and the lint gate passed.
-Installed-wheel validation ran inside a fresh Linux Arclet against the explicitly
-selected `eng-ml-inference` profile with router `m2-r315-quality-20260929`:
+On 2026-11-12, 782 focused component/contract tests and the lint gate passed
+after the follow-up review fixes. Socket-collision checks also passed with an
+unrelated listener on the mocked launcher port. The installed-wheel results below
+are from revision `2bde6427`, before those follow-up fixes, in a fresh Linux Arclet
+against the explicitly selected `eng-ml-inference` profile with router `m2-r315-quality-20260929`:
 
 - Codex 0.167.0 passed all four selected journeys: installed-skill off/on with
   `subagent_orch_v0`, ordinary running-child navigation, no-child attribution, and
