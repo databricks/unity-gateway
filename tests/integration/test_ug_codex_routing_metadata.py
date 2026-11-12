@@ -61,7 +61,8 @@ def _assert_collaboration_succeeded(records, name, target):
 def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     live_session, workspace, tmp_path
 ):
-    """Scenario: keep a native child running, turn routing off through the installed skill,
+    """Scenario: launch with the native workspace-write sandbox, keep a child running,
+    turn routing off through the installed skill,
     spawn a new sibling, then let the old child spawn a grandchild and message its new sibling.
     The root messages the grandchild and follows up with the original child.
 
@@ -88,7 +89,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         f"started = Path({str(started)!r})\nrelease = Path({str(release)!r})\n"
         f"finished = Path({str(finished)!r})\n"
         "with started.open('x') as receipt: receipt.write(str(os.getpid()))\n"
-        "deadline = time.monotonic() + 240\n"
+        "deadline = time.monotonic() + 420\n"
         "while not release.exists():\n"
         "    if time.monotonic() > deadline: raise TimeoutError('release missing')\n"
         "    time.sleep(0.2)\n"
@@ -102,7 +103,10 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         "to /root/new__sr_off. Wait for your child's answer and return that value."
     )
     with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "routing-metadata-busy-child"
+        session,
+        "codex",
+        [str(session.binary), "codex", "--sandbox", "workspace-write"],
+        "routing-metadata-busy-child",
     ) as tui:
         tui.boot()
         tui.submit(
