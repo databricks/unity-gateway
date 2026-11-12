@@ -2960,7 +2960,14 @@ def launch(
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
     if state.get("claude_relayed"):
-        _launch_relayed(state, binary, tool_args)
+        # The relayed settings don't pin a picked or launch-only model, so pass it the way the
+        # gateway path does: Claude Code's own `--model`, unless the caller forwarded one.
+        relayed_start_model = options.user_pinned_model or options.launch_model
+        if relayed_start_model:
+            relayed_start_model = maybe_add_gpt_1m_suffix(relayed_start_model)
+        _launch_relayed(
+            state, binary, [*_launch_model_args(tool_args, relayed_start_model), *tool_args]
+        )
         return
     server_side_search = _use_server_side_web_search(state)
     launch_default_model = state.get("_claude_launch_default_model")

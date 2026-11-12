@@ -3443,7 +3443,29 @@ class TestClaudeLaunch:
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [(state, "claude", ["--debug"])]
 
-    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("options", "tool_args", "model_args"),
+        [
+            (LaunchOptions(), ["--debug"], []),
+            (
+                LaunchOptions(user_pinned_model="main.default.relayed"),
+                ["--debug"],
+                ["--model", "main.default.relayed"],
+            ),
+            (
+                LaunchOptions(launch_model="system.ai.kimi"),
+                ["--debug"],
+                ["--model", "system.ai.kimi"],
+            ),
+            # A model forwarded to Claude Code after `--` wins over ug's own.
+            (
+                LaunchOptions(user_pinned_model="main.default.relayed"),
+                ["--model", "system.ai.kimi"],
+                [],
+            ),
+        ],
+    )
+    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch, options, tool_args, model_args):
         calls: list[tuple] = []
 
         class Server:
@@ -3470,7 +3492,8 @@ class TestClaudeLaunch:
             def wait(self):
                 return 0
 
-        def start_relay_proxy(workspace, token_provider, port):
+        def start_relay_proxy(workspace, token_provider, port, *, routes_to_subscription_relay):
+            assert callable(routes_to_subscription_relay)
             calls.append(("proxy", workspace, port, token_provider(False)))
             return Server(), Cache(), Client()
 
@@ -3492,8 +3515,8 @@ class TestClaudeLaunch:
                     "claude_relayed": True,
                     "relayed_proxy_port": 12345,
                 },
-                ["--debug"],
-                options=LaunchOptions(),
+                tool_args,
+                options=options,
             )
 
         assert exc.value.code == 0
@@ -3503,6 +3526,11 @@ class TestClaudeLaunch:
             12345,
             f"tok:{WS}:test:False",
         )
+        argv = next(call[1] for call in calls if call[0] == "popen")
+        model_flags = [arg for arg in argv if arg == "--model"]
+        assert len(model_flags) == (1 if model_args or "--model" in tool_args else 0)
+        if model_args:
+            assert argv[argv.index("--model") : argv.index("--model") + 2] == model_args
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
     def test_smart_routing_on_windows_uses_native_binary(self, monkeypatch, tmp_path):
