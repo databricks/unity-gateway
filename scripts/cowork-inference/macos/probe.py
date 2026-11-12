@@ -83,9 +83,7 @@ def select_model(snapshot, label):
     if initial not in selected_labels:
         ui("click", initial)
         ui("click", wait_for_model_option(label))
-        snapshot = wait_for(selected_labels)
-    if not matches_labels(snapshot, selected_labels):
-        raise RuntimeError(f"Cowork did not select the expected model {MODEL}")
+        wait_for(selected_labels)
     return initial
 
 
@@ -122,8 +120,8 @@ def check_model_source(profile):
     helper_args = profile.get("inferenceCredentialHelperArgs", [])
     if ("--relay" in helper_args) != RELAY:
         raise RuntimeError(f"Desktop credential helper relay mode should be {RELAY}")
-    if RELAY and "--claude-binary" not in helper_args:
-        raise RuntimeError("Relay credential helper is missing its Claude CLI binary")
+    if ("--claude-binary" in helper_args) != RELAY:
+        raise RuntimeError(f"Desktop credential helper Claude CLI binary should be {RELAY}")
 
 
 def configured_model_label(profile):

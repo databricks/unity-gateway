@@ -46,8 +46,8 @@ $helperArgs = @($desktopProfile.inferenceCredentialHelperArgs)
 if (($helperArgs -ccontains '--relay') -ne $relay) {
     throw "Desktop credential helper relay mode is $(-not $relay), expected $relay"
 }
-if ($relay -and -not ($helperArgs -ccontains '--claude-binary')) {
-    throw 'Relay credential helper is missing its Claude CLI binary'
+if (($helperArgs -ccontains '--claude-binary') -ne $relay) {
+    throw "Desktop credential helper Claude CLI binary presence is $(-not $relay), expected $relay"
 }
 $models = @($desktopProfile.inferenceModels | Where-Object { $_.name -eq $targetModel })
 if ($models.Count -ne 1) { throw "Expected Claude model $targetModel is missing from the configured profile" }

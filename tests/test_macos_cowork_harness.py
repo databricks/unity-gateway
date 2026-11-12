@@ -301,6 +301,13 @@ RELAY_HELPER_ARGS = ["claude-desktop-auth", "--relay", "--claude-binary", "/usr/
             ["claude-desktop-auth", "--relay"],
             "Claude CLI binary",
         ),
+        (
+            "main.mps",
+            False,
+            {"Databricks-Model-Provider-Service": "main.mps"},
+            ["claude-desktop-auth", "--claude-binary", "/usr/local/bin/claude"],
+            "Claude CLI binary",
+        ),
     ],
 )
 def test_profile_must_use_the_selected_model_source(
@@ -443,17 +450,17 @@ def test_probe_failures_preserve_evidence_and_restore_signals(harness, monkeypat
 @pytest.mark.parametrize("relay", [True, False])
 def test_terminal_forwards_only_the_probe_environment(harness, monkeypatch, relay):
     monkeypatch.setenv("UNRELATED_SECRET", "unrelated")
-    for key in (
-        "UG_COWORK_PROVIDER",
-        "UG_COWORK_MODEL",
-        "UG_COWORK_RELAY",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-    ):
-        monkeypatch.delenv(key, raising=False)
+    source = {
+        "UG_COWORK_PROVIDER": "main.relay" if relay else "main.mps",
+        "UG_COWORK_MODEL": "claude-haiku-4-5-20251001",
+        "UG_COWORK_RELAY": "true" if relay else "false",
+    }
     if relay:
-        monkeypatch.setenv("UG_COWORK_PROVIDER", "main.relay")
-        monkeypatch.setenv("UG_COWORK_RELAY", "true")
-        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-secret")
+        source["CLAUDE_CODE_OAUTH_TOKEN"] = "oauth-secret"
+    else:
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    for key, value in source.items():
+        monkeypatch.setenv(key, value)
     forwarded = {}
 
     def capture_environment(args, **kwargs):
@@ -464,10 +471,15 @@ def test_terminal_forwards_only_the_probe_environment(harness, monkeypatch, rela
     monkeypatch.setattr(harness.terminal, "process", SimpleNamespace(run=capture_environment))
     with pytest.raises(OSError, match="Terminal launch failed"):
         harness.terminal.run_terminal()
-    assert "UNRELATED_SECRET" not in forwarded
-    assert forwarded["DATABRICKS_BEARER"] == "test-bearer"
-    relay_keys = {"UG_COWORK_PROVIDER", "UG_COWORK_RELAY", "CLAUDE_CODE_OAUTH_TOKEN"}
-    assert relay_keys <= forwarded.keys() if relay else not relay_keys & forwarded.keys()
+    expected = {
+        "UCODE_TEST_WORKSPACE": "https://workspace.example",
+        "DATABRICKS_BEARER": "test-bearer",
+        "RUNNER_TEMP": str(harness.root),
+        "GITHUB_ACTIONS": "true",
+        "PATH": os.environ["PATH"],
+        **source,
+    }
+    assert forwarded == expected
 
 
 def test_terminal_launch_failure_removes_credentials_and_retains_diagnostics(harness, monkeypatch):

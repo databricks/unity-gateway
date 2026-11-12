@@ -48,7 +48,9 @@ function Test-SelectedModel {
 function Select-CoworkModel {
     param([Windows.Automation.AutomationElement]$Root, [string]$Label)
     $picker = Wait-ModelPickerControl -Root $Root -Description 'Model: *' -Predicate {
-        param($control) $control.Current.Name.StartsWith('Model: ', [StringComparison]::Ordinal)
+        param($control)
+        $control.Current.ControlType.ProgrammaticName -eq 'ControlType.Button' -and
+            $control.Current.Name.StartsWith('Model: ', [StringComparison]::Ordinal)
     }
     $initial = $picker.Current.Name
     # Desktop starts on its own default model, which is not the target for every provider service.
@@ -64,7 +66,9 @@ function Select-CoworkModel {
         Invoke-ModelPickerControl $option
     }
     $null = Wait-ModelPickerControl -Root $Root -Description "Model: $Label" -Predicate {
-        param($control) Test-SelectedModel -Name $control.Current.Name -Label $Label
+        param($control)
+        $control.Current.ControlType.ProgrammaticName -eq 'ControlType.Button' -and
+            (Test-SelectedModel -Name $control.Current.Name -Label $Label)
     }
     return $initial
 }

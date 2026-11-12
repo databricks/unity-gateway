@@ -1075,7 +1075,10 @@ def test_cowork_ci_covers_each_claude_model_source(job_name):
     tokens = re.findall(r"(?m)^\s+CLAUDE_CODE_OAUTH_TOKEN: (.*)$", job)
     assert tokens
     assert set(tokens) == {"${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}"}
-    assert "-${{ matrix.source.id }}\n" in job
+    artifact = "cowork-inference" if job_name.endswith("windows") else "cowork-inference-macos"
+    assert re.findall(r"(?m)^          name: (cowork-inference.*)$", job) == [
+        f"{artifact}-${{{{ matrix.source.id }}}}"
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
