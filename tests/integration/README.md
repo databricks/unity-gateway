@@ -1136,6 +1136,8 @@ MPS CUJs select preprovisioned services:
   All four lanes use `databricks-protected-runner-group`, with
   `linux-ubuntu-latest` / `windows-server-latest` labels and internal Python/npm
   package proxies. These managed runners can reach staging ingress.
+  The job has an explicit fork guard and does not depend on the other workspace's
+  bearer validation.
   The configure picker journey also rejects an out-of-allowlist model and verifies
   that its completed file task used the pinned Haiku model. This and Cases 11
   replace the duplicate legacy launches, raw inference, fixture listing, and fresh
@@ -1206,7 +1208,8 @@ fails the selected CUJ, rather than skipping it.
 
 The `test_ug_codex_fresh_provider_launch` journey checks provider selection and real agent
 CLI launch without inference. Claude's fresh provider discovery journey covers its
-launch and model picker. The configure, Foundry, and custom MPS journeys additionally
+launch, model picker, and selected-provider routing header in generated settings.
+The configure, Foundry, and custom MPS journeys additionally
 require inference and file-reading task completion. Codex discovery journeys also
 check its app-server model catalog.
 

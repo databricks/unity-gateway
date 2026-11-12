@@ -390,7 +390,7 @@ jobs:
 
   anthropic-mps:
     name: Anthropic MPS - Staging workspace · ${{ matrix.agent == 'claude' && 'Claude' || 'Copilot' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.agent == 'copilot' && ' (non-blocking)' || '' }}
-    needs: workspace
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     continue-on-error: ${{ matrix.agent == 'copilot' }}
     runs-on:
       group: databricks-protected-runner-group
@@ -658,8 +658,8 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  # managed and dedicated-cuj stay Linux-only: ug has no Windows managed-settings
-  # writer, and the CUJ suite drives agents through a POSIX PTY.
+  # This general managed lane is Linux-only; anthropic-mps covers Claude MPS managed
+  # settings on Windows too. Dedicated CUJs require POSIX PTYs.
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}

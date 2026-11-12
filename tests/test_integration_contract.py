@@ -257,6 +257,7 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
     jobs = _integration_jobs()
     job = jobs["anthropic-mps"]
+    assert not re.search(r"(?m)^    needs:", job)
     assert "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in job
     assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
     assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
