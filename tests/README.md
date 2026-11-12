@@ -21,6 +21,8 @@ description unchanged when routing is off.
 `test_codex_routing_reload.py` covers restart configuration, bounded process-tree
 cleanup, early wrapper exit, transient control-file failures, stalled Ctrl+C,
 malformed control messages, and root-only recovery without rerouting the first prompt.
+Sessions without known children receive no injected recovery turn. Native history and
+streamed collaboration items enable child recovery across reconnects and root changes.
 Regression cases cover bounded cleanup and diagnostics after Windows taskkill timeouts
 or launch errors, and replacing a root after failed recovery without reusing stale notices.
 Managed-config checks require path-specific repair instructions, including user-only

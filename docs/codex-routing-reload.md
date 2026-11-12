@@ -50,7 +50,10 @@ and the recipe header may be absent. It must never carry a stale value.
    address with updated attribution. The TUI process and `CODEX_HOME` stay intact.
 3. Native Codex reconnects and resumes the saved conversation. UG forwards that
    resume unchanged, leaving models, cwd, sandbox, and approvals to native Codex.
-4. After a successful root resume, UG sends one recovery prompt. It asks the
+4. After a successful root resume, UG sends one recovery prompt only if native
+   saved history or observed collaboration events show that root has children.
+   With no known children, UG consumes the restart notice without starting a
+   model turn; the next user message proceeds normally. The recovery prompt asks the
    parent to continue unfinished work and reopen existing children with
    `followup_task`, without spawning replacements or repeating the toggle.
    Unfinished children must be resumed even when the latest user prompt only
@@ -93,8 +96,8 @@ Native subcommands bypass smart routing. The new launch uses its own routing and
 permission settings; it does not restore the old session-control file.
 
 Restart stops all running work in this launch's server, including loaded roots
-other than the one currently displayed. Only the resumed root gets an automatic
-recovery prompt. Native history survives, but UG no longer promises automatic
+other than the one currently displayed. Only the resumed root with known children
+gets an automatic recovery prompt. Native history survives, but UG no longer promises automatic
 continuation for multiple open roots, approval replies, queued input, or Escape
 during a toggle. Native Codex owns reconnect and input handling.
 
@@ -110,7 +113,8 @@ following those instructions.
 `tests/test_codex_routing_reload.py` covers server lifecycle, off/on configuration,
 shutdown escalation, native descendant port release, Windows process-tree shutdown,
 failed startup/restart, unexpected exit, reconnect without rerouting, root-only
-continuation, ephemeral title threads, coalesced notices, and private internal RPC
+continuation, no injected turn without children, child detection from native history
+and streamed collaboration items, ephemeral title threads, coalesced notices, and private internal RPC
 responses. Component checks simulate delayed Windows exit and failed termination;
 malformed frames and null resume results do not close the relay or consume a pending
 restart. Temporary control-file failures preserve the current session, and a stalled

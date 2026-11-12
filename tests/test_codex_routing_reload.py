@@ -37,6 +37,25 @@ CONFIG = {
 }
 
 
+def saved_root(thread_id="root"):
+    return {
+        "id": thread_id,
+        "turns": [{"items": [child_spawn(thread_id)]}],
+    }
+
+
+def child_spawn(thread_id="root"):
+    return {
+        "type": "collabAgentToolCall",
+        "id": "spawn-1",
+        "tool": "spawnAgent",
+        "status": "completed",
+        "senderThreadId": thread_id,
+        "receiverThreadIds": [f"{thread_id}-child"],
+        "agentsStates": {f"{thread_id}-child": {"status": "running"}},
+    }
+
+
 def test_off_on_restores_launch_recipe_without_mutating_launch_config():
     original = copy.deepcopy(CONFIG)
     for enabled, recipe in [(False, "DISABLED"), (True, "custom")]:
@@ -83,7 +102,7 @@ def test_unreadable_session_controls_report_failure_instead_of_enabling(tmp_path
 def test_malformed_resume_does_not_consume_restart_notice(result):
     notices = SimpleQueue()
     continuation = RestartContinuation(notices)
-    resumed(continuation, 1, {"id": "root"}, method="thread/start")
+    resumed(continuation, 1, saved_root(), method="thread/start")
     notices.put("DISABLED")
     continuation.before_tui({"id": [], "method": "thread/resume"})
     continuation.before_tui({"id": 2, "method": "thread/resume", "params": None})
@@ -91,7 +110,7 @@ def test_malformed_resume_does_not_consume_restart_notice(result):
     continuation.before_tui({"id": 3, "method": "thread/resume"})
     assert continuation.after_resume({"id": 3, "result": result}) is None
     assert not notices.empty()
-    assert resumed(continuation, 4, {"id": "root"})["params"]["threadId"] == "root"
+    assert resumed(continuation, 4, saved_root())["params"]["threadId"] == "root"
 
 
 def resumed(continuation, identity, thread, *, method="thread/resume", error=False):
@@ -100,6 +119,47 @@ def resumed(continuation, identity, thread, *, method="thread/resume", error=Fal
     if error:
         reply = {"id": identity, "error": {"message": "resume failed"}}
     return continuation.after_resume(reply)
+
+
+@pytest.mark.parametrize(
+    "turns",
+    [
+        [],
+        [{"items": [{"type": "userMessage", "text": "spawn_agent followup_task"}]}],
+        [{"items": [{**child_spawn(), "receiverThreadIds": [], "agentsStates": {}}]}],
+    ],
+)
+def test_restart_without_subagents_consumes_notice_without_starting_a_turn(turns):
+    notices = SimpleQueue()
+    continuation = RestartContinuation(notices)
+    root = {"id": "root", "turns": turns}
+    resumed(continuation, 1, root, method="thread/start")
+    for identity, recipe in [(2, "DISABLED"), (3, "custom")]:
+        notices.put(recipe)
+        assert resumed(continuation, identity, root) is None
+        assert notices.empty()
+        assert continuation.turn_id is None
+
+
+@pytest.mark.parametrize("method", ["item/started", "item/completed"])
+def test_restart_remembers_observed_children_when_resume_omits_history(method):
+    notices = SimpleQueue()
+    continuation = RestartContinuation(notices)
+    resumed(continuation, 1, {"id": "root", "turns": []}, method="thread/start")
+    assert (
+        continuation.after_resume(
+            {"method": method, "params": {"threadId": "root", "item": child_spawn()}}
+        )
+        is None
+    )
+    notices.put("DISABLED")
+    request = resumed(continuation, 2, {"id": "root", "turns": []})
+    assert "followup_task" in request["params"]["input"][0]["text"]
+
+    resumed(continuation, 3, {"id": "other", "source": "cli"}, method="thread/start")
+    notices.put("custom")
+    assert resumed(continuation, 4, {"id": "other", "turns": []}) is None
+    assert notices.empty()
 
 
 @pytest.mark.parametrize(
@@ -113,12 +173,12 @@ def resumed(continuation, identity, thread, *, method="thread/resume", error=Fal
 def test_restart_continues_same_root_once_and_never_a_viewed_child(child):
     notices = SimpleQueue()
     continuation = RestartContinuation(notices)
-    assert resumed(continuation, 1, {"id": "root"}, method="thread/start") is None
+    assert resumed(continuation, 1, saved_root(), method="thread/start") is None
     notices.put("DISABLED")
     assert resumed(continuation, 2, child) is None
     assert continuation.root_id == "root"
     assert not notices.empty()
-    request = resumed(continuation, 3, {"id": "root"})
+    request = resumed(continuation, 3, saved_root())
     assert request["method"] == "turn/start"
     assert request["params"]["threadId"] == "root"
     # Native resume owns model, cwd, sandbox, and approvals; the continuation sends only input.
@@ -131,7 +191,7 @@ def test_restart_continues_same_root_once_and_never_a_viewed_child(child):
     assert "rerun any command that did not exit successfully" in prompt
     assert continuation.take_response({"id": request["id"], "result": {"turn": {"id": "t"}}})
     assert not continuation.take_response({"id": 3, "result": {}})
-    assert resumed(continuation, 4, {"id": "root"}) is None
+    assert resumed(continuation, 4, saved_root()) is None
 
 
 @pytest.mark.parametrize("replacement_method", ["thread/start", "thread/resume"])
@@ -140,22 +200,27 @@ def test_failed_resume_keeps_recovery_pending_and_rapid_toggles_use_latest_recip
 ):
     notices = SimpleQueue()
     continuation = RestartContinuation(notices)
-    resumed(continuation, 1, {"id": "root"}, method="thread/start")
+    resumed(continuation, 1, saved_root(), method="thread/start")
     notices.put("DISABLED")
     notices.put("custom")
-    assert resumed(continuation, 2, {"id": "root"}, error=True) is None
+    assert resumed(continuation, 2, saved_root(), error=True) is None
     assert not notices.empty()
-    request = resumed(continuation, 3, {"id": "root"})
+    request = resumed(continuation, 3, saved_root())
     assert "Smart Router is now on" in request["params"]["input"][0]["text"]
     assert continuation.recipe == "custom"
     assert notices.empty()
     assert continuation.take_response({"id": request["id"], "result": {}})
 
     notices.put("DISABLED")
-    assert resumed(continuation, 4, {"id": "root"}, error=True) is None
+    assert resumed(continuation, 4, saved_root(), error=True) is None
     assert not notices.empty()
     assert (
-        resumed(continuation, 5, {"id": "replacement", "source": "cli"}, method=replacement_method)
+        resumed(
+            continuation,
+            5,
+            {**saved_root("replacement"), "source": "cli"},
+            method=replacement_method,
+        )
         is None
     )
     assert continuation.root_id == "replacement"
@@ -165,29 +230,30 @@ def test_failed_resume_keeps_recovery_pending_and_rapid_toggles_use_latest_recip
 
     notices.put("custom")
     notices.put("DISABLED")
-    request = resumed(continuation, 6, {"id": "replacement", "source": "cli"})
+    request = resumed(continuation, 6, {**saved_root("replacement"), "source": "cli"})
     assert request["params"]["threadId"] == "replacement"
     assert "Smart Router is now off" in request["params"]["input"][0]["text"]
     assert continuation.recipe == "DISABLED"
     assert notices.empty()
-    assert resumed(continuation, 7, {"id": "replacement", "source": "cli"}) is None
+    assert resumed(continuation, 7, {**saved_root("replacement"), "source": "cli"}) is None
 
 
 def test_temporary_title_thread_does_not_replace_conversation_root():
     notices = SimpleQueue()
     continuation = RestartContinuation(notices)
-    resumed(continuation, 1, {"id": "root"}, method="thread/start")
+    resumed(continuation, 1, saved_root(), method="thread/start")
     continuation.before_tui({"id": 2, "method": "thread/start", "params": {"ephemeral": True}})
     assert continuation.after_resume({"id": 2, "result": {"thread": {"id": "title"}}}) is None
     assert continuation.root_id == "root"
     notices.put("DISABLED")
-    request = resumed(continuation, 3, {"id": "root"})
+    request = resumed(continuation, 3, saved_root())
     assert request["params"]["threadId"] == "root"
 
 
+@pytest.mark.parametrize("has_children", [False, True])
 @pytest.mark.parametrize("continuation_error", [False, True])
 def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_reply(
-    monkeypatch, continuation_error
+    monkeypatch, continuation_error, has_children
 ):
     async def scenario():
         calls = []
@@ -225,7 +291,13 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
                     method = message["method"]
                     result = {}
                     if method in ("thread/start", "thread/resume"):
-                        result = {"thread": {"id": "root"}}
+                        result = {
+                            "thread": (
+                                saved_root()
+                                if method == "thread/resume" and has_children
+                                else {"id": "root", "turns": []}
+                            )
+                        }
                     if method == "turn/start":
                         if str(message["id"]).startswith("ug-restart-") and continuation_error:
                             await ws.send(
@@ -296,13 +368,14 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
                         )
                     )
                     assert json.loads(await tui.recv())["id"] == 3
-                    notification = json.loads(await tui.recv())
-                    assert "id" not in notification
-                    assert notification["method"] == (
-                        "error" if continuation_error else "turn/started"
-                    )
-                    if continuation_error:
-                        assert "Send a message" in notification["params"]["error"]["message"]
+                    if has_children:
+                        notification = json.loads(await tui.recv())
+                        assert "id" not in notification
+                        assert notification["method"] == (
+                            "error" if continuation_error else "turn/started"
+                        )
+                        if continuation_error:
+                            assert "Send a message" in notification["params"]["error"]["message"]
                     await tui.send(
                         json.dumps(
                             {
@@ -322,8 +395,12 @@ def test_interposer_reconnect_preserves_first_prompt_routing_and_hides_internal_
                 assert calls[-1]["params"]["model"] == "gpt-user-choice"
                 resume = next(call for call in calls if call["method"] == "thread/resume")
                 assert resume["params"] == {"threadId": "root", "sandbox": "workspace-write"}
-                assert sum(str(call["id"]).startswith("ug-restart-") for call in calls) == 1
-                assert any("[RESTART FAILED]" in log for log in logs) == continuation_error
+                assert sum(str(call["id"]).startswith("ug-restart-") for call in calls) == int(
+                    has_children
+                )
+                assert any("[RESTART FAILED]" in log for log in logs) == (
+                    has_children and continuation_error
+                )
             finally:
                 interposer.close()
                 await interposer.wait_closed()

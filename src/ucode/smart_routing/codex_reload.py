@@ -55,6 +55,20 @@ class RestartContinuation:
         self.root_id: str | None = None
         self.turn_id: str | None = None
         self.recipe: str | None = None
+        self.roots_with_children: set[str] = set()
+
+    def _remember_children(self, thread_id: str, items: object) -> None:
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "collabAgentToolCall":
+                continue
+            receivers = item.get("receiverThreadIds")
+            if isinstance(receivers, list) and any(
+                isinstance(receiver, str) and receiver and receiver != thread_id
+                for receiver in receivers
+            ):
+                self.roots_with_children.add(thread_id)
 
     def before_tui(self, message: dict) -> None:
         params = message.get("params", {})
@@ -67,6 +81,10 @@ class RestartContinuation:
             self.requests[message["id"]] = message["method"]
 
     def after_resume(self, message: dict) -> dict | None:
+        params = message.get("params")
+        if message.get("method") in ("item/started", "item/completed") and isinstance(params, dict):
+            if isinstance(thread_id := params.get("threadId"), str):
+                self._remember_children(thread_id, [params.get("item")])
         identity = message.get("id")
         if not isinstance(identity, (str, int)):
             return None
@@ -93,6 +111,11 @@ class RestartContinuation:
                     break
             self.recipe = None
         self.root_id = thread_id
+        turns = thread.get("turns")
+        if isinstance(turns, list):
+            for turn in turns:
+                if isinstance(turn, dict):
+                    self._remember_children(thread_id, turn.get("items"))
         if method != "thread/resume":
             return None
         recipe = None
@@ -101,7 +124,7 @@ class RestartContinuation:
                 recipe = self.notices.get_nowait()
             except Empty:
                 break
-        if recipe is None:
+        if recipe is None or thread_id not in self.roots_with_children:
             return None
         self.turn_id = f"ug-restart-{uuid.uuid4().hex}"
         self.recipe = recipe
