@@ -13,12 +13,8 @@ from pathlib import Path
 from typing import Protocol
 
 from ucode.config_io import deep_merge_dict
-from ucode.constants import (
-    ENABLE_SMART_ROUTING_ENV_VAR,
-    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-    SMART_ROUTER_RECIPE_HEADER,
-)
-from ucode.smart_routing.session_env import read_session_environment
+from ucode.constants import SMART_ROUTER_RECIPE_HEADER
+from ucode.smart_routing.session_env import read_session_environment, routing_enabled
 
 RELOAD_TIMEOUT_SECONDS = 30
 RPC_TIMEOUT_SECONDS = 10
@@ -63,11 +59,7 @@ def routing_config(config: dict, enabled: bool) -> dict:
 
 
 def session_routing_enabled(controls: Path) -> bool:
-    overrides = read_session_environment(controls)
-    return not all(
-        overrides.get(key) == "0"
-        for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
-    )
+    return routing_enabled(read_session_environment(controls))
 
 
 def is_toggle_only(params: dict) -> bool:

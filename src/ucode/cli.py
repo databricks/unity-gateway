@@ -199,6 +199,8 @@ from ucode.smart_routing.claude_hooks import (
 )
 from ucode.smart_routing.session_env import (
     effective_environment,
+    read_current_session_environment,
+    routing_enabled,
     session_env_path,
     set_session_environment,
 )
@@ -3453,6 +3455,16 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         session_env_path()
     except RuntimeError:
         return False
+    try:
+        current = read_current_session_environment()
+    except RuntimeError as exc:
+        print_err(str(exc))
+        raise typer.Exit(1) from None
+    if routing_enabled(current) == enabled:
+        print_success(
+            f"Smart Router is already {'on' if enabled else 'off'} for this session; no changes made"
+        )
+        return True
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)

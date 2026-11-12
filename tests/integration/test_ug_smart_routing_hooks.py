@@ -1244,11 +1244,11 @@ def _codex_app_server_pids(tui):
 def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
     live_session, workspace, tmp_path, idle_children
 ):
-    """Scenario: toggle off/on through the installed skill with no children or one idle child.
+    """Scenario: toggle and repeat off/on through the skill with no children or one idle child.
 
-    Expected: no recovery prompt or automatic turn follows either toggle. Explicit
-    user probes use current header/body attribution. App-server PIDs, connection,
-    and original IDs stay unchanged, with native sandbox/approvals and normal exit.
+    Expected: guidance precedes each toggle command and no automatic turn follows.
+    Repeated settings leave controls untouched and do not reload. Explicit probes
+    use current attribution. PIDs, connection, IDs, sandbox/approvals and exit survive.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v1")
@@ -1300,15 +1300,21 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
                 )
                 original = _codex_thread_ids(session)
 
-            def root_turns():
-                return {
-                    row["payload"]["turn_id"]
+            def root_records():
+                return [
+                    row
                     for records in agent_sessions(session, "codex").values()
                     if any(
                         row.get("type") == "session_meta" and row["payload"].get("id") == root
                         for row in records
                     )
                     for row in records
+                ]
+
+            def root_turns():
+                return {
+                    row["payload"]["turn_id"]
+                    for row in root_records()
                     if row.get("type") == "turn_context"
                 }
 
@@ -1319,6 +1325,7 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
             assert launch_recipe and launch_recipe != "DISABLED"
             for enabled, recipe in ((False, "DISABLED"), (True, launch_recipe)):
                 before_turns = root_turns()
+                before_records = len(root_records())
                 _toggle_with_skill(
                     tui, session, "codex", enabled=enabled, orchestration_enabled=False
                 )
@@ -1337,6 +1344,34 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
                 )
                 assert len(root_turns() - before_turns) == 2, "Toggle started an automatic turn"
                 assert _codex_thread_ids(session) == original
+                guidance = (
+                    f"Turning Smart Router {state}. Codex may briefly show “Conversation interrupted” "
+                    "while reloading routing settings. This is expected; you can continue "
+                    "in the same conversation afterward."
+                )
+                new_items = [
+                    row["payload"]
+                    for row in root_records()[before_records:]
+                    if row.get("type") == "response_item"
+                ]
+                guidance_position = next(
+                    index
+                    for index, item in enumerate(new_items)
+                    if item.get("role") == "assistant"
+                    and guidance
+                    in " ".join(
+                        " ".join(part.get("text", "") for part in item.get("content", [])).split()
+                    )
+                )
+                flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+                command_position = next(
+                    index
+                    for index, item in enumerate(new_items)
+                    if item.get("type") in {"function_call", "custom_tool_call"}
+                    and flag in json.dumps(item)
+                )
+                assert guidance_position < command_position
+                session.record(f"toggle-guidance-{state}.json", {"message": guidance})
                 session.record(
                     f"recipe-{state}.json",
                     _assert_codex_inference_recipes(
@@ -1347,6 +1382,32 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
                         recipe,
                     ),
                 )
+                controls = list(Path(session.env["TMPDIR"]).glob("ug-session-env-*/env.json"))
+                assert len(controls) == 1, controls
+                before_controls = controls[0].stat()
+                before_reloads = (session.home / ".ucode/codex-v2-interposer.log").read_text()
+                before_turns = root_turns()
+                before_answers = len(assistant_answers("codex", root_records()))
+                tui.submit(f"$smart-router {state}")
+                tui.wait_for(
+                    lambda screen, before_answers=before_answers: (
+                        len(assistant_answers("codex", root_records())) > before_answers
+                        and "esc to interrupt" not in screen.lower()
+                    ),
+                    f"repeat {state} completes without reload",
+                    timeout=120,
+                )
+                after_controls = controls[0].stat()
+                assert (after_controls.st_ino, after_controls.st_mtime_ns) == (
+                    before_controls.st_ino,
+                    before_controls.st_mtime_ns,
+                )
+                assert (session.home / ".ucode/codex-v2-interposer.log").read_text().count(
+                    "[RELOAD] resumed"
+                ) == before_reloads.count("[RELOAD] resumed")
+                assert len(root_turns() - before_turns) == 1
+                assert _codex_app_server_pids(tui) == server_pids
+                assert _codex_thread_ids(session) == original
             log = (session.home / ".ucode/codex-v2-interposer.log").read_text()
             assert log.count("[CONN] TUI connected") == 1
             assert log.count("[RELOAD] resumed") == 2

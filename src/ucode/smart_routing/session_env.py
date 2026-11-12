@@ -11,7 +11,11 @@ from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
-from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.constants import (
+    ENABLE_SMART_ROUTING_ENV_VAR,
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    SMART_ROUTING_ENV_KEYS,
+)
 from ucode.smart_routing.config import resolve_environment
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
@@ -53,6 +57,13 @@ def read_session_environment(path: Path) -> dict[str, str]:
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
+def routing_enabled(overrides: Mapping[str, str]) -> bool:
+    return not all(
+        overrides.get(key) == "0"
+        for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
+    )
+
+
 def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
     """Overlay the latest session controls on the hook process environment."""
     effective = resolve_environment(env, agent=agent)
@@ -71,11 +82,10 @@ def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -
     return effective
 
 
-def set_session_environment(values: Mapping[str, str]) -> None:
-    """Atomically replace the current session's allowlisted overrides."""
+def read_current_session_environment() -> dict[str, str]:
     path = session_env_path()
     try:
-        read_session_environment(path)
+        return read_session_environment(path)
     except PermissionError as exc:
         raise RuntimeError(
             f"Permission denied reading Smart Router session controls at {path}. "
@@ -83,8 +93,17 @@ def set_session_environment(values: Mapping[str, str]) -> None:
         ) from exc
     except (OSError, UnicodeError, ValueError) as exc:
         raise RuntimeError(f"Smart Router session controls at {path} are invalid.") from exc
+
+
+def set_session_environment(values: Mapping[str, str]) -> bool:
+    """Atomically replace changed session overrides."""
+    current = read_current_session_environment()
+    requested = _validate(dict(values))
+    if current == requested:
+        return False
+    path = session_env_path()
     try:
-        atomic_write_json(path, _validate(dict(values)))
+        atomic_write_json(path, requested)
     except (OSError, RuntimeError) as exc:
         # The atomic writer wraps mkdir and replacement failures, but not mkstemp failures.
         cause = exc.__cause__ if isinstance(exc, RuntimeError) else exc
@@ -98,3 +117,4 @@ def set_session_environment(values: Mapping[str, str]) -> None:
         raise RuntimeError(
             f"Error writing Smart Router session controls at {path}: {cause or exc}"
         ) from exc
+    return True

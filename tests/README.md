@@ -45,6 +45,9 @@ scrubbed. Use a recipe supported by the selected workspace.
 off/on with no children or a completed idle child: no recovery prompt or automatic
 turn, explicit user probes with current parent request headers/body metadata,
 unchanged server PIDs, one TUI connection, stable root/child IDs, and normal TUI exit.
+The approved guidance appears before each toggle command. Repeating on or off
+leaves controls untouched and starts no reload. Component CLI checks cover
+canonical and partial controls for both agents, including already-off feedback bypass.
 Component checks distinguish idle roots, explicit toggle-only turns, and real
 interrupted work; busy children still require recovery even for a toggle-only turn.
 

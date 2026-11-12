@@ -19,6 +19,36 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("canonical", [False, True])
+def test_repeated_toggle_leaves_session_controls_untouched(tmp_path, agent, enabled, canonical):
+    if canonical:
+        controls = {} if enabled else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+    else:
+        controls = {
+            v2.ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1" if enabled else "0",
+        }
+    session_file = tmp_path / "env.json"
+    session_file.write_text(json.dumps(controls))
+    before = session_file.stat()
+    result = runner.invoke(
+        cli.app,
+        [agent, "--enable-smart-routing" if enabled else "--disable-smart-routing"],
+        env={
+            session_env.SESSION_ENV_VAR: str(session_file),
+            "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+            "ISAAC_LAUNCH_MODE": "direct",
+        },
+    )
+    assert result.exit_code == 0, result.output
+    assert f"Smart Router is already {'on' if enabled else 'off'}" in result.output
+    assert json.loads(session_file.read_text()) == controls
+    after = session_file.stat()
+    assert (after.st_ino, after.st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.
@@ -148,6 +178,13 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
 
         denied.setattr(target, write_step, fail_session_write)
         for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            controls = (
+                {}
+                if flag == "--disable-smart-routing"
+                else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+            )
+            session_file.write_text(json.dumps(controls))
+            before = session_file.read_bytes()
             result = runner.invoke(cli.app, ["codex", flag], env=env)
             assert result.exit_code == 1
             output = " ".join(result.output.split())

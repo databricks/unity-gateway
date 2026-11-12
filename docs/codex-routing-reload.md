@@ -50,7 +50,11 @@ metadata, and the recipe header may be absent. It must never carry a stale value
 
 ## Reload behavior
 
-1. The skill atomically updates the existing session-control file. Routing hooks
+1. Before a Codex toggle, the skill explains that the expected “Conversation
+   interrupted” message comes from reloading routing settings and that the user can
+   continue in the same conversation afterward. Repeating the current on/off state
+   leaves controls untouched and starts no reload. A changed setting atomically
+   updates the existing session-control file. Routing hooks
    read the same file. If sandbox access requires approval, the skill uses the
    native command-approval dialog. Temporary read errors retain the last applied
    setting and are logged once until controls become readable.
