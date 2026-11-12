@@ -143,6 +143,10 @@ The wait uses the child's answer directly; parent-answer reconstruction is reser
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
 Selector cases have separate TUI artifact names, and the session environment is restored afterward.
+Before checking child-routing correlation, each preset also saves a redacted
+`<preset>-<agent>-routing.json` artifact containing routing request/response bodies, HTTP statuses,
+new decisions, and matched request sequences. Rejected or unselected routing requests remain in
+the artifact even when no decision was recorded. Inference bodies and headers are excluded.
 Each Claude preset session checks the visible ON state and routing scope,
 then OFF and restored ON after `/smart-router off` and `on`.
 These checks read the terminal's rendered text, ignoring styling and trailing UI controls.

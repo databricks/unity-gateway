@@ -458,9 +458,19 @@ class TestCujSmartRouting(BaseCujTest):
                 decision_tasks = {decision[task_field] for decision in decisions}
                 requests = recorder.requests_after(checkpoint)
                 routes = []
+                routing_exchanges = []
                 for request in requests:
                     if request.path != ROUTING_PATH:
                         continue
+                    response = recorder.response_for(request)
+                    routing_exchanges.append(
+                        {
+                            "sequence": request.sequence,
+                            "request_body": request.body.decode("utf-8", errors="replace"),
+                            "status_code": response.status_code,
+                            "response_body": response.body.decode("utf-8", errors="replace"),
+                        }
+                    )
                     prompt = request.payload.get("task", {}).get("prompt")
                     if not isinstance(prompt, str):
                         continue
@@ -471,6 +481,17 @@ class TestCujSmartRouting(BaseCujTest):
                     )
                     if key in decision_tasks:
                         routes.append(request)
+                session.record(
+                    f"{SMART_ROUTER_CONFIG_VERSION}-{agent}-routing.json",
+                    {
+                        "checkpoint": checkpoint,
+                        "decisions": decisions,
+                        "task_field": task_field,
+                        "decision_tasks": sorted(decision_tasks),
+                        "routing_exchanges": routing_exchanges,
+                        "matched_sequences": [request.sequence for request in routes],
+                    },
+                )
                 assert bool(routes) == subagent_routed, (agent, routes)
                 if subagent_routed:
                     assert_subagent_routed(
