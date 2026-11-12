@@ -3257,19 +3257,10 @@ def smart_router_describe_cmd() -> None:
     sys.stdout.write(json.dumps(asdict(smart_routing_v2.describe_routing())) + "\n")
 
 
-class LogHarness(StrEnum):
-    """Which agent harness's session log to read."""
-
-    claude = "claude"
-    codex = "codex"
-
-
 @app.command("smart-router-logs", hidden=True)
 def smart_router_logs_cmd(
     session: Annotated[str, typer.Option("--session")],
-    harness: Annotated[LogHarness, typer.Option("--harness")] = LogHarness.claude,
     decision: Annotated[str | None, typer.Option("--decision")] = None,
-    as_json: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Print a session's recorded smart-routing decisions as JSON on stdout."""
     from ucode.smart_routing import session_log
@@ -3278,12 +3269,12 @@ def smart_router_logs_cmd(
         sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
 
     try:
-        records = session_log.read_decisions(harness, session)
+        records = session_log.read_decisions("claude", session)
     except OSError as exc:
         emit(
             {
                 "error": f"cannot read session log at "
-                f"{session_log.session_log_path(harness, session)}: {exc.strerror or exc}"
+                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
             }
         )
         raise typer.Exit(1) from exc

@@ -81,26 +81,29 @@ test('renders session rows and refreshes on new subagent spawns only while open'
 test('shows reader failures, clears stale errors, and reports an unplaced pane', { options }, async ($, on) => {
   let stdout = '';
   let exitCode = 0;
+  let isStdoutTruncated = false;
   let isPlaced = true;
   let closed = false;
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced } }));
   on('ui.close', () => { closed = true; return { value: undefined }; });
-  on('process.run', () => ({ value: { exitCode, stderr: '', stdout } }));
+  on('process.run', () => ({ value: { exitCode, stderr: '', stdout, isStdoutTruncated } }));
   const ui = await $.ui.mount(pane);
   for (const response of [
-    { exitCode: 1, stdout: JSON.stringify({ v: 1, error: 'Permission denied' }), hint: true },
-    { exitCode: 1, stdout: '', hint: false },
-    { exitCode: 0, stdout: 'invalid json', hint: false },
-    { exitCode: 0, stdout: '{"v":2,"decisions":[]}', hint: false },
+    { exitCode: 1, stdout: JSON.stringify({ v: 1, error: 'Permission denied' }), hint: true, isStdoutTruncated: false },
+    { exitCode: 1, stdout: '', hint: false, isStdoutTruncated: false },
+    { exitCode: 0, stdout: 'invalid json', hint: false, isStdoutTruncated: false },
+    { exitCode: 0, stdout: '{"v":2,"decisions":[]}', hint: false, isStdoutTruncated: false },
+    { exitCode: 0, stdout: '{"v":1,"decisions":[]}', hint: false, isStdoutTruncated: true },
   ]) {
-    ({ exitCode, stdout } = response);
+    ({ exitCode, stdout, isStdoutTruncated } = response);
     await $.command.run(command);
     const tree = JSON.stringify(await ui.drawn());
     expect(tree).toContain('Could not read Smart Router logs.');
     expect(tree.includes('Permission denied')).toBe(response.hint);
   }
   stdout = '{"v":1,"decisions":[]}';
+  isStdoutTruncated = false;
   await $.command.run(command);
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   isPlaced = false;

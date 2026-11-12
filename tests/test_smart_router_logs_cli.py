@@ -24,10 +24,8 @@ def decision(model="selected"):
     return routing.RoutingDecision(model, "reason", ((model, "claude"), ("other", None)), "stable")
 
 
-def write(payload, task="inspect parser", **kwargs):
-    session_log.append_decision(
-        "claude", payload, task, decision(), "requested", routing_ms=840, **kwargs
-    )
+def write(payload, task="inspect parser"):
+    session_log.append_decision("claude", payload, task, decision(), "requested", routing_ms=840)
 
 
 def payload(session_id="s1", **extra):
@@ -36,10 +34,8 @@ def payload(session_id="s1", **extra):
     return base
 
 
-def read_overviews(session="s1", harness="claude"):
-    result = runner.invoke(
-        cli.app, ["smart-router-logs", "--session", session, "--harness", harness, "--json"]
-    )
+def read_overviews(session="s1"):
+    result = runner.invoke(cli.app, ["smart-router-logs", "--session", session])
     assert result.exit_code == 0, result.output
     return json.loads(result.output)["decisions"]
 
@@ -145,22 +141,3 @@ def test_decision_miss_exits_1(log_dir):
     result = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--decision", "nope"])
     assert result.exit_code == 1
     assert json.loads(result.output) == {"v": 1, "error": "decision not found"}
-
-
-def test_codex_harness_reads_codex_file(log_dir):
-    session_log.append_decision(
-        "codex", payload(), "codex task", decision("codex-model"), "requested", routing_ms=5
-    )
-    assert session_log.session_log_path("claude", "s1").exists() is False
-    overviews = read_overviews(harness="codex")
-    assert len(overviews) == 1
-    assert overviews[0]["selected_model"] == "codex-model"
-    assert overviews[0]["preview"] == "codex task"
-
-
-def test_json_flag_is_accepted(log_dir):
-    write(payload())
-    plain = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1"])
-    explicit = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--json"])
-    assert plain.exit_code == explicit.exit_code == 0
-    assert json.loads(plain.output) == json.loads(explicit.output)

@@ -24,10 +24,8 @@ def decision():
     )
 
 
-def write(payload, decision, task="inspect parser", **kwargs):
-    session_log.append_decision(
-        "claude", payload, task, decision, "requested", routing_ms=840, **kwargs
-    )
+def write(payload, decision, task="inspect parser"):
+    session_log.append_decision("claude", payload, task, decision, "requested", routing_ms=840)
 
 
 def test_record_shape(log_dir, decision):
@@ -180,14 +178,3 @@ def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_pat
     assert log_dir.exists()
     claude_routing.clear_routing_artifacts()
     assert not log_dir.exists()
-
-
-def test_private_preview_omits_task_text(log_dir, decision):
-    task = "secret task\nprivate continuation"
-    write({"session_id": "s1"}, decision, task, include_task_text=False)
-    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
-    assert record["prompt"] == {
-        "preview": None,
-        "sha256": hashlib.sha256(task.encode()).hexdigest(),
-        "length": len(task),
-    }

@@ -18,68 +18,39 @@ function age(at: number): string {
 }
 
 let rows: Decision[] = [];
-let failed = false;
-// The reader CLI's own error hint, when its failure carries one.
-let cliError: string | undefined;
+// Undefined after success; an empty string means failure without a CLI hint.
+let readError: string | undefined;
 // Whether the logs pane has been placed and has not been seen closed since.
 let paneOpen = false;
 // One reader at a time; a load asked for while one runs reruns after it finishes.
 let loading = false;
 let rerun = false;
 
-// The reader command, validated: an unconfigured or malformed logsCommand fails here.
-function logsReaderCommand(options: PluginOptions): string[] {
-  const command = options.logsCommand as string[];
-  if (!Array.isArray(command) || !command.length || command.some(arg => typeof arg !== 'string' || !arg)) {
-    throw new Error('logs command unavailable');
-  }
-  return command;
-}
-
-// Run the reader CLI once and store its result. Returns the debug-log note,
-// empty when the read succeeded. Local because the mod compiler keeps $ only
-// within the file that declares the function receiving it.
-async function runRoutingLogsReader($: EngineInterface, options: PluginOptions): Promise<string> {
+// Keep $ in this file for the mod compiler's capability scanner.
+async function runRoutingLogsReader($: EngineInterface, options: PluginOptions): Promise<void> {
+  let hint = '';
   try {
-    const command = logsReaderCommand(options);
+    const command = options.logsCommand as string[];
+    if (!Array.isArray(command) || !command.length || command.some(arg => typeof arg !== 'string' || !arg)) {
+      throw new Error('logs command unavailable');
+    }
     const session = await $.session.id();
     const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
-    return applyRoutingLogsRead(result.stdout,
-      result.exitCode !== 0 || result.isStdoutTruncated
-        ? `logs command exited ${result.exitCode} or truncated output`
-        : undefined);
-  } catch (error) {
-    return applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
-  }
-}
-
-// Store one reader result in the pane state. A failed or malformed read shows the generic
-// notice; a CLI error envelope {"v":1,"error":"..."} adds its hint under that notice.
-// Returns the debug-log note, empty when the read succeeded.
-function applyRoutingLogsRead(stdout: string, readError?: string): string {
-  cliError = undefined;
-  if (readError !== undefined) {
-    try {
-      const envelope = JSON.parse(stdout);
-      if (typeof envelope?.error === 'string' && envelope.error.trim()) {
-        cliError = envelope.error.trim().slice(0, 200);
-      }
-    } catch {}
-    rows = [];
-    failed = true;
-    return `Smart Router logs: ${readError}`;
-  }
-  try {
-    let data;
-    try { data = JSON.parse(stdout); } catch { throw new Error('invalid logs JSON'); }
+    if (result.exitCode !== 0 || result.isStdoutTruncated) {
+      try {
+        const envelope = JSON.parse(result.stdout);
+        if (typeof envelope?.error === 'string') hint = envelope.error.trim().slice(0, 200);
+      } catch {}
+      throw new Error(`logs command exited ${result.exitCode} or truncated output`);
+    }
+    const data = JSON.parse(result.stdout);
     if (data?.v !== 1 || !Array.isArray(data.decisions)) throw new Error('invalid logs response');
     rows = data.decisions.filter(isDecision).reverse();
-    failed = false;
-    return '';
+    readError = undefined;
   } catch (error) {
     rows = [];
-    failed = true;
-    return `Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`;
+    readError = hint;
+    $.ui.log(`Smart Router logs: ${error instanceof Error ? error.message : 'read failed'}`, { to: 'debug' });
   }
 }
 
@@ -90,8 +61,7 @@ async function load($: EngineInterface, options: PluginOptions): Promise<void> {
   }
   loading = true;
   try {
-    const note = await runRoutingLogsReader($, options);
-    if (note) $.ui.log(note, { to: 'debug' });
+    await runRoutingLogsReader($, options);
   } finally {
     loading = false;
   }
@@ -144,9 +114,9 @@ export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnab
   on('ui.render', { component: 'Pane', requestId: ROUTING_LOGS_PANE }, ($, e) => {
     const { Box, Text } = $.ui.resolve(e);
     const columns = Number.isFinite(e.props.bodyColumns) ? e.props.bodyColumns : 80;
-    if (failed) {
+    if (readError !== undefined) {
       const children = [Text({ children: ['Could not read Smart Router logs.'] })];
-      if (cliError) children.push(Text({ dimColor: true, children: [cliError.slice(0, columns)] }));
+      if (readError) children.push(Text({ dimColor: true, children: [readError.slice(0, columns)] }));
       return Box({ flexDirection: 'column', children });
     }
     const children = [Text({ dimColor: true, children: [`${rows.length} routed prompt${rows.length === 1 ? '' : 's'} this session`] })];

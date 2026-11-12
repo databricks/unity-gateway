@@ -273,12 +273,12 @@ permissions, failure handling and Claude subagent wiring; these are local compon
 not live agent, Windows, or gateway coverage.
 Record-shape assertions live here; missing/unreadable reader behavior is covered through
 the CLI tests below. Filesystem failure cases cover directory creation, opening, and locking.
-`test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs --json` reader:
+`test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing and unreadable sessions,
-`--decision` hit/miss, the optional `--json` flag, and the `--harness codex` file; local
-component checks only. Four native logs-pane tests cover rendering/background refresh, reader errors and
-recovery, missing configuration, and launch gating with a fake logs reader. Exact styling and
-missing-width fallback are not asserted; interactive pane and live-session coverage remain absent.
+and `--decision` hit/miss; local component checks only. Four native logs-pane tests cover
+rendering/background refresh, reader errors and recovery including truncated output, missing
+configuration, and launch gating with a fake logs reader. Exact styling and missing-width
+fallback are not asserted; interactive pane and live-session coverage remain absent.
 The refresh case holds a reader pending while foreground/background spawns complete and
 checks that parallel spawns queue a refresh. Ordinary turns, resumed/denied spawns, and
 closed panes do not trigger reads.

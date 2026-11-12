@@ -41,7 +41,6 @@ def append_decision(
     requested_model: str,
     *,
     routing_ms: int,
-    include_task_text: bool = True,
 ) -> None:
     """Write a decision without allowing filesystem failures to block routing."""
     try:
@@ -65,7 +64,7 @@ def append_decision(
             # Only a bounded first-line preview is stored; the full prompt text
             # stays out of ~/.ucode (the decisions file already holds it).
             "prompt": {
-                "preview": preview if include_task_text else None,
+                "preview": preview,
                 "sha256": hashlib.sha256(
                     task_text.encode("utf-8", errors="surrogatepass")
                 ).hexdigest(),
