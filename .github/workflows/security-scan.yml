@@ -1,0 +1,160 @@
+name: Security Scan
+
+# Statically scans PRs from untrusted authors (anyone GitHub doesn't report as
+# OWNER, MEMBER, or COLLABORATOR) for committed secrets, exfiltration and
+# obfuscated exec, edits to privileged paths, known-vulnerable locked
+# dependencies, and local semgrep rules. It never runs PR code and gets no
+# secrets. The scanner and the trust decision come from `main`, so a PR can't
+# edit them; the PR head is only read, from a separate `pr/` checkout.
+#
+# The org IP allow list blocks GitHub-hosted runners from the GitHub API, so
+# this job makes no API calls: it fetches this public repository anonymously
+# and reads labels from the event payload.
+#
+# Adapted from omnigent-ai/omnigent (Apache-2.0), .github/workflows/security-scan.yml.
+on:
+  pull_request:
+    # labeled/unlabeled so applying or removing the skip-security-scan waiver
+    # re-runs the scan and flips this check.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Hosted runners can't reach the internal pypi-proxy uv.lock points at.
+      UV_INDEX_URL: https://pypi.org/simple
+    steps:
+      - name: Check out scanner from main
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          # Plain git, so no action pin supplied by the PR runs before the scan.
+          git init -q .
+          git remote add origin "$GITHUB_SERVER_URL/$REPO.git"
+          git sparse-checkout set --no-cone .github/scripts/security-scan .github/security
+          git fetch -q --depth=1 origin main
+          git checkout -q --detach FETCH_HEAD
+
+      - name: Trust gate
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          # Until this lands on main the scanner is absent there; proceed so the
+          # introducing PR isn't blocked by its own check.
+          if [ ! -f .github/scripts/security-scan/should-scan.sh ]; then
+            echo "::warning::security scanner not present on main yet; proceeding without scan (bootstrap)."
+            echo "scan=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bash .github/scripts/security-scan/should-scan.sh
+
+      - name: Check out PR head for static analysis
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}  # untrusted: only read, never executed
+          path: pr
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute PR diff
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        env:
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git -C pr fetch -q --no-tags "$GITHUB_SERVER_URL/$REPO.git" "$BASE_SHA"
+          # --no-renames lists a moved file's old path too, so moving a workflow away is caught.
+          git -C pr diff --no-renames "$BASE_SHA...HEAD" > pr.diff
+          git -C pr diff --no-renames --name-only "$BASE_SHA...HEAD" > changed.txt
+          echo "Changed files:"; cat changed.txt
+
+      - name: Secret scan (added lines)
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        env:
+          DIFF_FILE: ${{ github.workspace }}/pr.diff
+        run: python3 .github/scripts/security-scan/secret-scan.py
+
+      - name: Exfil scan (added lines)
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        env:
+          DIFF_FILE: ${{ github.workspace }}/pr.diff
+        run: python3 .github/scripts/security-scan/exfil-scan.py
+
+      - name: Sensitive-path guard
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        env:
+          CHANGED_FILES: ${{ github.workspace }}/changed.txt
+        run: bash .github/scripts/security-scan/sensitive-paths.sh
+
+      - name: Install uv
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+
+      - name: Advisory scan (uv.lock pins the PR adds or changes)
+        # Only new pins, so open advisories already on main don't block the PR.
+        # --no-config: never read the PR's uv settings (it could add a package index).
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git -C pr show "$BASE_SHA:uv.lock" > base-uv.lock 2>/dev/null || : > base-uv.lock
+          python3 .github/scripts/security-scan/locked-pins.py base-uv.lock | sort > base-pins.txt
+          python3 .github/scripts/security-scan/locked-pins.py pr/uv.lock | sort > head-pins.txt
+          comm -13 base-pins.txt head-pins.txt > new-pins.txt
+          if [ ! -s new-pins.txt ]; then
+            echo "No new uv.lock pins; skipping advisory scan."
+            exit 0
+          fi
+          echo "New pins:"; cat new-pins.txt
+          uvx --no-config pip-audit==2.10.1 --requirement new-pins.txt \
+            --no-deps --disable-pip --vulnerability-service osv
+
+      - name: Semgrep (changed files, local rules)
+        if: ${{ steps.gate.outputs.scan == 'true' }}
+        env:
+          RULES: ${{ github.workspace }}/.github/security/semgrep-rules.yml
+        run: |
+          # Only PR-changed files still in the head tree, so a contributor is
+          # never failed for pre-existing findings.
+          : > targets.txt
+          while IFS= read -r f; do
+            [ -n "$f" ] && [ -f "pr/$f" ] && printf 'pr/%s\n' "$f" >> targets.txt
+          done < changed.txt
+          if [ ! -s targets.txt ]; then
+            echo "No changed files to semgrep."; exit 0
+          fi
+          echo "Semgrep targets:"; cat targets.txt
+          # Warnings are informational; ERROR-severity rules fail the scan.
+          xargs -d '\n' uvx --no-config semgrep==1.150.0 scan --config "$RULES" --severity=WARNING \
+            --metrics=off --quiet < targets.txt || true
+          xargs -d '\n' uvx --no-config semgrep==1.150.0 scan --config "$RULES" --severity=ERROR --error \
+            --metrics=off --quiet < targets.txt
+
+      - name: Explain the maintainer waiver (on failure)
+        if: ${{ failure() }}
+        run: |
+          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (this requires Triage permission, so a fork author cannot self-waive). Applying the label re-runs this scan automatically."
+          echo "::error::$MSG"
+          {
+            echo "### Security Scan failed"
+            echo
+            echo "$MSG"
+          } >> "$GITHUB_STEP_SUMMARY"
