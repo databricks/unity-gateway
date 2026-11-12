@@ -851,5 +851,6 @@ def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
     saved = {}
     tasks.capture_desktop_logs(SimpleNamespace(save=saved.__setitem__), started=1)
     assert saved == {
-        "desktop-log-Claude-3p-mcp-server-web_search.log": "x" * 10 + "connector started"
+        "desktop-log-Library-Logs-Claude-3p-mcp-server-web_search.log": "x" * 10
+        + "connector started"
     }

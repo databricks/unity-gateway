@@ -207,6 +207,8 @@ try {
             $logs = @($logRoots | ForEach-Object {
                 Get-ChildItem $_.FullName -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue
             } | Where-Object { $_.FullName -match '[\\/]logs[\\/]' -and $_.LastWriteTime -ge $started })
+            # UG's MCP proxy backend explains a connector that Desktop reports as closed.
+            $logs += @(Get-ChildItem (Join-Path $env:USERPROFILE '.ucode/mcp-proxy') -Recurse -File -Filter 'backend.log' -ErrorAction SilentlyContinue)
             $logDirectory = Join-Path $evidence 'desktop-logs'
             New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
             foreach ($log in $logs) {
