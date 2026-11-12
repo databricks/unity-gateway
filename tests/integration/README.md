@@ -1,5 +1,14 @@
 # Integration tests
 
+`test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
+empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning
+an off toggle. It checks old-child identity/continuity, off markers on a new sibling
+and grandchild, messages across both branches, and follow-up to the original child.
+It reads native transcripts and exclusive file receipts without intercepting inference.
+It does not by itself establish exact HTTP metadata serialization or usage-table ingestion.
+Select with `--codex-version 0.167.1 -- -k test_codex_routing_toggle`.
+Use `--smart-router-name` for an explicit recipe; reported inputs retain that selection.
+
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.

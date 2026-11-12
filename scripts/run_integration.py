@@ -248,7 +248,7 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
 @contextlib.contextmanager
 def managed_process(command, *, interrupt=False, **kwargs):
     """Bound child lifetimes, including descendants that outlive their parent."""
-    proc = subprocess.Popen(command, **process_group_options(), **kwargs)
+    proc = subprocess.Popen(command, **process_group_options(), **kwargs)  # noqa: TID251 - runs before UG is installed
     try:
         yield proc
     finally:
@@ -278,7 +278,7 @@ def managed_process(command, *, interrupt=False, **kwargs):
             if proc.poll() is None:
                 # taskkill /T handles descendants; proc.kill() only handles the
                 # direct child on Windows.
-                subprocess.run(
+                subprocess.run(  # noqa: TID251 - runner cannot import UG
                     [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
                     check=False,
                     stdout=subprocess.DEVNULL,
@@ -575,6 +575,11 @@ def arguments(
         "--default-index", default=environment.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
+    parser.add_argument(
+        "--smart-router-name",
+        default=environment.get("SMART_ROUTER_NAME"),
+        help="Explicit router recipe for smart-routing journeys.",
+    )
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=environment.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument(
@@ -794,6 +799,7 @@ def main() -> int:
             "antigravity": args.antigravity_build,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
+            "smart_router_name": args.smart_router_name,
             "opencode_model": args.opencode_model,
             "copilot_model": args.copilot_model,
             "antigravity_model": args.antigravity_model,
@@ -1123,6 +1129,7 @@ def main() -> int:
                 "UG_INTEGRATION_BIN": str(binary),
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
+                "UG_INTEGRATION_SMART_ROUTER_NAME": args.smart_router_name or "",
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER": args.claude_custom_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
@@ -1155,6 +1162,9 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
+                "UCODE_TEST_CODEX_ROUTING_FIXTURE": os.environ.get(
+                    "UCODE_TEST_CODEX_ROUTING_FIXTURE", ""
+                ),
                 "DATABRICKS_BEARER": bearer,
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,

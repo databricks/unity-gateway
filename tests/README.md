@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+Codex routing metadata component checks cover hook stamping while routing is on/off,
+preserved spawn inputs, main-only turn handoff, queued input, Escape, child interrupts,
+toggle-command completion, and fail-closed update errors. Live journeys in
+`integration/test_ug_codex_routing_metadata.py` cover empty trees, repeated-state no-ops,
+busy-child survival, nested spawns, cross-branch messages, and original-child follow-up.
+Native artifacts establish identity and continuity; HTTP metadata and usage-table
+ingestion require separate transport/backend validation.
+
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.

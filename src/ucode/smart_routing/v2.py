@@ -46,7 +46,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -898,6 +897,7 @@ def launch_codex(
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
+    overlay["responses_api_metadata.smart_router_recipe_name"] = routing.configured_router_name()
     overlay["features.hooks"] = True
     overlay["features.multi_agent_v2.non_code_mode_only"] = False
     overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
@@ -916,10 +916,7 @@ def launch_codex(
         SESSION_PYTHON_ENV_VAR
     ]
     config_args = codex_config_args(overlay)
-    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
+    first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -945,10 +942,11 @@ def launch_codex(
             LOOPBACK_HOST,
             app_server_url,
             available_models=available_models,
-            workspace=workspace,
-            token_provider=lambda: launch_token(state, workspace),
+            workspace=workspace if first_prompt else None,
+            token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
+            session_controls=session_env_path,
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []

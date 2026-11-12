@@ -144,6 +144,13 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
 
         denied.setattr(target, write_step, fail_session_write)
         for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            current = (
+                {}
+                if flag == "--disable-smart-routing"
+                else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+            )
+            session_file.write_text(json.dumps(current))
+            before = session_file.read_bytes()
             result = runner.invoke(cli.app, ["codex", flag], env=env)
             assert result.exit_code == 1
             output = " ".join(result.output.split())
@@ -156,6 +163,7 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
             assert session_file.read_bytes() == before
             assert not list(session_file.parent.glob(".env.json.*.tmp"))
 
+    session_file.write_text("{}")
     assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_not_called()

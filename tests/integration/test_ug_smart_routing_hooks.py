@@ -417,7 +417,7 @@ def test_smart_routing_codex_route_subagent_hook(
     updated = hook["updatedInput"]
     assert updated["model"] in CODEX_MODEL_SLUGS, updated
     assert updated["message"] == payload["tool_input"]["message"], updated
-    assert updated["task_name"] == payload["tool_input"]["task_name"], updated
+    assert updated["task_name"] == payload["tool_input"]["task_name"] + "__sr_on", updated
 
     decisions_path = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
     assert decisions_path.is_file(), f"hook wrote no routing decision record: {decisions_path}"
@@ -869,7 +869,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
     Smart Router Orchestrator. The uniquely tagged calculation completes in a native child
     session, shows the subagent-routing banner (including [orchestrator on] when orchestration
     is enabled), and produces one live gateway decision correlated with that child. No
-    first-prompt interposer starts.
+    first-prompt model selection occurs; the metadata interposer remains active.
     """
     session = live_session
     _select_smart_router_version(
@@ -891,7 +891,7 @@ def test_smart_router_routes_codex_subagent_at_launch(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "[ROUTE]" not in session.routing_log("codex")
 
 
 @pytest.mark.live
@@ -909,8 +909,8 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
     Smart Router Orchestrator. The invocation records the CLI confirmation in the native
     transcript and changes the saved routing controls, even with collapsed terminal output.
     The uniquely tagged calculation completes in a native child session, shows no
-    subagent-routing banner, and produces no live gateway decision. No first-prompt
-    interposer starts.
+    subagent-routing banner, and produces no live gateway decision. First-prompt
+    model selection stays disabled; the metadata interposer remains active.
     """
     session = live_session
     _select_smart_router_version(
@@ -935,7 +935,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "[ROUTE]" not in session.routing_log("codex")
 
 
 @pytest.mark.live
@@ -956,7 +956,8 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     terminal output. Each uniquely tagged calculation completes in a native child session. The
     first and third show the subagent-routing banner (including [orchestrator on] when
     orchestration is enabled) and produce one live gateway decision correlated with that child;
-    the second shows no banner and produces no decision. No first-prompt interposer starts.
+    the second shows no banner and produces no decision. First-prompt model selection
+    stays disabled; the metadata interposer remains active.
     """
     session = live_session
     _select_smart_router_version(
@@ -987,7 +988,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
-    session.assert_not_routed()
+    assert "[ROUTE]" not in session.routing_log("codex")
 
 
 @pytest.mark.live

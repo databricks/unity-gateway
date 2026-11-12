@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
+from ucode.smart_routing.codex_metadata import RoutingMetadata
 
 SETTINGS_UPDATED = "thread/settings/updated"
 SETTINGS_UPDATE = "thread/settings/update"
@@ -211,6 +212,7 @@ async def _handle_tui(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
+    session_controls: Path | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -240,10 +242,53 @@ async def _handle_tui(
         switch_message_fn,
     )
     async with connect(uri, max_size=None) as upstream:
+        controller = (
+            RoutingMetadata(upstream, tui, session_controls, log)
+            if session_controls is not None
+            else None
+        )
+        queued_frames: asyncio.Queue = asyncio.Queue()
+
+        def parse(frame) -> dict | None:
+            if not isinstance(frame, str):
+                return None
+            try:
+                message = json.loads(frame)
+            except ValueError:
+                return None
+            return message if isinstance(message, dict) else None
+
+        async def read_tui():
+            assert controller is not None
+            async for frame in tui:
+                message = parse(frame)
+                if message is not None and message.get("method") in (None, "turn/interrupt"):
+                    forwarded = await controller.before_tui(message)
+                    if forwarded is not None:
+                        await upstream.send(json.dumps(forwarded))
+                else:
+                    if message is not None:
+                        controller.buffer_input(message)
+                    await queued_frames.put(frame)
+            await queued_frames.put(None)
+
+        async def tui_frames():
+            if controller is None:
+                async for frame in tui:
+                    yield frame
+                return
+            while (frame := await queued_frames.get()) is not None:
+                yield frame
 
         async def tui_to_app():
-            async for frame in tui:
+            async for frame in tui_frames():
                 if isinstance(frame, str):
+                    message = parse(frame)
+                    if controller is not None and message is not None:
+                        message = await controller.before_tui(message)
+                        if message is None:
+                            continue
+                        frame = json.dumps(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
                     if result.needs_settings_update and sess.thread_id:
                         update_id = f"ucode-route-{uuid.uuid4().hex}"
@@ -273,6 +318,9 @@ async def _handle_tui(
 
         async def app_to_tui():
             async for frame in upstream:
+                message = parse(frame)
+                if controller is not None and message is not None and controller.observe(message):
+                    continue
                 await tui.send(frame)
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
@@ -280,12 +328,18 @@ async def _handle_tui(
 
         a = asyncio.create_task(tui_to_app())
         b = asyncio.create_task(app_to_tui())
-        done, pending = await asyncio.wait({a, b}, return_when=asyncio.FIRST_COMPLETED)
-        for t in pending:
-            t.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            task.result()
+        tasks = {a, b}
+        if controller is not None:
+            tasks.add(asyncio.create_task(read_tui()))
+            tasks.add(asyncio.create_task(controller.watch()))
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
     log("[CONN] TUI session closed")
 
 
@@ -300,6 +354,7 @@ async def _serve(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
+    session_controls: Path | None = None,
 ):
     async def handler(tui):
         try:
@@ -313,6 +368,7 @@ async def _serve(
                 workspace,
                 token_provider,
                 switch_message_fn,
+                session_controls,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -335,6 +391,7 @@ def start_interposer_thread(
     switch_message: str | None = None,
     log_path: Path | None = None,
     ready_timeout: float = 10.0,
+    session_controls: Path | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:
@@ -365,6 +422,7 @@ def start_interposer_thread(
                     workspace,
                     token_provider,
                     switch_message_fn,
+                    session_controls,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]

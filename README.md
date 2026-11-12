@@ -577,8 +577,28 @@ For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
 Custom values for these fields do not apply during that session. The saved config
 files are unchanged, as are native delegation-mode controls. Requests use the
-configured Databricks provider directly. Subagent-only routing launches the native
-TUI directly; first-prompt routing uses the existing app-server interposer.
+configured Databricks provider directly. All routed Codex launches use the app-server
+interposer, including subagent-only presets. First-prompt model selection still follows
+the selected preset.
+
+Smart Router toggles keep every conversation loaded. UG briefly interrupts only the
+main turn and continues it with fresh native turn metadata. Existing subagents keep
+running with their original attribution; new children, including descendants spawned
+by an old child, get the latest state through the spawn hook. Main commands may be
+interrupted, so the continuation instructs Codex to inspect their effects before retrying.
+Repeating the current state does not interrupt anything.
+
+Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
+`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`).
+The hook stamps child task names with `__sr_on` or `__sr_off`, which Codex places in
+`agent_name`. Parse only the final path segment: `/root/old__sr_on/new__sr_off`
+means off for that grandchild. A child's marker takes precedence over main state.
+Off is recorded as `DISABLED`; on uses the recipe name. Older clients can fall back
+to `Databricks-Smart-Router-Recipe`. These values describe client-requested routing,
+not proof that the router selected a different model. Native internal agents that
+bypass `spawn_agent` have no guaranteed marker. Reserve `smart_router_state` for
+per-turn metadata; a static Codex `responses_api_metadata` entry with that name
+would override dynamic values.
 
 ### Smart Router Orchestrator
 

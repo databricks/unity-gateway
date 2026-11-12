@@ -3186,12 +3186,12 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(
+    enabled = smart_routing_v2.smart_routing_enabled(
         effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
-    ):
-        return
+    )
 
     from ucode.smart_routing.codex_routing import (
+        is_spawn_agent_tool,
         record_session_start,
         record_subagent_start,
         route_pre_tool_use,
@@ -3202,6 +3202,14 @@ def codex_router_hook_cmd(
     except ValueError:
         return
     if not isinstance(payload, dict):
+        return
+    if not enabled:
+        if event == "route-subagent" and is_spawn_agent_tool(payload.get("tool_name")):
+            from ucode.smart_routing.codex_metadata import stamp_spawn
+
+            output = stamp_spawn(payload, enabled=False)
+            if output is not None:
+                sys.stdout.write(json.dumps(output))
         return
     if event == "session-start":
         record_session_start(payload)
@@ -3233,16 +3241,23 @@ def codex_router_hook_cmd(
         return
     if event != "route-subagent" or not host:
         return
-    token = _router_hook_token(host, profile, use_pat)
-    if not token:
+    from ucode.smart_routing.codex_metadata import stamp_spawn
+
+    if not is_spawn_agent_tool(payload.get("tool_name")):
         return
-    output = route_pre_tool_use(
-        payload,
-        workspace=host,
-        token=token,
-        available_models=model or [],
-        audit_decision=True,
+    token = _router_hook_token(host, profile, use_pat)
+    output = (
+        route_pre_tool_use(
+            payload,
+            workspace=host,
+            token=token,
+            available_models=model or [],
+            audit_decision=True,
+        )
+        if token
+        else None
     )
+    output = stamp_spawn(payload, enabled=True, output=output)
     if output is not None:
         sys.stdout.write(json.dumps(output))
 
@@ -3450,9 +3465,18 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if enabled is None:
         return False
     try:
-        session_env_path()
+        controls = session_env_path()
     except RuntimeError:
         return False
+    from ucode.smart_routing.session_env import session_routing_enabled
+
+    try:
+        unchanged = session_routing_enabled(controls) == enabled
+    except (OSError, UnicodeError, ValueError):
+        unchanged = False
+    if unchanged:
+        print_success(f"Smart Router is already {'on' if enabled else 'off'} for this session")
+        return True
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)

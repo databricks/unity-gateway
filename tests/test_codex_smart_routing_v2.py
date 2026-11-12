@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -458,7 +459,9 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
-    def test_subagent_only_launch_runs_tui_directly(self, tmp_path, monkeypatch):
+    def test_subagent_only_launch_uses_metadata_interposer_without_routing_main(
+        self, tmp_path, monkeypatch
+    ):
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -471,23 +474,30 @@ class TestLaunchCodex:
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
         monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        monkeypatch.setattr(
-            v2.subprocess,
-            "Popen",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing spawns no app-server"),
-        )
-        monkeypatch.setattr(
-            codex_interposer,
-            "start_interposer_thread",
-            lambda *_args, **_kwargs: pytest.fail("subagent-only routing must not interpose"),
-        )
-        execd = []
+        processes = []
 
-        def fake_exec(argv):
-            execd.append(argv)
-            raise SystemExit(0)
+        class Process:
+            def __init__(self, argv, **kwargs):
+                self.argv = argv
+                self.terminated = False
+                processes.append(self)
 
-        monkeypatch.setattr(v2, "exec_or_spawn", fake_exec)
+            def wait(self, timeout=None):
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+        monkeypatch.setattr(v2.subprocess, "Popen", Process)
+        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
+        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *_a, **_k: True)
+        interposer = {}
+
+        def start_interposer(*args, **kwargs):
+            interposer.update(kwargs)
+            return 41002, lambda: None
+
+        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_codex(
@@ -499,12 +509,28 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 0
-        (argv,) = execd
+        argv = processes[0].argv
         assert argv[0] == "codex"
-        assert argv[-1] == "--search"
+        assert argv[1] == "app-server"
+        assert processes[1].argv == [
+            "codex",
+            "--remote",
+            "ws://127.0.0.1:41002",
+            "--model",
+            "gpt-start",
+            "--search",
+        ]
+        assert interposer["workspace"] is None
+        assert interposer["token_provider"] is None
+        assert interposer["session_controls"] == Path(os.environ["UCODE_SESSION_ENV_FILE"])
+        assert processes[0].terminated
         assert 'model="gpt-start"' in argv
         config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
-        native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
+        config = tomllib.loads("\n".join(config_values))
+        assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
+            v2.routing.configured_router_name()
+        )
+        native_overrides = config["features"]["multi_agent_v2"]
         assert native_overrides["non_code_mode_only"] is False
         assert "features.multi_agent_v2.non_code_mode_only=false" in argv
         for key, role in (
