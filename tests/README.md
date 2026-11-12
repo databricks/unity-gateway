@@ -271,12 +271,16 @@ inherited model, an executed-model match, or a remote metrics export.
 `test_smart_router_session_log.py` covers per-session records, privacy, retention,
 permissions, failure handling and Claude subagent wiring; these are local component checks,
 not live agent, Windows, or gateway coverage.
+Record-shape assertions live here; missing/unreadable reader behavior is covered through
+the CLI tests below. Filesystem failure cases cover directory creation, opening, and locking.
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs --json` reader:
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing and unreadable sessions,
 `--decision` hit/miss, the optional `--json` flag, and the `--harness codex` file; local
-component checks only. Four native logs-pane tests cover rendering/refresh, reader errors and
+component checks only. Four native logs-pane tests cover rendering/background refresh, reader errors and
 recovery, missing configuration, and launch gating with a fake logs reader. Exact styling and
 missing-width fallback are not asserted; interactive pane and live-session coverage remain absent.
+The refresh case holds a reader pending while turns complete and checks that another turn
+does not start an overlapping refresh.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch

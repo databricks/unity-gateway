@@ -7,7 +7,7 @@ const pane = {
 } as const;
 const command = { command: 'smart-router', args: 'logs' };
 
-test('renders session rows and refreshes only while the pane is open', { options }, async ($, on) => {
+test('renders session rows and refreshes in the background only while open', { options }, async ($, on) => {
   const now = Date.now() / 1000;
   let decisions: unknown[] = [
     { at: now - 2 * 3600, preview: 'older task ' + 'A'.repeat(200), selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
@@ -15,6 +15,9 @@ test('renders session rows and refreshes only while the pane is open', { options
     { at: 'invalid', preview: null, selected_model: 'bad-row', routing_ms: 0 },
   ];
   let reads = 0;
+  let pause = false;
+  let resume: () => void = () => {};
+  const reader = new Promise<void>((resolve) => { resume = resolve; });
   let open = [{ id: pane.requestId }];
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', ($, e) => {
@@ -23,9 +26,10 @@ test('renders session rows and refreshes only while the pane is open', { options
   });
   on('ui.panes', () => ({ value: open }));
   on('turn.complete', () => ({ text: '' }));
-  on('process.run', ($, e) => {
+  on('process.run', async ($, e) => {
     expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one']);
     reads++;
+    if (pause) await reader;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
   });
   await $.turn.complete({ answer: '' });
@@ -44,7 +48,13 @@ test('renders session rows and refreshes only while the pane is open', { options
   expect(tree).toContain('(prompt not recorded)');
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
   decisions = [];
+  pause = true;
   await $.turn.complete({ answer: '' });
+  await $.turn.complete({ answer: '' });
+  expect(reads).toBe(2);
+  expect(JSON.stringify(await ui.drawn())).toContain('older task');
+  pause = false;
+  resume();
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   await $.command.run(command);
   expect(reads).toBe(3);

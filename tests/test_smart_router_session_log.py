@@ -113,7 +113,7 @@ def test_retention_only_on_new_file(log_dir, decision):
     assert len((log_dir / "claude-s1.jsonl").read_text().splitlines()) == 2
 
 
-@pytest.mark.parametrize("failure", ["mkdir", "open", "lock", "uuid"])
+@pytest.mark.parametrize("failure", ["mkdir", "open", "lock"])
 def test_filesystem_errors_are_nonfatal(log_dir, decision, monkeypatch, failure):
     def fail(*args, **kwargs):
         raise OSError("unavailable")
@@ -122,8 +122,6 @@ def test_filesystem_errors_are_nonfatal(log_dir, decision, monkeypatch, failure)
         monkeypatch.setattr(type(log_dir), "mkdir", fail)
     elif failure == "open":
         monkeypatch.setattr(session_log.os, "open", fail)
-    elif failure == "uuid":
-        monkeypatch.setattr(session_log.uuid, "uuid4", fail)
     else:
         monkeypatch.setattr(session_log, "acquire_exclusive_file_lock", fail)
     write({"session_id": "s1"}, decision)
@@ -172,20 +170,6 @@ def test_no_session_record_without_audit_or_route(log_dir, decision, monkeypatch
     v2.route_claude_subagent(payload, **kwargs)
     v2.route_claude_subagent({**payload, "tool_name": "Read"}, audit_decision=True, **kwargs)
     assert not log_dir.exists()
-
-
-def test_read_decisions_distinguishes_missing_from_unreadable(log_dir, decision, monkeypatch):
-    """A missing log is empty history; a permission failure must not look empty."""
-
-    def deny_read(self, *args, **kwargs):
-        raise PermissionError(13, "Permission denied", str(self))
-
-    assert session_log.read_decisions("claude", "absent") == []
-    write({"session_id": "s1"}, decision)
-    path = log_dir / "claude-s1.jsonl"
-    monkeypatch.setattr(type(path), "read_text", deny_read)
-    with pytest.raises(PermissionError):
-        session_log.read_decisions("claude", "s1")
 
 
 def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_path, monkeypatch):

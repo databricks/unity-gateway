@@ -19,7 +19,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
     # The entry point imports these, so they ship beside it unmodified.
-    for name in (
+    filenames = (
         "register.ts",
         "constants.ts",
         "extra-body.ts",
@@ -29,20 +29,10 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
-    ):
+    )
+    for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
-    assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
-        "constants.ts",
-        "extra-body.ts",
-        "hooks.json",
-        "isaac-feedback.ts",
-        "register.ts",
-        "routing-logs.ts",
-        "routing-state.ts",
-        "smart-routing-status.ts",
-        "subagent-routing.ts",
-        "subagent-statusline.py",
-    ]
+    assert {path.name for path in (tmp_path / "hooks").iterdir()} == {*filenames, "hooks.json"}
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings == {
         "subagentStatusLine": {

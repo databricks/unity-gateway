@@ -1,6 +1,5 @@
 """Tests for the `ug smart-router-logs` JSON reader."""
 
-import hashlib
 import json
 import uuid
 
@@ -131,13 +130,6 @@ def test_decision_hit_returns_full_record(log_dir):
     document = json.loads(result.output)
     assert document["v"] == 1
     assert document["decision"] == record
-    assert record["routing_ms"] == 840
-    assert record["requested_model"] == "requested"
-    assert record["prompt"] == {
-        "preview": "inspect parser",
-        "sha256": hashlib.sha256(b"inspect parser").hexdigest(),
-        "length": len("inspect parser"),
-    }
 
 
 def test_decision_miss_exits_1(log_dir):

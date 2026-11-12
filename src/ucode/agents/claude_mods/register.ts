@@ -64,12 +64,8 @@ async function readSessionEnvironment($: EngineInterface): Promise<Environment> 
   return current;
 }
 
-// While the Smart Router logs pane is open, a finished turn reruns the reader, so
-// decisions routed after the pane opened appear and the relative ages stay fresh. The
-// reader runs here rather than in routing-logs because the mod compiler keeps $ only
-// within the file that declares the function receiving it.
+// Keep $ here because the mod compiler cannot pass it between files.
 async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions): Promise<void> {
-  if (!routingLogsPaneOpen()) return;
   try {
     const open = await $.ui.panes();
     if (!Array.isArray(open) || !open.some((pane) => pane?.id === ROUTING_LOGS_PANE)) {
@@ -171,6 +167,7 @@ export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
+  let refreshingLogs = false;
 
   on('session.start', async ($, e, next) => {
     if (launchedEnabled) {
@@ -241,10 +238,14 @@ export function register(on: On, options: PluginOptions): void {
   registerStatusBand(on);
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
-  on('turn.complete', async ($, e, next) => {
-    await refreshRoutingLogsPane($, options);
+  on('turn.complete', ($, e, next) => {
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
+    if (routingLogsPaneOpen() && !refreshingLogs) {
+      refreshingLogs = true;
+      // A slow or failed pane refresh must not delay turn completion.
+      void refreshRoutingLogsPane($, options).catch(() => {}).finally(() => { refreshingLogs = false; });
+    }
     return next(e);
   });
 }
