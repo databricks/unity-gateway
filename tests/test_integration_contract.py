@@ -360,6 +360,9 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing
             "subagent_only_v1",
             "subagent_orch_v0",
         )
+    } | {
+        "test_ug_smart_routing_hooks.py::test_smart_router_routes_claude_subagent_at_launch"
+        "[subagent_only_v0-glm]"
     }
 
 
