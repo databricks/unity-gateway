@@ -23,6 +23,7 @@ from utils.agents.claude import (
     claude_delivered_child_answers,
     parent_tool_calls,
 )
+from utils.agents.codex import completed_command_outputs
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -246,7 +247,10 @@ def _toggle_with_skill(
             if is_child_session(agent, path, records):
                 continue
             answers += len(assistant_answers(agent, records))
-            confirmations += sum(confirmation in output for output in tool_outputs(agent, records))
+            outputs = tool_outputs(agent, records)
+            if agent == "codex":
+                outputs += completed_command_outputs(records)
+            confirmations += sum(confirmation in output for output in outputs)
         return answers, confirmations
 
     before_answers, before_confirmations = completion_counts()

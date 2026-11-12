@@ -7,6 +7,10 @@ toggle-command completion, and fail-closed update errors. Live journeys in
 busy-child survival, nested spawns, cross-branch messages, and original-child follow-up.
 Native artifacts establish identity and continuity; HTTP metadata and usage-table
 ingestion require separate transport/backend validation.
+Message assertions require native delivery receipts with the exact target path and
+thread ID, covering both direct tool calls and code mode.
+Toggle checks accept native command output only after a successful exit, including
+when the main-turn handoff interrupts the enclosing code-mode tool.
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace

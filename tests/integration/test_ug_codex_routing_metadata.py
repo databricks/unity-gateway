@@ -4,6 +4,7 @@ import json
 
 import pytest
 from test_ug_smart_routing_hooks import _select_smart_router_version, _toggle_with_skill
+from utils.agents.codex import assert_agent_interaction_completed
 from utils.evidence import agent_sessions, assistant_answers, fresh_id, tool_outputs
 from utils.terminal import AgentTerminal
 
@@ -34,24 +35,6 @@ def _root_answers(session):
         )
         for answer in assistant_answers("codex", records)
     ]
-
-
-def _assert_collaboration_succeeded(records, name, target):
-    payloads = [row["payload"] for row in records if row.get("type") == "response_item"]
-    calls = {
-        item["call_id"]
-        for item in payloads
-        if item.get("type") == "function_call"
-        and item.get("namespace") == "collaboration"
-        and item.get("name") == name
-        and json.loads(item["arguments"]).get("target") == target
-    }
-    results = [
-        item.get("output")
-        for item in payloads
-        if item.get("type") == "function_call_output" and item.get("call_id") in calls
-    ]
-    assert calls and results and all(result == "" for result in results), (name, target, results)
 
 
 @pytest.mark.live
@@ -105,7 +88,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     with AgentTerminal(
         session,
         "codex",
-        [str(session.binary), "codex", "--sandbox", "workspace-write"],
+        [str(session.binary), "codex", "--", "--sandbox=workspace-write"],
         "routing-metadata-busy-child",
     ) as tui:
         tui.boot()
@@ -181,10 +164,16 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         for output in tool_outputs("codex", records)
     ]
     assert not any("live agent path" in output and "not found" in output for output in outputs)
-    _assert_collaboration_succeeded(old_records, "send_message", "/root/new__sr_off")
+    assert_agent_interaction_completed(
+        old_records, "/root/new__sr_off", agents["/root/new__sr_off"][0]
+    )
     all_records = [row for records in agent_sessions(session, "codex").values() for row in records]
-    _assert_collaboration_succeeded(all_records, "send_message", "/root/old__sr_on/nested__sr_off")
-    _assert_collaboration_succeeded(all_records, "followup_task", "/root/old__sr_on")
+    assert_agent_interaction_completed(
+        all_records,
+        "/root/old__sr_on/nested__sr_off",
+        agents["/root/old__sr_on/nested__sr_off"][0],
+    )
+    assert_agent_interaction_completed(all_records, "/root/old__sr_on", old_id)
     assert sum(receipt in answer for answer in assistant_answers("codex", old_records)) == 1
     log = session.routing_log("codex")
     assert "[METADATA] main turns updated: state=off" in log, log

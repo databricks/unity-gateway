@@ -6,6 +6,9 @@ an off toggle. It checks old-child identity/continuity, off markers on a new sib
 and grandchild, messages across both branches, and follow-up to the original child.
 It reads native transcripts and exclusive file receipts without intercepting inference.
 It does not by itself establish exact HTTP metadata serialization or usage-table ingestion.
+Message checks use native delivery receipts, including when Codex invokes tools through code mode.
+Toggle confirmations also read successful native command completions, so an interrupted
+code-mode wrapper does not hide a completed CLI command.
 Select with `--codex-version 0.167.1 -- -k test_codex_routing_toggle`.
 Use `--smart-router-name` for an explicit recipe; reported inputs retain that selection.
 
