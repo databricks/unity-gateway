@@ -23,7 +23,7 @@ foreach ($path in (ConvertFrom-Json ([Console]::In.ReadToEnd()))) {
         $sid = $rule.IdentityReference.Value
         $rights = [int]$rule.FileSystemRights
         if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow) {
-            if (($rights -band 0xD0156) -and $sid -notin $trusted) {
+            if (($rights -band 0x500D0156) -and $sid -notin $trusted) {
                 throw "Shared path is writable by a non-administrator: $path ($sid)"
             }
             if ($sid -in $readers) { $read = $read -bor $rights }
