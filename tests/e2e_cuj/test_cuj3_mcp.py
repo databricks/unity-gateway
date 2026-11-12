@@ -124,7 +124,10 @@ class McpFixtureTask:
 
     def completed(self, session, agent: str) -> bool:
         for path, records in agent_sessions(session, agent).items():
-            if is_child_session(agent, path, records) or not completed_turn(agent, records, self):
+            if is_child_session(agent, path, records):
+                continue
+            turn = completed_turn(agent, records, self)
+            if turn is None or turn.answer.strip() != self.value:
                 continue
             if self._receipts(agent, records) == self.expected:
                 return True

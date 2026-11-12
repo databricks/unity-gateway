@@ -850,6 +850,7 @@ def test_mcp_completion_reads_full_native_receipts_without_an_assistant_copy(mon
         "missing_result",
         "result_before_call",
         "missing_completion",
+        "failure_answer",
         "wrong_prompt",
         "child_session",
     ],
@@ -887,6 +888,12 @@ def test_mcp_completion_rejects_incomplete_or_unrelated_native_evidence(monkeypa
             records[4:8] = records[6:8] + records[4:6]
     elif damage == "missing_completion":
         records.pop()
+    elif damage == "failure_answer":
+        answer = f"Could not {task.value}: timeout"
+        if agent == CLAUDE:
+            records[-1]["message"]["content"] = [{"type": "text", "text": answer}]
+        else:
+            records[-1]["payload"]["last_agent_message"] = answer
     elif damage == "wrong_prompt":
         if agent == CLAUDE:
             records[0]["message"]["content"] = "other prompt"
