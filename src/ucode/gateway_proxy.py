@@ -497,9 +497,19 @@ _MODEL_SERVICE_ROUTE_STRIP = frozenset({MODEL_PROVIDER_SERVICE_HEADER.lower()})
 
 
 class _RelayProxyHandler(_ProxyHandler):
+    # Set by the server factory: ``(model, databricks_token)`` -> True when the UC model service
+    # routes to a subscription-relay MPS. The gateway rejects relayed requests to any other MPS,
+    # so only those services may keep the relay credentials.
+    routes_to_subscription_relay: Callable[[str, str], bool] | None = None
+
+    def _is_relay_backed_model_service(self, model: str | None) -> bool:
+        if not model or not is_uc_model_service(model) or self.routes_to_subscription_relay is None:
+            return False
+        return self.routes_to_subscription_relay(model, self.cache.token)
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         model = _request_model(body)
-        if is_uc_model_service(model):
+        if self._is_relay_backed_model_service(model):
             return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
         if is_databricks_routed_model(model):
             return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
@@ -753,9 +763,18 @@ def start_relay_proxy(
     *,
     agent: str = AGENT_CLAUDE,
     fallback_on_bind_error: bool = True,
+    routes_to_subscription_relay: Callable[[str, str], bool] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``).
+
+    ``routes_to_subscription_relay(model, databricks_token)`` tells Claude's proxy which UC model
+    services keep the relay credentials; without it they all take the gateway-auth path."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
+    handler_attrs = (
+        {"routes_to_subscription_relay": staticmethod(routes_to_subscription_relay)}
+        if routes_to_subscription_relay
+        else None
+    )
     return _start_proxy(
         workspace,
         token_provider,
@@ -765,6 +784,7 @@ def start_relay_proxy(
         handler_type=handler_type,
         force_refresh_near_expiry=False,
         fallback_on_bind_error=fallback_on_bind_error,
+        handler_attrs=handler_attrs,
     )
 
 

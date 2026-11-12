@@ -2882,7 +2882,12 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     # Only relayed launches need the proxy (and its `httpx` import).
     from ucode import gateway_proxy
 
-    server, cache, client = gateway_proxy.start_relay_proxy(workspace, token_provider, port)
+    def routes_to_subscription_relay(model: str, token: str) -> bool:
+        return model_services_need_subscription_relay(workspace, token, [model])
+
+    server, cache, client = gateway_proxy.start_relay_proxy(
+        workspace, token_provider, port, routes_to_subscription_relay=routes_to_subscription_relay
+    )
     # start_relay_proxy falls back to an OS-assigned port when the cached one is taken
     # (stale proxy from a killed session). Reconcile settings + state to whatever
     # it actually bound, so Claude Code connects to the live port.
