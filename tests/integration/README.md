@@ -1830,6 +1830,15 @@ Use `-- -m tui` for the six interactive journeys or
   output, keyboard actions, exit status, routing logs, and actual agent-session records.
 - `install.log` for resolution/bootstrap failures.
 
+Isolated integration sessions enable the existing `UCODE_RELAYED_PROXY_DIAGNOSTICS`
+transport logger for every agent. Headless `command-*.json` artifacts retain its
+`[ucode-relay]` events in `stderr`; TUI artifacts retain them in terminal output.
+Request IDs correlate upstream-header timings, status codes, response byte counts,
+disconnects and transport exception classes. The logger excludes request headers,
+bodies and credentials. Antigravity's native stream-json events remain in headless
+command `stdout`; its raw native logs are not archived. These diagnostics do not
+change agent timeouts, task retries or success assertions.
+
 Unknown onboarding screens fail with their actual screen text. Update terminal
 selectors only after confirming the agent's intended UI changed; do not seed its
 onboarding state or relax the prompt/task assertions. Test homes are deleted after
