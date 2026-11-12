@@ -2055,34 +2055,12 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 `ty` checks registered modules' `source_models` signatures against `ModelSourceAgent`.
-The mocked model-source and CLI wildcard tests were removed. Wildcard discovery, ordering,
-deduplication, launch fallback, workspace-cache isolation, wildcard configure failures, and
-multi-agent expansion persistence lack dedicated component coverage. No installed-agent
-integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
-
-Verbatim Claude picker labels for qualified MPS IDs have component coverage in
-`../test_agent_claude.py`. The checks retain the full option and
-allow-list IDs and preserve dotted GPT versions. No installed-agent journey covers these labels.
-
-Gateway-alias picker text has component coverage in `../test_agent_claude.py` for short labels,
-managed-static-only organization descriptions, preserved option and allow-list IDs, long-context
-hints, and explicit catalog metadata. No installed-agent journey covers these presentation fields.
+Managed wildcard expansion, launch fallback, workspace-cache isolation, and wildcard configure
+failures lack dedicated component coverage. No installed-agent journey currently covers mixed
+wildcard sources or proves inference with qualified MPS models.
 
 Antigravity MCP web-search evidence compares homepage slash variants and ignores
 `utm_source` attribution while retaining the completed-call and official-URL checks.
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
-
-`test_agent_claude.py` checks provider IDs through rendered picker options instead
-of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
-`test_databricks.py`; warning punctuation and internal save counts are not pinned.
-The shared e2e fixture uses UC model services directly. Installed-agent wildcard
-inference coverage remains a gap.
-
-Wildcard expansion lives in `ucode.agents.model_sources` and requires an acquired token.
-Missing-token fallback cases were removed; token acquisition errors propagate before expansion.
-
-Managed Claude options and Codex fallback catalog entries keep
-provider IDs as labels; friendly `system.ai` labels and native catalog metadata are retained.
-These component checks do not establish inference support for every model.

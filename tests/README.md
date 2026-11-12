@@ -1564,29 +1564,6 @@ background Agent calls deliver the host-reported model to the parent's next requ
 while preserving reviewed inputs and denials.
 
 `ty` checks registered modules' `source_models` signatures against `ModelSourceAgent`.
-The mocked model-source and CLI wildcard tests were removed. Wildcard discovery, ordering,
-deduplication, launch fallback, workspace-cache isolation, wildcard configure failures, and
-multi-agent expansion persistence lack dedicated component coverage.
-
-`test_agent_claude.py` covers verbatim provider IDs in managed MPS picker labels.
-The checks preserve provider paths, dotted versions, and mixed case in picker options
-and the allow-list. These component checks do not establish live picker or inference coverage.
-
-`test_agent_claude.py` covers gateway-alias picker text for GLM, GPT, and Kimi models.
-Static managed options omit the synthetic Anthropic prefix from labels and organization
-descriptions; discovered options do not invent that description. Option values, long-context
-hints, allow-lists, and explicit catalog metadata are preserved. These component checks do not
-establish native picker rendering or inference coverage.
-
-`test_agent_claude.py` checks provider IDs through rendered picker options instead
-of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
-`test_databricks.py`; warning punctuation and internal save counts are not pinned.
-The shared e2e fixture uses UC model services directly. Installed-agent wildcard
-inference coverage remains a gap.
-
-Wildcard expansion lives in `ucode.agents.model_sources` and requires an acquired token.
-Missing-token fallback cases were removed; token acquisition errors propagate before expansion.
-
-Managed Claude options and Codex fallback catalog entries keep
-provider IDs as labels; friendly `system.ai` labels and native catalog metadata are retained.
-These component checks do not establish inference support for every model.
+Managed wildcard expansion, launch fallback, workspace-cache isolation, and wildcard configure
+failures lack dedicated component coverage. No installed-agent journey currently covers mixed
+wildcard sources or proves inference with qualified MPS models.

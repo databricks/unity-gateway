@@ -49,31 +49,24 @@ def test_gpt_metadata_preserved_with_admin_identity_and_order(bundled):
     assert bundled == original
 
 
-def test_hosted_services_keep_provider_ids_and_friendly_system_labels(bundled):
-    names = ["system.ai.kimi-k3", "main.team.custom", "main.team.mps.openai.gpt-6.1-sol", "plain"]
+def test_hosted_services_get_readable_labels_and_keep_full_slugs(bundled):
+    names = ["system.ai.kimi-k3", "main.team.custom", "plain"]
     models = catalog.build_codex_catalog(bundled, names)["models"]
     assert [(m["slug"], m["display_name"]) for m in models] == [
         ("system.ai.kimi-k3", "Kimi K3"),
-        ("main.team.custom", "main.team.custom"),
-        ("main.team.mps.openai.gpt-6.1-sol", "main.team.mps.openai.gpt-6.1-sol"),
-        ("plain", "plain"),
+        ("main.team.custom", "Custom"),
+        ("plain", "Plain"),
     ]
 
 
 def test_duplicate_labels_fall_back_to_full_ids_but_not_hidden_aliases(bundled):
-    bundled[1]["display_name"] = bundled[2]["display_name"]
-    names = [
-        "system.ai.gpt-6-astra",
-        "system.ai.gpt-5-6-sol",
-        "system.ai.other",
-        "system.ai.kimi-k3",
-    ]
+    names = ["system.ai.kimi-k3", "main.team.kimi-k3", "system.ai.other", "system.ai.gpt-6-astra"]
     models = catalog.build_codex_catalog(bundled, names)["models"]
     assert [m["display_name"] for m in models[:4]] == [
-        "system.ai.gpt-6-astra",
-        "system.ai.gpt-5-6-sol",
+        "system.ai.kimi-k3",
+        "main.team.kimi-k3",
         "Other",
-        "Kimi K3",
+        "gpt-6-astra",
     ]
     assert models[4]["slug"] == "gpt-6-astra"
     assert models[4]["visibility"] == "hide"
