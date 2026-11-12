@@ -14,14 +14,7 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
-import {
-  ROUTING_LOGS_PANE,
-  applyRoutingLogsRead,
-  logsReaderCommand,
-  registerRoutingLogs,
-  routingLogsPaneClosed,
-  routingLogsPaneOpen,
-} from './routing-logs.ts';
+import { registerRoutingLogs } from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -62,33 +55,6 @@ async function readSessionEnvironment($: EngineInterface): Promise<Environment> 
     }
   }
   return current;
-}
-
-// Keep $ here because the mod compiler cannot pass it between files.
-async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions): Promise<void> {
-  try {
-    const open = await $.ui.panes();
-    if (!Array.isArray(open) || !open.some((pane) => pane?.id === ROUTING_LOGS_PANE)) {
-      routingLogsPaneClosed();
-      return;
-    }
-  } catch {
-    return;
-  }
-  let note: string | undefined;
-  try {
-    const command = logsReaderCommand(options);
-    const session = await $.session.id();
-    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
-    note = applyRoutingLogsRead(result.stdout,
-      result.exitCode !== 0 || result.isStdoutTruncated
-        ? `logs command exited ${result.exitCode} or truncated output`
-        : undefined);
-  } catch (error) {
-    note = applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
-  }
-  $.ui.invalidate('ui.render');
-  if (note) $.ui.log(note, { to: 'debug' });
 }
 
 async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
@@ -167,7 +133,6 @@ export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
-  let refreshingLogs = false;
 
   on('session.start', async ($, e, next) => {
     if (launchedEnabled) {
@@ -241,11 +206,6 @@ export function register(on: On, options: PluginOptions): void {
   on('turn.complete', ($, e, next) => {
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
-    if (routingLogsPaneOpen() && !refreshingLogs) {
-      refreshingLogs = true;
-      // A slow or failed pane refresh must not delay turn completion.
-      void refreshRoutingLogsPane($, options).catch(() => {}).finally(() => { refreshingLogs = false; });
-    }
     return next(e);
   });
 }

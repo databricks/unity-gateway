@@ -1,6 +1,6 @@
-import type { On, PluginOptions } from 'claude-code';
+import type { EngineInterface, On, PluginOptions } from 'claude-code';
 
-export const ROUTING_LOGS_PANE = 'smart-router-logs';
+const ROUTING_LOGS_PANE = 'smart-router-logs';
 type Decision = { at: number; preview: string | null; selected_model: string; routing_ms: number };
 
 const isDecision = (d: Decision): boolean =>
@@ -28,7 +28,7 @@ let loading = false;
 let rerun = false;
 
 // The reader command, validated: an unconfigured or malformed logsCommand fails here.
-export function logsReaderCommand(options: PluginOptions): string[] {
+function logsReaderCommand(options: PluginOptions): string[] {
   const command = options.logsCommand as string[];
   if (!Array.isArray(command) || !command.length || command.some(arg => typeof arg !== 'string' || !arg)) {
     throw new Error('logs command unavailable');
@@ -39,7 +39,7 @@ export function logsReaderCommand(options: PluginOptions): string[] {
 // Run the reader CLI once and store its result. Returns the debug-log note,
 // empty when the read succeeded. Local because the mod compiler keeps $ only
 // within the file that declares the function receiving it.
-async function runRoutingLogsReader($: any, options: PluginOptions): Promise<string> {
+async function runRoutingLogsReader($: EngineInterface, options: PluginOptions): Promise<string> {
   try {
     const command = logsReaderCommand(options);
     const session = await $.session.id();
@@ -56,7 +56,7 @@ async function runRoutingLogsReader($: any, options: PluginOptions): Promise<str
 // Store one reader result in the pane state. A failed or malformed read shows the generic
 // notice; a CLI error envelope {"v":1,"error":"..."} adds its hint under that notice.
 // Returns the debug-log note, empty when the read succeeded.
-export function applyRoutingLogsRead(stdout: string, readError?: string): string {
+function applyRoutingLogsRead(stdout: string, readError?: string): string {
   cliError = undefined;
   if (readError !== undefined) {
     try {
@@ -83,15 +83,7 @@ export function applyRoutingLogsRead(stdout: string, readError?: string): string
   }
 }
 
-export function routingLogsPaneOpen(): boolean {
-  return paneOpen;
-}
-
-export function routingLogsPaneClosed(): void {
-  paneOpen = false;
-}
-
-async function load($: any, options: PluginOptions): Promise<void> {
+async function load($: EngineInterface, options: PluginOptions): Promise<void> {
   if (loading) {
     rerun = true;
     return;
@@ -110,7 +102,26 @@ async function load($: any, options: PluginOptions): Promise<void> {
   $.ui.invalidate('ui.render');
 }
 
+async function refreshRoutingLogs($: EngineInterface, options: PluginOptions): Promise<void> {
+  const open = await $.ui.panes();
+  if (!Array.isArray(open) || !open.some((pane) => pane?.id === ROUTING_LOGS_PANE)) {
+    paneOpen = false;
+    return;
+  }
+  await load($, options);
+}
+
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
+  // Match both launch modes to coexist with the routing module's unmatched spawn hook.
+  on('agent.spawn', { background: [true, false] }, async ($, e, next) => {
+    const result = await next(e);
+    if (paneOpen && !e.resume && result.agentId && !result.deny) {
+      // Refresh routing logs async to not delay subagent startup.
+      void refreshRoutingLogs($, options).catch(() => {});
+    }
+    return result;
+  });
+
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
     if (e.args.trim() !== 'logs') return next(e);
     if (!launchedEnabled) return { text: 'Smart Router was not enabled for this session.' };

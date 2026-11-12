@@ -7,7 +7,13 @@ const pane = {
 } as const;
 const command = { command: 'smart-router', args: 'logs' };
 
-test('renders session rows and refreshes in the background only while open', { options }, async ($, on) => {
+test('renders session rows and refreshes on new subagent spawns only while open', { options }, async ($, on) => {
+  const spawn = {
+    tool_use_id: 'call', prompt: 'Inspect parser', description: 'Inspect parser',
+    subagentType: 'general-purpose', parentModel: 'claude-sonnet-5',
+    provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+    permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+  };
   const now = Date.now() / 1000;
   let decisions: unknown[] = [
     { at: now - 2 * 3600, preview: 'older task ' + 'A'.repeat(200), selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
@@ -25,6 +31,7 @@ test('renders session rows and refreshes in the background only while open', { o
     return { value: { isPlaced: true } };
   });
   on('ui.panes', () => ({ value: open }));
+  on('agent.spawn', ($, e) => e.name === 'denied' ? { deny: 'Permission denied' } : { agentId: 'child', model: 'claude-sonnet-5' });
   on('turn.complete', () => ({ text: '' }));
   on('process.run', async ($, e) => {
     expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one']);
@@ -33,6 +40,7 @@ test('renders session rows and refreshes in the background only while open', { o
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
   });
   await $.turn.complete({ answer: '' });
+  await $.agent.spawn(spawn);
   expect(reads).toBe(0);
   expect((await $.command.run(command)).text).toBe('Smart Router logs opened.');
   const ui = await $.ui.mount(pane);
@@ -47,21 +55,26 @@ test('renders session rows and refreshes in the background only while open', { o
   expect(tree).not.toContain('A'.repeat(40));
   expect(tree).toContain('(prompt not recorded)');
   expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
+  await $.turn.complete({ answer: '' });
+  await $.agent.spawn({ ...spawn, resume: { agentId: 'child' } });
+  await $.agent.spawn({ ...spawn, name: 'denied' });
+  expect(reads).toBe(1);
   decisions = [];
   pause = true;
-  await $.turn.complete({ answer: '' });
-  await $.turn.complete({ answer: '' });
+  await $.agent.spawn(spawn);
+  await $.agent.spawn({ ...spawn, tool_use_id: 'parallel', background: false });
   expect(reads).toBe(2);
   expect(JSON.stringify(await ui.drawn())).toContain('older task');
   pause = false;
   resume();
   expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
   await $.command.run(command);
-  expect(reads).toBe(3);
+  expect(reads).toBe(4);
   open = [];
+  await $.agent.spawn(spawn);
+  await $.agent.spawn(spawn);
   await $.turn.complete({ answer: '' });
-  await $.turn.complete({ answer: '' });
-  expect(reads).toBe(3);
+  expect(reads).toBe(4);
   await ui.unmount();
 });
 
