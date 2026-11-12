@@ -2,12 +2,12 @@
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace
-`4168069418041172` (`dbc-1bb9e8f5-bf3a`). Integration's `anthropic_mps`
-Claude lanes are required; Copilot's equivalent lanes remain advisory. CI reads the
-workspace URL from
-`UG_ANTHROPIC_MPS_WORKSPACE` and authenticates with
-`UG_ANTHROPIC_MPS_CLIENT_ID` / `UG_ANTHROPIC_MPS_CLIENT_SECRET` and never receives
-the Anthropic key. The service allows only `claude-haiku-4-5-20251001`.
+`4168069418041172` (`dbc-1bb9e8f5-bf3a`). Integration's `anthropic-mps`
+matrix runs Claude and Copilot on Linux and Windows. Claude runs are required;
+Copilot runs remain advisory. The workflow defines the workspace URL and `ug-ci-sp`
+client ID as constants and authenticates with the
+`UG_ANTHROPIC_MPS_CLIENT_SECRET` GitHub secret. CI never receives the Anthropic key.
+The service allows only `claude-haiku-4-5-20251001`.
 These lanes use the IT-managed `databricks-protected-runner-group` on Linux and
 Windows for staging ingress, with Python and npm installs through internal package proxies.
 Contract tests check that staging and existing lanes partition coverage, share the

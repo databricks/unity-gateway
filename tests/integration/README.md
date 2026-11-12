@@ -1125,11 +1125,11 @@ MPS CUJs select preprovisioned services:
 
 - Claude (direct API key): `main.ucode.dont_delete_ci_company_anthropic_mps` in
   `https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com`
-  (workspace `4168069418041172`). The `anthropic_mps` lanes read the URL from
-  `UG_ANTHROPIC_MPS_WORKSPACE` and authenticate with
-  `UG_ANTHROPIC_MPS_CLIENT_ID` and `UG_ANTHROPIC_MPS_CLIENT_SECRET` GitHub secrets;
-  the runner mints a short-lived OAuth bearer for this workspace. The service resolves
-  `databricks-staging-shared-key://anthropic` server-side, exposes only
+  (workspace `4168069418041172`). The `anthropic-mps` job uses one agent/OS matrix
+  for Claude and Copilot on Linux and Windows. The workflow defines the URL and
+  `ug-ci-sp` client ID as constants; only `UG_ANTHROPIC_MPS_CLIENT_SECRET` is a
+  GitHub secret. The runner mints a short-lived OAuth bearer for this workspace.
+  The service resolves `databricks-staging-shared-key://anthropic` server-side, exposes only
   `claude-haiku-4-5-20251001` on `anthropic/v1/messages`, and disables all three
   forwarding options. CI never reads the provider key. Claude runs are required on
   Linux and Windows; Copilot retains its advisory status on both platforms.

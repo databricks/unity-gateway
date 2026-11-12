@@ -256,23 +256,28 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
     monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
     jobs = _integration_jobs()
+    job = jobs["anthropic-mps"]
+    assert "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in job
+    assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
+    assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
+    assert "DATABRICKS_BEARER:" not in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "agent: [claude, copilot]" in job
+    assert "fail-fast: false" in job
+    assert "group: databricks-protected-runner-group" in job
+    assert (
+        "labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' "
+        "|| 'linux-ubuntu-latest' }}"
+    ) in job
+    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in job
+    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in job
+    assert "steps: *live-steps" in job
+    assert "continue-on-error: ${{ matrix.agent == 'copilot' }}" in job
+    assert "timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || 40 }}" in job
+    assert "AGENT: ${{ matrix.agent }}" in job
+    assert "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}" in job
     selected = set()
-    for job_name, agent in (("anthropic-mps", "claude"), ("anthropic-mps-copilot", "copilot")):
-        job = jobs[job_name]
-        assert "UCODE_TEST_WORKSPACE: ${{ secrets.UG_ANTHROPIC_MPS_WORKSPACE }}" in job
-        assert "DATABRICKS_CLIENT_ID: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_ID }}" in job
-        assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
-        assert "DATABRICKS_BEARER:" not in job
-        assert "os: [ubuntu-22.04, windows-latest]" in job
-        assert "group: databricks-protected-runner-group" in job
-        assert (
-            "labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' "
-            "|| 'linux-ubuntu-latest' }}"
-        ) in job
-        assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in job
-        assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in job
-        assert "steps: *live-steps" in job
-        assert ("continue-on-error: true" in job) == (agent == "copilot")
+    for agent in ("claude", "copilot"):
         cases = _collect_integration_cases(_ci_marker_expression(job, agent))
         assert not selected & cases
         selected |= cases
@@ -286,7 +291,6 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert needs is not None
     required = {name.strip() for name in needs.group(1).split(",")}
     assert "anthropic-mps" in required
-    assert "anthropic-mps-copilot" not in required
 
 
 def test_anthropic_mps_fixtures_use_the_same_service():
@@ -559,7 +563,6 @@ FORK_GUARD = (
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
     "anthropic-mps",
-    "anthropic-mps-copilot",
     "cowork-inference-windows",
     "cowork-inference-macos",
     "workspace",
