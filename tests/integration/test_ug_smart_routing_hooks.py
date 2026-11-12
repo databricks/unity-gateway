@@ -206,6 +206,14 @@ def _installed_skills(session, agent: str) -> list[str]:
     )
 
 
+def _codex_toggle_command(enabled: bool) -> str:
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
+    return f"{python} -m ucode.cli codex {flag}"
+
+
 def _toggle_with_skill(
     tui, session, agent: str, enabled: bool, orchestration_enabled: bool
 ) -> None:
@@ -244,11 +252,7 @@ def _toggle_with_skill(
     before_reloads = reload_log.read_text().count("[RELOAD] resumed") if reload_log.exists() else 0
     tui.submit(invocation)
     approval_sent = False
-    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
-    python = (
-        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
-    )
-    command = f"{python} -m ucode.cli codex {flag}"
+    command = _codex_toggle_command(enabled)
 
     def toggled(screen):
         nonlocal approval_sent
@@ -1260,8 +1264,9 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
     """Scenario: toggle and repeat off/on through the skill with no children or two idle children.
 
     Expected: guidance precedes each toggle command and no automatic turn follows.
-    Repeated settings leave controls untouched and do not reload. Explicit probes
-    use current attribution. PIDs, connection, IDs, sandbox/approvals and exit survive.
+    Repeated settings leave controls untouched and do not reload. Each invocation
+    approves only its exact command when requested. Explicit probes use current
+    attribution. PIDs, connection, IDs, sandbox/approvals and exit survive.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v1")
@@ -1407,12 +1412,25 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
                 before_reloads = (session.home / ".ucode/codex-v2-interposer.log").read_text()
                 before_turns = root_turns()
                 before_answers = len(assistant_answers("codex", root_records()))
-                tui.submit(f"$smart-router {state}")
-                tui.wait_for(
-                    lambda screen, before_answers=before_answers: (
+                approval_sent = False
+                command = _codex_toggle_command(enabled)
+
+                def repeated_toggle_completed(
+                    screen, command=command, state=state, before_answers=before_answers
+                ):
+                    nonlocal approval_sent
+                    if not approval_sent and codex_command_approval_pending(screen, command):
+                        tui.send("\r", f"approve the repeated Smart Router toggle {state} once")
+                        approval_sent = True
+                        return False
+                    return (
                         len(assistant_answers("codex", root_records())) > before_answers
                         and "esc to interrupt" not in screen.lower()
-                    ),
+                    )
+
+                tui.submit(f"$smart-router {state}")
+                tui.wait_for(
+                    repeated_toggle_completed,
                     f"repeat {state} completes without reload",
                     timeout=120,
                 )
@@ -1510,10 +1528,7 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
 
     def wait_for_reload(tui, expected_recipe, description):
         approval_sent = False
-        flag = (
-            "--disable-smart-routing" if expected_recipe == "DISABLED" else "--enable-smart-routing"
-        )
-        command = f'& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex {flag}'
+        command = _codex_toggle_command(expected_recipe != "DISABLED")
 
         def reloaded(screen):
             nonlocal approval_sent
