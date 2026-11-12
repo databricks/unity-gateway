@@ -1121,9 +1121,50 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
-MPS CUJs select the existing services already used by e2e:
+MPS CUJs select preprovisioned services:
 
-- Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Claude (direct API key): `main.ucode.dont_delete_ci_company_anthropic_mps` in
+  `https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com`
+  (workspace `4168069418041172`). The `anthropic-mps` job uses one agent/OS matrix
+  for Claude and Copilot on Linux and Windows. The workflow defines the URL and
+  `ug-ci-sp` client ID as constants; only `UG_ANTHROPIC_MPS_CLIENT_SECRET` is a
+  GitHub secret. The runner mints a short-lived OAuth bearer for this workspace.
+  The service resolves `databricks-staging-shared-key://anthropic` server-side, exposes only
+  `claude-haiku-4-5-20251001` on `anthropic/v1/messages`, and disables all three
+  forwarding options. CI never reads the provider key. Claude runs are required on
+  Linux and Windows; Copilot retains its advisory status on both platforms.
+  All four lanes use `databricks-protected-runner-group`, with
+  `linux-ubuntu-latest` / `windows-server-latest` labels and internal Python/npm
+  package proxies. These managed runners can reach staging ingress.
+  The job has an explicit fork guard and does not depend on the other workspace's
+  bearer validation.
+  The configure picker journey also rejects an out-of-allowlist model and verifies
+  that its completed file task used the pinned Haiku model. This and Cases 11
+  replace the duplicate legacy launches, raw inference, fixture listing, and fresh
+  `--version` check, so no separate legacy staging shard or token setup is needed.
+  Family-alias resolution remains unit-tested; a standalone live `--model haiku`
+  inference and raw Messages response-shape assertions are no longer covered.
+  Relay, other-provider, and dedicated CUJ2 fixtures stay in their existing
+  workspaces. Missing SP credentials or MPS access fail the new jobs.
+  Token-request HTTP failures report the endpoint, status, and up to 2,000 response-body
+  characters, with the client secret and encoded Basic credential redacted first.
+  `../test_integration_runner.py` covers these diagnostics with controlled HTTP responses;
+  these component checks do not establish live authentication or network access.
+
+  For a local direct-Anthropic run, select the dedicated workspace and an explicit
+  profile authorized there:
+
+  ```bash
+  python3.12 scripts/run_integration.py --claude-version 2.1.290 \
+    --workspace https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com \
+    --profile YOUR_STAGING_CI_PROFILE -- -m 'anthropic_mps and claude'
+  ```
+
+  Supply the package-proxy arguments from the local-run instructions below when on
+  the Databricks network. Use `--copilot-version 1.0.91` and
+  `-m 'anthropic_mps and copilot'` for Copilot. Runs against the original workspaces
+  must exclude `anthropic_mps`; these tests require the staging workspace's SP
+  access, empty published CodingAgentConfig, and both company-credential SAFE flags.
 - Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps` declares
   `claude-haiku-5-5` and `claude-sonnet-5-5` on `anthropic/v1/messages`, plus
   `gpt-5.4` on `openai/v1/responses`. `test_ug_claude_fresh_foundry_mps`
@@ -1165,10 +1206,12 @@ reproduce another existing service. Use `--claude-provider-model` /
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-The `test_ug_claude_fresh_provider_launch` and `test_ug_codex_fresh_provider_launch` journeys
-check provider selection and real agent CLI launch without inference. The Foundry and custom MPS
-journeys above additionally require inference and file-reading task completion. Codex discovery
-journeys also check its app-server model catalog.
+The `test_ug_codex_fresh_provider_launch` journey checks provider selection and real agent
+CLI launch without inference. Claude's fresh provider discovery journey covers its
+launch, model picker, and selected-provider routing header in generated settings.
+The configure, Foundry, and custom MPS journeys additionally
+require inference and file-reading task completion. Codex discovery journeys also
+check its app-server model catalog.
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
@@ -1245,15 +1288,15 @@ Twelve explicit configured/fresh Claude and Codex discovery and source-override 
 `claude_mps.json` / `codex_mps.json` fixtures, which set each agent's source to its dedicated MPS.
 The other cases cover focused model, MCP, skills, saved-config replay, foreign-workspace refusal, and lifecycle shapes, including
 per-agent model reconciliation and managed skill cleanup. Of the two Claude default-model cases,
-the MPS case stubs a `main.default.ci_e2e_anthropic_mps` source and the `system.ai` parent-schema
+the MPS case stubs a `main.ucode.dont_delete_ci_company_anthropic_mps` source and the `system.ai` parent-schema
 case stubs a Unity Catalog source; both verify the generated settings
 files retain all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
 the independently fetched MPS or UC schema catalog. MPS family shortcut rows remain separate
 from catalog rows for the same target; UC model IDs are deduplicated and catalog labels are retained.
 Direct renderer tests cover default/catalog composition, while focused CLI regressions verify UC
 catalog discovery with overall defaults, family defaults, or both, along with explicit model
-selection and preservation of static model lists. Both cases run on the managed workspace's own
-bearer; no second workspace or extra secret is involved.
+selection and preservation of static model lists. The MPS case runs in the staging `anthropic_mps` lane. The UC parent-schema case
+continues to use the managed workspace and its existing bearer.
 Across integration and dedicated CUJ7, the 14 numbered scenarios comprise 24 journeys:
 12 managed and 12 unmanaged. Integration contains 22 of them (12 managed, 10 unmanaged);
 configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`.
@@ -1407,7 +1450,8 @@ harness-latest workflow runs the same journey against the newest appcast build, 
 when a bump is due.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
-Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
+Installation jobs need no workspace credentials. The dedicated direct-Anthropic lanes
+use the staging SP described above. Other live jobs for same-repository PRs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
@@ -1611,12 +1655,12 @@ settings reconciliation and makes no model-inference claim.
 
 The expected model ids in `test_ug_configure_managed.py` mirror `managed_workspace_default.json`;
 update both together. The fixtures reference real securables on the managed workspace (MPS
-`main.default.ci_e2e_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
+`main.ucode.dont_delete_ci_company_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
 `main.default.forkable-meals`), which must keep existing.
 
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
 managed-config HTTP read. The Claude discovery module uses `claude_mps.json`, whose Claude model
-source is `main.default.ci_e2e_anthropic_mps` with no static defaults, across all configured/fresh
+source is `main.ucode.dont_delete_ci_company_anthropic_mps` with no static defaults, across all configured/fresh
 scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
@@ -1638,6 +1682,9 @@ to be listed. The fixture itself has no managed smart-routing setting.
 
 The Claude parent-schema defaults case expects discovered numbered GPT models to carry
 `[1m]` in the picker and retain its catalog display label.
+Both Claude defaults cases read the actual machine settings file for Linux,
+macOS, or Windows directly with Python; all default, header, and picker assertions
+apply to both per-user and machine settings.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
@@ -1876,11 +1923,13 @@ DATABRICKS_BEARER=$(databricks auth token --host "$integration_workspace" \
 uv run --no-project --python 3.12 python scripts/run_integration.py \
   --python 3.12 --ug-version checkout --workspace "$integration_workspace" \
   --default-index "$integration_index" --npm-registry "$integration_registry" \
-  --claude-version 2.1.268 --codex-version 0.154.0 -- -m live
+  --claude-version 2.1.268 --codex-version 0.154.0 -- -m 'live and not anthropic_mps'
 unset DATABRICKS_BEARER
 ```
 
-This runs all 88 live cases. For the eight installation checks, run the same
+This runs the live cases assigned to the original e2e workspace. Run the direct
+Anthropic cases separately against their staging workspace as described above.
+For the eight installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
