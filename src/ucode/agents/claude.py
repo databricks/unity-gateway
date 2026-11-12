@@ -121,7 +121,13 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
+from ucode.state import (
+    CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
+    MANAGED_OVERLAY_KEY,
+    is_tool_managed,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_note, print_success, print_warning
@@ -1929,6 +1935,10 @@ def write_tool_config(
     else:
         state.pop("claude_relayed", None)
         state.pop("relayed_proxy_port", None)
+    if relayed and not (provider or parent_schema):
+        state[CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY] = True
+    else:
+        state.pop(CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY, None)
     state = mark_tool_managed(state, "claude", managed_keys)
     save_state(state)
     return state

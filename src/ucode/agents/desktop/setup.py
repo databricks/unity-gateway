@@ -22,7 +22,7 @@ from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
 from ucode.managed_files import ManagedFileWriteUnavailable, machine_wide_only
-from ucode.state import get_provider_service
+from ucode.state import desktop_uses_claude_subscription_relay, get_provider_service
 from ucode.string_utils import model_picker_label
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
@@ -125,7 +125,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
     if sys.platform != "darwin" and not can_initialize_claude_desktop_directory(directory):
         raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
-    relayed = bool(state.get("claude_relayed"))
+    relayed = desktop_uses_claude_subscription_relay(state)
     claude_binary = None
     if relayed:
         claude_binary = shutil.which("claude")

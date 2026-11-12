@@ -19,7 +19,11 @@ from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.smart_routing import claude_routing, v2
-from ucode.state import MANAGED_OVERLAY_KEY
+from ucode.state import (
+    CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
+    MANAGED_OVERLAY_KEY,
+    desktop_uses_claude_subscription_relay,
+)
 from ucode.telemetry import client_platform
 
 
@@ -2580,6 +2584,20 @@ class TestWriteToolConfigManagedSettings:
         claude.write_tool_config(state, "databricks-claude-sonnet-4", relayed=True)
         assert managed_writes == []
         assert warns == []
+
+    def test_relayed_without_a_provider_is_marked_cli_only(self, monkeypatch):
+        # A relayed launch from relay-backed model services is CLI-only, so Desktop keeps gateway
+        # auth; a later non-relayed configure clears the marker.
+        self._patch(monkeypatch, [], [])
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
+        monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda path: [])
+        state = {"workspace": WS, "codex_models": []}
+        state = claude.write_tool_config(state, "main.default.relayed-sonnet", relayed=True)
+        assert state[CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY] is True
+        assert not desktop_uses_claude_subscription_relay(state)
+
+        state = claude.write_tool_config(state, "main.default.relayed-sonnet")
+        assert CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY not in state
 
     def test_relayed_fails_on_conflicting_managed_auth(self, monkeypatch):
         private_writes: list = []
