@@ -1,6 +1,6 @@
 # Test suites and user journeys
 
-Model picker component tests cover friendly labels without custom catalog prefixes,
+Model picker component tests cover friendly Claude labels without custom catalog prefixes,
 preserved dotted versions, and unchanged full model IDs in Claude's static and discovered
 pickers. Discovery retains custom display names and formats names that repeat the model ID.
 These checks do not establish native picker or live inference behavior.

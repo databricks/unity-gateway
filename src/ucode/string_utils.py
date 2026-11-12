@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 
 def _is_valid_dotted_name(value: str, levels: int) -> bool:
     parts = value.split(".")
@@ -34,7 +32,9 @@ def model_picker_label(model: str) -> str:
     ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
     and join a run of numeric segments into a dotted version, also a short one after a word that
     ends in a digit (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``)."""
-    stem = re.sub(r"^(?:[^.]+\.)+(?=[A-Za-z])", "", model.removeprefix("system.ai."))
+    stem = model.removeprefix("system.ai.")
+    if ".claude-" in stem:
+        stem = "claude-" + stem.rsplit(".claude-", 1)[1]
     parts: list[str] = []
     version: list[str] = []
     for token in stem.split("-"):
