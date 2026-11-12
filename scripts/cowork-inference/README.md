@@ -67,7 +67,7 @@ It submits a number-conversion prompt and requires both `Claude responded: 48213
 in the conversation pane and `Claude finished the response` within four minutes.
 The prompt spells the number in words so echoing the input cannot pass.
 
-After inference, two fresh Cowork tasks run through the same native UI:
+After inference, three fresh Cowork tasks run through the same native UI:
 
 1. Create `Documents/CoworkProbe/input.txt` with a random value absent from the prompt.
    Select that folder through the native picker and choose **Allow** for this task.
@@ -77,6 +77,16 @@ After inference, two fresh Cowork tasks run through the same native UI:
    using the account directory created by the inference task. Its instructions refer
    to a file containing another random value. Require successful `Skill` and `Read`
    calls, the reference file's value in the tool result, and an identical completed answer.
+3. Register `system.ai.web_search` with `ug mcp add --names system.ai.web_search`, the same
+   registration the no-GUI Desktop journey in `tests/integration/test_ug_configure_claude_desktop.py`
+   uses, and require the Desktop profile's `web_search` connector to be UG's stdio proxy for that
+   service. Ask Cowork to search for Databricks' official website with that connector. Require a
+   successful `mcp__*__web_search` call with a nonempty query whose result contains a
+   `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
+   URLs, ignoring Markdown and trailing slashes. Search ranking and wording are not asserted;
+   Desktop's native web search cannot satisfy it. If Desktop asks before the connector's first
+   use, the task approves it and records the label. This runs in the hosted Windows and macOS
+   Desktop jobs, not the staging `anthropic-mps` lane.
 
 `session-evidence.py` reads the native Desktop transcript belonging to the submitted
 prompt and requires an assistant `end_turn`. Failed tools, mismatched result IDs,
@@ -124,7 +134,8 @@ after three days.
 The named `desktop-ci` Databricks profile contains host/auth metadata, not a
 token. No Claude.ai login is used. The test verifies the configured provider/model
 and desktop response; it does not independently trace gateway HTTP requests.
-Code-tab, external MCP execution, file writes, and Cowork VM readiness are outside these tests.
+Code-tab, MCP services other than `system.ai.web_search`, file writes, and Cowork VM readiness are
+outside these tests.
 
 ## macOS
 

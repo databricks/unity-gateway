@@ -88,6 +88,25 @@ function New-CoworkTask {
             $task.expectedFile = Join-Path $installed[0].installPath 'skills/probe-summary/references/facts.txt'
             $task.skill = $fixture.skill
         }
+        'mcp' {
+            $log = Join-Path $evidence 'mcp-add.txt'
+            $output = (& $env:UG_COWORK_TEST_BINARY mcp add --names $fixture.mcpService 2>&1 | Out-String)
+            $code = $LASTEXITCODE
+            Protect-DiagnosticText $output | Set-Content -LiteralPath $log
+            if ($code -ne 0) { throw 'ug mcp add failed; see mcp-add.txt' }
+            $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
+            $desktopProfile = Get-Content -Raw -LiteralPath $profilePath | ConvertFrom-Json
+            $servers = @($desktopProfile.managedMcpServers | Where-Object { $_.name -eq $fixture.mcpServer })
+            if ($servers.Count -ne 1) { throw "Desktop profile is missing the $($fixture.mcpServer) connector" }
+            $arguments = @($servers[0].args)
+            $url = $arguments[[array]::IndexOf($arguments, '--url') + 1]
+            $expectedUrl = "$($env:UCODE_TEST_WORKSPACE.TrimEnd('/'))/ai-gateway/mcp-services/$($fixture.mcpService)"
+            if ($servers[0].transport -ne 'stdio' -or $url -ne $expectedUrl) {
+                throw "The $($fixture.mcpServer) connector does not proxy $($fixture.mcpService)"
+            }
+            $task.mcpServer = $fixture.mcpServer
+            $task.mcpTool = $fixture.mcpTool
+        }
         }
     } finally {
         $env:CLAUDE_CONFIG_DIR = $previousConfigDirectory

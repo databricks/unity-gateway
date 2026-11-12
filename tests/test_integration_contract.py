@@ -1111,6 +1111,21 @@ def test_cowork_ci_covers_each_claude_model_source(job_name):
     ]
 
 
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
+    job = _integration_jobs()[job_name]
+    step = job.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}\n" in step
+    )
+    # `ug mcp add` and the connector proxy authenticate against the e2e workspace.
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in step
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in step
+    assert ("-Capability mcp" in step) or ("--capability mcp" in step)
+
+
 def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     jobs = _integration_jobs()
     job = jobs["anthropic-mps"]

@@ -761,3 +761,90 @@ def test_macos_skill_runtime_copy_waits_for_partial_copy(tasks, tmp_path):
     assert tasks.runtime_task(task, runtime) is None
     (copy.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
     assert tasks.runtime_task(task, runtime)["expectedFile"] == str(copy)
+
+
+def _mcp_profile(tmp_path, servers):
+    library = tmp_path / "Library/Application Support/Claude-3p/configLibrary"
+    library.mkdir(parents=True)
+    (library / "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json").write_text(
+        json.dumps({"managedMcpServers": servers})
+    )
+
+
+WEB_SEARCH_PROXY = {
+    "name": "web_search",
+    "transport": "stdio",
+    "args": [
+        "mcp-proxy",
+        "--url",
+        "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("servers", "error"),
+    [
+        ([WEB_SEARCH_PROXY], None),
+        ([], "missing the web_search connector"),
+        ([WEB_SEARCH_PROXY, WEB_SEARCH_PROXY], "missing the web_search connector"),
+        ([{**WEB_SEARCH_PROXY, "transport": "http"}], "does not proxy"),
+        (
+            [{**WEB_SEARCH_PROXY, "args": ["mcp-proxy", "--url", "https://other.example/x"]}],
+            "does not proxy",
+        ),
+        ([{**WEB_SEARCH_PROXY, "args": ["mcp-proxy"]}], "does not proxy"),
+    ],
+)
+def test_macos_mcp_task_requires_the_web_search_connector(
+    tasks, tmp_path, monkeypatch, servers, error
+):
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    calls, logs = [], {}
+
+    def native_ug(args, **kwargs):
+        calls.append(args[1:])
+        _mcp_profile(tmp_path, servers)
+        return subprocess.CompletedProcess(args, 0, stdout="added", stderr="")
+
+    # `ug mcp add` needs a live workspace; the profile check after it stays real.
+    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=native_ug))
+    desktop = SimpleNamespace(save=logs.__setitem__)
+    task = {"capability": "mcp"}
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            tasks.prepare_mcp_task(task, desktop)
+    else:
+        task = tasks.prepare_mcp_task(task, desktop)
+        assert (task["mcpServer"], task["mcpTool"]) == ("web_search", "web_search")
+        assert task["prompt"] == tasks.FIXTURE["prompts"]["mcp"]
+    assert calls == [["mcp", "add", "--names", "system.ai.web_search"]]
+    assert "added" in logs["mcp-add.txt"]
+
+
+def test_macos_mcp_task_fails_when_registration_fails(tasks, monkeypatch):
+    def failed_ug(args, **kwargs):
+        return subprocess.CompletedProcess(args, 1, stdout="", stderr="no access")
+
+    # `ug mcp add` needs a live workspace; its failure handling stays real.
+    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=failed_ug))
+    logs = {}
+    with pytest.raises(RuntimeError, match="ug mcp add failed"):
+        tasks.prepare_mcp_task({"capability": "mcp"}, SimpleNamespace(save=logs.__setitem__))
+    assert "no access" in logs["mcp-add.txt"]
+
+
+@pytest.mark.parametrize("label", [None, "Allow once", "Always allow"])
+def test_macos_mcp_task_approves_a_connector_prompt(tasks, label, monkeypatch):
+    rows = [["AXButton", label, "", "", "", "1", "0"]] if label else []
+    clicks, report = [], {}
+
+    def ui(*args, **kwargs):
+        if args[0] == "snapshot":
+            return json.dumps(rows)
+        clicks.append(args[1])
+        return "clicked"
+
+    tasks.approve_tool_permission(SimpleNamespace(ui=ui), report)
+    assert clicks == ([label] if label else [])
+    assert report.get("toolPermission") == label

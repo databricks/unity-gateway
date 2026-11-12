@@ -96,7 +96,9 @@ def main():
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
     parser = argparse.ArgumentParser()
     parser.add_argument("--child", type=Path)
-    parser.add_argument("--capability", choices=("inference", "file", "skill"), default="inference")
+    parser.add_argument(
+        "--capability", choices=("inference", "file", "skill", "mcp"), default="inference"
+    )
     args = parser.parse_args()
     if args.child:
         environment = args.child

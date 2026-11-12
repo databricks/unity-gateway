@@ -67,8 +67,9 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 installed UG through its CLI, and asserts a completed exact-answer task through macOS
 Accessibility for each model source: Databricks Hosted, the Anthropic MPS, and the
 Anthropic relay MPS (see `scripts/cowork-inference/README.md`). Both jobs block the
-integration gate. The macOS job also runs the file and skill tasks described below.
-Apple Silicon, Code-tab, MCP, and file writes remain uncovered.
+integration gate. The macOS job also runs the file, skill, and MCP web search tasks described
+below. Apple Silicon, Code-tab, MCP services other than `system.ai.web_search`, and file writes
+remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
 provider-service and relay-helper profile checks, model-picker switching from Desktop's
@@ -90,6 +91,8 @@ staging `anthropic-mps` lane's Windows Claude row runs the same Desktop steps fo
 non-relay Anthropic MPS. Each lane
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
+The hosted Windows job also runs a `system.ai.web_search` connector search through UG's MCP proxy,
+requiring an official Databricks URL shared by the tool result and the answer.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
 mismatched or malformed result IDs, malformed tool inputs and file paths, missing skill calls,
 incomplete answers, and case-mismatched macOS paths. It tolerates unrelated

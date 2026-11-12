@@ -4,8 +4,12 @@ import argparse
 import json
 import ntpath
 import posixpath
+import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
+
+DATABRICKS_HOSTS = {"databricks.com", "www.databricks.com"}
 
 
 def content_blocks(content):
@@ -22,6 +26,54 @@ def content_text(content):
         for block in content_blocks(content)
         if block.get("type") == "text" and isinstance(block.get("text"), str)
     )
+
+
+def databricks_urls(text):
+    """Official Databricks URLs in text, ignoring surrounding Markdown and trailing slashes."""
+    urls = set()
+    for url in re.findall(r"https?://[^\s)<>\]`*\"']+", text):
+        url = url.rstrip(".,;:/")
+        if urlparse(url).hostname in DATABRICKS_HOSTS:
+            urls.add(url)
+    return urls
+
+
+def evaluate_mcp(answer, calls, results, task):
+    suffix = f"__{task['mcpTool']}"
+    searches = [
+        call
+        for call in calls
+        if isinstance(call.get("name"), str)
+        and call["name"].startswith("mcp__")
+        and call["name"].endswith(suffix)
+        and isinstance(call["input"].get("query"), str)
+        and call["input"]["query"].strip()
+    ]
+    found = {
+        call["id"]: databricks_urls(content_text(results[call["id"]].get("content", [])))
+        for call in searches
+    }
+    search = next((call for call in searches if found[call["id"]]), None)
+    if search is None:
+        return {
+            "status": "failed",
+            "error": "No successful MCP web search returned an official Databricks URL",
+            "answer": answer,
+        }
+    shared = sorted(databricks_urls(answer) & found[search["id"]])
+    if not shared:
+        return {
+            "status": "failed",
+            "error": "Completed answer does not repeat a Databricks URL from the search",
+            "answer": answer,
+        }
+    return {
+        "status": "passed",
+        "answer": answer,
+        "mcpToolId": search["id"],
+        "mcpToolName": search["name"],
+        "url": shared[0],
+    }
 
 
 def evaluate(records, task):
@@ -45,12 +97,6 @@ def evaluate(records, task):
     if not answers:
         return {"status": "pending"}
     answer = answers[-1].strip()
-    if answer != task["expected"]:
-        return {
-            "status": "failed",
-            "error": "Completed answer does not match the file",
-            "answer": answer,
-        }
     blocks = [block for message in messages for block in content_blocks(message.get("content"))]
     results = {
         block["tool_use_id"]: block
@@ -68,6 +114,14 @@ def evaluate(records, task):
         and isinstance(block.get("input"), dict)
         and not results[block["id"]].get("is_error")
     ]
+    if task["capability"] == "mcp":
+        return evaluate_mcp(answer, calls, results, task)
+    if answer != task["expected"]:
+        return {
+            "status": "failed",
+            "error": "Completed answer does not match the file",
+            "answer": answer,
+        }
     read = next(
         (
             call

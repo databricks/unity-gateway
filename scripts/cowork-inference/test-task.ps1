@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('file', 'skill')][string]$Capability,
+    [Parameter(Mandatory)][ValidateSet('file', 'skill', 'mcp')][string]$Capability,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
 
@@ -147,8 +147,17 @@ try {
     Invoke-Control (Wait-Control -Names @('Start task'))
     $report.submitted = $true
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    # Desktop may ask before a connector tool's first use; the prompt label is not pinned.
+    $toolPermissionLabels = @('Allow once', 'Allow for this task', 'Allow for this chat', 'Always allow')
     do {
         Start-Sleep -Seconds 3
+        if ($task.capability -eq 'mcp') {
+            $allow = Find-Control -Names $toolPermissionLabels
+            if ($allow) {
+                $report.toolPermission = $allow.Current.Name
+                Invoke-Control $allow
+            }
+        }
         $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
             --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
