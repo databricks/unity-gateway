@@ -367,6 +367,25 @@ class TestGatewayAuthProxyEndToEnd:
         assert sub.header("thread-id") == "sub-13"
         assert main.header("thread-id") == "session-wide"
 
+    def test_forwards_the_request_when_the_per_request_headers_fail(self, make_gateway):
+        gw = make_gateway()
+
+        def adder(headers, body):
+            raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+
+        with _running_gateway_auth_proxy(
+            gw, added_headers={"session-id": "s-1"}, request_headers_adder=adder
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b'{"model":"m"}',
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        assert gw.requests[-1].header("session-id") == "s-1"
+        assert gw.requests[-1].body == b'{"model":"m"}'
+
     def test_drops_configured_fields_from_chat_completions_only(self, make_gateway):
         gw = make_gateway()
         body = b'{"model":"gpt-4o-mini","reasoning_effort":"medium","messages":[]}'

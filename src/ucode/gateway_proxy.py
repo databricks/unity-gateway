@@ -658,14 +658,19 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        self._request_added = {
-            **self.added_headers,
-            **(
-                self.request_headers_adder(self.headers, body) if self.request_headers_adder else {}
-            ),
-        }
+        self._request_added = {**self.added_headers, **self._request_headers(body)}
         added = frozenset(name.lower() for name in self._request_added)
         return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
+
+    def _request_headers(self, body: bytes | None) -> Mapping[str, str]:
+        if self.request_headers_adder is None:
+            return {}
+        try:
+            return self.request_headers_adder(self.headers, body)
+        except Exception as exc:
+            # The headers only label the request, so a failure must not cost the request.
+            log_proxy_diagnostic("request_headers_failed", error=type(exc).__name__)
+            return {}
 
     def _added_headers(self) -> dict[str, str]:
         return dict(self._request_added)

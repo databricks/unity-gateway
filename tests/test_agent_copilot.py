@@ -1899,9 +1899,12 @@ class TestSessionArgs:
 class TestSubagentHeaders:
     SUBAGENT = {"x-interaction-type": "conversation-subagent"}
 
+    def setup_method(self):
+        self.adder = copilot.subagent_headers(SESSION)
+
     def _id(self, body, headers=SUBAGENT):
         raw = body if isinstance(body, bytes) else json.dumps(body).encode()
-        return copilot.subagent_headers(SESSION)(headers, raw).get("thread-id")
+        return self.adder(headers, raw).get("thread-id")
 
     def test_each_subagent_keeps_one_id_over_its_turns(self):
         first = {
@@ -1967,3 +1970,24 @@ class TestSubagentHeaders:
     )
     def test_no_id_for_the_main_agent_or_a_body_it_cannot_read(self, headers, body):
         assert self._id(body, headers) is None
+
+    def test_a_lone_surrogate_still_gets_an_id(self):
+        body = b'{"messages": [{"role": "user", "content": "cut \\ud83d"}]}'
+
+        assert self._id(body).startswith(f"{SESSION}-")
+
+    def test_the_id_is_keyed_for_the_launch(self):
+        body = json.dumps({"messages": [{"role": "user", "content": "find tests"}]}).encode()
+        one, other = copilot.subagent_headers(SESSION), copilot.subagent_headers(SESSION)
+
+        assert one(self.SUBAGENT, body) == one(self.SUBAGENT, body)
+        assert one(self.SUBAGENT, body) != other(self.SUBAGENT, body)
+
+
+class TestWithSessionId:
+    def test_adds_the_session_id_unless_an_admin_header_sets_it(self):
+        assert copilot.with_session_id({"User-Agent": "u"}, SESSION) == {
+            "session-id": SESSION,
+            "User-Agent": "u",
+        }
+        assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}

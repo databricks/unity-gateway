@@ -28,6 +28,7 @@ inspection and `revert`; Copilot never reads it and it never holds a credential.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -1124,6 +1125,13 @@ def session_args(tool_args: list[str]) -> tuple[list[str], str]:
     return ["--session-id", session_id, *tool_args], session_id
 
 
+def with_session_id(headers: dict[str, str], session_id: str) -> dict[str, str]:
+    """``headers`` and the session id, unless an admin's header of that name already sets it."""
+    if any(name.casefold() == SESSION_ID_HEADER for name in headers):
+        return headers
+    return {SESSION_ID_HEADER: session_id, **headers}
+
+
 def _text(content: object) -> str | None:
     if isinstance(content, str):
         return content
@@ -1159,7 +1167,9 @@ def first_user_text(body: bytes | None) -> str | None:
 
 def subagent_headers(session_id: str) -> Callable[[Any, bytes | None], dict[str, str]]:
     """Gives a subagent's requests an id of that subagent: Copilot marks them only by type, and
-    its delegated prompt, the first user message, stays the same over the subagent's turns."""
+    its delegated prompt, the first user message, stays the same over the subagent's turns. The
+    hash is keyed for this launch, so the id can't confirm a guess at the prompt."""
+    key = secrets.token_bytes(32)
 
     def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
         if request_headers.get("x-interaction-type") != "conversation-subagent":
@@ -1167,8 +1177,9 @@ def subagent_headers(session_id: str) -> Callable[[Any, bytes | None], dict[str,
         prompt = first_user_text(body)
         if prompt is None:
             return {}
-        digest = hashlib.sha256(prompt.encode()).hexdigest()[:16]
-        return {SUBAGENT_ID_HEADER: f"{session_id}-{digest}"}
+        # JSON can carry a lone surrogate, which strict UTF-8 can't encode.
+        digest = hmac.new(key, prompt.encode("utf-8", "surrogatepass"), hashlib.sha256)
+        return {SUBAGENT_ID_HEADER: f"{session_id}-{digest.hexdigest()[:16]}"}
 
     return headers
 
@@ -1249,7 +1260,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         workspace,
         _token_provider(state),
         session_secret=session_secret,
-        added_headers={SESSION_ID_HEADER: session_id, **proxy_headers(state)},
+        added_headers=with_session_id(proxy_headers(state), session_id),
         request_headers_adder=subagent_headers(session_id),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
         on_refresh_failure=_log_proxy_failure,

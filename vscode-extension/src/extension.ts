@@ -133,7 +133,8 @@ export const SESSION_ID_HEADER = "session-id";
  * private option. Its subagents share their parent's, so a subagent gets no id of its own. */
 export const sessionHeaders = (modelOptions: unknown): Record<string, string> => {
   const id = (modelOptions as { _conversationId?: unknown } | undefined)?._conversationId;
-  return typeof id === "string" && id ? { [SESSION_ID_HEADER]: id } : {};
+  // A value fetch rejects as a header would fail every request.
+  return typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id) ? { [SESSION_ID_HEADER]: id } : {};
 };
 
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };

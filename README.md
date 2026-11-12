@@ -113,9 +113,11 @@ Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` 
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
 
 So that AI Gateway's usage table can tell sessions and subagents apart, the proxy sends each request
-a `session-id` header: the UUID of the session you resume with `--session-id` or `--resume`, else a
-new one that ug passes to Copilot as `--session-id`. A subagent's requests also get a `thread-id`
-of that session and the subagent. Copilot Chat in VS Code sends its chat's id as `session-id`.
+a `session-id` header: the UUID of the session you resume with `--session-id` or `--resume`, or for
+a new session a new one that ug passes to Copilot as `--session-id`. A session picked another way
+(by name, `--continue`) gets an id of that launch only. A subagent's requests also get a
+`thread-id` of that session and the subagent. Copilot Chat in VS Code sends its chat's id as
+`session-id`.
 
 `ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
 Service instead, and `/model` lists that service's models: Claude models of an Anthropic or

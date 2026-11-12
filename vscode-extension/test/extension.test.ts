@@ -501,6 +501,8 @@ describe("sessionHeaders", () => {
     assert.deepEqual(sessionHeaders({ _conversationId: "c-1", _capturingTokenCorrelationId: "r-1" }), { "session-id": "c-1" });
     assert.deepEqual(sessionHeaders({ _conversationId: 7 }), {});
     assert.deepEqual(sessionHeaders({ _conversationId: "" }), {});
+    assert.deepEqual(sessionHeaders({ _conversationId: "a\nb" }), {});
+    assert.deepEqual(sessionHeaders({ _conversationId: "x".repeat(257) }), {});
     assert.deepEqual(sessionHeaders(undefined), {});
   });
 });
