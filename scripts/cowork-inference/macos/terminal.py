@@ -16,6 +16,19 @@ from ucode.os_compatibility import subprocess_cross_os as process
 
 PROBE_TIMEOUT_SECONDS = 900
 PROBE_CLEANUP_SECONDS = 90
+REQUIRED_PROBE_ENVIRONMENT = (
+    "UCODE_TEST_WORKSPACE",
+    "DATABRICKS_BEARER",
+    "RUNNER_TEMP",
+    "GITHUB_ACTIONS",
+    "PATH",
+)
+OPTIONAL_PROBE_ENVIRONMENT = (
+    "UG_COWORK_PROVIDER",
+    "UG_COWORK_MODEL",
+    "UG_COWORK_RELAY",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+)
 TERMINAL_TIMEOUT_SECONDS = PROBE_TIMEOUT_SECONDS + PROBE_CLEANUP_SECONDS + 30
 
 
@@ -116,16 +129,8 @@ def run_terminal(capability="inference"):
     try:
         environment.write_text(
             json.dumps(
-                {
-                    key: os.environ[key]
-                    for key in (
-                        "UCODE_TEST_WORKSPACE",
-                        "DATABRICKS_BEARER",
-                        "RUNNER_TEMP",
-                        "GITHUB_ACTIONS",
-                        "PATH",
-                    )
-                }
+                {key: os.environ[key] for key in REQUIRED_PROBE_ENVIRONMENT}
+                | {key: os.environ[key] for key in OPTIONAL_PROBE_ENVIRONMENT if key in os.environ}
             )
         )
         environment.chmod(0o600)
@@ -157,7 +162,8 @@ def run_terminal(capability="inference"):
         stages = {
             "UG gateway profile configured",
             "Gateway onboarding accepted",
-            "Cowork selected",
+            "Cowork task screen ready",
+            "Cowork model selected",
             "Start task requested",
             "Cowork inference passed",
             "Cowork probe failed; see evidence",
