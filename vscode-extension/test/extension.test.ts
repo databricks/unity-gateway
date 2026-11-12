@@ -352,6 +352,15 @@ describe("whenCopilotChatIsOn", () => {
     assert.deepEqual(host.executed, []);
   });
 
+  it("is ready at once, with no notice, in a remote window, where Copilot Chat runs out of sight", async () => {
+    host.remoteName = "ssh-remote";
+    const calls: boolean[] = [];
+    whenCopilotChatIsOn(context(), (late) => calls.push(late), () => {});
+    await settle();
+    assert.deepEqual(calls, [false]);
+    assert.deepEqual(host.notices, []);
+  });
+
   it("shows no notice when the user turned AI features off", async () => {
     host.settings = { "chat.disableAIFeatures": true };
     host.commands = [TURN_ON_COMMAND];

@@ -48,6 +48,7 @@ export const host = {
   executed: [] as string[],
   notices: [] as { message: string; actions: string[] }[],
   choice: undefined as string | undefined,
+  remoteName: undefined as string | undefined,
   reset(): void {
     this.copilotChat = undefined;
     this.extensionListeners = [];
@@ -56,6 +57,12 @@ export const host = {
     this.executed = [];
     this.notices = [];
     this.choice = undefined;
+    this.remoteName = undefined;
+  },
+};
+export const env = {
+  get remoteName() {
+    return host.remoteName;
   },
 };
 export const extensions = {

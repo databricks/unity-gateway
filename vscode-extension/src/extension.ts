@@ -228,7 +228,8 @@ export const NOTICE_SHOWN_KEY = "copilotChatOffNoticeShown";
  * on. VS Code turns Copilot Chat off in a profile that never finished its chat setup, and a prompt sent to a
  * Databricks model then asks the user to sign in to GitHub. */
 export function whenCopilotChatIsOn(context: vscode.ExtensionContext, ready: (late: boolean) => void, log: (line: string) => void): void {
-  if (vscode.extensions.getExtension(COPILOT_CHAT)) {
+  // In a remote window Copilot Chat runs on the remote side, out of this extension's sight.
+  if (vscode.env.remoteName || vscode.extensions.getExtension(COPILOT_CHAT)) {
     ready(false);
     return;
   }
