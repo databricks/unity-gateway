@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 
-from ucode.smart_routing import routing, session_log, v2
+from ucode.smart_routing import claude_routing, routing, session_log, v2
 
 
 @pytest.fixture
@@ -50,7 +50,6 @@ def test_record_shape(log_dir, decision):
         "tool_use_id": "tool1",
         "prompt": {
             "preview": "inspect parser",
-            "text": "inspect parser",
             "sha256": hashlib.sha256(b"inspect parser").hexdigest(),
             "length": 14,
         },
@@ -68,17 +67,13 @@ def test_record_shape(log_dir, decision):
     }
 
 
-def test_preview_first_nonblank_line_and_privacy(log_dir, decision):
+def test_preview_first_nonblank_line_truncated(log_dir, decision):
     task = "\n  \n  " + "x" * 161 + "  \nsecond line"
     write({"session_id": "s1"}, decision, task)
-    write({"session_id": "s1"}, decision, task, include_task_text=False)
-    first, private = [
-        json.loads(line) for line in (log_dir / "claude-s1.jsonl").read_text().splitlines()
-    ]
-    assert first["prompt"]["preview"] == "x" * 160 + "…"
-    assert first["prompt"]["text"] == task
-    assert private["prompt"] == {**first["prompt"], "preview": None, "text": None}
-    assert first["tool_use_id"] is None
+    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
+    assert record["prompt"]["preview"] == "x" * 160 + "…"
+    assert record["prompt"]["length"] == len(task)
+    assert record["tool_use_id"] is None
 
 
 @pytest.mark.parametrize("session_id", ["../escape", "a" * 129, "a/b", "é"])
@@ -132,6 +127,12 @@ def test_filesystem_errors_are_nonfatal(log_dir, decision, monkeypatch, failure)
     else:
         monkeypatch.setattr(session_log, "acquire_exclusive_file_lock", fail)
     write({"session_id": "s1"}, decision)
+    path = log_dir / "claude-s1.jsonl"
+    if failure == "lock":
+        # The file was created before the lock failed, but no record reached it.
+        assert path.exists() and path.read_text() == ""
+    else:
+        assert not path.exists()
 
 
 def test_claude_subagent_audit_writes_one_timed_record(log_dir, tmp_path, decision, monkeypatch):
@@ -171,3 +172,38 @@ def test_no_session_record_without_audit_or_route(log_dir, decision, monkeypatch
     v2.route_claude_subagent(payload, **kwargs)
     v2.route_claude_subagent({**payload, "tool_name": "Read"}, audit_decision=True, **kwargs)
     assert not log_dir.exists()
+
+
+def test_read_decisions_distinguishes_missing_from_unreadable(log_dir, decision, monkeypatch):
+    """A missing log is empty history; a permission failure must not look empty."""
+
+    def deny_read(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    assert session_log.read_decisions("claude", "absent") == []
+    write({"session_id": "s1"}, decision)
+    path = log_dir / "claude-s1.jsonl"
+    monkeypatch.setattr(type(path), "read_text", deny_read)
+    with pytest.raises(PermissionError):
+        session_log.read_decisions("claude", "s1")
+
+
+def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_path, monkeypatch):
+    monkeypatch.setattr(claude_routing, "CANARY_PATH", tmp_path / "canary.json")
+    monkeypatch.setattr(claude_routing, "AUDIT_PATH", tmp_path / "audit.jsonl")
+    monkeypatch.setattr(claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    write({"session_id": "s1"}, decision)
+    assert log_dir.exists()
+    claude_routing.clear_routing_artifacts()
+    assert not log_dir.exists()
+
+
+def test_private_preview_omits_task_text(log_dir, decision):
+    task = "secret task\nprivate continuation"
+    write({"session_id": "s1"}, decision, task, include_task_text=False)
+    record = json.loads((log_dir / "claude-s1.jsonl").read_text())
+    assert record["prompt"] == {
+        "preview": None,
+        "sha256": hashlib.sha256(task.encode()).hexdigest(),
+        "length": len(task),
+    }

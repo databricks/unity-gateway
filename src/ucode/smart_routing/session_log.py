@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -47,8 +48,7 @@ def append_decision(
         path = session_log_path(harness, payload.get("session_id"))
         if path is None:
             return
-        first_line = next((line.strip() for line in task_text.splitlines() if line.strip()), None)
-        preview = first_line
+        preview = next((line.strip() for line in task_text.splitlines() if line.strip()), None)
         if preview is not None and len(preview) > PREVIEW_CHARS:
             preview = preview[:PREVIEW_CHARS] + "…"
         original = payload.get("tool_input")
@@ -62,9 +62,10 @@ def append_decision(
             "kind": "subagent",
             "session_id": payload["session_id"],
             "tool_use_id": payload.get("tool_use_id"),
+            # Only a bounded first-line preview is stored; the full prompt text
+            # stays out of ~/.ucode (the decisions file already holds it).
             "prompt": {
                 "preview": preview if include_task_text else None,
-                "text": task_text if include_task_text else None,
                 "sha256": hashlib.sha256(
                     task_text.encode("utf-8", errors="surrogatepass")
                 ).hexdigest(),
@@ -118,8 +119,11 @@ def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
         return []
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
+    except FileNotFoundError:
+        # A session without a log simply has no recorded decisions.
         return []
+    # Other read failures (permissions, I/O) propagate: the caller must not
+    # present an unreadable log as an empty history.
     records: list[dict[str, Any]] = []
     for line in lines:
         line = line.strip()
@@ -127,7 +131,7 @@ def read_decisions(harness: str, session_id: str) -> list[dict[str, Any]]:
             continue
         try:
             record = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         if not isinstance(record, dict):
             continue
@@ -149,3 +153,8 @@ def overview(record: dict[str, Any]) -> dict[str, Any]:
         "selected_model": record.get("selected_model"),
         "routing_ms": record.get("routing_ms"),
     }
+
+
+def clear_logs() -> None:
+    """Remove the session log directory. Best effort, like clear_artifacts."""
+    shutil.rmtree(LOG_DIR, ignore_errors=True)

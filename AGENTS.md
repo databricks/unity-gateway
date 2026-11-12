@@ -149,7 +149,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
-and `~/.config` on Linux. Windows and Linux require Desktop to have opened once.
+and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux requires Desktop to have opened once.
 UG reserves UUID `5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6` for its fully owned profile.
 Configure replaces the profile, updates its metadata entry, and selects it, retaining
 same-workspace connectors until MCP reconciliation succeeds. Changing workspaces
@@ -263,5 +263,18 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
+
+</details>
+
+<details>
+<summary>GitHub Copilot in VS Code</summary>
+
+Fields live in the VS Code user `settings.json`. `ug`'s extension writes them when it starts, from the `ug-config.json` that `ug configure` packed into it, and records what it wrote: once a configure no longer asks for a field, the extension removes the value it wrote, and a value the developer changed since stays. `ug revert` removes them before it uninstalls the extension, from the user `settings.json` and each profile's, except a value the developer changed; for an OTel agent, a changed `otlpEndpoint` keeps its whole group. A `settings.json` with comments is left alone, and revert names the fields to remove.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `github.copilot.chat.otel.enabled`, `.exporterType`, `.protocol`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the local agent exports protobuf to the extension's loopback receiver, which forwards traces to the gateway |
+| `chat.agentHost.otel.enabled`, `.exporterType`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the Copilot CLI agent exports to the same receiver |
+| `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on |
 
 </details>

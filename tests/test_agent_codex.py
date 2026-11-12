@@ -646,6 +646,38 @@ class TestCodexWriteConfig:
 
         assert "hooks" not in read_toml_safe(config_path)
 
+    def test_config_write_strips_codex_hook_trust_state(self, tmp_path, monkeypatch):
+        config_path = tmp_path / ".codex" / "ucode.config.toml"
+        config_path.parent.mkdir()
+        config_path.write_text(
+            "[[hooks.PreToolUse]]\n"
+            'matcher = "Bash"\n'
+            "[[hooks.PreToolUse.hooks]]\n"
+            'type = "command"\n'
+            'command = "user-policy"\n'
+            "\n"
+            '[hooks.state."/home/u/.codex/hooks.json:post_tool_use:1:0"]\n'
+            'trusted_hash = "sha256:a4ce19f6a4c610a35e632d2bb901bef8b62e0528832f2ab4ee4026b84efa2589"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
+        monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "save_state", lambda state: None)
+
+        codex.write_tool_config({"workspace": WS})
+
+        doc = read_toml_safe(config_path)
+        # A stale snapshot of Codex's trust bookkeeping must not survive in ug's
+        # profile layer, where forwarding it would re-prompt hook approval on
+        # every launch (AIGTWY-5220).
+        assert "state" not in doc["hooks"]
+        pre_tool_commands = [
+            hook["command"] for group in doc["hooks"]["PreToolUse"] for hook in group["hooks"]
+        ]
+        assert pre_tool_commands == ["user-policy"]
+        assert doc["model_provider"] == "Databricks"
+
     def test_legacy_write_preserves_other_profiles_in_shared_config(self, tmp_path, monkeypatch):
         config_dir = tmp_path / ".codex"
         config_dir.mkdir()
@@ -1908,6 +1940,35 @@ class TestCodexLaunch:
         )
         assert 'base_url = "https://example.databricks.com/ai-gateway/codex/v1"' in provider_arg
         assert "Upgrade Codex" not in capsys.readouterr().err
+
+    def test_launch_does_not_forward_hook_trust_state(self, tmp_path, monkeypatch):
+        launches = self._patch(tmp_path, monkeypatch)
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text(
+            'model_provider = "Databricks"\n'
+            "\n"
+            "[[hooks.PreToolUse]]\n"
+            'matcher = "Agent|.*spawn_agent$"\n'
+            "[[hooks.PreToolUse.hooks]]\n"
+            'type = "command"\n'
+            'command = "ug codex-router-hook route-subagent"\n'
+            "\n"
+            '[hooks.state."/home/u/.codex/hooks.json:post_tool_use:1:0"]\n'
+            'trusted_hash = "sha256:a4ce19f6a4c610a35e632d2bb901bef8b62e0528832f2ab4ee4026b84efa2589"\n',
+            encoding="utf-8",
+        )
+
+        codex.launch({"workspace": WS}, [], options=LaunchOptions())
+
+        argv = launches[0]
+        # Codex saves hook approvals in its own config.toml; a forwarded stale
+        # snapshot would outrank it and re-ask on every launch (AIGTWY-5220).
+        assert not any("hooks.state" in arg for arg in argv)
+        assert not any("trusted_hash" in arg for arg in argv)
+        # Other profile config, including hook groups, still reaches the launch.
+        assert 'model_provider="Databricks"' in argv
+        pre_tool_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
+        assert "route-subagent" in pre_tool_override
 
     @pytest.mark.parametrize("tool_args", [[], ["exec", "hi"]])
     @pytest.mark.parametrize("stale_profile", [False, True])

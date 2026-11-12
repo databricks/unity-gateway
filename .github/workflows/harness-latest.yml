@@ -41,12 +41,26 @@ jobs:
   harness-latest:
     name: harness-latest · ${{ matrix.suite }}
     needs: resolve-versions
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        suite: [cujs, live, managed]
+        include:
+          - suite: cujs
+            runner: ubuntu-22.04
+          - suite: live
+            runner: ubuntu-22.04
+            marker: harness_latest and not managed_fixture
+          - suite: managed
+            runner: ubuntu-22.04
+            managed: true
+            marker: harness_latest and managed_fixture
+          # The newest ChatGPT desktop build from OpenAI's appcast, ahead of the pin in integration.yml.
+          - suite: desktop
+            runner: macos-latest
+            managed: true
+            marker: managed_fixture and macos_desktop and codex
     env:
       CLAUDE_VERSION: ${{ needs.resolve-versions.outputs.claude }}
       CODEX_VERSION: ${{ needs.resolve-versions.outputs.codex }}
@@ -56,11 +70,11 @@ jobs:
       UG_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_CUJ_SP_CLIENT_SECRET }}
       UG_BUDGET_CUJ_SP_CLIENT_ID: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_ID }}
       UG_BUDGET_CUJ_SP_CLIENT_SECRET: ${{ secrets.UG_BUDGET_CUJ_SP_CLIENT_SECRET }}
-      UCODE_TEST_WORKSPACE: ${{ matrix.suite == 'managed' && secrets.E2E_ADMIN_WORKSPACE || secrets.UCODE_TEST_WORKSPACE }}
-      DATABRICKS_BEARER: ${{ matrix.suite != 'managed' && secrets.DATABRICKS_BEARER || '' }}
-      DATABRICKS_CLIENT_ID: ${{ matrix.suite == 'managed' && secrets.E2E_ADMIN_SP_CLIENT_ID || '' }}
-      DATABRICKS_CLIENT_SECRET: ${{ matrix.suite == 'managed' && secrets.E2E_ADMIN_SP_CLIENT_SECRET || '' }}
-      TEST_MARKER: ${{ matrix.suite == 'managed' && 'harness_latest and managed_fixture' || 'harness_latest and not managed_fixture' }}
+      UCODE_TEST_WORKSPACE: ${{ matrix.managed && secrets.E2E_ADMIN_WORKSPACE || secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ !matrix.managed && secrets.DATABRICKS_BEARER || '' }}
+      DATABRICKS_CLIENT_ID: ${{ matrix.managed && secrets.E2E_ADMIN_SP_CLIENT_ID || '' }}
+      DATABRICKS_CLIENT_SECRET: ${{ matrix.managed && secrets.E2E_ADMIN_SP_CLIENT_SECRET || '' }}
+      TEST_MARKER: ${{ matrix.marker }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -93,6 +107,20 @@ jobs:
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
             pytest --confcutdir=tests/e2e_cuj tests/e2e_cuj \
             -m harness_latest -v --basetemp "$RUNNER_TEMP/cuj"
+      - name: Install the newest ChatGPT desktop app
+        if: ${{ matrix.suite == 'desktop' }}
+        env:
+          # OpenAI OpCo, LLC's Developer ID team, which signs every appcast build.
+          OPENAI_TEAM_ID: 2DC432GLL2
+        run: |
+          url=$(curl -fsSL --retry 3 https://persistent.oaistatic.com/codex-app-prod/appcast.xml |
+            python3 -c 'import sys, xml.etree.ElementTree as E; print(E.parse(sys.stdin).find("channel/item/enclosure").get("url"))')
+          zip="$RUNNER_TEMP/ChatGPT.zip"
+          curl -fsSL --retry 3 -o "$zip" "$url"
+          ditto -xk "$zip" /Applications
+          codesign --verify --deep --strict /Applications/ChatGPT.app
+          spctl --assess --type execute /Applications/ChatGPT.app
+          codesign -dv /Applications/ChatGPT.app 2>&1 | grep -qx "TeamIdentifier=$OPENAI_TEAM_ID"
       - name: Run opted-in integration tests against the latest agents
         if: ${{ matrix.suite != 'cujs' }}
         shell: bash
@@ -101,7 +129,7 @@ jobs:
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
             --claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" \
-            -- -m "$TEST_MARKER"
+            ${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }} -- -m "$TEST_MARKER"
       - name: Upload latest harness evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
