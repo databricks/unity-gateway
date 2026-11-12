@@ -39,7 +39,9 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
         (expected_command,) if isinstance(expected_command, str) else expected_command
     )
     rendered_command = (
-        " ".join(line.strip() for line in command.group(1).splitlines()) if command else None
+        " ".join(line.strip() for line in command.group(1).splitlines()).strip()
+        if command
+        else None
     )
     assert (
         re.search(r"(?m)^[ \t]*Environment: local[ \t]*$", dialog) is not None

@@ -20,6 +20,7 @@ metadata handoffs add no synthetic prompt to the native conversation history.
 The busy child uses UG's installed Python on both platforms. Windows command approvals
 use the native UI; the toggle matcher also recognizes the explicit environment guard
 and wrapped command presentation, while rejecting additional commands.
+Native blank lines around the command do not change approval matching.
 
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.

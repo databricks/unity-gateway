@@ -19,6 +19,7 @@ Main handoffs use empty input; queued user input is preserved, and idle toggles 
 no inference. Live histories must contain exactly the prompts submitted through the TUI.
 Windows journeys use UG's installed Python for the busy child and native approval
 keystrokes. Toggle approvals accept only the requested command or its known environment guard.
+Approval evidence tolerates the native dialog's wrapped lines and blank spacing.
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace

@@ -40,11 +40,14 @@ from tests.integration.utils.terminal import codex_command_approval_pending
         "no-choice",
     ],
 )
-def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+@pytest.mark.parametrize("command_gap", ["\n", "\n\n\n"])
+def test_codex_approval_requires_the_exact_local_command(
+    command, environment, missing, expected, command_gap
+):
     prompt = "Would you like to run the following command?"
     footer = "Press enter to confirm or esc to cancel"
     choice = "› 1. Yes, proceed (y)"
-    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}{command_gap}{choice}\n{footer}"
     if missing == "prompt":
         screen = screen.replace(prompt, "")
     elif missing == "footer":
@@ -72,7 +75,7 @@ def test_codex_windows_toggle_approval_accepts_only_the_known_guard(extra_comman
     )
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
-        f"  $ {guard}\n  {command[2:]}{extra_command}\n"
+        f"  $ {guard}\n  {command[2:]}{extra_command}\n\n\n"
         "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
     )
     expected = (command, f"{guard} {command[2:]}")
