@@ -1498,7 +1498,6 @@ def _configure_workspace_command(
             return 0
         configured_tools: list[str] = []
         failed_tools: list[str] = []
-        expansion_failures: set[str] = set()
         failure_reasons: dict[str, str] = {}
         latest_configured: dict | None = None
         for tool_name in managed_tools:
@@ -1511,7 +1510,6 @@ def _configure_workspace_command(
                 # fails at the end (`_fail_machine_wide_run`), matching other per-tool failures.
                 print_warning(str(exc))
                 failed_tools.append(tool_name)
-                expansion_failures.add(tool_name)
                 failure_reasons[tool_name] = str(exc)
                 continue
             resolved = resolve_state(expanded_managed, state, tool_name)
@@ -1563,8 +1561,6 @@ def _configure_workspace_command(
                 f"{TOOL_SPECS[name]['display']}: {reason}"
                 for name, reason in failure_reasons.items()
             )
-            if expansion_failures == set(managed_tools):
-                raise RuntimeError(details)
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
                 f"are available on this workspace. {details} "
@@ -1575,10 +1571,12 @@ def _configure_workspace_command(
         assert latest_configured is not None
         persisted = dict(latest_configured)
         persisted.pop("last_configured_tools", None)
-        for tool_name in configured_tools:
-            set_managed_model_source_expansions(
-                persisted, tool_name, get_managed_model_source_expansions(state, tool_name)
-            )
+        if MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY in state:
+            persisted[MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY] = state[
+                MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY
+            ]
+        else:
+            persisted.pop(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY, None)
         save_state(persisted)
         registered_mcps: list[str] = []
         if not is_dry_run():
