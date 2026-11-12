@@ -32,7 +32,6 @@ from utils.evidence import (
     assistant_answers,
     codex_routing_display_for_task,
     fresh_id,
-    is_child_session,
     read_jsonl,
 )
 from utils.harness import ANSI
@@ -241,15 +240,6 @@ def _toggle_with_skill(
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    def answer_count():
-        answers = 0
-        for path, records in agent_sessions(session, agent).items():
-            if is_child_session(agent, path, records):
-                continue
-            answers += len(assistant_answers(agent, records))
-        return answers
-
-    before_answers = answer_count()
     reload_log = session.home / ".ucode/codex-v2-interposer.log"
     before_reloads = reload_log.read_text().count("[RELOAD] resumed") if reload_log.exists() else 0
     tui.submit(invocation)
@@ -273,12 +263,10 @@ def _toggle_with_skill(
         except PermissionError:
             # Windows denies reads while ug replaces the controls file; try again next frame.
             return False
-        answers = answer_count()
         return (
             controls_now == expected
             and reload_log.exists()
             and reload_log.read_text().count("[RELOAD] resumed") > before_reloads
-            and answers > before_answers
             and "esc to interrupt" not in screen.lower()
         )
 
@@ -1252,14 +1240,15 @@ def _codex_app_server_pids(tui):
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.codex_smart_routing
-def test_smart_router_codex_reload_without_children_updates_inference(
-    live_session, workspace, tmp_path
+@pytest.mark.parametrize("idle_children", [False, True], ids=["no-children", "idle-children"])
+def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
+    live_session, workspace, tmp_path, idle_children
 ):
-    """Scenario: toggle off/on through the installed skill while no children exist.
+    """Scenario: toggle off/on through the installed skill with no children or one idle child.
 
-    Expected: real parent inference uses current header/body attribution after each
-    toggle. App-server PIDs, the TUI connection, and root ID stay unchanged; no child
-    is spawned. The real TUI exits normally with its default sandbox intact.
+    Expected: no recovery prompt or automatic turn follows either toggle. Explicit
+    user probes use current header/body attribution. App-server PIDs, connection,
+    and original IDs stay unchanged, with native sandbox/approvals and normal exit.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v1")
@@ -1289,18 +1278,64 @@ def test_smart_router_codex_reload_without_children_updates_inference(
                 timeout=120,
             )
             original = _codex_thread_ids(session)
+            root = original["/root"]
+            if idle_children:
+                tui.submit(
+                    'Spawn exactly one child named idle_worker with fork_turns="none". '
+                    f"Tell it to reply exactly child-idle-{marker} and END its turn. "
+                    f"Wait for its final answer, then reply exactly root-idle-{marker} "
+                    "and END your turn."
+                )
+                tui.wait_for(
+                    lambda screen: (
+                        len(threads := _codex_thread_ids(session)) == 2
+                        and _codex_thread_answered(session, root, f"root-idle-{marker}")
+                        and _codex_thread_answered(
+                            session, threads["/root/idle_worker"], f"child-idle-{marker}"
+                        )
+                        and "esc to interrupt" not in screen.lower()
+                    ),
+                    "parent and completed child idle before toggling",
+                    timeout=120,
+                )
+                original = _codex_thread_ids(session)
+
+            def root_turns():
+                return {
+                    row["payload"]["turn_id"]
+                    for records in agent_sessions(session, "codex").values()
+                    if any(
+                        row.get("type") == "session_meta" and row["payload"].get("id") == root
+                        for row in records
+                    )
+                    for row in records
+                    if row.get("type") == "turn_context"
+                }
+
             requests = [r for r in recorder.requests_after(0) if r.path.endswith("/responses")]
             metadata = requests[0].payload["client_metadata"]["x-codex-turn-metadata"]
             metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
             launch_recipe = metadata["smart_router_recipe_name"]
             assert launch_recipe and launch_recipe != "DISABLED"
             for enabled, recipe in ((False, "DISABLED"), (True, launch_recipe)):
-                checkpoint = recorder.checkpoint()
+                before_turns = root_turns()
                 _toggle_with_skill(
                     tui, session, "codex", enabled=enabled, orchestration_enabled=False
                 )
                 state = "on" if enabled else "off"
                 assert _codex_app_server_pids(tui) == server_pids
+                assert _codex_thread_ids(session) == original
+                checkpoint = recorder.checkpoint()
+                tui.submit(f"Reply exactly probe-{state}-{marker}. Do not use tools or delegate.")
+                tui.wait_for(
+                    lambda screen, state=state: (
+                        _codex_thread_answered(session, root, f"probe-{state}-{marker}")
+                        and "esc to interrupt" not in screen.lower()
+                    ),
+                    f"explicit parent probe after silent {state} reload",
+                    timeout=120,
+                )
+                assert len(root_turns() - before_turns) == 2, "Toggle started an automatic turn"
                 assert _codex_thread_ids(session) == original
                 session.record(
                     f"recipe-{state}.json",
@@ -1308,9 +1343,8 @@ def test_smart_router_codex_reload_without_children_updates_inference(
                         session,
                         recorder,
                         checkpoint,
-                        original.values(),
+                        [root],
                         recipe,
-                        continuation=f"Smart Router is now {state}. UG reloaded",
                     ),
                 )
             log = (session.home / ".ucode/codex-v2-interposer.log").read_text()

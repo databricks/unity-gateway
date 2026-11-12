@@ -33,9 +33,12 @@ The integration runner accepts `--smart-router-name` (or explicit
 homes receive only this selected test recipe; other inherited routing flags stay
 scrubbed. Use a recipe supported by the selected workspace.
 
-`test_smart_router_codex_reload_without_children_updates_inference` checks installed-skill
-off/on with no children: parent request headers/body metadata, unchanged server PIDs,
-one TUI connection, stable root ID, no new children, and normal TUI exit.
+`test_smart_router_codex_idle_reload_updates_inference_without_recovery` checks installed-skill
+off/on with no children or a completed idle child: no recovery prompt or automatic
+turn, explicit user probes with current parent request headers/body metadata,
+unchanged server PIDs, one TUI connection, stable root/child IDs, and normal TUI exit.
+Component checks distinguish idle roots, explicit toggle-only turns, and real
+interrupted work; busy children still require recovery even for a toggle-only turn.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
 checks the installed-wheel busy-child off/on journey: unchanged app-server PIDs and

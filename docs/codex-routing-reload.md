@@ -61,12 +61,14 @@ metadata, and the recipe header may be absent. It must never carry a stale value
    and its latest accepted model, working directory, sandbox, and approval settings.
    Automatic continuation uses those same settings, including the model nested in
    collaboration mode.
-4. A continuation asks the parent to resume unfinished children with
-   `followup_task`, without spawning replacements or repeating the toggle.
+4. If actual work was interrupted, a continuation asks the parent to resume
+   unfinished children with `followup_task`, without spawning replacements or repeating the toggle.
    Children can be absent from `list_agents` until reopened; the parent recovers
    task names from conversation history. This applies even when the latest user
-   prompt only toggled Smart Router. With no unfinished work, the parent confirms
-   the setting and stops.
+   prompt only toggled Smart Router. An idle parent or a turn containing only
+   `$smart-router on` or `$smart-router off`, with no interrupted children, resumes
+   silently: UG sends no recovery prompt
+   and starts no automatic turn. Completed idle children remain saved.
 
 User input waits behind the reload; approval replies can still pass through.
 Queued user input receives recovery context instead of a competing continuation,
@@ -114,11 +116,13 @@ The installed-wheel busy-child journey requires unchanged app-server PIDs and on
 TUI connection, saved child IDs, preserved sandbox/approval settings, exclusive
 command-completion receipts, child-owned final answers, and successful parent and
 child requests with current attribution. Separate journeys cover ordinary navigation
-and installed-skill off/on toggles. A recording test fixture forwards real gateway
+and installed-skill off/on toggles. Idle-toggle journeys require exactly the skill
+turn and an explicit user probe, with no automatic turn, both with no children and
+with a completed idle child. A recording test fixture forwards real gateway
 traffic unchanged; it is not part of the production request path.
 
-On 2026-11-12, 782 focused component/contract tests and the lint gate passed
-after the follow-up review fixes. Socket-collision checks also passed with an
+On 2026-11-12, 794 focused component/contract tests and the lint gate passed
+after the follow-up review and idle-toggle fixes. Socket-collision checks also passed with an
 unrelated listener on the mocked launcher port. The installed-wheel results below
 are from revision `2bde6427`, before those follow-up fixes, in a fresh Linux Arclet
 against the explicitly selected `eng-ml-inference` profile with router `m2-r315-quality-20260929`:

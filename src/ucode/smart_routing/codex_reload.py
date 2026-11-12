@@ -70,6 +70,21 @@ def session_routing_enabled(controls: Path) -> bool:
     )
 
 
+def is_toggle_only(params: dict) -> bool:
+    inputs = params.get("input")
+    if not isinstance(inputs, list):
+        return False
+    texts = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            return False
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            texts.append(item["text"])
+        elif item.get("type") != "skill" or item.get("name") != "smart-router":
+            return False
+    return " ".join(texts).split() in (["$smart-router", "on"], ["$smart-router", "off"])
+
+
 class RoutingReload:
     def __init__(
         self,
@@ -88,6 +103,7 @@ class RoutingReload:
         self.parents: dict[str, str | None] = {}
         self.task_paths: dict[str, str] = {}
         self.active: dict[str, str] = {}
+        self.toggle_turns: dict[str, str] = {}
         self.pending: dict[str, asyncio.Future[dict]] = {}
         self.client_requests: dict[str | int, tuple[str, dict]] = {}
         self.loaded_resumes: set[str | int] = set()
@@ -359,6 +375,15 @@ class RoutingReload:
                 if settings is not None:
                     self.remember_settings(requested, settings)
                     self.remember_settings(result, settings)
+                if requested_method == "turn/start" and isinstance(target, str):
+                    self.toggle_turns.pop(target, None)
+                    turn = result.get("turn")
+                    if (
+                        is_toggle_only(requested)
+                        and isinstance(turn, dict)
+                        and isinstance(turn.get("id"), str)
+                    ):
+                        self.toggle_turns[target] = turn["id"]
             self.loaded_resumes.discard(identity)
         method = message.get("method")
         method = method if isinstance(method, str) else None
@@ -379,6 +404,8 @@ class RoutingReload:
         elif method == "turn/completed" and tid is not None and isinstance(turn_id, str):
             if self.active.get(tid) == turn_id:
                 self.active.pop(tid)
+            if self.toggle_turns.get(tid) == turn_id:
+                self.toggle_turns.pop(tid)
         if (
             isinstance(identity, str)
             and identity.startswith(INTERNAL_REQUEST_PREFIX)
@@ -495,11 +522,9 @@ class RoutingReload:
             roots = {self.root}
             interrupted_children: dict[str, set[str]] = {}
             interrupted_roots = set()
-            routing_changed = False
             while True:
                 await self.unload(roots, interrupted_children, interrupted_roots)
                 enabled = self.enabled()
-                routing_changed |= enabled != self.applied
                 config = routing_config(self.config, enabled)
                 for root in sorted(roots):
                     settings = self.conversations[root]
@@ -521,12 +546,7 @@ class RoutingReload:
                 for root in sorted(roots):
                     if self.cancel_continuation:
                         break
-                    if (
-                        root == self.root
-                        and routing_changed
-                        or root in interrupted_roots
-                        or root in interrupted_children
-                    ):
+                    if root in interrupted_roots or root in interrupted_children:
                         await self.continue_task(
                             root, enabled, interrupted_children.get(root, set())
                         )
@@ -561,7 +581,7 @@ class RoutingReload:
                     continue
                 if tid != root:
                     interrupted_children.setdefault(root, set()).add(self.task_paths.get(tid, tid))
-                else:
+                elif self.toggle_turns.get(tid) != turn:
                     interrupted_roots.add(root)
                 try:
                     await self.rpc("turn/interrupt", {"threadId": tid, "turnId": turn})

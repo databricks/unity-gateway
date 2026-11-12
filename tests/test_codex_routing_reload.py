@@ -175,6 +175,64 @@ def test_off_on_restores_launch_recipe_without_mutating_launch_config(tmp_path):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("children", ["none", "idle", "running"])
+@pytest.mark.parametrize("parent", ["idle", "toggle", "work", "toggle_and_work"])
+def test_reload_only_continues_interrupted_work(tmp_path, children, parent):
+    async def scenario():
+        controller, engine, _, controls = make_controller(tmp_path)
+        controller.active.clear()
+        if children == "none":
+            engine.loaded.pop("child")
+        elif children == "running":
+            engine.add("child", "root")
+        if parent != "idle":
+            text = {
+                "toggle": "$smart-router off",
+                "work": "Finish updating the parser",
+                "toggle_and_work": "$smart-router off, then finish updating the parser",
+            }[parent]
+            await controller.before_tui(
+                {
+                    "id": 100,
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": "root",
+                        "input": [
+                            {"type": "text", "text": text},
+                            {"type": "skill", "name": "smart-router", "path": "/skill/SKILL.md"},
+                        ],
+                    },
+                }
+            )
+            controller.observe({"id": 100, "result": {"turn": {"id": "parent-turn"}}})
+            controller.observe(
+                {
+                    "method": "turn/started",
+                    "params": {"threadId": "root", "turn": {"id": "parent-turn"}},
+                }
+            )
+        for enabled in (False, True):
+            controls.write_text(
+                "{}" if enabled else json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+            )
+            checkpoint = len(engine.calls)
+            await controller.reload()
+            expected_recovery = not enabled and (
+                children == "running" or parent in {"work", "toggle_and_work"}
+            )
+            calls = engine.calls[checkpoint:]
+            assert sum(call["method"] == "turn/start" for call in calls) == int(expected_recovery)
+            assert not controller.continuations
+            resumed = next(call for call in calls if call["method"] == "thread/resume")
+            assert resumed["params"]["config"]["responses_api_metadata"][
+                "smart_router_recipe_name"
+            ] == ("stable" if enabled else "DISABLED")
+            assert controller.ready.is_set()
+            controller.active.clear()
+
+    asyncio.run(scenario())
+
+
 def test_reload_preserves_effective_permissions_and_working_directory(tmp_path):
     async def scenario():
         controller, engine, _, controls = make_controller(tmp_path)
