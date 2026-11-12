@@ -59,15 +59,22 @@ if [ ! -x /usr/local/bin/claude ]; then
   install -m 755 "$tmp/claude" /usr/local/bin/claude
 fi
 
-# Install Codex
-if [ ! -x /usr/local/bin/codex ]; then
+# Install Codex from its release package, which also includes the
+# codex-code-mode-host helper Code Mode needs next to codex.
+if [ ! -x "$PREFIX/codex/bin/codex" ]; then
   case "$(uname -m)" in
     aarch64 | arm64) target=aarch64-unknown-linux-musl ;;
     *) target=x86_64-unknown-linux-musl ;;
   esac
-  curl -fsSL "$CODEX_RELEASES/codex-$target.tar.gz" \
-    | tar -xzf - -C "$tmp" "codex-$target"
-  install -m 755 "$tmp/codex-$target" /usr/local/bin/codex
+  package="codex-package-$target.tar.gz"
+  curl -fsSL -o "$tmp/$package" "$CODEX_RELEASES/$package"
+  curl -fsSL "$CODEX_RELEASES/codex-package_SHA256SUMS" \
+    | grep "  $package\$" | (cd "$tmp" && sha256sum -c -)
+  mkdir -p "$PREFIX/codex"
+  tar -xzf "$tmp/$package" -C "$PREFIX/codex"
+  ln -sfn "$PREFIX/codex/bin/codex" /usr/local/bin/codex
+  ln -sfn "$PREFIX/codex/bin/codex-code-mode-host" \
+    /usr/local/bin/codex-code-mode-host
 fi
 
 # Get short lived credential; curl reads the client id and secret from

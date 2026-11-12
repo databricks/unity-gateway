@@ -4,7 +4,6 @@ Stages run in file order: provision, machine-wide files, demote, launch Claude, 
 """
 
 import json
-import re
 import stat
 import tomllib
 from pathlib import Path
@@ -17,11 +16,14 @@ from .conftest import (
     CODEX_SETTINGS,
     DARWIN,
     HOME,
+    JWT,
     MACHINE_WIDE_ROOTS,
     POLICY,
     machine_snapshot,
+    root_home_leaks,
     snapshot,
     user_uid,
+    with_secret,
 )
 
 PROMPT = "What is 6 times 7? Reply with only the number."
@@ -51,8 +53,6 @@ ALIASES = {
     "codex": "UG_SKIP_OS_SETTINGS=1 ug codex",
 }
 SHELL_RCS = (Path("/etc/zshrc"), Path("/etc/bashrc"))
-# A Databricks OAuth token, such as the one the provisioning script mints and exports.
-JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 
 
 def assert_root_owned(path, mode=0o644):
@@ -117,6 +117,11 @@ def test_no_credentials_written_machine_wide(machine, provisioned):
     assert not leaked, leaked
 
 
+def test_no_credentials_written_to_root_home(machine, provisioned):
+    leaked = root_home_leaks(machine)
+    assert not leaked, leaked
+
+
 def test_provisioning_left_the_user_home_untouched(demoted):
     leaked = [p for p in demoted.home if p.startswith(f"{HOME}/.ucode") or ".claude" in p]
     assert not leaked, leaked
@@ -149,10 +154,10 @@ def test_shell_aliases_installed(machine, demoted):
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 def test_demoted_user_launches_agent(machine, demoted, agent):
     result = machine.as_user(
-        LAUNCH[agent],
+        with_secret("DATABRICKS_BEARER", LAUNCH[agent]),
         timeout=240,
+        secret=demoted.bearer,
         UG_SKIP_OS_SETTINGS="1",
-        DATABRICKS_BEARER=demoted.bearer,
     )
     assert result.returncode == 0, result.output[-4000:]
     assert ANSWER in result.output, result.output[-4000:]

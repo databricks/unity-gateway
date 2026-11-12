@@ -959,13 +959,16 @@ jobs:
       - name: Require every integration job to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
+          # mdm-provision is skipped on pinned runs, which it doesn't test.
+          MDM_PINNED: ${{ !((inputs.ug_version == '' || inputs.ug_version == 'checkout') && (inputs.claude_version == '' || inputs.claude_version == '2.1.290') && (inputs.codex_version == '' || inputs.codex_version == '0.154.0') && (inputs.dependency == '')) }}
         run: |
           python3 - <<'PY'
           import json
           import os
           results = json.loads(os.environ["RESULTS"])
+          allowed = {"mdm-provision": "skipped"} if os.environ.get("MDM_PINNED") == "true" else {}
           failed = [job for job, result in results.items()
-                    if result["result"] != "success"]
+                    if result["result"] != "success" and allowed.get(job) != result["result"]]
           if failed:
               raise SystemExit("Integration jobs did not pass: " + ", ".join(failed))
           print("All integration jobs passed: " + ", ".join(results))

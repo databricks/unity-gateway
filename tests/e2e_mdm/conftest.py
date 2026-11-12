@@ -7,8 +7,10 @@ only runs on a disposable host with UG_MDM_E2E=1, and imports nothing from ucode
 import json
 import os
 import pwd
+import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -48,6 +50,7 @@ INSTALLED = (
     Path("/usr/local/bin/ug"),
     Path("/usr/local/bin/claude"),
     Path("/usr/local/bin/codex"),
+    Path("/usr/local/bin/codex-code-mode-host"),
     Path("/usr/local/bin/databricks"),
     Path("/usr/local/bin/uv"),
     Path("/usr/local/unity-gateway"),
@@ -102,43 +105,85 @@ class Run:
 
 # The client secret and every minted bearer, masked in any output a failure prints.
 SECRETS = [os.environ.get("UG_MDM_E2E_CLIENT_SECRET", "")]
+# A Databricks OAuth token, such as the one the provisioning script mints and exports.
+JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 
 
 def scrub(text: str) -> str:
     for value in filter(None, SECRETS):
         text = text.replace(value, "***")
-    return text
+    return JWT.sub("***", text)
 
 
-def run(argv, *, timeout, extra_env=None, check=False, merge_stderr=True) -> Run:
-    """Run a command with no stdin and no controlling terminal, so a password prompt cannot wait."""
-    argv = [str(a) for a in argv]
-    try:
-        proc = subprocess.run(
-            argv,
+def kill_tree(pid: int) -> None:
+    """Kill a process and every descendant, including ones under sudo that run as another user."""
+    listing = subprocess.run(
+        ["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False
+    ).stdout
+    children: dict[int, list[int]] = {}
+    for line in listing.splitlines():
+        child, parent = map(int, line.split())
+        children.setdefault(parent, []).append(child)
+    tree, stack = [], [pid]
+    while stack:
+        current = stack.pop()
+        tree.append(current)
+        stack.extend(children.get(current, ()))
+    denied = []
+    for target in tree:
+        try:
+            os.kill(target, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            denied.append(str(target))
+    if denied:
+        subprocess.run(
+            ["sudo", "-n", "kill", "-KILL", *denied],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            start_new_session=True,
-            env={**os.environ, **(extra_env or {})},
+            capture_output=True,
+            check=False,
+            timeout=30,
         )
-    except subprocess.TimeoutExpired as exc:
-        partial = (exc.output or b"").decode(errors="replace")
-    else:
-        partial = None
+
+
+def run(argv, *, timeout, check=False, merge_stderr=True, secret=None) -> Run:
+    """Run a command with no controlling terminal and no stdin, so a password prompt cannot wait.
+
+    A `secret` is the only stdin, for a command that reads it first and gives what it runs
+    /dev/null: sudo logs arguments and preserved variables, but not stdin.
+    """
+    argv = [str(a) for a in argv]
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL if secret is None else subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(
+            None if secret is None else f"{secret}\n", timeout=timeout
+        )
+        timed_out = False
+    except subprocess.TimeoutExpired:
+        kill_tree(proc.pid)
+        stdout, stderr = proc.communicate()
+        timed_out = True
     # Outside the except block, so the failure doesn't chain TimeoutExpired, whose message holds
     # argv and with it any minted bearer, which GitHub doesn't mask.
-    if partial is not None:
+    if timed_out:
         pytest.fail(
-            f"{scrub(str(argv[:4]))} timed out after {timeout}s:\n{scrub(partial)[-4000:]}",
+            f"{scrub(str(argv[:4]))} timed out after {timeout}s:\n{scrub(stdout or '')[-4000:]}",
             pytrace=False,
         )
-    result = Run(proc.returncode, scrub(proc.stdout))
+    result = Run(proc.returncode, scrub(stdout))
     if check and result.returncode:
-        detail = result.output + scrub(proc.stderr or "")
-        pytest.fail(f"{argv[:4]} exited {result.returncode}:\n{detail[-4000:]}", pytrace=False)
+        detail = result.output + scrub(stderr or "")
+        pytest.fail(
+            f"{scrub(str(argv[:4]))} exited {result.returncode}:\n{detail[-4000:]}", pytrace=False
+        )
     return result
 
 
@@ -163,12 +208,16 @@ class Machine:
         }
         return [f"{k}={v}" for k, v in values.items()]
 
-    def as_user(self, argv, *, home=str(HOME), timeout=60, **extra) -> Run:
-        """Run as the test user from a clean environment, as a login from MDM-managed Macs would."""
+    def as_user(self, argv, *, home=str(HOME), timeout=60, secret=None, **extra) -> Run:
+        """Run as the test user from a clean environment, as a login from MDM-managed Macs would.
+
+        A `secret` reaches the command on stdin; see `run` and `with_secret`.
+        """
         in_home = ["sh", "-c", 'cd "$HOME" && exec "$@"', "sh", *argv]
         return run(
             ["sudo", "-n", "-u", USER, "-H", "env", "-i", *self.env(home, **extra), *in_home],
             timeout=timeout,
+            secret=secret,
         )
 
     def mint_bearer(self) -> str:
@@ -188,6 +237,64 @@ class Machine:
             token = json.load(response)["access_token"]
         SECRETS.append(token)
         return token
+
+
+ROOT_HOME = Path("/var/root" if DARWIN else "/root")
+# What root's configure, the Databricks CLI and the agents write in the home they run with.
+ROOT_HOME_STATE = (
+    ".ucode",
+    ".claude",
+    ".claude.json",
+    ".codex",
+    ".databricks",
+    ".databrickscfg",
+    ".config",
+)
+CREDENTIAL_SCAN = r"""
+import os, re, sys
+
+secret = sys.stdin.readline().rstrip("\n")
+jwt = re.compile(sys.argv[1])
+leaked = []
+for root in sys.argv[2:]:
+    paths = [root] if os.path.isfile(root) else [
+        os.path.join(base, name) for base, _, names in os.walk(root) for name in names
+    ]
+    for path in paths:
+        if os.path.islink(path):
+            continue
+        with open(path, errors="ignore") as f:
+            text = f.read()
+        if (secret and secret in text) or jwt.search(text):
+            leaked.append(path)
+print("\n".join(leaked))
+"""
+
+
+def with_secret(name: str, argv) -> list[str]:
+    """Run argv with the secret on stdin exported as `name`, and /dev/null as its stdin."""
+    return ["sh", "-c", f'IFS= read -r {name}; export {name}; exec "$@" </dev/null', "sh", *argv]
+
+
+def root_home_leaks(machine) -> list[str]:
+    """Files in root's state that hold the client secret or a token, read as root."""
+    result = run(
+        [
+            "sudo",
+            "-n",
+            sys.executable,
+            "-I",
+            "-c",
+            CREDENTIAL_SCAN,
+            JWT.pattern,
+            *(str(ROOT_HOME / name) for name in ROOT_HOME_STATE),
+        ],
+        timeout=120,
+        check=True,
+        merge_stderr=False,
+        secret=machine.client_secret,
+    )
+    return result.output.split()
 
 
 def snapshot(roots) -> dict:
@@ -271,6 +378,9 @@ def admin(machine):
 @pytest.fixture(scope="module")
 def provisioned(machine, admin):
     """Run the provisioning script as the admin user, the way MDM runs it as root, without a password."""
+    # Sourced with Jamf's arguments set by `set --`, so the secret is $6 as Jamf passes it, but
+    # it reaches root on stdin and is never a process argument.
+    source = 'IFS= read -r secret; set -- / mdm-e2e "$1" "$2" "$3" "$secret"; unset secret; . "$0" </dev/null'
     result = machine.as_user(
         [
             "sudo",
@@ -278,15 +388,15 @@ def provisioned(machine, admin):
             "env",
             *machine.env("/var/root" if DARWIN else "/root"),
             "bash",
+            "-c",
+            source,
             str(PROVISION_SCRIPT),
-            "/",
-            "mdm-e2e",
             USER,
             machine.workspace,
             machine.client_id,
-            machine.client_secret,
         ],
         timeout=1500,
+        secret=machine.client_secret,
     )
     return result
 

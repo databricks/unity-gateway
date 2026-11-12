@@ -195,7 +195,9 @@ user's sudo is removed, and `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex` run h
 the `claude` and `codex` aliases the script adds must resolve in the user's login zsh and bash. Nothing may
 ask for a password (`sudo -n`, no stdin, no tty), and
 the launches must leave every machine-wide file byte- and stat-identical and write only user-owned
-files in the user's home.
+files in the user's home. Neither the client secret nor a token may appear in the machine-wide files or
+root's ug, agent and Databricks CLI state. The secret and the launch bearer reach their commands through
+sudo's preserved environment, never an argument, so sudo's log and process listings don't show them.
 
 It creates a user and writes `/etc` and `/usr/local`, so it is skipped unless `UG_MDM_E2E=1`, and is
 excluded from the default `pytest` run. Inputs: `UG_MDM_E2E_WORKSPACE`, `UG_MDM_E2E_CLIENT_ID`,
@@ -204,8 +206,10 @@ service principal's token uses the scopes the provisioning script requests. Run 
 `pytest -c tests/e2e_mdm/pytest.ini --confcutdir=tests/e2e_mdm --rootdir=. tests/e2e_mdm`.
 `test_mdm_provision_scripts.py`, in the default run, fails when the Linux twin's install, token
 request or `ug configure` lines stop matching the macOS script's.
-`test_mdm_e2e_harness.py` checks that a timed-out command's failure masks a minted credential in
-its command and output.
+`test_mdm_e2e_harness.py` (skipped on Windows) checks that a timed-out command's failure masks a
+minted credential in its command and output, that output masks token-shaped values, and that a timeout
+kills the command's descendants. `test_integration_contract.py` checks that `All integration tests`
+accepts a skipped `mdm-provision` only on pinned runs.
 
 `test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:
