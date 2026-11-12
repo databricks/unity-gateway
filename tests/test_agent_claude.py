@@ -670,6 +670,7 @@ class TestRenderOverlay:
             "system.ai.glm-5-3",
             "system.ai.kimi-k3",
             "databricks-custom-model",
+            "main.default.my_mps.us.anthropic.claude-opus-5-5",
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
@@ -679,9 +680,11 @@ class TestRenderOverlay:
             "GLM 5.3",
             "Kimi K3",
             "Databricks Custom Model",
+            "us.anthropic.claude-opus-5-5",
         ]
         assert overlay["availableModels"] == static
         assert overlay["modelPicker"]["options"][1]["model"] == static[1]
+        assert overlay["modelPicker"]["options"][-1]["model"] == static[-1]
 
     @pytest.mark.parametrize(
         "display_name", [None, "main.default.xxx.claude-opus-5-5", "Team Opus"]

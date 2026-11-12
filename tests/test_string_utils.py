@@ -56,7 +56,11 @@ def test_invalid_catalog_schema_name(value):
         ("my-catalog.my-schema.xxx.gpt-5-5", "GPT 5.5"),
         ("gpt-5.5", "GPT 5.5"),
         ("main.default.gpt-5-5", "GPT 5.5"),
-        ("one.two.three.four.five", "One.Two.Three.Four.Five"),
+        ("one.two.three.four.five", "four.five"),
+        (
+            "main.default.my_mps.us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-opus-5-5",
+        ),
         ("system.ai.gpt-5-6-luna", "GPT 5.6 Luna"),
         ("system.ai.glm-5-3-flash", "GLM 5.3 Flash"),
         ("system.ai.kimi-k3", "Kimi K3"),

@@ -50,12 +50,14 @@ def test_gpt_metadata_preserved_with_admin_identity_and_order(bundled):
 
 
 def test_hosted_services_get_readable_labels_and_keep_full_slugs(bundled):
-    names = ["system.ai.kimi-k3", "main.team.custom", "plain"]
+    nested = "main.default.my_mps.us.anthropic.claude-opus-5-5"
+    names = ["system.ai.kimi-k3", "main.team.custom", "plain", nested]
     models = catalog.build_codex_catalog(bundled, names)["models"]
     assert [(m["slug"], m["display_name"]) for m in models] == [
         ("system.ai.kimi-k3", "Kimi K3"),
         ("main.team.custom", "Custom"),
         ("plain", "Plain"),
+        (nested, "us.anthropic.claude-opus-5-5"),
     ]
 
 

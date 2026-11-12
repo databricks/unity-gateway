@@ -1,7 +1,7 @@
 # Test suites and user journeys
 
-Model picker component tests cover final-segment labels for three- and four-part model IDs,
-preserved unqualified dotted versions, and unchanged full model IDs in Claude's static and discovered
+Model picker component tests cover removing catalog/schema and optional provider prefixes,
+preserved dotted provider model names, and unchanged full model IDs in Claude's static and discovered
 pickers. Discovery retains custom display names and formats names that repeat the model ID.
 These checks do not establish native picker or live inference behavior.
 

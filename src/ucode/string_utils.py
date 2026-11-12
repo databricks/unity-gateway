@@ -31,9 +31,12 @@ def model_picker_label(model: str) -> str:
     """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
     ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
     and join a run of numeric segments into a dotted version, also a short one after a word that
-    ends in a digit (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``)."""
-    segments = model.split(".")
+    ends in a digit (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``).
+    Dotted provider model names are preserved verbatim after removing the three-part prefix."""
+    segments = model.split(".", 3)
     stem = segments[-1] if len(segments) in (3, 4) else model
+    if len(segments) == 4 and "." in stem:
+        return stem
     parts: list[str] = []
     version: list[str] = []
     for token in stem.split("-"):
