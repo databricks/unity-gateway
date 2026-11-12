@@ -1,7 +1,7 @@
 # Integration tests
 
 Component checks in `../test_string_utils.py` and `../test_agent_claude.py` cover
-friendly Claude labels without custom catalog prefixes and preserve full request IDs.
+final-segment labels for three- and four-part model IDs and preserve full request IDs.
 Native picker display and live inference for these custom names remain unverified.
 
 Subagent calculation journeys use short native task names. Offline evidence checks

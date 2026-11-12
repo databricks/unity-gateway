@@ -32,9 +32,8 @@ def model_picker_label(model: str) -> str:
     ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
     and join a run of numeric segments into a dotted version, also a short one after a word that
     ends in a digit (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``)."""
-    stem = model.removeprefix("system.ai.")
-    if ".claude-" in stem:
-        stem = "claude-" + stem.rsplit(".claude-", 1)[1]
+    segments = model.split(".")
+    stem = segments[-1] if len(segments) in (3, 4) else model
     parts: list[str] = []
     version: list[str] = []
     for token in stem.split("-"):
