@@ -43,7 +43,7 @@ from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     explicit_managed_writes,
     machine_wide_only,
-    mdm_managed,
+    published_agent_config_used,
 )
 from ucode.mcp_connection_login import connection_from_url
 from ucode.mcp_oauth import (
@@ -1215,18 +1215,23 @@ def _agent_managed_file_entries(
     return entries
 
 
-def resolve_machine_mcp_entries(manifest: dict, workspace: str) -> dict[str, dict[str, dict]]:
-    """The managed config's ``mcp_servers`` as machine-wide entries, for an MDM run.
+def resolve_machine_mcp_entries(
+    manifest: dict, workspace: str, *, profile: str | None = None, token: str | None = None
+) -> dict[str, dict[str, dict]]:
+    """The managed config's ``mcp_servers`` as machine-wide entries, for a managed run.
 
-    Returns ``{agent: {name: entry}}`` for Claude and Codex. Entries carry no Databricks CLI
-    profile, since one machine file serves every developer: Claude gets only the native HTTP
-    entries Claude Code signs in to itself, and Codex every server ug registers for it. Raises
-    ``RuntimeError`` when the servers can't be resolved.
+    Returns ``{agent: {name: entry}}`` for Claude and Codex. A ``unity_catalog_location`` is listed
+    as the run's own identity (``token``, else ``profile``). Entries carry no Databricks CLI
+    profile, since one machine file serves every developer and each signs in as themselves: Claude
+    gets only the native HTTP entries Claude Code signs in to itself, and Codex every server ug
+    registers for it. Raises ``RuntimeError`` when the servers can't be resolved.
     """
     selector = manifest.get("mcp_servers")
     if not isinstance(selector, dict) or not selector:
         return {"claude": {}, "codex": {}}
-    servers = _resolve_managed_mcp_servers(selector, workspace, None, ["claude", "codex"])
+    servers = _resolve_managed_mcp_servers(
+        selector, workspace, profile, ["claude", "codex"], token=token
+    )
     return {
         agent: _agent_managed_file_entries(agent, servers, workspace, None, False)
         for agent in ("claude", "codex")
@@ -1346,8 +1351,8 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
         if is_eligible and written:
             delivered.update((name, agent) for name in entries)
 
-    if mdm_managed() and "claude" in configured:
-        # The MDM run delivers these through Claude's managed file; registering them again at
+    if published_agent_config_used() and "claude" in configured:
+        # The managed run delivers these through Claude's managed file; registering them again at
         # user scope would shadow them. Servers it couldn't deliver still fall back below.
         in_managed_file = claude.read_managed_mcp_urls()
         delivered.update(

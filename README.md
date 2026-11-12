@@ -557,13 +557,13 @@ Routing-enabled responses are buffered until each model step completes.
 
 Smart routing now requires Codex 0.164.0
 or newer, including workspaces that already enable managed smart routing. Users on
-Codex 0.145–0.163 who previously launched successfully must upgrade or explicitly
+Codex 0.156–0.163 who previously launched successfully must upgrade or explicitly
 run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
 known older version and checks the result before launching. Declining, failing, or
 remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
 intentional requirement ensures native v2 provides readable delegated assignments;
-UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
-and newer. The general integration CI baseline remains 0.154.0; routing cases use
+UG does not silently disable routing. Ordinary launches support Codex 0.156.0
+and newer. The general integration CI baseline is 0.156.0; routing cases use
 0.165.0.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the

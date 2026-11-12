@@ -84,7 +84,6 @@ from ucode.managed_files import (
     managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
-    mdm_managed,
     read_managed_file,
     reconcile_managed_file,
     revert_managed_file,
@@ -135,12 +134,10 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
     SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
     AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
 }
-MINIMUM_CODEX_VERSION = (0, 145, 0)
-MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
-# requirements.toml's provider lock, which an MDM run writes, first appears in Codex 0.156.0;
+# Codex 0.156.0 first enforces requirements.toml's provider lock, which a managed run writes;
 # older releases ignore it and would leave developers free to bypass the gateway.
-MINIMUM_MDM_CODEX_VERSION = (0, 156, 0)
-MINIMUM_MDM_CODEX_VERSION_TEXT = "0.156.0"
+MINIMUM_CODEX_VERSION = (0, 156, 0)
+MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
 MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
 MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
@@ -206,14 +203,6 @@ def minimum_version_error(*, smart_routing_enabled: bool = False) -> str | None:
             f"Codex smart routing requires Codex {MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT} "
             f"or newer for readable delegated assignments; found {version}. "
             "Upgrade Codex or launch with --disable-smart-routing."
-        )
-    if mdm_managed():
-        if parsed is None or parsed >= MINIMUM_MDM_CODEX_VERSION:
-            return None
-        return (
-            f"This machine's Codex settings are managed by your IT team, which needs Codex "
-            f"{MINIMUM_MDM_CODEX_VERSION_TEXT} or newer; found {version}. Ask your IT team to "
-            "update Codex."
         )
     if parsed is None or parsed >= MINIMUM_CODEX_VERSION:
         return None
