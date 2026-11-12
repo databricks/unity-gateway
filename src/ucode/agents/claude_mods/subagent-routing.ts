@@ -115,6 +115,24 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
+// Claude always loads SubagentHandback, yet routed GLM children still select it through
+// ToolSearch, and the gateway rejects the follow-up request.
+type HandbackSelect =
+  | { kind: 'native' }
+  | { kind: 'loaded' }
+  | { kind: 'narrowed'; query: string }
+
+const HANDBACK_LOADED = 'SubagentHandback is already loaded, so ToolSearch skipped it. '
+  + 'Call SubagentHandback directly with your full report; a final text reply delivers nothing.'
+
+// Matches Claude's own select grammar: a case-insensitive prefix and trimmed, comma-separated names.
+const handbackSelect = (query: string): HandbackSelect => {
+  const names = /^select:(.+)$/i.exec(query)?.[1].split(',').map((name) => name.trim()).filter(Boolean) ?? []
+  const others = names.filter((name) => name.toLowerCase() !== 'subagenthandback')
+  if (others.length === names.length) return { kind: 'native' }
+  return others.length ? { kind: 'narrowed', query: `select:${others.join(',')}` } : { kind: 'loaded' }
+}
+
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
   routedModels.reset()
   const names = new Map<string, string>()
@@ -211,6 +229,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
       + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
     ] }
+  })
+
+  on('tool.call', { tool: 'ToolSearch' }, async ($, e, next) => {
+    const plan = routedModels.model(e.agentId) ? handbackSelect(e.query) : { kind: 'native' as const }
+    if (plan.kind === 'native') return next(e)
+    if (plan.kind === 'loaded') return { deny: HANDBACK_LOADED }
+    const result = await next({ ...e, query: plan.query })
+    if (result.deny !== undefined || result.isError) return result
+    return { ...result, context: [...(result.context ?? []), HANDBACK_LOADED] }
   })
 
   on('agent.spawn', async ($, e, next) => {
