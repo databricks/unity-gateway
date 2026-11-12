@@ -83,6 +83,14 @@ def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
 
 def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
     deadline = time.monotonic() + 120
+    current = ""
+
+    def remaining():
+        left = deadline - time.monotonic()
+        assert left > 0, (
+            f"Codex's MCP servers did not connect with the expected tools within 120s:\n{current}"
+        )
+        return left
 
     def inventory():
         screen = pyte.HistoryScreen(140, 60, history=1000)
@@ -95,12 +103,22 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
         return "\n".join([*history, *screen.display])
 
     while True:
+        remaining()
         output_start = len(tui.output)
-        tui.submit("/mcp verbose")
+        # AgentTerminal.submit's typed-input check, bounded by this inventory's deadline.
+        tui.send("/mcp verbose", "type text before pressing Enter")
+        tui.wait_for(
+            lambda screen: "/mcpverbose" in "".join(screen.split()),
+            "typed input",
+            timeout=remaining(),
+            stable_for=0.5,
+        )
+        remaining()
+        tui.send("\r", "press Enter after the input has rendered")
         tui.wait_for(
             lambda _: re.search(r"(?ms)MCP Tools.*?^\s*[›❯>]\s", inventory()),
             "Codex's complete MCP inventory response",
-            timeout=max(0, deadline - time.monotonic()),
+            timeout=remaining(),
         )
         current = inventory()
         connected = all(
@@ -115,10 +133,9 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
         if connected:
             tui.actions.append({"reason": "codex-mcp-inventory", "screen": current})
             return current
-        remaining = deadline - time.monotonic()
-        assert remaining > 0 and any(
+        assert any(
             re.search(rf"(?m)^\s*• {re.escape(service.replace('.', '-'))}: starting\b", current)
             for service in services
         ), f"Codex's MCP servers did not connect with the expected tools:\n{current}"
         # /mcp prints a snapshot; startup completion does not update its old rows.
-        time.sleep(min(1, remaining))
+        time.sleep(min(1, remaining()))

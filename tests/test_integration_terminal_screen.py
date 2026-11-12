@@ -1,5 +1,8 @@
 """Unit checks for the integration harness's virtual terminal screen."""
 
+import time
+from dataclasses import dataclass
+
 import pyte
 import pytest
 
@@ -82,26 +85,78 @@ def test_wait_for_task_custom_evidence_does_not_hide_api_errors():
         terminal.wait_for_task(_Task(), completion=lambda: True)
 
 
-class _McpInventoryTerminal:
-    """Control only terminal output; exercise the real inventory reader and parser."""
+class _Clock:
+    # wait_for treats a 0.0 stability start as unset, so the clock never reads zero.
+    start = 1000.0
 
-    def __init__(self, snapshots):
-        self.snapshots = snapshots
+    def __init__(self):
+        self.now = self.start
+
+    @property
+    def elapsed(self):
+        return self.now - self.start
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    clock = _Clock()
+    monkeypatch.setattr(time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(time, "sleep", clock.sleep)
+    return clock
+
+
+@dataclass
+class _McpReply:
+    snapshot: str
+    echo_delay: float = 0
+    not_before: float = 0
+
+
+class _ScriptedCodexPty:
+    idle_poll_seconds = 0.25
+
+    def __init__(self, clock, replies):
+        self.clock = clock
+        self.replies = replies
+        self.pending = []
+        self.typed = []
+
+    @property
+    def enters(self):
+        return [at for at, keys in self.typed if keys == "\r"]
+
+    def _reply(self):
+        return self.replies[min(len(self.enters), len(self.replies) - 1)]
+
+    def send(self, keys):
+        reply = self._reply()
+        self.typed.append((self.clock.elapsed, keys))
+        if keys == "\r":
+            chunk = "\x1b[2J\x1b[H" + reply.snapshot.replace("\n", "\r\n")
+            self.pending.append((max(self.clock.elapsed, reply.not_before), chunk))
+        else:
+            self.pending.append((self.clock.elapsed + reply.echo_delay, f"› {keys}"))
+        self.pending.sort(key=lambda item: item[0])
+
+    def read(self, timeout):
+        if self.pending and self.pending[0][0] <= self.clock.elapsed:
+            return self.pending.pop(0)[1]
+        self.clock.now += self.idle_poll_seconds
+        return None
+
+
+class _McpInventoryTerminal(AgentTerminal):
+    def __init__(self, pty):
+        self.agent = "codex"
+        self.child = pty
+        self.screen = TerminalScreen(140, 60, pty.send)
+        self.stream = pyte.Stream(self.screen)
         self.output = []
         self.actions = []
-        self.queries = 0
-
-    def submit(self, text):
-        assert text == "/mcp verbose"
-        index = min(self.queries, len(self.snapshots) - 1)
-        self.queries += 1
-        self.output.append("\x1b[2J\x1b[H" + self.snapshots[index].replace("\n", "\r\n"))
-
-    def wait_for(self, predicate, description, timeout):
-        assert timeout > 0
-        assert predicate(self.snapshots[min(self.queries - 1, len(self.snapshots) - 1)]), (
-            description
-        )
+        self.ended = False
 
 
 def _mcp_snapshot(status="connected", tool="describe_fixture", other_status="connected"):
@@ -121,27 +176,33 @@ def _mcp_snapshot(status="connected", tool="describe_fixture", other_status="con
     )
 
 
-@pytest.mark.parametrize("starting_snapshots", [0, 1, 3])
-def test_codex_mcp_inventory_refreshes_static_startup_snapshots(monkeypatch, starting_snapshots):
-    from tests.integration.utils import mcp
+_MCP_SERVICES = {
+    "ug_e2e.tools.fixture_metadata": "describe_fixture",
+    "ug_e2e.tools.fixture_reader": "read_fixture",
+}
+_MCP_BUDGET = 120
 
-    monkeypatch.setattr(mcp.time, "sleep", lambda _: None)
-    terminal = _McpInventoryTerminal(
-        [_mcp_snapshot("starting", other_status="starting")] * starting_snapshots
-        + [_mcp_snapshot()]
+
+def _inventory_actions(terminal):
+    return [action for action in terminal.actions if action["reason"] == "codex-mcp-inventory"]
+
+
+@pytest.mark.parametrize("starting_snapshots", [0, 1, 3])
+def test_codex_mcp_inventory_refreshes_static_startup_snapshots(clock, starting_snapshots):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    pty = _ScriptedCodexPty(
+        clock,
+        [_McpReply(_mcp_snapshot("starting", other_status="starting"))] * starting_snapshots
+        + [_McpReply(_mcp_snapshot())],
     )
-    inventory = mcp.open_codex_mcp_inventory(
-        terminal,
-        {
-            "ug_e2e.tools.fixture_metadata": "describe_fixture",
-            "ug_e2e.tools.fixture_reader": "read_fixture",
-        },
-    )
-    assert terminal.queries == starting_snapshots + 1
+    terminal = _McpInventoryTerminal(pty)
+    inventory = open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+    assert len(pty.enters) == starting_snapshots + 1
     assert "fixture_metadata: connected (1 tool)" in inventory
     assert "fixture_reader: connected (1 tool)" in inventory
     assert "starting" not in inventory
-    assert terminal.actions == [{"reason": "codex-mcp-inventory", "screen": inventory}]
+    assert _inventory_actions(terminal) == [{"reason": "codex-mcp-inventory", "screen": inventory}]
 
 
 @pytest.mark.parametrize(
@@ -152,32 +213,77 @@ def test_codex_mcp_inventory_refreshes_static_startup_snapshots(monkeypatch, sta
         _mcp_snapshot(other_status="failed"),
     ],
 )
-def test_codex_mcp_inventory_rejects_failed_servers_and_wrong_tools(snapshot):
+def test_codex_mcp_inventory_rejects_failed_servers_and_wrong_tools(clock, snapshot):
     from tests.integration.utils.mcp import open_codex_mcp_inventory
 
-    terminal = _McpInventoryTerminal([snapshot])
+    pty = _ScriptedCodexPty(clock, [_McpReply(snapshot)])
+    terminal = _McpInventoryTerminal(pty)
     with pytest.raises(AssertionError, match="did not connect with the expected tools"):
-        open_codex_mcp_inventory(
-            terminal,
-            {
-                "ug_e2e.tools.fixture_metadata": "describe_fixture",
-                "ug_e2e.tools.fixture_reader": "read_fixture",
-            },
-        )
-    assert terminal.queries == 1
-    assert terminal.actions == []
+        open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+    assert len(pty.enters) == 1
+    assert _inventory_actions(terminal) == []
 
 
-def test_codex_mcp_inventory_bounds_permanent_startup(monkeypatch):
-    from tests.integration.utils import mcp
+def test_codex_mcp_inventory_bounds_permanent_startup(clock):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
 
-    clock = iter(range(0, 1000, 10))
-    monkeypatch.setattr(mcp.time, "monotonic", lambda: next(clock))
-    monkeypatch.setattr(mcp.time, "sleep", lambda _: None)
-    terminal = _McpInventoryTerminal([_mcp_snapshot("starting")])
+    pty = _ScriptedCodexPty(clock, [_McpReply(_mcp_snapshot("starting"))])
+    terminal = _McpInventoryTerminal(pty)
     with pytest.raises(AssertionError, match="did not connect with the expected tools"):
-        mcp.open_codex_mcp_inventory(
-            terminal, {"ug_e2e.tools.fixture_metadata": "describe_fixture"}
-        )
-    assert terminal.queries == 6
-    assert terminal.actions == []
+        open_codex_mcp_inventory(terminal, {"ug_e2e.tools.fixture_metadata": "describe_fixture"})
+    assert len(pty.enters) > 1
+    assert all(at < _MCP_BUDGET for at, _ in pty.typed)
+    assert clock.elapsed <= _MCP_BUDGET
+    assert _inventory_actions(terminal) == []
+
+
+@pytest.mark.parametrize(
+    "replies",
+    [
+        pytest.param(
+            [_McpReply(_mcp_snapshot("starting"), not_before=_MCP_BUDGET - 1)],
+            id="snapshot-just-before-deadline",
+        ),
+        pytest.param(
+            # The second submission types at 101.5s, so its echo settles at exactly 120s.
+            [
+                _McpReply(_mcp_snapshot("starting"), not_before=100),
+                _McpReply(_mcp_snapshot(), echo_delay=18),
+            ],
+            id="echo-settles-at-deadline",
+        ),
+    ],
+)
+def test_codex_mcp_inventory_stops_submitting_once_the_budget_expires(clock, replies):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    pty = _ScriptedCodexPty(clock, replies)
+    terminal = _McpInventoryTerminal(pty)
+    with pytest.raises(AssertionError, match="did not connect with the expected tools") as error:
+        open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+    assert "ug_e2e-tools-fixture_metadata: starting (1 tool)" in str(error.value)
+    assert all(at < _MCP_BUDGET for at, _ in pty.typed)
+    assert _inventory_actions(terminal) == []
+
+
+@pytest.mark.parametrize("echo_delay, connects", [(10, True), (60, False)])
+def test_codex_mcp_inventory_bounds_input_echo_by_the_remaining_budget(clock, echo_delay, connects):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    pty = _ScriptedCodexPty(
+        clock,
+        [
+            _McpReply(_mcp_snapshot("starting"), not_before=100),
+            _McpReply(_mcp_snapshot(), echo_delay=echo_delay),
+        ],
+    )
+    terminal = _McpInventoryTerminal(pty)
+    if connects:
+        inventory = open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+        assert "fixture_metadata: connected (1 tool)" in inventory
+    else:
+        with pytest.raises(AssertionError, match="typed input") as error:
+            open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+        assert "ug_e2e-tools-fixture_metadata: starting (1 tool)" in str(error.value)
+        assert len(pty.enters) == 1
+    assert clock.elapsed <= _MCP_BUDGET
