@@ -77,9 +77,9 @@ After inference, three fresh Cowork tasks run through the same native UI:
    using the account directory created by the inference task. Its instructions refer
    to a file containing another random value. Require successful `Skill` and `Read`
    calls, the reference file's value in the tool result, and an identical completed answer.
-3. Register `system.ai.web_search` with `ug mcp add --names system.ai.web_search`, the same
-   registration the no-GUI Desktop journey in `tests/integration/test_ug_configure_claude_desktop.py`
-   uses, and require the Desktop profile's `web_search` connector to be UG's stdio proxy for that
+3. The hosted Desktop jobs set `UG_COWORK_MCP`, so the initial `ug configure` also passes
+   `--mcp system.ai.web_search` (the service in `task-fixture.json`). The task requires the
+   Desktop profile's `web_search` connector to be UG's stdio proxy for that
    service. Ask Cowork to search for Databricks' official website with that connector. Require a
    successful `mcp__*__web_search` call with a nonempty query whose result contains a
    `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
@@ -87,6 +87,8 @@ After inference, three fresh Cowork tasks run through the same native UI:
    Desktop's native web search cannot satisfy it. If Desktop asks before the connector's first
    use, the task approves it and records the label. This runs in the hosted Windows and macOS
    Desktop jobs, not the staging `anthropic-mps` lane.
+   UG writes the connector's absolute command from the `ug` on `PATH`, so both install scripts
+   add the test runtime to `PATH`, as an installed `ug` would be.
 
 `session-evidence.py` reads the native Desktop transcript belonging to the submitted
 prompt and requires an assistant `end_turn`. Failed tools, mismatched result IDs,

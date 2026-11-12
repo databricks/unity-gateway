@@ -176,6 +176,8 @@ jobs:
       UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
       UG_COWORK_MODEL: ${{ matrix.source.model }}
       UG_COWORK_RELAY: ${{ matrix.source.relay }}
+      # configure selects this lane's MCP service (task-fixture.json mcpService).
+      UG_COWORK_MCP: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -293,6 +295,8 @@ jobs:
       UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
       UG_COWORK_MODEL: ${{ matrix.source.model }}
       UG_COWORK_RELAY: ${{ matrix.source.relay }}
+      # configure selects this lane's MCP service (task-fixture.json mcpService).
+      UG_COWORK_MCP: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:

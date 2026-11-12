@@ -89,18 +89,6 @@ function New-CoworkTask {
             $task.skill = $fixture.skill
         }
         'mcp' {
-            $log = Join-Path $evidence 'mcp-add.txt'
-            # UG writes its own absolute path into Desktop's connector from PATH, as an installed ug would be.
-            $previousPath = $env:PATH
-            $env:PATH = "$(Split-Path -Parent $env:UG_COWORK_TEST_BINARY);$previousPath"
-            try {
-                $output = (& $env:UG_COWORK_TEST_BINARY mcp add --names $fixture.mcpService 2>&1 | Out-String)
-                $code = $LASTEXITCODE
-            } finally {
-                $env:PATH = $previousPath
-            }
-            Protect-DiagnosticText $output | Set-Content -LiteralPath $log
-            if ($code -ne 0) { throw 'ug mcp add failed; see mcp-add.txt' }
             $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
             $desktopProfile = Get-Content -Raw -LiteralPath $profilePath | ConvertFrom-Json
             $servers = @($desktopProfile.managedMcpServers | Where-Object { $_.name -eq $fixture.mcpServer })

@@ -27,8 +27,10 @@ $report = [ordered]@{
 $report | ConvertTo-Json |
     Set-Content "$env:RUNNER_TEMP/cowork-inference/configuration.json"
 $providerArgs = if ($provider) { @('--provider', $provider) } else { @() }
+$mcpService = (Get-Content -Raw -LiteralPath "$PSScriptRoot/task-fixture.json" | ConvertFrom-Json).mcpService
+$mcpArgs = if ($env:UG_COWORK_MCP -eq 'true') { @('--mcp', $mcpService) } else { @() }
 & $env:UG_COWORK_TEST_BINARY configure --profile desktop-ci `
-    --agents claude --user --disable-databricks-ai-tools --skip-validate --skip-upgrade @providerArgs
+    --agents claude --user --disable-databricks-ai-tools --skip-validate --skip-upgrade @providerArgs @mcpArgs
 if ($LASTEXITCODE -ne 0) { throw 'UG configure failed' }
 $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
 if (-not (Test-Path $profilePath)) { throw 'UG did not create its Desktop profile' }

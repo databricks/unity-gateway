@@ -1124,6 +1124,9 @@ def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in step
     assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in step
     assert ("-Capability mcp" in step) or ("--capability mcp" in step)
+    # configure selects the MCP service; the staging lane's workspace is not asked to serve it.
+    assert "      UG_COWORK_MCP: true\n" in job
+    assert "UG_COWORK_MCP:" not in _integration_jobs()["anthropic-mps"]
 
 
 def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():

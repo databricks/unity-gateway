@@ -796,43 +796,33 @@ WEB_SEARCH_PROXY = {
         ([{**WEB_SEARCH_PROXY, "args": ["mcp-proxy"]}], "does not proxy"),
     ],
 )
-def test_macos_mcp_task_requires_the_web_search_connector(
+def test_macos_mcp_task_requires_the_configured_web_search_connector(
     tasks, tmp_path, monkeypatch, servers, error
 ):
     monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
-    calls, logs = [], {}
-
-    def native_ug(args, **kwargs):
-        calls.append(args[1:])
-        assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(Path(args[0]).parent)
-        _mcp_profile(tmp_path, servers)
-        return subprocess.CompletedProcess(args, 0, stdout="added", stderr="")
-
-    # `ug mcp add` needs a live workspace; the profile check after it stays real.
-    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=native_ug))
-    desktop = SimpleNamespace(save=logs.__setitem__)
+    _mcp_profile(tmp_path, servers)
     task = {"capability": "mcp"}
     if error:
         with pytest.raises(RuntimeError, match=error):
-            tasks.prepare_mcp_task(task, desktop)
+            tasks.prepare_mcp_task(task)
+        return
+    task = tasks.prepare_mcp_task(task)
+    assert (task["mcpServer"], task["mcpTool"]) == ("web_search", "web_search")
+    assert task["prompt"] == tasks.FIXTURE["prompts"]["mcp"]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_macos_configure_selects_the_mcp_service_only_when_enabled(monkeypatch, enabled):
+    if enabled:
+        monkeypatch.setenv("UG_COWORK_MCP", "true")
     else:
-        task = tasks.prepare_mcp_task(task, desktop)
-        assert (task["mcpServer"], task["mcpTool"]) == ("web_search", "web_search")
-        assert task["prompt"] == tasks.FIXTURE["prompts"]["mcp"]
-    assert calls == [["mcp", "add", "--names", "system.ai.web_search"]]
-    assert "added" in logs["mcp-add.txt"]
-
-
-def test_macos_mcp_task_fails_when_registration_fails(tasks, monkeypatch):
-    def failed_ug(args, **kwargs):
-        return subprocess.CompletedProcess(args, 1, stdout="", stderr="no access")
-
-    # `ug mcp add` needs a live workspace; its failure handling stays real.
-    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=failed_ug))
-    logs = {}
-    with pytest.raises(RuntimeError, match="ug mcp add failed"):
-        tasks.prepare_mcp_task({"capability": "mcp"}, SimpleNamespace(save=logs.__setitem__))
-    assert "no access" in logs["mcp-add.txt"]
+        monkeypatch.delenv("UG_COWORK_MCP", raising=False)
+    spec = importlib.util.spec_from_file_location("macos_cowork_probe_mcp", SCRIPTS / "probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    monkeypatch.setenv("RUNNER_TEMP", "/tmp")
+    spec.loader.exec_module(probe)
+    assert probe.MCP_SERVICE == ("system.ai.web_search" if enabled else "")
 
 
 @pytest.mark.parametrize("label", [None, "Allow once", "Always allow"])

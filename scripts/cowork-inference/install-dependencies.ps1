@@ -18,3 +18,5 @@ $env:PIP_EXTRA_INDEX_URL = ''
 & $python -m pip install --disable-pip-version-check --index-url $packageIndex .
 if ($LASTEXITCODE -ne 0) { throw 'UG installation failed' }
 "UG_COWORK_TEST_BINARY=$(Join-Path $runtime 'Scripts/ug.exe')" | Add-Content $env:GITHUB_ENV
+# UG writes its own path into Desktop's MCP connectors from PATH, as for an installed ug.
+Join-Path $runtime 'Scripts' | Add-Content $env:GITHUB_PATH

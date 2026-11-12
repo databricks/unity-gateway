@@ -15,6 +15,11 @@ from ucode.os_compatibility import subprocess_cross_os as process
 MODEL = os.environ.get("UG_COWORK_MODEL") or "system.ai.claude-haiku-4-5"
 PROVIDER = os.environ.get("UG_COWORK_PROVIDER", "")
 RELAY = os.environ.get("UG_COWORK_RELAY") == "true"
+MCP_SERVICE = (
+    json.loads((Path(__file__).parents[1] / "task-fixture.json").read_text())["mcpService"]
+    if os.environ.get("UG_COWORK_MCP") == "true"
+    else ""
+)
 MODEL_LABEL_SUFFIXES = ("", " Extended", " Low", " Medium", " High", " Max")
 PROMPT = (
     "Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools."
@@ -159,6 +164,7 @@ def configure():
             "--disable-databricks-ai-tools",
             "--skip-upgrade",
             *(["--provider", PROVIDER] if PROVIDER else []),
+            *(["--mcp", MCP_SERVICE] if MCP_SERVICE else []),
         ],
         capture_output=True,
         text=True,

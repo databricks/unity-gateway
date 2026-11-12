@@ -3,7 +3,6 @@ import os
 import runpy
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 import uuid
@@ -65,7 +64,7 @@ def prepare_task(capability, desktop):
         )
         return task
     if capability == "mcp":
-        return prepare_mcp_task(task, desktop)
+        return prepare_mcp_task(task)
 
     marketplace = desktop.TEMP / FIXTURE["marketplace"]["name"]
     skill = marketplace / FIXTURE["skillDirectory"]
@@ -198,20 +197,7 @@ def matches_installed_skill(copy, source):
         return False
 
 
-def prepare_mcp_task(task, desktop):
-    runtime = Path(sys.executable).parent
-    result = process.run(
-        [str(runtime / "ug"), "mcp", "add", "--names", FIXTURE["mcpService"]],
-        # UG writes its own absolute path into Desktop's connector from PATH, as an installed ug would be.
-        env={**os.environ, "PATH": os.pathsep.join([str(runtime), os.environ.get("PATH", "")])},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        timeout=240,
-    )
-    desktop.save("mcp-add.txt", result.stdout + "\n" + result.stderr)
-    if result.returncode:
-        raise RuntimeError("ug mcp add failed; see mcp-add.txt")
+def prepare_mcp_task(task):
     profile = json.loads(
         (
             Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
