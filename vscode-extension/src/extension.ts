@@ -126,6 +126,16 @@ export const requestHeaders = (copilotChatVersion: unknown, managed: Readonly<Re
   };
 };
 
+/** The gateway logs this as the usage table's client session id, as it does for Codex. */
+export const SESSION_ID_HEADER = "session-id";
+
+/** Copilot Chat passes its chat session's id to other providers' models as `_conversationId`, a
+ * private option. Its subagents share their parent's, so a subagent gets no id of its own. */
+export const sessionHeaders = (modelOptions: unknown): Record<string, string> => {
+  const id = (modelOptions as { _conversationId?: unknown } | undefined)?._conversationId;
+  return typeof id === "string" && id ? { [SESSION_ID_HEADER]: id } : {};
+};
+
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
 
 export class DatabricksModels implements vscode.LanguageModelChatProvider<Model> {
@@ -177,7 +187,11 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     const turn = { model: model.id, messages, tools: options.tools ?? [], toolRequired: options.toolMode === vscode.LanguageModelChatToolMode.Required };
     const abort = new AbortController();
     const cancelled = token.onCancellationRequested(() => abort.abort());
-    const headers = { ...this.headers(), ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
+    const headers = {
+      ...sessionHeaders(options.modelOptions),
+      ...this.headers(),
+      ...(provider ? { [PROVIDER_HEADER]: provider } : {}),
+    };
     const tokens = this.tokens;
     const stream = (path: string, body: object, extra: Record<string, string> = {}) =>
       streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);

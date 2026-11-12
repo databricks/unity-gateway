@@ -340,6 +340,33 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.header("X-Tag") == "t"
         assert req.body == b'{"model":"m"}'
 
+    def test_adds_per_request_headers_from_the_request_over_the_session_ones(self, make_gateway):
+        gw = make_gateway()
+
+        def adder(headers, body):
+            return {"thread-id": f"sub-{len(body)}"} if headers.get("x-kind") == "sub" else {}
+
+        with _running_gateway_auth_proxy(
+            gw,
+            added_headers={"session-id": "s-1", "thread-id": "session-wide"},
+            request_headers_adder=adder,
+        ) as proxy_url:
+            for kind in ("sub", "main"):
+                httpx.post(
+                    f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                    headers={
+                        "Authorization": f"Bearer {_SESSION_SECRET}",
+                        "x-kind": kind,
+                        "thread-id": "from-client",
+                    },
+                    content=b'{"model":"m"}',
+                    timeout=10,
+                )
+        sub, main = gw.requests[-2:]
+        assert sub.header("session-id") == main.header("session-id") == "s-1"
+        assert sub.header("thread-id") == "sub-13"
+        assert main.header("thread-id") == "session-wide"
+
     def test_drops_configured_fields_from_chat_completions_only(self, make_gateway):
         gw = make_gateway()
         body = b'{"model":"gpt-4o-mini","reasoning_effort":"medium","messages":[]}'

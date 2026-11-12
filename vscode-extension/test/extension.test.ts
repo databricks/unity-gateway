@@ -10,6 +10,8 @@ import {
   PROVIDER_HEADER,
   readConfig,
   requestHeaders,
+  SESSION_ID_HEADER,
+  sessionHeaders,
   SWITCHED_KEY,
   switchToDefaultModel,
   userAgent,
@@ -24,7 +26,14 @@ const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join(
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
 const stubFetch = (...answers: [number, string, string?][]) => {
-  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; body: Record<string, unknown> }[] = [];
+  const requests: {
+    url: string;
+    authorization: string;
+    userAgent: string;
+    provider: string | null;
+    session: string | null;
+    body: Record<string, unknown>;
+  }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
     requests.push({
@@ -32,6 +41,7 @@ const stubFetch = (...answers: [number, string, string?][]) => {
       authorization: headers.get("authorization") ?? "",
       userAgent: headers.get("user-agent") ?? "",
       provider: headers.get(PROVIDER_HEADER),
+      session: headers.get(SESSION_ID_HEADER),
       body: JSON.parse(String(init.body)),
     });
     const [status, body, contentType] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
@@ -253,13 +263,13 @@ describe("DatabricksModels", () => {
     [200, sse('{"choices":[{"delta":{"content":"hey"},"finish_reason":"stop"}]}', "[DONE]")],
   ];
 
-  const askEach = async (provider: DatabricksModels) => {
+  const askEach = async (provider: DatabricksModels, modelOptions?: Record<string, unknown>) => {
     const reported: unknown[] = [];
     for (const model of await provider.provideLanguageModelChatInformation()) {
       await provider.provideLanguageModelChatResponse(
         model,
         [message(USER, text("hi"))],
-        { toolMode: LanguageModelChatToolMode.Auto } as unknown as vscode.ProvideLanguageModelChatResponseOptions,
+        { toolMode: LanguageModelChatToolMode.Auto, modelOptions } as unknown as vscode.ProvideLanguageModelChatResponseOptions,
         { report: (part) => reported.push(part) },
         { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) } as unknown as vscode.CancellationToken,
       );
@@ -281,6 +291,15 @@ describe("DatabricksModels", () => {
     );
     assert.equal(requests[0]?.body.max_tokens, 128_000);
     assert.deepEqual(reported, [new LanguageModelTextPart("hello"), new LanguageModelTextPart("hi"), new LanguageModelTextPart("hey")]);
+  });
+
+  it("sends the chat session's id on every API, and none when Copilot Chat passes none", async () => {
+    let requests = stubFetch(...answers);
+    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}), { _conversationId: "chat-1" });
+    assert.deepEqual(requests.map((request) => request.session), ["chat-1", "chat-1", "chat-1"]);
+    requests = stubFetch(...answers);
+    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}));
+    assert.deepEqual(requests.map((request) => request.session), [null, null, null]);
   });
 
   it("routes a Model Provider Service's models with its header, and OpenAI ones on the OpenAI route", async () => {
@@ -474,5 +493,14 @@ describe("switchToDefaultModel", () => {
     await switchToDefaultModel(ctx, settings(sonnet.id), "config-1", (line) => lines.push(line));
     assert.match(lines[0] ?? "", /Couldn't switch the chat to system.ai.claude-sonnet-5-5/);
     assert.equal(ctx.globalState.get(SWITCHED_KEY), "config-1");
+  });
+});
+
+describe("sessionHeaders", () => {
+  it("sends Copilot Chat's chat session id, and nothing without one", () => {
+    assert.deepEqual(sessionHeaders({ _conversationId: "c-1", _capturingTokenCorrelationId: "r-1" }), { "session-id": "c-1" });
+    assert.deepEqual(sessionHeaders({ _conversationId: 7 }), {});
+    assert.deepEqual(sessionHeaders({ _conversationId: "" }), {});
+    assert.deepEqual(sessionHeaders(undefined), {});
   });
 });

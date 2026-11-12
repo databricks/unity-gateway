@@ -35,6 +35,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
 from urllib.parse import unquote
@@ -546,7 +547,9 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    request_headers_adder: Callable[[Message, bytes | None], Mapping[str, str]] | None = None
     discarded_paths: frozenset[str] = frozenset()
+    _request_added: dict[str, str] = {}
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -655,11 +658,17 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        added = frozenset(name.lower() for name in self.added_headers)
+        self._request_added = {
+            **self.added_headers,
+            **(
+                self.request_headers_adder(self.headers, body) if self.request_headers_adder else {}
+            ),
+        }
+        added = frozenset(name.lower() for name in self._request_added)
         return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
 
     def _added_headers(self) -> dict[str, str]:
-        return dict(self.added_headers)
+        return dict(self._request_added)
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
@@ -801,6 +810,7 @@ def start_gateway_auth_proxy(
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
+    request_headers_adder: Callable[[Message, bytes | None], Mapping[str, str]] | None = None,
     discarded_paths: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
@@ -811,8 +821,9 @@ def start_gateway_auth_proxy(
     Completions request bodies. ``path_rewriter`` maps an accepted request path to the
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
     body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
-    (returning None relays it as it is). ``discarded_paths`` are answered with an empty 200 and
-    never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
+    (returning None relays it as it is). ``request_headers_adder(headers, body)`` gives more
+    headers for one request, which win over ``added_headers``. ``discarded_paths`` are answered
+    with an empty 200 and never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -834,6 +845,9 @@ def start_gateway_auth_proxy(
             "body_rewriter": staticmethod(body_rewriter) if body_rewriter else None,
             "bad_request_rewriter": (
                 staticmethod(bad_request_rewriter) if bad_request_rewriter else None
+            ),
+            "request_headers_adder": (
+                staticmethod(request_headers_adder) if request_headers_adder else None
             ),
             "discarded_paths": frozenset(discarded_paths),
         },
