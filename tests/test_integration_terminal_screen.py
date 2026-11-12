@@ -80,3 +80,104 @@ def test_wait_for_task_custom_evidence_does_not_hide_api_errors():
     terminal = _TaskWaitTerminal(None, ["unexpected status 401"])
     with pytest.raises(AssertionError, match="terminal API error"):
         terminal.wait_for_task(_Task(), completion=lambda: True)
+
+
+class _McpInventoryTerminal:
+    """Control only terminal output; exercise the real inventory reader and parser."""
+
+    def __init__(self, snapshots):
+        self.snapshots = snapshots
+        self.output = []
+        self.actions = []
+        self.queries = 0
+
+    def submit(self, text):
+        assert text == "/mcp verbose"
+        index = min(self.queries, len(self.snapshots) - 1)
+        self.queries += 1
+        self.output.append("\x1b[2J\x1b[H" + self.snapshots[index].replace("\n", "\r\n"))
+
+    def wait_for(self, predicate, description, timeout):
+        assert timeout > 0
+        assert predicate(self.snapshots[min(self.queries - 1, len(self.snapshots) - 1)]), (
+            description
+        )
+
+
+def _mcp_snapshot(status="connected", tool="describe_fixture", other_status="connected"):
+    return (
+        "🔌 MCP Tools\n\n"
+        f"  • ug_e2e-tools-fixture_metadata: {status} (1 tool)\n"
+        "    • Auth: Unsupported\n"
+        f"    • Tools: {tool}\n"
+        "    • Resources: (none)\n"
+        "    • Resource templates: (none)\n\n"
+        f"  • ug_e2e-tools-fixture_reader: {other_status} (1 tool)\n"
+        "    • Auth: Unsupported\n"
+        "    • Tools: read_fixture\n"
+        "    • Resources: (none)\n"
+        "    • Resource templates: (none)\n\n"
+        "› Ask Codex to do anything\n"
+    )
+
+
+@pytest.mark.parametrize("starting_snapshots", [0, 1, 3])
+def test_codex_mcp_inventory_refreshes_static_startup_snapshots(monkeypatch, starting_snapshots):
+    from tests.integration.utils import mcp
+
+    monkeypatch.setattr(mcp.time, "sleep", lambda _: None)
+    terminal = _McpInventoryTerminal(
+        [_mcp_snapshot("starting", other_status="starting")] * starting_snapshots
+        + [_mcp_snapshot()]
+    )
+    inventory = mcp.open_codex_mcp_inventory(
+        terminal,
+        {
+            "ug_e2e.tools.fixture_metadata": "describe_fixture",
+            "ug_e2e.tools.fixture_reader": "read_fixture",
+        },
+    )
+    assert terminal.queries == starting_snapshots + 1
+    assert "fixture_metadata: connected (1 tool)" in inventory
+    assert "fixture_reader: connected (1 tool)" in inventory
+    assert "starting" not in inventory
+    assert terminal.actions == [{"reason": "codex-mcp-inventory", "screen": inventory}]
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        _mcp_snapshot("failed"),
+        _mcp_snapshot(tool="wrong_tool"),
+        _mcp_snapshot(other_status="failed"),
+    ],
+)
+def test_codex_mcp_inventory_rejects_failed_servers_and_wrong_tools(snapshot):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    terminal = _McpInventoryTerminal([snapshot])
+    with pytest.raises(AssertionError, match="did not connect with the expected tools"):
+        open_codex_mcp_inventory(
+            terminal,
+            {
+                "ug_e2e.tools.fixture_metadata": "describe_fixture",
+                "ug_e2e.tools.fixture_reader": "read_fixture",
+            },
+        )
+    assert terminal.queries == 1
+    assert terminal.actions == []
+
+
+def test_codex_mcp_inventory_bounds_permanent_startup(monkeypatch):
+    from tests.integration.utils import mcp
+
+    clock = iter(range(0, 1000, 10))
+    monkeypatch.setattr(mcp.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(mcp.time, "sleep", lambda _: None)
+    terminal = _McpInventoryTerminal([_mcp_snapshot("starting")])
+    with pytest.raises(AssertionError, match="did not connect with the expected tools"):
+        mcp.open_codex_mcp_inventory(
+            terminal, {"ug_e2e.tools.fixture_metadata": "describe_fixture"}
+        )
+    assert terminal.queries == 6
+    assert terminal.actions == []
