@@ -1559,16 +1559,15 @@ spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
 
-`test_agent_model_sources.py` and `test_cli.py` cover managed schema and MPS wildcard model sources.
-The source-agent registry is checked against all static-model-list agents; `ty` checks each
-registered module's `source_models` signature against `ModelSourceAgent`.
-Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, provider
-catalogs follow service type, and failed discovery fails closed during configure. Launch uses
-matching last-configure expansions on live failures; tests cover malformed or missing fallbacks,
-per-workspace and per-agent isolation. CLI checks retain live/saved/unavailable launch results,
+`test_cli.py` retains managed wildcard checks for live/saved/unavailable launch results,
 configure rejection of stale fallback data and authentication failures, workspace isolation, and
-continuing after a wildcard failure. Multi-agent expansion persistence and detailed no-agent
-failure diagnostics no longer have dedicated CLI cases. These are component checks, not live inference coverage.
+continuing after a wildcard failure. `ty` checks registered modules' `source_models` signatures
+against `ModelSourceAgent`.
+The dedicated model-source tests were removed. Wildcard ordering, schema catalog dispatch,
+Copilot alias normalization, deduplication, malformed fallback validation, per-agent cache updates,
+and registry completeness no longer have dedicated coverage. Multi-agent expansion persistence
+and detailed no-agent failure diagnostics also lack dedicated CLI cases.
+These are component checks, not live inference coverage.
 
 `test_agent_claude.py` covers verbatim provider IDs in managed MPS picker labels.
 The checks preserve provider paths, dotted versions, and mixed case in picker options
@@ -1580,10 +1579,6 @@ descriptions; discovered options do not invent that description. Option values, 
 hints, allow-lists, and explicit catalog metadata are preserved. These component checks do not
 establish native picker rendering or inference coverage.
 
-Duplicate CLI helper and bookkeeping checks were removed. Expansion ordering, deduplication,
-provider dispatch, fallback validation, and per-agent state updates remain in
-`test_agent_model_sources.py`. Provider-type dispatch runs once per provider type;
-agent-specific schema catalogs remain covered for Claude, Codex, and Copilot.
 `test_agent_claude.py` checks provider IDs through rendered picker options instead
 of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
 `test_databricks.py`; warning punctuation and internal save counts are not pinned.
@@ -1593,7 +1588,6 @@ inference coverage remains a gap.
 Wildcard expansion lives in `ucode.agents.model_sources` and requires an acquired token.
 Missing-token fallback cases were removed; token acquisition errors propagate before expansion.
 
-Provider catalog expansion checks preserve representative golden IDs with paths, version dots,
-release dates, and mixed case. Managed Claude options and Codex fallback catalog entries keep
+Managed Claude options and Codex fallback catalog entries keep
 provider IDs as labels; friendly `system.ai` labels and native catalog metadata are retained.
-These component checks do not establish inference support for every model in the golden.
+These component checks do not establish inference support for every model.
