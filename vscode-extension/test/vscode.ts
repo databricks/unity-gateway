@@ -38,3 +38,47 @@ export class EventEmitter<T> {
     }
   }
 }
+
+/** What the stubs below report; tests set it in place. */
+export const host = {
+  copilotChat: undefined as { activate: () => Promise<void> } | undefined,
+  extensionListeners: [] as (() => void)[],
+  settings: {} as Record<string, unknown>,
+  commands: [] as string[],
+  executed: [] as string[],
+  notices: [] as { message: string; actions: string[] }[],
+  choice: undefined as string | undefined,
+  reset(): void {
+    this.copilotChat = undefined;
+    this.extensionListeners = [];
+    this.settings = {};
+    this.commands = [];
+    this.executed = [];
+    this.notices = [];
+    this.choice = undefined;
+  },
+};
+export const extensions = {
+  getExtension: (id: string) => (id === "GitHub.copilot-chat" ? host.copilotChat : undefined),
+  onDidChange: (listener: () => void) => {
+    host.extensionListeners.push(listener);
+    return { dispose: () => (host.extensionListeners = host.extensionListeners.filter((other) => other !== listener)) };
+  },
+};
+export const workspace = {
+  getConfiguration: (section: string) => ({ get: (key: string) => host.settings[`${section}.${key}`] }),
+};
+export const commands = {
+  executeCommand: async (id: string) => {
+    if (!host.commands.includes(id)) {
+      throw new Error(`command '${id}' not found`);
+    }
+    host.executed.push(id);
+  },
+};
+export const window = {
+  showInformationMessage: async (message: string, ...actions: string[]) => {
+    host.notices.push({ message, actions });
+    return host.choice;
+  },
+};

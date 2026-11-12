@@ -4,10 +4,10 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, type Settings } from "../src/extension";
+import { DatabricksModels, NOTICE_SHOWN_KEY, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, whenCopilotChatIsOn, type Settings } from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
-import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
+import { host, LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
 
 const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join("");
 
@@ -213,6 +213,14 @@ describe("DatabricksModels", () => {
     ],
   });
 
+  it("tells VS Code to list the models again on refresh", () => {
+    const provider = new DatabricksModels(() => settings("true"), () => {});
+    let changes = 0;
+    provider.onDidChangeLanguageModelChatInformation(() => changes++);
+    provider.refresh();
+    assert.equal(changes, 1);
+  });
+
   it("lists the configured models by name, or by id without one, or none with a hint when settings are missing", async () => {
     const logs: string[] = [];
     const models = await new DatabricksModels(() => settings("cmd"), (line) => logs.push(line)).provideLanguageModelChatInformation();
@@ -275,5 +283,80 @@ describe("DatabricksModels", () => {
         ["https://ws/ai-gateway/openai/v1/chat/completions", "main.default.mps"],
       ],
     );
+  });
+});
+
+describe("whenCopilotChatIsOn", () => {
+  const TURN_ON_COMMAND = "workbench.action.chat.manage";
+  const context = () => {
+    const state = new Map<string, unknown>();
+    return {
+      subscriptions: [] as { dispose(): void }[],
+      globalState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => void state.set(key, value) },
+    } as unknown as vscode.ExtensionContext;
+  };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  afterEach(() => host.reset());
+
+  it("is ready at once, with no notice, when Copilot Chat is on", async () => {
+    host.copilotChat = { activate: async () => {} };
+    const calls: boolean[] = [];
+    whenCopilotChatIsOn(context(), (late) => calls.push(late), () => {});
+    await settle();
+    assert.deepEqual(calls, [false]);
+    assert.deepEqual(host.notices, []);
+  });
+
+  it("offers to turn Copilot Chat on once, and is ready after it starts", async () => {
+    host.commands = [TURN_ON_COMMAND];
+    host.choice = "Turn On Copilot Chat";
+    const calls: boolean[] = [];
+    const ctx = context();
+    whenCopilotChatIsOn(ctx, (late) => calls.push(late), () => {});
+    await settle();
+    assert.deepEqual(host.notices, [{ message: "Databricks models need Copilot Chat, which is turned off.", actions: ["Turn On Copilot Chat"] }]);
+    assert.deepEqual(host.executed, [TURN_ON_COMMAND]);
+    assert.equal(ctx.globalState.get(NOTICE_SHOWN_KEY), true);
+    assert.deepEqual(calls, []);
+
+    let started = false;
+    host.copilotChat = { activate: async () => void (started = true) };
+    for (const listener of [...host.extensionListeners]) listener();
+    await settle();
+    assert.equal(started, true);
+    assert.deepEqual(calls, [true]);
+    assert.deepEqual(host.extensionListeners, []);
+
+    host.reset();
+    whenCopilotChatIsOn(ctx, () => {}, () => {});
+    await settle();
+    assert.deepEqual(host.notices, []);
+  });
+
+  it("says how to turn Copilot Chat on when VS Code lacks the command", async () => {
+    host.choice = "Turn On Copilot Chat";
+    whenCopilotChatIsOn(context(), () => {}, () => {});
+    await settle();
+    assert.deepEqual(
+      host.notices.map((notice) => notice.message),
+      ["Databricks models need Copilot Chat, which is turned off.", "To turn on Copilot Chat, click + in the chat's model picker."],
+    );
+    assert.deepEqual(host.executed, []);
+  });
+
+  it("does nothing more when the user dismisses the notice", async () => {
+    host.commands = [TURN_ON_COMMAND];
+    whenCopilotChatIsOn(context(), () => {}, () => {});
+    await settle();
+    assert.equal(host.notices.length, 1);
+    assert.deepEqual(host.executed, []);
+  });
+
+  it("shows no notice when the user turned AI features off", async () => {
+    host.settings = { "chat.disableAIFeatures": true };
+    host.commands = [TURN_ON_COMMAND];
+    whenCopilotChatIsOn(context(), () => {}, () => {});
+    await settle();
+    assert.deepEqual(host.notices, []);
   });
 });
