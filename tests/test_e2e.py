@@ -677,7 +677,7 @@ class TestGeminiLaunch:
         model = model_case
         _require_binary("gemini")
         # Gemini CLI >= 0.45 rewrites forced flash model ids (e.g.
-        # 'system.ai.gemini-3-5-flash') to 'gemini-3.5-flash', which Unity
+        # 'databricks-gemini-3-5-flash') to 'gemini-3.5-flash', which Unity
         # Catalog rejects. ucode caps the supported version below 0.45 and
         # offers a downgrade; skip here if the runner still has a too-new build
         # rather than asserting against a version we deliberately don't support.
