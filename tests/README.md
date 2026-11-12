@@ -11,6 +11,8 @@ Message assertions require native delivery receipts with the exact target path a
 thread ID, covering both direct tool calls and code mode.
 Toggle checks accept native command output only after a successful exit, including
 when the main-turn handoff interrupts the enclosing code-mode tool.
+Launcher checks also assert the gateway provider settings forwarded to Windows'
+remote TUI, with the exact remote arguments preserved on each platform.
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace

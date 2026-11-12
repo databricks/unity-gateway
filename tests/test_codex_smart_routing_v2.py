@@ -459,9 +459,11 @@ class TestLaunchCodex:
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
 
+    @pytest.mark.parametrize("os_name", ["posix", "nt"])
     def test_subagent_only_launch_uses_metadata_interposer_without_routing_main(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, os_name
     ):
+        monkeypatch.setattr(v2, "os", SimpleNamespace(**{**vars(os), "name": os_name}))
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -512,8 +514,9 @@ class TestLaunchCodex:
         argv = processes[0].argv
         assert argv[0] == "codex"
         assert argv[1] == "app-server"
-        assert processes[1].argv == [
-            "codex",
+        tui_argv = processes[1].argv
+        assert tui_argv[0] == "codex"
+        assert tui_argv[-5:] == [
             "--remote",
             "ws://127.0.0.1:41002",
             "--model",
@@ -527,6 +530,15 @@ class TestLaunchCodex:
         assert 'model="gpt-start"' in argv
         config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
         config = tomllib.loads("\n".join(config_values))
+        tui_provider_args = tui_argv[1:-5]
+        if os_name == "nt":
+            assert tui_provider_args[::2] == ["--config", "--config"]
+            assert tomllib.loads("\n".join(tui_provider_args[1::2])) == {
+                "model_provider": config["model_provider"],
+                "model_providers": config["model_providers"],
+            }
+        else:
+            assert not tui_provider_args
         assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
             v2.routing.configured_router_name()
         )
