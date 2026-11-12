@@ -6,6 +6,7 @@ import re
 
 import pytest
 
+from tests.integration.utils.agents.claude import parent_tool_calls
 from tests.integration.utils.evidence import (
     agent_sessions,
     assistant_answers,
@@ -16,6 +17,7 @@ from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mc
 
 from .base import BaseCujTest
 from .helpers.constants import CLAUDE, CODEX
+from .helpers.evidence import completed_turn, message_text
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
 from .helpers.terminal import Terminal
@@ -46,36 +48,70 @@ class McpFixtureTask:
             f"call {tool} on {registered_name(service)} with run_id={self.run_id}"
             for service, tool in SERVICES.items()
         )
-        keys = " and ".join(f'"{tool}"' for tool in SERVICES.values())
+        self.value = f"complete {self.run_id}"
         self.prompt = (
             f"Use these read-only MCP tools: {calls}. "
-            "Do not use shell commands, files, or subagents. Reply with only a JSON object "
-            f"whose keys are exactly the bare tool names {keys}, with no server name or "
-            "mcp__ prefix, each mapped to the text that tool returned, copied character for "
-            "character from the tool result without retyping or abbreviating it, "
-            "and without code fences."
+            "Do not use shell commands, files, or subagents. "
+            f"After both tools succeed, reply with only: {self.value}"
         )
-        # Claude may key a receipt by its native tool name and echo the raw tool result.
         self.aliases = {
             f"mcp__{registered_name(service)}__{tool}": tool for service, tool in SERVICES.items()
         }
 
-    def _receipts(self, observed):
-        if not isinstance(observed, dict):
-            return None
-        receipts = {}
-        for key, value in observed.items():
-            tool = self.aliases.get(key, key)
-            if isinstance(value, str) and value.startswith("{"):
+    def _receipts(self, agent, records):
+        calls, receipts = {}, {}
+        names = {
+            (f"mcp__{registered_name(service).replace('-', '_')}", tool): tool
+            for service, tool in SERVICES.items()
+        }
+        for row in records:
+            results = []
+            if agent == CLAUDE:
+                calls.update(
+                    {
+                        call_id: self.aliases[call["name"]]
+                        for call_id, call in parent_tool_calls(
+                            {"parent": [row]}, self.aliases
+                        ).items()
+                        if call.get("input") == {"run_id": self.run_id}
+                    }
+                )
+                content = row.get("message", {}).get("content")
+                if row.get("type") == "user" and isinstance(content, list):
+                    results = [
+                        (part.get("tool_use_id"), message_text(part.get("content")))
+                        for part in content
+                        if part.get("type") == "tool_result" and not part.get("is_error")
+                    ]
+            elif agent == CODEX and row.get("type") == "response_item":
+                payload = row.get("payload", {})
+                if payload.get("type") == "function_call":
+                    tool = names.get((payload.get("namespace"), payload.get("name")))
+                    try:
+                        arguments = json.loads(payload.get("arguments", ""))
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    if tool and arguments == {"run_id": self.run_id}:
+                        calls[payload.get("call_id")] = tool
+                elif payload.get("type") == "function_call_output":
+                    output = payload.get("output", "")
+                    if isinstance(output, str):
+                        wrapped = re.fullmatch(
+                            r"Wall time: [0-9.]+ seconds\nOutput:\n(.*)", output, re.DOTALL
+                        )
+                        results = [
+                            (payload.get("call_id"), wrapped.group(1) if wrapped else output)
+                        ]
+            for call_id, output in results:
+                if not call_id or call_id not in calls:
+                    continue
                 try:
-                    value = json.loads(value)
-                except json.JSONDecodeError:
-                    return None
-            if isinstance(value, dict) and value.keys() == {"result"}:
-                value = value["result"]
-            if tool in receipts:
-                return None
-            receipts[tool] = value
+                    value = json.loads(output)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                tool = calls[call_id]
+                if value == {"result": self.expected[tool]}:
+                    receipts[tool] = value["result"]
         return receipts
 
     def answers(self, session, agent: str) -> list[str]:
@@ -87,14 +123,10 @@ class McpFixtureTask:
         ]
 
     def completed(self, session, agent: str) -> bool:
-        for answer in self.answers(session, agent):
-            # The TUI renders a fenced reply without its fence.
-            fenced = re.fullmatch(r"\s*```(?:json)?\n(.*)\n```\s*", answer, re.DOTALL)
-            try:
-                observed = json.loads(fenced.group(1) if fenced else answer)
-            except json.JSONDecodeError:
+        for path, records in agent_sessions(session, agent).items():
+            if is_child_session(agent, path, records) or not completed_turn(agent, records, self):
                 continue
-            if self._receipts(observed) == self.expected:
+            if self._receipts(agent, records) == self.expected:
                 return True
         return False
 
@@ -149,7 +181,7 @@ def _wait_for_mcp_task(tui, task):
     try:
         tui.wait_until(
             lambda: task.completed(tui.session, tui.agent),
-            "a completed assistant answer with both verified MCP receipts",
+            "a completed parent answer after both verified MCP tool results",
             rejected=("Do you want to proceed?", "Do you want to allow"),
             on_screen=approve_expected_codex_call,
         )
@@ -236,7 +268,7 @@ class TestMcpRegistration(BaseCujTest):
 
         Expected: both scoped servers are registered, connected, and expose their tools;
         no ug_e2e.other_tools server or decoy tool appears in the complete inventory;
-        a parent assistant answer contains the correct receipts for a fresh run ID.
+        both native tool results contain exact receipts for a fresh run ID before completion.
         """
         session, workspace, _recorder = cuj
         session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
@@ -266,7 +298,7 @@ class TestMcpRegistration(BaseCujTest):
 
         Expected: both scoped servers are registered, connected, and expose their tools;
         no ug_e2e.other_tools server or decoy tool appears in the complete inventory;
-        a completed parent turn returns the correct receipts for a fresh run ID.
+        both native tool results contain exact receipts for a fresh run ID before completion.
         """
         session, workspace, _recorder = cuj
         session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])

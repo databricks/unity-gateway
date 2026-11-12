@@ -10,8 +10,11 @@ for both agents. Fixtures are provisioned separately; this suite does not modify
 
 The two TUI journeys configure installed UG, open the real agent MCP inventory, and require
 connected servers with their tools loaded. Claude opens each server's details and tools
-view; Codex uses `/mcp verbose`. Both then call the two tools with a fresh run ID and return
-their receipts. Expected receipts are computed locally and withheld from the prompt.
+view; Codex uses `/mcp verbose`. Both then call the two tools with a fresh run ID.
+The harness pairs native calls with successful results and checks each complete SHA-256
+receipt against its tool and run ID. Expected receipts are withheld from the prompt.
+A completed parent turn must answer with a short run-specific marker after both calls;
+it does not copy the long receipts, which models can mistype.
 Terminal actions, rendered screens, and native transcripts are recorded by the harness.
 
 Both inventories must omit `ug_e2e.other_tools`, including the accessible
