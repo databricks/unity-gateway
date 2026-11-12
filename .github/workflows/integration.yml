@@ -94,7 +94,7 @@ jobs:
             --default-index "$PACKAGE_INDEX" --installation-only --output "$RUNNER_TEMP/ug-integration"
       - name: Upload installation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: integration-installation
           include-hidden-files: true
@@ -140,7 +140,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Windows installation evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: integration-installation-windows
           include-hidden-files: true
@@ -240,7 +240,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork inference evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: cowork-inference-${{ matrix.source.id }}
           retention-days: 3
@@ -324,7 +324,7 @@ jobs:
           pkill -x Terminal || test "$?" = 1
       - name: Upload Cowork inference evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: cowork-inference-macos-${{ matrix.source.id }}
           retention-days: 3
@@ -412,7 +412,7 @@ jobs:
             "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ${{ env.ARTIFACT_NAME }}
           include-hidden-files: true
@@ -474,7 +474,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork evidence
         if: ${{ !cancelled() && steps.desktop-install.outcome != 'skipped' }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: cowork-inference-anthropic
           retention-days: 3
@@ -572,7 +572,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Windows headless evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: integration-headless-windows-claude
           include-hidden-files: true
@@ -750,7 +750,7 @@ jobs:
             "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload managed OpenCode evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ${{ env.ARTIFACT_NAME }}
           include-hidden-files: true
@@ -822,7 +822,7 @@ jobs:
             "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT and not soft_fail and not anthropic_mps and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: ${{ env.ARTIFACT_NAME }}
           include-hidden-files: true
@@ -908,7 +908,7 @@ jobs:
             pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}" -v --basetemp "$RUNNER_TEMP/cuj"
       - name: Upload CUJ evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: e2e-cujs-${{ matrix.test }}
           include-hidden-files: true
@@ -986,7 +986,7 @@ jobs:
             --macos-desktop "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload macOS desktop evidence
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: integration-codex-desktop-macos
           include-hidden-files: true
