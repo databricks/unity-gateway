@@ -169,6 +169,7 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   // The installed smart-router skill already supplies the slash command.
+  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
     if (!command) return {text: 'Usage: /smart-router on|off'};
@@ -185,6 +186,7 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
+  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
     try {

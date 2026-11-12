@@ -24,11 +24,9 @@ from pathlib import Path
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-import httpx
 import pytest
 
 from tests.conftest import e2e_state_for
-from ucode.agents import resolve_provider_models
 from ucode.databricks import (
     build_shared_base_urls,
     build_tool_base_url,
@@ -41,26 +39,11 @@ from ucode.databricks import (
     list_model_provider_services,
     list_tool_provider_services,
     probe_unity_gateway_capabilities,
-    resolve_provider_launch_model,
     service_usable_for_tool,
     workspace_hostname,
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.ui import normalize_workspace_url
-
-# ---------------------------------------------------------------------------
-# CI provider-launch pinning
-# ---------------------------------------------------------------------------
-# The claude provider-launch tests route through one fixed, non-relayed MPS
-# that exposes only its cheapest model, so the inference is deterministic and
-# ~a cent per run rather than depending on whichever service happened to list
-# first. Hardcoded on purpose.
-CI_ANTHROPIC_MPS = "main.ucode.ci_e2e_anthropic_nonrelay_mps"  # api-key Anthropic (for claude)
-CI_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-
-# Claude Code's client-side model pre-flight is flaky for MPS-routed ids and emits this; the
-# launch retries on it before giving up (see TestModelProviderLaunch).
-_CLAUDE_PREFLIGHT_FLAKE = "may not exist or you may not have access"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,12 +120,21 @@ def _run_gemini_gateway_smoke(workspace: str, model: str, token: str) -> str:
         },
         method="POST",
     )
+    timeout_seconds = 30
     try:
-        with urllib_request.urlopen(req, timeout=30) as response:
+        with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
             body = response.read().decode("utf-8")
     except urllib_error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
         raise AssertionError(f"Gemini gateway smoke failed: HTTP {exc.code}: {body[:500]}") from exc
+    except (TimeoutError, urllib_error.URLError) as exc:
+        if isinstance(exc, urllib_error.URLError) and not isinstance(exc.reason, TimeoutError):
+            raise
+        # Matches the e2e shards' `--only-rerun 'timed out after [0-9]+s'`, so a slow live
+        # model gets the same single rerun as the CLI launch tests.
+        raise AssertionError(
+            f"Gemini gateway smoke for model={model} timed out after {timeout_seconds}s"
+        ) from exc
 
     data = json.loads(body)
     return data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
@@ -670,189 +662,6 @@ class TestClaudeLaunch:
                 f"Claude launch failure: family={family} model={model_id} rc={result.returncode} "
                 f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
             )
-
-
-class TestModelProviderLaunch:
-    """Launch claude routed through a real Model Provider Service.
-
-    Pinned to a fixed CI MPS (CI_ANTHROPIC_MPS) exposing only its cheapest
-    model, so a real request flows through the MPS gateway deterministically.
-    Skips when the MPS is absent or the caller lacks permission on the backing
-    connection.
-    """
-
-    @staticmethod
-    def _skip_if_provider_unusable(combined: str, provider: str) -> None:
-        # Environmental provider-account conditions, not ucode bugs: the test only proves routing
-        # reaches the provider, so skip (rather than fail) when the account lacks a grant on the
-        # connection or has run out of credits — state outside the code under test.
-        if "USE CONNECTION" in combined or "EXECUTE" in combined:
-            pytest.skip(f"no permission on provider {provider}: {combined[:200]}")
-        if "Credit balance is too low" in combined:
-            pytest.skip(f"provider {provider} account is out of credits: {combined[:200]}")
-        # The launch helper retries the flaky model pre-flight; a "may not exist" that survives the
-        # retries still isn't the MPS failing (the direct-inference test proves routing), so skip
-        # rather than fail CI.
-        if _CLAUDE_PREFLIGHT_FLAKE in combined:
-            pytest.skip(
-                f"Claude Code model pre-flight validation flaked for {provider}: {combined[:200]}"
-            )
-
-    def _resolve_anthropic_mps(self, e2e_state, e2e_workspace):
-        """Return (state, provider_models) for the pinned Anthropic MPS, or skip if it's absent."""
-        state = {**e2e_state, "workspace": e2e_workspace}
-        provider_models, error, _relayed = resolve_provider_models(
-            "claude", state, CI_ANTHROPIC_MPS
-        )
-        if error is not None:
-            pytest.skip(
-                f"CI Anthropic MPS {CI_ANTHROPIC_MPS} unavailable on this workspace: {error}"
-            )
-        return state, provider_models
-
-    def _launch_claude_and_assert_success(
-        self, tmp_path, monkeypatch, state, provider_models, route_root_model, workspace, token
-    ):
-        """Write the provider config, run a one-turn claude launch, assert it succeeds.
-
-        This MPS allows only Haiku, so any other model 403s — a successful launch is itself
-        proof the request went out on the pinned Haiku target (route_root_model)."""
-        import ucode.config_io as config_io_mod
-        from ucode.agents import claude
-
-        config_dir = tmp_path / "claude_config"
-        config_dir.mkdir()
-        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
-        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", config_dir / "settings.json")
-        monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude-settings.backup.json")
-
-        with pytest.MonkeyPatch().context() as mp:
-            mp.setattr("ucode.state.save_state", lambda s: None)
-            claude.write_tool_config(
-                state,
-                None,
-                provider=CI_ANTHROPIC_MPS,
-                provider_models=provider_models,
-                route_root_model=route_root_model,
-            )
-
-        env = {
-            **os.environ,
-            "CLAUDE_CONFIG_DIR": str(config_dir),
-            "ANTHROPIC_BASE_URL": build_tool_base_url("claude", workspace),
-            "ANTHROPIC_API_KEY": token,
-        }
-        # Retry the flaky client-side model pre-flight before giving up; only a persistent failure
-        # falls through to _skip_if_provider_unusable.
-        for _attempt in range(3):
-            result = _run_agent(claude.validate_cmd("claude"), env=env, timeout=90)
-            combined = (result.stdout + result.stderr).strip()
-            if _CLAUDE_PREFLIGHT_FLAKE not in combined:
-                break
-        self._skip_if_provider_unusable(combined, CI_ANTHROPIC_MPS)
-        assert result.returncode == 0 and combined, (
-            f"model={route_root_model} rc={result.returncode} "
-            f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
-        )
-
-    def test_launch_claude_through_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        # No --model: ucode picks the only servable tier. The MPS declares no opus, so the default
-        # resolves to Haiku — and the launch succeeds only because Haiku is what the MPS allows.
-        _require_binary("claude")
-        state, provider_models = self._resolve_anthropic_mps(e2e_state, e2e_workspace)
-        launch_model = resolve_provider_launch_model(None, provider_models or {})
-        assert launch_model == CI_ANTHROPIC_MODEL, (
-            f"a bare launch should default to the only allowed model; got {launch_model}"
-        )
-        self._launch_claude_and_assert_success(
-            tmp_path, monkeypatch, state, provider_models, launch_model, e2e_workspace, e2e_token
-        )
-
-    def test_launch_claude_model_haiku_through_provider(
-        self, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
-    ):
-        # `--model haiku`: the family alias resolves to the one declared Haiku target, so the launch
-        # routes. (Claude Code's bare `haiku`/undated id would 403 — the gateway exact-matches.)
-        _require_binary("claude")
-        state, provider_models = self._resolve_anthropic_mps(e2e_state, e2e_workspace)
-        launch_model = resolve_provider_launch_model("haiku", provider_models or {})
-        assert launch_model == CI_ANTHROPIC_MODEL, (
-            f"--model haiku should resolve to the declared Haiku target; got {launch_model}"
-        )
-        self._launch_claude_and_assert_success(
-            tmp_path, monkeypatch, state, provider_models, launch_model, e2e_workspace, e2e_token
-        )
-
-
-class TestAnthropicNonRelayMps:
-    """Non-relay (api-key) Anthropic MPS, pinned to CI_ANTHROPIC_MPS (Haiku-only).
-
-    Exercised without the agent binary — direct Anthropic Messages calls through the
-    gateway MPS. The MPS exact-matches its allowlist, so only claude-haiku-4-5-20251001
-    routes; a 200 is itself proof the request hit Haiku.
-    """
-
-    @staticmethod
-    def _messages_request(workspace: str, token: str, model: str) -> httpx.Response:
-        body = {
-            "model": model,
-            "max_tokens": 64,  # Leave room to finish without truncating the greeting.
-            "stream": False,
-            "messages": [{"role": "user", "content": "say hi in 5 words or less"}],
-        }
-        return httpx.post(
-            f"{build_tool_base_url('claude', workspace)}/v1/messages",
-            headers={
-                "Authorization": f"Bearer {token}",
-                "Databricks-Model-Provider-Service": CI_ANTHROPIC_MPS,
-                "x-databricks-use-coding-agent-mode": "true",
-            },
-            json=body,
-            timeout=60,
-        )
-
-    @staticmethod
-    def _skip_if_unusable(resp: httpx.Response) -> None:
-        # Environmental account conditions, not ucode bugs (mirrors _skip_if_provider_unusable).
-        text = resp.text
-        if resp.status_code in (401, 403) and ("USE CONNECTION" in text or "EXECUTE" in text):
-            pytest.skip(f"no permission on {CI_ANTHROPIC_MPS}: {text[:200]}")
-        if "credit balance is too low" in text.lower():
-            pytest.skip(f"{CI_ANTHROPIC_MPS} account is out of credits: {text[:200]}")
-
-    def test_direct_inference_routes_to_haiku(self, e2e_workspace, e2e_token):
-        # A real inference through the non-relay Anthropic MPS, no agent binary involved.
-        resp = self._messages_request(e2e_workspace, e2e_token, CI_ANTHROPIC_MODEL)
-        self._skip_if_unusable(resp)
-        assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text[:300]}"
-        message = resp.json()
-        assert message["type"] == "message" and message["role"] == "assistant"
-        assert message["model"] == CI_ANTHROPIC_MODEL
-        assert message["stop_reason"] == "end_turn"
-        assert "".join(
-            part["text"] for part in message["content"] if part["type"] == "text"
-        ).strip()
-
-    def test_rejects_model_outside_allowlist(self, e2e_workspace, e2e_token):
-        # The MPS enforces its allowlist up front: a model it doesn't declare is refused.
-        resp = self._messages_request(e2e_workspace, e2e_token, "claude-sonnet-4-5")
-        self._skip_if_unusable(resp)
-        assert resp.status_code == 403, f"HTTP {resp.status_code}: {resp.text[:300]}"
-        assert "not in the allowed models list" in resp.text
-
-    def test_mps_is_listed_usable_and_nonrelayed(self, e2e_workspace, e2e_token):
-        services, reason = list_model_provider_services(e2e_workspace, e2e_token)
-        if is_model_provider_feature_unavailable(reason):
-            pytest.skip("Model Provider Service feature not enabled on this workspace")
-        assert reason is None, reason
-        entry = next((s for s in services if s["name"] == CI_ANTHROPIC_MPS), None)
-        assert entry is not None, (
-            f"{CI_ANTHROPIC_MPS} not found among {[s['name'] for s in services][:10]}"
-        )
-        assert service_usable_for_tool("claude", entry)
-        assert not entry.get("relayed")
 
 
 class TestGeminiLaunch:

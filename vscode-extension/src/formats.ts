@@ -10,7 +10,7 @@ export interface Turn {
   readonly toolRequired: boolean;
 }
 
-export type Reply = vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart;
+export type Reply = vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart | vscode.LanguageModelDataPart;
 
 const IMAGE_TOKENS = 1000;
 
@@ -64,6 +64,18 @@ const stoppedEarly = (reason: string | undefined): Error =>
 
 // A dropped connection ends the stream like a finished answer does, so only a final event counts as done.
 const cutOff = () => new Error("The response ended before the model finished. Try again.");
+
+const count = (value: unknown): number => (typeof value === "number" && value > 0 ? value : 0);
+
+/** Copilot Chat shows a third-party model's token counts only from a "usage" data part, in Chat
+ * Completions' usage shape. */
+const usagePart = (input: number, output: number, cached: number): vscode.LanguageModelDataPart =>
+  new vscode.LanguageModelDataPart(
+    new TextEncoder().encode(
+      JSON.stringify({ prompt_tokens: input, completion_tokens: output, total_tokens: input + output, prompt_tokens_details: { cached_tokens: cached } }),
+    ),
+    "usage",
+  );
 
 const toolOptions = (turn: Turn, toTool: (tool: vscode.LanguageModelChatTool) => object): object =>
   turn.tools.length ? { tools: turn.tools.map(toTool), ...(turn.toolRequired ? { tool_choice: "required" } : {}) } : {};
@@ -123,6 +135,8 @@ export function chatCompletionsRequest(turn: Turn): object {
     model: turn.model,
     messages,
     stream: true,
+    // OpenAI-compatible providers stream usage only when asked.
+    stream_options: { include_usage: true },
     ...toolOptions(turn, (tool) => ({ type: "function", function: { name: tool.name, description: tool.description, parameters: parametersOf(tool) } })),
   };
 }
@@ -131,6 +145,7 @@ type ChatContent = string | { type?: string; text?: string }[] | null;
 
 interface ChatChunk {
   error?: string | { message?: string };
+  usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } | null } | null;
   choices?: {
     delta?: { content?: ChatContent; tool_calls?: { index?: number; id?: string; function?: { name?: string; arguments?: string } }[] };
     finish_reason?: string | null;
@@ -152,11 +167,13 @@ const CHAT_FINISHED = new Set(["stop", "tool_calls", "function_call"]);
 export async function* chatCompletionsReplies(events: AsyncIterable<unknown>): AsyncGenerator<Reply> {
   const calls: { id: string; name: string; args: string }[] = [];
   let finish: string | undefined;
+  let usage: ChatChunk["usage"];
   for await (const event of events) {
     const { error } = event as ChatChunk;
     if (error) {
       throw new Error(typeof error === "string" ? error : (error.message ?? JSON.stringify(error)));
     }
+    usage = (event as ChatChunk).usage ?? usage;
     for (const choice of (event as ChatChunk).choices ?? []) {
       const text = deltaText(choice.delta?.content);
       if (text) {
@@ -181,6 +198,9 @@ export async function* chatCompletionsReplies(events: AsyncIterable<unknown>): A
   }
   for (const call of calls.filter(Boolean)) {
     yield toolCall(call.id, call.name, call.args);
+  }
+  if (usage) {
+    yield usagePart(count(usage.prompt_tokens), count(usage.completion_tokens), count(usage.prompt_tokens_details?.cached_tokens));
   }
 }
 
@@ -232,7 +252,11 @@ interface ResponseEvent {
   type: string;
   delta?: string;
   item?: { type?: string; call_id?: string; name?: string; arguments?: string };
-  response?: { incomplete_details?: { reason?: string } | null; error?: { message?: string } | null };
+  response?: {
+    incomplete_details?: { reason?: string } | null;
+    error?: { message?: string } | null;
+    usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } | null } | null;
+  };
   message?: string;
 }
 
@@ -240,6 +264,7 @@ export async function* responsesReplies(events: AsyncIterable<unknown>): AsyncGe
   // Held back until the response completes, so a cut-off stream runs no tool.
   const calls: vscode.LanguageModelToolCallPart[] = [];
   let completed = false;
+  let usage: NonNullable<ResponseEvent["response"]>["usage"];
   for await (const raw of events) {
     const event = raw as ResponseEvent;
     if (event.type === "response.output_text.delta" && event.delta) {
@@ -248,6 +273,7 @@ export async function* responsesReplies(events: AsyncIterable<unknown>): AsyncGe
       calls.push(toolCall(event.item.call_id ?? "", event.item.name ?? "", event.item.arguments ?? ""));
     } else if (event.type === "response.completed") {
       completed = true;
+      usage = event.response?.usage;
     } else if (event.type === "response.incomplete") {
       throw stoppedEarly(event.response?.incomplete_details?.reason);
     } else if (event.type === "response.failed" || event.type === "error") {
@@ -258,6 +284,9 @@ export async function* responsesReplies(events: AsyncIterable<unknown>): AsyncGe
     throw cutOff();
   }
   yield* calls;
+  if (usage) {
+    yield usagePart(count(usage.input_tokens), count(usage.output_tokens), count(usage.input_tokens_details?.cached_tokens));
+  }
 }
 
 const textBlocks = (text: string): object[] => (text ? [{ type: "text", text }] : []);
@@ -325,9 +354,13 @@ export function anthropicMessagesRequest(turn: Turn, maxTokens: number): object 
   };
 }
 
+type AnthropicUsage = Partial<Record<"input_tokens" | "cache_creation_input_tokens" | "cache_read_input_tokens" | "output_tokens", number | null>>;
+
 interface AnthropicEvent {
   type: string;
   index?: number;
+  message?: { usage?: AnthropicUsage };
+  usage?: AnthropicUsage;
   content_block?: { type?: string; id?: string; name?: string };
   delta?: { type?: string; text?: string; partial_json?: string; stop_reason?: string | null };
   error?: { message?: string };
@@ -339,8 +372,15 @@ export async function* anthropicMessagesReplies(events: AsyncIterable<unknown>):
   // Held back until the message stops, so a cut-off stream runs no tool.
   const calls = new Map<number, { id: string; name: string; args: string }>();
   let stopped = false;
+  // message_start reports the input, and each message_delta the running totals.
+  const usage: AnthropicUsage = {};
   for await (const raw of events) {
     const event = raw as AnthropicEvent;
+    for (const [key, value] of Object.entries({ ...event.message?.usage, ...event.usage })) {
+      if (typeof value === "number") {
+        usage[key as keyof AnthropicUsage] = value;
+      }
+    }
     if (event.type === "content_block_start" && event.content_block?.type === "tool_use") {
       calls.set(event.index ?? 0, { id: event.content_block.id ?? "", name: event.content_block.name ?? "", args: "" });
     } else if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) {
@@ -363,5 +403,9 @@ export async function* anthropicMessagesReplies(events: AsyncIterable<unknown>):
   }
   for (const call of calls.values()) {
     yield toolCall(call.id, call.name, call.args);
+  }
+  if (Object.keys(usage).length) {
+    const cached = count(usage.cache_read_input_tokens);
+    yield usagePart(count(usage.input_tokens) + count(usage.cache_creation_input_tokens) + cached, count(usage.output_tokens), cached);
   }
 }

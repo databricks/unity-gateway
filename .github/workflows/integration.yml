@@ -64,6 +64,9 @@ env:
   COPILOT_VERSION: ${{ inputs.copilot_version || '1.0.91' }}
   ANTIGRAVITY_BUILD: ${{ inputs.antigravity_build || '1.5.4-5037094733742080' }}
   PACKAGE_INDEX: ${{ inputs.default_index || 'https://pypi.org/simple' }}
+  CLAUDE_DESKTOP_WINDOWS_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
+  CLAUDE_DESKTOP_WINDOWS_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
+  NPM_REGISTRY: https://registry.npmjs.org
 
 jobs:
   installation:
@@ -150,12 +153,29 @@ jobs:
             ${{ runner.temp }}/ug-integration/wheels/
 
   cowork-inference-windows:
-    name: Cowork inference · Windows
+    name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 25
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - id: databricks
+            name: Databricks Hosted
+            provider: ''
+            model: system.ai.claude-haiku-4-5
+            relay: false
+          - id: anthropic-relay
+            name: Anthropic relay MPS
+            provider: main.ucode.ci_e2e_anthropic_relay_mps
+            model: claude-haiku-4-5-20251001
+            relay: true
     env:
       PYTHONUTF8: 1
+      UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
+      UG_COWORK_MODEL: ${{ matrix.source.model }}
+      UG_COWORK_RELAY: ${{ matrix.source.relay }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -174,21 +194,10 @@ jobs:
             if ($errors.Count) { throw ($errors | Out-String) }
           }
           & ./scripts/cowork-inference/test-diagnostics.ps1
+          & ./scripts/cowork-inference/test-prepare-task.ps1
       - name: Download and verify the approved Claude installer
         shell: pwsh
-        env:
-          INSTALLER_URL: https://downloads.claude.ai/releases/win32/x64/2.42304.2/Claude-af65c0e384c1657459441aac3083c6e622789afe.msix
-          INSTALLER_SHA256: D737861F0DA3175C6B663172AF0E602494CD99FF1B350D57DAE5910A49519FC9
-        run: |
-          if ($env:INSTALLER_SHA256 -notmatch '^[a-fA-F0-9]{64}$') {
-            throw 'An installer SHA256 is required'
-          }
-          $installer = Join-Path $env:RUNNER_TEMP 'Claude.msix'
-          Invoke-WebRequest -Uri $env:INSTALLER_URL -OutFile $installer -TimeoutSec 300
-          $digest = $env:INSTALLER_SHA256
-          & ./scripts/cowork-inference/install-desktop.ps1 -InstallerPath $installer `
-            -ExpectedSha256 $digest `
-            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+        run: ./scripts/cowork-inference/download-desktop.ps1
       - name: Install UG checkout and pinned Claude CLI
         shell: pwsh
         run: ./scripts/cowork-inference/install-dependencies.ps1
@@ -199,30 +208,78 @@ jobs:
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
         run: ./scripts/cowork-inference/configure.ps1
       - name: Assert Cowork inference through Windows UI Automation
+        id: cowork-inference
         shell: pwsh
         env:
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: |
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
             -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork file read
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability file -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/file"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork skill execution
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: cowork-inference
+          name: cowork-inference-${{ matrix.source.id }}
           retention-days: 3
           path: |
             ${{ runner.temp }}/cowork-inference/*.json
             ${{ runner.temp }}/cowork-inference/*.png
             ${{ runner.temp }}/cowork-inference/native-*.log
+            ${{ runner.temp }}/cowork-inference/file/
+            ${{ runner.temp }}/cowork-inference/skill/
           if-no-files-found: warn
 
   cowork-inference-macos:
-    name: Cowork inference · macOS
+    name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 25
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        source:
+          - id: databricks
+            name: Databricks Hosted
+            provider: ''
+            model: system.ai.claude-haiku-4-5
+            relay: false
+          - id: anthropic
+            name: Anthropic MPS
+            provider: main.ucode.ci_e2e_anthropic_nonrelay_mps
+            model: claude-haiku-4-5-20251001
+            relay: false
+          - id: anthropic-relay
+            name: Anthropic relay MPS
+            provider: main.ucode.ci_e2e_anthropic_relay_mps
+            model: claude-haiku-4-5-20251001
+            relay: true
+    env:
+      UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
+      UG_COWORK_MODEL: ${{ matrix.source.model }}
+      UG_COWORK_RELAY: ${{ matrix.source.relay }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -239,10 +296,27 @@ jobs:
       - name: Install UG checkout and pinned Claude CLI
         run: bash scripts/cowork-inference/macos/install-dependencies.sh
       - name: Configure and assert Cowork inference through macOS Accessibility
+        id: cowork-inference
         env:
           UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py'
+      - name: Assert Cowork file read
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability file'
+      - name: Assert Cowork skill execution
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability skill'
       - name: Stop desktop processes
         if: always()
         run: |
@@ -252,7 +326,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: cowork-inference-macos
+          name: cowork-inference-macos-${{ matrix.source.id }}
           retention-days: 3
           path: ${{ runner.temp }}/macos-cowork-evidence/
           if-no-files-found: warn
@@ -334,6 +408,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
+            --npm-registry "$NPM_REGISTRY" \
             "${args[@]}" -- -m "$TEST_MARKER"
       - name: Upload live test evidence
         if: ${{ !cancelled() }}
@@ -348,6 +423,99 @@ jobs:
             ${{ runner.temp }}/ug-integration/*.log
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
+      # Claude Desktop runs only in the Windows Claude anthropic-mps lane; see scripts/cowork-inference/README.md.
+      - name: Install Claude Desktop
+        id: desktop-install
+        if: ${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}
+        shell: pwsh
+        run: ./scripts/cowork-inference/download-desktop.ps1
+      - name: Install the Desktop UG runtime and Claude CLI
+        id: desktop-dependencies
+        if: ${{ !cancelled() && steps.desktop-install.outcome == 'success' }}
+        shell: pwsh
+        env:
+          UG_COWORK_PACKAGE_INDEX: ${{ env.PACKAGE_INDEX }}
+          UG_COWORK_NPM_REGISTRY: ${{ env.NPM_REGISTRY }}
+        run: |
+          ./scripts/cowork-inference/install-dependencies.ps1
+          # Desktop's credential helper reruns this, so tokens outlive the one-hour M2M token.
+          $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+          $mint = Join-Path $env:GITHUB_WORKSPACE 'scripts/cowork-inference/bearer-token.py'
+          "DATABRICKS_BEARER_COMMAND=`"$python`" `"$mint`"" | Add-Content $env:GITHUB_ENV
+      - name: Configure Desktop for the staging Anthropic MPS
+        id: desktop-configure
+        if: ${{ !cancelled() && steps.desktop-dependencies.outcome == 'success' }}
+        shell: pwsh
+        run: ./scripts/cowork-inference/configure.ps1
+      - name: Assert Cowork inference through Windows UI Automation
+        id: desktop-inference
+        if: ${{ !cancelled() && steps.desktop-configure.outcome == 'success' }}
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-inference.ps1 `
+            -OutputDirectory "$env:RUNNER_TEMP/cowork-inference"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork file read
+        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability file -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/file"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork skill execution
+        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Upload Cowork evidence
+        if: ${{ !cancelled() && steps.desktop-install.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cowork-inference-anthropic
+          retention-days: 3
+          path: |
+            ${{ runner.temp }}/cowork-inference/*.json
+            ${{ runner.temp }}/cowork-inference/*.png
+            ${{ runner.temp }}/cowork-inference/native-*.log
+            ${{ runner.temp }}/cowork-inference/file/
+            ${{ runner.temp }}/cowork-inference/skill/
+          if-no-files-found: warn
+
+  anthropic-mps:
+    name: Anthropic MPS - Staging workspace · ${{ matrix.agent == 'claude' && 'Claude' || 'Copilot' }} · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}${{ matrix.agent == 'copilot' && ' (non-blocking)' || '' }}
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    continue-on-error: ${{ matrix.agent == 'copilot' }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' || 'linux-ubuntu-latest' }}
+    # The Windows Claude lane also runs the Cowork Desktop tasks.
+    timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || matrix.os == 'windows-latest' && 85 || 40 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest]
+        agent: [claude, copilot]
+    env:
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
+      UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com
+      DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba
+      DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: ${{ matrix.agent }}
+      TEST_MARKER: anthropic_mps and ${{ matrix.agent }}
+      ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}
+      # Desktop jobs skip merge-group runs, like the other Cowork lanes.
+      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && matrix.os == 'windows-latest' && matrix.agent == 'claude' }}
+      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
+      UG_COWORK_MODEL: claude-haiku-4-5-20251001
+      UG_COWORK_RELAY: false
+    steps: *live-steps
 
   headless-windows:
     name: Windows headless journey · Claude
@@ -447,7 +615,7 @@ jobs:
       AGENT: ${{ matrix.agent }}
       CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || inputs.codex_version || '0.154.0' }}
       # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
-      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}
     steps: *live-steps
 
@@ -514,7 +682,7 @@ jobs:
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: copilot
-      TEST_MARKER: live and copilot
+      TEST_MARKER: live and copilot and not anthropic_mps
       ARTIFACT_NAME: integration-full-copilot-${{ matrix.os }}
     steps: *live-steps
 
@@ -594,8 +762,8 @@ jobs:
             ${{ runner.temp }}/ug-integration/artifacts/
             ${{ runner.temp }}/ug-integration/wheels/
 
-  # managed and dedicated-cuj stay Linux-only: ug has no Windows managed-settings
-  # writer, and the CUJ suite drives agents through a POSIX PTY.
+  # This general managed lane is Linux-only; anthropic-mps covers Claude MPS managed
+  # settings on Windows too. Dedicated CUJs require POSIX PTYs.
   managed:
     name: Managed config · ${{ matrix.agent == 'claude' && 'Claude' || 'Codex' }}${{ matrix.smart_routing && ' · Smart routing' || '' }}
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
@@ -651,7 +819,7 @@ jobs:
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT and not soft_fail and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}"
+            "${args[@]}" -- -m "(managed_fixture or workspace_switch) and $AGENT and not soft_fail and not anthropic_mps and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}"
       - name: Upload managed test evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -750,7 +918,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, antigravity, managed, codex-desktop-macos, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, anthropic-mps, antigravity, managed, codex-desktop-macos, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
