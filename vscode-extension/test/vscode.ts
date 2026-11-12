@@ -49,6 +49,7 @@ export const host = {
   notices: [] as { message: string; actions: string[] }[],
   choice: undefined as string | undefined,
   remoteName: undefined as string | undefined,
+  showNotice: (): Promise<string | undefined> => Promise.resolve(host.choice),
   reset(): void {
     this.copilotChat = undefined;
     this.extensionListeners = [];
@@ -84,8 +85,8 @@ export const commands = {
   },
 };
 export const window = {
-  showInformationMessage: async (message: string, ...actions: string[]) => {
+  showInformationMessage: (message: string, ...actions: string[]) => {
     host.notices.push({ message, actions });
-    return host.choice;
+    return host.showNotice();
   },
 };

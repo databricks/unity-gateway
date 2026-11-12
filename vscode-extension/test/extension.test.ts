@@ -361,6 +361,29 @@ describe("whenCopilotChatIsOn", () => {
     assert.deepEqual(host.notices, []);
   });
 
+  it("lists the models even when Copilot Chat fails to start", async () => {
+    const calls: boolean[] = [];
+    whenCopilotChatIsOn(context(), (late) => calls.push(late), () => {});
+    host.copilotChat = { activate: async () => Promise.reject(new Error("boom")) };
+    for (const listener of [...host.extensionListeners]) listener();
+    await settle();
+    assert.deepEqual(calls, [true]);
+  });
+
+  it("asks again next time when the notice got no answer", async () => {
+    const ctx = context();
+    let answer: (choice: string | undefined) => void = () => {};
+    const show = host.showNotice;
+    host.showNotice = () => new Promise((resolve) => (answer = resolve));
+    whenCopilotChatIsOn(ctx, () => {}, () => {});
+    await settle();
+    assert.equal(ctx.globalState.get(NOTICE_SHOWN_KEY), undefined);
+    answer(undefined);
+    await settle();
+    assert.equal(ctx.globalState.get(NOTICE_SHOWN_KEY), true);
+    host.showNotice = show;
+  });
+
   it("shows no notice when the user turned AI features off", async () => {
     host.settings = { "chat.disableAIFeatures": true };
     host.commands = [TURN_ON_COMMAND];

@@ -36,14 +36,15 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def test_ug_configure_installs_an_extension_that_lists_models_in_an_open_window(
+def test_ug_configure_installs_the_extension_build_that_refreshes_its_models(
     live_session, workspace
 ):
-    """Scenario: with a `code` command on PATH, run `ug configure --agents copilot`.
+    """Scenario: with a stand-in `code` command on PATH, run `ug configure --agents copilot`.
 
-    Expected: configure installs the extension with the workspace's models, and that build asks
-    VS Code to list its models once Copilot Chat is on (so a window open during configure shows
-    them) and otherwise offers to turn Copilot Chat on. The next steps say to quit VS Code fully.
+    Expected: configure force-installs the extension with the workspace's models, the installed
+    bundle is the build that reports its models to VS Code and offers to turn Copilot Chat on (the
+    window behavior itself is covered by vscode-extension/test), and the next steps say to quit
+    VS Code fully.
     """
     session = live_session
     code_dir = session.cwd / "fake-code"
@@ -72,6 +73,9 @@ def test_ug_configure_installs_an_extension_that_lists_models_in_an_open_window(
     )
     assert restart in output, result.stdout
     assert "If VS Code is open" not in output, result.stdout
+    calls = (code_dir / "calls").read_text(encoding="utf-8").splitlines()
+    installs = [call.split() for call in calls if call.startswith("--install-extension ")]
+    assert len(installs) == 1 and installs[0][-1] == "--force", calls
     with zipfile.ZipFile(code_dir / "installed.vsix") as vsix:
         config = json.loads(vsix.read("extension/ug-config.json"))
         bundle = vsix.read("extension/out/extension.js").decode()

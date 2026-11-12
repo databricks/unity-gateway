@@ -240,21 +240,22 @@ export function whenCopilotChatIsOn(context: vscode.ExtensionContext, ready: (la
       return;
     }
     listener.dispose();
-    Promise.resolve(chat.activate()).then(
-      () => ready(true),
-      (error: unknown) => log(`Copilot Chat didn't start: ${String(error)}`),
-    );
+    Promise.resolve(chat.activate())
+      .catch((error: unknown) => log(`Copilot Chat didn't start: ${String(error)}`))
+      .finally(() => ready(true));
   });
   context.subscriptions.push(listener);
   if (vscode.workspace.getConfiguration("chat").get("disableAIFeatures") === true || context.globalState.get(NOTICE_SHOWN_KEY)) {
     return;
   }
-  void context.globalState.update(NOTICE_SHOWN_KEY, true);
-  void offerToTurnOn().catch((error: unknown) => log(`Couldn't turn on Copilot Chat: ${String(error)}`));
+  void offerToTurnOn(context).catch((error: unknown) => log(`Couldn't turn on Copilot Chat: ${String(error)}`));
 }
 
-const offerToTurnOn = async (): Promise<void> => {
-  if ((await vscode.window.showInformationMessage("Databricks models need Copilot Chat, which is turned off.", TURN_ON)) !== TURN_ON) {
+const offerToTurnOn = async (context: vscode.ExtensionContext): Promise<void> => {
+  const choice = await vscode.window.showInformationMessage("Databricks models need Copilot Chat, which is turned off.", TURN_ON);
+  // Only once the user answered: a window closed first asks again next time.
+  await context.globalState.update(NOTICE_SHOWN_KEY, true);
+  if (choice !== TURN_ON) {
     return;
   }
   try {
