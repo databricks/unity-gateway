@@ -3,6 +3,8 @@
 import asyncio
 import copy
 import json
+import threading
+from contextlib import asynccontextmanager
 from unittest.mock import Mock
 
 import pytest
@@ -10,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import session_env
+from ucode.smart_routing import codex_interposer, codex_metadata, session_env
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
     RootTurn,
@@ -90,6 +92,210 @@ def controller(tmp_path):
     upstream, tui = Wire(), Wire()
     metadata = RoutingMetadata(upstream, tui, controls, lambda _: None)
     return metadata, upstream, tui, controls
+
+
+@pytest.mark.parametrize("entrypoint", ["initialize", "refresh", "turn"])
+def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatch, entrypoint):
+    async def run():
+        metadata, upstream, tui, _ = controller(tmp_path)
+        read = Mock(side_effect=[PermissionError("controls locked"), False])
+        monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
+        message = {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
+
+        if entrypoint == "turn":
+            forwarded = await asyncio.wait_for(metadata.before_tui(message), 2)
+            assert forwarded["params"]["responsesapiClientMetadataPatch"] == {
+                ROUTING_STATE_KEY: "off"
+            }
+        else:
+            await asyncio.wait_for(getattr(metadata, entrypoint)(), 2)
+            assert metadata.applied is False
+        assert read.call_count == 2
+        assert upstream.messages == tui.messages == []
+
+    asyncio.run(run())
+
+
+class StreamingWire(Wire):
+    def __init__(self):
+        super().__init__()
+        self.incoming = asyncio.Queue()
+        self.outgoing = asyncio.Queue()
+        self.read_finished = asyncio.Event()
+        self.closed = False
+        self.tui_messages_at_close = []
+
+    async def send(self, raw):
+        await super().send(raw)
+        self.outgoing.put_nowait(json.loads(raw))
+
+    async def __aiter__(self):
+        try:
+            while (message := await self.incoming.get()) is not None:
+                yield json.dumps(message)
+        finally:
+            self.read_finished.set()
+
+
+@pytest.fixture
+def running_interposer(tmp_path, monkeypatch):
+    @asynccontextmanager
+    async def run():
+        controls = tmp_path / "controls.json"
+        controls.write_text("{}")
+        upstream, tui = StreamingWire(), StreamingWire()
+
+        @asynccontextmanager
+        async def connect(*args, **kwargs):
+            try:
+                yield upstream
+            finally:
+                upstream.tui_messages_at_close = list(tui.messages)
+                upstream.closed = True
+
+        monkeypatch.setattr(codex_interposer, "connect", connect)
+        task = asyncio.create_task(
+            codex_interposer._handle_tui(
+                tui, "ws://localhost", None, lambda _: None, session_controls=controls
+            )
+        )
+        try:
+            for thread in ({"id": "main"}, {"id": "child", "parentThreadId": "main"}):
+                message = {"result": {"thread": thread}}
+                upstream.incoming.put_nowait(message)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == message
+            yield task, upstream, tui, controls
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return run
+
+
+def test_controls_recovery_gates_main_input_and_preserves_forwarding(
+    running_interposer, monkeypatch
+):
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            retry_started = asyncio.Event()
+            release_read = threading.Event()
+            loop = asyncio.get_running_loop()
+            original_read = codex_metadata.session_routing_enabled
+            original_before_tui = RoutingMetadata.before_tui
+            steering_started, steering_released = asyncio.Event(), asyncio.Event()
+            attempts = 0
+
+            async def before_tui(metadata, message):
+                if message.get("id") != "steer":
+                    return await original_before_tui(metadata, message)
+                steering_started.set()
+                forwarded = await original_before_tui(metadata, message)
+                steering_released.set()
+                return forwarded
+
+            def read(path):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise PermissionError("controls locked")
+                if attempts == 2:
+                    loop.call_soon_threadsafe(retry_started.set)
+                    if not release_read.wait(5):
+                        raise TimeoutError("test did not release the controls read")
+                return original_read(path)
+
+            monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
+            monkeypatch.setattr(RoutingMetadata, "before_tui", before_tui)
+            try:
+                await asyncio.wait_for(retry_started.wait(), 2)
+                user_input = {
+                    "id": "input",
+                    "method": "turn/start",
+                    "params": {"threadId": "main", "input": [{"type": "text", "text": "work"}]},
+                }
+                steering = {
+                    "id": "steer",
+                    "method": "turn/steer",
+                    "params": {"threadId": "main", "input": [{"type": "text", "text": "wait"}]},
+                }
+                approval = {"id": "approval", "result": {"decision": "accept"}}
+                child_interrupt = {
+                    "id": "stop-child",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": "child", "turnId": "child-turn"},
+                }
+                for message in (steering, user_input, approval, child_interrupt):
+                    tui.incoming.put_nowait(message)
+                await asyncio.wait_for(steering_started.wait(), 2)
+                assert not steering_released.is_set()
+                for expected in (approval, child_interrupt):
+                    assert await asyncio.wait_for(upstream.outgoing.get(), 2) == expected
+                assert upstream.messages == [approval, child_interrupt]
+                child_update = {"method": "turn/started", "params": {"threadId": "child"}}
+                upstream.incoming.put_nowait(child_update)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == child_update
+
+                controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+                release_read.set()
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == steering
+                forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
+                assert forwarded == {
+                    **user_input,
+                    "params": {
+                        **user_input["params"],
+                        "responsesapiClientMetadataPatch": {ROUTING_STATE_KEY: "off"},
+                    },
+                }
+                assert all(message.get("method") != "error" for message in tui.messages)
+                tui.incoming.put_nowait(None)
+                await asyncio.wait_for(task, 2)
+                assert upstream.closed
+                assert upstream.read_finished.is_set() and tui.read_finished.is_set()
+            finally:
+                release_read.set()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("entrypoint", ["poll", "turn"])
+def test_persistent_controls_denial_reports_recovery_before_teardown(
+    running_interposer, monkeypatch, entrypoint
+):
+    async def wait_for_poll(self):
+        await asyncio.Event().wait()
+
+    if entrypoint == "turn":
+        monkeypatch.setattr(RoutingMetadata, "watch", wait_for_poll)
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            read = Mock(side_effect=PermissionError("controls locked"))
+            monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
+            if entrypoint == "turn":
+                tui.incoming.put_nowait(
+                    {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
+                )
+
+            error = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert error["method"] == "error"
+            assert error["params"]["willRetry"] is False
+            assert str(controls) in error["params"]["message"]
+            assert "controls locked" in error["params"]["message"]
+            assert "restart Codex through ug" in error["params"]["message"]
+            with pytest.raises(PermissionError, match="controls locked"):
+                await asyncio.wait_for(task, 2)
+
+            assert read.call_count == codex_metadata.CONTROLS_READ_ATTEMPTS
+            assert upstream.messages == []
+            assert [message for message in tui.messages if message.get("method") == "error"] == [
+                error
+            ]
+            assert error in upstream.tui_messages_at_close
+            assert upstream.closed
+            assert upstream.read_finished.is_set() and tui.read_finished.is_set()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("existing_patch", [None, {"other": "kept"}])

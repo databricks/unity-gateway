@@ -247,6 +247,8 @@ async def _handle_tui(
             if session_controls is not None
             else None
         )
+        if controller is not None:
+            await controller.initialize()
         queued_frames: asyncio.Queue = asyncio.Queue()
 
         def parse(frame) -> dict | None:

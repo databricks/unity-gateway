@@ -18,6 +18,8 @@ ROUTING_STATE_KEY = "smart_router_state"
 TASK_STATE_SUFFIX = re.compile(r"(?:__sr_(?:on|off))+$")
 INTERNAL_REQUEST_PREFIX = "ug-routing-metadata-"
 UPDATE_TIMEOUT_SECONDS = 30
+CONTROLS_READ_ATTEMPTS = 10
+CONTROLS_READ_RETRY_SECONDS = 0.1
 
 
 def routing_state(enabled: bool) -> str:
@@ -66,10 +68,57 @@ class RoutingMetadata:
         self.client_idle.set()
         self.activity = asyncio.Event()
         self.updating = False
-        self.applied = self.enabled()
+        self.applied: bool | None = None
+        self.controls_lock = asyncio.Lock()
+        self.controls_ready = asyncio.Event()
+        self.controls_ready.set()
+        self.failed = False
 
-    def enabled(self) -> bool:
-        return session_routing_enabled(self.controls)
+    async def initialize(self) -> None:
+        self.applied = await self.enabled()
+
+    async def enabled(self) -> bool:
+        try:
+            async with self.controls_lock:
+                self.controls_ready.clear()
+                attempts_remaining = CONTROLS_READ_ATTEMPTS
+                while True:
+                    try:
+                        enabled = await asyncio.to_thread(session_routing_enabled, self.controls)
+                        self.controls_ready.set()
+                        return enabled
+                    except PermissionError:
+                        attempts_remaining -= 1
+                        if not attempts_remaining:
+                            raise
+                        await asyncio.sleep(CONTROLS_READ_RETRY_SECONDS)
+        except (OSError, UnicodeError, ValueError) as exc:
+            await self.report_failure(exc)
+            raise
+
+    async def wait_ready(self) -> None:
+        while True:
+            await self.ready.wait()
+            await self.controls_ready.wait()
+            if self.ready.is_set() and self.controls_ready.is_set():
+                return
+
+    async def report_failure(self, exc: Exception) -> None:
+        self.ready.clear()
+        if self.failed:
+            return
+        self.failed = True
+        await self.tui.send(
+            json.dumps(
+                {
+                    "method": "error",
+                    "params": {
+                        "message": f"Smart Router metadata update failed: {exc}. Check access to session controls at {self.controls}, then restart Codex through ug and submit a new prompt.",
+                        "willRetry": False,
+                    },
+                }
+            )
+        )
 
     async def before_tui(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -86,16 +135,21 @@ class RoutingMetadata:
                         await self.tui.send(json.dumps({"id": message["id"], "result": {}}))
                     return None
             return message
-        await self.ready.wait()
+        await self.wait_ready()
         identity = message.get("id")
         if method == "initialize" and isinstance(params.get("capabilities", {}), dict):
             params.setdefault("capabilities", {})["experimentalApi"] = True
         if method == "turn/start" and isinstance(tid, str) and tid not in self.children:
             patch = params.get("responsesapiClientMetadataPatch")
             if patch is None or isinstance(patch, dict):
+                while True:
+                    await self.wait_ready()
+                    enabled = await self.enabled()
+                    if self.ready.is_set():
+                        break
                 params["responsesapiClientMetadataPatch"] = {
                     **(patch or {}),
-                    ROUTING_STATE_KEY: routing_state(self.enabled()),
+                    ROUTING_STATE_KEY: routing_state(enabled),
                 }
         if isinstance(identity, (str, int)) and method in {
             "thread/start",
@@ -203,7 +257,7 @@ class RoutingMetadata:
                         while root.active == turn_id:
                             self.activity.clear()
                             await self.activity.wait()
-                enabled = self.enabled()
+                enabled = await self.enabled()
                 self.applied = enabled
                 self.log(
                     f"[METADATA] main turns updated: state={routing_state(enabled)} roots={len(roots)}"
@@ -215,20 +269,9 @@ class RoutingMetadata:
     async def watch(self) -> None:
         try:
             while True:
-                if self.enabled() != self.applied:
+                if await self.enabled() != self.applied:
                     await self.refresh()
                 await asyncio.sleep(0.1)
         except (OSError, UnicodeError, ValueError, RuntimeError, TimeoutError) as exc:
-            self.ready.clear()
-            await self.tui.send(
-                json.dumps(
-                    {
-                        "method": "error",
-                        "params": {
-                            "message": f"Smart Router metadata update failed: {exc}. Reconnect and submit a new prompt to continue with current routing metadata.",
-                            "willRetry": False,
-                        },
-                    }
-                )
-            )
+            await self.report_failure(exc)
             raise

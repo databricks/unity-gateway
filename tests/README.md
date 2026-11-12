@@ -7,6 +7,12 @@ toggle-command completion, and fail-closed update errors. Live journeys in
 busy-child survival, nested spawns, cross-branch messages, and original-child follow-up.
 Native artifacts establish identity and continuity; HTTP metadata and usage-table
 ingestion require separate transport/backend validation.
+Controls-read component checks cover initialization, polling, refresh, and main-turn
+submission. Permission denials retry up to ten times without blocking the event loop.
+Handler checks gate main input, including steering, while approvals, child interrupts, and upstream events
+continue; recovery uses the latest state, and persistent failures send one actionable
+error before closing and cancelling forwarding tasks. These tests control filesystem
+errors and transports; they do not reproduce native Windows file contention.
 Message assertions require native delivery receipts with the exact target path and
 thread ID, covering both direct tool calls and code mode.
 Toggle checks accept native command output only after a successful exit, including

@@ -26,6 +26,8 @@ and wrapped command presentation, while rejecting additional commands.
 Native blank lines around the command do not change approval matching.
 The known PowerShell environment guard's quoted diagnostic label may vary; its
 checks, exit, and toggle command must still match, with no interpolation or extra commands.
+Controls-read retry, input gating, and error-before-teardown behavior have separate
+[component coverage](../README.md); these live journeys do not induce file-access failures.
 
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
