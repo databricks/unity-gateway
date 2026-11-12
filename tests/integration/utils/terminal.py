@@ -24,6 +24,15 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def _normalize_smart_router_env_guard(command: str) -> str:
+    return re.sub(
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; )""",
+        r'\1"ENV_UNSET"\2',
+        command,
+        count=1,
+    )
+
+
 def codex_command_approval_pending(screen: str, expected_command: str | tuple[str, ...]) -> bool:
     prompt = "Would you like to run the following command?"
     if prompt not in screen:
@@ -46,7 +55,8 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
     assert (
         re.search(r"(?m)^[ \t]*Environment: local[ \t]*$", dialog) is not None
         and command is not None
-        and rendered_command in expected_commands
+        and _normalize_smart_router_env_guard(rendered_command)
+        in tuple(_normalize_smart_router_env_guard(expected) for expected in expected_commands)
     ), "Codex requested an unexpected command approval:\n" + dialog
     return True
 
