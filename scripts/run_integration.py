@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -238,8 +239,17 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
-        token = json.load(response).get("access_token", "")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
+            token = json.load(response).get("access_token", "")
+    except urllib.error.HTTPError as exc:
+        detail = redact_secrets(
+            exc.read().decode("utf-8", errors="replace"), (client_secret, basic)
+        )[:2000]
+        raise RuntimeError(
+            f"Service-principal OAuth token request to {request.full_url} failed "
+            f"(HTTP {exc.code}): {detail}"
+        ) from None
     if not token:
         raise RuntimeError("Service-principal client credentials returned no access token.")
     return token
@@ -415,7 +425,7 @@ def arguments(
     )
     parser.add_argument(
         "--claude-provider",
-        default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
+        default="main.ucode.dont_delete_ci_company_anthropic_mps",
         help="Existing Anthropic MPS selected in the configure CUJ.",
     )
     parser.add_argument(
