@@ -264,7 +264,7 @@ def _toggle_with_skill(
     commands = (command,)
     if os.name == "nt":
         commands += (
-            'if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) '
+            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
             '{ Write-Output "SMART_ROUTER_ENV_UNSET"; exit 2 }; ' + command,
         )
 
