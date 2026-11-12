@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.harness import clean_environment
+from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -36,6 +36,26 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
 
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+
+
+def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "0")
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+
+    result = session.run(
+        "-c",
+        "from ucode.gateway_proxy import log_proxy_diagnostic; "
+        "log_proxy_diagnostic('request_start', request_id='diagnostic-check')",
+    )
+
+    prefix, payload = result.stderr.strip().split(" ", 1)
+    assert prefix == "[ucode-relay]"
+    assert json.loads(payload) == {"event": "request_start", "request_id": "diagnostic-check"}
+    recorded = json.loads((session.artifacts / "command-1.json").read_text())
+    assert recorded["stderr"] == result.stderr
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
