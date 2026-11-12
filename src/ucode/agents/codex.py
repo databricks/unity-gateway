@@ -1542,11 +1542,17 @@ def _set_provider_header(config: dict, provider: str | None) -> None:
 
 
 def _remove_persisted_recipe(config: dict) -> None:
-    # Keep the recipe launch-scoped so toggles can update it on app-server relaunch.
-    # A persisted OS-managed header would override the new launch value.
-    provider = config.get("model_providers", {}).get(CODEX_MODEL_PROVIDER_NAME, {})
+    # Persisted OS-managed headers outrank conversation configuration.
+    providers = config.get("model_providers")
+    if not isinstance(providers, dict):
+        return
+    provider = providers.get(CODEX_MODEL_PROVIDER_NAME)
+    if not isinstance(provider, dict):
+        return
     for key in ("http_headers", "env_http_headers"):
-        headers = provider.get(key, {})
+        headers = provider.get(key)
+        if not isinstance(headers, dict):
+            continue
         for name in list(headers):
             if name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold():
                 del headers[name]

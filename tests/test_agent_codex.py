@@ -3406,3 +3406,23 @@ class TestManagedUserAgent:
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: path)
 
         assert codex.managed_user_agent() == expected
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_providers": "invalid"},
+        {"model_providers": []},
+        {"model_providers": {"Databricks": "invalid"}},
+        {"model_providers": {"Databricks": {"http_headers": "invalid"}}},
+        {
+            "model_providers": {
+                "Databricks": {"env_http_headers": ["Databricks-Smart-Router-Recipe"]}
+            }
+        },
+    ],
+)
+def test_remove_persisted_recipe_preserves_malformed_optional_tables(config):
+    original = json.dumps(config, sort_keys=True)
+    codex._remove_persisted_recipe(config)
+    assert json.dumps(config, sort_keys=True) == original

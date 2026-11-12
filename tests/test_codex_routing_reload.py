@@ -507,7 +507,9 @@ def test_reload_timeout_blocks_input_and_late_internal_reply_stays_private(tmp_p
         assert not controller.ready.is_set()
         assert not controller.pending
         assert not any(call["method"] == "turn/start" for call in engine.calls)
-        assert "ug codex -- resume root" in tui.calls[-1]["params"]["error"]["message"]
+        message = tui.calls[-1]["params"]["error"]["message"]
+        assert "ug codex -- resume root" in message
+        assert "reload timed out" in message
         identity = engine.calls[-1]["id"]
         assert controller.observe({"id": identity, "result": {"data": []}})
 
@@ -1225,3 +1227,27 @@ def test_interposer_reconnect_preserves_first_prompt_routing(monkeypatch):
                 await interposer.wait_closed()
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+
+def test_unknown_sandbox_keeps_session_running_until_reload(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        await controller.before_tui({"id": 1, "method": "thread/start", "params": {}})
+        controller.observe(
+            {
+                "id": 1,
+                "result": {
+                    "thread": {"id": "root"},
+                    "sandbox": {"type": "externalSandbox"},
+                },
+            }
+        )
+        assert controller.ready.is_set()
+        assert controller.settings.unsupported_sandbox == "externalSandbox"
+        with pytest.raises(RuntimeError, match="sandbox profile: externalSandbox"):
+            await controller.reload()
+        assert not any(call["method"] == "turn/interrupt" for call in engine.calls)
+        controller.remember_settings({"sandbox": {"type": "workspaceWrite"}})
+        assert controller.settings.unsupported_sandbox is None
+
+    asyncio.run(scenario())

@@ -34,6 +34,7 @@ class ConversationSettings:
     resume: dict = field(default_factory=dict)
     turn: dict = field(default_factory=dict)
     permissions: dict = field(default_factory=dict)
+    unsupported_sandbox: str | None = None
 
 
 def routing_config(config: dict, enabled: bool) -> dict:
@@ -253,6 +254,7 @@ class RoutingReload:
             settings.resume.pop("permissions", None)
             settings.turn.pop("permissions", None)
         if isinstance(policy, str):
+            settings.unsupported_sandbox = None
             settings.resume["sandbox"] = policy
         elif isinstance(policy, dict):
             modes = {
@@ -262,9 +264,9 @@ class RoutingReload:
             }
             mode = modes.get(policy.get("type"))
             if mode is None:
-                if not source.get("activePermissionProfile"):
-                    raise RuntimeError("Cannot preserve the current Codex sandbox profile")
+                settings.unsupported_sandbox = str(policy.get("type") or "unknown")
             else:
+                settings.unsupported_sandbox = None
                 settings.resume["sandbox"] = mode
                 settings.turn["sandboxPolicy"] = copy.deepcopy(policy)
             if mode == "workspace-write":
@@ -283,6 +285,7 @@ class RoutingReload:
             settings.resume["permissions"] = profile["id"]
             settings.turn["permissions"] = profile["id"]
         if "permissions" in settings.resume:
+            settings.unsupported_sandbox = None
             settings.resume.pop("sandbox", None)
             settings.turn.pop("sandboxPolicy", None)
 
@@ -479,9 +482,14 @@ class RoutingReload:
     ) -> None:
         while True:
             tree = await self.loaded_tree()
+            roots.update(root for tid in tree if (root := self.root_for(tid)) is not None)
+            for root in roots:
+                if sandbox := self.conversations[root].unsupported_sandbox:
+                    raise RuntimeError(
+                        f"Cannot preserve the current Codex sandbox profile: {sandbox}"
+                    )
             if not tree:
                 return
-            roots.update(root for tid in tree if (root := self.root_for(tid)) is not None)
             active = [(tid, turn) for tid, turn in self.active.items() if tid in tree]
             active.sort(key=lambda pair: pair[0] not in roots)
             for tid, turn in active:
@@ -559,7 +567,7 @@ class RoutingReload:
                         "turnId": self.last_turn,
                         "willRetry": False,
                         "error": {
-                            "message": f"Smart Router reload failed: {exc or 'reload timed out'}. Saved conversation: {self.root}. Exit and recover with: ug codex -- resume {self.root}. The new launch uses its own routing settings.",
+                            "message": f"Smart Router reload failed: {str(exc) or 'reload timed out'}. Saved conversation: {self.root}. Exit and recover with: ug codex -- resume {self.root}. The new launch uses its own routing settings.",
                             "codexErrorInfo": None,
                             "additionalDetails": None,
                         },

@@ -70,7 +70,9 @@ The first-prompt routing decision is retained across TUI reconnects.
 The reload timeout is 30 seconds; individual RPCs have a 10-second timeout.
 Failures report the saved root ID and block held input on that connection.
 Diagnostics are retained in `~/.ucode/codex-v2-interposer.log` and
-`~/.ucode/codex-app-server.log`.
+`~/.ucode/codex-app-server.log`. Unsupported sandbox profiles leave ordinary
+sessions running; a toggle fails before interruption if UG cannot preserve that
+profile. A partial reload does not release queued input against uncertain attribution.
 
 ## Recovery and limits
 
@@ -106,28 +108,33 @@ child requests with current attribution. Separate journeys cover ordinary naviga
 and installed-skill off/on toggles. A recording test fixture forwards real gateway
 traffic unchanged; it is not part of the production request path.
 
-On 2026-11-12, 753 focused component/contract tests and the lint gate passed.
+On 2026-11-12, 760 focused component/contract tests and the lint gate passed.
 Installed-wheel validation ran inside a fresh Linux Arclet against the explicitly
-selected `eng-ml-inference` profile, using Codex 0.165.0 and 0.167.0:
+selected `eng-ml-inference` profile with router `m2-r315-quality-20260929`:
 
-- No-child off/on and ordinary running-child navigation passed on both versions.
-  No-child requests changed header/body attribution from `stable` to `DISABLED`
-  and back. App-server PIDs stayed unchanged and the TUI used one connection.
-  Native command approvals for the toggles preserved the read-only sandbox.
-- No-child reloads took 0.175/0.177 seconds on 0.165.0 and 0.202/0.198 seconds on
-  0.167.0, excluding model completion.
-- Busy-child journeys recovered two original children after off and three after
-  on, including exclusive command-completion receipts and child-owned final
-  answers. On 0.167.0, intermediate assertions also confirmed unchanged server
-  PIDs, one TUI connection, and current header/body attribution on parent and
-  existing-child inference after both toggles. Reloads took 0.268/0.310 seconds.
-- The complete busy-child journey failed on both versions at its final new-child
-  routing-display assertion. A separate orchestration journey failed before its
-  first toggle for the same missing display/decision. Direct requests to this
-  workspace's routing API returned HTTP 422 for both checked-in GPT model menus.
-  Child task completion alone does not establish successful model routing; these
-  journeys remain failing, and assertions were retained.
+- Codex 0.167.0 passed all four selected journeys: installed-skill off/on with
+  `subagent_orch_v0`, ordinary running-child navigation, no-child attribution, and
+  busy-child recovery with `subagent_orch_v1`.
+- Parent and child requests used the selected recipe, then `DISABLED`, then the
+  selected recipe again in both header and body metadata. App-server PIDs and
+  root/child IDs stayed unchanged, and the TUI used one connection per session.
+- Busy-child recovery required exclusive command-completion receipts and
+  child-owned final answers from two original children after off and three after
+  on. New children routed successfully after on. Sandbox and approval settings
+  were preserved, and each TUI exited normally.
+- No-child reloads took 0.179/0.183 seconds; busy-child reloads took 0.298/0.298
+  seconds, excluding model completion. Native toggle approvals preserved the
+  read-only sandbox in the no-child journey.
 
-Historical results are not evidence for this revision. Native Windows, macOS,
-Codex 0.164.0, a reload while an approval is already pending, compaction, and
-multiple-root live recovery need separate validation.
+Earlier runs with the workspace's default `stable` recipe could not establish
+successful model routing: direct routing requests returned HTTP 422. Supplying
+`m2-r315-quality-20260929` resolved that failure without relaxing assertions.
+The runner now accepts and records `--smart-router-name`, and passes only that
+selected recipe into each isolated agent environment.
+
+Codex 0.165.0 also passed installed-skill off/on with `subagent_orch_v0`, no-child
+attribution, and the complete busy-child journey with the same recipe. Seven
+selected live journeys passed across the two versions. Historical results are
+not evidence for this revision. Native Windows, macOS, Codex 0.164.0, a reload
+while an approval is already pending, compaction, and multiple-root live recovery
+need separate validation.

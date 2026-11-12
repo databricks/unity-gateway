@@ -16,8 +16,15 @@ body metadata, late descendants, unrelated roots, per-root permissions, approval
 replies behind queued input, Escape, rapid toggles, navigation, reload failures,
 malformed frames, and transient control-file errors. Launcher checks require one
 app-server across toggles and bounded process-tree cleanup on final exit.
+Unknown sandbox types leave untoggled sessions running and block an unsupported
+reload before interruption; timeout diagnostics identify the timeout.
 Managed-config checks retain path-specific repair instructions for pinned headers.
 These component checks simulate protocol races; they do not establish live coverage.
+
+The integration runner accepts `--smart-router-name` (or explicit
+`SMART_ROUTER_NAME`) and records that recipe in its version receipt. Fresh agent
+homes receive only this selected test recipe; other inherited routing flags stay
+scrubbed. Use a recipe supported by the selected workspace.
 
 `test_smart_router_codex_reload_without_children_updates_inference` checks installed-skill
 off/on with no children: parent request headers/body metadata, unchanged server PIDs,

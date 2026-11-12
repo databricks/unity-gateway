@@ -122,6 +122,9 @@ class UserSession:
         self.cwd.mkdir()
         self.binary = binary
         self.env = clean_environment(self.home)
+        router_name = os.environ.get("UG_INTEGRATION_SMART_ROUTER_NAME", "").strip()
+        if router_name:
+            self.env["SMART_ROUTER_NAME"] = router_name
         self.artifacts = artifacts
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.commands = 0

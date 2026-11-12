@@ -575,6 +575,11 @@ def arguments(
         "--default-index", default=environment.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
+    parser.add_argument(
+        "--smart-router-name",
+        default=environment.get("SMART_ROUTER_NAME"),
+        help="Explicit router recipe for smart-routing journeys.",
+    )
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=environment.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument(
@@ -794,6 +799,7 @@ def main() -> int:
             "antigravity": args.antigravity_build,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
+            "smart_router_name": args.smart_router_name,
             "opencode_model": args.opencode_model,
             "copilot_model": args.copilot_model,
             "antigravity_model": args.antigravity_model,
@@ -1123,6 +1129,7 @@ def main() -> int:
                 "UG_INTEGRATION_BIN": str(binary),
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
+                "UG_INTEGRATION_SMART_ROUTER_NAME": args.smart_router_name or "",
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER": args.claude_custom_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,

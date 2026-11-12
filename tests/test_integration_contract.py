@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.harness import clean_environment
+from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -36,6 +36,16 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
 
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+
+
+def test_isolated_sessions_use_only_the_explicit_test_router(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMART_ROUTER_NAME", "developer-recipe")
+    assert "SMART_ROUTER_NAME" not in clean_environment(tmp_path)
+    monkeypatch.setenv("UG_INTEGRATION_SMART_ROUTER_NAME", "test-recipe")
+    root, project = tmp_path / "root", tmp_path / "workspace"
+    project.mkdir()
+    session = UserSession(root, project, tmp_path / "ug", tmp_path / "artifacts")
+    assert session.env["SMART_ROUTER_NAME"] == "test-recipe"
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
