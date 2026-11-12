@@ -45,23 +45,7 @@ class Connection(Protocol):
 @dataclass
 class RootTurn:
     active: str | None = None
-    toggle_only: bool = False
     toggle_commands: set[str] = field(default_factory=set)
-
-
-def _toggle_only(params: dict) -> bool:
-    inputs = params.get("input")
-    if not isinstance(inputs, list):
-        return False
-    texts = []
-    for item in inputs:
-        if not isinstance(item, dict):
-            return False
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
-            texts.append(item["text"])
-        elif item.get("type") != "skill" or item.get("name") != "smart-router":
-            return False
-    return " ".join(texts).split() in (["$smart-router", "on"], ["$smart-router", "off"])
 
 
 class RoutingMetadata:
@@ -75,9 +59,7 @@ class RoutingMetadata:
         self.roots: dict[str, RootTurn] = {}
         self.children: set[str] = set()
         self.pending: dict[str, asyncio.Future[dict]] = {}
-        self.client_requests: dict[str | int, tuple[str, dict]] = {}
-        self.buffered_turns: dict[str, set[str | int]] = {}
-        self.cancelled: set[str] = set()
+        self.client_requests: set[str | int] = set()
         self.ready = asyncio.Event()
         self.ready.set()
         self.client_idle = asyncio.Event()
@@ -88,16 +70,6 @@ class RoutingMetadata:
 
     def enabled(self) -> bool:
         return session_routing_enabled(self.controls)
-
-    def buffer_input(self, message: dict) -> None:
-        params = message.get("params")
-        if (
-            message.get("method") == "turn/start"
-            and isinstance(params, dict)
-            and isinstance(params.get("threadId"), str)
-            and isinstance(message.get("id"), (str, int))
-        ):
-            self.buffered_turns.setdefault(params["threadId"], set()).add(message["id"])
 
     async def before_tui(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -110,7 +82,6 @@ class RoutingMetadata:
         if method == "turn/interrupt":
             if tid in self.roots:
                 if self.updating:
-                    self.cancelled.add(tid)
                     if "id" in message:
                         await self.tui.send(json.dumps({"id": message["id"], "result": {}}))
                     return None
@@ -120,7 +91,6 @@ class RoutingMetadata:
         if method == "initialize" and isinstance(params.get("capabilities", {}), dict):
             params.setdefault("capabilities", {})["experimentalApi"] = True
         if method == "turn/start" and isinstance(tid, str) and tid not in self.children:
-            self.buffered_turns.get(tid, set()).discard(identity)
             patch = params.get("responsesapiClientMetadataPatch")
             if patch is None or isinstance(patch, dict):
                 params["responsesapiClientMetadataPatch"] = {
@@ -134,7 +104,7 @@ class RoutingMetadata:
             "turn/start",
             "turn/settings/update",
         }:
-            self.client_requests[identity] = (method, copy.deepcopy(params))
+            self.client_requests.add(identity)
             self.client_idle.clear()
         return message
 
@@ -155,14 +125,9 @@ class RoutingMetadata:
             elif not thread.get("ephemeral"):
                 self.roots.setdefault(thread["id"], RootTurn())
         if "method" not in message and isinstance(identity, (str, int)):
-            request = self.client_requests.pop(identity, None)
+            self.client_requests.discard(identity)
             if not self.client_requests:
                 self.client_idle.set()
-            if request is not None and "error" not in message:
-                method, requested = request
-                root = self.roots.get(requested.get("threadId"))
-                if method == "turn/start" and root is not None:
-                    root.toggle_only = _toggle_only(requested)
             if isinstance(identity, str) and identity.startswith(INTERNAL_REQUEST_PREFIX):
                 future = self.pending.get(identity)
                 if future is not None and not future.done():
@@ -213,10 +178,6 @@ class RoutingMetadata:
             result = response.get("result")
             if not isinstance(result, dict):
                 raise RuntimeError(f"{method}: expected an object result")
-            if method == "turn/start":
-                turn = result.get("turn")
-                if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
-                    raise RuntimeError("turn/start: expected a turn ID")
             return result
         finally:
             self.pending.pop(identity, None)
@@ -224,12 +185,10 @@ class RoutingMetadata:
     async def refresh(self) -> None:
         self.ready.clear()
         self.updating = True
-        self.cancelled.clear()
         try:
             async with asyncio.timeout(UPDATE_TIMEOUT_SECONDS):
                 await self.client_idle.wait()
                 roots = list(self.roots.items())
-                interrupted = set()
                 for tid, root in roots:
                     while root.toggle_commands:
                         self.activity.clear()
@@ -244,27 +203,7 @@ class RoutingMetadata:
                         while root.active == turn_id:
                             self.activity.clear()
                             await self.activity.wait()
-                        interrupted.add(tid)
                 enabled = self.enabled()
-                for tid, root in roots:
-                    if tid not in self.roots or tid in self.cancelled or tid not in interrupted:
-                        continue
-                    if root.toggle_only or self.buffered_turns.get(tid):
-                        continue
-                    result = await self.rpc(
-                        "turn/start",
-                        {
-                            "threadId": tid,
-                            "input": [],
-                            "responsesapiClientMetadataPatch": {
-                                ROUTING_STATE_KEY: routing_state(enabled)
-                            },
-                        },
-                    )
-                    if tid in self.cancelled:
-                        await self.rpc(
-                            "turn/interrupt", {"threadId": tid, "turnId": result["turn"]["id"]}
-                        )
                 self.applied = enabled
                 self.log(
                     f"[METADATA] main turns updated: state={routing_state(enabled)} roots={len(roots)}"

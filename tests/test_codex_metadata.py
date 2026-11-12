@@ -145,14 +145,6 @@ def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, q
         }
         assert metadata.observe(child_turn) is False
         controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
-        if queued:
-            metadata.buffer_input(
-                {
-                    "id": "user-start",
-                    "method": "turn/start",
-                    "params": {"threadId": "main", "input": [{"type": "text", "text": "new work"}]},
-                }
-            )
 
         def reply(message):
             if message["method"] == "turn/interrupt":
@@ -164,15 +156,30 @@ def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, q
                 )
                 result = {}
             else:
-                assert message["method"] == "turn/start"
-                result = {"turn": {"id": "continued"}}
+                pytest.fail(f"Unexpected automatic request: {message['method']}")
             metadata.observe({"id": message["id"], "result": result})
 
         upstream.on_send = reply
-        if cancel:
-            metadata.client_idle.clear()
-            task = asyncio.create_task(metadata.refresh())
+        metadata.client_idle.clear()
+        task = asyncio.create_task(metadata.refresh())
+        await asyncio.sleep(0)
+        queued_input = None
+        if queued:
+            queued_input = asyncio.create_task(
+                metadata.before_tui(
+                    {
+                        "id": "user-start",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": "main",
+                            "input": [{"type": "text", "text": "new work"}],
+                        },
+                    }
+                )
+            )
             await asyncio.sleep(0)
+            assert not queued_input.done()
+        if cancel:
             assert (
                 await metadata.before_tui(
                     {
@@ -183,32 +190,22 @@ def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, q
                 )
                 is None
             )
-            metadata.client_idle.set()
-            await task
             assert tui.messages == [{"id": "escape", "result": {}}]
-        else:
-            await metadata.refresh()
+        metadata.client_idle.set()
+        await task
         assert "main" in metadata.roots and "child" in metadata.children
         assert all(message["params"]["threadId"] == "main" for message in upstream.messages)
         assert all(
             message["method"] not in {"thread/unsubscribe", "thread/resume"}
             for message in upstream.messages
         )
-        starts = [message for message in upstream.messages if message["method"] == "turn/start"]
-        assert len(starts) == (0 if queued or cancel else 1)
-        if starts:
-            assert starts[0]["params"]["responsesapiClientMetadataPatch"] == {
+        assert [message["method"] for message in upstream.messages] == ["turn/interrupt"]
+        if queued_input is not None:
+            forwarded = await queued_input
+            assert forwarded["params"]["input"] == [{"type": "text", "text": "new work"}]
+            assert forwarded["params"]["responsesapiClientMetadataPatch"] == {
                 ROUTING_STATE_KEY: "off"
             }
-            assert starts[0]["params"]["input"] == []
-        if queued and not cancel:
-            message = {
-                "id": "user-start",
-                "method": "turn/start",
-                "params": {"threadId": "main", "input": [{"type": "text", "text": "new work"}]},
-            }
-            forwarded = await metadata.before_tui(message)
-            assert forwarded["params"]["input"] == [{"type": "text", "text": "new work"}]
 
     asyncio.run(run())
 
@@ -227,7 +224,10 @@ def test_idle_toggle_does_not_start_inference_or_add_a_prompt(tmp_path):
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_toggle_only_turn_stops_after_command_without_starting_it_again(tmp_path, enabled):
+@pytest.mark.parametrize(
+    "request_text", ["$smart-router {state}", "Turn Smart Router {state}.", "Continue work."]
+)
+def test_toggle_stops_main_without_starting_it_again(tmp_path, enabled, request_text):
     async def run():
         metadata, upstream, _, controls = controller(tmp_path)
         metadata.roots["main"] = RootTurn(active="toggle-turn")
@@ -237,7 +237,7 @@ def test_toggle_only_turn_stops_after_command_without_starting_it_again(tmp_path
             "params": {
                 "threadId": "main",
                 "input": [
-                    {"type": "text", "text": f"$smart-router {'on' if enabled else 'off'}"},
+                    {"type": "text", "text": request_text.format(state="on" if enabled else "off")},
                     {"type": "skill", "name": "smart-router"},
                 ],
             },
@@ -333,7 +333,6 @@ def test_toggle_command_finishes_before_main_is_interrupted(tmp_path):
         task = asyncio.create_task(metadata.refresh())
         await asyncio.sleep(0)
         assert upstream.messages == []
-        metadata.cancelled.add("main")
 
         def reply(message):
             metadata.observe({"id": message["id"], "result": {}})

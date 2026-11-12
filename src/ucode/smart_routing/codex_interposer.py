@@ -267,8 +267,6 @@ async def _handle_tui(
                     if forwarded is not None:
                         await upstream.send(json.dumps(forwarded))
                 else:
-                    if message is not None:
-                        controller.buffer_input(message)
                     await queued_frames.put(frame)
             await queued_frames.put(None)
 

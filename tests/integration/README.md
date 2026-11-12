@@ -17,7 +17,7 @@ Component checks also cover the TUI's nullable metadata patch; verify attributio
 on later user turns when querying the usage table.
 The live journeys also require the exact submitted user-prompt count, proving that
 metadata handoffs add no synthetic prompt to the native conversation history.
-Standalone toggles stop after the successful CLI receipt and metadata handoff;
+Toggles stop after the successful CLI receipt and metadata handoff;
 they require no final assistant reply. Both journeys assert one successful command
 per requested transition, followed by normal user tasks in the same conversation.
 The busy child uses UG's installed Python on both platforms. Windows command approvals

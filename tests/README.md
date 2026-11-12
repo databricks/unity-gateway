@@ -15,9 +15,9 @@ Launcher checks also assert the gateway provider settings forwarded to Windows'
 remote TUI, with the exact remote arguments preserved on each platform.
 Turn metadata checks include native TUI requests whose optional patch is JSON null,
 so later user turns retain the current routing state.
-Main handoffs use empty input; queued user input is preserved, and idle toggles start
-no inference. Live histories must contain exactly the prompts submitted through the TUI.
-Standalone toggles end after the command and interruption without starting another turn.
+Main handoffs start no inference; queued user input is preserved. Live histories
+must contain exactly the prompts submitted through the TUI. Toggles end after the
+command and interruption without starting another turn, regardless of prompt wording.
 Live toggle evidence requires exactly one successful native CLI execution per transition;
 permission-denied attempts are distinct from successful commands.
 Windows journeys use UG's installed Python for the busy child and native approval
