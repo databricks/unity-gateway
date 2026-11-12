@@ -299,3 +299,21 @@ def capture_sessions(desktop, task):
             continue
         if task["prompt"] in text:
             desktop.save(f"native-session-{index}.jsonl", text)
+    if task["capability"] == "mcp":
+        capture_desktop_logs(desktop, started)
+
+
+DESKTOP_LOG_TAIL_BYTES = 200_000
+
+
+def capture_desktop_logs(desktop, started):
+    """Save Desktop's own logs, which show whether it started each connector."""
+    for path in sorted((Path.home() / "Library/Logs").glob("Claude*/**/*.log")):
+        try:
+            if path.stat().st_mtime < started:
+                continue
+            data = path.read_bytes()[-DESKTOP_LOG_TAIL_BYTES:]
+        except FileNotFoundError:
+            continue
+        name = "-".join(path.relative_to(Path.home() / "Library/Logs").parts)
+        desktop.save(f"desktop-log-{name}", data.decode("utf-8", errors="replace"))

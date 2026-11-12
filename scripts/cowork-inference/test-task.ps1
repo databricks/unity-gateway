@@ -196,6 +196,27 @@ try {
             Protect-DiagnosticText $text | Set-Content (Join-Path $evidence 'session.jsonl')
         } catch { $report.captureError = $_.Exception.Message }
     }
+    if ($Capability -eq 'mcp') {
+        # Desktop's own logs show whether it started each connector; MSIX may virtualize AppData.
+        try {
+            $logRoots = @(
+                @(Get-ChildItem $env:APPDATA -Directory -Filter 'Claude*' -ErrorAction SilentlyContinue)
+                @(Get-ChildItem $env:LOCALAPPDATA -Directory -Filter 'Claude*' -ErrorAction SilentlyContinue)
+                @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue)
+            )
+            $logs = @($logRoots | ForEach-Object {
+                Get-ChildItem $_.FullName -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue
+            } | Where-Object { $_.FullName -match '[\\/]logs[\\/]' -and $_.LastWriteTime -ge $started })
+            $logDirectory = Join-Path $evidence 'desktop-logs'
+            New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+            foreach ($log in $logs) {
+                $name = ($log.FullName.Substring($env:USERPROFILE.Length) -replace '[\\/:]', '-').Trim('-')
+                $text = (Get-Content -LiteralPath $log.FullName -Tail 2000 -ErrorAction Stop) -join "`n"
+                Protect-DiagnosticText $text | Set-Content -LiteralPath (Join-Path $logDirectory $name)
+            }
+            $report.desktopLogs = $logs.Count
+        } catch { $report.logCaptureError = $_.Exception.Message }
+    }
     Remove-Item $taskPath -ErrorAction SilentlyContinue
     Protect-DiagnosticText ($report | ConvertTo-Json -Depth 8) | Set-Content (Join-Path $evidence 'result.json')
 }

@@ -839,3 +839,17 @@ def test_macos_mcp_task_approves_a_connector_prompt(tasks, label, monkeypatch):
     tasks.approve_tool_permission(SimpleNamespace(ui=ui), report)
     assert clicks == ([label] if label else [])
     assert report.get("toolPermission") == label
+
+
+def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
+    logs = tmp_path / "Library/Logs/Claude-3p"
+    logs.mkdir(parents=True)
+    (logs / "mcp-server-web_search.log").write_text("x" * 10 + "connector started")
+    old = logs / "main.log"
+    old.write_text("stale")
+    os.utime(old, (0, 0))
+    saved = {}
+    tasks.capture_desktop_logs(SimpleNamespace(save=saved.__setitem__), started=1)
+    assert saved == {
+        "desktop-log-Claude-3p-mcp-server-web_search.log": "x" * 10 + "connector started"
+    }
