@@ -23,5 +23,5 @@
     "author": {"name": "Unity Gateway CI"},
     "description": "Native Cowork skill test fixture"
   },
-  "skillInstructions": "---\nname: probe-summary\ndescription: Use when asked to produce the capability probe summary.\n---\nUse the Read tool to read references/facts.txt beside this skill. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text.\nDo not guess the contents and do not use subagents.\n"
+  "skillInstructions": "---\nname: probe-summary\ndescription: Use when asked to produce the capability probe summary.\n---\nUse the Read tool to read the file at the full base directory shown above followed by /references/facts.txt. Keep the entire base directory, including skills/probe-summary; do not resolve the file from the plugin root or the current working directory. Reply with only the value stored in the file. Omit line numbers added by the tool. Do not use Markdown, code fences, or any other text.\nDo not guess the contents and do not use subagents.\n"
 }
