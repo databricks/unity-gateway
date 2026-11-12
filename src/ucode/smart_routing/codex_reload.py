@@ -33,9 +33,23 @@ class ConversationSettings:
     unsupported_sandbox: str | None = None
 
 
+def _set_routing_recipe(config: dict, provider: str, recipe: str) -> None:
+    headers = (
+        config.setdefault("model_providers", {})
+        .setdefault(provider, {})
+        .setdefault("http_headers", {})
+    )
+    for name in list(headers):
+        if name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold():
+            del headers[name]
+    headers[SMART_ROUTER_RECIPE_HEADER] = recipe
+    config.setdefault("responses_api_metadata", {})["smart_router_recipe_name"] = recipe
+
+
 def routing_config(config: dict, enabled: bool) -> dict:
     result = copy.deepcopy(config)
-    headers = result["model_providers"][result["model_provider"]].setdefault("http_headers", {})
+    provider = result["model_provider"]
+    headers = result["model_providers"][provider].setdefault("http_headers", {})
     recipe = (
         next(
             (
@@ -50,11 +64,7 @@ def routing_config(config: dict, enabled: bool) -> dict:
     )
     if not isinstance(recipe, str) or not recipe.strip():
         raise RuntimeError("Codex smart routing requires a nonempty launch recipe")
-    for name in list(headers):
-        if name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold():
-            del headers[name]
-    headers[SMART_ROUTER_RECIPE_HEADER] = recipe
-    result.setdefault("responses_api_metadata", {})["smart_router_recipe_name"] = recipe
+    _set_routing_recipe(result, provider, recipe)
     return result
 
 
@@ -114,18 +124,6 @@ class RoutingReload:
         self.applied = True
         self.controls_unreadable = False
         self.applied = self.enabled()
-
-    @property
-    def turn_settings(self) -> dict:
-        return self.settings.turn
-
-    @property
-    def resume_settings(self) -> dict:
-        return self.settings.resume
-
-    @property
-    def permission_config(self) -> dict:
-        return self.settings.permissions
 
     def enabled(self) -> bool:
         try:
@@ -204,29 +202,11 @@ class RoutingReload:
             # New roots and resumed roots must not inherit the app-server's launch recipe.
             config = routing_config(self.config, self.enabled())
             overrides = copy.deepcopy(params.get("config") or {})
-            provider = config["model_provider"]
-            headers = (
-                overrides.setdefault("model_providers", {})
-                .setdefault(provider, {})
-                .setdefault("http_headers", {})
-            )
-            for name in list(headers):
-                if name.casefold() == SMART_ROUTER_RECIPE_HEADER.casefold():
-                    del headers[name]
-            deep_merge_dict(
+            deep_merge_dict(overrides, {"responses_api_metadata": config["responses_api_metadata"]})
+            _set_routing_recipe(
                 overrides,
-                {
-                    "model_providers": {
-                        provider: {
-                            "http_headers": {
-                                SMART_ROUTER_RECIPE_HEADER: config["responses_api_metadata"][
-                                    "smart_router_recipe_name"
-                                ]
-                            }
-                        }
-                    },
-                    "responses_api_metadata": config["responses_api_metadata"],
-                },
+                config["model_provider"],
+                config["responses_api_metadata"]["smart_router_recipe_name"],
             )
             params["config"] = overrides
         self.remember_request(message)

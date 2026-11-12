@@ -333,8 +333,8 @@ def test_tui_background_thread_cannot_replace_root_or_permissions(tmp_path):
             }
         )
         assert controller.root == "root"
-        assert controller.resume_settings["sandbox"] == "workspace-write"
-        assert controller.resume_settings["approvalPolicy"] == "never"
+        assert controller.settings.resume["sandbox"] == "workspace-write"
+        assert controller.settings.resume["approvalPolicy"] == "never"
         assert not controller.belongs_to_root("title-helper")
 
     asyncio.run(scenario())
@@ -478,7 +478,7 @@ def test_accepted_settings_replace_prior_turn_overrides_on_recovery(tmp_path, so
             }
         )
         controller.observe({"id": 80, "result": {"turn": {"id": "root-turn"}}})
-        assert controller.turn_settings["collaborationMode"]["settings"]["model"] == "plan-model"
+        assert controller.settings.turn["collaborationMode"]["settings"]["model"] == "plan-model"
         accepted = {"model": "new-model", "approvalPolicy": "on-request"}
         if source == "response":
             await controller.before_tui(
