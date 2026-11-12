@@ -126,10 +126,15 @@ alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
 alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
 ```
 
-Each policy run rewrites that block, which restores it if a macOS update resets the file. The
-aliases apply only to interactive zsh and bash. In scripts, other shells, or to run the agent
-without ug, use `UG_SKIP_OS_SETTINGS=1 ug claude` or `command claude` directly. Without the variable,
-a launch may try to update the machine-wide settings with sudo and stop.
+Each policy run rewrites that block, which restores it if a macOS update resets the file. Until
+then, `claude` and `codex` start the agents directly, which still reach Unity Gateway through the
+machine-wide settings the policy installed; they only miss ug's launch features, such as smart
+routing, so no extra trigger is needed.
+
+The aliases apply only to interactive zsh and bash. In scripts and other shells, use
+`UG_SKIP_OS_SETTINGS=1 ug claude` (or `ug codex`) directly. Without the variable, a launch may try to
+update the machine-wide settings with sudo and stop. To run Claude Code itself without ug, use
+`command claude`: `command` is the shell built-in that skips aliases and runs the `claude` binary.
 
 ## Rotate the secret
 
