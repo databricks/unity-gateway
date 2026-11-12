@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from ucode import managed_resolve
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -95,7 +96,6 @@ from ucode.managed_files import (
     windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
-from ucode.managed_resolve import managed_claude_family_models, managed_default_model
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
@@ -827,8 +827,8 @@ def managed_model_inputs(state: dict, managed: dict | None) -> ManagedModelInput
     """
     if managed is None:
         return ManagedModelInputs({}, None, None)
-    defaults = managed_claude_family_models(managed) or {}
-    root_model = managed_default_model(managed, "claude")
+    defaults = managed_resolve.managed_claude_family_models(managed) or {}
+    root_model = managed_resolve.managed_default_model(managed, "claude")
     picker_catalog = None
     if defaults and not state.get("claude_static_models"):
         picker_catalog = default_model_picker_catalog(defaults, launch_model=root_model)

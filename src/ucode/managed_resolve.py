@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from ucode.agents.model_sources import SCHEMA_MODEL_CATALOGS
 from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
 from ucode.state import MANAGED_OVERLAY_KEY
 
@@ -85,9 +86,6 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     Supported tracing flags, Copilot's VS Code switch and harness-native settings are also mapped
     to the state key each writer consumes.
     """
-    # Agent modules import managed resolution during initialization.
-    from ucode.agents.model_sources import SCHEMA_MODEL_CATALOGS
-
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
     if models:
