@@ -42,7 +42,7 @@ homes receive only this selected test recipe; other inherited routing flags stay
 scrubbed. Use a recipe supported by the selected workspace.
 
 `test_smart_router_codex_idle_reload_updates_inference_without_recovery` checks installed-skill
-off/on with no children or a completed idle child: no recovery prompt or automatic
+off/on with no children or two completed idle children: no recovery prompt or automatic
 turn, explicit user probes with current parent request headers/body metadata,
 unchanged server PIDs, one TUI connection, stable root/child IDs, and normal TUI exit.
 The approved guidance appears before each toggle command. Repeating on or off
@@ -58,6 +58,9 @@ exclusive command-completion receipts, child-owned final answers, successful par
 and child inference with the current recipe, and normal TUI exit. Windows uses native
 approval for the exact toggle command. Ordinary `/subagents` navigation has separate
 coverage requiring no reload or interrupted command.
+The busy-child journey covers all-working and mixed working/idle children. Completed
+idle children keep their original turns and send no inference after either toggle;
+working children finish their original assignments under the same saved IDs.
 
 Request-recorder checks preserve upstream responses after client disconnects during
 headers or body, including Windows connection-aborted errors.

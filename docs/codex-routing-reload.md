@@ -5,6 +5,10 @@ Smart-routed `ug codex` sessions unload and resume their saved conversations aft
 connection stay open. This avoids the reconnect screen caused by restarting the
 app-server. Running turns and commands are still interrupted.
 
+Resuming a conversation initializes its MCP connections again. Codex may show
+“Starting MCP servers” during this step even though the app-server process stays
+running. Repeating the current routing state starts no reload or MCP initialization.
+
 The Codex routing minimum remains 0.164.0 and the routing CI pin remains 0.165.0.
 The managed default remains Claude-only. Select a Codex-enabled preset:
 

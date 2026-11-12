@@ -1012,6 +1012,19 @@ def _codex_thread_answered(session, thread_id: str, marker: str) -> bool:
     return False
 
 
+def _codex_thread_turns(session, thread_ids) -> set[str]:
+    return {
+        row["payload"]["turn_id"]
+        for records in agent_sessions(session, "codex").values()
+        if any(
+            row.get("type") == "session_meta" and row["payload"].get("id") in thread_ids
+            for row in records
+        )
+        for row in records
+        if row.get("type") == "turn_context"
+    }
+
+
 def _assert_codex_inference_recipes(
     session, recorder, checkpoint, thread_ids, recipe, *, continuation=None
 ):
@@ -1244,7 +1257,7 @@ def _codex_app_server_pids(tui):
 def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
     live_session, workspace, tmp_path, idle_children
 ):
-    """Scenario: toggle and repeat off/on through the skill with no children or one idle child.
+    """Scenario: toggle and repeat off/on through the skill with no children or two idle children.
 
     Expected: guidance precedes each toggle command and no automatic turn follows.
     Repeated settings leave controls untouched and do not reload. Explicit probes
@@ -1281,17 +1294,19 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
             root = original["/root"]
             if idle_children:
                 tui.submit(
-                    'Spawn exactly one child named idle_worker with fork_turns="none". '
-                    f"Tell it to reply exactly child-idle-{marker} and END its turn. "
-                    f"Wait for its final answer, then reply exactly root-idle-{marker} "
+                    'Spawn exactly two children named idle_a and idle_b with fork_turns="none". '
+                    f"Tell each to reply exactly child-idle-{marker} and END its turn. "
+                    f"Wait for both final answers, then reply exactly root-idle-{marker} "
                     "and END your turn."
                 )
                 tui.wait_for(
                     lambda screen: (
-                        len(threads := _codex_thread_ids(session)) == 2
+                        set(threads := _codex_thread_ids(session))
+                        == {"/root", "/root/idle_a", "/root/idle_b"}
                         and _codex_thread_answered(session, root, f"root-idle-{marker}")
-                        and _codex_thread_answered(
-                            session, threads["/root/idle_worker"], f"child-idle-{marker}"
+                        and all(
+                            _codex_thread_answered(session, threads[path], f"child-idle-{marker}")
+                            for path in ("/root/idle_a", "/root/idle_b")
                         )
                         and "esc to interrupt" not in screen.lower()
                     ),
@@ -1299,6 +1314,10 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
                     timeout=120,
                 )
                 original = _codex_thread_ids(session)
+
+            idle_threads = {path: tid for path, tid in original.items() if path != "/root"}
+            original_idle_turns = _codex_thread_turns(session, idle_threads.values())
+            idle_checkpoint = recorder.checkpoint()
 
             def root_records():
                 return [
@@ -1408,6 +1427,16 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
                 assert len(root_turns() - before_turns) == 1
                 assert _codex_app_server_pids(tui) == server_pids
                 assert _codex_thread_ids(session) == original
+                assert _codex_thread_turns(session, idle_threads.values()) == original_idle_turns
+                assert not any(
+                    request.path.endswith("/responses")
+                    and request.headers.get("thread-id") in idle_threads.values()
+                    for request in recorder.requests_after(idle_checkpoint)
+                ), "Completed idle children sent inference after toggling"
+            session.record(
+                "idle-child-preservation.json",
+                {"threads": idle_threads, "turns": sorted(original_idle_turns)},
+            )
             log = (session.home / ".ucode/codex-v2-interposer.log").read_text()
             assert log.count("[CONN] TUI connected") == 1
             assert log.count("[RELOAD] resumed") == 2
@@ -1418,14 +1447,16 @@ def test_smart_router_codex_idle_reload_updates_inference_without_recovery(
 @pytest.mark.codex
 @pytest.mark.managed_fixture
 @pytest.mark.codex_smart_routing
+@pytest.mark.parametrize("with_idle_child", [False, True], ids=["all-working", "mixed"])
 def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
-    live_session, workspace, tmp_path
+    live_session, workspace, tmp_path, with_idle_child
 ):
-    """Scenario: toggle off from the main agent with two children running, then on with three.
+    """Scenario: toggle off with two children running, then on with three, optionally with an idle child.
 
     Expected: every resumed parent/child inference carries the new recipe in body metadata
     and the header (Windows permits an absent header). All original IDs and permissions
-    survive; app-server PIDs and the TUI connection stay unchanged. Resumed commands
+    survive; app-server PIDs and the TUI connection stay unchanged. The completed idle
+    child starts no new turn or inference after either toggle. Resumed commands
     write exclusive completion receipts before children deliver
     their own final answers. Newly spawned children inherit the current recipe.
     Windows uses native approval for the exact toggle command;
@@ -1514,6 +1545,43 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             app_server_pids = _codex_app_server_pids(tui)
             session.record("app-server-launch-pids.json", app_server_pids)
             checkpoint = recorder.checkpoint()
+            idle_threads = {}
+
+            def assert_idle_unchanged(since):
+                assert _codex_thread_turns(session, idle_threads.values()) == original_idle_turns, (
+                    "Completed idle child restarted"
+                )
+                assert not any(
+                    request.path.endswith("/responses")
+                    and request.headers.get("thread-id") in idle_threads.values()
+                    for request in recorder.requests_after(since)
+                ), "Completed idle child sent inference after the toggle"
+
+            if with_idle_child:
+                tui.submit(
+                    'Spawn exactly one child named idle_worker with fork_turns="none". '
+                    f"Tell it to reply exactly idle-child-{marker} and END its turn. "
+                    f"Wait for its final answer, then reply exactly idle-parent-{marker} "
+                    "and END your turn."
+                )
+                tui.wait_for(
+                    lambda screen: (
+                        set(threads := _codex_thread_ids(session)) == {"/root", "/root/idle_worker"}
+                        and _codex_thread_answered(
+                            session, threads["/root/idle_worker"], f"idle-child-{marker}"
+                        )
+                        and _codex_thread_answered(
+                            session, threads["/root"], f"idle-parent-{marker}"
+                        )
+                        and "esc to interrupt" not in screen.lower()
+                    ),
+                    "completed child idle before launching working children",
+                    timeout=120,
+                )
+                idle_threads = {
+                    path: tid for path, tid in _codex_thread_ids(session).items() if path != "/root"
+                }
+            original_idle_turns = _codex_thread_turns(session, idle_threads.values())
             names = ("worker_a", "worker_b")
             assignments = {name: assignment("off", name) for name in names}
             (session.cwd / "off-assignments.json").write_text(json.dumps(assignments))
@@ -1536,8 +1604,14 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                 timeout=180,
             )
             initial = _codex_thread_ids(session)
-            assert set(initial) == {"/root", "/root/worker_a", "/root/worker_b"}, initial
-            original_children = {path: tid for path, tid in initial.items() if path != "/root"}
+            assert set(initial) == {"/root", "/root/worker_a", "/root/worker_b"} | set(
+                idle_threads
+            ), initial
+            original_children = {
+                path: tid
+                for path, tid in initial.items()
+                if path != "/root" and path not in idle_threads
+            }
             assert all(
                 not children_finished("off", {path: tid}) for path, tid in original_children.items()
             )
@@ -1585,20 +1659,25 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             assert _codex_thread_ids(session) == initial
             _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
             off_threads = _codex_thread_ids(session)
-            assert len(off_threads) == 4, off_threads
+            assert len(off_threads) == 4 + len(idle_threads), off_threads
+            assert_idle_unchanged(off_checkpoint)
             session.record(
                 "recipe-off.json",
                 _assert_codex_inference_recipes(
                     session,
                     recorder,
                     off_checkpoint,
-                    off_threads.values(),
+                    [tid for path, tid in off_threads.items() if path not in idle_threads],
                     "DISABLED",
                     continuation="Smart Router is now off. UG reloaded",
                 ),
             )
 
-            existing_children = {path: tid for path, tid in off_threads.items() if path != "/root"}
+            existing_children = {
+                path: tid
+                for path, tid in off_threads.items()
+                if path != "/root" and path not in idle_threads
+            }
             assignments = {
                 path: assignment("on", path.rsplit("/", 1)[-1]) for path in existing_children
             }
@@ -1648,7 +1727,7 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                     session,
                     recorder,
                     on_checkpoint,
-                    off_threads.values(),
+                    [tid for path, tid in off_threads.items() if path not in idle_threads],
                     recipe,
                     continuation="Smart Router is now on. UG reloaded",
                 ),
@@ -1656,15 +1735,16 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             assert reload_log.read_text().count("[CONN] TUI connected") == 1
             _run_calculation(tui, session, "codex", "2+2", "4", True, routed=True)
             on_threads = _codex_thread_ids(session)
-            assert len(on_threads) == 5, on_threads
+            assert len(on_threads) == 5 + len(idle_threads), on_threads
             assert all(on_threads[path] == tid for path, tid in off_threads.items())
+            assert_idle_unchanged(on_checkpoint)
             session.record(
                 "recipe-on.json",
                 _assert_codex_inference_recipes(
                     session,
                     recorder,
                     on_checkpoint,
-                    on_threads.values(),
+                    [tid for path, tid in on_threads.items() if path not in idle_threads],
                     recipe,
                     continuation="Smart Router is now on. UG reloaded",
                 ),
@@ -1673,6 +1753,10 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             assert reload_log.read_text().count("[CONN] TUI connected") == 1
             session.record("app-server-pids.json", app_server_pids)
             session.record("thread-identities.json", on_threads)
+            session.record(
+                "idle-child-preservation.json",
+                {"threads": idle_threads, "turns": sorted(original_idle_turns)},
+            )
             session.record(
                 "child-completion-receipts.json",
                 {path.name: path.read_text() for path in session.cwd.glob("*-completed")},
