@@ -27,7 +27,6 @@ import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
 from ucode import agents
 from ucode.agents import copilot as copilot_agent
-from ucode.agents import model_sources
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -1927,107 +1926,6 @@ class TestManagedConfigLaunchSourceGuard:
         calls["resolve_provider"].assert_called_once()
         calls["configure"].assert_called_once()
         calls["launch"].assert_called_once()
-
-
-@pytest.mark.parametrize("discovery", ["live", "saved", "unavailable"])
-def test_managed_wildcard_launch_uses_live_or_saved_models(monkeypatch, discovery):
-    source = "system.ai.*"
-    model = "system.ai.claude-sonnet-5"
-    managed = {"enabled_agents": {"claude": {"model_config": {"sources": [source]}}}}
-    monkeypatch.setattr(
-        model_sources,
-        "_expand_wildcard_source",
-        lambda *args: ([model], None) if discovery == "live" else ([], "HTTP 403"),
-    )
-    with _launch_policy_patches(managed) as calls:
-        saved = {"claude": {source: [model]}} if discovery == "saved" else {}
-        calls["state"]["managed_model_source_expansions"] = saved
-        result = runner.invoke(app, ["claude"])
-
-    if discovery == "unavailable":
-        assert result.exit_code == 1, result.output
-        assert "refusing to fall back to workspace discovery" in " ".join(
-            _strip_ansi(result.output).split()
-        )
-        calls["launch"].assert_not_called()
-    else:
-        assert result.exit_code == 0, result.output
-        assert calls["resolve_model"].call_args.args[1]["claude_static_models"] == [model]
-        calls["launch"].assert_called_once()
-    assert calls["state"]["managed_model_source_expansions"] == saved
-    assert managed["enabled_agents"]["claude"]["model_config"]["sources"] == [source]
-
-
-@pytest.mark.parametrize("failure", ["discovery", "authentication"])
-def test_configure_requires_live_wildcard_discovery(monkeypatch, failure):
-    managed = {"enabled_agents": {"codex": {"model_config": {"sources": ["system.ai.*"]}}}}
-    state = {
-        **MINIMAL_STATE,
-        "managed_model_source_expansions": {"codex": {"system.ai.*": ["system.ai.stale"]}},
-    }
-    monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
-    monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
-    monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
-    monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *a: ([], "403"))
-    if failure == "authentication":
-        monkeypatch.setattr(
-            cli_mod,
-            "get_databricks_token",
-            MagicMock(side_effect=RuntimeError("Authentication failed")),
-        )
-    error = (
-        "Authentication failed"
-        if failure == "authentication"
-        else "Could not expand managed model sources"
-    )
-    with patch("ucode.cli.configure_single_tool") as configure:
-        with pytest.raises(RuntimeError, match=error):
-            cli_mod._setup_single_agent([(state["workspace"], None)], "codex", apply_managed=True)
-    configure.assert_not_called()
-    assert state["managed_model_source_expansions"]["codex"]["system.ai.*"] == ["system.ai.stale"]
-
-
-@pytest.mark.parametrize("same_host", [True, False])
-def test_workspace_switch_preserves_only_destination_model_expansions(
-    monkeypatch, tmp_path, same_host
-):
-    import ucode.state as state_mod
-
-    monkeypatch.setattr(state_mod, "STATE_PATH", tmp_path / "state.json")
-    monkeypatch.setattr(state_mod, "APP_DIR", tmp_path)
-    monkeypatch.setattr(cli_mod, "save_state", real_save_state)
-    monkeypatch.setattr(cli_mod, "resolve_workspace", lambda workspace: workspace)
-    monkeypatch.setattr(cli_mod, "_find_profile_name", lambda *a: None)
-    monkeypatch.setattr(cli_mod, "_purge_after_workspace_switch", lambda *a: None)
-    host_a = "https://a.databricks.com"
-    host_b = host_a if same_host else "https://b.databricks.com"
-    key_a = f"{host_a}?w=111" if same_host else host_a
-    key_b = f"{host_b}?w=222" if same_host else host_b
-    model_a = {"codex": {"system.ai.*": ["system.ai.a"]}}
-    model_b = {"codex": {"system.ai.*": ["system.ai.b"]}}
-    real_save_state(
-        {
-            "workspace": host_b,
-            "workspace_id": "222" if same_host else None,
-            "managed_model_source_expansions": model_b,
-        }
-    )
-    real_save_state(
-        {
-            "workspace": host_a,
-            "workspace_id": "111" if same_host else None,
-            "managed_model_source_expansions": model_a,
-        }
-    )
-
-    destination = cli_mod.configure_shared_state(key_b, skip_preflight=True)
-    assert destination["managed_model_source_expansions"] == model_b
-    assert state_mod.load_state()["managed_model_source_expansions"] == model_b
-    source = cli_mod.configure_shared_state(key_a, skip_preflight=True)
-    assert source["managed_model_source_expansions"] == model_a
-    fresh = cli_mod.configure_shared_state("https://fresh.databricks.com", skip_preflight=True)
-    assert "managed_model_source_expansions" not in fresh
-    assert "managed_model_source_expansions" not in state_mod.load_state()
 
 
 class TestManagedClaudeModelDiscovery:
@@ -7040,10 +6938,8 @@ class TestConfigureScopeFlags:
         assert "Unset UG_SKIP_OS_SETTINGS" in " ".join(_strip_ansi(result.output).split())
         mock_cfg.assert_not_called()
 
-    @pytest.mark.parametrize(
-        ("managed", "wildcard_failure"), [(True, False), (False, False), (True, True)]
-    )
-    def test_global_flag_fails_after_every_agent_and_mcp_setup(self, managed, wildcard_failure):
+    @pytest.mark.parametrize("managed", [True, False], ids=["managed_config", "picker"])
+    def test_global_flag_fails_after_every_agent_and_mcp_setup(self, managed):
         # An agent failing under --global must not stop the others or the MCP reconcile; the run
         # fails at the end so provisioning scripts see a nonzero exit.
         managed_files.set_machine_wide_only(True)
@@ -7053,11 +6949,6 @@ class TestConfigureScopeFlags:
             attempted.extend(tools)
             ok = [tool for tool in tools if tool != "claude"]
             return {**state, "available_tools": ok, "last_configured_tools": ok}
-
-        def expand(managed, state, tool):
-            if wildcard_failure and tool == "claude":
-                raise RuntimeError("Could not expand managed model sources")
-            return managed, {}
 
         with (
             patch(
@@ -7073,7 +6964,6 @@ class TestConfigureScopeFlags:
             patch("ucode.cli.resolve_state", side_effect=lambda _m, state, _t: state),
             patch("ucode.cli.check_gateway_endpoint", return_value=True),
             patch("ucode.cli.install_tool_binary", return_value=True),
-            patch("ucode.cli._expand_managed_model_sources", side_effect=expand),
             patch("ucode.cli.configure_selected_tools", side_effect=configure),
             patch("ucode.cli._record_unmanaged_configured_agents", side_effect=lambda s, _t: s),
             patch("ucode.cli._configure_managed_mcp_servers", return_value=[]) as mock_mcp,
@@ -7084,7 +6974,7 @@ class TestConfigureScopeFlags:
                     selected_tools=None if managed else ["claude", "codex"],
                     workspaces=[("https://first.databricks.com", None)],
                 )
-        assert attempted == (["codex"] if wildcard_failure else ["claude", "codex"])
+        assert attempted == ["claude", "codex"]
         mock_mcp.assert_called_once()
 
     def test_global_flag_skips_per_user_setup(self):

@@ -2054,14 +2054,10 @@ spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
 
-`../test_cli.py` retains managed wildcard checks for live/saved/unavailable launch results,
-configure rejection of stale fallback data and authentication failures, workspace isolation, and
-continuing after a wildcard failure. `ty` checks registered modules' `source_models` signatures
-against `ModelSourceAgent`.
-The dedicated model-source tests were removed. Wildcard ordering, schema catalog dispatch,
-Copilot alias normalization, deduplication, malformed fallback validation, per-agent cache updates,
-and registry completeness no longer have dedicated coverage. Multi-agent expansion persistence
-and detailed no-agent failure diagnostics also lack dedicated CLI cases. No installed-agent
+`ty` checks registered modules' `source_models` signatures against `ModelSourceAgent`.
+The mocked model-source and CLI wildcard tests were removed. Wildcard discovery, ordering,
+deduplication, launch fallback, workspace-cache isolation, wildcard configure failures, and
+multi-agent expansion persistence lack dedicated component coverage. No installed-agent
 integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Verbatim Claude picker labels for qualified MPS IDs have component coverage in
