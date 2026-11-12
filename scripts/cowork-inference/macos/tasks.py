@@ -199,8 +199,11 @@ def matches_installed_skill(copy, source):
 
 
 def prepare_mcp_task(task, desktop):
+    runtime = Path(sys.executable).parent
     result = process.run(
-        [str(Path(sys.executable).parent / "ug"), "mcp", "add", "--names", FIXTURE["mcpService"]],
+        [str(runtime / "ug"), "mcp", "add", "--names", FIXTURE["mcpService"]],
+        # UG writes its own absolute path into Desktop's connector from PATH, as an installed ug would be.
+        env={**os.environ, "PATH": os.pathsep.join([str(runtime), os.environ.get("PATH", "")])},
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,

@@ -804,6 +804,7 @@ def test_macos_mcp_task_requires_the_web_search_connector(
 
     def native_ug(args, **kwargs):
         calls.append(args[1:])
+        assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(Path(args[0]).parent)
         _mcp_profile(tmp_path, servers)
         return subprocess.CompletedProcess(args, 0, stdout="added", stderr="")
 
