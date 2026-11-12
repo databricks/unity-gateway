@@ -85,8 +85,9 @@ Windows first-launch configuration has component coverage in
 store; absent installations, package-query failures, and timeouts leave it absent.
 The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
-inference through the desktop UI for Databricks Hosted, the Anthropic MPS, and the
-Anthropic relay MPS. The same blocking job
+inference through the desktop UI for Databricks Hosted and the Anthropic relay MPS; the
+staging `anthropic-mps` lane's Windows Claude row runs the same Desktop steps for the
+non-relay Anthropic MPS. Each lane
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,

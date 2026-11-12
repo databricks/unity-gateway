@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-if (-not $env:UCODE_TEST_WORKSPACE -or -not $env:DATABRICKS_BEARER) {
-    throw 'Existing CI workspace and bearer are required'
+if (-not $env:UCODE_TEST_WORKSPACE -or -not ($env:DATABRICKS_BEARER -or $env:DATABRICKS_BEARER_COMMAND)) {
+    throw 'Existing CI workspace and a bearer or bearer command are required'
 }
 $provider = $env:UG_COWORK_PROVIDER
 $relay = $env:UG_COWORK_RELAY -eq 'true'
