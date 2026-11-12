@@ -25,7 +25,7 @@ function Wait-ModelPickerControl {
             [Windows.Automation.Condition]::TrueCondition)
         foreach ($control in $controls) {
             if ($control.Current.IsEnabled -and -not $control.Current.IsOffscreen -and
-                (& $Predicate $control.Current.Name)) {
+                (& $Predicate $control)) {
                 return $control
             }
         }
@@ -34,22 +34,37 @@ function Wait-ModelPickerControl {
     throw "Timed out after $TimeoutSeconds seconds waiting for enabled control: $Description"
 }
 
+$script:ModelLabelSuffixes = @('', ' Extended', ' Low', ' Medium', ' High', ' Max')
+$script:ModelOptionTypes = @('ControlType.RadioButton', 'ControlType.MenuItem', 'ControlType.ListItem')
+
+function Test-SelectedModel {
+    param([string]$Name, [string]$Label)
+    foreach ($suffix in $script:ModelLabelSuffixes) {
+        if ($Name -ceq "Model: $Label$suffix") { return $true }
+    }
+    return $false
+}
+
 function Select-CoworkModel {
     param([Windows.Automation.AutomationElement]$Root, [string]$Label)
-    $target = "Model: $Label"
     $picker = Wait-ModelPickerControl -Root $Root -Description 'Model: *' -Predicate {
-        param($name) $name.StartsWith('Model: ', [StringComparison]::Ordinal)
+        param($control) $control.Current.Name.StartsWith('Model: ', [StringComparison]::Ordinal)
     }
     $initial = $picker.Current.Name
     # Desktop starts on its own default model, which is not the target for every provider service.
-    if ($initial -cne $target) {
+    if (-not (Test-SelectedModel -Name $initial -Label $Label)) {
         Invoke-ModelPickerControl $picker
-        Invoke-ModelPickerControl (Wait-ModelPickerControl -Root $Root -Description $Label -Predicate {
-            param($name) $name -ceq $Label
-        })
+        # Options are named "<label> <description>", e.g. "Claude Haiku 4.5 Fastest for quick answers".
+        $option = Wait-ModelPickerControl -Root $Root -Description "model option $Label" -Predicate {
+            param($control)
+            $name = $control.Current.Name
+            ($script:ModelOptionTypes -contains $control.Current.ControlType.ProgrammaticName) -and
+                ($name -ceq $Label -or $name.StartsWith("$Label ", [StringComparison]::Ordinal))
+        }
+        Invoke-ModelPickerControl $option
     }
-    $null = Wait-ModelPickerControl -Root $Root -Description $target -Predicate {
-        param($name) $name -ceq $target
+    $null = Wait-ModelPickerControl -Root $Root -Description "Model: $Label" -Predicate {
+        param($control) Test-SelectedModel -Name $control.Current.Name -Label $Label
     }
     return $initial
 }

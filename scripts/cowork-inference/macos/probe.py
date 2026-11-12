@@ -6,7 +6,7 @@ import sys
 import time
 from pathlib import Path
 
-from controls import first_label_with_prefix, matches_labels
+from controls import first_label_with_prefix, matches_labels, model_option_label
 from diagnostics import redact
 from terminal import PROBE_TIMEOUT_SECONDS
 
@@ -82,11 +82,26 @@ def select_model(snapshot, label):
     # Desktop starts on its own default model, which is not the target for every provider service.
     if initial not in selected_labels:
         ui("click", initial)
-        ui("click", label)
+        ui("click", wait_for_model_option(label))
         snapshot = wait_for(selected_labels)
     if not matches_labels(snapshot, selected_labels):
         raise RuntimeError(f"Cowork did not select the expected model {MODEL}")
     return initial
+
+
+def wait_for_model_option(label, timeout=60):
+    deadline = time.monotonic() + timeout
+    snapshot = ""
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            snapshot = ui("snapshot", timeout=min(45, remaining))
+            if option := model_option_label(snapshot, label):
+                return option
+        except (RuntimeError, subprocess.TimeoutExpired) as exc:
+            snapshot = str(exc)
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+    save("last-ui.json", snapshot)
+    raise RuntimeError(f"Timed out waiting for model option {label}")
 
 
 def check_model_source(profile):

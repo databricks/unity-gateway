@@ -215,8 +215,14 @@ def test_model_selection_switches_from_desktop_default(harness, monkeypatch, pic
             return subprocess.CompletedProcess(args, 0, stdout=snapshot)
         actions.append(labels[0])
         if labels == ["Model: Claude Sonnet 3.7"]:
-            snapshot = json.dumps([_row("Model: Claude Sonnet 3.7"), _row("Haiku")])
-        elif labels == ["Haiku"]:
+            snapshot = json.dumps(
+                [
+                    _row("Model: Claude Sonnet 3.7"),
+                    ["AXStaticText", "", "Haiku", "", "", "1", "0"],
+                    ["AXRadioButton", "", "Haiku Fastest for quick answers", "", "", "1", "0"],
+                ]
+            )
+        elif labels == ["Haiku Fastest for quick answers"]:
             snapshot = json.dumps([_row("Model: Haiku" if picker_works else "Model: Other")])
         return subprocess.CompletedProcess(args, 0, stdout="clicked")
 
@@ -230,7 +236,22 @@ def test_model_selection_switches_from_desktop_default(harness, monkeypatch, pic
     else:
         with pytest.raises(RuntimeError, match="Timed out waiting for"):
             harness.probe.select_model(snapshot, "Haiku")
-    assert actions == ["Model: Claude Sonnet 3.7", "Haiku"]
+    assert actions == ["Model: Claude Sonnet 3.7", "Haiku Fastest for quick answers"]
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        (["AXRadioButton", "", "Haiku Fastest", "", "", "1", "0"], "Haiku Fastest"),
+        (["AXMenuItem", "Haiku", "", "", "", "1", "0"], "Haiku"),
+        (["AXStaticText", "", "Haiku", "", "", "1", "0"], None),
+        (["AXRadioButton", "", "Haiku Fastest", "", "", "0", "0"], None),
+        (["AXRadioButton", "", "Haiku-dated Fastest", "", "", "1", "0"], None),
+    ],
+)
+def test_model_option_requires_an_enabled_option_for_the_exact_label(row, expected):
+    model_option_label = runpy.run_path(str(SCRIPTS / "controls.py"))["model_option_label"]
+    assert model_option_label(json.dumps([row]), "Haiku") == expected
 
 
 def test_model_selection_requires_an_enabled_model_picker(harness):
