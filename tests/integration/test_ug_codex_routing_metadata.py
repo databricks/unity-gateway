@@ -5,7 +5,7 @@ import os
 
 import pytest
 from test_ug_smart_routing_hooks import _select_smart_router_version, _toggle_with_skill
-from utils.agents.codex import assert_agent_interaction_completed
+from utils.agents.codex import assert_agent_interaction_completed, completed_command_outputs
 from utils.evidence import agent_sessions, assistant_answers, fresh_id, tool_outputs
 from utils.terminal import AgentTerminal
 
@@ -64,6 +64,24 @@ def _wait_for(tui, predicate, description, *, timeout):
         return predicate()
 
     tui.wait_for(completed, description, timeout=timeout)
+
+
+def _assert_toggle_executed_once(session, enabled):
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+    children = {identity for identity, _ in _native_agents(session).values()}
+    outputs = [
+        output
+        for records in agent_sessions(session, "codex").values()
+        if not any(
+            row.get("type") == "session_meta" and row["payload"]["id"] in children
+            for row in records
+        )
+        for output in completed_command_outputs(
+            records, command_contains=f"-m ucode.cli codex {flag}"
+        )
+    ]
+    assert len(outputs) == 1, outputs
+    assert f"Smart Router is {'on' if enabled else 'off'} for this session" in outputs[0]
 
 
 @pytest.mark.live
@@ -213,6 +231,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     assert_agent_interaction_completed(all_records, "/root/old__sr_on", old_id)
     assert sum(receipt in answer for answer in assistant_answers("codex", old_records)) == 1
     assert len(_root_user_prompts(session)) == 4
+    _assert_toggle_executed_once(session, False)
     log = session.routing_log("codex")
     assert "[METADATA] main turns updated: state=off" in log, log
     session.record(
@@ -260,4 +279,6 @@ def test_codex_routing_toggle_without_children_and_repeated_state(
         tui.exit_normally()
     assert not _native_agents(session)
     assert len(_root_user_prompts(session)) == 3
+    _assert_toggle_executed_once(session, False)
+    _assert_toggle_executed_once(session, True)
     assert json.loads(controls.read_text()) == {}

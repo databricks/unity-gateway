@@ -582,8 +582,10 @@ interposer, including subagent-only presets. First-prompt model selection still 
 the selected preset.
 
 Smart Router toggles keep every conversation loaded. UG briefly interrupts only the
-main turn and continues it with empty input and fresh native turn metadata, adding
-no user prompt. An idle main starts no extra inference. Existing subagents keep
+main turn. A standalone `$smart-router on` or `$smart-router off` ends after the
+successful command and interruption. Other unfinished main work continues with
+empty input and fresh native turn metadata, adding no user prompt. An idle main
+starts no extra inference. Existing subagents keep
 running with their original attribution; new children, including descendants spawned
 by an old child, get the latest state through the spawn hook. Main commands may be
 interrupted; the existing task history is preserved for the continuation.

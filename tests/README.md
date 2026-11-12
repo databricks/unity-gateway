@@ -17,6 +17,9 @@ Turn metadata checks include native TUI requests whose optional patch is JSON nu
 so later user turns retain the current routing state.
 Main handoffs use empty input; queued user input is preserved, and idle toggles start
 no inference. Live histories must contain exactly the prompts submitted through the TUI.
+Standalone toggles end after the command and interruption without starting another turn.
+Live toggle evidence requires exactly one successful native CLI execution per transition;
+permission-denied attempts are distinct from successful commands.
 Windows journeys use UG's installed Python for the busy child and native approval
 keystrokes. Toggle approvals accept only the requested command or its known environment guard.
 Approval evidence tolerates the native dialog's wrapped lines and blank spacing.

@@ -226,6 +226,47 @@ def test_idle_toggle_does_not_start_inference_or_add_a_prompt(tmp_path):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_toggle_only_turn_stops_after_command_without_starting_it_again(tmp_path, enabled):
+    async def run():
+        metadata, upstream, _, controls = controller(tmp_path)
+        metadata.roots["main"] = RootTurn(active="toggle-turn")
+        request = {
+            "id": "toggle",
+            "method": "turn/start",
+            "params": {
+                "threadId": "main",
+                "input": [
+                    {"type": "text", "text": f"$smart-router {'on' if enabled else 'off'}"},
+                    {"type": "skill", "name": "smart-router"},
+                ],
+            },
+        }
+        await metadata.before_tui(request)
+        metadata.observe({"id": "toggle", "result": {"turn": {"id": "toggle-turn"}}})
+        controls.write_text(
+            json.dumps({} if enabled else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+        )
+
+        def reply(message):
+            metadata.observe(
+                {
+                    "method": "turn/completed",
+                    "params": {"threadId": "main", "turn": {"id": "toggle-turn"}},
+                }
+            )
+            result = {} if message["method"] == "turn/interrupt" else {"turn": {"id": "again"}}
+            metadata.observe({"id": message["id"], "result": result})
+
+        upstream.on_send = reply
+        await metadata.refresh()
+        assert [message["method"] for message in upstream.messages] == ["turn/interrupt"]
+        assert metadata.applied == enabled
+        assert metadata.ready.is_set()
+
+    asyncio.run(run())
+
+
 def test_child_navigation_does_not_become_main_and_internal_replies_stay_private(tmp_path):
     metadata, _, _, _ = controller(tmp_path)
     metadata.observe({"id": 1, "result": {"thread": {"id": "main", "source": "cli"}}})

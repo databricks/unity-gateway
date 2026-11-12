@@ -45,7 +45,23 @@ class Connection(Protocol):
 @dataclass
 class RootTurn:
     active: str | None = None
+    toggle_only: bool = False
     toggle_commands: set[str] = field(default_factory=set)
+
+
+def _toggle_only(params: dict) -> bool:
+    inputs = params.get("input")
+    if not isinstance(inputs, list):
+        return False
+    texts = []
+    for item in inputs:
+        if not isinstance(item, dict):
+            return False
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            texts.append(item["text"])
+        elif item.get("type") != "skill" or item.get("name") != "smart-router":
+            return False
+    return " ".join(texts).split() in (["$smart-router", "on"], ["$smart-router", "off"])
 
 
 class RoutingMetadata:
@@ -139,9 +155,14 @@ class RoutingMetadata:
             elif not thread.get("ephemeral"):
                 self.roots.setdefault(thread["id"], RootTurn())
         if "method" not in message and isinstance(identity, (str, int)):
-            self.client_requests.pop(identity, None)
+            request = self.client_requests.pop(identity, None)
             if not self.client_requests:
                 self.client_idle.set()
+            if request is not None and "error" not in message:
+                method, requested = request
+                root = self.roots.get(requested.get("threadId"))
+                if method == "turn/start" and root is not None:
+                    root.toggle_only = _toggle_only(requested)
             if isinstance(identity, str) and identity.startswith(INTERNAL_REQUEST_PREFIX):
                 future = self.pending.get(identity)
                 if future is not None and not future.done():
@@ -225,10 +246,10 @@ class RoutingMetadata:
                             await self.activity.wait()
                         interrupted.add(tid)
                 enabled = self.enabled()
-                for tid, _root in roots:
+                for tid, root in roots:
                     if tid not in self.roots or tid in self.cancelled or tid not in interrupted:
                         continue
-                    if self.buffered_turns.get(tid):
+                    if root.toggle_only or self.buffered_turns.get(tid):
                         continue
                     result = await self.rpc(
                         "turn/start",

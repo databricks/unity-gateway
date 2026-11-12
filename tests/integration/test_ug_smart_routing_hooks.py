@@ -29,11 +29,9 @@ from utils.evidence import (
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
-    assistant_answers,
     codex_routing_display_for_task,
     is_child_session,
     read_jsonl,
-    tool_outputs,
 )
 from utils.harness import ANSI
 from utils.managed import (
@@ -241,22 +239,24 @@ def _toggle_with_skill(
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    def completion_counts():
-        answers = confirmations = 0
+    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
+
+    def confirmation_count():
+        confirmations = 0
         for path, records in agent_sessions(session, agent).items():
             if is_child_session(agent, path, records):
                 continue
-            answers += len(assistant_answers(agent, records))
-            outputs = tool_outputs(agent, records)
-            if agent == "codex":
-                outputs += completed_command_outputs(records)
+            outputs = completed_command_outputs(
+                records, command_contains=f"-m ucode.cli codex {flag}"
+            )
             confirmations += sum(confirmation in output for output in outputs)
-        return answers, confirmations
+        return confirmations
 
-    before_answers, before_confirmations = completion_counts()
+    before_confirmations = confirmation_count()
+    metadata_marker = f"[METADATA] main turns updated: state={state}"
+    before_updates = session.routing_log("codex").count(metadata_marker)
     tui.submit(invocation)
     approval_sent = False
-    flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
     python = (
         '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
     )
@@ -281,11 +281,10 @@ def _toggle_with_skill(
         except PermissionError:
             # Windows denies reads while ug replaces the controls file; try again next frame.
             return False
-        answers, confirmations = completion_counts()
         return (
             controls_now == expected
-            and confirmations > before_confirmations
-            and answers > before_answers
+            and confirmation_count() == before_confirmations + 1
+            and session.routing_log("codex").count(metadata_marker) > before_updates
         )
 
     tui.wait_for(

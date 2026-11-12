@@ -79,3 +79,38 @@ def test_command_confirmation_requires_native_success(status, exit_code, expecte
         }
     ]
     assert completed_command_outputs(records) == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ('"$PYTHON" -m ucode.cli codex --disable-smart-routing', ["changed"]),
+        (["/bin/zsh", "-lc", '"$PYTHON" -m ucode.cli codex --disable-smart-routing'], ["changed"]),
+        ('"$PYTHON" -m ucode.cli codex --enable-smart-routing', []),
+        ("echo changed", []),
+        (None, []),
+        (["python", {}], []),
+    ],
+)
+def test_toggle_command_receipt_requires_the_requested_command(command, expected):
+    records = [
+        {
+            "type": "event_msg",
+            "payload": {
+                "type": "item_completed",
+                "item": {
+                    "type": "CommandExecution",
+                    "status": "completed",
+                    "exit_code": 0,
+                    "command": command,
+                    "aggregated_output": "changed",
+                },
+            },
+        }
+    ]
+    assert (
+        completed_command_outputs(
+            records, command_contains="-m ucode.cli codex --disable-smart-routing"
+        )
+        == expected
+    )

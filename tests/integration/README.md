@@ -9,7 +9,7 @@ It does not by itself establish exact HTTP metadata serialization or usage-table
 Message checks use native delivery receipts, including when Codex invokes tools through code mode.
 Toggle confirmations also read successful native command completions, so an interrupted
 code-mode wrapper does not hide a completed CLI command.
-Select with `--codex-version 0.167.1 -- -k test_codex_routing_toggle`.
+Select with `--codex-version 0.167.2 -- -k test_codex_routing_toggle`.
 Use `--smart-router-name` for an explicit recipe; reported inputs retain that selection.
 Windows remote-TUI provider forwarding has separate component coverage; these live
 journeys exercise the native platform where the runner executes.
@@ -17,6 +17,9 @@ Component checks also cover the TUI's nullable metadata patch; verify attributio
 on later user turns when querying the usage table.
 The live journeys also require the exact submitted user-prompt count, proving that
 metadata handoffs add no synthetic prompt to the native conversation history.
+Standalone toggles stop after the successful CLI receipt and metadata handoff;
+they require no final assistant reply. Both journeys assert one successful command
+per requested transition, followed by normal user tasks in the same conversation.
 The busy child uses UG's installed Python on both platforms. Windows command approvals
 use the native UI; the toggle matcher also recognizes the explicit environment guard
 and wrapped command presentation, while rejecting additional commands.

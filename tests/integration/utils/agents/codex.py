@@ -29,7 +29,17 @@ def assert_agent_interaction_completed(records: list[dict], target: str, thread_
     ), f"No successful native interaction with {target} ({thread_id})"
 
 
-def completed_command_outputs(records: list[dict]) -> list[str]:
+def _command_text(command: object) -> str:
+    if isinstance(command, str):
+        return command
+    if isinstance(command, list) and all(isinstance(part, str) for part in command):
+        return " ".join(command)
+    return ""
+
+
+def completed_command_outputs(
+    records: list[dict], *, command_contains: str | None = None
+) -> list[str]:
     return [
         item["aggregated_output"]
         for row in records
@@ -39,6 +49,7 @@ def completed_command_outputs(records: list[dict]) -> list[str]:
         and item.get("status") == "completed"
         and item.get("exit_code") == 0
         and isinstance(item.get("aggregated_output"), str)
+        and (command_contains is None or command_contains in _command_text(item.get("command")))
     ]
 
 
