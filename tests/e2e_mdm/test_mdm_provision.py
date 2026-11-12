@@ -7,6 +7,7 @@ import json
 import re
 import stat
 import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,7 @@ from .conftest import (
     CLAUDE_PLUGINS,
     CLAUDE_SETTINGS,
     CODEX_SETTINGS,
+    DARWIN,
     HOME,
     MACHINE_WIDE_ROOTS,
     POLICY,
@@ -43,6 +45,12 @@ LAUNCH = {
     "claude": ["ug", "claude", "-p", PROMPT, "--max-turns", "1"],
     "codex": ["ug", "codex", "exec", "--skip-git-repo-check", PROMPT],
 }
+# The aliases the macOS script adds to every user's shell startup files.
+ALIASES = {
+    "claude": "UG_SKIP_OS_SETTINGS=1 ug claude",
+    "codex": "UG_SKIP_OS_SETTINGS=1 ug codex",
+}
+SHELL_RCS = (Path("/etc/zshrc"), Path("/etc/bashrc"))
 # A Databricks OAuth token, such as the one the provisioning script mints and exports.
 JWT = re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")
 
@@ -117,6 +125,25 @@ def test_provisioning_left_the_user_home_untouched(demoted):
 def test_user_cannot_sudo_after_demotion(machine, demoted):
     result = machine.as_user(["sudo", "-n", "true"])
     assert result.returncode != 0
+
+
+@pytest.mark.skipif(not DARWIN, reason="Only the macOS script adds shell aliases")
+def test_shell_aliases_installed(machine, demoted):
+    rcs = [rc for rc in SHELL_RCS if rc.exists()]
+    assert Path("/etc/zshrc") in rcs, rcs
+    for rc in rcs:
+        st = rc.stat()
+        assert st.st_uid == 0 and not st.st_mode & 0o022, f"{rc}: {st.st_uid} {oct(st.st_mode)}"
+        text = rc.read_text()
+        assert text.count("# BEGIN unity-gateway") == 1, text
+        assert text.count("# END unity-gateway") == 1, text
+
+    # A login shell, as Terminal opens, run as the developer without sudo.
+    for shell in ("zsh", "bash"):
+        result = machine.as_user([shell, "-l", "-i", "-c", "alias claude codex"])
+        assert result.returncode == 0, result.output[-4000:]
+        for name, command in ALIASES.items():
+            assert f"{name}='{command}'" in result.output, (shell, result.output[-4000:])
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

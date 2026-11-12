@@ -191,7 +191,8 @@ These component checks do not establish native or live subscription/gateway beha
 `e2e_mdm/` runs the MDM flow on a disposable Linux or macOS host: a fresh admin user with passwordless
 sudo runs the provisioning script (`e2e_mdm/linux-provision.sh`, a twin of
 `scripts/mdm/macos-provision.sh`, or the macOS script itself), the machine-wide files are checked, the
-user's sudo is removed, and `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex` run headless. Nothing may
+user's sudo is removed, and `UG_SKIP_OS_SETTINGS=1 ug claude` / `ug codex` run headless. On macOS,
+the `claude` and `codex` aliases the script adds must resolve in the user's login zsh and bash. Nothing may
 ask for a password (`sudo -n`, no stdin, no tty), and
 the launches must leave every machine-wide file byte- and stat-identical and write only user-owned
 files in the user's home.
