@@ -13,6 +13,8 @@ Select with `--codex-version 0.167.1 -- -k test_codex_routing_toggle`.
 Use `--smart-router-name` for an explicit recipe; reported inputs retain that selection.
 Windows remote-TUI provider forwarding has separate component coverage; these live
 journeys exercise the native platform where the runner executes.
+Component checks also cover the TUI's nullable metadata patch; verify attribution
+on later user turns when querying the usage table.
 
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.

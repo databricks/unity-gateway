@@ -13,6 +13,8 @@ Toggle checks accept native command output only after a successful exit, includi
 when the main-turn handoff interrupts the enclosing code-mode tool.
 Launcher checks also assert the gateway provider settings forwarded to Windows'
 remote TUI, with the exact remote arguments preserved on each platform.
+Turn metadata checks include native TUI requests whose optional patch is JSON null,
+so later user turns retain the current routing state.
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace

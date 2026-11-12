@@ -126,10 +126,12 @@ class RoutingMetadata:
             continuation = self.continuations.pop(tid, None)
             if continuation:
                 params["input"] = [{"type": "text", "text": continuation}, *params.get("input", [])]
-            if isinstance(params.get("responsesapiClientMetadataPatch", {}), dict):
-                params.setdefault("responsesapiClientMetadataPatch", {})[ROUTING_STATE_KEY] = (
-                    routing_state(self.enabled())
-                )
+            patch = params.get("responsesapiClientMetadataPatch")
+            if patch is None or isinstance(patch, dict):
+                params["responsesapiClientMetadataPatch"] = {
+                    **(patch or {}),
+                    ROUTING_STATE_KEY: routing_state(self.enabled()),
+                }
         if isinstance(identity, (str, int)) and method in {
             "thread/start",
             "thread/resume",

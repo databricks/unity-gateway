@@ -92,7 +92,10 @@ def controller(tmp_path):
     return metadata, upstream, tui, controls
 
 
-def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(tmp_path):
+@pytest.mark.parametrize("existing_patch", [None, {"other": "kept"}])
+def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(
+    tmp_path, existing_patch
+):
     async def run():
         metadata, _, _, controls = controller(tmp_path)
         metadata.roots["main"] = RootTurn()
@@ -109,14 +112,15 @@ def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(tm
                     "input": [{"type": "text", "text": "work"}],
                     "model": "chosen",
                     "responsesapiClientMetadata": {"caller": "kept"},
-                    "responsesapiClientMetadataPatch": {"other": "kept"},
+                    "responsesapiClientMetadataPatch": existing_patch,
                 },
             }
             forwarded = await metadata.before_tui(copy.deepcopy(message))
             expected = copy.deepcopy(message)
-            expected["params"]["responsesapiClientMetadataPatch"][ROUTING_STATE_KEY] = (
-                "on" if enabled else "off"
-            )
+            expected["params"]["responsesapiClientMetadataPatch"] = {
+                **(existing_patch or {}),
+                ROUTING_STATE_KEY: "on" if enabled else "off",
+            }
             assert forwarded == expected
             child = {
                 "id": "child-start",
