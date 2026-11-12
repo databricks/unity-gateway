@@ -1442,7 +1442,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
-| Relayed launch from a managed static model-service list | Unit/component checks in `test_databricks.py` (relay detection), `test_agent_claude.py` (state helper, static picker kept when relayed without a provider) and `test_cli.py` (`relayed` reaches configure). No dedicated live journey; checked manually against a relayed workspace. |
+| Relayed launch from a managed static model-service list | Unit/component checks in `test_databricks.py` (relay detection), `test_agent_claude.py` (state helper, signed-in gating, static picker kept when relayed without a provider) and `test_cli.py` (`relayed` reaches configure). No dedicated live journey; checked manually against a relayed workspace. |
 | Saved Claude picker selection | Unit/component checks in `test_agent_claude.py` cover mapped family aliases, `[1m]`/`[200k]` variants, and unavailable-model fallback without changing saved settings. No dedicated live journey. |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |

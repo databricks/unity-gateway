@@ -709,6 +709,7 @@ class TestStaticModelsNeedSubscriptionRelay:
     def test_checks_only_custom_model_services(self, monkeypatch):
         seen: list[list[str]] = []
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(claude, "_has_subscription_login", lambda: True)
         monkeypatch.setattr(
             claude,
             "model_services_need_subscription_relay",
@@ -720,6 +721,54 @@ class TestStaticModelsNeedSubscriptionRelay:
         }
         assert claude.static_models_need_subscription_relay(state)
         assert seen == [["main.default.sonnet"]]
+
+    def _relay_backed(self, monkeypatch, *, signed_in: bool) -> None:
+        monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(
+            claude,
+            "model_services_need_subscription_relay",
+            lambda _ws, _token, models: models == ["main.default.relayed"],
+        )
+        monkeypatch.setattr(claude, "_has_subscription_login", lambda: signed_in)
+
+    _STATE = {
+        "workspace": WS,
+        "claude_static_models": ["main.default.relayed", "main.default.oss", "system.ai.kimi"],
+    }
+
+    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys):
+        self._relay_backed(monkeypatch, signed_in=True)
+        assert claude.static_models_need_subscription_relay(dict(self._STATE))
+        assert "claude auth login" not in capsys.readouterr().out
+
+    def test_user_without_a_subscription_login_keeps_gateway_auth(self, monkeypatch, capsys):
+        # The list is shared, so a user who isn't signed in keeps the rest of it rather than
+        # being sent to a browser login; the note names only the relay-backed service.
+        self._relay_backed(monkeypatch, signed_in=False)
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE))
+        out = capsys.readouterr().out
+        assert "claude auth login" in out
+        assert "main.default.relayed" in out
+        assert "main.default.oss" not in out
+
+    def test_oauth_token_env_counts_as_signed_in(self, monkeypatch):
+        self._relay_backed(monkeypatch, signed_in=False)
+        monkeypatch.setenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, "sk-ant-oat01-test")
+        monkeypatch.setattr(
+            claude, "_has_subscription_login", lambda: pytest.fail("env token is enough")
+        )
+        assert claude.static_models_need_subscription_relay(dict(self._STATE))
+
+    def test_no_relay_backed_service_skips_the_login_check(self, monkeypatch):
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(
+            claude, "model_services_need_subscription_relay", lambda _ws, _token, _models: False
+        )
+        monkeypatch.setattr(
+            claude, "_has_subscription_login", lambda: pytest.fail("no login check needed")
+        )
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE))
 
     def test_auth_failure_keeps_gateway_auth(self, monkeypatch):
         def fail(*_a, **_k):

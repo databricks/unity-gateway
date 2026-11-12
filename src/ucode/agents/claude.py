@@ -1550,9 +1550,12 @@ def disable_smart_routing(state: dict) -> bool:
 
 def static_models_need_subscription_relay(state: dict) -> bool:
     """True when Claude's static model list (a managed ``model_services``/``sources``) includes a
-    model service that routes to a subscription relay, so the launch must swap credentials.
+    model service that routes to a subscription relay and the user already holds a Claude
+    subscription login, so the launch must swap credentials.
 
-    A list of only ``system.*`` models makes no request.
+    The list is shared by every user of the config, so a user who isn't signed in keeps gateway
+    auth (and the rest of the list) instead of being sent to a browser login. A list of only
+    ``system.*`` models makes no request.
     """
     models = state.get("claude_static_models")
     custom = [
@@ -1569,7 +1572,20 @@ def static_models_need_subscription_relay(state: dict) -> bool:
     except RuntimeError:
         # Auth is checked (and reported) by the configure/launch path itself.
         return False
-    return model_services_need_subscription_relay(state["workspace"], token, custom)
+    relay_backed = [
+        model
+        for model in custom
+        if model_services_need_subscription_relay(state["workspace"], token, [model])
+    ]
+    if not relay_backed:
+        return False
+    if os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR) or _has_subscription_login():
+        return True
+    print_note(
+        f"Sign in with `claude auth login` to use {', '.join(relay_backed)} through your Claude "
+        "subscription. Other models use Databricks authentication."
+    )
+    return False
 
 
 def write_tool_config(
