@@ -64,13 +64,15 @@ an app that is already installed. Native Cowork CI still requires completed infe
 Native macOS Cowork inference is covered by `cowork-inference-macos` in
 `.github/workflows/integration.yml`, alongside the Windows job. On a disposable
 `macos-15-intel` runner it installs signed Claude Desktop 4.23118.0, configures
-installed UG through its CLI, and asserts a completed exact-answer task on
-`system.ai.claude-haiku-4-5` through macOS Accessibility. Both jobs block the
+installed UG through its CLI, and asserts a completed exact-answer task through macOS
+Accessibility for each model source: Databricks Hosted, the Anthropic MPS, and the
+Anthropic relay MPS (see `scripts/cowork-inference/README.md`). Both jobs block the
 integration gate. The macOS job also runs the file and skill tasks described below.
 Apple Silicon, Code-tab, MCP, and file writes remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
-and rejection of wrong/partial/unfinished responses. Navigation coverage includes the
+provider-service and relay-helper profile checks, model-picker switching from Desktop's
+default, relay-only token forwarding, and rejection of wrong/partial/unfinished responses. Navigation coverage includes the
 Cowork tab, the task screen under Claude, sidebar auto-opening, and refusal to proceed
 without Scheduled, the prompt field, and Start task together. Failure-path component tests cover
 launch, cleanup, and evidence-write errors, signal-handler restoration, temporary credential
@@ -83,7 +85,8 @@ Windows first-launch configuration has component coverage in
 store; absent installations, package-query failures, and timeouts leave it absent.
 The native Windows Cowork inference job in `.github/workflows/integration.yml`
 exercises real installation, UG configuration before first launch, and completed
-`system.ai.claude-haiku-4-5` inference through the desktop UI. The same blocking job
+inference through the desktop UI for Databricks Hosted, the Anthropic MPS, and the
+Anthropic relay MPS. The same blocking job
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,

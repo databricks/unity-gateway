@@ -1056,6 +1056,28 @@ def test_cowork_ci_permissions_and_required_gate(job_name):
         assert "id-token:" not in integration
 
 
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_covers_each_claude_model_source(job_name):
+    job = _integration_jobs()[job_name]
+    assert "      fail-fast: false\n" in job
+    for source in (
+        "            provider: ''\n            model: system.ai.claude-haiku-4-5\n"
+        "            relay: false\n",
+        "            provider: main.ucode.ci_e2e_anthropic_nonrelay_mps\n"
+        "            model: claude-haiku-4-5-20251001\n            relay: false\n",
+        "            provider: main.ucode.ci_e2e_anthropic_relay_mps\n"
+        "            model: claude-haiku-4-5-20251001\n            relay: true\n",
+    ):
+        assert source in job
+    for variable in ("PROVIDER", "MODEL", "RELAY"):
+        assert f"      UG_COWORK_{variable}: ${{{{ matrix.source.{variable.lower()} }}}}\n" in job
+    # Only the relay source receives the subscription token.
+    tokens = re.findall(r"(?m)^\s+CLAUDE_CODE_OAUTH_TOKEN: (.*)$", job)
+    assert tokens
+    assert set(tokens) == {"${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}"}
+    assert "-${{ matrix.source.id }}\n" in job
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
 @pytest.mark.parametrize(
     ("event", "integration_result", "passes"),

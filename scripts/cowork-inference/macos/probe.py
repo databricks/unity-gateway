@@ -6,13 +6,16 @@ import sys
 import time
 from pathlib import Path
 
-from controls import matches_labels
+from controls import first_label_with_prefix, matches_labels
 from diagnostics import redact
 from terminal import PROBE_TIMEOUT_SECONDS
 
 from ucode.os_compatibility import subprocess_cross_os as process
 
-MODEL = "system.ai.claude-haiku-4-5"
+MODEL = os.environ.get("UG_COWORK_MODEL") or "system.ai.claude-haiku-4-5"
+PROVIDER = os.environ.get("UG_COWORK_PROVIDER", "")
+RELAY = os.environ.get("UG_COWORK_RELAY") == "true"
+MODEL_LABEL_SUFFIXES = ("", " Extended", " Low", " Medium", " High", " Max")
 PROMPT = (
     "Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools."
 )
@@ -70,11 +73,49 @@ def open_cowork():
     return wait_for(("Scheduled", "Write your prompt to Claude", "Start task"), require_all=True)
 
 
+def select_model(snapshot, label):
+    """Select the target model in Cowork, returning the picker label Desktop opened with."""
+    selected_labels = {f"Model: {label}{suffix}" for suffix in MODEL_LABEL_SUFFIXES}
+    initial = first_label_with_prefix(snapshot, "Model: ")
+    if initial is None:
+        raise RuntimeError("Cowork did not show a model picker")
+    # Desktop starts on its own default model, which is not the target for every provider service.
+    if initial not in selected_labels:
+        ui("click", initial)
+        ui("click", label)
+        snapshot = wait_for(selected_labels)
+    if not matches_labels(snapshot, selected_labels):
+        raise RuntimeError(f"Cowork did not select the expected model {MODEL}")
+    return initial
+
+
+def check_model_source(profile):
+    if profile["inferenceProvider"] != "gateway":
+        raise RuntimeError("Expected gateway inference")
+    headers = profile.get("inferenceCustomHeaders", {})
+    configured_provider = headers.get("Databricks-Model-Provider-Service") or ""
+    if configured_provider != PROVIDER:
+        raise RuntimeError(
+            f"Desktop routes to model provider service {configured_provider!r}, expected {PROVIDER!r}"
+        )
+    if not PROVIDER and headers.get("Databricks-Model-Service-Parent-Schema") not in (
+        None,
+        "",
+        "system.ai",
+    ):
+        raise RuntimeError("Expected system.ai schema")
+    helper_args = profile.get("inferenceCredentialHelperArgs", [])
+    if ("--relay" in helper_args) != RELAY:
+        raise RuntimeError(f"Desktop credential helper relay mode should be {RELAY}")
+    if RELAY and "--claude-binary" not in helper_args:
+        raise RuntimeError("Relay credential helper is missing its Claude CLI binary")
+
+
 def configured_model_label(profile):
     models = profile["inferenceModels"]
     targets = [model for model in models if model["name"] == MODEL]
     if len(targets) != 1:
-        raise RuntimeError("Expected system.ai model missing or ambiguous")
+        raise RuntimeError(f"Expected model missing or ambiguous: {MODEL}")
     label = targets[0].get("labelOverride") or MODEL
     matching_labels = [
         model for model in models if (model.get("labelOverride") or model["name"]) == label
@@ -88,6 +129,8 @@ def configure():
     workspace = os.environ.get("UCODE_TEST_WORKSPACE", "")
     if not workspace or not os.environ.get("DATABRICKS_BEARER"):
         raise RuntimeError("Existing CI workspace and bearer are required")
+    if RELAY and not (PROVIDER and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()):
+        raise RuntimeError("A relay test requires a provider service and CLAUDE_CODE_OAUTH_TOKEN")
     config = Path.home() / ".databrickscfg"
     config.write_text(f"[desktop-ci]\nhost = {workspace}\nauth_type = databricks-cli\n")
     config.chmod(0o600)
@@ -102,6 +145,7 @@ def configure():
             "--user",
             "--disable-databricks-ai-tools",
             "--skip-upgrade",
+            *(["--provider", PROVIDER] if PROVIDER else []),
         ],
         capture_output=True,
         text=True,
@@ -117,15 +161,20 @@ def configure():
             "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
         ).read_text()
     )
-    if profile["inferenceProvider"] != "gateway":
-        raise RuntimeError("Expected gateway inference")
-    headers = profile.get("inferenceCustomHeaders", {})
-    if headers.get("Databricks-Model-Provider-Service"):
-        raise RuntimeError("Expected system.ai model services")
-    if headers.get("Databricks-Model-Service-Parent-Schema") not in (None, "", "system.ai"):
-        raise RuntimeError("Expected system.ai schema")
+    check_model_source(profile)
     label = configured_model_label(profile)
-    save("configuration.json", json.dumps({"provider": "gateway", "model": MODEL, "label": label}))
+    save(
+        "configuration.json",
+        json.dumps(
+            {
+                "provider": "gateway",
+                "modelProvider": PROVIDER,
+                "relay": RELAY,
+                "model": MODEL,
+                "label": label,
+            }
+        ),
+    )
     return label
 
 
@@ -141,7 +190,12 @@ def main(private, capability="inference"):
     if capability != "inference":
         EVIDENCE = baseline_evidence / capability
     EVIDENCE.mkdir(parents=True, exist_ok=True)
-    report = {"model": MODEL, "responseAsserted": False}
+    report = {
+        "model": MODEL,
+        "modelProvider": PROVIDER,
+        "relay": RELAY,
+        "responseAsserted": False,
+    }
     app = None
     task = None
     raw_log = private / "native.log"
@@ -184,12 +238,8 @@ def main(private, capability="inference"):
         report["coworkActivated"] = True
         print("Cowork task screen ready", flush=True)
         save("cowork-ui.json", snapshot)
-        expected_labels = {
-            f"Model: {model_label}{suffix}"
-            for suffix in ("", " Extended", " Low", " Medium", " High", " Max")
-        }
-        if not matches_labels(snapshot, expected_labels):
-            raise RuntimeError("Cowork did not select the expected system.ai model")
+        report["initialModel"] = select_model(snapshot, model_label)
+        print("Cowork model selected", flush=True)
         if task:
             tasks.run_task(sys.modules[__name__], task, report)
         else:

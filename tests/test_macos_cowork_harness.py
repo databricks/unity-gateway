@@ -27,6 +27,7 @@ def test_desktop_evidence_redacts_credentials_and_preserves_diagnostics(monkeypa
     assert (
         redact(text) == "failed [REDACTED] [REDACTED] Authorization: Bearer [REDACTED] [REDACTED]"
     )
+    assert redact("token sk-ant-oat01-unknown_secret-1") == "token [REDACTED]"
     assert redact("Claude responded: 48213") == "Claude responded: 48213"
 
 
@@ -182,6 +183,148 @@ def test_accessibility_timeout_uses_remaining_wait_budget(harness, monkeypatch, 
         assert "timed out" in (harness.root / "macos-cowork-evidence/last-ui.json").read_text()
 
 
+def _row(label, enabled="1"):
+    return ["AXButton", "", label, "", "", enabled, "0"]
+
+
+@pytest.mark.parametrize("initial", ["Model: Haiku", "Model: Haiku Extended"])
+def test_model_selection_keeps_the_target_when_already_selected(harness, monkeypatch, initial):
+    def unexpected_action(args, **kwargs):
+        pytest.fail(f"Unexpected native UI action: {args[1:]}")
+
+    # Native Accessibility is unavailable here; the selection decision stays real.
+    monkeypatch.setattr(harness.probe, "process", SimpleNamespace(run=unexpected_action))
+    snapshot = json.dumps([_row("Write your prompt to Claude"), _row(initial)])
+    assert harness.probe.select_model(snapshot, "Haiku") == initial
+
+
+@pytest.mark.parametrize("picker_works", [True, False])
+def test_model_selection_switches_from_desktop_default(harness, monkeypatch, picker_works):
+    now = 0
+    snapshot = json.dumps([_row("Model: Claude Sonnet 3.7")])
+    actions = []
+
+    def advance(seconds):
+        nonlocal now
+        now += seconds
+
+    def native_ui(args, **kwargs):
+        nonlocal snapshot
+        operation, *labels = args[1:]
+        if operation == "snapshot":
+            return subprocess.CompletedProcess(args, 0, stdout=snapshot)
+        actions.append(labels[0])
+        if labels == ["Model: Claude Sonnet 3.7"]:
+            snapshot = json.dumps([_row("Model: Claude Sonnet 3.7"), _row("Haiku")])
+        elif labels == ["Haiku"]:
+            snapshot = json.dumps([_row("Model: Haiku" if picker_works else "Model: Other")])
+        return subprocess.CompletedProcess(args, 0, stdout="clicked")
+
+    # Native Accessibility is unavailable here; picker navigation and waits stay real.
+    monkeypatch.setattr(harness.probe, "process", SimpleNamespace(run=native_ui))
+    monkeypatch.setattr(
+        harness.probe, "time", SimpleNamespace(monotonic=lambda: now, sleep=advance)
+    )
+    if picker_works:
+        assert harness.probe.select_model(snapshot, "Haiku") == "Model: Claude Sonnet 3.7"
+    else:
+        with pytest.raises(RuntimeError, match="Timed out waiting for"):
+            harness.probe.select_model(snapshot, "Haiku")
+    assert actions == ["Model: Claude Sonnet 3.7", "Haiku"]
+
+
+def test_model_selection_requires_an_enabled_model_picker(harness):
+    snapshot = json.dumps([_row("Model: Haiku", enabled="0")])
+    with pytest.raises(RuntimeError, match="did not show a model picker"):
+        harness.probe.select_model(snapshot, "Haiku")
+
+
+RELAY_HELPER_ARGS = ["claude-desktop-auth", "--relay", "--claude-binary", "/usr/local/bin/claude"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "relay", "headers", "helper_args", "error"),
+    [
+        ("", False, {}, ["claude-desktop-auth"], None),
+        ("", False, {"Databricks-Model-Service-Parent-Schema": "system.ai"}, [], None),
+        ("", False, {"Databricks-Model-Provider-Service": "main.mps"}, [], "expected ''"),
+        ("", False, {"Databricks-Model-Service-Parent-Schema": "main.x"}, [], "system.ai"),
+        ("main.mps", False, {"Databricks-Model-Provider-Service": "main.mps"}, [], None),
+        ("main.mps", False, {}, [], "expected 'main.mps'"),
+        ("main.mps", False, {"Databricks-Model-Provider-Service": "main.other"}, [], "main.other"),
+        (
+            "main.mps",
+            False,
+            {"Databricks-Model-Provider-Service": "main.mps"},
+            RELAY_HELPER_ARGS,
+            "relay mode",
+        ),
+        (
+            "main.relay",
+            True,
+            {"Databricks-Model-Provider-Service": "main.relay"},
+            RELAY_HELPER_ARGS,
+            None,
+        ),
+        (
+            "main.relay",
+            True,
+            {"Databricks-Model-Provider-Service": "main.relay"},
+            ["claude-desktop-auth"],
+            "relay mode",
+        ),
+        (
+            "main.relay",
+            True,
+            {"Databricks-Model-Provider-Service": "main.relay"},
+            ["claude-desktop-auth", "--relay"],
+            "Claude CLI binary",
+        ),
+    ],
+)
+def test_profile_must_use_the_selected_model_source(
+    harness, monkeypatch, provider, relay, headers, helper_args, error
+):
+    monkeypatch.setattr(harness.probe, "PROVIDER", provider)
+    monkeypatch.setattr(harness.probe, "RELAY", relay)
+    profile = {
+        "inferenceProvider": "gateway",
+        "inferenceCustomHeaders": headers,
+        "inferenceCredentialHelperArgs": helper_args,
+    }
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            harness.probe.check_model_source(profile)
+    else:
+        harness.probe.check_model_source(profile)
+
+
+@pytest.mark.parametrize(
+    ("provider", "token"), [("", "token"), ("main.relay", ""), ("main.relay", " ")]
+)
+def test_relay_probe_requires_service_and_subscription_token(harness, monkeypatch, provider, token):
+    monkeypatch.setattr(harness.probe, "PROVIDER", provider)
+    monkeypatch.setattr(harness.probe, "RELAY", True)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", token)
+    with pytest.raises(RuntimeError, match="CLAUDE_CODE_OAUTH_TOKEN"):
+        harness.probe.configure()
+
+
+def test_probe_reads_its_model_source_from_the_environment(harness, monkeypatch):
+    monkeypatch.setenv("UG_COWORK_PROVIDER", "main.relay")
+    monkeypatch.setenv("UG_COWORK_MODEL", "claude-haiku-4-5-20251001")
+    monkeypatch.setenv("UG_COWORK_RELAY", "true")
+    spec = importlib.util.spec_from_file_location("macos_cowork_probe_env", SCRIPTS / "probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    assert (probe.PROVIDER, probe.MODEL, probe.RELAY) == (
+        "main.relay",
+        "claude-haiku-4-5-20251001",
+        True,
+    )
+    assert harness.probe.MODEL == "system.ai.claude-haiku-4-5"
+
+
 @pytest.mark.parametrize("label", [None, "Haiku"])
 def test_target_model_label_is_unambiguous(harness, label):
     target = {"name": harness.probe.MODEL, "labelOverride": label}
@@ -274,6 +417,36 @@ def test_probe_failures_preserve_evidence_and_restore_signals(harness, monkeypat
     else:
         assert (evidence / "native.log").read_text() == "native [REDACTED]"
         assert not (private / "native.log").exists()
+
+
+@pytest.mark.parametrize("relay", [True, False])
+def test_terminal_forwards_only_the_probe_environment(harness, monkeypatch, relay):
+    monkeypatch.setenv("UNRELATED_SECRET", "unrelated")
+    for key in (
+        "UG_COWORK_PROVIDER",
+        "UG_COWORK_MODEL",
+        "UG_COWORK_RELAY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    if relay:
+        monkeypatch.setenv("UG_COWORK_PROVIDER", "main.relay")
+        monkeypatch.setenv("UG_COWORK_RELAY", "true")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-secret")
+    forwarded = {}
+
+    def capture_environment(args, **kwargs):
+        forwarded.update(json.loads((Path(args[-1]).parent / "environment.json").read_text()))
+        raise OSError("Terminal launch failed")
+
+    # Terminal.app is a native launch boundary unavailable on non-macOS runners.
+    monkeypatch.setattr(harness.terminal, "process", SimpleNamespace(run=capture_environment))
+    with pytest.raises(OSError, match="Terminal launch failed"):
+        harness.terminal.run_terminal()
+    assert "UNRELATED_SECRET" not in forwarded
+    assert forwarded["DATABRICKS_BEARER"] == "test-bearer"
+    relay_keys = {"UG_COWORK_PROVIDER", "UG_COWORK_RELAY", "CLAUDE_CODE_OAUTH_TOKEN"}
+    assert relay_keys <= forwarded.keys() if relay else not relay_keys & forwarded.keys()
 
 
 def test_terminal_launch_failure_removes_credentials_and_retains_diagnostics(harness, monkeypatch):
