@@ -20,18 +20,22 @@ CHATGPT_PACKAGE = "OpenAI.Codex"
 CHATGPT_EXECUTABLE = "app/ChatGPT.exe"
 # The managed_workspace_default fixture's Codex default model.
 MANAGED_CODEX_MODEL = "system.ai.gpt-5-6-sol"
+# How the app's picker names that model, and the composer's model-and-effort picker button.
+MANAGED_CODEX_MODEL_LABEL = "5.6 Sol"
+MODEL_PICKER = f"{MANAGED_CODEX_MODEL_LABEL} Light"
 ANSWER_TIMEOUT = 240
 
 
 def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspace):
     """Scenario: configure managed Codex, open the ChatGPT desktop app, and ask Codex for a value.
 
-    Expected: the app shows the answer, and its own Codex Desktop rollout, using ug's Databricks
-    provider, records exactly that answer in a completed turn whose model is the managed system.ai
-    GPT default. Onboarding is skipped through its visible controls with UI Automation and the
-    prompt is typed with real keystrokes; nothing is seeded. Each screen gets 60 seconds and the
-    answer four minutes, without retries. GUI rendering of other screens, MCP, tracing and revert
-    while the app runs are not covered.
+    Expected: the model picker lists only the managed model, under a readable name. The app shows
+    the answer, and its own Codex Desktop rollout, using ug's Databricks provider, records exactly
+    that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
+    is skipped through its visible controls with UI Automation and the prompt is typed with real
+    keystrokes; nothing is seeded. Each screen gets 60 seconds and the answer four minutes,
+    without retries. GUI rendering of other screens, MCP, tracing and revert while the app runs
+    are not covered.
     """
     session = live_session
     marker = fresh_id()
@@ -45,6 +49,14 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.Button", "Continue")
         app.click("ControlType.Button", "Skip")
         app.click("ControlType.Button", "Go to ChatGPT")
+        # The picker opens on Enter (an empty line), not on UI Automation's Invoke.
+        app.click("ControlType.Button", MODEL_PICKER)
+        app.type_line("")
+        app.click("ControlType.MenuItem", "Select model")
+        tree = app.wait_for("ControlType.RadioButton", MANAGED_CODEX_MODEL_LABEL)
+        models = [row[1] for row in tree if row[0] == "ControlType.RadioButton"]
+        assert models == [MANAGED_CODEX_MODEL_LABEL], models
+        app.click("ControlType.Button", MODEL_PICKER)
         # Focus the composer so the keystrokes cannot land in another control.
         app.click("ControlType.Edit", None)
         app.type_line(f"Reply with exactly {marker} and nothing else.")
