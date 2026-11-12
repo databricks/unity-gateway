@@ -2048,7 +2048,9 @@ while preserving reviewed inputs and denials.
 Managed schema/MPS wildcard expansion has component coverage in `../test_agent_model_sources.py` and
 `../test_cli.py`, including provider-type catalog selection, mixed source ordering, schema IDs,
 Copilot alias normalization, duplicate removal, configure fail-closed behavior, launch fallback to
-validated per-workspace last-configure results, accumulated saved expansions, and per-agent configure failure reporting. No installed-agent
+validated per-workspace last-configure results, workspace isolation, and continuing after a wildcard
+failure. Dedicated CLI cases for multi-agent expansion persistence and detailed no-agent failure
+diagnostics were removed; those paths are no longer separately covered. No installed-agent
 integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Short Claude picker labels for qualified MPS IDs have component coverage in
@@ -2065,8 +2067,9 @@ Closing Markdown may be followed by sentence punctuation; literal URL punctuatio
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
 
-Wildcard component coverage is consolidated around expansion results, configure failures,
-launch fallbacks, and saved state. Provider-type dispatch runs once per provider type;
+Duplicate CLI helper and bookkeeping checks were removed. Expansion ordering, deduplication,
+provider dispatch, fallback validation, and per-agent state updates remain in
+`test_agent_model_sources.py`. Provider-type dispatch runs once per provider type;
 agent-specific schema catalogs remain covered for Claude, Codex, and Copilot.
 `test_agent_claude.py` checks qualified labels through rendered picker options instead
 of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in

@@ -1563,8 +1563,10 @@ while preserving reviewed inputs and denials.
 Mixed lists expand in order and deduplicate, schema catalogs preserve advertised IDs, provider
 catalogs follow service type, and failed discovery fails closed during configure. Launch uses
 matching last-configure expansions on live failures; tests cover malformed or missing fallbacks,
-per-workspace and per-agent isolation, accumulated saved expansions, and mixed configure errors. These are component checks;
-they do not establish live inference coverage.
+per-workspace and per-agent isolation. CLI checks retain live/saved/unavailable launch results,
+configure rejection of stale fallback data, workspace isolation, and continuing after a wildcard
+failure. Multi-agent expansion persistence and detailed no-agent failure diagnostics no longer
+have dedicated CLI cases. These are component checks, not live inference coverage.
 
 `test_agent_claude.py` covers short Claude picker labels for qualified MPS model IDs.
 The checks preserve dotted GPT versions and retain the full model IDs in picker options
@@ -1576,8 +1578,9 @@ descriptions; discovered options do not invent that description. Option values, 
 hints, allow-lists, and explicit catalog metadata are preserved. These component checks do not
 establish native picker rendering or inference coverage.
 
-Wildcard component coverage is consolidated around expansion results, configure failures,
-launch fallbacks, and saved state. Provider-type dispatch runs once per provider type;
+Duplicate CLI helper and bookkeeping checks were removed. Expansion ordering, deduplication,
+provider dispatch, fallback validation, and per-agent state updates remain in
+`test_agent_model_sources.py`. Provider-type dispatch runs once per provider type;
 agent-specific schema catalogs remain covered for Claude, Codex, and Copilot.
 `test_agent_claude.py` checks qualified labels through rendered picker options instead
 of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
