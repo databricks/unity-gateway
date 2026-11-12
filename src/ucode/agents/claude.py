@@ -58,6 +58,7 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
+    model_services_need_subscription_relay,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -689,7 +690,8 @@ def render_overlay(
         overlay["permissions"] = {"deny": ["WebSearch"]}
         keys.append(["permissions", "deny"])
 
-    if static_models and not provider and not parent_schema and not relayed:
+    # A relayed launch from a static list (no provider) still owes the admin's allow-list.
+    if static_models and not provider and not parent_schema:
         overlay["availableModels"] = list(static_models)
         overlay["enforceAvailableModels"] = True
         overlay["modelPicker"] = {
@@ -1540,6 +1542,30 @@ def disable_smart_routing(state: dict) -> bool:
     return changed
 
 
+def static_models_need_subscription_relay(state: dict) -> bool:
+    """True when Claude's static model list (a managed ``model_services``/``sources``) includes a
+    model service that routes to a subscription relay, so the launch must swap credentials.
+
+    A list of only ``system.*`` models makes no request.
+    """
+    models = state.get("claude_static_models")
+    custom = [
+        model
+        for model in (models if isinstance(models, list) else [])
+        if isinstance(model, str)
+        and model.removesuffix("[1m]").count(".") == 2
+        and not model.startswith("system.")
+    ]
+    if not custom:
+        return False
+    try:
+        token = get_databricks_token(state["workspace"], state.get("profile"))
+    except RuntimeError:
+        # Auth is checked (and reported) by the configure/launch path itself.
+        return False
+    return model_services_need_subscription_relay(state["workspace"], token, custom)
+
+
 def write_tool_config(
     state: dict,
     model: str | None,
@@ -1576,7 +1602,7 @@ def write_tool_config(
     # the managed config `ug configure` saved (no network round trip unless none is saved yet).
     managed_manifest = refresh_managed_config(state).manifest
     managed_config_present = managed_manifest is not None
-    if derive_managed_model_inputs and not (provider or parent_schema or relayed):
+    if derive_managed_model_inputs and not (provider or parent_schema):
         # `ug configure` supplies no model inputs; derive the ones a plain launch passes explicitly.
         derived = managed_model_inputs(state, managed_manifest)
         coding_agent_config_defaults = derived.coding_agent_config_defaults

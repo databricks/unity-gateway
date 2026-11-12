@@ -1948,6 +1948,31 @@ class TestManagedClaudeModelDiscovery:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
+    @pytest.mark.parametrize("needs_relay", [True, False])
+    def test_managed_static_model_services_launch_relayed_when_one_is_relay_backed(
+        self, needs_relay
+    ):
+        # No provider: the static list names a model service that routes to a subscription relay,
+        # so the launch swaps credentials (relayed) while the admin's list stays the source.
+        services = ["main.default.claude-anthropic-sonnet-5-5", "main.default.oss-large"]
+        managed = {"enabled_agents": {"claude": {"model_config": {"model_services": services}}}}
+        seen: list[list] = []
+
+        def need_relay(state):
+            seen.append(state.get("claude_static_models"))
+            return needs_relay
+
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch("ucode.cli.claude_agent.static_models_need_subscription_relay", need_relay),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert seen == [services]
+        assert calls["configure"].call_args.kwargs["relayed"] is needs_relay
+        assert calls["configure"].call_args.kwargs["provider"] is None
+
     MPS_CONFIG = {
         "enabled_agents": {
             "claude": {

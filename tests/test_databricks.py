@@ -6654,3 +6654,88 @@ class TestSharedHostProfiles:
         assert calls == [
             ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
         ]
+
+
+class TestModelServicesNeedSubscriptionRelay:
+    """A static model-service list launches relayed when a service routes to a relayed MPS."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        db_mod.clear_model_services_cache()
+        yield
+        db_mod.clear_model_services_cache()
+
+    @staticmethod
+    def _service(name: str, *destinations: dict) -> dict:
+        return {
+            "name": f"model-services/{name}",
+            "config": {"routing": {"destinations": list(destinations)}},
+        }
+
+    @staticmethod
+    def _external(mps: str, traffic: int = 100) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_EXTERNAL_FOUNDATION_MODEL",
+            "traffic_percentage": traffic,
+            "external_model_config": {"model_provider_service": f"model-provider-services/{mps}"},
+        }
+
+    @staticmethod
+    def _hosted(model: str) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL",
+            "traffic_percentage": 100,
+            "pay_per_token_config": {"model": f"models/{model}"},
+        }
+
+    def _patch(self, monkeypatch, services: dict, relayed: set[str]) -> list[str]:
+        calls: list[str] = []
+
+        def get_service(name, _ws, _token):
+            calls.append(name)
+            return (services.get(name), None if name in services else "404")
+
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, _ws, _token: ({"name": name, "relayed": name in relayed}, None),
+        )
+        return calls
+
+    def test_service_on_a_relayed_provider_needs_the_relay(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "main.default.oss": self._service(
+                    "main.default.oss", self._hosted("system.ai.kimi")
+                ),
+                "main.default.sonnet": self._service(
+                    "main.default.sonnet", self._external("main.default.anthropic")
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.oss", "main.default.sonnet[1m]"]
+        )
+
+    def test_hosted_api_key_and_missing_services_do_not(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.keyed": self._service(
+                    "main.default.keyed",
+                    self._external("main.default.keyed-mps"),
+                    # An idle destination on a relayed provider doesn't count.
+                    self._external("main.default.anthropic", traffic=0),
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        models = ["system.ai.claude-sonnet-5-5", "main.default.keyed", "main.default.gone"]
+        assert not db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
+        # system.* ids are never looked up, and each custom service is looked up once.
+        assert calls == ["main.default.keyed", "main.default.gone"]
+        db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
+        assert calls == ["main.default.keyed", "main.default.gone"]

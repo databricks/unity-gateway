@@ -2350,6 +2350,7 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
+    _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -3148,6 +3149,74 @@ def get_model_provider_service(
     if entry is None:
         return None, "model-provider-service response had an unexpected shape"
     return entry, None
+
+
+def get_model_service(
+    service_name: str, workspace: str, token: str
+) -> tuple[dict | None, str | None]:
+    """Fetch one model service, with its routing config, by full ``catalog.schema.name``."""
+    origin = workspace_origin(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-services/{quote(service_name, safe='.')}"
+    payload, reason = _http_get_json(url, token, timeout=30)
+    if not isinstance(payload, dict):
+        return None, reason or "model-service response had an unexpected shape"
+    return payload, None
+
+
+def model_service_primary_providers(service: dict) -> list[str]:
+    """The Model Provider Services behind ``service``'s live primary destinations."""
+    routing = (service.get("config") or {}).get("routing") or {}
+    destinations = routing.get("destinations")
+    providers: list[str] = []
+    for destination in destinations if isinstance(destinations, list) else []:
+        if (
+            not isinstance(destination, dict)
+            or destination.get("is_deleted")
+            or not (destination.get("traffic_percentage") or 0) > 0
+        ):
+            continue
+        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
+        if isinstance(provider, str) and provider:
+            providers.append(provider.removeprefix("model-provider-services/"))
+    return providers
+
+
+# Per-process memo of whether a model service routes to a subscription relay, keyed by
+# (workspace, service). Configure and launch both ask about the same static model list.
+_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
+
+
+def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
+    """True when any custom model service in ``models`` routes to a subscription-relay MPS.
+
+    Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
+    the Databricks token in the swap header), so the agent must launch relayed even though no Model
+    Provider Service is its source. ``system.*`` ids and non-three-part entries are skipped. A
+    failed lookup counts as not relayed, which keeps the gateway-auth behavior.
+    """
+    for model in models:
+        name = model.removesuffix("[1m]")
+        parts = name.split(".")
+        if len(parts) != 3 or parts[0] == "system":
+            continue
+        key = (workspace, name)
+        if key not in _RELAY_BACKED_MODEL_SERVICES_CACHE:
+            service, reason = get_model_service(name, workspace, token)
+            relayed = False
+            if service is None:
+                _debug("relay detection", f"{name}: {reason}")
+            else:
+                for provider in model_service_primary_providers(service):
+                    entry, reason = get_model_provider_service(provider, workspace, token)
+                    if entry is None:
+                        _debug("relay detection", f"{provider}: {reason}")
+                    elif entry.get("relayed"):
+                        relayed = True
+                        break
+            _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = relayed
+        if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]:
+            return True
+    return False
 
 
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from

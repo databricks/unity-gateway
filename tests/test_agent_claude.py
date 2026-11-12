@@ -654,14 +654,31 @@ class TestRenderOverlay:
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
-    def test_static_models_skipped_when_relayed(self):
-        # When using relayed inference, static models are ignored.
+    def test_static_models_skipped_when_relayed_through_a_provider(self):
+        # A relayed Model Provider Service supplies the catalog; static models are ignored.
         static = ["system.ai.claude-opus-4-8"]
         overlay, _ = claude.render_overlay(
-            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+            WS,
+            "s4",
+            provider="main.default.anthropic",
+            relayed=True,
+            relayed_base_url="http://localhost:8000",
+            static_models=static,
         )
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
+
+    def test_static_models_kept_when_relayed_without_a_provider(self):
+        # A static list naming a relay-backed model service launches relayed, and the admin's
+        # list still owns the picker and allow-list.
+        static = ["main.default.claude-anthropic-sonnet-5-5", "main.default.oss-large"]
+        overlay, _ = claude.render_overlay(
+            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+        )
+        assert overlay["availableModels"] == static
+        assert overlay["modelPicker"]["replaceBuiltInOptions"] is True
+        assert "apiKeyHelper" not in overlay
+        assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
     def test_static_models_label_is_prettified(self):
         # Picker labels drop the ``system.ai.`` prefix and are title-cased with a dotted version.
@@ -674,6 +691,39 @@ class TestRenderOverlay:
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
         assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+
+
+class TestStaticModelsNeedSubscriptionRelay:
+    def test_hosted_only_lists_make_no_request(self, monkeypatch):
+        monkeypatch.setattr(
+            claude, "get_databricks_token", lambda *_a, **_k: pytest.fail("no lookup needed")
+        )
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-5-5"]}
+        assert not claude.static_models_need_subscription_relay(state)
+        assert not claude.static_models_need_subscription_relay({"workspace": WS})
+
+    def test_checks_only_custom_model_services(self, monkeypatch):
+        seen: list[list[str]] = []
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
+        monkeypatch.setattr(
+            claude,
+            "model_services_need_subscription_relay",
+            lambda _ws, _token, models: seen.append(models) or True,
+        )
+        state = {
+            "workspace": WS,
+            "claude_static_models": ["system.ai.claude-sonnet-5-5", "main.default.sonnet"],
+        }
+        assert claude.static_models_need_subscription_relay(state)
+        assert seen == [["main.default.sonnet"]]
+
+    def test_auth_failure_keeps_gateway_auth(self, monkeypatch):
+        def fail(*_a, **_k):
+            raise RuntimeError("expired")
+
+        monkeypatch.setattr(claude, "get_databricks_token", fail)
+        state = {"workspace": WS, "claude_static_models": ["main.default.sonnet"]}
+        assert not claude.static_models_need_subscription_relay(state)
 
 
 class TestRenderOverlayOtelTracing:
