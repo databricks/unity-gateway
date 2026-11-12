@@ -1,5 +1,9 @@
 # Integration tests
 
+Subagent calculation journeys use short native task names. Offline evidence checks
+still reject mistyped markers and wrong results in either the parent or child answer.
+These checks do not establish the live model's copying-error rate.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
@@ -11,14 +15,25 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-Windows Desktop detection allows up to 30 seconds for the native package query.
-Component coverage in `test_desktop_setup.py` verifies slow successful detection creates
-UG's profile, while missing packages, timeouts, launch errors, and query failures leave
-it absent. Query failures report their actual cause instead of asking users to open
-an app that is already installed. Native Cowork CI still requires completed inference.
+Windows and macOS Cowork desktop coverage, installation detection, and required
+integration gating are documented in the [main test guide](../README.md).
+`../test_macos_cowork_harness.py` separately covers bounded Accessibility retries,
+ambiguous model labels, private logs, and launch/timeout/cleanup/evidence-write failures.
+Malformed UTF-8 in diagnostic transcript copies does not lose the result report; UI and
+session capture errors remain separate. Shared transcript-parser component tests reject
+malformed tool inputs, paths, and IDs without crashing or accepting invalid evidence.
+Navigation checks cover both Cowork and Claude task layouts, sidebar auto-opening,
+and failure when any required task control is missing.
+Those component tests control native boundaries and use an isolated subprocess for
+termination checks; they do not replace the native desktop inference jobs.
 
-Windows Cowork desktop coverage and required integration gating are
-documented in the [main test guide](../README.md).
+Both native Windows and macOS Cowork jobs run
+inference, a selected-folder file read, and local plugin skill execution sequentially.
+The file/skill assertions require real native tool results and completed answers;
+UC skill downloads and external MCP execution are not covered by this job.
+After successful inference, the skill case runs even if the file case fails. Both remain
+blocking. The job budget includes both task timeouts and artifact collection; CLI stderr
+is logged separately from JSON, and transcript rotation does not abort evidence polling.
 
 Provider target component tests filter Claude targets by Messages API metadata across
 Anthropic, Bedrock, Mantle, Foundry, and custom providers, and Codex targets by Responses API
@@ -72,12 +87,19 @@ including null omitted selectors. They do not verify inherited model resolution,
 actual execution or a remote metrics export.
 
 `test_ug_smart_routing_hooks.py::test_smart_router_claude_resumes_same_subagent_with_send_message`
-checks live continuation with orchestration enabled on Claude 2.1.314+: one initial
-Agent/Task call, a `SendMessage` addressed by ID or name whose native result
-resolves to the original child's ID, and two completed
-hidden file tasks in the same child transcript. Continuation checks use only parent
-calls/results, allowing the child to reply through SendMessage. A second spawn or child session
-fails the test. Select it through the runner with `--claude-version 2.1.314` and
+checks live continuation with orchestration enabled on Claude 2.1.314+: Agent/Task calls
+for one byte-identical task (a redundant identical re-spawn while waiting for the first
+child's completion notification is tolerated, run 42721826953), a `SendMessage` addressed
+by ID or name whose native result resolves to one of those pre-existing children's IDs,
+and two completed hidden file tasks in the resumed child's transcript, both reaching
+the parent as native child-ID peer messages or parent assistant answers. The parent need
+not restate the values: its fabricated answers remain in the session artifacts
+(Windows job 129537991866). Offline checks reject prompt and tool-input echoes, missing
+deliveries, and wrong-child or unrelated parent peer messages. Continuation checks use
+only parent calls/results, allowing the child to reply through SendMessage. A
+differently tasked spawn, a second child session or Agent/Task call during the follow-up
+phase, or a follow-up resumed child that was not spawned before it fails the test.
+Select it through the runner with `--claude-version 2.1.314` and
 `-- -k test_smart_router_claude_resumes_same_subagent_with_send_message`.
 Offline evidence checks accept both recipient forms and reject a missing recipient,
 a wrong resumed child, a failed send, or a missing/crossed tool result.
@@ -235,6 +257,12 @@ pointer and an unchanged repeat configure with no restart notice; a second case 
 catalog pointer through configure and revert. Revert of ug's pointer is covered by
 `test_ug_codex_managed_model_discovery.py`. It does not cover desktop tracing (its systemd/launchd
 service needs a user session), the GUI, or inference.
+`test_ug_codex_desktop_macos.py` covers the GUI and inference on macOS only: after the same managed
+configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
+Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
+app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model.
+`scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
+macOS desktop CI job does, so a local run never drives a developer's installed app.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -245,7 +273,10 @@ is read-only and checked for changes at teardown; concurrent readers need no res
 CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
 inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
 model, provider type and target restrictions. Offline checks accept Responses alongside Chat
-Completions in either order and reject missing or additional APIs. Both inference cases ask
+Completions in either order and reject missing or additional APIs. CUJ2 expects only
+`gpt-6-luna` in its OpenAI MPS and as its Codex default. CUJ1 and CUJ6's Codex Luna
+selection is `system.ai.gpt-6-luna`; their published model lists and CUJ6 phase C default
+must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
@@ -571,7 +602,7 @@ from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copi
 `test_ug_copilot_model_location.py` launches Copilot from fresh state with `--model-location` on the
 model-discovery schema and completes a file task on its Claude-compatible model service.
 `test_ug_copilot_providers.py` runs Copilot through the MPS fixtures below: a file task on the
-Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-5-nano`, and
+Anthropic service's model, on the OpenAI, Azure OpenAI and Microsoft Foundry services' `gpt-6-luna`, and
 on a named model of the Bedrock allow-all service; launching on the relayed service fails before Copilot starts.
 `test_ug_copilot_mcp.py` adds `system.ai.web_search` with `ug mcp add --agents copilot` over a
 developer's own disabled server, checks Copilot's `copilot mcp list --json` and `ug mcp list`, runs
@@ -595,8 +626,10 @@ The MCP case registers `system.ai.web_search` with `ug mcp add` and pins
 the native file reader at the server's generated tool definition and instructions, avoiding
 shell-based directory discovery that headless permissions deny. It requires a successful native
 `call_mcp_tool` for the exact server, `web_search` tool, and query, plus an official Databricks
-URL shared by the returned search output and final answer. Search ranking and wording are not
-asserted. This replaces the SQL digest task; SQL execution is no longer covered by this case.
+URL shared by the returned search output and final answer, ignoring surrounding Markdown
+emphasis and inline-code markers while preserving the URL's path, query, and fragment.
+Search ranking and wording are not asserted. This replaces the SQL digest task; SQL execution
+is no longer covered by this case.
 Denied actions, empty answers, tool errors, and provider errors still fail.
 The skill case places a user skill in
 `~/.agents/skills` and requires its code word. Headless Antigravity cannot answer permission
@@ -679,11 +712,15 @@ required; floating `latest`, caret, and tilde versions are rejected. Hosted prov
 exercise explicit model arguments use a real `system.ai` model already discovered
 by `ug configure`, recorded in that case's `model.json`. Optional `--claude-model`
 `--codex-model` and `--opencode-model` overrides reproduce a particular model-related failure.
+Explicit Codex cases prefer `system.ai.gpt-6-luna` on both Linux and Windows; Copilot's
+GPT file tasks use the same model. The Codex and Copilot tracing fixtures also select it.
 OpenCode is opt-in: pass `--opencode-version` (for example `1.18.31`) to install and select it.
 Copilot CLI is opt-in the same way: pass `--copilot-version` (for example `1.0.91`).
 Antigravity CLI is not on npm: pass `--antigravity-build` with the exact `<version>-<build id>`
-from Google's release manifest (for example `1.4.9-4962164969177088`). The runner downloads that
-archive for the host platform into the run directory, records its URL and SHA-512 in
+from Google's release manifest (for example `1.5.4-5037094733742080`, pinned for Linux x64 CI).
+For a build/platform without a pinned checksum, pass `--antigravity-sha512` from its official
+release manifest. The runner downloads that archive for the host platform into the run directory,
+records its URL and SHA-512 in
 `versions.json`, and sets `AGY_CLI_DISABLE_AUTO_UPDATE=true` in the runner and isolated test
 sessions. Antigravity requires the literal `true`; `1` leaves background updates enabled
 ([upstream documentation](https://antigravity.google/docs/cli/troubleshooting/#resolve-self-updater-locks-and-failures)).
@@ -945,6 +982,7 @@ test_ug_codex_v2_routing.py              # exact native v2 assignments and route
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
+test_ug_codex_desktop_macos.py          # ChatGPT desktop app on macOS: GUI prompt, exact answer, model, completed turn
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
@@ -1047,7 +1085,10 @@ workspace smart-routing warning ("enabled for Codex in this workspace, but it is
 only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
-smart routing overrides individual routing env vars.
+smart routing overrides individual routing env vars. The shared Claude fixtures omit GLM. Only
+`test_smart_router_routes_claude_subagent_at_launch[subagent_only_v0-glm]` loads
+`claude_smart_routing_glm.json`, which offers only GLM, so that case's parent and routed child run
+on GLM; the off and back-on journeys keep their six cases.
 Claude's toggle variants are temporarily non-blocking on both CI platforms; see
 [Soft-fail tests](#soft-fail-tests). Their assertions and local
 selection are unchanged. Codex toggles and the direct hook journeys remain required.
@@ -1083,9 +1124,50 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
-MPS CUJs select the existing services already used by e2e:
+MPS CUJs select preprovisioned services:
 
-- Claude: `main.ucode.ci_e2e_anthropic_nonrelay_mps`.
+- Claude (direct API key): `main.ucode.dont_delete_ci_company_anthropic_mps` in
+  `https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com`
+  (workspace `4168069418041172`). The `anthropic-mps` job uses one agent/OS matrix
+  for Claude and Copilot on Linux and Windows. The workflow defines the URL and
+  `ug-ci-sp` client ID as constants; only `UG_ANTHROPIC_MPS_CLIENT_SECRET` is a
+  GitHub secret. The runner mints a short-lived OAuth bearer for this workspace.
+  The service resolves `databricks-staging-shared-key://anthropic` server-side, exposes only
+  `claude-haiku-4-5-20251001` on `anthropic/v1/messages`, and disables all three
+  forwarding options. CI never reads the provider key. Claude runs are required on
+  Linux and Windows; Copilot retains its advisory status on both platforms.
+  All four lanes use `databricks-protected-runner-group`, with
+  `linux-ubuntu-latest` / `windows-server-latest` labels and internal Python/npm
+  package proxies. These managed runners can reach staging ingress.
+  The job has an explicit fork guard and does not depend on the other workspace's
+  bearer validation.
+  The configure picker journey also rejects an out-of-allowlist model and verifies
+  that its completed file task used the pinned Haiku model. This and Cases 11
+  replace the duplicate legacy launches, raw inference, fixture listing, and fresh
+  `--version` check, so no separate legacy staging shard or token setup is needed.
+  Family-alias resolution remains unit-tested; a standalone live `--model haiku`
+  inference and raw Messages response-shape assertions are no longer covered.
+  Relay, other-provider, and dedicated CUJ2 fixtures stay in their existing
+  workspaces. Missing SP credentials or MPS access fail the new jobs.
+  Token-request HTTP failures report the endpoint, status, and up to 2,000 response-body
+  characters, with the client secret and encoded Basic credential redacted first.
+  `../test_integration_runner.py` covers these diagnostics with controlled HTTP responses;
+  these component checks do not establish live authentication or network access.
+
+  For a local direct-Anthropic run, select the dedicated workspace and an explicit
+  profile authorized there:
+
+  ```bash
+  python3.12 scripts/run_integration.py --claude-version 2.1.290 \
+    --workspace https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com \
+    --profile YOUR_STAGING_CI_PROFILE -- -m 'anthropic_mps and claude'
+  ```
+
+  Supply the package-proxy arguments from the local-run instructions below when on
+  the Databricks network. Use `--copilot-version 1.0.91` and
+  `-m 'anthropic_mps and copilot'` for Copilot. Runs against the original workspaces
+  must exclude `anthropic_mps`; these tests require the staging workspace's SP
+  access, empty published CodingAgentConfig, and both company-credential SAFE flags.
 - Claude (Microsoft Foundry): `main.ucode.ci_foundry_claude_mps` declares
   `claude-haiku-5-5` and `claude-sonnet-5-5` on `anthropic/v1/messages`, plus
   `gpt-5.4` on `openai/v1/responses`. `test_ug_claude_fresh_foundry_mps`
@@ -1103,7 +1185,7 @@ MPS CUJs select the existing services already used by e2e:
 - Codex (custom Azure OpenAI): `main.ucode.ci_custom_azure_openai_mps` declares GPT deployments
   on `openai/v1/responses`. `test_ug_configure_codex_custom_azure_openai_mps` selects the service
   in the real configure picker, then launches Codex without `--provider` and completes a TUI
-  file-reading task on `gpt-5-nano`. Override with `--codex-custom-provider` and
+  file-reading task on `gpt-6-luna`. Override with `--codex-custom-provider` and
   `--codex-custom-provider-model`.
   Both journeys assert the saved provider, completed-turn model, and normal exit, and run
   in their full agent lanes on Linux and Windows. Codex sets its MPS header at launch;
@@ -1115,11 +1197,11 @@ MPS CUJs select the existing services already used by e2e:
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
-- Codex: `main.ucode.ci_openai_mps`, using its allowed `gpt-5-nano` model.
+- Codex and Copilot (OpenAI): `main.ucode.ci_openai_mps`, using its allowed `gpt-6-luna` model.
 - Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
   target (`--antigravity-provider`, `--antigravity-provider-models`).
-- Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-5-nano` model.
-- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-5-nano` model.
+- Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-6-luna` model.
+- Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-6-luna` model.
 
 Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
@@ -1127,10 +1209,12 @@ reproduce another existing service. Use `--claude-provider-model` /
 No service is created or modified. A missing service, permission, or OAuth token
 fails the selected CUJ, rather than skipping it.
 
-The `test_ug_claude_fresh_provider_launch` and `test_ug_codex_fresh_provider_launch` journeys
-check provider selection and real agent CLI launch without inference. The Foundry and custom MPS
-journeys above additionally require inference and file-reading task completion. Codex discovery
-journeys also check its app-server model catalog.
+The `test_ug_codex_fresh_provider_launch` journey checks provider selection and real agent
+CLI launch without inference. Claude's fresh provider discovery journey covers its
+launch, model picker, and selected-provider routing header in generated settings.
+The configure, Foundry, and custom MPS journeys additionally
+require inference and file-reading task completion. Codex discovery journeys also
+check its app-server model catalog.
 
 The tracing journeys are part of their respective Full agent lanes and use the existing
 e2e workspace and bearer. Because that workspace deliberately has no published managed
@@ -1183,6 +1267,8 @@ the Claude service. Codex's app-server catalog must exactly match a separate rea
 Codex model-list request with the parent-schema header, including the dedicated Codex
 service and no out-of-schema models. A Claude service is included only if that API
 advertises it as compatible. Extra, missing, or duplicate app-server entries fail.
+Codex provider discovery also compares the full app-server list with an independent
+provider-scoped model-list request and requires `--codex-provider-model` in that catalog.
 Claude provider discovery still requires the exact `--claude-provider-model` ID
 in its cache. For the default `claude-haiku-4-5-20251001` fixture, Claude can
 deduplicate it into the native Haiku picker row (Haiku 4.5), while an explicit
@@ -1205,15 +1291,15 @@ Twelve explicit configured/fresh Claude and Codex discovery and source-override 
 `claude_mps.json` / `codex_mps.json` fixtures, which set each agent's source to its dedicated MPS.
 The other cases cover focused model, MCP, skills, saved-config replay, foreign-workspace refusal, and lifecycle shapes, including
 per-agent model reconciliation and managed skill cleanup. Of the two Claude default-model cases,
-the MPS case stubs a `main.default.ci_e2e_anthropic_mps` source and the `system.ai` parent-schema
+the MPS case stubs a `main.ucode.dont_delete_ci_company_anthropic_mps` source and the `system.ai` parent-schema
 case stubs a Unity Catalog source; both verify the generated settings
 files retain all admin-authored family defaults. Their replacement pickers contain those mapped defaults plus
 the independently fetched MPS or UC schema catalog. MPS family shortcut rows remain separate
 from catalog rows for the same target; UC model IDs are deduplicated and catalog labels are retained.
 Direct renderer tests cover default/catalog composition, while focused CLI regressions verify UC
 catalog discovery with overall defaults, family defaults, or both, along with explicit model
-selection and preservation of static model lists. Both cases run on the managed workspace's own
-bearer; no second workspace or extra secret is involved.
+selection and preservation of static model lists. The MPS case runs in the staging `anthropic_mps` lane. The UC parent-schema case
+continues to use the managed workspace and its existing bearer.
 Across integration and dedicated CUJ7, the 14 numbered scenarios comprise 24 journeys:
 12 managed and 12 unmanaged. Integration contains 22 of them (12 managed, 10 unmanaged);
 configured unmanaged cases 7 and 8 run in `e2e_cuj/test_cuj7_model_discovery.py`.
@@ -1357,9 +1443,18 @@ It uploads `integration-headless-windows-claude` evidence and remains outside
 the required gate while native failures are diagnosed. Codex's Windows CI
 journey is deferred while the npm proxy rejects its package metadata; the runner
 still supports explicitly selecting it once the requested package is available.
+The required **Codex desktop inference · macOS** job installs the ChatGPT desktop app from
+OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml`, and runs the
+`macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
+Accessibility to the runner's shell, so no permission prompt is needed. It uploads
+`integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
+`https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
+harness-latest workflow runs the same journey against the newest appcast build, so it shows
+when a bump is due.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
-Installation jobs need no workspace credentials. For same-repository PRs, the live jobs
+Installation jobs need no workspace credentials. The dedicated direct-Anthropic lanes
+use the staging SP described above. Other live jobs for same-repository PRs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
@@ -1484,8 +1579,8 @@ not provide that setup or affect unit tests, installation checks, or dedicated C
 
 Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claude_subagent_at_launch`,
 `test_smart_router_skill_turns_claude_subagent_routing_off` and
-`test_smart_router_skill_turns_claude_subagent_routing_back_on`) and their six variants each carry
-`soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
+`test_smart_router_skill_turns_claude_subagent_routing_back_on`) carry `soft_fail`: six variants
+each, plus the launch test's `subagent_only_v0-glm` case. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
 Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
 They use `continue-on-error`, stay outside `All integration tests`, and upload separate
@@ -1513,7 +1608,10 @@ The **harness-latest** workflow runs every six hours on `main` (00:00, 06:00,
 latest Claude and Codex releases, recording exact versions in its artifacts. It covers
 CUJ4, routing hooks, skill toggles (including Claude's recipe-header assertions),
 and first-prompt banners. It runs separately from PR checks, so failures do not block merges.
-Versions are resolved once for all three suites. A final job sends one success or
+Its `desktop` suite runs `test_ug_codex_desktop_macos.py` on macOS against the newest
+ChatGPT desktop build in OpenAI's appcast. With no hash to pin, it requires `codesign`,
+`spctl` (notarization) and OpenAI's Developer ID team before opening the app.
+Versions are resolved once for all four suites. A final job sends one success or
 failure message using `SLACK_WEBHOOK_UG_CODING_AGENTS_POD`, with both versions and
 a workflow-run link on success or a failed-job link on failure (the workflow-run
 link if GitHub's jobs API is unavailable).
@@ -1560,12 +1658,12 @@ settings reconciliation and makes no model-inference claim.
 
 The expected model ids in `test_ug_configure_managed.py` mirror `managed_workspace_default.json`;
 update both together. The fixtures reference real securables on the managed workspace (MPS
-`main.default.ci_e2e_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
+`main.ucode.dont_delete_ci_company_anthropic_mps` / `ci_e2e_openai_mps`, MCP service `system.ai.github`, skill
 `main.default.forkable-meals`), which must keep existing.
 
 The `managed_fixture` journeys use `UCODE_MANAGED_CONFIG_STUB` to short-circuit only the
 managed-config HTTP read. The Claude discovery module uses `claude_mps.json`, whose Claude model
-source is `main.default.ci_e2e_anthropic_mps` with no static defaults, across all configured/fresh
+source is `main.ucode.dont_delete_ci_company_anthropic_mps` with no static defaults, across all configured/fresh
 scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
@@ -1587,6 +1685,9 @@ to be listed. The fixture itself has no managed smart-routing setting.
 
 The Claude parent-schema defaults case expects discovered numbered GPT models to carry
 `[1m]` in the picker and retain its catalog display label.
+Both Claude defaults cases read the actual machine settings file for Linux,
+macOS, or Windows directly with Python; all default, header, and picker assertions
+apply to both per-user and machine settings.
 
 The smart-routing banner journeys inject static Claude and Codex model lists with
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
@@ -1825,11 +1926,13 @@ DATABRICKS_BEARER=$(databricks auth token --host "$integration_workspace" \
 uv run --no-project --python 3.12 python scripts/run_integration.py \
   --python 3.12 --ug-version checkout --workspace "$integration_workspace" \
   --default-index "$integration_index" --npm-registry "$integration_registry" \
-  --claude-version 2.1.268 --codex-version 0.154.0 -- -m live
+  --claude-version 2.1.268 --codex-version 0.154.0 -- -m 'live and not anthropic_mps'
 unset DATABRICKS_BEARER
 ```
 
-This runs all 88 live cases. For the eight installation checks, run the same
+This runs the live cases assigned to the original e2e workspace. Run the direct
+Anthropic cases separately against their staging workspace as described above.
+For the eight installation checks, run the same
 runner/version/index arguments with `--installation-only` and omit `-- -m live`;
 no bearer or workspace is needed. Results remain under `.integration-runs/`.
 Each invocation needs a new output directory; an existing one is rejected.
@@ -1945,7 +2048,7 @@ while preserving reviewed inputs and denials.
 Managed schema/MPS wildcard expansion has component coverage in `../test_agent_model_sources.py` and
 `../test_cli.py`, including provider-type catalog selection, mixed source ordering, schema IDs,
 Copilot alias normalization, duplicate removal, configure fail-closed behavior, launch fallback to
-validated per-workspace last-configure results, one accumulated save, and per-agent configure failure reporting. No installed-agent
+validated per-workspace last-configure results, accumulated saved expansions, and per-agent configure failure reporting. No installed-agent
 integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
 Short Claude picker labels for qualified MPS IDs have component coverage in
@@ -1955,3 +2058,18 @@ allow-list IDs and preserve dotted GPT versions. No installed-agent journey cove
 Gateway-alias picker text has component coverage in `../test_agent_claude.py` for short labels,
 managed-static-only organization descriptions, preserved option and allow-list IDs, long-context
 hints, and explicit catalog metadata. No installed-agent journey covers these presentation fields.
+
+Antigravity MCP web-search evidence compares homepage slash variants and ignores
+`utm_source` attribution while retaining the completed-call and official-URL checks.
+Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
+Offline regressions in `../test_integration_evidence.py` reject different schemes,
+hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+Wildcard component coverage is consolidated around expansion results, configure failures,
+launch fallbacks, and saved state. Provider-type dispatch runs once per provider type;
+agent-specific schema catalogs remain covered for Claude, Codex, and Copilot.
+`test_agent_claude.py` checks qualified labels through rendered picker options instead
+of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
+`test_databricks.py`; warning punctuation and internal save counts are not pinned.
+The shared e2e fixture uses UC model services directly. Installed-agent wildcard
+inference coverage remains a gap.

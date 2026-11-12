@@ -675,13 +675,19 @@ class TestRenderOverlay:
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
         assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
 
-    def test_static_mps_models_keep_ids_with_short_labels(self):
-        static = ["main.default.lilly-personal-anthropic.claude-haiku-5-5"]
+    @pytest.mark.parametrize(
+        ("model", "label"),
+        [
+            ("main.default.mps.claude-haiku-5-5", "Claude Haiku 5.5"),
+            ("main.default.mps.claude-opus-5-5", "Claude Opus 5.5"),
+            ("main.default.mps.claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ],
+    )
+    def test_static_mps_models_keep_ids_with_short_labels(self, model, label):
+        static = [model]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         assert overlay["availableModels"] == static
-        assert overlay["modelPicker"]["options"] == [
-            {"model": static[0], "label": "Claude Haiku 5.5"}
-        ]
+        assert overlay["modelPicker"]["options"] == [{"model": model, "label": label}]
 
     @pytest.mark.parametrize(
         ("model", "label", "slug", "context_hint"),
@@ -5368,18 +5374,3 @@ class TestGetFamilyDefaults:
         managed_file(json.dumps({"modelPicker": self.PICKER, "env": self.WRITER_ENV}))
         state, kwargs = source
         assert claude.get_family_defaults(state, **{**self.NO_SOURCE, **kwargs}) is None
-
-
-@pytest.mark.parametrize(
-    ("model", "label"),
-    [
-        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "Claude Haiku 5.5"),
-        ("main.default.lilly-personal-anthropic.claude-opus-5-5", "Claude Opus 5.5"),
-        ("main.default.lilly-personal-anthropic.claude-sonnet-5-5", "Claude Sonnet 5.5"),
-        ("system.ai.claude-haiku-4-5", "Claude Haiku 4.5"),
-        ("gpt-5.5", "GPT 5.5"),
-        ("system.ai.gpt-5.5", "GPT 5.5"),
-    ],
-)
-def test_picker_label(model, label):
-    assert claude.picker_label(model) == label

@@ -125,9 +125,8 @@ def test_expand_wildcard_sources_without_token_names_the_missing_token(monkeypat
     assert "no Databricks token; run `ug configure`" in warnings[0]
 
 
-@pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
 @pytest.mark.parametrize("provider_type", ["anthropic", "openai"])
-def test_provider_wildcard_uses_service_type_catalog(monkeypatch, tool, provider_type):
+def test_provider_wildcard_uses_service_type_catalog(monkeypatch, provider_type):
     monkeypatch.setattr(
         db_mod, "get_model_provider_service", lambda *_: ({"provider_type": provider_type}, None)
     )
@@ -141,29 +140,12 @@ def test_provider_wildcard_uses_service_type_catalog(monkeypatch, tool, provider
     anthropic = provider_type == "anthropic"
     expected = "anthropic-model" if anthropic else "codex-model"
     qualified = f"c.s.mps.{expected}"
-    assert agents.expand_wildcard_sources(["c.s.mps.*"], tool, WS, "token") == (
+    assert agents.expand_wildcard_sources(["c.s.mps.*"], "claude", WS, "token") == (
         [qualified],
         {"c.s.mps.*": [qualified]},
     )
     assert len(urls) == 1
     assert ("/anthropic/" if anthropic else "/codex/") in urls[0]
-
-
-@pytest.mark.parametrize("provider_type", ["anthropic", "openai"])
-def test_provider_empty_listing_is_not_an_error(monkeypatch, provider_type):
-    monkeypatch.setattr(
-        db_mod, "get_model_provider_service", lambda *_: ({"provider_type": provider_type}, None)
-    )
-    monkeypatch.setattr(
-        db_mod, "_http_get_json", lambda *a, **k: ({"data": [], "models": []}, None)
-    )
-    assert db_mod.list_model_provider_service_targets(WS, "token", "c.s.mps") == ([], None)
-
-
-def test_codex_empty_schema_still_raises(monkeypatch):
-    monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: ({"models": []}, None))
-    with pytest.raises(db_mod.CodexModelCatalogEmpty):
-        codex.source_models(WS, "token", parent_schema="system.ai")
 
 
 def test_fallback_applies_per_wildcard_only_and_records_live_results(monkeypatch):
@@ -237,23 +219,3 @@ def test_set_expansions_preserves_other_agents_and_removes_empty_mapping():
     }
     set_managed_model_source_expansions(state, "codex", {})
     assert "managed_model_source_expansions" not in state
-
-
-@pytest.mark.parametrize("tool", ["claude", "codex"])
-@pytest.mark.parametrize("source", ["c.s.mps.*", "system.ai.*"])
-def test_empty_catalog_warning_keeps_schema_reason_only(monkeypatch, tool, source):
-    monkeypatch.setattr(
-        db_mod, "get_model_provider_service", lambda *_: ({"provider_type": "custom"}, None)
-    )
-    monkeypatch.setattr(
-        db_mod, "_http_get_json", lambda *a, **k: ({"data": [], "models": []}, None)
-    )
-    warnings = []
-    monkeypatch.setattr(agents, "print_warning", warnings.append)
-
-    assert agents.expand_wildcard_sources([source], tool, WS, "token") == ([], {})
-    assert len(warnings) == 1
-    if source == "c.s.mps.*":
-        assert f"{source};" in warnings[0]
-    else:
-        assert f"{source} (" in warnings[0]

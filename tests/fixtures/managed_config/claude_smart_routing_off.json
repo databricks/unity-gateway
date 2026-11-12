@@ -7,13 +7,13 @@
       "config": {
         "models": {
           "model_services": [
-            "system.ai.claude-opus-4-8",
-            "system.ai.claude-sonnet-4-6",
-            "system.ai.claude-haiku-4-5"
+            "system.ai.deepseek-v4-1-flash-1017",
+            "system.ai.claude-sonnet-5-5",
+            "system.ai.claude-sonnet-4-6"
           ]
         },
         "default_models": {
-          "default_model": "system.ai.claude-sonnet-4-6"
+          "default_model": "system.ai.claude-sonnet-5-5"
         }
       }
     }

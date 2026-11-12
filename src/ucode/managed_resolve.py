@@ -86,8 +86,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     """The state keys to layer over local state so ``tool``'s writer sees managed settings.
 
     Each agent reads models from a different shape, so the manifest's list has to be translated.
-    Supported tracing flags and harness-native settings are also mapped to the state key each
-    writer consumes.
+    Supported tracing flags, Copilot's VS Code switch and harness-native settings are also mapped
+    to the state key each writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -115,6 +115,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_http_headers"] = http_headers
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
+    if tool == "copilot" and _agent_entry(managed, tool).get("vscode_integration_enabled") is False:
+        overrides["copilot_vscode_integration"] = False
     settings = _as_dict(_agent_entry(managed, tool).get("agent_native_settings"))
     if tool in SETTINGS_PASSTHROUGH_TOOLS and settings:
         overrides[f"{tool}_settings_passthrough"] = settings
@@ -234,21 +236,15 @@ def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     return static_model_list(_agent_model_config(managed, tool)) or None
 
 
-def _static_model_list_key(model_config: dict) -> str | None:
-    """The key carrying one agent's static model list: ``sources`` wins over the legacy
-    ``model_services`` (a oneof). None when neither is set."""
-    if "sources" in model_config:
-        return "sources"
-    if "model_services" in model_config:
-        return "model_services"
-    return None
+def _static_model_list_key(model_config: dict) -> str:
+    """Prefer ``sources`` to the legacy ``model_services`` oneof."""
+    return "sources" if "sources" in model_config else "model_services"
 
 
 def static_model_list(model_config: dict) -> list[str]:
     """The static model list from one agent's ``model_config``: ``sources`` or the legacy
     ``model_services`` (a oneof). Empty and non-string entries are dropped; empty when unset."""
-    key = _static_model_list_key(model_config)
-    models = model_config[key] if key else None
+    models = model_config.get(_static_model_list_key(model_config))
     if not isinstance(models, list):
         return []
     return [model for model in (_str(item) for item in models) if model]
@@ -257,7 +253,7 @@ def static_model_list(model_config: dict) -> list[str]:
 def set_static_model_list(model_config: dict, models: list[str]) -> None:
     """Write the static model list to the key it was read from (``sources`` over the legacy
     ``model_services``), so a reader of :func:`static_model_list` sees the written list."""
-    model_config[_static_model_list_key(model_config) or "model_services"] = models
+    model_config[_static_model_list_key(model_config)] = models
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:

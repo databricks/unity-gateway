@@ -154,7 +154,7 @@ def expand_wildcard_sources(
             continue
         if model not in lookups:
             targets: list[str] = []
-            reason: str | None = None
+            reason = None if token else "no Databricks token; run `ug configure`"
             if token:
                 try:
                     targets, reason = _expand_wildcard_source(model, tool, workspace, token)
@@ -163,8 +163,6 @@ def expand_wildcard_sources(
             if targets:
                 live[model] = list(targets)
             else:
-                if not token:
-                    reason = "no Databricks token; run `ug configure`"
                 detail = f" ({reason})" if reason else ""
                 prefix = f"Could not expand managed model source {model}{detail}; "
                 fallback = (fallbacks or {}).get(model)
@@ -781,7 +779,11 @@ def request_vscode_with_copilot(requested: bool = True) -> None:
 
 
 def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
-    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with, or remove
+    an earlier setup when the workspace's managed config turns VS Code off."""
+    if state.get("copilot_vscode_integration") is False:
+        _remove_vscode_for_managed_config()
+        return
     if not _vscode_with_copilot:
         return
     if is_dry_run():
@@ -790,6 +792,19 @@ def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | 
     from . import vscode
 
     vscode.configure(state, provider=provider, location=parent_schema)
+
+
+def _remove_vscode_for_managed_config() -> None:
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    removed = vscode.revert() == "removed"
+    print_note(
+        "This workspace's managed configuration turns off GitHub Copilot in VS Code, so "
+        + ("the VS Code extension was removed." if removed else "VS Code was skipped.")
+    )
 
 
 def configure_single_tool(

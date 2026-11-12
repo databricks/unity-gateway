@@ -14,7 +14,15 @@ import os
 from pathlib import Path
 
 import pytest
-from utils.agents.claude import assert_follow_ups_resumed
+from utils.agents.claude import (
+    assert_follow_up_spawned_nothing,
+    assert_follow_ups_resumed,
+    assert_one_delegated_task,
+    child_id,
+    child_paths,
+    claude_delivered_child_answers,
+    parent_tool_calls,
+)
 from utils.evidence import (
     FileTask,
     SubagentCalculation,
@@ -27,7 +35,11 @@ from utils.evidence import (
     tool_outputs,
 )
 from utils.harness import ANSI
-from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
+from utils.managed import (
+    MANAGED_CONFIG_FIXTURES,
+    use_managed_config_fixture,
+    use_smart_routing_fixture,
+)
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
@@ -425,24 +437,38 @@ def test_smart_routing_codex_route_subagent_hook(
     assert row["requested_model"] == updated["model"], row
 
 
+SMART_ROUTER_CASES = [
+    (False, None),
+    (True, None),
+    (True, MANAGED_DEFAULT),
+    (False, "subagent_only_v0"),
+    (False, "subagent_only_v1"),
+    (True, "subagent_orch_v0"),
+]
+SMART_ROUTER_CASE_IDS = [
+    "routing-only",
+    "orchestration",
+    MANAGED_DEFAULT,
+    "subagent_only_v0",
+    "subagent_only_v1",
+    "subagent_orch_v0",
+]
 SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
     "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    SMART_ROUTER_CASES,
+    ids=SMART_ROUTER_CASE_IDS,
+)
+
+# GLM child sessions intermittently fail SubagentHandback, so GLM stays out of the shared Claude
+# routing menu and gets one launch case whose menu offers only GLM.
+CLAUDE_GLM_ROUTING_FIXTURE = "claude_smart_routing_glm"
+CLAUDE_AT_LAUNCH_VERSIONS = pytest.mark.parametrize(
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION, routing_fixture",
     [
-        (False, None),
-        (True, None),
-        (True, MANAGED_DEFAULT),
-        (False, "subagent_only_v0"),
-        (False, "subagent_only_v1"),
-        (True, "subagent_orch_v0"),
+        *((*case, None) for case in SMART_ROUTER_CASES),
+        (False, "subagent_only_v0", CLAUDE_GLM_ROUTING_FIXTURE),
     ],
-    ids=[
-        "routing-only",
-        "orchestration",
-        MANAGED_DEFAULT,
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
+    ids=[*SMART_ROUTER_CASE_IDS, "subagent_only_v0-glm"],
 )
 
 # Codex is opted out under the managed default (subagent_orch_v0_claude_only), so these Codex
@@ -468,9 +494,18 @@ CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
 
 
 def _select_smart_router_version(
-    session, agent: str, workspace, tmp_path, orchestration_enabled, config_version
+    session,
+    agent: str,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    config_version,
+    routing_fixture: str | None = None,
 ) -> None:
-    """Choose the legacy flags, a subagent selector, or the managed default; install the fixture."""
+    """Choose the legacy flags, a subagent selector, or the managed default; install the fixture.
+
+    ``routing_fixture`` replaces the workspace's shared routing fixture for a selector case.
+    """
     session.env["TMPDIR"] = str(tmp_path)
     if config_version is None:
         session.env["ENABLE_SMART_ROUTING_V2"] = "1"
@@ -479,6 +514,10 @@ def _select_smart_router_version(
             session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
     elif config_version != MANAGED_DEFAULT:
         session.env["SMART_ROUTER_CONFIG_VERSION"] = config_version
+    if routing_fixture is not None:
+        assert config_version is not None, "a routing fixture enables managed smart routing"
+        use_managed_config_fixture(session, routing_fixture)
+        return
     # Managed smart routing would override the legacy env vars set above.
     use_smart_routing_fixture(session, agent, workspace, smart_routing=config_version is not None)
 
@@ -577,9 +616,10 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
 ):
     """Scenario: with orchestration on, spawn one Claude child, then give it a follow-up.
 
-    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue the original
-    child. Both hidden file values appear in that same child's completed answers,
-    exactly one Agent/Task call occurs, and no second child session is created.
+    Expected: on Claude 2.1.314+ the parent uses SendMessage to continue a routed
+    child. Both hidden file values appear in that child's completed answers and reach
+    the parent, without requiring the parent to restate them. The follow-up creates
+    no child session or Agent/Task call, and SendMessage resolves to a pre-existing child.
     """
     session = live_session
     _select_smart_router_version(session, "claude", workspace, tmp_path, True, "subagent_orch_v0")
@@ -602,22 +642,17 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
             "end your turn and wait for its actual completion notification. Do not call "
             "Agent again to wait, or write a completion notification yourself."
         )
-        tui.wait_for_task(first)
-        tui.wait_for(
-            lambda _: first.completed(session, "claude", child=True),
-            "the original child's completed answer",
-            timeout=180,
+        tui.wait_for_task(
+            first,
+            completion=lambda: bool(
+                claude_delivered_child_answers(agent_sessions(session, "claude"), first.value)
+            ),
+            description="the child's answer delivered to the parent",
         )
         tui.wait_for_background_tasks()
-        children = {
-            path: records
-            for path, records in agent_sessions(session, "claude").items()
-            if is_child_session("claude", path, records)
-        }
-        session.record("agent-sessions-before-followup.json", agent_sessions(session, "claude"))
-        assert len(children) == 1, list(children)
-        child_path = next(iter(children))
-        child_id = Path(child_path).stem.removeprefix("agent-")
+        pre_followup = agent_sessions(session, "claude")
+        session.record("agent-sessions-before-followup.json", pre_followup)
+        assert_one_delegated_task(pre_followup)
 
         second = FileTask(session)
         tui.submit(
@@ -625,53 +660,30 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
             f"{second.prompt} Do not spawn another agent or read the file yourself. "
             "Wait for that agent's answer and reply with only the value it returned."
         )
-        tui.wait_for_task(second)
-        tui.wait_for(
-            lambda _: any(
-                second.value in answer
-                for answer in assistant_answers(
-                    "claude", agent_sessions(session, "claude").get(child_path, [])
-                )
+        tui.wait_for_task(
+            second,
+            completion=lambda: bool(
+                claude_delivered_child_answers(agent_sessions(session, "claude"), second.value)
             ),
-            "the original child's completed follow-up answer",
-            timeout=180,
+            description="the follow-up child answer delivered to the parent",
         )
         _assert_claude_session_finished(session, tui)
 
     sessions = agent_sessions(session, "claude")
     session.record("agent-sessions.json", sessions)
-    assert [path for path in sessions if is_child_session("claude", path, sessions[path])] == [
-        child_path
-    ]
-    calls = {
-        part["id"]: part
-        for records in sessions.values()
-        for record in records
-        if record.get("type") == "assistant"
-        for part in record.get("message", {}).get("content", [])
-        if part.get("type") == "tool_use"
-    }
-    spawns = [call for call in calls.values() if call["name"] in {"Agent", "Task"}]
-    assert len(spawns) == 1, spawns
-    parent_records = [
-        record
-        for path, records in sessions.items()
-        if not is_child_session("claude", path, records)
-        for record in records
-    ]
-    followups = {
-        part["id"]: part
-        for record in parent_records
-        if record.get("type") == "assistant"
-        for part in record.get("message", {}).get("content", [])
-        if part.get("type") == "tool_use" and part.get("name") == "SendMessage"
-    }
-    assert followups, calls
-    assert_follow_ups_resumed(list(followups.values()), parent_records, child_id)
+    # The follow-up must resume an existing child: no new child session or spawn.
+    assert_follow_up_spawned_nothing(pre_followup, sessions)
+    followups = parent_tool_calls(sessions, {"SendMessage"})
+    assert followups, "the follow-up sent no SendMessage"
+    resumed_child = assert_follow_ups_resumed(
+        list(followups.values()), [r for records in sessions.values() for r in records]
+    )
+    assert any(child_id(path) == resumed_child for path in child_paths(pre_followup)), (
+        f"the follow-up resumed {resumed_child}, which is not one of the spawned children"
+    )
     for task in (first, second):
-        task.assert_completed(session, "claude")
-        assert any(
-            task.value in answer for answer in assistant_answers("claude", sessions[child_path])
+        assert resumed_child in claude_delivered_child_answers(sessions, task.value), (
+            f"Child {resumed_child} did not answer and deliver {task.value}"
         )
 
 
@@ -679,13 +691,19 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
 @pytest.mark.claude
 @pytest.mark.managed_fixture
 @pytest.mark.soft_fail
-@SMART_ROUTER_VERSIONS
+@CLAUDE_AT_LAUNCH_VERSIONS
 def test_smart_router_routes_claude_subagent_at_launch(
-    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+    live_session,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    SMART_ROUTER_CONFIG_VERSION,
+    routing_fixture,
 ):
     """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
     config's smart routing default and, without touching the Smart Router skill, spawn one child in
-    the real TUI.
+    the real TUI. The ``subagent_only_v0-glm`` case offers only GLM, so its parent and routed
+    child both run on GLM.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The uniquely tagged calculation completes in native parent and
@@ -698,7 +716,13 @@ def test_smart_router_routes_claude_subagent_at_launch(
     """
     session = live_session
     _select_smart_router_version(
-        session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+        session,
+        "claude",
+        workspace,
+        tmp_path,
+        orchestration_enabled,
+        SMART_ROUTER_CONFIG_VERSION,
+        routing_fixture,
     )
     with TuiRequestRecorder(workspace) as recorder:
         # Configure through the forwarding URL using the public CLI, keeping ug state real.

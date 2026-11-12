@@ -69,6 +69,7 @@ from ucode.constants import (
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
+    ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
@@ -1989,6 +1990,8 @@ def status() -> int:
                     "enabled" if effective_state.get(f"{tool}_otel_tracing") else "disabled",
                 )
             )
+        if tool == AGENT_COPILOT and effective_state.get("copilot_vscode_integration") is False:
+            rows.append(("VS Code", "off (workspace-managed)"))
         if tool in MCP_CLIENTS:
             # High-level overview: just a count per agent. `ug mcp list` (see the note below) shows
             # the per-server detail and live connection status, so status stays scannable. The shared
@@ -3542,6 +3545,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni"
         and len((reason or "").strip()) < 16
     ):
         print_err(

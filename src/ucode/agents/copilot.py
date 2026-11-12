@@ -546,13 +546,15 @@ def _string_list(value: object) -> list[str]:
 def copilot_catalog(state: dict) -> list[CopilotModel]:
     """The models this launch registers: the managed list, else the discovered catalog.
 
-    State saved before the catalog existed falls back to the Claude and GPT discovery lists."""
+    The managed list takes the limits discovery saved for the same models, since nothing else
+    gives GPT models a limit. State saved before the catalog existed falls back to the Claude and
+    GPT discovery lists."""
+    saved = state.get(CATALOG_STATE_KEY)
+    limits = _saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
     static = build_copilot_catalog(_string_list(state.get("copilot_static_models")))
     if static:
-        return static
-    saved = state.get(CATALOG_STATE_KEY)
+        return [replace(model, listed_limits=limits.get(model.id)) for model in static]
     if isinstance(saved, dict):
-        limits = _saved_limits(saved.get("limits"))
         return [
             replace(model, listed_limits=limits.get(model.id))
             for model in build_copilot_catalog(_string_list(saved.get("models")))

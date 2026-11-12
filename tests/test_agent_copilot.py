@@ -265,6 +265,31 @@ class TestCopilotCatalog:
             )
         ]
 
+    def test_managed_list_takes_the_limits_discovery_saved(self):
+        discovered = [
+            copilot.CopilotModel(SONNET, "anthropic"),
+            copilot.CopilotModel(GPT, "responses", (922_000, 128_000)),
+        ]
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(discovered),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert model.listed_limits == (922_000, 128_000)
+        assert copilot.catalog_model_limits(model) == (794_000, 128_000)
+
+    def test_managed_model_without_saved_limits_keeps_copilots_default(self):
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(catalog(SONNET)),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert copilot.catalog_model_limits(model) is None
+
     def test_an_unusable_managed_list_falls_back_to_discovery(self):
         state = {
             "copilot_static_models": ["system.ai.gemini-3-flash"],
