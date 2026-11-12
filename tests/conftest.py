@@ -256,3 +256,19 @@ def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
     return dict(e2e_state_for(e2e_workspace))
+
+
+@pytest.fixture
+def metrics_recorder(monkeypatch):
+    from unittest.mock import Mock
+
+    from ucode import metrics, metrics_export
+
+    # Tests exercise collection and real SDK aggregation without sending developer telemetry.
+    runtime = metrics.Recorder("claude", metrics.time.perf_counter())
+    monkeypatch.setattr(metrics, "_runtime", runtime)
+    monkeypatch.setattr(metrics_export, "send_in_background", Mock(return_value=None))
+    yield runtime
+    runtime.stop.set()
+    if runtime.thread:
+        runtime.thread.join(timeout=2)
