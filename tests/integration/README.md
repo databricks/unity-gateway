@@ -18,7 +18,8 @@ malformed frames, and transient control-file errors. Launcher checks require one
 app-server across toggles and bounded process-tree cleanup on final exit.
 Accepted model and permission updates replace older continuation overrides, including
 nested collaboration-mode models. Reloads drain resume preflight and accepted responses.
-Queued input receives recovery context even when enqueued before the reload begins.
+Queued input receives recovery context even when enqueued before the reload begins
+and dequeued after it finishes; forwarding one turn preserves other queued turns.
 Fresh history receives current attribution on its initial resume; only already-loaded
 unknown roots require an unload. Idle history never starts work. Native history
 selection still needs live validation. Unsupported sandboxes remain usable until

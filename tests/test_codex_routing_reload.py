@@ -698,7 +698,7 @@ def test_recipe_headers_are_case_insensitive_and_launch_config_is_immutable():
     assert config == original
 
 
-@pytest.mark.parametrize("arrival", ["before_reload", "during_reload"])
+@pytest.mark.parametrize("arrival", ["before_reload", "during_reload", "dequeued_after_reload"])
 def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp_path, arrival):
     async def scenario():
         controller, engine, _, _ = make_controller(tmp_path)
@@ -712,7 +712,7 @@ def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp
         }
 
         forwarded = None
-        if arrival == "before_reload":
+        if arrival != "during_reload":
             controller.buffer_input(pending)
 
         async def user_input():
@@ -720,6 +720,8 @@ def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp
             engine.on_list = None
             if arrival == "during_reload":
                 controller.buffer_input(pending)
+            if arrival == "dequeued_after_reload":
+                return
             forwarded = asyncio.create_task(controller.before_tui(pending))
             await asyncio.sleep(0)
             assert not forwarded.done()
@@ -727,12 +729,40 @@ def test_buffered_user_turn_receives_recovery_context_without_competing_turn(tmp
         engine.on_list = user_input
         await controller.reload()
         assert not any(call["method"] == "turn/start" for call in engine.calls)
-        assert forwarded is not None
+        if forwarded is None:
+            forwarded = asyncio.create_task(controller.before_tui(pending))
         message = await forwarded
         texts = [item["text"] for item in message["params"]["input"]]
         assert "Existing interrupted agents" in texts[0]
         assert texts[1] == "Change the next step"
         assert not controller.continuations
+
+    asyncio.run(scenario())
+
+
+def test_multiple_queued_turns_keep_recovery_for_input_still_waiting(tmp_path):
+    async def scenario():
+        controller, engine, _, _ = make_controller(tmp_path)
+        messages = [
+            {
+                "id": identity,
+                "method": "turn/start",
+                "params": {"threadId": "root", "input": [{"type": "text", "text": text}]},
+            }
+            for identity, text in ((25, "First request"), (26, "Second request"))
+        ]
+        for message in messages:
+            controller.buffer_input(message)
+        await controller.before_tui(messages[0])
+        controller.observe({"id": 25, "result": {"turn": {"id": "root-turn"}}})
+        await controller.reload()
+        assert not any(call["method"] == "turn/start" for call in engine.calls)
+        forwarded = await controller.before_tui(messages[1])
+        texts = [item["text"] for item in forwarded["params"]["input"]]
+        assert "Existing interrupted agents" in texts[0]
+        assert texts[1] == "Second request"
+        assert not controller.continuations
+        assert not controller.buffered_turns
 
     asyncio.run(scenario())
 

@@ -117,7 +117,7 @@ class RoutingReload:
         self.reloading = False
         self.reload_requested = False
         self.cancel_continuation = False
-        self.buffered_turns: set[str] = set()
+        self.buffered_turns: dict[str, set[str | int]] = {}
         self.continuations: dict[str, str] = {}
         self.applied = True
         self.controls_unreadable = False
@@ -154,11 +154,11 @@ class RoutingReload:
         if not isinstance(params, dict):
             return
         if (
-            not self.ready.is_set()
-            and message.get("method") == "turn/start"
+            message.get("method") == "turn/start"
             and isinstance(params.get("threadId"), str)
+            and isinstance(message.get("id"), (str, int))
         ):
-            self.buffered_turns.add(params["threadId"])
+            self.buffered_turns.setdefault(params["threadId"], set()).add(message["id"])
 
     async def before_tui(self, message: dict) -> dict | None:
         method = message.get("method")
@@ -184,7 +184,11 @@ class RoutingReload:
         params = message.setdefault("params", {})
         if method == "turn/start":
             tid = params.get("threadId")
-            self.buffered_turns.discard(tid)
+            buffered = self.buffered_turns.get(tid)
+            if buffered is not None:
+                buffered.discard(identity)
+                if not buffered:
+                    self.buffered_turns.pop(tid)
             continuation = self.continuations.pop(tid, None)
             if continuation:
                 params["input"] = [{"type": "text", "text": continuation}, *params.get("input", [])]

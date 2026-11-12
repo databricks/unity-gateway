@@ -72,7 +72,8 @@ metadata, and the recipe header may be absent. It must never carry a stale value
 
 User input waits behind the reload; approval replies can still pass through.
 Queued user input receives recovery context instead of a competing continuation,
-even when it entered the queue before the reload began.
+even when it entered the queue before the reload began and is dequeued after it
+finishes. Each queued request remains tracked until it is forwarded.
 Escape cancels automatic continuation. Temporary title threads and ordinary
 `/subagents` navigation do not replace the root or trigger a reload.
 The first-prompt routing decision is retained across TUI reconnects.
@@ -121,7 +122,7 @@ turn and an explicit user probe, with no automatic turn, both with no children a
 with a completed idle child. A recording test fixture forwards real gateway
 traffic unchanged; it is not part of the production request path.
 
-On 2026-11-12, 794 focused component/contract tests and the lint gate passed
+On 2026-11-12, 796 focused component/contract tests and the lint gate passed
 after the follow-up review and idle-toggle fixes. Socket-collision checks also passed with an
 unrelated listener on the mocked launcher port. The installed-wheel results below
 are from revision `2bde6427`, before those follow-up fixes, in a fresh Linux Arclet
