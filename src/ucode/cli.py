@@ -59,7 +59,11 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
-from ucode.agents.model_sources import expand_wildcard_sources, is_model_source_wildcard
+from ucode.agents.model_sources import (
+    SOURCE_MODEL_AGENTS,
+    expand_wildcard_sources,
+    is_model_source_wildcard,
+)
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
@@ -146,7 +150,6 @@ from ucode.managed_files import (
 )
 from ucode.managed_resolve import (
     OTEL_TRACING_TOOLS,
-    STATIC_MODEL_LIST_TOOLS,
     managed_claude_family_models,
     managed_default_model,
     managed_enabled_tools,
@@ -1110,7 +1113,7 @@ def _expand_managed_model_sources(
 ) -> tuple[dict, dict[str, list[str]]]:
     sources = managed_static_models(managed, tool) or []
     wildcards = [source for source in sources if is_model_source_wildcard(source)]
-    if tool not in STATIC_MODEL_LIST_TOOLS or not wildcards:
+    if tool not in SOURCE_MODEL_AGENTS or not wildcards:
         return managed, {}
     token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
     expanded, live_expansions = expand_wildcard_sources(

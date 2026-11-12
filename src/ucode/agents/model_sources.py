@@ -17,7 +17,7 @@ class ModelSourceAgent(Protocol):
     ) -> tuple[list[str], str | None]: ...
 
 
-_SOURCE_MODEL_AGENTS: dict[str, ModelSourceAgent] = {
+SOURCE_MODEL_AGENTS: dict[str, ModelSourceAgent] = {
     "claude": claude,
     "codex": codex,
     "copilot": copilot,
@@ -34,7 +34,7 @@ def _expand_wildcard_source(
 ) -> tuple[list[str], str | None]:
     source_name = source[:-2]
     if len(source.split(".")) == 3:
-        return _SOURCE_MODEL_AGENTS[tool].source_models(workspace, token, parent_schema=source_name)
+        return SOURCE_MODEL_AGENTS[tool].source_models(workspace, token, parent_schema=source_name)
     return list_model_provider_service_targets(workspace, token, source_name)
 
 

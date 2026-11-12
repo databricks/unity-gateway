@@ -42,10 +42,6 @@ OTEL_TRACING_TOOLS = ("claude", "codex", "copilot")
 # write yet.
 SETTINGS_PASSTHROUGH_TOOLS = ("claude",)
 
-# Agents whose managed `model_config` carries a static model allow-list (`sources` or the legacy
-# `model_services`), the list managed MPS wildcard entries are expanded against.
-STATIC_MODEL_LIST_TOOLS = ("claude", "codex", "copilot")
-
 
 def _as_dict(value: object) -> dict[str, object]:
     """Return ``value`` as a ``dict[str, object]`` when it is a dict, else an empty dict."""
@@ -89,6 +85,9 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     Supported tracing flags, Copilot's VS Code switch and harness-native settings are also mapped
     to the state key each writer consumes.
     """
+    # Agent modules import managed resolution during initialization.
+    from ucode.agents.model_sources import SOURCE_MODEL_AGENTS
+
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
     if models:
@@ -103,7 +102,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
-    if tool in STATIC_MODEL_LIST_TOOLS:
+    if tool in SOURCE_MODEL_AGENTS:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
