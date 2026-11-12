@@ -1213,13 +1213,14 @@ def _codex_app_server_pids(tui):
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine "
+                "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CommandLine "
+                "| Select-Object ProcessId,ParentProcessId,CommandLine "
                 "| ConvertTo-Json -Compress",
             ],
             check=True,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
         ).stdout
         processes = [
             (row["ProcessId"], row["ParentProcessId"], row.get("CommandLine") or "")
