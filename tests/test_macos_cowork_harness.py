@@ -802,11 +802,21 @@ def test_macos_mcp_task_requires_the_configured_web_search_connector(
     monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
     _mcp_profile(tmp_path, servers)
     task = {"capability": "mcp"}
+    saved = {}
+
+    def connect_check(args, **kwargs):
+        assert Path(args[1]).name == "mcp-connect-check.py"
+        return subprocess.CompletedProcess(args, 0, stdout='{"fullEnvironment": {}}', stderr="")
+
+    # The connector check starts a live proxy; its result is diagnostic only.
+    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=connect_check))
+    desktop = SimpleNamespace(save=saved.__setitem__)
     if error:
         with pytest.raises(RuntimeError, match=error):
-            tasks.prepare_mcp_task(task)
+            tasks.prepare_mcp_task(task, desktop)
         return
-    task = tasks.prepare_mcp_task(task)
+    task = tasks.prepare_mcp_task(task, desktop)
+    assert saved["mcp-connect.json"] == '{"fullEnvironment": {}}'
     assert (task["mcpServer"], task["mcpTool"]) == ("web_search", "web_search")
     assert task["prompt"] == tasks.FIXTURE["prompts"]["mcp"]
 

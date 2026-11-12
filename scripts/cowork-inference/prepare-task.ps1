@@ -99,6 +99,9 @@ function New-CoworkTask {
             if ($servers[0].transport -ne 'stdio' -or $url -ne $expectedUrl) {
                 throw "The $($fixture.mcpServer) connector does not proxy $($fixture.mcpService)"
             }
+            # Diagnostic only: shows whether the connector starts outside Desktop and with Desktop's reduced env.
+            $check = & $python "$PSScriptRoot/mcp-connect-check.py" --profile $profilePath --server $fixture.mcpServer 2>&1 | Out-String
+            Protect-DiagnosticText $check | Set-Content -LiteralPath (Join-Path $evidence 'mcp-connect.json')
             $task.mcpServer = $fixture.mcpServer
             $task.mcpTool = $fixture.mcpTool
         }

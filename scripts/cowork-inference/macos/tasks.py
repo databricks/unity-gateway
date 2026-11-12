@@ -3,6 +3,7 @@ import os
 import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -64,7 +65,7 @@ def prepare_task(capability, desktop):
         )
         return task
     if capability == "mcp":
-        return prepare_mcp_task(task)
+        return prepare_mcp_task(task, desktop)
 
     marketplace = desktop.TEMP / FIXTURE["marketplace"]["name"]
     skill = marketplace / FIXTURE["skillDirectory"]
@@ -197,13 +198,12 @@ def matches_installed_skill(copy, source):
         return False
 
 
-def prepare_mcp_task(task):
-    profile = json.loads(
-        (
-            Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
-            "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
-        ).read_text()
+def prepare_mcp_task(task, desktop):
+    profile_path = (
+        Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
     )
+    profile = json.loads(profile_path.read_text())
     servers = [
         server
         for server in profile.get("managedMcpServers", [])
@@ -225,6 +225,22 @@ def prepare_mcp_task(task):
         raise RuntimeError(
             f"The {FIXTURE['mcpServer']} connector does not proxy {FIXTURE['mcpService']}"
         )
+    # Diagnostic only: shows whether the connector starts outside Desktop and with Desktop's reduced env.
+    check = process.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "mcp-connect-check.py"),
+            "--profile",
+            str(profile_path),
+            "--server",
+            FIXTURE["mcpServer"],
+        ],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=120,
+    )
+    desktop.save("mcp-connect.json", check.stdout + check.stderr)
     task.update(
         mcpServer=FIXTURE["mcpServer"],
         mcpTool=FIXTURE["mcpTool"],
