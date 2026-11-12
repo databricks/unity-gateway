@@ -76,6 +76,10 @@ def _full_manifest() -> dict:
             "codex": {
                 "otel_tracing_enabled": False,
                 "model_config": {"default_model": "system.ai.gpt-5-6"},
+                "codex": {
+                    "config": {"model_reasoning_effort": "high"},
+                    "requirements": {"allowed_sandbox_modes": ["read-only"]},
+                },
             },
             "copilot": {
                 "vscode_integration_enabled": False,
@@ -134,6 +138,18 @@ class TestRoundTrip:
     def test_full_manifest_round_trips(self):
         manifest = _full_manifest()
         assert normalize_managed_config(serialize_managed_config(manifest)) == manifest
+
+    def test_claude_code_native_config_round_trips(self):
+        manifest = {
+            "enabled_agents": {
+                "claude": {"claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}}
+            }
+        }
+        raw = serialize_managed_config(manifest)
+        assert raw["enabled_agents"][0]["config"] == {
+            "claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}
+        }
+        assert normalize_managed_config(raw) == manifest
 
     def test_minimal_manifest_round_trips(self):
         manifest = _minimal_manifest()

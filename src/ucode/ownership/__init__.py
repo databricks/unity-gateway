@@ -1,13 +1,18 @@
 """Ownership tables: which agent settings keys Unity Gateway owns in machine-wide files.
 
-Each agent has one TOML table shipped with the package (``claude.toml``, ``codex.toml``). The
-table is the single source of truth for:
+Each supported agent has one TOML table shipped with the package, named ``<agent>.toml``. It
+names the agent's ``agent_native_config`` variant (``native_config``), and each of its sections is
+one field of that variant, such as ``[[managed_settings]]`` for ``claude_code.managed_settings``.
+The table is the single source of truth for:
 
-- ``ug configure --global`` on a workspace that publishes an agent configuration, which builds an agent's machine-wide file from four layers
-  (UG defaults < admin native settings < feature requirements < gateway requirements) with
-  :func:`compose`;
-- the generated admin docs (``python -m ucode.ownership --write docs/admin-managed-settings.md``),
-  which CI checks with ``--check``.
+- ``ug configure --global`` on a workspace that publishes an agent configuration, which builds
+  each machine-wide file from layers (UG defaults < admin native settings < feature requirements <
+  gateway requirements) with :func:`compose`;
+- the generated admin reference
+  (``python -m ucode.ownership --write docs/admin-managed-settings-reference.md``), which
+  ``tests/test_ownership.py`` checks.
+
+To support another agent, add its table and its name in ``AGENTS``.
 
 Keys not in a table pass through from the admin's native settings unchanged, so admins can use a
 new agent setting the day it ships.
@@ -19,6 +24,7 @@ import tomllib
 from dataclasses import dataclass, field
 from importlib import resources
 
+from ucode.managed_config import AGENT_NATIVE_CONFIG_VARIANTS
 from ucode.managed_files import _leaf_paths, _overlaps, _set_path_value
 
 RESERVED = "reserved"
@@ -29,17 +35,8 @@ SHARED_TABLE = "shared_table"
 CLASSES = (RESERVED, CONDITIONALLY_RESERVED, DEFAULT, SHARED_LIST, SHARED_TABLE)
 FEATURES = ("tracing", "models", "smart_routing")
 
-# Table section names per agent, in display order. Claude has one managed file; Codex has the
-# enforced requirements file and the system config defaults file.
-SECTIONS = {
-    "claude": ("entry",),
-    "codex": ("requirement", "setting"),
-}
-SECTION_TITLES = {
-    "entry": "`agent_native_settings` (managed-settings.json)",
-    "requirement": "`agent_native_requirements` (/etc/codex/requirements.toml)",
-    "setting": "`agent_native_settings` (/etc/codex/config.toml)",
-}
+# Agents with an ownership table, in display order.
+AGENTS = ("claude", "codex")
 
 # Report outcomes for one admin-supplied key.
 APPLIED = "applied"
@@ -75,6 +72,8 @@ class Entry:
 class Table:
     agent: str
     display: str
+    # The agent's `agent_native_config` variant; each section is one of its fields.
+    native_config: str
     sections: dict[str, tuple[Entry, ...]]
 
     def section(self, name: str) -> tuple[Entry, ...]:
@@ -134,13 +133,20 @@ def _parse_entry(raw: dict, *, source: str) -> Entry:
 
 def load_table(agent: str) -> Table:
     """Load and validate ``agent``'s ownership table from the package data."""
-    if agent not in SECTIONS:
+    if agent not in AGENTS:
         raise ValueError(f"No ownership table for {agent!r}")
     source = f"{agent}.toml"
     data = tomllib.loads(resources.files(__name__).joinpath(source).read_text(encoding="utf-8"))
+    native_config = data.get("native_config")
+    if native_config not in AGENT_NATIVE_CONFIG_VARIANTS:
+        raise ValueError(
+            f"{source}: native_config must name an agent_native_config variant, one of "
+            f"{', '.join(AGENT_NATIVE_CONFIG_VARIANTS)}"
+        )
     sections: dict[str, tuple[Entry, ...]] = {}
-    for name in SECTIONS[agent]:
-        raw_entries = data.get(name) or []
+    for name, raw_entries in data.items():
+        if not isinstance(raw_entries, list):
+            continue
         entries = tuple(_parse_entry(raw, source=source) for raw in raw_entries)
         seen: set[tuple[str, ...]] = set()
         for entry in entries:
@@ -148,7 +154,14 @@ def load_table(agent: str) -> Table:
                 raise ValueError(f"{source}: {entry.dotted} is listed twice under {name}")
             seen.add(entry.path)
         sections[name] = entries
-    return Table(agent=agent, display=str(data.get("display") or agent), sections=sections)
+    if not sections:
+        raise ValueError(f"{source}: no sections")
+    return Table(
+        agent=agent,
+        display=str(data.get("display") or agent),
+        native_config=native_config,
+        sections=sections,
+    )
 
 
 def entries_by_class(entries: tuple[Entry, ...], cls: str) -> list[Entry]:
@@ -272,7 +285,7 @@ def defaults(entries: tuple[Entry, ...]) -> dict[str, object]:
 # Generated admin docs
 # ---------------------------------------------------------------------------------------------
 
-DOCS_BEGIN = "<!-- BEGIN GENERATED OWNERSHIP TABLES: run `uv run python -m ucode.ownership --write docs/admin-managed-settings.md` -->"
+DOCS_BEGIN = "<!-- BEGIN GENERATED OWNERSHIP TABLES: run `uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md` -->"
 DOCS_END = "<!-- END GENERATED OWNERSHIP TABLES -->"
 
 _CLASS_LABELS = {
@@ -315,11 +328,11 @@ def _render_section(entries: tuple[Entry, ...]) -> list[str]:
 def render_docs() -> str:
     """The generated ownership-table section of the admin docs."""
     lines = [DOCS_BEGIN, ""]
-    for agent in SECTIONS:
+    for agent in AGENTS:
         table = load_table(agent)
-        for name in SECTIONS[agent]:
-            lines += [f"### {table.display}: {SECTION_TITLES[name]}", ""]
-            lines += _render_section(table.section(name))
+        for name, entries in table.sections.items():
+            lines += [f"### {table.display}: `{table.native_config}.{name}`", ""]
+            lines += _render_section(entries)
             lines.append("")
     lines.append(DOCS_END)
     return "\n".join(lines)

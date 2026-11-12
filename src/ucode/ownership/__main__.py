@@ -1,7 +1,7 @@
 """Regenerate or check the ownership-table section of the admin docs.
 
-    uv run python -m ucode.ownership --write docs/admin-managed-settings.md
-    uv run python -m ucode.ownership --check docs/admin-managed-settings.md
+    uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md
+    uv run python -m ucode.ownership --check docs/admin-managed-settings-reference.md
 
 ``--check`` exits 1 when the docs are out of date with the tables, which CI's lint gate runs.
 """

@@ -14,11 +14,13 @@ from ucode import ownership
 from ucode.agents import claude, codex
 from ucode.ownership import __main__ as ownership_cli
 
-DOCS = Path(__file__).resolve().parents[1] / "docs" / "admin-managed-settings.md"
+DOCS = Path(__file__).resolve().parents[1] / "docs" / "admin-managed-settings-reference.md"
 
 
 def _claude_entries() -> dict[str, ownership.Entry]:
-    return {entry.dotted: entry for entry in ownership.load_table("claude").section("entry")}
+    return {
+        entry.dotted: entry for entry in ownership.load_table("claude").section("managed_settings")
+    }
 
 
 def _codex_entries(section: str) -> dict[str, ownership.Entry]:
@@ -27,10 +29,14 @@ def _codex_entries(section: str) -> dict[str, ownership.Entry]:
 
 class TestTables:
     def test_tables_load_and_validate(self):
-        for agent, sections in ownership.SECTIONS.items():
+        for agent in ownership.AGENTS:
             table = ownership.load_table(agent)
-            for name in sections:
-                assert table.section(name), f"{agent}.{name} is empty"
+            for name, entries in table.sections.items():
+                assert entries, f"{agent}.{name} is empty"
+
+    def test_sections_are_the_native_config_fields(self):
+        assert list(ownership.load_table("claude").sections) == ["managed_settings"]
+        assert list(ownership.load_table("codex").sections) == ["requirements", "config"]
 
     def test_unknown_class_is_rejected(self):
         with pytest.raises(ValueError, match="unknown class"):
@@ -53,8 +59,8 @@ class TestDocsAreGenerated:
     def test_docs_section_matches_tables(self):
         text = DOCS.read_text(encoding="utf-8")
         assert ownership.replace_docs_section(text) == text, (
-            "docs/admin-managed-settings.md is stale. Run "
-            "`uv run python -m ucode.ownership --write docs/admin-managed-settings.md`."
+            "docs/admin-managed-settings-reference.md is stale. Run "
+            "`uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md`."
         )
 
     def test_check_command_fails_on_stale_docs(self, tmp_path, capsys):
@@ -75,7 +81,7 @@ class TestClaudeParity:
     def test_gateway_keys_are_reserved_and_written(self):
         entries = _claude_entries()
         overlay, keys = claude.render_overlay("https://example.cloud.databricks.com", None)
-        defaults = ownership.defaults(ownership.load_table("claude").section("entry"))
+        defaults = ownership.defaults(ownership.load_table("claude").section("managed_settings"))
         for path in keys:
             dotted = ".".join(path)
             if dotted in defaults:
@@ -87,7 +93,7 @@ class TestClaudeParity:
     def test_defaults_match_render_overlay(self):
         overlay, _keys = claude.render_overlay("https://example.cloud.databricks.com", None)
         for dotted, value in ownership.defaults(
-            ownership.load_table("claude").section("entry")
+            ownership.load_table("claude").section("managed_settings")
         ).items():
             section, key = dotted.split(".", 1)
             assert overlay[section][key] == value, f"{dotted} default differs from render_overlay"
@@ -130,8 +136,8 @@ class TestClaudeParity:
 
 class TestCodexParity:
     def test_provider_is_reserved_in_both_files(self):
-        requirements = _codex_entries("requirement")
-        settings = _codex_entries("setting")
+        requirements = _codex_entries("requirements")
+        settings = _codex_entries("config")
         assert requirements["model_provider"].cls == ownership.RESERVED
         assert requirements["model_providers"].cls == ownership.RESERVED
         assert settings[f"model_providers.{codex.CODEX_MODEL_PROVIDER_NAME}"].cls == (
@@ -140,7 +146,7 @@ class TestCodexParity:
         assert not settings["model_provider"].in_managed_file
 
     def test_hook_lockdowns_are_reserved_while_smart_routing(self):
-        requirements = _codex_entries("requirement")
+        requirements = _codex_entries("requirements")
         for key in ("allow_managed_hooks_only", "features.hooks"):
             assert requirements[key].feature == "smart_routing"
 

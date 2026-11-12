@@ -126,6 +126,33 @@ class TestNormalize:
         }
         assert "agent_native_settings" not in agents["codex"]
 
+    def test_agent_native_config_variants(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {"claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}},
+                },
+                {
+                    "agent": "CODING_AGENT_CODEX",
+                    "config": {
+                        "codex": {
+                            "config": {"model_reasoning_effort": "high"},
+                            "requirements": {"allowed_sandbox_modes": ["read-only"]},
+                        }
+                    },
+                },
+            ]
+        }
+        agents = normalize_managed_config(raw)["enabled_agents"]
+        assert agents["claude"] == {"claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}}
+        assert agents["codex"] == {
+            "codex": {
+                "config": {"model_reasoning_effort": "high"},
+                "requirements": {"allowed_sandbox_modes": ["read-only"]},
+            }
+        }
+
     def test_non_object_settings_are_dropped(self):
         raw = {
             "enabled_agents": [

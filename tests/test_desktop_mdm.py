@@ -21,8 +21,8 @@ from ucode import (
     config_io,
     managed_config,
     managed_files,
-    managed_mdm,
     mcp,
+    published_agent_config,
     skills_download,
     workspace,
 )
@@ -639,8 +639,9 @@ def test_global_preserves_existing_auth_flow(device, monkeypatch, agent, externa
         monkeypatch.setenv(external_auth, "external-credential-input")
     monkeypatch.setattr(cli, "_parse_profile_option", lambda value: [(WORKSPACE, value)])
     monkeypatch.setattr(cli, "install_databricks_cli", lambda: None)
-    # The merge path's auth routing; a published configuration's rebuild is in test_managed_mdm.py.
-    monkeypatch.setattr(managed_mdm, "fetch_published", lambda *a, **kw: None)
+    # The merge path; managed runs are covered in test_published_agent_config.py.
+    monkeypatch.setattr(published_agent_config, "sign_in", lambda *a, **kw: "token")
+    monkeypatch.setattr(published_agent_config, "fetch_published", lambda *a, **kw: None)
     login = Mock()
     ensure_auth = Mock()
     monkeypatch.setattr(cli, "run_databricks_login", login)
