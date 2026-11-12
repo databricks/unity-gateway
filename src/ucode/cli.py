@@ -39,11 +39,9 @@ from ucode.agents import (
     configure_tool,
     ensure_bootstrap_dependencies,
     ensure_provider_state,
-    expand_wildcard_sources,
     explicit_model_arg_value,
     install_databricks_ai_tools_for_agents,
     install_tool_binary,
-    is_model_source_wildcard,
     normalize_tool,
     refuse_user_scope_over_managed_config,
     refuse_user_scope_over_managed_files,
@@ -61,6 +59,7 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
+from ucode.agents.model_sources import expand_wildcard_sources, is_model_source_wildcard
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
@@ -1109,16 +1108,13 @@ def _expand_managed_model_sources(
     *,
     fallbacks: dict[str, list[str]] | None = None,
 ) -> tuple[dict, dict[str, list[str]]]:
-    models = managed_static_models(managed, tool) or []
-    wildcards = [model for model in models if is_model_source_wildcard(model)]
+    sources = managed_static_models(managed, tool) or []
+    wildcards = [source for source in sources if is_model_source_wildcard(source)]
     if tool not in STATIC_MODEL_LIST_TOOLS or not wildcards:
         return managed, {}
-    try:
-        token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
-    except RuntimeError:
-        token = ""
+    token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
     expanded, live_expansions = expand_wildcard_sources(
-        models, tool, state["workspace"], token, fallbacks=fallbacks
+        sources, tool, state["workspace"], token, fallbacks=fallbacks
     )
     if not expanded:
         # Every wildcard failed to expand. An empty static list reads as unset, which would

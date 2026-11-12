@@ -1564,12 +1564,12 @@ Mixed lists expand in order and deduplicate, schema catalogs preserve advertised
 catalogs follow service type, and failed discovery fails closed during configure. Launch uses
 matching last-configure expansions on live failures; tests cover malformed or missing fallbacks,
 per-workspace and per-agent isolation. CLI checks retain live/saved/unavailable launch results,
-configure rejection of stale fallback data, workspace isolation, and continuing after a wildcard
-failure. Multi-agent expansion persistence and detailed no-agent failure diagnostics no longer
-have dedicated CLI cases. These are component checks, not live inference coverage.
+configure rejection of stale fallback data and authentication failures, workspace isolation, and
+continuing after a wildcard failure. Multi-agent expansion persistence and detailed no-agent
+failure diagnostics no longer have dedicated CLI cases. These are component checks, not live inference coverage.
 
-`test_agent_claude.py` covers short Claude picker labels for qualified MPS model IDs.
-The checks preserve dotted GPT versions and retain the full model IDs in picker options
+`test_agent_claude.py` covers verbatim provider IDs in managed MPS picker labels.
+The checks preserve provider paths, dotted versions, and mixed case in picker options
 and the allow-list. These component checks do not establish live picker or inference coverage.
 
 `test_agent_claude.py` covers gateway-alias picker text for GLM, GPT, and Kimi models.
@@ -1582,8 +1582,16 @@ Duplicate CLI helper and bookkeeping checks were removed. Expansion ordering, de
 provider dispatch, fallback validation, and per-agent state updates remain in
 `test_agent_model_sources.py`. Provider-type dispatch runs once per provider type;
 agent-specific schema catalogs remain covered for Claude, Codex, and Copilot.
-`test_agent_claude.py` checks qualified labels through rendered picker options instead
+`test_agent_claude.py` checks provider IDs through rendered picker options instead
 of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
 `test_databricks.py`; warning punctuation and internal save counts are not pinned.
 The shared e2e fixture uses UC model services directly. Installed-agent wildcard
 inference coverage remains a gap.
+
+Wildcard expansion lives in `ucode.agents.model_sources` and requires an acquired token.
+Missing-token fallback cases were removed; token acquisition errors propagate before expansion.
+
+Provider catalog expansion checks preserve representative golden IDs with paths, version dots,
+release dates, and mixed case. Managed Claude options and Codex fallback catalog entries keep
+provider IDs as labels; friendly `system.ai` labels and native catalog metadata are retained.
+These component checks do not establish inference support for every model in the golden.

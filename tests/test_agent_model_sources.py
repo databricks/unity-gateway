@@ -2,9 +2,8 @@
 
 import pytest
 
-import ucode.agents as agents
 import ucode.databricks as db_mod
-from ucode.agents import claude, codex, copilot
+from ucode.agents import claude, codex, copilot, model_sources
 from ucode.state import get_managed_model_source_expansions, set_managed_model_source_expansions
 
 WS = "https://example.cloud.databricks.com"
@@ -36,7 +35,7 @@ def test_expand_schema_wildcard_uses_native_ids_and_deduplicates(monkeypatch, to
     monkeypatch.setattr(claude, "list_anthropic_model_catalog", catalog)
     monkeypatch.setattr(copilot, "list_anthropic_model_catalog", catalog)
     monkeypatch.setattr(codex, "_fetch_codex_model_catalog", codex_catalog)
-    expanded, live = agents.expand_wildcard_sources(
+    expanded, live = model_sources.expand_wildcard_sources(
         ["system.ai.claude-opus-5-5", "system.ai.*", "system.ai.*"], tool, WS, "token"
     )
     second = (
@@ -69,9 +68,11 @@ def test_expand_wildcard_sources_in_place_and_deduplicates(monkeypatch, tool):
         return ["one", "c.s.mps.two"], None
 
     monkeypatch.setattr(db_mod, "list_provider_service_models", provider)
-    monkeypatch.setattr(agents._MODULES[tool], "source_models", catalog)
-    models = ["system.ai.kimi", "c.s.mps.*", "c.s.mps.one", "system.ai.*"]
-    expanded, live = agents.expand_wildcard_sources(models, tool, WS, "token")
+    monkeypatch.setattr(
+        {"claude": claude, "codex": codex, "copilot": copilot}[tool], "source_models", catalog
+    )
+    sources = ["system.ai.kimi", "c.s.mps.*", "c.s.mps.one", "system.ai.*"]
+    expanded, live = model_sources.expand_wildcard_sources(sources, tool, WS, "token")
     assert expanded == [
         "system.ai.kimi",
         "c.s.mps.one",
@@ -93,9 +94,9 @@ def test_expand_wildcard_sources_drops_failed_lookup(monkeypatch, service):
     monkeypatch.setattr(db_mod, "get_model_provider_service", lambda *_: service)
     monkeypatch.setattr(db_mod, "list_provider_service_models", lambda *a: ([], None))
     warnings = []
-    monkeypatch.setattr(agents, "print_warning", warnings.append)
-    models = ["c.s.mps.*", "system.ai.model", "c.s.mps.*"]
-    assert agents.expand_wildcard_sources(models, "claude", WS, "token") == (
+    monkeypatch.setattr(model_sources, "print_warning", warnings.append)
+    sources = ["c.s.mps.*", "system.ai.model", "c.s.mps.*"]
+    assert model_sources.expand_wildcard_sources(sources, "claude", WS, "token") == (
         ["system.ai.model"],
         {},
     )
@@ -108,21 +109,8 @@ def test_expand_wildcard_sources_preserves_other_forms(monkeypatch):
         pytest.fail("unexpected lookup")
 
     monkeypatch.setattr(db_mod, "get_model_provider_service", fail)
-    models = ["c.s.mps.model", "c.s.*.model", "c.*.mps.*", "system.*.*", "*.ai.*"]
-    assert agents.expand_wildcard_sources(models, "claude", WS, "token") == (models, {})
-
-
-@pytest.mark.parametrize("source", ["c.s.mps.*", "system.ai.*"])
-def test_expand_wildcard_sources_without_token_names_the_missing_token(monkeypatch, source):
-    def fail(*args):
-        pytest.fail("unexpected lookup without a token")
-
-    monkeypatch.setattr(db_mod, "get_model_provider_service", fail)
-    warnings = []
-    monkeypatch.setattr(agents, "print_warning", warnings.append)
-    assert agents.expand_wildcard_sources([source], "claude", WS, "") == ([], {})
-    assert len(warnings) == 1
-    assert "no Databricks token; run `ug configure`" in warnings[0]
+    sources = ["c.s.mps.model", "c.s.*.model", "c.*.mps.*", "system.*.*", "*.ai.*"]
+    assert model_sources.expand_wildcard_sources(sources, "claude", WS, "token") == (sources, {})
 
 
 @pytest.mark.parametrize("provider_type", ["anthropic", "openai"])
@@ -131,18 +119,29 @@ def test_provider_wildcard_uses_service_type_catalog(monkeypatch, provider_type)
         db_mod, "get_model_provider_service", lambda *_: ({"provider_type": provider_type}, None)
     )
     urls = []
+    targets = [
+        "global.openai.gpt-6.1-sol",
+        "us-gov-west-1/anthropic.claude-haiku-5-5",
+        "claude-opus-4-7@default",
+        "deepseek-ai/deepseek-v4.1-flash-maas",
+        "eu/gpt-6.1-sol",
+        "FW-Kimi-K2.5",
+        "gpt-5.5-2026-04-23",
+    ]
 
     def get_catalog(url, token, **kwargs):
         urls.append(url)
-        return {"data": [{"id": "anthropic-model"}], "models": [{"slug": "codex-model"}]}, None
+        return {
+            "data": [{"id": target} for target in targets],
+            "models": [{"slug": target} for target in targets],
+        }, None
 
     monkeypatch.setattr(db_mod, "_http_get_json", get_catalog)
     anthropic = provider_type == "anthropic"
-    expected = "anthropic-model" if anthropic else "codex-model"
-    qualified = f"c.s.mps.{expected}"
-    assert agents.expand_wildcard_sources(["c.s.mps.*"], "claude", WS, "token") == (
-        [qualified],
-        {"c.s.mps.*": [qualified]},
+    qualified = [f"c.s.mps.{target}" for target in targets]
+    assert model_sources.expand_wildcard_sources(["c.s.mps.*"], "claude", WS, "token") == (
+        qualified,
+        {"c.s.mps.*": qualified},
     )
     assert len(urls) == 1
     assert ("/anthropic/" if anthropic else "/codex/") in urls[0]
@@ -158,9 +157,9 @@ def test_fallback_applies_per_wildcard_only_and_records_live_results(monkeypatch
             return ["system.ai.live"], None
         return [], "403"
 
-    monkeypatch.setattr(agents, "_expand_wildcard_source", lookup)
-    monkeypatch.setattr(agents, "print_warning", warnings.append)
-    expanded, live = agents.expand_wildcard_sources(
+    monkeypatch.setattr(model_sources, "_expand_wildcard_source", lookup)
+    monkeypatch.setattr(model_sources, "print_warning", warnings.append)
+    expanded, live = model_sources.expand_wildcard_sources(
         ["c.s.mps.*", "system.ai.*", "c.s.mps.*", "other.ai.*"],
         "claude",
         WS,
@@ -175,19 +174,17 @@ def test_fallback_applies_per_wildcard_only_and_records_live_results(monkeypatch
     assert "retry" in warnings[1]
 
 
-def test_live_expansion_wins_over_fallback_and_missing_token_can_use_it(monkeypatch):
+def test_live_expansion_wins_over_fallback(monkeypatch):
     warnings = []
-    monkeypatch.setattr(agents, "print_warning", warnings.append)
-    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *a: (["system.ai.live"], None))
+    monkeypatch.setattr(model_sources, "print_warning", warnings.append)
+    monkeypatch.setattr(
+        model_sources, "_expand_wildcard_source", lambda *a: (["system.ai.live"], None)
+    )
     fallbacks = {"system.ai.*": ["system.ai.saved"]}
-    assert agents.expand_wildcard_sources(
+    assert model_sources.expand_wildcard_sources(
         ["system.ai.*"], "claude", WS, "token", fallbacks=fallbacks
     ) == (["system.ai.live"], {"system.ai.*": ["system.ai.live"]})
     assert not warnings
-    assert agents.expand_wildcard_sources(
-        ["system.ai.*"], "claude", WS, "", fallbacks=fallbacks
-    ) == (["system.ai.saved"], {})
-    assert "no Databricks token" in warnings[0] and "last configure" in warnings[0]
 
 
 @pytest.mark.parametrize("invalid", [[], "model", [""], ["ok", None]])

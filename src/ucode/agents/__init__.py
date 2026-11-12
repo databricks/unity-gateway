@@ -16,7 +16,6 @@ import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import Protocol, cast
 
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
@@ -25,7 +24,6 @@ from ucode.databricks import (
     get_databricks_token,
     install_ai_tools,
     install_databricks_cli,
-    list_model_provider_service_targets,
     map_claude_family_models,
     provider_targets_for_tool,
     resolve_provider_service,
@@ -110,72 +108,6 @@ AITOOLS_AGENT_TOKENS = {
     "opencode": "opencode",
     "copilot": "copilot",
 }
-
-
-class _ModelSourceModule(Protocol):
-    def source_models(
-        self,
-        workspace: str,
-        token: str,
-        *,
-        parent_schema: str | None = None,
-    ) -> tuple[list[str], str | None]: ...
-
-
-def is_model_source_wildcard(model: str) -> bool:
-    parts = model.split(".")
-    return len(parts) in (3, 4) and parts[-1] == "*" and all(p and "*" not in p for p in parts[:-1])
-
-
-def _expand_wildcard_source(
-    model: str, tool: str, workspace: str, token: str
-) -> tuple[list[str], str | None]:
-    source_name = model[:-2]
-    if len(model.split(".")) == 3:
-        module = cast(_ModelSourceModule, _MODULES[tool])
-        return module.source_models(workspace, token, parent_schema=source_name)
-    return list_model_provider_service_targets(workspace, token, source_name)
-
-
-def expand_wildcard_sources(
-    models: list[str],
-    tool: str,
-    workspace: str,
-    token: str,
-    *,
-    fallbacks: dict[str, list[str]] | None = None,
-) -> tuple[list[str], dict[str, list[str]]]:
-    expanded: list[str] = []
-    lookups: dict[str, list[str]] = {}
-    live: dict[str, list[str]] = {}
-    for model in models:
-        if not is_model_source_wildcard(model):
-            expanded.append(model)
-            continue
-        if model not in lookups:
-            targets: list[str] = []
-            reason = None if token else "no Databricks token; run `ug configure`"
-            if token:
-                try:
-                    targets, reason = _expand_wildcard_source(model, tool, workspace, token)
-                except RuntimeError as exc:
-                    reason = str(exc)
-            if targets:
-                live[model] = list(targets)
-            else:
-                detail = f" ({reason})" if reason else ""
-                prefix = f"Could not expand managed model source {model}{detail}; "
-                fallback = (fallbacks or {}).get(model)
-                if fallback:
-                    targets = fallback
-                    print_warning(prefix + "using the list from the last configure.")
-                else:
-                    print_warning(
-                        prefix + "check service access and compatible models, then retry."
-                    )
-            lookups[model] = targets
-        expanded.extend(lookups[model])
-    return list(dict.fromkeys(expanded)), live
 
 
 def install_databricks_ai_tools_for_agents(

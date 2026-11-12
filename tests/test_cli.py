@@ -27,6 +27,7 @@ import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
 from ucode import agents
 from ucode.agents import copilot as copilot_agent
+from ucode.agents import model_sources
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
@@ -1934,7 +1935,7 @@ def test_managed_wildcard_launch_uses_live_or_saved_models(monkeypatch, discover
     model = "system.ai.claude-sonnet-5"
     managed = {"enabled_agents": {"claude": {"model_config": {"sources": [source]}}}}
     monkeypatch.setattr(
-        agents,
+        model_sources,
         "_expand_wildcard_source",
         lambda *args: ([model], None) if discovery == "live" else ([], "HTTP 403"),
     )
@@ -1957,7 +1958,8 @@ def test_managed_wildcard_launch_uses_live_or_saved_models(monkeypatch, discover
     assert managed["enabled_agents"]["claude"]["model_config"]["sources"] == [source]
 
 
-def test_configure_requires_live_wildcard_discovery(monkeypatch):
+@pytest.mark.parametrize("failure", ["discovery", "authentication"])
+def test_configure_requires_live_wildcard_discovery(monkeypatch, failure):
     managed = {"enabled_agents": {"codex": {"model_config": {"sources": ["system.ai.*"]}}}}
     state = {
         **MINIMAL_STATE,
@@ -1966,9 +1968,20 @@ def test_configure_requires_live_wildcard_discovery(monkeypatch):
     monkeypatch.setattr(cli_mod, "_configure_shared_workspace_states", lambda *a, **k: [state])
     monkeypatch.setattr(cli_mod, "_refresh_configured_policy", lambda state: (managed, False))
     monkeypatch.setattr(cli_mod, "refuse_user_scope_over_managed_config", lambda *a: None)
-    monkeypatch.setattr(agents, "_expand_wildcard_source", lambda *a: ([], "403"))
+    monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *a: ([], "403"))
+    if failure == "authentication":
+        monkeypatch.setattr(
+            cli_mod,
+            "get_databricks_token",
+            MagicMock(side_effect=RuntimeError("Authentication failed")),
+        )
+    error = (
+        "Authentication failed"
+        if failure == "authentication"
+        else "Could not expand managed model sources"
+    )
     with patch("ucode.cli.configure_single_tool") as configure:
-        with pytest.raises(RuntimeError, match="Could not expand managed model sources"):
+        with pytest.raises(RuntimeError, match=error):
             cli_mod._setup_single_agent([(state["workspace"], None)], "codex", apply_managed=True)
     configure.assert_not_called()
     assert state["managed_model_source_expansions"]["codex"]["system.ai.*"] == ["system.ai.stale"]

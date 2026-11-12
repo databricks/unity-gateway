@@ -706,7 +706,7 @@ def render_overlay(
                 picker_option(
                     maybe_add_gpt_1m_suffix(model),
                     picker_catalog.model_id_to_display_name.get(model)
-                    or picker_label(unwrap_anthropic_gateway_model(model)),
+                    or model_picker_label(unwrap_anthropic_gateway_model(model)),
                     picker_catalog.model_id_to_description.get(model),
                 )
                 for model in picker_catalog.model_ids
@@ -723,13 +723,6 @@ def render_overlay(
         keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
 
     return overlay, keys
-
-
-def picker_label(model: str) -> str:
-    """Hide a provider service's qualifier in Claude picker labels."""
-    if ".claude-" in model:
-        model = "claude-" + model.rpartition(".claude-")[2]
-    return model_picker_label(model)
 
 
 def source_models(
@@ -751,7 +744,9 @@ def static_picker_option(model: str) -> dict[str, str]:
     display_model = unwrap_anthropic_gateway_model(model)
     option = {
         "model": maybe_add_gpt_1m_suffix(model),
-        "label": picker_label(display_model),
+        "label": model_picker_label(display_model)
+        if display_model.startswith("system.ai.")
+        else display_model,
     }
     if display_model != model:
         option["description"] = f"Managed by your organization ({display_model})"
@@ -800,7 +795,7 @@ def default_model_picker_catalog(
     descriptions: dict[str, str] = {}
     for family, raw_model in defaults.items():
         model = raw_model
-        label = picker_label(model.removesuffix("[1m]"))
+        label = model_picker_label(model.removesuffix("[1m]"))
         if provider is not None:
             # Family shortcuts stay distinct from catalog rows for the same target.
             model = family

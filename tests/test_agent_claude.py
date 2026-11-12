@@ -673,21 +673,21 @@ class TestRenderOverlay:
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
-        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "databricks-custom-model"]
 
     @pytest.mark.parametrize(
-        ("model", "label"),
+        "model",
         [
-            ("main.default.mps.claude-haiku-5-5", "Claude Haiku 5.5"),
-            ("main.default.mps.claude-opus-5-5", "Claude Opus 5.5"),
-            ("main.default.mps.claude-sonnet-5-5", "Claude Sonnet 5.5"),
+            "main.default.mps.claude-haiku-5-5",
+            "main.default.mps.global.openai.gpt-6.1-sol",
+            "main.default.mps.deepseek-ai/deepseek-v4.1-flash-maas",
+            "main.default.mps.FW-Kimi-K2.5",
         ],
     )
-    def test_static_mps_models_keep_ids_with_short_labels(self, model, label):
-        static = [model]
-        overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
-        assert overlay["availableModels"] == static
-        assert overlay["modelPicker"]["options"] == [{"model": model, "label": label}]
+    def test_static_mps_models_keep_provider_ids_in_labels(self, model):
+        overlay, _ = claude.render_overlay(WS, "s4", static_models=[model])
+        assert overlay["availableModels"] == [model]
+        assert overlay["modelPicker"]["options"] == [{"model": model, "label": model}]
 
     @pytest.mark.parametrize(
         ("model", "label", "slug", "context_hint"),

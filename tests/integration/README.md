@@ -2053,7 +2053,7 @@ failure. Dedicated CLI cases for multi-agent expansion persistence and detailed 
 diagnostics were removed; those paths are no longer separately covered. No installed-agent
 integration journey currently covers mixed wildcard sources or proves inference with qualified MPS models.
 
-Short Claude picker labels for qualified MPS IDs have component coverage in
+Verbatim Claude picker labels for qualified MPS IDs have component coverage in
 `../test_agent_claude.py`. The checks retain the full option and
 allow-list IDs and preserve dotted GPT versions. No installed-agent journey covers these labels.
 
@@ -2071,8 +2071,16 @@ Duplicate CLI helper and bookkeeping checks were removed. Expansion ordering, de
 provider dispatch, fallback validation, and per-agent state updates remain in
 `test_agent_model_sources.py`. Provider-type dispatch runs once per provider type;
 agent-specific schema catalogs remain covered for Claude, Codex, and Copilot.
-`test_agent_claude.py` checks qualified labels through rendered picker options instead
+`test_agent_claude.py` checks provider IDs through rendered picker options instead
 of a duplicate helper test. Empty provider and Codex-schema catalogs remain covered in
 `test_databricks.py`; warning punctuation and internal save counts are not pinned.
 The shared e2e fixture uses UC model services directly. Installed-agent wildcard
 inference coverage remains a gap.
+
+Wildcard expansion lives in `ucode.agents.model_sources` and requires an acquired token.
+Missing-token fallback cases were removed; token acquisition errors propagate before expansion.
+
+Provider catalog expansion checks preserve representative golden IDs with paths, version dots,
+release dates, and mixed case. Managed Claude options and Codex fallback catalog entries keep
+provider IDs as labels; friendly `system.ai` labels and native catalog metadata are retained.
+These component checks do not establish inference support for every model in the golden.
