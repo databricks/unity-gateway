@@ -6688,7 +6688,14 @@ class TestModelServicesNeedSubscriptionRelay:
             "pay_per_token_config": {"model": f"models/{model}"},
         }
 
-    def _patch(self, monkeypatch, services: dict, relayed: set[str]) -> list[str]:
+    def _patch(
+        self,
+        monkeypatch,
+        services: dict,
+        relayed: set[str],
+        *,
+        openai: frozenset[str] = frozenset(),
+    ) -> list[str]:
         calls: list[str] = []
 
         def get_service(name, _ws, _token):
@@ -6699,7 +6706,14 @@ class TestModelServicesNeedSubscriptionRelay:
         monkeypatch.setattr(
             db_mod,
             "get_model_provider_service",
-            lambda name, _ws, _token: ({"name": name, "relayed": name in relayed}, None),
+            lambda name, _ws, _token: (
+                {
+                    "name": name,
+                    "provider_type": "openai" if name in openai else "anthropic",
+                    "relayed": name in relayed,
+                },
+                None,
+            ),
         )
         return calls
 
@@ -6727,15 +6741,59 @@ class TestModelServicesNeedSubscriptionRelay:
                 "main.default.keyed": self._service(
                     "main.default.keyed",
                     self._external("main.default.keyed-mps"),
-                    # An idle destination on a relayed provider doesn't count.
+                    # Idle or deleted destinations on a relayed provider don't count.
                     self._external("main.default.anthropic", traffic=0),
+                    {**self._external("main.default.anthropic"), "is_deleted": True},
                 ),
             },
             {"main.default.anthropic"},
         )
         models = ["system.ai.claude-sonnet-5-5", "main.default.keyed", "main.default.gone"]
         assert not db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
-        # system.* ids are never looked up, and each custom service is looked up once.
+        # system.* ids are never looked up. A confirmed answer is cached; a failed lookup is
+        # retried on the next call.
         assert calls == ["main.default.keyed", "main.default.gone"]
         db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
-        assert calls == ["main.default.keyed", "main.default.gone"]
+        assert calls == ["main.default.keyed", "main.default.gone", "main.default.gone"]
+
+    def test_relayed_openai_provider_does_not_need_the_claude_relay(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "main.default.gpt": self._service(
+                    "main.default.gpt", self._external("main.default.chatgpt")
+                )
+            },
+            {"main.default.chatgpt"},
+            openai=frozenset({"main.default.chatgpt"}),
+        )
+        assert not db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"]
+        )
+
+    def test_failed_lookup_recovers_on_a_later_call(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        outcomes = iter([(None, "503"), (service, None)])
+        monkeypatch.setattr(db_mod, "get_model_service", lambda *_a: next(outcomes))
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, *_a: ({"name": name, "provider_type": "anthropic", "relayed": True}, None),
+        )
+        models = ["main.default.sonnet"]
+        assert not db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
+        assert db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
+
+    def test_failed_provider_lookup_is_not_cached(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        monkeypatch.setattr(db_mod, "get_model_service", lambda *_a: (service, None))
+        outcomes = iter(
+            [
+                (None, "timeout"),
+                ({"name": "x", "provider_type": "anthropic", "relayed": True}, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "get_model_provider_service", lambda *_a: next(outcomes))
+        models = ["main.default.sonnet"]
+        assert not db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
+        assert db_mod.model_services_need_subscription_relay("https://ws", "tok", models)

@@ -3187,12 +3187,14 @@ _RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
 
 
 def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
-    """True when any custom model service in ``models`` routes to a subscription-relay MPS.
+    """True when any custom model service in ``models`` routes to a Claude subscription relay: a
+    live primary destination on an Anthropic MPS with relayed auth.
 
     Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
-    the Databricks token in the swap header), so the agent must launch relayed even though no Model
-    Provider Service is its source. ``system.*`` ids and non-three-part entries are skipped. A
-    failed lookup counts as not relayed, which keeps the gateway-auth behavior.
+    the Databricks token in the swap header), so Claude must launch relayed even though no Model
+    Provider Service is its source. A relayed OpenAI (ChatGPT) MPS needs a different credential, so
+    it doesn't count. ``system.*`` ids and non-three-part entries are skipped. A failed lookup
+    counts as not relayed for this call but isn't cached, so a later request retries it.
     """
     for model in models:
         name = model.removesuffix("[1m]")
@@ -3201,22 +3203,33 @@ def model_services_need_subscription_relay(workspace: str, token: str, models: l
             continue
         key = (workspace, name)
         if key not in _RELAY_BACKED_MODEL_SERVICES_CACHE:
-            service, reason = get_model_service(name, workspace, token)
-            relayed = False
-            if service is None:
-                _debug("relay detection", f"{name}: {reason}")
-            else:
-                for provider in model_service_primary_providers(service):
-                    entry, reason = get_model_provider_service(provider, workspace, token)
-                    if entry is None:
-                        _debug("relay detection", f"{provider}: {reason}")
-                    elif entry.get("relayed"):
-                        relayed = True
-                        break
+            relayed, conclusive = _model_service_routes_to_claude_relay(name, workspace, token)
+            if not conclusive:
+                continue
             _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = relayed
         if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]:
             return True
     return False
+
+
+def _model_service_routes_to_claude_relay(
+    name: str, workspace: str, token: str
+) -> tuple[bool, bool]:
+    """``(relayed, conclusive)`` for one model service; ``conclusive`` is False after any failed
+    lookup that left the answer unknown."""
+    service, reason = get_model_service(name, workspace, token)
+    if service is None:
+        _debug("relay detection", f"{name}: {reason}")
+        return False, False
+    conclusive = True
+    for provider in model_service_primary_providers(service):
+        entry, reason = get_model_provider_service(provider, workspace, token)
+        if entry is None:
+            _debug("relay detection", f"{provider}: {reason}")
+            conclusive = False
+        elif entry.get("relayed") and entry.get("provider_type") == "anthropic":
+            return True, True
+    return False, conclusive
 
 
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from
