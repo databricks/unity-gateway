@@ -2054,7 +2054,8 @@ spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
 
-`ty` checks registered modules' `source_models` signatures against `ModelSourceAgent`.
+`ucode.agents.model_sources` owns schema/provider wildcard dispatch and provider-ID qualification.
+`ty` checks the schema catalog callbacks registered in `SCHEMA_MODEL_CATALOGS`.
 Copilot schema wildcards use UC model-service entries and the existing Copilot catalog builder,
 which includes Claude, GPT, and supported open models while filtering incompatible APIs.
 Managed wildcard expansion, launch fallback, workspace-cache isolation, and wildcard configure

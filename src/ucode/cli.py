@@ -60,7 +60,7 @@ from ucode.agents import (
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
-    SOURCE_MODEL_AGENTS,
+    SCHEMA_MODEL_CATALOGS,
     expand_wildcard_sources,
     is_model_source_wildcard,
 )
@@ -1113,7 +1113,7 @@ def _expand_managed_model_sources(
 ) -> tuple[dict, dict[str, list[str]]]:
     sources = managed_static_models(managed, tool) or []
     wildcards = [source for source in sources if is_model_source_wildcard(source)]
-    if tool not in SOURCE_MODEL_AGENTS or not wildcards:
+    if tool not in SCHEMA_MODEL_CATALOGS or not wildcards:
         return managed, {}
     token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
     expanded, live_expansions = expand_wildcard_sources(

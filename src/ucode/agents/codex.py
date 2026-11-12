@@ -1586,18 +1586,6 @@ def _set_routing_header(config: dict, header: str, value: str | None) -> None:
         headers.pop(header, None)
 
 
-def source_models(
-    workspace: str,
-    token: str,
-    *,
-    parent_schema: str | None = None,
-) -> tuple[list[str], str | None]:
-    catalog = _fetch_codex_model_catalog(
-        workspace, token, source=CodexCatalogSource.PARENT_SCHEMA, identifier=parent_schema or ""
-    )
-    return catalog_slugs(catalog), None
-
-
 def _model_catalog_path(workspace: str, scope: str) -> Path:
     key = f"{workspace.rstrip('/')}\0{scope}".encode()
     digest = hashlib.sha256(key).hexdigest()[:16]

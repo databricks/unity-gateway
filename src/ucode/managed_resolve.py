@@ -86,7 +86,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     to the state key each writer consumes.
     """
     # Agent modules import managed resolution during initialization.
-    from ucode.agents.model_sources import SOURCE_MODEL_AGENTS
+    from ucode.agents.model_sources import SCHEMA_MODEL_CATALOGS
 
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -102,7 +102,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
-    if tool in SOURCE_MODEL_AGENTS:
+    if tool in SCHEMA_MODEL_CATALOGS:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models

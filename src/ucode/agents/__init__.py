@@ -7,8 +7,6 @@ aggregates the registry and exposes uniform dispatchers for the rest of the code
 Adding a new agent: create `agents/<name>.py` exposing `SPEC`, `write_tool_config`,
 `default_model`, `launch`, `validate_cmd`. Then add an entry to `_MODULES`
 below and to `TOOL_ALIASES` if needed.
-Agents supporting model-source discovery implement `source_models` and register
-in `model_sources.SOURCE_MODEL_AGENTS`.
 """
 
 from __future__ import annotations

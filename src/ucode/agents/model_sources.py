@@ -1,26 +1,41 @@
 """Expand managed schema and provider wildcards into model IDs."""
 
-from typing import Protocol
+from collections.abc import Callable
 
-from ucode.agents import claude, codex, copilot
-from ucode.databricks import list_model_provider_service_targets
+from ucode.agents.copilot import build_copilot_catalog
+from ucode.codex_config import catalog_slugs
+from ucode.databricks import (
+    CodexCatalogSource,
+    _fetch_codex_model_catalog,
+    get_model_provider_service,
+    list_anthropic_model_catalog,
+    list_model_service_entries,
+    list_provider_service_models,
+)
 from ucode.ui import print_warning
 
 
-class ModelSourceAgent(Protocol):
-    def source_models(
-        self,
-        workspace: str,
-        token: str,
-        *,
-        parent_schema: str | None = None,
-    ) -> tuple[list[str], str | None]: ...
+def _claude_schema_models(workspace: str, token: str, schema: str) -> tuple[list[str], str | None]:
+    catalog = list_anthropic_model_catalog(workspace, token, parent_schema=schema)
+    return catalog.model_ids, catalog.error_msg
 
 
-SOURCE_MODEL_AGENTS: dict[str, ModelSourceAgent] = {
-    "claude": claude,
-    "codex": codex,
-    "copilot": copilot,
+def _codex_schema_models(workspace: str, token: str, schema: str) -> tuple[list[str], str | None]:
+    catalog = _fetch_codex_model_catalog(
+        workspace, token, source=CodexCatalogSource.PARENT_SCHEMA, identifier=schema
+    )
+    return catalog_slugs(catalog), None
+
+
+def _copilot_schema_models(workspace: str, token: str, schema: str) -> tuple[list[str], str | None]:
+    entries, reason = list_model_service_entries(workspace, token, parent_schema=schema)
+    return [model.id for model in build_copilot_catalog(entries)], reason
+
+
+SCHEMA_MODEL_CATALOGS: dict[str, Callable[[str, str, str], tuple[list[str], str | None]]] = {
+    "claude": _claude_schema_models,
+    "codex": _codex_schema_models,
+    "copilot": _copilot_schema_models,
 }
 
 
@@ -34,8 +49,17 @@ def _expand_wildcard_source(
 ) -> tuple[list[str], str | None]:
     source_name = source[:-2]
     if len(source.split(".")) == 3:
-        return SOURCE_MODEL_AGENTS[tool].source_models(workspace, token, parent_schema=source_name)
-    return list_model_provider_service_targets(workspace, token, source_name)
+        return SCHEMA_MODEL_CATALOGS[tool](workspace, token, source_name)
+    service, reason = get_model_provider_service(source_name, workspace, token)
+    if service is None:
+        return [], reason
+    targets, reason = list_provider_service_models(
+        workspace, token, source_name, service.get("provider_type", "")
+    )
+    return [
+        target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
+        for target in targets
+    ], reason
 
 
 def expand_wildcard_sources(

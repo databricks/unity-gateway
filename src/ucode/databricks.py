@@ -3155,22 +3155,6 @@ def get_model_provider_service(
     return entry, None
 
 
-def list_model_provider_service_targets(
-    workspace: str, token: str, source_name: str
-) -> tuple[list[str], str | None]:
-    """List a provider service's qualified targets for managed model sources."""
-    service, reason = get_model_provider_service(source_name, workspace, token)
-    if service is None:
-        return [], reason
-    targets, reason = list_provider_service_models(
-        workspace, token, source_name, service.get("provider_type", "")
-    )
-    return [
-        target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
-        for target in targets
-    ], reason
-
-
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from
 # the catalog) is what lets an arbitrary developer pull a config that routes through an MPS in that
 # schema; without it they hit "User does not have USE_SCHEMA on Schema <catalog>.<schema>".

@@ -57,7 +57,6 @@ from ucode.databricks import (
     build_otel_traces_endpoint,
     build_tool_base_url,
     get_databricks_token,
-    list_anthropic_model_catalog,
     maybe_add_gpt_1m_suffix,
     ug_binary,
 )
@@ -724,16 +723,6 @@ def render_overlay(
         keys += [["env", key] for key in otel_env] + [["otelHeadersHelper"]]
 
     return overlay, keys
-
-
-def source_models(
-    workspace: str,
-    token: str,
-    *,
-    parent_schema: str | None = None,
-) -> tuple[list[str], str | None]:
-    catalog = list_anthropic_model_catalog(workspace, token, parent_schema=parent_schema)
-    return catalog.model_ids, catalog.error_msg
 
 
 _CLAUDE_PICKER_LABEL_RE = re.compile(

@@ -72,7 +72,6 @@ from ucode.databricks import (
     build_copilot_base_url,
     build_tool_base_url,
     list_anthropic_model_catalog,
-    list_model_service_entries,
     list_provider_service_models,
     model_version_sort_key,
     resolve_provider_service,
@@ -381,16 +380,6 @@ def _without_registry_prefix(model: str) -> str:
     """``model`` without a Copilot registry provider prefix: ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
     name, separator, rest = model.partition("/")
     return rest if separator and name in PROVIDER_NAMES.values() else model
-
-
-def source_models(
-    workspace: str,
-    token: str,
-    *,
-    parent_schema: str | None = None,
-) -> tuple[list[str], str | None]:
-    entries, reason = list_model_service_entries(workspace, token, parent_schema=parent_schema)
-    return [model.id for model in build_copilot_catalog(entries)], reason
 
 
 def provider_service_catalog(
