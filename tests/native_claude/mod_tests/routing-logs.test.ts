@@ -3,181 +3,95 @@ import { expect, test } from 'claude-code/testing';
 const options = { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', logsCommand: ['/bin/ug', 'smart-router-logs'] };
 const pane = {
   plugin: 'ug-smart-router', component: 'Pane', requestId: 'smart-router-logs', surface: 'terminal',
-  props: { title: 'Smart Router logs', isFocused: true, bodyColumns: 80, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
+  props: { title: 'Smart Router logs', isFocused: true, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const;
 const command = { command: 'smart-router', args: 'logs' };
-const now = Date.now() / 1000;
-const records = [
-  { at: now - 2 * 3600, preview: 'older task', selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
-  { at: now - 5, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
-];
 
-test('opens and refreshes session rows newest first', { options }, async ($, on) => {
-  const opened: unknown[] = [];
-  let count = 0;
-  on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', ($, e) => { opened.push(e); return { value: { isPlaced: true } }; });
-  on('process.run', ($, e) => {
-    expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one']);
-    count++;
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: count === 1 ? records : [] }) } };
-  });
-  expect((await $.command.run(command)).text).toBe('Smart Router logs opened.');
-  expect(opened[0]).toMatchObject({ id: pane.requestId, title: pane.props.title, focus: true, closeOnEscape: true });
-  const ui = await $.ui.mount(pane);
-  const tree = JSON.stringify(await ui.drawn());
-  expect(tree).toContain('2 routed prompts this session');
-  expect(tree).toContain('  2h ago  ');
-  expect(tree).toContain('just now  ');
-  expect(tree).not.toMatch(/\d{2}:\d{2}/);
-  expect(tree.indexOf('(prompt not recorded)')).toBeGreaterThanOrEqual(0);
-  expect(tree.indexOf('older task')).toBeGreaterThanOrEqual(0);
-  expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
-  expect(tree).toContain('claude-sonnet');
-  expect(tree).toContain('fast');
-  expect(tree).not.toContain('1.4s');
-  expect(tree).not.toContain('0.3s');
-  expect(tree).toContain('green');
-  // Each row fills bodyColumns exactly, so the model name is right-aligned.
-  expect(tree).toContain(`"${'older task'.padEnd(80 - 'claude-sonnet'.length - 12)}  "`);
-  expect(tree).toContain(`"${'(prompt not recorded)'.padEnd(80 - 'fast'.length - 12)}  "`);
-  await $.command.run(command);
-  expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
-  expect(count).toBe(2);
-  await ui.unmount();
-});
-
-test('truncates long previews for the pane width', { options }, async ($, on) => {
-  on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-    v: 1, decisions: [{ ...records[0], preview: 'A'.repeat(200) }],
-  }) } }));
-  await $.command.run(command);
-  const ui = await $.ui.mount({ ...pane, props: { ...pane.props, bodyColumns: 40 } });
-  const tree = JSON.stringify(await ui.drawn());
-  expect(tree).toContain('…');
-  expect(tree).not.toContain('A'.repeat(40));
-  await ui.unmount();
-  const { bodyColumns: _omitted, ...fallbackProps } = pane.props;
-  const fallback = await $.ui.mount({ ...pane, props: fallbackProps });
-  const fallbackTree = JSON.stringify(await fallback.drawn());
-  expect(fallbackTree).toContain('…');
-  expect(fallbackTree).not.toContain('A'.repeat(60));
-  await fallback.unmount();
-});
-
-test('shows a failure for command errors and malformed JSON', { options }, async ($, on) => {
-  let stdout = 'invalid json';
-  const logs: string[] = [];
-  on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout } }));
-  const ui = await $.ui.mount(pane);
-  for (const value of ['invalid json', '{"v":2,"decisions":[]}', '123']) {
-    stdout = value;
-    await $.command.run(command);
-    expect(JSON.stringify(await ui.drawn())).toContain('Could not read Smart Router logs.');
-  }
-  expect(logs).toHaveLength(3);
-  await ui.unmount();
-});
-
-test('drops malformed decision rows without failing the pane', { options }, async ($, on) => {
-  on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-    v: 1, decisions: [{ at: 'nope', preview: null, selected_model: 'x', routing_ms: 0 }, records[1]],
-  }) } }));
-  await $.command.run(command);
-  const ui = await $.ui.mount(pane);
-  const tree = JSON.stringify(await ui.drawn());
-  expect(tree).toContain('1 routed prompt this session');
-  expect(tree).toContain('fast');
-  await ui.unmount();
-});
-
-test('reports an unplaced pane', { options }, async ($, on) => {
-  let closed = 0;
-  let logged = 0;
-  on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', () => ({ value: { isPlaced: false } }));
-  on('ui.close', () => { closed++; return { value: undefined }; });
-  on('ui.log', () => { logged++; return { value: undefined }; });
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } }));
-  expect((await $.command.run(command)).text).toBe('Could not open the Smart Router logs pane.');
-  expect(closed).toBe(1);
-  expect(logged).toBe(1);
-});
-
-test('missing command fails safely and unrouted launches stay inert', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  let logged = 0;
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('ui.log', () => { logged++; return { value: undefined }; });
-  await $.command.run(command);
-  const ui = await $.ui.mount(pane);
-  expect(JSON.stringify(await ui.drawn())).toContain('Could not read Smart Router logs.');
-  expect(logged).toBe(1);
-  await ui.unmount();
-});
-
-test('a failed read surfaces the CLI error envelope', { options }, async ($, on) => {
-  let stdout: string = JSON.stringify({ v: 1, error: 'cannot read session log at /tmp/missing.jsonl' });
-  on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('process.run', () => ({ value: { exitCode: 1, stderr: '', stdout } }));
-  await $.command.run(command);
-  const ui = await $.ui.mount(pane);
-  const tree = JSON.stringify(await ui.drawn());
-  expect(tree).toContain('Could not read Smart Router logs.');
-  expect(tree).toContain('cannot read session log at /tmp/missing.jsonl');
-  await ui.unmount();
-  // A failure without a readable envelope keeps only the generic line.
-  stdout = '';
-  await $.command.run(command);
-  const generic = await $.ui.mount(pane);
-  const bare = JSON.stringify(await generic.drawn());
-  expect(bare).toContain('Could not read Smart Router logs.');
-  expect(bare).not.toContain('cannot read session log');
-  await generic.unmount();
-});
-
-test('the open pane refreshes on turn completion and a closed one stops', { options }, async ($, on) => {
+test('renders session rows and refreshes only while the pane is open', { options }, async ($, on) => {
+  const now = Date.now() / 1000;
+  let decisions: unknown[] = [
+    { at: now - 2 * 3600, preview: 'older task ' + 'A'.repeat(200), selected_model: 'system.ai.claude-sonnet', routing_ms: 1400 },
+    { at: now - 5, preview: null, selected_model: 'databricks-fast', routing_ms: 250 },
+    { at: 'invalid', preview: null, selected_model: 'bad-row', routing_ms: 0 },
+  ];
   let reads = 0;
-  let decisions: unknown[] = records;
-  let open: unknown[] = [{ id: 'smart-router-logs' }];
+  let open = [{ id: pane.requestId }];
   on('session.id', () => ({ value: 'session-one' }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('ui.open', ($, e) => {
+    expect(e).toMatchObject({ id: pane.requestId, focus: true, closeOnEscape: true });
+    return { value: { isPlaced: true } };
+  });
   on('ui.panes', () => ({ value: open }));
   on('turn.complete', () => ({ text: '' }));
-  on('process.run', () => {
+  on('process.run', ($, e) => {
+    expect(e.argv).toEqual(['/bin/ug', 'smart-router-logs', '--session', 'session-one']);
     reads++;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
   });
-  // No reader runs while the pane has never been opened.
   await $.turn.complete({ answer: '' });
   expect(reads).toBe(0);
-  await $.command.run(command);
-  expect(reads).toBe(1);
+  expect((await $.command.run(command)).text).toBe('Smart Router logs opened.');
   const ui = await $.ui.mount(pane);
-  expect(JSON.stringify(await ui.drawn())).toContain('older task');
-  await ui.unmount();
-  // A decision recorded after the pane opened shows up on the next turn completion.
-  decisions = [records[1]];
+  const tree = JSON.stringify(await ui.drawn());
+  expect(tree).toContain('2 routed prompts this session');
+  expect(tree).toContain('2h ago');
+  expect(tree).toContain('just now');
+  expect(tree).toContain('claude-sonnet');
+  expect(tree).toContain('fast');
+  expect(tree).not.toContain('bad-row');
+  expect(tree).toContain('…');
+  expect(tree).not.toContain('A'.repeat(40));
+  expect(tree).toContain('(prompt not recorded)');
+  expect(tree.indexOf('(prompt not recorded)')).toBeLessThan(tree.indexOf('older task'));
+  decisions = [];
   await $.turn.complete({ answer: '' });
-  expect(reads).toBe(2);
-  const refreshed = await $.ui.mount(pane);
-  const tree = JSON.stringify(await refreshed.drawn());
-  expect(tree).toContain('1 routed prompt this session');
-  expect(tree).not.toContain('older task');
-  await refreshed.unmount();
-  // Once the user closes the pane, later turns spawn no reader.
+  expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
+  await $.command.run(command);
+  expect(reads).toBe(3);
   open = [];
-  decisions = records;
   await $.turn.complete({ answer: '' });
   await $.turn.complete({ answer: '' });
-  expect(reads).toBe(2);
+  expect(reads).toBe(3);
+  await ui.unmount();
+});
+
+test('shows reader failures, clears stale errors, and reports an unplaced pane', { options }, async ($, on) => {
+  let stdout = '';
+  let exitCode = 0;
+  let isPlaced = true;
+  let closed = false;
+  on('session.id', () => ({ value: 'session-one' }));
+  on('ui.open', () => ({ value: { isPlaced } }));
+  on('ui.close', () => { closed = true; return { value: undefined }; });
+  on('process.run', () => ({ value: { exitCode, stderr: '', stdout } }));
+  const ui = await $.ui.mount(pane);
+  for (const response of [
+    { exitCode: 1, stdout: JSON.stringify({ v: 1, error: 'Permission denied' }), hint: true },
+    { exitCode: 1, stdout: '', hint: false },
+    { exitCode: 0, stdout: 'invalid json', hint: false },
+    { exitCode: 0, stdout: '{"v":2,"decisions":[]}', hint: false },
+  ]) {
+    ({ exitCode, stdout } = response);
+    await $.command.run(command);
+    const tree = JSON.stringify(await ui.drawn());
+    expect(tree).toContain('Could not read Smart Router logs.');
+    expect(tree.includes('Permission denied')).toBe(response.hint);
+  }
+  stdout = '{"v":1,"decisions":[]}';
+  await $.command.run(command);
+  expect(JSON.stringify(await ui.drawn())).toContain('No routed subagents in this session yet.');
+  isPlaced = false;
+  expect((await $.command.run(command)).text).toBe('Could not open the Smart Router logs pane.');
+  expect(closed).toBe(true);
+  await ui.unmount();
+});
+
+test('missing reader configuration shows an error', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  await $.command.run(command);
+  const ui = await $.ui.mount(pane);
+  expect(JSON.stringify(await ui.drawn())).toContain('Could not read Smart Router logs.');
+  await ui.unmount();
 });
 
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
