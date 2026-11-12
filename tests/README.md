@@ -860,10 +860,25 @@ These checks do not establish live login or launch-time savings.
 model-service listing starts on a daemon thread before the gateway probe returns, that a
 probe failure raises its own error while the listing is still blocked, that a listing error
 propagates without saving state, that `skip_model_discovery` never starts the listing but
-keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
-caches. The skip-preflight tests also reject starting a background worker. These component
-checks control the HTTP boundary with events; they do not establish live gateway timing,
-agent launch, or launch-time savings.
+keeps its web-search lookup, and that explicit reconfiguration refreshes the process-local probe
+and listing caches. The skip-preflight tests also reject starting a background worker.
+`TestConfiguredLaunchPreflightCache` checks persisted five-minute success reuse after fresh auth,
+credential/profile/auth-mode/workspace-ID changes, family and discovery-mode coverage,
+reuse with real successful-empty Gemini/OSS diagnostics (retained on warm launches),
+required Gemini models for Gemini/Antigravity launches when creating and reusing stamps,
+and Codex/Copilot reuse after a complete empty UC listing with successful family fallbacks,
+expired/future/malformed stamps and model data, explicit refresh, and auth/probe/listing failure
+invalidation. Partial-pagination regressions retain API metadata for Copilot and completeness
+diagnostics for unbucketed Claude while leaving incomplete listings retryable. Valid entries survive
+malformed neighbors and later pages; unused v1 metadata does not hide valid v2 endpoints. Typed empty
+results stay distinct from malformed responses (including JSON null) and HTTP failures. Successful
+family fallbacks cannot erase the preferred listing's incomplete status. These component checks control HTTP and clock
+boundaries; they do not establish live gateway timing, agent launch, or launch-time savings.
+The same launch cases preserve a verified process-local probe across auto-setup and discovery-mode
+changes; explicit configure/refresh still probes again. HTTP-boundary checks bind probe reuse to
+effective routing and workspace-selector headers as well as the credential.
+Warm reuse still performs workspace cleanup deferred by global configure, and a failed preferred
+Copilot catalog keeps its usable fallback retryable. The PAT fixture restores its bearer environment.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

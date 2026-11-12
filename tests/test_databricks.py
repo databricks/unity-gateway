@@ -553,6 +553,51 @@ class TestModelTokenLimits:
 
 
 class TestDiscoverModelServices:
+    def test_complete_empty_listing_has_typed_reason(self, monkeypatch):
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: ({}, None))
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert (claude, codex, gemini, oss) == ({}, [], [], [])
+        assert reason == "model-services listing returned no models"
+        assert isinstance(reason, db_mod.EmptyModelDiscoveryReason)
+
+    @pytest.mark.parametrize("payload", [[], {"model_services": None}, {"model_services": [None]}])
+    def test_malformed_listing_is_not_successful_empty(self, monkeypatch, payload):
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: (payload, None))
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert entries == []
+        assert type(reason) is str
+        assert "invalid" in reason
+        assert db_mod.cached_model_service_entries(WS) is None
+
+    def test_malformed_entry_keeps_valid_models_on_current_and_later_pages(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [None, _model_service("system.ai.gpt-5")],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                ({"model_services": [_model_service("system.ai.claude-opus-4-8")]}, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert [entry.id for entry in entries] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-5",
+        ]
+        assert type(reason) is str
+        assert "invalid model entries" in reason
+        assert db_mod.cached_model_service_entries(WS) is None
+
     def test_buckets_families_by_name(self, monkeypatch):
         payload = {
             "model_services": [
@@ -663,6 +708,28 @@ class TestDiscoverModelServices:
 
         assert (claude, codex, gemini, oss) == ({}, [], [], [])
         assert reason is not None and "llama-4-maverick" in reason
+        assert isinstance(reason, db_mod.EmptyModelDiscoveryReason)
+
+    def test_no_matching_families_preserves_partial_failure(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [_model_service("system.ai.llama-4-maverick")],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert (claude, codex, gemini, oss) == ({}, [], [], [])
+        assert reason == "HTTP 503"
+        assert type(reason) is str
 
     def test_ignores_non_system_ai_schemas(self, monkeypatch):
         # The metastore listing returns services from every schema; only
@@ -758,6 +825,11 @@ class TestDiscoverModelServices:
             db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
         ]
         assert db_mod.cached_model_service_entries(WS) == entries
+        assert db_mod.latest_model_service_listing(WS) == db_mod.ModelServiceListing(
+            tuple(entries), None
+        )
+        db_mod.clear_model_services_cache()
+        assert db_mod.latest_model_service_listing(WS) is None
 
     def test_failed_listing_is_not_cached(self, monkeypatch):
         monkeypatch.setattr(
@@ -765,6 +837,68 @@ class TestDiscoverModelServices:
         )
 
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
+        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.latest_model_service_listing(WS) == db_mod.ModelServiceListing((), "HTTP 503")
+
+    def test_partial_listing_keeps_models_and_reports_incomplete_discovery(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [
+                            {
+                                **_model_service("system.ai.claude-opus-4-8"),
+                                "supported_api_types": ["anthropic/v1/messages"],
+                            },
+                            {
+                                **_model_service("system.ai.gpt-5"),
+                                "supported_api_types": ["openai/v1/responses"],
+                            },
+                        ],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        claude, codex, gemini, oss, reason = db_mod.discover_model_services(WS, "token")
+
+        assert claude == {"opus": "system.ai.claude-opus-4-8"}
+        assert codex == ["system.ai.gpt-5"]
+        assert (gemini, oss) == ([], [])
+        assert reason == "HTTP 503"
+        assert type(reason) is str
+        assert db_mod.cached_model_service_entries(WS) is None
+        listing = db_mod.latest_model_service_listing(WS)
+        assert listing is not None
+        assert listing.reason == "HTTP 503"
+        assert listing.entries == (
+            db_mod.ModelServiceEntry("system.ai.claude-opus-4-8", ("anthropic/v1/messages",)),
+            db_mod.ModelServiceEntry("system.ai.gpt-5", ("openai/v1/responses",)),
+        )
+
+    def test_unbucketed_claude_keeps_partial_listing_reason(self, monkeypatch):
+        pages = iter(
+            [
+                (
+                    {
+                        "model_services": [_model_service("system.ai.claude-opus-4-8")],
+                        "next_page_token": "more",
+                    },
+                    None,
+                ),
+                (None, "HTTP 503"),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        models, reason = db_mod.discover_claude_models_unbucketed(WS, "token")
+
+        assert models == ["system.ai.claude-opus-4-8"]
+        assert reason == "HTTP 503"
         assert db_mod.cached_model_service_entries(WS) is None
 
 
@@ -2475,6 +2609,91 @@ class TestModelVersionSortKey:
 
 
 class TestDiscoverGeminiModels:
+    def test_malformed_endpoints_and_entities_keep_later_valid_models(self, monkeypatch):
+        payload = _foundation_models_payload(["current-gemini"])
+        payload["endpoints"][0]["config"]["served_entities"].insert(0, None)
+        payload["endpoints"].insert(0, None)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == ["current-gemini"]
+        assert type(reason) is str
+        assert "invalid" in reason
+
+    def test_malformed_v2_api_types_keep_valid_strings_and_models(self, monkeypatch):
+        payload = _foundation_models_payload(["current-gemini"])
+        entities = payload["endpoints"][0]["config"]["served_entities"]
+        entities[0]["foundation_model"]["api_types"].append(3)
+        entities.insert(
+            0, {"foundation_model": {"ai_gateway_v2_supported": True, "api_types": None}}
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == ["current-gemini"]
+        assert type(reason) is str
+        assert "invalid" in reason
+
+    def test_unused_v1_metadata_does_not_hide_valid_v2_models(self, monkeypatch):
+        payload = _foundation_models_payload(["legacy-gemini", "current-gemini"])
+        legacy = payload["endpoints"][0]["config"]["served_entities"][0]["foundation_model"]
+        legacy.update(ai_gateway_v2_supported=False, api_types=None)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == ["current-gemini"]
+        assert reason is None
+
+    @pytest.mark.parametrize("case", ["no-endpoints", "v1-only", "other-api"])
+    def test_successful_empty_discovery_has_typed_reason(self, monkeypatch, case):
+        payload = _foundation_models_payload([] if case == "no-endpoints" else ["gemini"])
+        if case != "no-endpoints":
+            model = payload["endpoints"][0]["config"]["served_entities"][0]["foundation_model"]
+            if case == "v1-only":
+                model["ai_gateway_v2_supported"] = False
+            else:
+                model["api_types"] = ["openai/v1/responses"]
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, None))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == []
+        assert isinstance(reason, db_mod.EmptyModelDiscoveryReason)
+        expected = {
+            "no-endpoints": "foundation-models listing returned no endpoints",
+            "v1-only": (
+                "no endpoint exposes api_type `gemini/v1/generateContent` with "
+                "`ai_gateway_v2_supported=true` (workspace has v1-only endpoints)"
+            ),
+            "other-api": "no endpoint exposes api_type `gemini/v1/generateContent`",
+        }
+        assert reason == expected[case]
+
+    @pytest.mark.parametrize(
+        ("payload", "error"),
+        [
+            (None, "HTTP 503"),
+            (None, None),
+            ([], None),
+            ({"endpoints": None}, None),
+            ({"endpoints": [None]}, None),
+        ],
+    )
+    def test_errors_are_not_successful_empty_discovery(self, monkeypatch, payload, error):
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *args: (payload, error))
+
+        models, reason = db_mod.discover_gemini_models(WS, "token")
+
+        assert models == []
+        assert type(reason) is str
+        if error:
+            assert reason == error
+        else:
+            assert "invalid" in reason
+
     def test_returns_newest_flash_first(self, monkeypatch):
         payload = _foundation_models_payload(
             [
@@ -4270,6 +4489,55 @@ class TestProbeUnityGatewayCapabilities:
 
         assert calls == ["token-a", "token-a", "token-a", "token-b"]
 
+    def test_probe_cache_uses_effective_routing_headers(self, monkeypatch):
+        from ucode.ug_headers import scoped_ug_headers
+
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({"model_services": [_model_service("system.ai.gpt-5")]})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("UG_HEADERS", "X-Route: first\nX-Client: same\nauthorization: ignored")
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        # Header case/order and an overridden credential do not change the actual request.
+        monkeypatch.setenv("UG_HEADERS", "x-client: same\nx-route: first\nAuthorization: changed")
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        with scoped_ug_headers("X-Client: same\nX-Route: second"):
+            assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+            assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+        assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+
+        assert [request.get_header("X-route") for request in requests] == ["first", "second"]
+        assert [request.get_header("Authorization") for request in requests] == [
+            "Bearer token",
+            "Bearer token",
+        ]
+
+    def test_probe_cache_separates_selected_workspaces(self, monkeypatch):
+        from ucode.workspace import activate
+
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return _FakeResponse({"model_services": [_model_service("system.ai.gpt-5")]})
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setenv("UG_HEADERS", "")
+        for workspace_id in ("111", "111", "222", "222", "111", None):
+            activate(WS, workspace_id)
+            assert db_mod.probe_unity_gateway_capabilities(WS, "token").resource_available
+
+        assert [
+            (
+                request.get_header("X-databricks-workspace-id"),
+                request.get_header("X-databricks-org-id"),
+            )
+            for request in requests
+        ] == [("111", "111"), ("222", "222"), (None, None)]
+
     def test_model_service_auth_failure_raises(self, monkeypatch):
         calls: list[str] = []
 
@@ -5645,6 +5913,45 @@ class TestModelServicesCache:
         db_mod.list_model_services(WS, "tok")
         db_mod.list_model_services("https://other.databricks.com", "tok")
         assert calls["n"] == 2
+
+    @pytest.mark.parametrize("interruption", ["page-failure", "repeated-cursor", "page-limit"])
+    def test_partial_listing_is_not_cached_and_next_call_completes(self, monkeypatch, interruption):
+        first_page = {
+            "model_services": [_model_service("system.ai.gpt-5")],
+            "next_page_token": "more",
+        }
+        pages = iter(
+            [
+                (first_page, None),
+                (None, "HTTP 503") if interruption == "page-failure" else (first_page, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(pages))
+
+        entries, reason = db_mod.list_model_service_entries(
+            WS, "token", max_pages=1 if interruption == "page-limit" else 100
+        )
+
+        assert [entry.id for entry in entries] == ["system.ai.gpt-5"]
+        assert reason is not None
+        assert db_mod.cached_model_service_entries(WS) is None
+
+        complete_pages = iter(
+            [
+                (first_page, None),
+                ({"model_services": [_model_service("system.ai.claude-opus-4-8")]}, None),
+            ]
+        )
+        monkeypatch.setattr(db_mod, "_get_model_services_page", lambda *args: next(complete_pages))
+
+        entries, reason = db_mod.list_model_service_entries(WS, "token")
+
+        assert reason is None
+        assert [entry.id for entry in entries] == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-5",
+        ]
+        assert db_mod.cached_model_service_entries(WS) == entries
 
     def test_failures_are_not_cached(self, monkeypatch):
         # A transient error must not poison the rest of the process into believing there are no
