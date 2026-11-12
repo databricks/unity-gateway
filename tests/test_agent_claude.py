@@ -664,16 +664,41 @@ class TestRenderOverlay:
         assert "modelPicker" not in overlay
 
     def test_static_models_label_is_prettified(self):
-        # Picker labels drop the ``system.ai.`` prefix and are title-cased with a dotted version.
         static = [
             "system.ai.claude-opus-4-8",
+            "main.default.xxx.claude-opus-5-5",
             "system.ai.glm-5-3",
             "system.ai.kimi-k3",
             "databricks-custom-model",
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
-        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+        assert labels == [
+            "Claude Opus 4.8",
+            "Claude Opus 5.5",
+            "GLM 5.3",
+            "Kimi K3",
+            "Databricks Custom Model",
+        ]
+        assert overlay["availableModels"] == static
+        assert overlay["modelPicker"]["options"][1]["model"] == static[1]
+
+    @pytest.mark.parametrize(
+        "display_name", [None, "main.default.xxx.claude-opus-5-5", "Team Opus"]
+    )
+    def test_discovered_models_label_is_prettified(self, display_name):
+        model = "main.default.xxx.claude-opus-5-5"
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[model],
+            model_id_to_display_name={model: display_name} if display_name else {},
+        )
+        overlay, _ = claude.render_overlay(WS, "s4", picker_catalog=catalog)
+
+        option = overlay["modelPicker"]["options"][0]
+        assert option["model"] == model
+        assert option["label"] == (
+            "Team Opus" if display_name == "Team Opus" else "Claude Opus 5.5"
+        )
 
 
 class TestRenderOverlayOtelTracing:

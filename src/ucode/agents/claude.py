@@ -731,6 +731,8 @@ _CLAUDE_PICKER_LABEL_RE = re.compile(
 
 
 def _picker_option(model: str, label: str, description: str | None = None) -> dict[str, str]:
+    if label == model.removesuffix("[1m]"):
+        label = model_picker_label(label)
     option = {"model": model, "label": label}
     if description:
         option["description"] = description
