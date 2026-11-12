@@ -848,7 +848,6 @@ def test_mcp_completion_reads_full_native_receipts_without_an_assistant_copy(mon
         "wrong_run_id",
         "wrong_call_id",
         "missing_result",
-        "failed_result",
         "result_before_call",
         "missing_completion",
         "wrong_prompt",
@@ -881,11 +880,6 @@ def test_mcp_completion_rejects_incomplete_or_unrelated_native_evidence(monkeypa
         result["tool_use_id" if agent == CLAUDE else "call_id"] = "other"
     elif damage == "missing_result":
         result.clear()
-    elif damage == "failed_result":
-        if agent == CLAUDE:
-            result["is_error"] = True
-        else:
-            result[content_key] = json.dumps({"isError": True, "content": result[content_key]})
     elif damage == "result_before_call":
         if agent == CLAUDE:
             records[1], records[2] = records[2], records[1]
@@ -898,12 +892,21 @@ def test_mcp_completion_rejects_incomplete_or_unrelated_native_evidence(monkeypa
             records[0]["message"]["content"] = "other prompt"
         else:
             records[3]["payload"]["message"] = "other prompt"
-    elif agent == CODEX:
+    elif damage == "child_session" and agent == CODEX:
         records[0]["payload"]["source"] = {"subagent": {}}
     path = "session/subagents/child.jsonl" if damage == "child_session" and agent == CLAUDE else "s"
     monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {path: records})
 
     assert not task.completed(None, agent)
+
+
+def test_mcp_completion_rejects_failed_claude_tool_results(monkeypatch):
+    task = mcp_registration.McpFixtureTask()
+    records, _, results = _mcp_native_records(task, CLAUDE)
+    results[-1]["is_error"] = True
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": records})
+
+    assert not task.completed(None, CLAUDE)
 
 
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
