@@ -45,23 +45,7 @@ class Connection(Protocol):
 @dataclass
 class RootTurn:
     active: str | None = None
-    toggle_only: bool = False
     toggle_commands: set[str] = field(default_factory=set)
-
-
-def _toggle_only(params: dict) -> bool:
-    inputs = params.get("input")
-    if not isinstance(inputs, list):
-        return False
-    texts = []
-    for item in inputs:
-        if not isinstance(item, dict):
-            return False
-        if item.get("type") == "text" and isinstance(item.get("text"), str):
-            texts.append(item["text"])
-        elif item.get("type") != "skill" or item.get("name") != "smart-router":
-            return False
-    return " ".join(texts).split() in (["$smart-router", "on"], ["$smart-router", "off"])
 
 
 class RoutingMetadata:
@@ -77,7 +61,6 @@ class RoutingMetadata:
         self.pending: dict[str, asyncio.Future[dict]] = {}
         self.client_requests: dict[str | int, tuple[str, dict]] = {}
         self.buffered_turns: dict[str, set[str | int]] = {}
-        self.continuations: dict[str, str] = {}
         self.cancelled: set[str] = set()
         self.ready = asyncio.Event()
         self.ready.set()
@@ -110,7 +93,6 @@ class RoutingMetadata:
             return message
         if method == "turn/interrupt":
             if tid in self.roots:
-                self.continuations.pop(tid, None)
                 if self.updating:
                     self.cancelled.add(tid)
                     if "id" in message:
@@ -123,9 +105,6 @@ class RoutingMetadata:
             params.setdefault("capabilities", {})["experimentalApi"] = True
         if method == "turn/start" and isinstance(tid, str) and tid not in self.children:
             self.buffered_turns.get(tid, set()).discard(identity)
-            continuation = self.continuations.pop(tid, None)
-            if continuation:
-                params["input"] = [{"type": "text", "text": continuation}, *params.get("input", [])]
             patch = params.get("responsesapiClientMetadataPatch")
             if patch is None or isinstance(patch, dict):
                 params["responsesapiClientMetadataPatch"] = {
@@ -160,14 +139,9 @@ class RoutingMetadata:
             elif not thread.get("ephemeral"):
                 self.roots.setdefault(thread["id"], RootTurn())
         if "method" not in message and isinstance(identity, (str, int)):
-            request = self.client_requests.pop(identity, None)
+            self.client_requests.pop(identity, None)
             if not self.client_requests:
                 self.client_idle.set()
-            if request is not None and "error" not in message:
-                method, requested = request
-                root = self.roots.get(requested.get("threadId"))
-                if method == "turn/start" and root is not None:
-                    root.toggle_only = _toggle_only(requested)
             if isinstance(identity, str) and identity.startswith(INTERNAL_REQUEST_PREFIX):
                 future = self.pending.get(identity)
                 if future is not None and not future.done():
@@ -234,6 +208,7 @@ class RoutingMetadata:
             async with asyncio.timeout(UPDATE_TIMEOUT_SECONDS):
                 await self.client_idle.wait()
                 roots = list(self.roots.items())
+                interrupted = set()
                 for tid, root in roots:
                     while root.toggle_commands:
                         self.activity.clear()
@@ -248,29 +223,18 @@ class RoutingMetadata:
                         while root.active == turn_id:
                             self.activity.clear()
                             await self.activity.wait()
+                        interrupted.add(tid)
                 enabled = self.enabled()
-                for tid, root in roots:
-                    if tid not in self.roots or tid in self.cancelled:
+                for tid, _root in roots:
+                    if tid not in self.roots or tid in self.cancelled or tid not in interrupted:
                         continue
-                    instruction = (
-                        "Confirm briefly."
-                        if root.toggle_only
-                        else "Continue any unfinished main-agent task. If no work remains, confirm briefly."
-                    )
-                    text = (
-                        f"Smart Router is now {routing_state(enabled)}. {instruction} "
-                        "Existing subagents remain running with their original routing attribution. "
-                        "Do not restart or redelegate their assignments. Main-agent commands may have "
-                        "been interrupted after making changes; inspect their effects before retrying."
-                    )
                     if self.buffered_turns.get(tid):
-                        self.continuations[tid] = text
                         continue
                     result = await self.rpc(
                         "turn/start",
                         {
                             "threadId": tid,
-                            "input": [{"type": "text", "text": text}],
+                            "input": [],
                             "responsesapiClientMetadataPatch": {
                                 ROUTING_STATE_KEY: routing_state(enabled)
                             },

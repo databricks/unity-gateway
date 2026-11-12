@@ -63,6 +63,26 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         )
 
 
+@pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
+def test_codex_windows_toggle_approval_accepts_only_the_known_guard(extra_command):
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    guard = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        '{ Write-Output "SMART_ROUTER_ENV_UNSET"; exit 2 }; &'
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guard}\n  {command[2:]}{extra_command}\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    expected = (command, f"{guard} {command[2:]}")
+    if extra_command:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, expected)
+    else:
+        assert codex_command_approval_pending(screen, expected)
+
+
 class _Session:
     def __init__(self, home):
         self.home = home

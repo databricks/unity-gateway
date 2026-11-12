@@ -1,6 +1,7 @@
 """Live native-agent continuity across Smart Router metadata changes."""
 
 import json
+import os
 
 import pytest
 from test_ug_smart_routing_hooks import _select_smart_router_version, _toggle_with_skill
@@ -37,6 +38,34 @@ def _root_answers(session):
     ]
 
 
+def _root_user_prompts(session):
+    children = {identity for identity, _ in _native_agents(session).values()}
+    prompts = []
+    for records in agent_sessions(session, "codex").values():
+        if any(
+            row.get("type") == "session_meta" and row["payload"]["id"] in children
+            for row in records
+        ):
+            continue
+        for row in records:
+            payload = row.get("payload", {})
+            if row.get("type") != "response_item" or payload.get("role") != "user":
+                continue
+            text = " ".join(item.get("text", "") for item in payload.get("content", []))
+            if text and not text.startswith(("<environment_context>", "<skill>")):
+                prompts.append(text)
+    return prompts
+
+
+def _wait_for(tui, predicate, description, *, timeout):
+    def completed(screen):
+        if tui.approve_windows_command(screen):
+            return False
+        return predicate()
+
+    tui.wait_for(completed, description, timeout=timeout)
+
+
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
@@ -52,7 +81,8 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     Expected: one uninterrupted old child retains its ID and on marker. New sibling and
     grandchild have off markers. Messages across both branches succeed, the original child
     resumes, hidden file values reach completed answers, and no conversation is reloaded.
-    Native transcripts prove identity and continuity; usage-table validation is separate.
+    Native transcripts prove identity and continuity with no additional user prompts;
+    usage-table validation is separate.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v0")
@@ -78,8 +108,11 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         "    time.sleep(0.2)\n"
         "with finished.open('x') as receipt: receipt.write(str(os.getpid()))\n"
     )
+    python = (
+        '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
+    )
     assignment = (
-        f"Run python3 {gate.name} exactly once. This command waits for a release file; "
+        f'Run {python} "{gate.name}" exactly once. This command waits for a release file; '
         "let it run without restarting it. After it finishes, spawn exactly one child with "
         f"task_name nested, fork_turns none, asking it to read {secret.name} and return its "
         "entire contents. Then use send_message to send 'old sibling reached new sibling' "
@@ -97,8 +130,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
             f"assignment: {assignment}\nEnd your turn with ONLY 'started {marker}' immediately "
             "after spawning. Do not wait for it or run its commands yourself."
         )
-        tui.wait_for(
-            lambda _: started.is_file() and f"started {marker}" in _root_answers(session),
+        _wait_for(
+            tui,
+            lambda: started.is_file() and f"started {marker}" in _root_answers(session),
             "a running child and completed main answer",
             timeout=180,
         )
@@ -111,8 +145,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
             "Spawn exactly one new child with task_name new, fork_turns none. Ask it to "
             "reply 'new sibling ready'. Wait for its answer and repeat it. Leave old running."
         )
-        tui.wait_for(
-            lambda _: (
+        _wait_for(
+            tui,
+            lambda: (
                 "new sibling ready" in _root_answers(session)
                 and "/root/new__sr_off" in _native_agents(session)
             ),
@@ -120,8 +155,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
             timeout=180,
         )
         release.write_text("release")
-        tui.wait_for(
-            lambda _: (
+        _wait_for(
+            tui,
+            lambda: (
                 "/root/old__sr_on/nested__sr_off" in _native_agents(session)
                 and any(
                     value in answer
@@ -139,8 +175,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
             "grandchild'. Then use followup_task to /root/old__sr_on asking it to reply exactly "
             f"'{receipt}'. Wait for its answer, then reply with that exact answer. Spawn nothing."
         )
-        tui.wait_for(
-            lambda _: receipt in _root_answers(session),
+        _wait_for(
+            tui,
+            lambda: receipt in _root_answers(session),
             "cross-branch messaging and original child follow-up",
             timeout=180,
         )
@@ -175,6 +212,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     )
     assert_agent_interaction_completed(all_records, "/root/old__sr_on", old_id)
     assert sum(receipt in answer for answer in assistant_answers("codex", old_records)) == 1
+    assert len(_root_user_prompts(session)) == 4
     log = session.routing_log("codex")
     assert "[METADATA] main turns updated: state=off" in log, log
     session.record(
@@ -195,6 +233,7 @@ def test_codex_routing_toggle_without_children_and_repeated_state(
 
     Expected: both transitions complete; repeated on leaves the controls file unchanged,
     causes no additional handoff, and a subsequent answer completes in the original root.
+    The native history contains only the three submitted user prompts.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v0")
@@ -220,4 +259,5 @@ def test_codex_routing_toggle_without_children_and_repeated_state(
         assert session.routing_log("codex").count("[METADATA] main turns updated") == handoffs
         tui.exit_normally()
     assert not _native_agents(session)
+    assert len(_root_user_prompts(session)) == 3
     assert json.loads(controls.read_text()) == {}

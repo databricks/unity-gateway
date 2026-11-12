@@ -200,9 +200,28 @@ def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, q
             assert starts[0]["params"]["responsesapiClientMetadataPatch"] == {
                 ROUTING_STATE_KEY: "off"
             }
-            assert "Do not restart or redelegate" in starts[0]["params"]["input"][0]["text"]
+            assert starts[0]["params"]["input"] == []
         if queued and not cancel:
-            assert "main" in metadata.continuations
+            message = {
+                "id": "user-start",
+                "method": "turn/start",
+                "params": {"threadId": "main", "input": [{"type": "text", "text": "new work"}]},
+            }
+            forwarded = await metadata.before_tui(message)
+            assert forwarded["params"]["input"] == [{"type": "text", "text": "new work"}]
+
+    asyncio.run(run())
+
+
+def test_idle_toggle_does_not_start_inference_or_add_a_prompt(tmp_path):
+    async def run():
+        metadata, upstream, _, controls = controller(tmp_path)
+        metadata.roots["main"] = RootTurn()
+        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        await metadata.refresh()
+        assert upstream.messages == []
+        assert metadata.applied is False
+        assert metadata.ready.is_set()
 
     asyncio.run(run())
 

@@ -15,6 +15,11 @@ Windows remote-TUI provider forwarding has separate component coverage; these li
 journeys exercise the native platform where the runner executes.
 Component checks also cover the TUI's nullable metadata patch; verify attribution
 on later user turns when querying the usage table.
+The live journeys also require the exact submitted user-prompt count, proving that
+metadata handoffs add no synthetic prompt to the native conversation history.
+The busy child uses UG's installed Python on both platforms. Windows command approvals
+use the native UI; the toggle matcher also recognizes the explicit environment guard
+and wrapped command presentation, while rejecting additional commands.
 
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
@@ -1327,6 +1332,7 @@ The native v2 assignment journey requires Codex 0.164.0 or newer. It uses a bund
 v2 catalog and a user-owned observer hook, without test-supplied native feature flags.
 It checks the exact multiline assignment at PreToolUse and the actual native recipient,
 and matches the router decision's SHA-256 digest and character count to that assignment.
+The observer retains the caller's task name; the child path includes `__sr_on` for attribution.
 The launch/off/on journeys match audit digests against native assignment text;
 CUJ4 matches them against the recorded real router requests. Full native plaintext,
 completed parent and child models, and preserved settings remain required. Select it with

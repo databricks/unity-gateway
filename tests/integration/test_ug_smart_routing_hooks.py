@@ -261,12 +261,18 @@ def _toggle_with_skill(
         '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
     )
     command = f"{python} -m ucode.cli codex {flag}"
+    commands = (command,)
+    if os.name == "nt":
+        commands += (
+            'if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) '
+            '{ Write-Output "SMART_ROUTER_ENV_UNSET"; exit 2 }; ' + command,
+        )
 
     def toggled(screen):
         nonlocal approval_sent
         # Fresh remote Codex sessions can be read-only. Approve only this
         # requested toggle through the native dialog, keeping the sandbox intact.
-        if not approval_sent and codex_command_approval_pending(screen, command):
+        if not approval_sent and codex_command_approval_pending(screen, commands):
             tui.send("\r", f"approve the session-local Smart Router toggle {state} once")
             approval_sent = True
             return False

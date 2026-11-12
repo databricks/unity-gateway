@@ -582,10 +582,11 @@ interposer, including subagent-only presets. First-prompt model selection still 
 the selected preset.
 
 Smart Router toggles keep every conversation loaded. UG briefly interrupts only the
-main turn and continues it with fresh native turn metadata. Existing subagents keep
+main turn and continues it with empty input and fresh native turn metadata, adding
+no user prompt. An idle main starts no extra inference. Existing subagents keep
 running with their original attribution; new children, including descendants spawned
 by an old child, get the latest state through the spawn hook. Main commands may be
-interrupted, so the continuation instructs Codex to inspect their effects before retrying.
+interrupted; the existing task history is preserved for the continuation.
 Repeating the current state does not interrupt anything.
 
 Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
