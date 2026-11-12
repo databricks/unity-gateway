@@ -11,28 +11,30 @@ unsolicited comparisons with the requested model; comparisons remain available w
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
 
-`test_codex_routing_reload.py` covers restart configuration, bounded process-tree
-cleanup, early wrapper exit, transient control-file failures, stalled Ctrl+C,
-malformed control messages, and root-only recovery without rerouting the first prompt.
-Sessions without known children receive no injected recovery turn. Native history and
-streamed collaboration items enable child recovery across reconnects and root changes.
-Regression cases cover bounded cleanup and diagnostics after Windows taskkill timeouts
-or launch errors, and replacing a root after failed recovery without reusing stale notices.
-Managed-config checks require path-specific repair instructions, including user-only
-and administrator-managed installations. Mock launcher checks cover POSIX and Windows;
-real subprocess checks require descendant port release.
+`test_codex_routing_reload.py` covers conversation unload/resume, routing headers and
+body metadata, late descendants, unrelated roots, per-root permissions, approval
+replies behind queued input, Escape, rapid toggles, navigation, reload failures,
+malformed frames, and transient control-file errors. Launcher checks require one
+app-server across toggles and bounded process-tree cleanup on final exit.
+Managed-config checks retain path-specific repair instructions for pinned headers.
+These component checks simulate protocol races; they do not establish live coverage.
+
+`test_smart_router_codex_reload_without_children_updates_inference` checks installed-skill
+off/on with no children: parent request headers/body metadata, unchanged server PIDs,
+one TUI connection, stable root ID, no new children, and normal TUI exit.
 
 `test_smart_router_codex_reload_updates_parent_and_existing_child_inference`
-checks the installed-wheel busy-child off/on journey: stable IDs and permissions,
+checks the installed-wheel busy-child off/on journey: unchanged app-server PIDs and
+one TUI connection, stable conversation IDs and permissions,
 exclusive command-completion receipts, child-owned final answers, successful parent
 and child inference with the current recipe, and normal TUI exit. Windows uses native
 approval for the exact toggle command. Ordinary `/subagents` navigation has separate
-coverage requiring no restart or interrupted command.
+coverage requiring no reload or interrupted command.
 
 Request-recorder checks preserve upstream responses after client disconnects during
 headers or body, including Windows connection-aborted errors.
 
-See [restart behavior and validation limits](../../docs/codex-routing-reload.md) for live results and remaining gaps.
+See [reload behavior and validation limits](../../docs/codex-routing-reload.md) for live results and remaining gaps.
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
@@ -1061,8 +1063,8 @@ the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
-a successful app-server restart and a new parent answer after each skill invocation. The
-busy-child restart journey additionally checks recipe metadata on actual inference requests.
+a successful conversation reload and a new parent answer after each skill invocation. The
+busy-child reload journey additionally checks recipe metadata on actual inference requests.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
@@ -1962,7 +1964,7 @@ answer text, intervening prompts, and nonadjacent or unrelated spawn rows.
 For a managed workspace other than the two CI workspaces, set
 `UCODE_TEST_CODEX_ROUTING_FIXTURE` to the basename of a checked-in fixture whose model menu has
 been validated in that workspace. The suite never guesses a model menu or silently changes the
-workspace.
+workspace. The integration runner forwards this explicit assignment into pytest.
 
 Browser MCP review regressions check stale ACTIVE credentials wait for a changed credential
 or an observed non-ACTIVE state, pending provisioning continues, and missing services fail

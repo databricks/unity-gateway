@@ -565,9 +565,8 @@ intentional requirement ensures native v2 provides readable delegated assignment
 and supports native conversation resume;
 UG does not silently disable routing. Ordinary launches still support Codex 0.145.0
 and newer. The general integration CI baseline remains 0.154.0; routing cases use
-0.165.0. The restart path does not raise either version requirement. Linux Codex
-0.165.0 passed installed-wheel off/on skill and busy-child attribution checks;
-native macOS/Windows and Codex 0.164.0 restart validation remain outstanding.
+0.165.0. Conversation reload does not raise either version requirement. See
+[reload validation and limits](docs/codex-routing-reload.md) for current results.
 
 An inconclusive Codex version probe is retried once with a longer timeout. If the
 version is still unknown, UG stops without offering or running an update and asks
@@ -583,10 +582,10 @@ files are unchanged, as are native delegation-mode controls. Requests use the
 configured Databricks provider directly. Smart-routed launches use the native
 app-server and UG control interposer, including subagent-only presets.
 
-`$smart-router off/on` [restarts app-server and resumes saved conversations](docs/codex-routing-reload.md)
+`$smart-router off/on` [unloads and resumes saved conversations](docs/codex-routing-reload.md)
 to refresh inference attribution in body metadata and, where supported, the recipe
 header. Configure removes old persisted recipe headers that would pin attribution.
-The TUI reconnects; existing children stay stopped until the parent reopens them
+The app-server and TUI connection stay open; existing children stay stopped until the parent reopens them
 with `followup_task` under their saved IDs. Running commands stop; agents rerun any
 command that did not exit, keeping effects that already completed. This uses no gateway proxy or backend session
 state. The managed default remains Claude-only; Codex routing requires an explicit

@@ -9,13 +9,11 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from queue import SimpleQueue
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
-from ucode.smart_routing.codex_reload import RestartContinuation
 
 SETTINGS_UPDATED = "thread/settings/updated"
 SETTINGS_UPDATE = "thread/settings/update"
@@ -209,17 +207,61 @@ class _Session:
         return []
 
 
-async def _handle_tui(tui, upstream_uri: str, sess: _Session, log, restart=None) -> None:
+async def _handle_tui(
+    tui,
+    upstream_uri: str,
+    sess: _Session,
+    log,
+    reload_config: dict | None = None,
+    session_controls: Path | None = None,
+) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
     log(f"[CONN] TUI connected (path={path}); dialing app-server {uri}")
     async with connect(uri, max_size=None) as upstream:
+        controller = None
+        if reload_config is not None and session_controls is not None:
+            from ucode.smart_routing.codex_reload import RoutingReload
+
+            controller = RoutingReload(upstream, tui, reload_config, session_controls, log)
+
+        queued_frames: asyncio.Queue = asyncio.Queue()
+
+        async def read_tui():
+            async for frame in tui:
+                message = _parse_message(frame) if isinstance(frame, str) else None
+                if (
+                    controller is not None
+                    and message is not None
+                    and message.get("method") in (None, "turn/interrupt")
+                ):
+                    # Approval replies must pass even behind a held user request.
+                    message = await controller.before_tui(message)
+                    if message is not None:
+                        await upstream.send(json.dumps(message))
+                else:
+                    if controller is not None and message is not None:
+                        controller.buffer_input(message)
+                    await queued_frames.put(frame)
+            await queued_frames.put(None)
+
+        async def tui_frames():
+            if controller is None:
+                async for frame in tui:
+                    yield frame
+                return
+            while (frame := await queued_frames.get()) is not None:
+                yield frame
 
         async def tui_to_app():
-            async for frame in tui:
+            async for frame in tui_frames():
                 if isinstance(frame, str):
-                    if restart is not None and (message := _parse_message(frame)) is not None:
-                        restart.before_tui(message)
+                    message = _parse_message(frame)
+                    if controller is not None and message is not None:
+                        message = await controller.before_tui(message)
+                        if message is None:
+                            continue
+                        frame = json.dumps(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
                     if result.needs_settings_update and sess.thread_id:
                         update_id = f"ucode-route-{uuid.uuid4().hex}"
@@ -243,6 +285,10 @@ async def _handle_tui(tui, upstream_uri: str, sess: _Session, log, restart=None)
                             log("[ROUTE] settings/update confirmed by app-server")
                         except TimeoutError:
                             log("[ROUTE] settings/update timed out; forwarding turn/start anyway")
+                    if controller is not None and result.frame != frame:
+                        forwarded = _parse_message(result.frame)
+                        if forwarded is not None:
+                            controller.remember_request(forwarded)
                     await upstream.send(result.frame)
                 else:
                     await upstream.send(frame)
@@ -250,43 +296,25 @@ async def _handle_tui(tui, upstream_uri: str, sess: _Session, log, restart=None)
         async def app_to_tui():
             async for frame in upstream:
                 message = _parse_message(frame) if isinstance(frame, str) else None
-                if restart is not None and message is not None:
-                    if restart.take_response(message):
-                        if error := message.get("error"):
-                            log(f"[RESTART FAILED] continuation: {error}")
-                            await tui.send(
-                                json.dumps(
-                                    {
-                                        "method": "error",
-                                        "params": {
-                                            "threadId": restart.root_id,
-                                            "turnId": "",
-                                            "willRetry": False,
-                                            "error": {
-                                                "message": f"Smart Router restart completed, but automatic continuation failed: {error}. Send a message to continue your saved conversation.",
-                                                "codexErrorInfo": None,
-                                                "additionalDetails": None,
-                                            },
-                                        },
-                                    }
-                                )
-                            )
-                        else:
-                            log(f"[RESTART] resumed root={restart.root_id} recipe={restart.recipe}")
+                if controller is not None and message is not None:
+                    try:
+                        consumed = controller.observe(message)
+                    except (ValueError, RuntimeError) as exc:
+                        await controller.report_failure(exc)
+                        raise
+                    if consumed:
                         continue
                 await tui.send(frame)
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))
 
-                if restart is not None and message is not None:
-                    continuation = restart.after_resume(message)
-                    if continuation is not None:
-                        await upstream.send(json.dumps(continuation))
-
         a = asyncio.create_task(tui_to_app())
         b = asyncio.create_task(app_to_tui())
         tasks = {a, b}
+        if controller is not None:
+            tasks.add(asyncio.create_task(read_tui()))
+            tasks.add(asyncio.create_task(controller.watch()))
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
@@ -309,7 +337,8 @@ async def _serve(
     workspace: str | None = None,
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
-    restart_notices: SimpleQueue[str] | None = None,
+    reload_config: dict | None = None,
+    session_controls: Path | None = None,
 ):
     route_decision: RouteDecisionFn | None = None
     if workspace is not None and token_provider is not None:
@@ -335,11 +364,10 @@ async def _serve(
         route_decision,
         switch_message_fn,
     )
-    restart = RestartContinuation(restart_notices) if restart_notices is not None else None
 
     async def handler(tui):
         try:
-            await _handle_tui(tui, upstream_uri, sess, log, restart)
+            await _handle_tui(tui, upstream_uri, sess, log, reload_config, session_controls)
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
         finally:
@@ -363,7 +391,8 @@ def start_interposer_thread(
     switch_message: str | None = None,
     log_path: Path | None = None,
     ready_timeout: float = 10.0,
-    restart_notices: SimpleQueue[str] | None = None,
+    reload_config: dict | None = None,
+    session_controls: Path | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:
@@ -395,7 +424,8 @@ def start_interposer_thread(
                     workspace,
                     token_provider,
                     switch_message_fn,
-                    restart_notices,
+                    reload_config,
+                    session_controls,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]

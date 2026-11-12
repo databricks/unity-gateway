@@ -11,6 +11,7 @@ Smart Router skill and spawn real children before and after its session-local to
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -250,7 +251,7 @@ def _toggle_with_skill(
 
     before_answers = answer_count()
     reload_log = session.home / ".ucode/codex-v2-interposer.log"
-    before_reloads = reload_log.read_text().count("[RESTART] resumed") if reload_log.exists() else 0
+    before_reloads = reload_log.read_text().count("[RELOAD] resumed") if reload_log.exists() else 0
     tui.submit(invocation)
     approval_sent = False
     flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
@@ -276,7 +277,7 @@ def _toggle_with_skill(
         return (
             controls_now == expected
             and reload_log.exists()
-            and reload_log.read_text().count("[RESTART] resumed") > before_reloads
+            and reload_log.read_text().count("[RELOAD] resumed") > before_reloads
             and answers > before_answers
             and "esc to interrupt" not in screen.lower()
         )
@@ -914,7 +915,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The invocation changes the saved routing controls,
-    completes the server restart, and produces a parent answer.
+    completes the conversation reload, and produces a parent answer.
     The uniquely tagged calculation completes in a native child session, shows no
     subagent-routing banner, and produces no live gateway decision. The control interposer starts without first-prompt model routing.
     """
@@ -958,7 +959,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. Each invocation changes the saved routing controls
-    (off, then restored), completes a server restart, and produces a parent answer.
+    (off, then restored), completes a conversation reload, and produces a parent answer.
     Each uniquely tagged calculation completes in a native child session. The
     first and third show the subagent-routing banner (including [orchestrator on] when
     orchestration is enabled) and produce one live gateway decision correlated with that child;
@@ -1041,7 +1042,7 @@ def _assert_codex_inference_recipes(
             for request in inferences
             if continuation in json.dumps(request.payload.get("input", []))
         ]
-        assert resumed, "No inference from the restart's continuation turn"
+        assert resumed, "No inference from the reload's continuation turn"
         inferences = [request for request in inferences if request.sequence >= resumed[0].sequence]
     assert {request.headers["thread-id"] for request in inferences} == set(thread_ids)
     evidence = []
@@ -1078,7 +1079,7 @@ def test_smart_router_codex_agent_navigation_preserves_running_child(
 ):
     """Scenario: open a running child and return to the main agent without a routing toggle.
 
-    Expected: navigation never restarts the server, interrupts the command, or injects a
+    Expected: navigation never reloads conversations, interrupts the command, or injects a
     routing continuation. The original child completes its command exactly once and
     answers under its original ID; the parent accepts another turn. Reproduces on 0.167.0.
     """
@@ -1169,11 +1170,11 @@ def test_smart_router_codex_agent_navigation_preserves_running_child(
             lambda screen: "esc to interrupt" in screen.lower() or "unavailable" in screen.lower(),
             "running child view",
         )
-        assert "[RESTART" not in reload_log.read_text(), reload_log.read_text()
+        assert "[RELOAD" not in reload_log.read_text(), reload_log.read_text()
         assert not (session.cwd / "command-finished").exists()
         select_agent("Main")
         tui.wait_for(lambda screen: f"root-ready-{marker}" in screen, "original parent view")
-        assert "[RESTART" not in reload_log.read_text(), reload_log.read_text()
+        assert "[RELOAD" not in reload_log.read_text(), reload_log.read_text()
 
         (session.cwd / "release-child").write_text("release")
         tui.wait_for(
@@ -1192,12 +1193,130 @@ def test_smart_router_codex_agent_navigation_preserves_running_child(
             timeout=120,
         )
         assert _codex_thread_ids(session) == initial
-        assert "[RESTART" not in reload_log.read_text(), reload_log.read_text()
+        assert "[RELOAD" not in reload_log.read_text(), reload_log.read_text()
         for records in agent_sessions(session, "codex").values():
             assert not any(row.get("payload", {}).get("type") == "turn_aborted" for row in records)
-            assert "UG restarted the app-server" not in json.dumps(records)
+            assert "UG reloaded this conversation" not in json.dumps(records)
         session.record("navigation-thread-identities.json", initial)
         tui.exit_normally()
+
+
+def _codex_app_server_pids(tui):
+    if os.name == "nt":
+        output = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine "
+                "| ConvertTo-Json -Compress",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout
+        processes = [
+            (row["ProcessId"], row["ParentProcessId"], row.get("CommandLine") or "")
+            for row in json.loads(output)
+        ]
+    else:
+        output = subprocess.run(
+            ["ps", "-eww", "-o", "pid=,ppid=,args="],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        processes = [
+            (int(pid), int(parent), args)
+            for line in output.splitlines()
+            for pid, parent, args in [line.strip().split(None, 2)]
+        ]
+    descendants = {tui.child.child.pid}
+    while True:
+        children = {pid for pid, parent, _ in processes if parent in descendants}
+        if children <= descendants:
+            break
+        descendants.update(children)
+    servers = sorted(
+        pid
+        for pid, _, command in processes
+        if pid in descendants and "app-server" in command.split()
+    )
+    assert servers, "No native app-server under the launched ug process"
+    return servers
+
+
+@pytest.mark.live
+@pytest.mark.codex
+@pytest.mark.managed_fixture
+@pytest.mark.codex_smart_routing
+def test_smart_router_codex_reload_without_children_updates_inference(
+    live_session, workspace, tmp_path
+):
+    """Scenario: toggle off/on through the installed skill while no children exist.
+
+    Expected: real parent inference uses current header/body attribution after each
+    toggle. App-server PIDs, the TUI connection, and root ID stay unchanged; no child
+    is spawned. The real TUI exits normally with its default sandbox intact.
+    """
+    session = live_session
+    _select_smart_router_version(session, "codex", workspace, tmp_path, False, "subagent_only_v1")
+    with TuiRequestRecorder(workspace) as recorder:
+        session.run(
+            "configure",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
+        )
+        with AgentTerminal(
+            session, "codex", [str(session.binary), "codex"], "reload-no-children"
+        ) as tui:
+            tui.boot()
+            server_pids = _codex_app_server_pids(tui)
+            session.record("app-server-launch-pids.json", server_pids)
+            marker = fresh_id()
+            tui.submit(f"Reply exactly ready-{marker}. Do not use tools or delegate.")
+            tui.wait_for(
+                lambda _: (
+                    len(threads := _codex_thread_ids(session)) == 1
+                    and _codex_thread_answered(session, threads["/root"], f"ready-{marker}")
+                ),
+                "initial parent answer",
+                timeout=120,
+            )
+            original = _codex_thread_ids(session)
+            requests = [r for r in recorder.requests_after(0) if r.path.endswith("/responses")]
+            metadata = requests[0].payload["client_metadata"]["x-codex-turn-metadata"]
+            metadata = json.loads(metadata) if isinstance(metadata, str) else metadata
+            launch_recipe = metadata["smart_router_recipe_name"]
+            assert launch_recipe and launch_recipe != "DISABLED"
+            for enabled, recipe in ((False, "DISABLED"), (True, launch_recipe)):
+                checkpoint = recorder.checkpoint()
+                _toggle_with_skill(
+                    tui, session, "codex", enabled=enabled, orchestration_enabled=False
+                )
+                state = "on" if enabled else "off"
+                assert _codex_app_server_pids(tui) == server_pids
+                assert _codex_thread_ids(session) == original
+                session.record(
+                    f"recipe-{state}.json",
+                    _assert_codex_inference_recipes(
+                        session,
+                        recorder,
+                        checkpoint,
+                        original.values(),
+                        recipe,
+                        continuation=f"Smart Router is now {state}. UG reloaded",
+                    ),
+                )
+            log = (session.home / ".ucode/codex-v2-interposer.log").read_text()
+            assert log.count("[CONN] TUI connected") == 1
+            assert log.count("[RELOAD] resumed") == 2
+            tui.exit_normally()
 
 
 @pytest.mark.live
@@ -1211,14 +1330,15 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
 
     Expected: every resumed parent/child inference carries the new recipe in body metadata
     and the header (Windows permits an absent header). All original IDs and permissions
-    survive; resumed commands write exclusive completion receipts before children deliver
+    survive; app-server PIDs and the TUI connection stay unchanged. Resumed commands
+    write exclusive completion receipts before children deliver
     their own final answers. Newly spawned children inherit the current recipe.
     Windows uses native approval for the exact toggle command;
     the workspace-write sandbox stays enabled. Requires real gateway responses and a normal TUI exit.
     """
     session = live_session
     _select_smart_router_version(session, "codex", workspace, tmp_path, True, "subagent_orch_v1")
-    # User-owned native preferences; ug must preserve them through configure and restart.
+    # User-owned native preferences; ug must preserve them through configure and reload.
     native_config = session.home / ".codex/config.toml"
     native_config.parent.mkdir(parents=True, exist_ok=True)
     approval_policy = "on-request" if os.name == "nt" else "never"
@@ -1262,14 +1382,14 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             for path, tid in threads.items()
         )
 
-    def wait_for_restart(tui, expected_recipe, description):
+    def wait_for_reload(tui, expected_recipe, description):
         approval_sent = False
         flag = (
             "--disable-smart-routing" if expected_recipe == "DISABLED" else "--enable-smart-routing"
         )
         command = f'& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex {flag}'
 
-        def restarted(screen):
+        def reloaded(screen):
             nonlocal approval_sent
             if (
                 os.name == "nt"
@@ -1281,7 +1401,7 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                 return False
             return f"recipe={expected_recipe}" in reload_log.read_text()[log_checkpoint:]
 
-        tui.wait_for(restarted, description, timeout=120)
+        tui.wait_for(reloaded, description, timeout=120)
 
     with TuiRequestRecorder(workspace) as recorder:
         session.run(
@@ -1296,6 +1416,8 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             session, "codex", [str(session.binary), "codex"], "routing-reload"
         ) as tui:
             tui.boot()
+            app_server_pids = _codex_app_server_pids(tui)
+            session.record("app-server-launch-pids.json", app_server_pids)
             checkpoint = recorder.checkpoint()
             names = ("worker_a", "worker_b")
             assignments = {name: assignment("off", name) for name in names}
@@ -1346,11 +1468,14 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             reload_log = session.home / ".ucode/codex-v2-interposer.log"
             log_checkpoint = len(reload_log.read_text())
             tui.submit("$smart-router off")
-            wait_for_restart(
+            wait_for_reload(
                 tui,
                 "DISABLED",
-                "server restarted while both child commands were running",
+                "conversations reloaded while both child commands were running",
             )
+            off_pids = _codex_app_server_pids(tui)
+            assert off_pids == app_server_pids
+            session.record("app-server-off-pids.json", off_pids)
             (session.cwd / "release-off").write_text("release")
             tui.wait_for(
                 lambda _: children_finished("off", original_children),
@@ -1374,7 +1499,7 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                     off_checkpoint,
                     off_threads.values(),
                     "DISABLED",
-                    continuation="Smart Router is now off. UG restarted",
+                    continuation="Smart Router is now off. UG reloaded",
                 ),
             )
 
@@ -1403,11 +1528,14 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
             on_checkpoint = recorder.checkpoint()
             log_checkpoint = len(reload_log.read_text())
             tui.submit("$smart-router on")
-            wait_for_restart(
+            wait_for_reload(
                 tui,
                 recipe,
-                "server restarted while all three child commands were running",
+                "conversations reloaded while all three child commands were running",
             )
+            on_pids = _codex_app_server_pids(tui)
+            assert on_pids == app_server_pids
+            session.record("app-server-on-pids.json", on_pids)
             (session.cwd / "release-on").write_text("release")
             tui.wait_for(
                 lambda _: children_finished("on", existing_children),
@@ -1419,6 +1547,18 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                 "parent idle after continuing all children",
                 timeout=180,
             )
+            session.record(
+                "recipe-on-existing-children.json",
+                _assert_codex_inference_recipes(
+                    session,
+                    recorder,
+                    on_checkpoint,
+                    off_threads.values(),
+                    recipe,
+                    continuation="Smart Router is now on. UG reloaded",
+                ),
+            )
+            assert reload_log.read_text().count("[CONN] TUI connected") == 1
             _run_calculation(tui, session, "codex", "2+2", "4", True, routed=True)
             on_threads = _codex_thread_ids(session)
             assert len(on_threads) == 5, on_threads
@@ -1431,9 +1571,12 @@ def test_smart_router_codex_reload_updates_parent_and_existing_child_inference(
                     on_checkpoint,
                     on_threads.values(),
                     recipe,
-                    continuation="Smart Router is now on. UG restarted",
+                    continuation="Smart Router is now on. UG reloaded",
                 ),
             )
+            assert _codex_app_server_pids(tui) == app_server_pids
+            assert reload_log.read_text().count("[CONN] TUI connected") == 1
+            session.record("app-server-pids.json", app_server_pids)
             session.record("thread-identities.json", on_threads)
             session.record(
                 "child-completion-receipts.json",

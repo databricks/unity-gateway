@@ -333,10 +333,28 @@ class TestLaunchCodex:
                 self.pid = 42000 + len(processes)
                 self.kwargs = kwargs
                 self.terminated = False
+                self.waits = 0
                 processes.append(self)
 
+            def poll(self):
+                return None
+
             def wait(self, timeout=None):
-                return 7 if "--remote" in self.argv else 0
+                if "--remote" not in self.argv:
+                    return 0
+                self.waits += 1
+                if self.waits <= 2:
+                    controls = interposer_args["kwargs"]["session_controls"]
+                    controls.write_text(
+                        json.dumps(
+                            {
+                                v2.ENABLE_SMART_ROUTING_ENV_VAR: str(self.waits - 1),
+                                v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR: str(self.waits - 1),
+                            }
+                        )
+                    )
+                    raise subprocess.TimeoutExpired(self.argv, timeout)
+                return 7
 
             def terminate(self):
                 self.terminated = True
@@ -386,6 +404,8 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 7
+        assert len(processes) == 2
+        assert processes[1].waits == 3
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
@@ -509,7 +529,7 @@ class TestLaunchCodex:
         assert "eng-ml-inference" in provider_arg
 
     @pytest.mark.parametrize("codex_launch_processes", ["posix", "nt"], indirect=True)
-    def test_subagent_only_launch_enables_restart_without_first_prompt_routing(
+    def test_subagent_only_launch_enables_reload_without_first_prompt_routing(
         self, tmp_path, monkeypatch, codex_launch_processes
     ):
         user_config = tmp_path / "config.toml"
@@ -551,7 +571,8 @@ class TestLaunchCodex:
         assert processes[0].terminated
         assert interposer_options["workspace"] is None
         assert interposer_options["token_provider"] is None
-        assert interposer_options["restart_notices"].empty()
+        assert interposer_options["reload_config"]["thread_unload_delay_secs"] == 0
+        assert interposer_options["session_controls"].exists()
         config = tomllib.loads("\n".join(argv[3:-2:2]))
         assert config["responses_api_metadata"]["smart_router_recipe_name"] == "stable"
         assert 'model="gpt-start"' in argv

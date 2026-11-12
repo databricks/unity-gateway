@@ -1154,6 +1154,9 @@ def main() -> int:
                 "UG_INTEGRATION_PARENT_SCHEMA": args.parent_schema,
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
+                "UCODE_TEST_CODEX_ROUTING_FIXTURE": os.environ.get(
+                    "UCODE_TEST_CODEX_ROUTING_FIXTURE", ""
+                ),
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
                 "DATABRICKS_BEARER": bearer,
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",

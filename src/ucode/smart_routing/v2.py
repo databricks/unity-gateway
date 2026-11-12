@@ -14,7 +14,6 @@ from collections.abc import Callable, Mapping, MutableMapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from queue import SimpleQueue
 from tempfile import TemporaryDirectory
 from typing import NoReturn, TextIO
 
@@ -978,8 +977,9 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    from ucode.smart_routing.codex_reload import routing_config, session_routing_enabled
+    from ucode.smart_routing.codex_reload import routing_config
 
+    overlay["thread_unload_delay_secs"] = 0
     overlay = routing_config(overlay, enabled=True)
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
@@ -990,14 +990,14 @@ def launch_codex(
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
-    def start_app_server(enabled: bool):
+    def start_app_server():
         CODEX_APP_SERVER_LOG.parent.mkdir(parents=True, exist_ok=True)
         with CODEX_APP_SERVER_LOG.open("a", encoding="utf-8") as stderr:
             return subprocess_cross_os.popen(
                 [
                     binary,
                     "app-server",
-                    *codex_config_args(routing_config(overlay, enabled)),
+                    *codex_config_args(overlay),
                     "--listen",
                     app_server_url,
                 ],
@@ -1008,10 +1008,7 @@ def launch_codex(
                 start_new_session=os.name != "nt",
             )
 
-    app_server = start_app_server(enabled=True)
-    restart_notices: SimpleQueue[str] = SimpleQueue()
-    applied = True
-    controls_unreadable = False
+    app_server = start_app_server()
     tui = None
     stop_interposer = None
     try:
@@ -1027,7 +1024,8 @@ def launch_codex(
             token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
-            restart_notices=restart_notices,
+            reload_config=overlay,
+            session_controls=session_env_path,
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []
@@ -1056,32 +1054,6 @@ def launch_codex(
                             f"see {CODEX_APP_SERVER_LOG}. Restart ug codex and resume "
                             "your saved conversation."
                         ) from None
-                    try:
-                        enabled = session_routing_enabled(session_env_path)
-                    except (OSError, UnicodeError, ValueError) as exc:
-                        if not controls_unreadable:
-                            print_warning(
-                                f"Could not read Smart Router controls at {session_env_path}: {exc}. "
-                                "Keeping the current routing state; retrying automatically."
-                            )
-                        controls_unreadable = True
-                        continue
-                    controls_unreadable = False
-                    if enabled == applied:
-                        continue
-                    _stop_codex_process(app_server, process_tree=True, port=app_port)
-                    restart_notices.put(
-                        routing_config(overlay, enabled)["responses_api_metadata"][
-                            "smart_router_recipe_name"
-                        ]
-                    )
-                    app_server = start_app_server(enabled)
-                    if not _wait_for_app_server(app_port, timeout=APP_SERVER_READY_TIMEOUT_SECONDS):
-                        raise RuntimeError(
-                            "Codex app-server restart failed. Restart ug codex and resume "
-                            "your saved conversation; check workspace auth."
-                        ) from None
-                    applied = enabled
         except KeyboardInterrupt:
             tui.send_signal(signal.SIGINT)
             try:
