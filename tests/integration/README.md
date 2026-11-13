@@ -36,12 +36,12 @@ New structured diagnostics exclude prompts, rationale, credentials, raw error me
 response bodies, and arbitrary headers. No production log store or exporter is installed.
 Existing command/transcript artifacts retain their existing redaction policy.
 
-`../test_routing_diagnostics.py` covers controlled transport failures and content-free
-request records. `../test_integration_contract.py` checks diagnostic retention after a
-real refused local connection. The native mod component tests check captured-stderr
+`../test_integration_contract.py` checks diagnostic retention after a real refused
+local connection. The native mod component tests check captured-stderr
 forwarding and unchanged fallback behavior. A native command without inference verifies
 that debug records reach the filtered artifact. These checks do not establish live gateway
 recovery or backend trace indexing.
+Detailed transport failure phases and hook context lifetimes are not covered by these checks.
 
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
