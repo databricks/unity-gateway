@@ -90,6 +90,19 @@ def test_agent_launch_drops_an_inherited_coding_agent(monkeypatch):
     assert os.environ["UG_HEADERS"] == "x-databricks-traffic-id: abc\nX-Env: 1"
 
 
+@pytest.mark.parametrize(
+    "args",
+    [["agy", "--help"], ["cursor", "--help"], []],
+    ids=["alias command", "cursor (not in TOOL_ALIASES)", "bare ug"],
+)
+def test_every_agent_launch_form_drops_an_inherited_coding_agent(monkeypatch, args):
+    monkeypatch.setattr("ucode.cli._launch_managed_default", lambda *_, **__: None)
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: claude-code\nX-Env: 1")
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "X-Env: 1"
+
+
 def test_agent_launch_keeps_its_own_coding_agent_header(monkeypatch):
     monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: codex")
     result = CliRunner().invoke(
