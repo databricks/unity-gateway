@@ -3,7 +3,8 @@
 Launchers such as isaac run ``ug --version`` on every start. Importing ``ucode.cli`` (Typer, Rich,
 questionary, every subcommand module) costs far more than printing the version, so a bare version
 request is answered here without importing it. The per-agent MCP proxy also skips agent setup
-imports. Other invocations go to ``ucode.cli.main``.
+imports. Agents such as pi run `ug auth-token` before every model request, so a cached bearer
+(``ucode.token_cache``) is printed here too. Other invocations go to ``ucode.cli.main``.
 """
 
 from __future__ import annotations
@@ -73,6 +74,19 @@ def main() -> None:
 
         proxy_main()
         return
+
+    if sys.argv[1:2] == ["auth-token"]:
+        from ucode import auth_token_log
+        from ucode.token_cache import fast_path_token
+
+        # Installed before the cache check so a caller's timeout is logged at whichever stage.
+        auth_token_log.log_if_killed(sys.argv[2:])
+        auth_token_log.set_stage("checking the token cache")
+        token = fast_path_token(sys.argv[1:])
+        if token:
+            sys.stdout.write(token + "\n")
+            return
+        auth_token_log.set_stage("loading the ug CLI")
 
     from ucode.cli import main as cli_main
 

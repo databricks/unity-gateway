@@ -27,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import auth_token_log, custom_oauth, token_cache
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -86,6 +86,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    BearerCommandError,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -3040,6 +3041,13 @@ def claude_desktop_auth_cmd(
         sys.stdout.write(json.dumps(credential, separators=(",", ":")) + "\n")
 
 
+# A caller that kills the helper (`--caller-timeout`, which pi's apiKey passes) leaves this much
+# of its timeout for interpreter start-up, so a slow CLI fails with ug's logged error first.
+AUTH_TOKEN_STARTUP_HEADROOM_SECONDS = 3.0
+# Nobody waits on the background refresher (`--refresh-cache`), but it must not linger.
+AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS = 30.0
+
+
 @app.command("auth-token", hidden=True)
 def auth_token_cmd(
     host: Annotated[
@@ -3056,6 +3064,25 @@ def auth_token_cmd(
         typer.Option("--force-refresh", help="Force the Databricks CLI to mint a new token."),
     ] = False,
     browser_login: Annotated[bool, typer.Option("--browser-login", hidden=True)] = False,
+    caller_timeout: Annotated[
+        float | None,
+        typer.Option(
+            "--caller-timeout",
+            hidden=True,
+            min=0.0,
+            help="Seconds after which the caller kills this command. Bounds the Databricks CLI "
+            "calls to fit, ending a timed-out call's whole process tree.",
+        ),
+    ] = None,
+    refresh_cache: Annotated[
+        bool,
+        typer.Option(
+            "--refresh-cache",
+            hidden=True,
+            help="Re-read the token through the Databricks CLI into ug's cache and print "
+            "nothing. Started in the background when a cached token is due for a re-check.",
+        ),
+    ] = False,
     client_id: Annotated[
         str | None,
         typer.Option(
@@ -3085,11 +3112,21 @@ def auth_token_cmd(
     and Codex's auth command on every token refresh. It is not meant for
     interactive use. All token logic (DATABRICKS_BEARER short-circuit, PAT
     profiles, OAuth refresh) lives in `get_databricks_token`, so the same
-    binary works on macOS, Linux, and Windows without any POSIX shell."""
+    binary works on macOS, Linux, and Windows without any POSIX shell.
+
+    CLI-minted OAuth tokens are cached in ``ucode.token_cache``; ``ucode.entrypoint`` serves a hit
+    for the plain ``--host H [--profile P] [--caller-timeout S]`` form before this module is
+    imported. A miss fits the CLI calls inside ``--caller-timeout`` when the caller sets one
+    (unless ``--browser-login`` asks for an interactive sign-in) and logs failures to
+    ``~/.ucode/auth-token-errors.log``."""
     import sys
+    import time
 
     if client_id is not None and use_pat:
         print_err("--client-id cannot be combined with --use-pat.")
+        raise typer.Exit(1)
+    if client_id is not None and refresh_cache:
+        print_err("--client-id cannot be combined with --refresh-cache.")
         raise typer.Exit(1)
     if redirect_url is not None and client_id is None:
         print_err("--redirect-url requires --client-id.")
@@ -3124,6 +3161,9 @@ def auth_token_cmd(
     try:
         if client_id is not None:
             assert scopes is not None
+            auth_token_log.set_stage(
+                "fetching a custom OAuth client token", host=workspace, profile=profile
+            )
             token = custom_oauth.get_custom_client_token(
                 workspace,
                 client_id=client_id,
@@ -3135,12 +3175,54 @@ def auth_token_cmd(
                 force_refresh=force_refresh,
             )
         else:
-            token = get_databricks_token(
-                workspace, profile, force_refresh=force_refresh, browser_login=browser_login
-            )
+            # token_cache is a no-op when DATABRICKS_BEARER(_COMMAND) owns auth, including the
+            # bearer the --use-pat branch just exported, so only CLI-minted OAuth tokens are cached.
+            # A served entry that is due for a re-check starts the background refresher.
+            skip_cache = force_refresh or refresh_cache
+            cached = None if skip_cache else token_cache.serve(workspace, profile)
+            if cached:
+                token = cached
+            else:
+                auth_token_log.set_stage(
+                    "waiting for `databricks auth token`", host=workspace, profile=profile
+                )
+                # A login that clears the cache during this fetch must win over its result.
+                fetch_started = time.time()
+                if browser_login:
+                    budget = None  # a person may be signing in through the browser
+                elif refresh_cache:
+                    budget = AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS
+                elif caller_timeout is not None:
+                    budget = max(1.0, caller_timeout - AUTH_TOKEN_STARTUP_HEADROOM_SECONDS)
+                else:
+                    budget = None  # each CLI call keeps its own timeout, as before
+                # Headless helper: skip the `auth login --no-browser` fallback, whose URL
+                # nobody sees here.
+                token = get_databricks_token(
+                    workspace,
+                    profile,
+                    force_refresh=force_refresh,
+                    browser_login=browser_login,
+                    budget_seconds=budget,
+                    allow_reauth=False,
+                )
+                token_cache.write(workspace, profile, token, fetch_started=fetch_started)
     except RuntimeError as exc:
-        print_err(str(exc))
+        message = str(exc)
+        # The log persists, so a bearer command's text and stderr (which may hold a credential)
+        # stay on stderr only.
+        logged = exc.summary if isinstance(exc, BearerCommandError) else message
+        # A failed background refresh failed no request: its caller was already served the
+        # cached token. Label it so the log says so.
+        auth_token_log.log_failure(
+            workspace,
+            profile,
+            f"background refresh failed: {logged}" if refresh_cache else logged,
+        )
+        print_err(message)
         raise typer.Exit(1) from None
+    if refresh_cache:
+        return  # the cache is the output; nothing reads this process's stdout
     # Write the bare token (with trailing newline) to stdout — nothing else may
     # land on stdout or the consuming agent will treat it as part of the token.
     sys.stdout.write(token + "\n")
@@ -3226,18 +3308,10 @@ def otel_headers_cmd(
 
 
 def _oauth_token_is_fresh(token: str, buffer_seconds: float = 120) -> bool:
-    import base64
-    import binascii
-    import json
     import time
 
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        expires_at = float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
-    except (IndexError, KeyError, TypeError, ValueError, binascii.Error, json.JSONDecodeError):
-        return False
-    return time.time() < expires_at - buffer_seconds
+    expires_at = token_cache.token_expiry(token)
+    return expires_at is not None and time.time() < expires_at - buffer_seconds
 
 
 def _router_hook_token(host: str, profile: str | None, use_pat: bool) -> str | None:

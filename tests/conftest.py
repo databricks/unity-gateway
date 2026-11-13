@@ -40,12 +40,14 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     privileged writer for an OS-managed agent config.
     """
     import ucode.agents as agents_mod
+    import ucode.auth_token_log as auth_token_log_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    import ucode.token_cache as token_cache_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
@@ -58,6 +60,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
+    monkeypatch.setattr(token_cache_mod, "CACHE_DIR", state_dir / "token-cache")
+    monkeypatch.setattr(token_cache_mod, "STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(auth_token_log_mod, "LOG_PATH", state_dir / "auth-token-errors.log")
+    # A real background refresher is a separate process that sees none of these patches: it would
+    # run the developer's Databricks CLI and write their real ~/.ucode token cache.
+    monkeypatch.setattr(token_cache_mod, "_spawn_detached", lambda argv: None)
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
@@ -200,8 +208,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # into a test that assumes a bare "databricks" or a specific fake CLI.
     databricks_mod.clear_databricks_cli_cache()
     # Tokens and token failures are memoized for the process; a fake CLI's answer
-    # in one test must not satisfy (or fail) a fetch in the next.
-    databricks_mod.clear_databricks_token_cache()
+    # in one test must not satisfy (or fail) a fetch in the next. Only the memo: clearing the
+    # (empty, per-test) disk cache would record an invalidation file in every test's home.
+    databricks_mod._clear_token_memo()
 
 
 def _workspace() -> str:

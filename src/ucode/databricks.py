@@ -4,6 +4,8 @@ discovery, Unity Gateway checks, and URL builders."""
 from __future__ import annotations
 
 import configparser
+import contextlib
+import contextvars
 import functools
 import json
 import logging
@@ -33,6 +35,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode import token_cache
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -85,6 +88,7 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+_BUDGET_SPENT = "the time budget for `databricks auth token` ran out"
 # Only explicit credential refusals justify a negative memo; unknown CLI errors
 # can be network, VPN, or service failures that the next call should retry.
 _TOKEN_CREDENTIAL_FAILURE_MARKERS = (
@@ -240,14 +244,52 @@ def _scrub_json(value: object) -> object:
     return value
 
 
+# A ``time.monotonic()`` deadline for the Databricks CLI calls made in this context, set by
+# ``get_databricks_token(budget_seconds=...)``. CLI discovery, profile listing and token fetches
+# read it through ``_time_left``; ``run`` then ends a timed-out command's whole process tree.
+_CLI_DEADLINE: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "ucode_databricks_cli_deadline", default=None
+)
+
+
+@contextlib.contextmanager
+def _cli_deadline(seconds: float | None):
+    """Bound the CLI calls made in this block to ``seconds`` from now; nesting only narrows it."""
+    if seconds is None:
+        yield
+        return
+    deadline = time.monotonic() + seconds
+    outer = _CLI_DEADLINE.get()
+    reset = _CLI_DEADLINE.set(deadline if outer is None else min(deadline, outer))
+    try:
+        yield
+    finally:
+        _CLI_DEADLINE.reset(reset)
+
+
+def _time_left(default: float) -> float:
+    """``default`` seconds, capped by the current CLI deadline (zero or less once it has passed)."""
+    deadline = _CLI_DEADLINE.get()
+    return default if deadline is None else min(default, deadline - time.monotonic())
+
+
 @functools.cache
 def _log_auth_diagnostics() -> None:
     """Dump CLI version, profiles, and ~/.databrickscfg (scrubbed) to the debug log.
 
-    No-op unless UCODE_DEBUG=1; cached so it runs at most once per process."""
+    No-op unless UCODE_DEBUG=1; cached so it runs at most once per process. Under a CLI deadline
+    the CLI probes are skipped, so debugging never spends a headless helper's budget."""
     if not _debug_enabled():
         return
 
+    if _CLI_DEADLINE.get() is None:
+        _log_cli_diagnostics()
+    else:
+        _debug("databricks --version", "skipped under the caller's time budget")
+    _log_databrickscfg()
+
+
+def _log_cli_diagnostics() -> None:
     try:
         version_result = subprocess_cross_os.run(
             [databricks_cli_path(), "--version"],
@@ -285,6 +327,8 @@ def _log_auth_diagnostics() -> None:
     except (OSError, subprocess.TimeoutExpired) as exc:
         _debug("databricks auth profiles", f"exception: {type(exc).__name__}: {exc}")
 
+
+def _log_databrickscfg() -> None:
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     try:
         if cfg_path.is_file():
@@ -735,7 +779,7 @@ def run(
     capture_output: bool = False,
     text: Literal[True],
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]: ...
 
 
@@ -747,7 +791,7 @@ def run(
     capture_output: bool = False,
     text: Literal[False] = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -758,8 +802,23 @@ def run(
     capture_output: bool = False,
     text: bool = False,
     env: dict[str, str] | None = None,
-    timeout: int | None = None,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    if (
+        isinstance(args, list)
+        and capture_output
+        and timeout is not None
+        and _CLI_DEADLINE.get() is not None
+    ):
+        # Under a caller's deadline a timeout must end the whole command, including a wrapper
+        # script's child that would otherwise keep its output open (a Windows `.cmd` shim).
+        return subprocess_cross_os.run_bounded(
+            args,
+            timeout=timeout,
+            check=check,
+            text=text,
+            env=env,
+        )
     return subprocess_cross_os.run(
         args,
         check=check,
@@ -852,8 +911,13 @@ def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
     Used only by discovery, which is what establishes ``path`` in the first
     place — every other caller reads a version through ``databricks_cli_path()``.
     """
+    timeout = _time_left(10)
+    if timeout <= 0:
+        return None
     try:
-        result = run([path, "--version"], check=False, capture_output=True, text=True, timeout=10)
+        result = run(
+            [path, "--version"], check=False, capture_output=True, text=True, timeout=timeout
+        )
     except (OSError, subprocess.TimeoutExpired):
         return None
     raw = result.stdout or result.stderr or ""
@@ -897,6 +961,10 @@ def _discover_databricks_clis(
     # Best-first: highest version wins. A stable sort keeps PATH order among equal
     # versions, and the None-version sentinel (unparseable) sinks below every real one.
     discovered.sort(key=lambda pv: pv[1] or (-1, -1, -1), reverse=True)
+    if _time_left(1.0) <= 0:
+        # A caller's deadline ran out during the walk, so later candidates were never probed
+        # and read as unparseable; a later call in this process must not inherit that order.
+        return discovered
     _DISCOVERED_DATABRICKS_CLIS_ORDERED = discovered
     return _DISCOVERED_DATABRICKS_CLIS_ORDERED
 
@@ -1303,15 +1371,19 @@ def list_profile_entries() -> list[dict]:
     Returns ``[]`` on any failure (CLI missing, timeout, non-zero exit, JSON
     decode error). When ``UCODE_DEBUG=1`` each dropout path logs *why* the
     result was empty so a silently-disappearing workspace picker is
-    diagnosable from ``~/.ucode/debug.log``.
+    diagnosable from ``~/.ucode/debug.log``. Under a spent CLI deadline nothing runs.
     """
+    timeout = _time_left(20)
+    if timeout <= 0:
+        _debug("list_profile_entries", "no time left to list profiles")
+        return []
     try:
         result = run(
             [databricks_cli_path(), "auth", "profiles", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _debug("list_profile_entries", f"subprocess error: {type(exc).__name__}: {exc}")
@@ -1531,6 +1603,17 @@ def ensure_databricks_auth(
     run_databricks_login(workspace, profile, workspace_id=workspace_id)
 
 
+class BearerCommandError(RuntimeError):
+    """``DATABRICKS_BEARER_COMMAND`` failed.
+
+    The message names the command and its stderr for the person reading it. ``summary`` leaves
+    both out, since either may hold a credential, for anything that persists the failure."""
+
+    def __init__(self, message: str, summary: str) -> None:
+        super().__init__(message)
+        self.summary = summary
+
+
 def _bearer_from_command(command: str) -> str:
     """Run ``DATABRICKS_BEARER_COMMAND`` and return the bearer it prints.
 
@@ -1553,9 +1636,10 @@ def _bearer_from_command(command: str) -> str:
             timeout=15,
         )
     except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-        raise RuntimeError(
+        raise BearerCommandError(
             f"DATABRICKS_BEARER_COMMAND could not be run: {type(exc).__name__}: {exc}. "
-            f"Command: {command}"
+            f"Command: {command}",
+            f"DATABRICKS_BEARER_COMMAND could not be run ({type(exc).__name__}).",
         ) from exc
     # Deliberately not _format_subprocess_result: that includes stdout on a
     # non-zero exit, and this command's stdout is the bearer itself.
@@ -1568,7 +1652,10 @@ def _bearer_from_command(command: str) -> str:
     # diagnostic, not a bearer, and forwarding it only resurfaces as a 401.
     reason = f"exited {result.returncode}" if result.returncode else "printed no token"
     detail = f" Stderr: {stderr}" if stderr else ""
-    raise RuntimeError(f"DATABRICKS_BEARER_COMMAND {reason}. Command: {command}.{detail}")
+    raise BearerCommandError(
+        f"DATABRICKS_BEARER_COMMAND {reason}. Command: {command}.{detail}",
+        f"DATABRICKS_BEARER_COMMAND {reason}.",
+    )
 
 
 @dataclass(frozen=True)
@@ -1589,7 +1676,16 @@ _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK = threading.Lock()
 
 
 def clear_databricks_token_cache() -> None:
-    """Forget memoized tokens and failures (after a login, and between tests)."""
+    """Forget memoized tokens and failures (after a login, and between tests).
+
+    Also drops the bearers `ug auth-token` cached on disk: a login may change the identity
+    behind a profile, and helper processes would otherwise keep serving the old one."""
+    _clear_token_memo()
+    token_cache.clear()
+
+
+def _clear_token_memo() -> None:
+    """Forget this process's memoized tokens and failures only."""
     global _TOKEN_CACHE_EPOCH
     with _TOKEN_MEMO_LOCK:
         _TOKEN_CACHE_EPOCH += 1
@@ -1762,6 +1858,7 @@ def _get_databricks_token_for_profile(
     *,
     force_refresh: bool,
     browser_login: bool,
+    allow_reauth: bool,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     if not force_refresh:
@@ -1799,6 +1896,7 @@ def _get_databricks_token_for_profile(
             force_refresh=force_refresh,
             browser_login=browser_login,
             token_epoch=token_epoch,
+            allow_reauth=allow_reauth,
         )
 
 
@@ -1809,6 +1907,7 @@ def _fetch_databricks_token_for_profile(
     force_refresh: bool,
     browser_login: bool,
     token_epoch: int,
+    allow_reauth: bool = True,
 ) -> str:
     memo_key = _token_memo_key(workspace, profile)
     env = build_databricks_cli_env(workspace, profile)
@@ -1836,11 +1935,20 @@ def _fetch_databricks_token_for_profile(
     # Treat unknown failures as transient unless the CLI explicitly identifies
     # invalid or missing credentials.
     transient_failure = True
+    # ug's own reason for a failed fetch (timeout, budget, bad JSON), named in the final error,
+    # which headless helpers log because their callers hide stderr. CLI stderr is left out: its
+    # generic `auth login` advice also follows network failures.
+    cause = ""
 
     def _fetch() -> tuple[str, float | None, str]:
         """Return (access_token, lifetime_s, diagnostics). token is '' on failure."""
-        nonlocal transient_failure
+        nonlocal transient_failure, cause
         transient_failure = True
+        cause = ""
+        timeout = _time_left(15.0)
+        if timeout <= 0:
+            cause = _BUDGET_SPENT
+            return "", None, cause
         try:
             result = run(
                 cmd,
@@ -1848,7 +1956,7 @@ def _fetch_databricks_token_for_profile(
                 capture_output=True,
                 text=True,
                 env=env,
-                timeout=15,
+                timeout=timeout,
             )
             _debug("auth token", _format_subprocess_result(result))
             if result.returncode == 0:
@@ -1861,8 +1969,13 @@ def _fetch_databricks_token_for_profile(
                 marker in diagnostics.lower() for marker in _TOKEN_CREDENTIAL_FAILURE_MARKERS
             )
             return "", None, diagnostics
-        except (subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+        except subprocess.TimeoutExpired as exc:
             _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
+            cause = f"`databricks auth token` timed out after {timeout:.1f}s"
+            return "", None, str(exc)
+        except json.JSONDecodeError as exc:
+            _debug("auth token", f"exception: {type(exc).__name__}: {exc}")
+            cause = "`databricks auth token` returned invalid JSON"
             return "", None, str(exc)
 
     def _fetch_with_lock_retry() -> tuple[str, float | None]:
@@ -1873,7 +1986,7 @@ def _fetch_databricks_token_for_profile(
         held only for the brief cache write, so a short jittered backoff almost
         always wins the next attempt. A non-lock failure returns '' immediately
         so the caller can fall through to the re-auth path."""
-        nonlocal transient_failure
+        nonlocal transient_failure, cause
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
             token, lifetime_s, diagnostics = _fetch()
             if token:
@@ -1883,14 +1996,19 @@ def _fetch_databricks_token_for_profile(
             _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
             transient_failure = True
             if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
-                time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
+                pause = random.uniform(0.05, 0.1 * (2**attempt))
+                if _time_left(pause) < pause:
+                    # No attempt could start inside the budget after this pause.
+                    cause = _BUDGET_SPENT
+                    return "", None
+                time.sleep(pause)
         return "", None
 
     token, lifetime_s = _fetch_with_lock_retry()
     if not token and browser_login and not transient_failure:
         # A desktop app's helper has no terminal to finish a non-browser login.
         token, lifetime_s = _browser_login(workspace, profile, env, _fetch_with_lock_retry)
-    elif not token and _auth_login_supports_no_browser(cli):
+    elif not token and allow_reauth and _auth_login_supports_no_browser(cli):
         # Session may have expired — attempt non-interactive re-auth and retry once.
         _debug("auth token", "empty on first fetch; attempting auth login --no-browser")
         try:
@@ -1920,18 +2038,22 @@ def _fetch_databricks_token_for_profile(
                 token, lifetime_s = _fetch_with_lock_retry()
             else:
                 _debug("auth login", f"returned non-zero status {reauth.returncode}")
-    elif not token:
+    elif not token and allow_reauth:
         _debug("auth token", "empty on first fetch; CLI has no `auth login --no-browser`")
 
     if not token:
-        error = f"Databricks CLI returned no access token for {workspace}. "
+        error = f"Databricks CLI returned no access token for {workspace}"
+        error += f" ({cause}). " if cause else ". "
         if transient_failure:
             error += (
                 "Retry the request and check network connectivity or Databricks CLI diagnostics."
             )
         else:
             error += "Run `databricks auth login` to re-authenticate."
-            profile_name = profile or find_profile_name_for_host(workspace)
+            # Under a deadline the profile was already looked up from the host before fetching.
+            profile_name = profile
+            if not profile_name and _CLI_DEADLINE.get() is None:
+                profile_name = find_profile_name_for_host(workspace)
             if profile_name:
                 error += (
                     " The saved Databricks CLI profile may be stale or invalid. Try:\n"
@@ -1953,7 +2075,17 @@ def get_databricks_token(
     *,
     force_refresh: bool = False,
     browser_login: bool = False,
+    budget_seconds: float | None = None,
+    allow_reauth: bool = True,
 ) -> str:
+    """Return a Databricks bearer for ``workspace``.
+
+    ``budget_seconds`` caps the total time spent in Databricks CLI calls (CLI discovery, profile
+    lookup and `databricks auth token` across cache-lock retries) for a caller under a hard
+    deadline; a call that runs out of time is ended with its whole process tree.
+    ``allow_reauth=False`` skips the `auth login --no-browser` fallback, whose URL nobody sees
+    when the caller is a headless helper.
+    """
     # ``DATABRICKS_BEARER`` is the CI escape hatch: when set, skip the
     # `databricks auth token` subprocess entirely and return the pre-fetched
     # bearer directly. Used by the e2e job, where the protected runner has
@@ -1973,16 +2105,22 @@ def get_databricks_token(
     if command:
         return _bearer_from_command(command)
 
-    _log_auth_diagnostics()
-    # See has_valid_databricks_auth: resolve the profile from the host when
-    # the caller didn't supply one, so duplicate-host cfgs don't break us.
-    profile = profile or find_profile_name_for_host(workspace)
-    return _get_databricks_token_for_profile(
-        workspace,
-        profile,
-        force_refresh=force_refresh,
-        browser_login=browser_login,
-    )
+    with _cli_deadline(budget_seconds):
+        _log_auth_diagnostics()
+        # See has_valid_databricks_auth: resolve the profile from the host when
+        # the caller didn't supply one, so duplicate-host cfgs don't break us.
+        if not profile:
+            # Under a budget the listing gets half of what is left; `databricks auth token`
+            # can find the host's profile itself if the listing runs out of time.
+            with _cli_deadline(None if budget_seconds is None else _time_left(budget_seconds) / 2):
+                profile = find_profile_name_for_host(workspace)
+        return _get_databricks_token_for_profile(
+            workspace,
+            profile,
+            force_refresh=force_refresh,
+            browser_login=browser_login,
+            allow_reauth=allow_reauth,
+        )
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
