@@ -9,7 +9,11 @@ lifecycle test additionally checks the on-disk bundles, since removal-on-reconci
 that has no steady-state `/skills` signal.
 """
 
+import json
+import shutil
+
 import pytest
+from utils.evidence import FileTask
 from utils.managed import use_managed_config_fixture
 from utils.terminal import AgentTerminal
 
@@ -118,3 +122,121 @@ def test_managed_skills_reconcile_lifecycle(live_session, workspace):
     remaining = _bundles_on_disk(session)
     assert remaining == {DEVELOPER_SKILL}, remaining
     assert not (managed_bundles & remaining), "managed skills should have been reconciled away"
+
+
+@pytest.mark.managed_fixture
+@pytest.mark.codex
+@pytest.mark.tui
+def test_ug_codex_repairs_shared_project_skill_downloads(live_session, workspace):
+    """Scenario: download one real UC skill into three projects, then remove one root in two.
+
+    Expected: the first normal Codex launch repairs both partial installs, preserves the current
+    install and every source attribution, and completes a real TUI file task. The normal ug debug
+    log shows one successful metadata GET and one successful bundle-root directory GET. Only the admin
+    config INPUT uses the existing fixture; skill APIs, downloads, state, and agent stay real.
+    """
+    session = live_session
+    use_managed_config_fixture(session, "codex_skills_by_location")
+    session.run(
+        "configure",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
+    )
+    source = f"main.default.{SKILL_NAME}"
+    projects = [session.cwd / name for name in ("current", "repair-claude", "repair-codex")]
+    for project in projects:
+        project.mkdir()
+        session.run("skills", "add", "--names", source, "--path", str(project), timeout=240)
+
+    manifest_path = session.home / ".ucode/skills.json"
+    before = json.loads(manifest_path.read_text())
+    assert "last_update_check" not in before, "The first launch must exercise a due refresh"
+    project_records = {
+        record["base"]: record
+        for record in before["skill_downloads"]
+        if record["fqn"] == source and record["scope"] == "project"
+    }
+    assert set(project_records) == {str(project) for project in projects}
+    for project in projects:
+        assert project_records[str(project)]["dirs"] == [
+            str(project / root / SKILL_NAME) for root in SKILL_ROOTS
+        ]
+
+    original = {}
+    current_mtimes = {}
+    for project in projects:
+        for root in SKILL_ROOTS:
+            bundle = project / root / SKILL_NAME
+            files = {
+                path.relative_to(bundle).as_posix(): path.read_bytes()
+                for path in bundle.rglob("*")
+                if path.is_file()
+            }
+            assert "SKILL.md" in files, f"{bundle} was not downloaded"
+            if not original:
+                original = files
+            assert files == original
+            if project == projects[0]:
+                current_mtimes.update(
+                    (path, path.stat().st_mtime_ns) for path in bundle.rglob("*") if path.is_file()
+                )
+    # Ordinary user deletions leave one surviving agent copy per project; ug must repair the pair.
+    shutil.rmtree(projects[1] / SKILL_ROOTS[0] / SKILL_NAME)
+    shutil.rmtree(projects[2] / SKILL_ROOTS[1] / SKILL_NAME)
+    session.env["UCODE_DEBUG"] = "1"
+    task = FileTask(session)
+    with AgentTerminal(
+        session, "codex", [str(session.binary), "codex"], "shared-project-skill-refresh"
+    ) as tui:
+        tui.boot()
+        tui.submit(task.prompt)
+        tui.wait_for_task(task)
+        tui.exit_normally()
+    task.assert_completed(session, "codex")
+
+    for project in projects:
+        for root in SKILL_ROOTS:
+            bundle = project / root / SKILL_NAME
+            assert {
+                path.relative_to(bundle).as_posix(): path.read_bytes()
+                for path in bundle.rglob("*")
+                if path.is_file()
+            } == original
+    assert all(path.stat().st_mtime_ns == modified for path, modified in current_mtimes.items()), (
+        "The already-current installation must not be rewritten"
+    )
+
+    after = json.loads(manifest_path.read_text())
+    assert after["last_update_check"]
+    before_records = {
+        (record["base"], record["fqn"]): record for record in before["skill_downloads"]
+    }
+    after_records = {(record["base"], record["fqn"]): record for record in after["skill_downloads"]}
+    assert after_records.keys() == before_records.keys()
+    repaired = {str(project) for project in projects[1:]}
+    for key, previous in before_records.items():
+        current = after_records[key]
+        if key[0] in repaired:
+            assert {k: v for k, v in current.items() if k != "downloaded_at"} == {
+                k: v for k, v in previous.items() if k != "downloaded_at"
+            }
+        else:
+            assert current == previous
+
+    # These are ordinary production debug messages from actual successful HTTP requests.
+    debug = "\n".join(path.read_text() for path in (session.home / ".ucode").glob("debug.log*"))
+    request_counts = {
+        "metadata": sum(
+            f"/api/2.1/unity-catalog/skills/{source}: HTTP 200," in line
+            for line in debug.splitlines()
+        ),
+        "bundle_directory": sum(
+            f"/api/2.0/fs/directories/Skills/main/default/{SKILL_NAME}: HTTP 200," in line
+            for line in debug.splitlines()
+        ),
+    }
+    session.record("shared-skill-refresh.json", {"source": source, "requests": request_counts})
+    assert request_counts == {"metadata": 1, "bundle_directory": 1}

@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
@@ -259,6 +260,15 @@ def _fetch_bundles_and_write(
     if not refs:
         return []
     bundles = _fetch_bundles(workspace, token, refs, label=label, deadline=deadline)
+    return _write_fetched_bundles(refs, roots, bundles)
+
+
+def _write_fetched_bundles(
+    refs: list[SkillRef],
+    roots: list[Path],
+    bundles: dict[str, tuple[dict[str, bytes] | None, str | None]],
+) -> list[SkillRef]:
+    """Write completed downloads, retaining per-install failure handling."""
     written: list[SkillRef] = []
     for ref in refs:
         if ref.fqn not in bundles:
@@ -491,21 +501,27 @@ def _refs_needing_refresh(
     """
     if not records:
         return []
+    records_by_fqn: dict[str, list[dict]] = {}
+    for record in records:
+        records_by_fqn.setdefault(record["fqn"], []).append(record)
     pairs: list[tuple[dict, SkillRef]] = []
-    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records)))
+    pool = ThreadPoolExecutor(max_workers=min(_MAX_FETCH_WORKERS, len(records_by_fqn)))
     try:
-        futures = {pool.submit(get_skill, workspace, token, r["fqn"]): r for r in records}
+        futures = {
+            pool.submit(get_skill, workspace, token, fqn): installs
+            for fqn, installs in records_by_fqn.items()
+        }
         try:
             for future in as_completed(futures, timeout=max(0.0, deadline - time.monotonic())):
                 ref = future.result()
                 if ref is None:
                     continue
-                record = futures[future]
-                stored = parse_update_time(record.get("uc_update_time"))
                 current = parse_update_time(ref.uc_update_time)
-                is_newer = stored is None or (current is not None and current > stored)
-                if is_newer or _record_dirs_missing(record):
-                    pairs.append((record, ref))
+                for record in futures[future]:
+                    stored = parse_update_time(record.get("uc_update_time"))
+                    is_newer = stored is None or (current is not None and current > stored)
+                    if is_newer or _record_dirs_missing(record):
+                        pairs.append((record, ref))
         except TimeoutError:
             pass  # out of budget: act on whatever resolved in time
     finally:
@@ -553,6 +569,9 @@ def _update_stale_skills(
         pairs_by_base.setdefault(os.path.normpath(record["base"]), []).append((record, ref))
 
     updated = 0
+    # One source may be installed in many projects; download it once per sweep.
+    bundles: dict[str, tuple[dict[str, bytes] | None, str | None]] = {}
+    remaining_installs = Counter(ref.fqn for _, ref in pairs)
     for base, base_pairs in pairs_by_base.items():
         if time.monotonic() >= deadline:
             break
@@ -561,11 +580,20 @@ def _update_stale_skills(
         refs = _reject_bundle_name_collisions(
             _reject_renames_onto_existing_skills(base_pairs, roots)
         )
-        written = _fetch_bundles_and_write(
-            workspace, token, refs, roots, label="Updating skills", deadline=deadline
-        )
+        missing = [ref for ref in refs if ref.fqn not in bundles]
+        if missing:
+            bundles.update(
+                _fetch_bundles(
+                    workspace, token, missing, label="Updating skills", deadline=deadline
+                )
+            )
+        written = _write_fetched_bundles(refs, roots, bundles)
         record_downloads(_skill_installs(written, roots, path, workspace))
         updated += len(written)
+        for _, ref in base_pairs:
+            remaining_installs[ref.fqn] -= 1
+            if remaining_installs[ref.fqn] == 0:
+                bundles.pop(ref.fqn, None)
     return updated
 
 
