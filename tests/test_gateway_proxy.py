@@ -487,6 +487,58 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
+    def test_diagnostics_separate_token_preparation_from_upstream_attempts(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        elapsed = [0.0]
+        monkeypatch.setattr(gateway_proxy.time, "monotonic", lambda: elapsed[0])
+
+        class TimedCache(_FakeCache):
+            def token_snapshot(self):
+                elapsed[0] = 1.0
+                return super().token_snapshot()
+
+            def refresh(self, **kwargs):
+                elapsed[0] = 3.0
+                return super().refresh(**kwargs)
+
+        class TimedClient(_FakeClient):
+            def stream(self, *args, **kwargs):
+                elapsed[0] += 1.0
+                return super().stream(*args, **kwargs)
+
+        client = TimedClient([_FakeResp(401), _FakeResp(200, b"private-response")])
+        output = _Collect()
+        handler = _handle_handler(client, TimedCache(), output)
+        handler.headers = {"Authorization": "Bearer private-token", "Content-Length": "15"}
+        handler.rfile = io.BytesIO(b"private-request")
+        started_ms = int(time.time() * 1000)
+        handler._handle()
+
+        logged = capsys.readouterr().err
+        events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
+        assert [event["event"] for event in events] == [
+            "request_start",
+            "upstream_request_start",
+            "upstream_headers",
+            "upstream_request_start",
+            "upstream_headers",
+            "response_complete",
+        ]
+        assert [(event["attempt"], event["elapsed_ms"]) for event in events[1:-1]] == [
+            (1, 1000),
+            (1, 2000),
+            (2, 3000),
+            (2, 4000),
+        ]
+        assert len({event["request_id"] for event in events}) == 1
+        assert all(
+            started_ms <= event["timestamp_ms"] <= int(time.time() * 1000) for event in events
+        )
+        assert "private-" not in logged
+        assert bytes(output.data).endswith(b"private-response")
+
     @pytest.mark.parametrize("status", [401, 403])
     @pytest.mark.parametrize("same_token", [False, True])
     def test_concurrent_rejections_share_one_refresh(self, status, same_token):
