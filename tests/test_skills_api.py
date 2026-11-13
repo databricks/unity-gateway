@@ -210,6 +210,33 @@ class TestListSchemaSkills:
 
 
 class TestListSkillFiles:
+    def test_descendants_start_before_a_slow_sibling_finishes(self, monkeypatch):
+        prefix = "Skills/main/default/triage"
+        deepest_started = threading.Event()
+        release_slow = threading.Event()
+
+        def listing(_base, directory, _token, _prefix):
+            if directory == prefix:
+                return [], [f"{prefix}/fast", f"{prefix}/slow"], None
+            if directory.endswith("/slow"):
+                assert release_slow.wait(15)
+                return ["slow.md"], [], None
+            if directory.endswith("/fast"):
+                return [], [f"{prefix}/fast/deep"], None
+            deepest_started.set()
+            return ["fast/deep.md"], [], None
+
+        monkeypatch.setattr(sa, "_list_skill_directory", listing)
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            future = caller.submit(sa.list_skill_files, WS, "token", "main", "default", "triage")
+            try:
+                assert deepest_started.wait(5), "a slow sibling blocked a discovered descendant"
+            finally:
+                release_slow.set()
+            paths, reason = future.result(timeout=5)
+        assert reason is None
+        assert set(paths) == {"slow.md", "fast/deep.md"}
+
     def test_lists_under_the_skills_place(self, monkeypatch):
         captured = {}
 
