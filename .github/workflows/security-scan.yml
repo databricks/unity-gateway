@@ -128,10 +128,8 @@ jobs:
       - name: Compute PR diff
         if: ${{ steps.gate.outputs.scan == 'true' }}
         env:
-          REPO: ${{ github.repository }}
           BASE_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).base_sha }}
         run: |
-          git -C pr fetch -q --no-tags "$GITHUB_SERVER_URL/$REPO.git" "$BASE_SHA"
           # --no-renames lists a moved file's old path too, so moving a workflow away is caught.
           # --text --no-textconv: the PR's .gitattributes can't mark changes binary or rewrite them.
           git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff

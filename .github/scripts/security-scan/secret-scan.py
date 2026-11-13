@@ -15,10 +15,6 @@ Detection is two-pronged:
     (token/secret/password/api_key=...) -- reported as errors when the value is
     long and high-entropy.
 
-This is intentionally a curated, hermetic baseline, not a replacement for
-gitleaks/trufflehog; those can be layered in later once an org license / pinned
-action SHA is settled (see plan).
-
 Env in:  DIFF_FILE (path to a `git diff base...head` unified diff).
 Exit:    non-zero if any secret is found; 0 otherwise.
 """
