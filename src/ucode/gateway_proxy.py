@@ -84,6 +84,7 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
+_DIAGNOSTICS_FILE_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE"
 
 
 def _diagnostics_enabled() -> bool:
@@ -93,10 +94,19 @@ def _diagnostics_enabled() -> bool:
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
-    payload = {"event": event, **fields}
-    sys.stderr.write(
-        f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
-    )
+    payload = {"event": event, "timestamp_ms": int(time.time() * 1000), **fields}
+    line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
+    if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
+        try:
+            with open(path, "a", encoding="utf-8") as log:
+                log.write(line)
+            return
+        except OSError:
+            # Keep diagnostic evidence if the destination becomes unavailable.
+            sys.stderr.write(
+                "[ucode-relay] Could not write proxy diagnostics file; using stderr.\n"
+            )
+    sys.stderr.write(line)
     sys.stderr.flush()
 
 
@@ -333,6 +343,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
             headers = request_headers(token)
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=1,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -364,6 +380,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if self._on_refresh_failure(exc):
                     return
             headers = request_headers(self.cache.token)
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=2,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
