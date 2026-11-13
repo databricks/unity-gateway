@@ -282,6 +282,31 @@ class TestRelayResponseClientDisconnect:
         handler._relay_response(_FakeResponse(200, {}, [b"ok"]))
         assert capsys.readouterr().err == ""
 
+    @pytest.mark.parametrize("log_directory_available", [True, False])
+    def test_interactive_proxy_logs_preserve_terminal_output(
+        self, monkeypatch, capsys, tmp_path, log_directory_available
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
+        monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path)
+        if not log_directory_available:
+            (tmp_path / "logs").write_text("existing file")
+
+        handler = _relay_handler(_Collect())
+        handler._relay_response(
+            _FakeResponse(200, {}, [b"ok"]), diagnostic_id="local-id", started=time.monotonic()
+        )
+        gateway_proxy.log_token_refresh_failure(RuntimeError("refresh unavailable"))
+
+        assert capsys.readouterr() == ("", "")
+        if log_directory_available:
+            lines = (tmp_path / "logs" / "gateway-proxy.log").read_text().splitlines()
+            event = json.loads(lines[0].removeprefix("[ucode-relay] "))
+            assert event["event"] == "response_complete"
+            assert event["request_id"] == "local-id"
+            assert event["bytes"] == 2
+            assert "token refresh failed: refresh unavailable" in lines[1]
+
 
 class TestJwtExp:
     def test_extracts_exp(self):
@@ -906,6 +931,25 @@ class TestClaudeLanguageLoopbackProxy:
             timeout=5,
         )
         assert response.status_code == 200
+        assert captured[-1]["body"] == body
+        assert "x-ug-language-session" not in captured[-1]["headers"]
+        assert "x-ug-response-language" not in captured[-1]["headers"]
+
+    def test_json_recursion_error_passes_through(self, _language_proxy, monkeypatch):
+        proxy_url, captured = _language_proxy
+        body = b'{"messages":[]}'
+        decoder = Mock(side_effect=RecursionError)
+        monkeypatch.setattr(gateway_proxy.json, "loads", decoder)
+        response = httpx.post(
+            proxy_url + "/ai-gateway/anthropic/v1/messages",
+            headers=_language_proxy_headers(
+                language="English", agent_id="child", request_class="subagent"
+            ),
+            content=body,
+            timeout=5,
+        )
+        assert response.status_code == 200
+        decoder.assert_called_once_with(body)
         assert captured[-1]["body"] == body
         assert "x-ug-language-session" not in captured[-1]["headers"]
         assert "x-ug-response-language" not in captured[-1]["headers"]

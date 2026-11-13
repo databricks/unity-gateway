@@ -32,28 +32,45 @@ export function headerLines(base: string | undefined, extra: string | undefined)
   return merged.length === lines.length ? undefined : merged.join('\n');
 }
 
-async function apply($: EngineInterface): Promise<void> {
+async function apply($: EngineInterface, warn = false): Promise<void> {
   // Claude's capability scanner requires literal environment-variable names.
   const merged = headerLines(
     await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
     await $.env.get('UG_HEADERS'),
   );
   if (merged !== undefined) await $.env.set('ANTHROPIC_CUSTOM_HEADERS', merged);
-  await applyLanguageTransport($);
+  await applyLanguageTransport($, warn);
 }
 
-async function applyLanguageTransport($: EngineInterface): Promise<void> {
+async function applyLanguageTransport($: EngineInterface, warn: boolean): Promise<void> {
   const raw = await $.env.get('UG_CLAUDE_LANGUAGE_PROXY');
   if (!raw) return;
-  const transport = JSON.parse(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    parsed = undefined;
+  }
+  const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
+    .split(/\r?\n/).filter(line => !/^\s*x-ug-(response-language|language-session)\s*:/i.test(line));
+  const clearInvalidTransport = async () => {
+    await $.env.set('UG_CLAUDE_LANGUAGE_PROXY', '');
+    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+  };
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    await clearInvalidTransport();
+    return;
+  }
+  const transport = parsed as { url?: unknown; upstream?: unknown; secret?: unknown };
   if (
     typeof transport.url !== 'string' ||
     !/^http:\/\/127\.0\.0\.1:\d+\/ai-gateway\/anthropic$/.test(transport.url) ||
     typeof transport.upstream !== 'string' ||
     typeof transport.secret !== 'string' || !transport.secret
-  ) throw new Error('Invalid Unity Gateway language transport.');
-  const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
-    .split(/\r?\n/).filter(line => !/^\s*x-ug-(response-language|language-session)\s*:/i.test(line));
+  ) {
+    await clearInvalidTransport();
+    return;
+  }
   const base = await $.env.get('ANTHROPIC_BASE_URL');
   if (base !== transport.upstream && base !== transport.url) {
     await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
@@ -61,7 +78,10 @@ async function applyLanguageTransport($: EngineInterface): Promise<void> {
   }
   const hints = await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS');
   if (hints !== undefined && hints !== '1') {
-    throw new Error('Subagent language inheritance requires CLAUDE_CODE_GATEWAY_HINT_HEADERS=1. Remove the conflicting override and restart ug claude.');
+    if (warn) $.ui.log('Skipping optional language inheritance because gateway identity headers are disabled.');
+    if (base === transport.url) await $.env.set('ANTHROPIC_BASE_URL', transport.upstream);
+    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+    return;
   }
   const { language } = await $.settings.read();
   const configured = typeof language === 'string' && language.trim() !== '';
@@ -78,7 +98,7 @@ async function applyLanguageTransport($: EngineInterface): Promise<void> {
 
 export function register(on: On): void {
   on('session.start', async ($, e, next) => {
-    await apply($);
+    await apply($, true);
     return next(e);
   });
   // Claude rebuilds its client per request and a settings reload resets the variable, so add the

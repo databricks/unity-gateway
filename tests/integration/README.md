@@ -49,6 +49,10 @@ the fallback follows the task text delivered to the child. Request
 construction alone does not establish generated language. The native task-view parser
 also recognizes an empty earlier-session section without treating running or
 partially rendered task lists as complete.
+Proxy diagnostic component tests keep background logs out of interactive terminal output
+while preserving them in `~/.ucode/logs/gateway-proxy.log`; redirected stderr is unchanged.
+The existing smart-routing CUJs and resumed-child journey exercise the native task view
+and prompt after requests complete.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component

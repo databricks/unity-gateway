@@ -16,7 +16,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -2194,72 +2194,66 @@ def header_mod_active(*, require_ug: bool = False) -> bool:
 
 
 @contextmanager
-def subagent_language_transport(state: dict, settings: dict | None = None) -> Iterator[None]:
+def subagent_language_transport(state: dict) -> Iterator[None]:
     """Give the managed mod a launch-local transport without changing saved settings."""
-    if not header_mod_active(require_ug=True):
-        yield
-        return
-    managed_path = _managed_settings_path()
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    paths = [Path(config_dir) / "settings.json" if config_dir else CLAUDE_USER_SETTINGS_PATH]
-    if managed_path:
-        paths.extend(
-            [
-                managed_path,
-                *sorted(
-                    path
-                    for path in managed_path.with_name("managed-settings.d").glob("*.json")
-                    if not path.name.startswith(".") and (path.is_file() or path.is_symlink())
-                ),
-            ]
-        )
-    paths.extend(
-        directory / ".claude" / name
-        for directory in (Path.cwd(), *Path.cwd().parents)
-        for name in ("settings.json", "settings.local.json")
-    )
-    configs = [settings or {}, *(read_json_safe(path) for path in paths)]
-    hints = [os.environ.get("CLAUDE_CODE_GATEWAY_HINT_HEADERS")]
-    hints.extend(
-        config["env"].get("CLAUDE_CODE_GATEWAY_HINT_HEADERS")
-        for config in configs
-        if isinstance(config.get("env"), dict)
-    )
-    if any(value is not None and value != "1" for value in hints):
-        raise RuntimeError(
-            "Subagent language inheritance requires CLAUDE_CODE_GATEWAY_HINT_HEADERS=1. "
-            "Remove the conflicting environment or settings override and restart ug claude."
-        )
-    from ucode.custom_oauth import launch_token
-    from ucode.gateway_proxy import start_claude_language_proxy
+    previous = os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
+    resources = ExitStack()
 
-    workspace = state["workspace"]
-    secret = secrets.token_urlsafe(32)
-    server, cache, client = start_claude_language_proxy(
-        workspace,
-        lambda force: launch_token(state, workspace, force_refresh=force),
-        session_secret=secret,
-    )
-    previous = os.environ.get("UG_CLAUDE_LANGUAGE_PROXY")
-    os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = json.dumps(
-        {
-            "url": f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic",
-            "upstream": build_tool_base_url("claude", workspace),
-            "secret": secret,
-        }
-    )
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    def close_resources() -> None:
+        try:
+            resources.close()
+        except Exception:
+            print_warning("Couldn't fully clean up the Claude language inheritance transport.")
+
     try:
-        yield
+        if not header_mod_active(require_ug=True):
+            yield
+            return
+
+        try:
+            from ucode.custom_oauth import launch_token
+            from ucode.gateway_proxy import start_claude_language_proxy
+
+            workspace = state["workspace"]
+            secret = secrets.token_urlsafe(32)
+            server, cache, client = start_claude_language_proxy(
+                workspace,
+                lambda force: launch_token(state, workspace, force_refresh=force),
+                session_secret=secret,
+            )
+            resources.callback(client.close)
+            resources.callback(cache.stop)
+            resources.callback(server.server_close)
+            upstream = build_tool_base_url("claude", workspace)
+            os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = json.dumps(
+                {
+                    "url": f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic",
+                    "upstream": upstream,
+                    "secret": secret,
+                }
+            )
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            # BaseServer.shutdown blocks until serve_forever runs. Register it only after
+            # Thread.start succeeds so setup failures cannot wait on a thread that never ran.
+            resources.callback(server.shutdown)
+        except Exception:
+            os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
+            close_resources()
+            print_warning(
+                "Couldn't start the optional Claude language inheritance transport; "
+                "continuing without language inheritance."
+            )
+
+        try:
+            yield
+        finally:
+            close_resources()
     finally:
         if previous is None:
             os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
         else:
             os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = previous
-        cache.stop()
-        server.shutdown()
-        server.server_close()
-        client.close()
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:

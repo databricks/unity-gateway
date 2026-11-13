@@ -334,6 +334,8 @@ def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_
 def test_language_transport_restores_environment_and_closes_on_failure(tmp_path, monkeypatch):
     from ucode import gateway_proxy
 
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
     _managed_env(tmp_path, monkeypatch)
     state = {"workspace": WS, "codex_models": []}
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -341,42 +343,119 @@ def test_language_transport_restores_environment_and_closes_on_failure(tmp_path,
     server, cache, client = Mock(server_port=12345), Mock(), Mock()
     start = Mock(return_value=(server, cache, client))
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
+    thread = Mock()
+    monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
     monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", "previous")
+    body_calls = []
     with pytest.raises(RuntimeError, match="agent failed"):
         with claude.subagent_language_transport(state):
+            body_calls.append(True)
             transport = json.loads(os.environ["UG_CLAUDE_LANGUAGE_PROXY"])
             assert transport["url"] == "http://127.0.0.1:12345/ai-gateway/anthropic"
             assert transport["secret"] == start.call_args.kwargs["session_secret"]
             assert transport["upstream"] == f"{WS}/ai-gateway/anthropic"
             raise RuntimeError("agent failed")
+    assert body_calls == [True]
     assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == "previous"
+    thread.start.assert_called_once()
     server.shutdown.assert_called_once()
     server.server_close.assert_called_once()
     cache.stop.assert_called_once()
     client.close.assert_called_once()
 
 
-@pytest.mark.parametrize(
-    "scope", ["environment", "caller", "managed", "drop-in", "user", "project"]
-)
-def test_language_transport_rejects_disabled_identity_headers_before_starting(
-    tmp_path, monkeypatch, scope
+def test_language_transport_inactive_preserves_body_error_and_restores_environment(
+    tmp_path, monkeypatch
 ):
     from ucode import gateway_proxy
 
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
+    monkeypatch.setattr(claude, "header_mod_active", Mock(return_value=False))
+    start = Mock()
+    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
+    previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
+    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
+    body_calls = []
+
+    with pytest.raises(RuntimeError, match="agent failed"):
+        with claude.subagent_language_transport({"workspace": WS}):
+            body_calls.append(True)
+            assert "UG_CLAUDE_LANGUAGE_PROXY" not in os.environ
+            raise RuntimeError("agent failed")
+
+    assert body_calls == [True]
+    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
+    start.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["proxy", "upstream", "thread"])
+def test_language_transport_startup_failure_degrades_and_cleans_resources(
+    tmp_path, monkeypatch, failure
+):
+    from ucode import gateway_proxy
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
     _managed_env(tmp_path, monkeypatch)
     state = {"workspace": WS, "codex_models": []}
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
-    start = Mock()
+    server, cache, client = Mock(server_port=12345), Mock(), Mock()
+    start = Mock(return_value=(server, cache, client))
+    if failure == "proxy":
+        start.side_effect = OSError("proxy setup failed")
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    settings = {}
+    if failure == "upstream":
+        monkeypatch.setattr(
+            claude, "build_tool_base_url", Mock(side_effect=OSError("upstream unavailable"))
+        )
+    if failure == "thread":
+        thread = Mock()
+        thread.start.side_effect = RuntimeError("thread did not start")
+        monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
+    warning = Mock()
+    monkeypatch.setattr(claude, "print_warning", warning)
+    previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
+    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
+    body_calls = []
+
+    with claude.subagent_language_transport(state):
+        body_calls.append(True)
+        assert "UG_CLAUDE_LANGUAGE_PROXY" not in os.environ
+
+    assert body_calls == [True]
+    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
+    warning.assert_called_once()
+    if failure == "proxy":
+        server.server_close.assert_not_called()
+        cache.stop.assert_not_called()
+        client.close.assert_not_called()
+    else:
+        server.server_close.assert_called_once()
+        cache.stop.assert_called_once()
+        client.close.assert_called_once()
+    server.shutdown.assert_not_called()
+
+
+@pytest.mark.parametrize("scope", ["environment", "managed", "drop-in", "user", "project"])
+def test_language_transport_leaves_effective_settings_to_native_mod(tmp_path, monkeypatch, scope):
+    from ucode import gateway_proxy
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
+    _managed_env(tmp_path, monkeypatch)
+    state = {"workspace": WS, "codex_models": []}
+    claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    server, cache, client = Mock(server_port=12345), Mock(), Mock()
+    start = Mock(return_value=(server, cache, client))
+    monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=Mock()))
+    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
     override = {"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}}
+    previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
+    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
     if scope == "environment":
         monkeypatch.setenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", "0")
-    elif scope == "caller":
-        settings = override
     else:
-        monkeypatch.chdir(tmp_path)
         path = {
             "managed": claude._managed_settings_path(),
             "drop-in": claude._managed_settings_path().with_name("managed-settings.d")
@@ -388,10 +467,24 @@ def test_language_transport_rejects_disabled_identity_headers_before_starting(
         config = json.loads(path.read_text()) if path.exists() else {}
         config.setdefault("env", {}).update(override["env"])
         path.write_text(json.dumps(config))
-    with pytest.raises(RuntimeError, match="requires CLAUDE_CODE_GATEWAY_HINT_HEADERS=1"):
-        with claude.subagent_language_transport(state, settings):
-            pytest.fail("The incompatible launch must not start")
-    start.assert_not_called()
+    warning = Mock()
+    monkeypatch.setattr(claude, "print_warning", warning)
+    body_calls = []
+    with pytest.raises(RuntimeError, match="agent failed"):
+        with claude.subagent_language_transport(state):
+            body_calls.append(True)
+            assert json.loads(os.environ["UG_CLAUDE_LANGUAGE_PROXY"])["url"].startswith(
+                "http://127.0.0.1:"
+            )
+            raise RuntimeError("agent failed")
+    assert body_calls == [True]
+    start.assert_called_once()
+    server.shutdown.assert_called_once()
+    server.server_close.assert_called_once()
+    cache.stop.assert_called_once()
+    client.close.assert_called_once()
+    warning.assert_not_called()
+    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
     if scope == "environment":
         assert os.environ["CLAUDE_CODE_GATEWAY_HINT_HEADERS"] == "0"
 
@@ -399,6 +492,8 @@ def test_language_transport_rejects_disabled_identity_headers_before_starting(
 def test_language_transport_ignores_inactive_managed_dropins(tmp_path, monkeypatch):
     from ucode import gateway_proxy
 
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
     managed_path, _root, _writes = _managed_env(tmp_path, monkeypatch)
     state = {"workspace": WS, "codex_models": []}
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -411,8 +506,11 @@ def test_language_transport_ignores_inactive_managed_dropins(tmp_path, monkeypat
     server, cache, client = Mock(server_port=12345), Mock(), Mock()
     start = Mock(return_value=(server, cache, client))
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
+    thread = Mock()
+    monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
     with claude.subagent_language_transport(state):
         start.assert_called_once()
+    thread.start.assert_called_once()
     server.shutdown.assert_called_once()
 
 

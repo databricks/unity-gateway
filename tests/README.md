@@ -217,11 +217,17 @@ terminal hint when sudo needs a password), and the Windows install and removal u
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
 checked by hand on Claude 2.1.304. The header-mod tests also cover configured language
 changes and clearing the setting, per-turn settings reloads, provider switches, disabled
-identity headers, unrelated headers, and launch-local transport cleanup.
+identity headers, unrelated headers, and launch-local transport cleanup. The mod uses
+Claude's effective environment; the launcher does not scan settings excluded by native
+source selection or apply its own precedence rules.
+Malformed optional transport settings and startup failures preserve the normal launch;
+setup and agent-exit failures restore the environment and release acquired resources.
 `test_gateway_proxy.py` checks child and progress-summary language propagation,
 task-language fallback without a setting, translation guidance, malformed-input and
 token-count passthrough, unchanged parent and classifier payloads, session authentication
-and private-header stripping.
+and private-header stripping. Decoder recursion errors retain the original request.
+Interactive proxy diagnostics and refresh failures go to `~/.ucode/logs/gateway-proxy.log`
+without writing into the agent's terminal; redirected stderr retains its existing output.
 These component checks establish request construction, not model language compliance.
 
 The required Isaac feedback form and background delivery notifications need manual

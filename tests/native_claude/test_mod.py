@@ -70,6 +70,99 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
             assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" in writes
 
 
+@pytest.mark.parametrize("sources", ["user", "project,local"])
+def test_language_transport_uses_native_settings_sources(native_binary, tmp_path, sources):
+    for path, text in _header_mod_files(tmp_path).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    plugin = tmp_path / "ug-headers"
+    (plugin / "hooks/probe.ts").write_text("""
+import { register as headers } from './register';
+export function register(on) {
+  headers(on);
+  on('session.start', {isInteractive: false}, async ($, e, next) => {
+    await $.command.register({name: 'language-probe', description: 'Read language transport', immediate: true});
+    return next(e);
+  });
+  on('command.run', {command: 'language-probe'}, async ($) => ({text: JSON.stringify({
+    hints: await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS'),
+    base: await $.env.get('ANTHROPIC_BASE_URL'),
+    headers: await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
+  })}));
+}
+""")
+    (plugin / "hooks/hooks.json").write_text('{"modules":["./probe.ts"]}')
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "settings.json").write_text(
+        json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}})
+    )
+    upstream = "http://127.0.0.1:1"
+    proxy = "http://127.0.0.1:9/ai-gateway/anthropic"
+    result = subprocess.run(
+        [
+            native_binary,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--debug-file",
+            str(tmp_path / "debug.log"),
+            "--setting-sources",
+            sources,
+            "--settings",
+            '{"language":"English"}',
+            "--plugin-dir",
+            str(plugin),
+        ],
+        cwd=tmp_path,
+        env={
+            **{
+                key: os.environ[key]
+                for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP")
+                if key in os.environ
+            },
+            "HOME": str(tmp_path),
+            "CLAUDE_CONFIG_DIR": str(config_dir),
+            "ANTHROPIC_API_KEY": "fixture-only",
+            "ANTHROPIC_BASE_URL": upstream,
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "DISABLE_AUTOUPDATER": "1",
+            "CLAUDE_CODE_ELEGANT_MEADOW": "1",
+            "CLAUDE_CODE_MAX_RETRIES": "0",
+            "UG_CLAUDE_LANGUAGE_PROXY": json.dumps(
+                {"url": proxy, "upstream": upstream, "secret": "fixture-session"}
+            ),
+        },
+        input=json.dumps(
+            {"type": "user", "message": {"role": "user", "content": "/language-probe"}}
+        )
+        + "\n",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    event = next(
+        event
+        for line in result.stdout.splitlines()
+        if (event := json.loads(line)).get("type") == "result"
+    )
+    assert event["num_turns"] == 0 and event["usage"]["output_tokens"] == 0
+    observed = json.loads(event["result"].partition(": ")[2])
+    if sources == "user":
+        assert observed["hints"] == "0"
+        assert observed["base"] == upstream
+        assert "x-ug-" not in observed["headers"].lower()
+    else:
+        assert observed["hints"] == "1"
+        assert observed["base"] == proxy
+        assert "X-UG-Response-Language: English" in observed["headers"]
+        assert "X-UG-Language-Session: fixture-session" in observed["headers"]
+
+
 def test_native_options_are_launch_local(native_binary, tmp_path):
     env = {
         "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,

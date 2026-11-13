@@ -41,6 +41,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.workspace import workspace_headers
@@ -90,14 +91,28 @@ def _diagnostics_enabled() -> bool:
     return env_bool(_DIAGNOSTICS_ENV)
 
 
+def _write_proxy_log(line: str) -> None:
+    if sys.stderr.isatty():
+        # Background writes corrupt the agent's cursor-controlled terminal rendering.
+        try:
+            path = APP_DIR / "logs" / "gateway-proxy.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as log:
+                log.write(line)
+        except OSError:
+            pass
+        return
+    sys.stderr.write(line)
+    sys.stderr.flush()
+
+
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
     payload = {"event": event, **fields}
-    sys.stderr.write(
+    _write_proxy_log(
         f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
     )
-    sys.stderr.flush()
 
 
 def _jwt_exp(token: str) -> float | None:
@@ -111,9 +126,8 @@ def _jwt_exp(token: str) -> float | None:
 
 
 def log_token_refresh_failure(exc: BaseException) -> None:
-    """Surface (never silently swallow) a refresh failure, without leaking any
-    token or header value."""
-    sys.stderr.write(
+    """Record a refresh failure without writing into the agent's interactive terminal."""
+    _write_proxy_log(
         f"[ucode] Databricks token refresh failed: {exc}. If the session stalls, "
         "run `databricks auth login` for your workspace profile.\n"
     )
@@ -856,7 +870,7 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
                 system = [{"type": "text", "text": system}]
             if not isinstance(system, list):
                 return body
-        except (ValueError, UnicodeError):
+        except (ValueError, UnicodeError, RecursionError):
             return body
         payload["system"] = [
             *system,

@@ -94,21 +94,49 @@ test('switching providers removes private transport headers before returning', a
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
 });
 
-test('disabled identity headers never redirect or expose the session secret', async ($, on) => {
+test('malformed language transport is cleared without breaking injected headers', async ($, on) => {
   const upstream = 'https://workspace.example/ai-gateway/anthropic';
   const env = setup(on, {
     ANTHROPIC_BASE_URL: upstream,
-    ANTHROPIC_CUSTOM_HEADERS: 'X-Team: eng',
-    CLAUDE_CODE_GATEWAY_HINT_HEADERS: '0',
-    UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({
-      url: 'http://127.0.0.1:12345/ai-gateway/anthropic', upstream, secret: 'session-secret',
-    }),
+    ANTHROPIC_CUSTOM_HEADERS:
+      'X-Required: keep\nX-Team: eng\nX-UG-Response-Language: private-language\nX-UG-Language-Session: private-session',
+    UG_HEADERS: 'X-Added: yes',
+    UG_CLAUDE_LANGUAGE_PROXY:
+      '{"url":"http://127.0.0.1:12345/ai-gateway/anthropic","secret":"private-session"',
   });
-  on('settings.read', () => ({ value: { language: 'English' } }));
   await $.session.start(start);
   expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
+  expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe('');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep\nX-Team: eng\nX-Added: yes');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('private-session');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('private-language');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('127.0.0.1');
+});
+
+test('disabled identity headers skip language inheritance and restore the upstream', async ($, on) => {
+  const upstream = 'https://workspace.example/ai-gateway/anthropic';
+  const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
+  const env = setup(on, {
+    ANTHROPIC_BASE_URL: url,
+    ANTHROPIC_CUSTOM_HEADERS:
+      'X-Required: keep\nX-Team: eng\nX-UG-Response-Language: stale\nX-UG-Language-Session: stale-key',
+    CLAUDE_CODE_GATEWAY_HINT_HEADERS: '0',
+    UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
+  });
+  on('settings.read', () => ({ value: { language: 'English' } }));
+  const warnings: string[] = [];
+  on('ui.log', ($, e) => { warnings.push(e.text); return { value: undefined }; });
+  await $.session.start(start);
+  expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep\nX-Team: eng');
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('session-secret');
   expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBe('0');
+  expect(warnings).toEqual(['Skipping optional language inheritance because gateway identity headers are disabled.']);
+  env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = '1';
+  await $.session.start(start);
+  expect(env.ANTHROPIC_BASE_URL).toBe(url);
+  expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('X-UG-Response-Language: English');
+  expect(warnings.length).toBe(1);
 });
 
 test('each turn reapplies the current language after a settings reload', async ($, on) => {
