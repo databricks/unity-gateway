@@ -817,7 +817,7 @@ def _configure_one(
             tool,
             state,
             model,
-            relayed=claude.static_models_need_subscription_relay(state),
+            relayed=claude.static_models_need_subscription_relay(state, configuring=True),
             derive_managed_model_inputs=True,
         )
     return configure_tool(tool, state, model)

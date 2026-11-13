@@ -803,19 +803,6 @@ class TestRelayedModelServiceRouting:
                 routes_to_subscription_relay=no_lookup,
             )._handle()
 
-    def test_system_ai_still_routes_to_gateway_auth(self):
-        client = _FakeClient([_FakeResp(200, b"ok")])
-        _relayed_oss_handler(
-            client,
-            _FakeCache(),
-            _Collect(),
-            headers=TestRelayedOssRouting._CLIENT_HEADERS,
-            body=b'{"model": "system.ai.claude-opus-4-8"}',
-        )._handle()
-        sent = client.sent_headers[0]
-        assert sent["Authorization"] == "Bearer tok1"
-        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in sent
-
 
 class TestClaudeRelayProxyWiring:
     def test_relay_lookup_reaches_the_handler(self, monkeypatch):

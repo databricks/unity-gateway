@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -52,6 +53,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     AnthropicModelCatalog,
+    RelayLookup,
     _debug,
     build_auth_shell_command,
     build_otel_headers_shell_command,
@@ -59,7 +61,9 @@ from ucode.databricks import (
     build_tool_base_url,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
+    model_service_relay_lookup,
     model_services_need_subscription_relay,
+    relay_candidate_model_services,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -1557,47 +1561,101 @@ def disable_smart_routing(state: dict) -> bool:
     return changed
 
 
-def static_models_need_subscription_relay(state: dict) -> bool:
+# A relay-detection result saved by configure that launches reuse instead of refetching.
+CLAUDE_RELAY_DETECTION_KEY = "claude_relay_detection"
+_RELAY_DETECTION_REUSE_S = 24 * 60 * 60
+
+
+def static_models_need_subscription_relay(state: dict, *, configuring: bool = False) -> bool:
     """True when Claude's static model list (a managed ``model_services``/``sources``) includes a
     model service that routes to a subscription relay and the user already holds a Claude
     subscription login, so the launch must swap credentials.
 
-    The list is shared by every user of the config, so a user who isn't signed in keeps gateway
-    auth (and the rest of the list) instead of being sent to a browser login. A list of only
-    ``system.*`` models makes no request.
+    The list is shared by every user of the config, so a user who isn't signed in, or whose
+    managed settings already pin other auth, keeps gateway auth (and the rest of the list) rather
+    than being sent to a browser login or blocked. Configure looks the services up and saves the
+    result; a launch reuses it for a day while the list is unchanged.
     """
-    if machine_wide_only():
-        # `--global` writes settings for every user on the machine; the relay is per-user.
+    if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
     models = state.get("claude_static_models")
-    custom = [
-        model
-        for model in (models if isinstance(models, list) else [])
-        if isinstance(model, str)
-        and model.removesuffix("[1m]").count(".") == 2
-        and not model.startswith("system.")
-    ]
-    if not custom:
+    candidates = relay_candidate_model_services(models if isinstance(models, list) else [])
+    if not candidates:
+        state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
         return False
-    try:
-        token = get_databricks_token(state["workspace"], state.get("profile"))
-    except RuntimeError:
-        # Auth is checked (and reported) by the configure/launch path itself.
-        return False
-    relay_backed = [
-        model
-        for model in custom
-        if model_services_need_subscription_relay(state["workspace"], token, [model])
-    ]
+    relay_backed = None if configuring else _saved_relay_backed_services(state, candidates)
+    if relay_backed is None:
+        relay_backed = _detect_relay_backed_services(state, candidates)
     if not relay_backed:
         return False
-    if os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR) or _has_subscription_login():
-        return True
-    print_note(
-        f"Sign in with `claude auth login` to use {', '.join(relay_backed)} through your Claude "
-        "subscription. Other models use Databricks authentication."
-    )
-    return False
+    if not (os.environ.get(CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR) or _has_subscription_login()):
+        if configuring:
+            print_note(
+                f"Sign in with `claude auth login` to use {', '.join(relay_backed)} through your "
+                "Claude subscription. Other models use Databricks authentication."
+            )
+        return False
+    conflicts = _relay_blocking_managed_settings()
+    if conflicts:
+        if configuring:
+            print_note(
+                f"{', '.join(relay_backed)} need your Claude subscription, but Claude Code's "
+                f"managed settings define {', '.join(conflicts)}, so ug keeps Databricks "
+                "authentication. If ug created them, run `ug revert`, then `ug configure`."
+            )
+        return False
+    return True
+
+
+def _saved_relay_backed_services(state: dict, candidates: list[str]) -> list[str] | None:
+    saved = state.get(CLAUDE_RELAY_DETECTION_KEY)
+    if not isinstance(saved, dict) or saved.get("models") != candidates:
+        return None
+    checked_at = saved.get("checked_at")
+    relay_backed = saved.get("relay_backed")
+    if not isinstance(checked_at, (int, float)) or not isinstance(relay_backed, list):
+        return None
+    if time.time() - checked_at > _RELAY_DETECTION_REUSE_S:
+        return None
+    return relay_backed
+
+
+def _detect_relay_backed_services(state: dict, candidates: list[str]) -> list[str]:
+    try:
+        token = get_databricks_token(state["workspace"], state.get("profile"))
+    except RuntimeError:  # the configure/launch path reports auth itself
+        return []
+    lookups = {
+        model: model_service_relay_lookup(state["workspace"], token, model) for model in candidates
+    }
+    relay_backed = [model for model, lookup in lookups.items() if lookup is RelayLookup.RELAYED]
+    unknown = [model for model, lookup in lookups.items() if lookup is RelayLookup.UNKNOWN]
+    if unknown:
+        print_warning(
+            f"Couldn't check whether {', '.join(unknown)} need your Claude subscription, so they "
+            "use Databricks authentication this time. Run `ug claude` again to retry."
+        )
+        state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
+    else:
+        state[CLAUDE_RELAY_DETECTION_KEY] = {
+            "models": candidates,
+            "relay_backed": relay_backed,
+            "checked_at": time.time(),
+        }
+    return relay_backed
+
+
+def _relay_blocking_managed_settings() -> list[str]:
+    """Managed settings that would override relayed auth; empty when ug doesn't manage the file."""
+    if managed_settings_skipped():
+        return []
+    path = _managed_settings_path()
+    if path is None:
+        return []
+    try:
+        return _managed_relayed_conflicts(path)
+    except RuntimeError:  # unreadable; the relayed write reports it with repair steps
+        return []
 
 
 def write_tool_config(

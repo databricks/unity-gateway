@@ -258,14 +258,8 @@ def is_databricks_routed_model(model: str | None) -> bool:
 
 
 def is_uc_model_service(model: str | None) -> bool:
-    """True when ``model`` names a customer Unity Catalog model service (``catalog.schema.name``).
-
-    Such a service can route to a relayed Model Provider Service, which only accepts a
-    credential-swapped request: the caller's subscription OAuth in ``Authorization`` and the
-    Databricks token in the swap header. The gateway authenticates the swap header for any
-    destination, so services that route only to Databricks-hosted models work the same way.
-    ``system.*`` ids and ``databricks-*`` names are Databricks-hosted and keep the gateway-auth
-    path."""
+    """True when ``model`` names a customer Unity Catalog model service (``catalog.schema.name``,
+    not ``system.*`` or ``databricks-*``)."""
     if not model or model.startswith(("system.", "databricks-")):
         return False
     return model.count(".") >= 2
