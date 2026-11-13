@@ -44,6 +44,7 @@ from ucode.constants import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
+from ucode.string_utils import unqualified_model_name
 from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import (
@@ -2262,7 +2263,7 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
 
 @dataclass(frozen=True)
 class ModelServiceEntry:
-    """One ``system.ai.*`` model service and the API types it advertises.
+    """One Unity Catalog model service and the API types it advertises.
 
     ``api_types`` is advisory: the gateway serves some models on routes they don't list, so callers
     use it to exclude non-chat models, never to pick a route."""
@@ -2278,18 +2279,18 @@ def _model_service_api_types(service: dict) -> tuple[str, ...]:
     return tuple(t for t in api_types if isinstance(t, str))
 
 
-def _model_service_id(service: dict) -> str | None:
-    """Extract the `system.ai.<model-name>` id from one model-service entry.
+def _model_service_id(service: dict, *, parent_schema: str | None = None) -> str | None:
+    """Extract a model-service id in ``parent_schema`` (``system.ai`` by default).
 
-    Returns None for services in any other schema, so user/internal model
-    services don't leak into the family buckets."""
+    Returns None for services in any other schema."""
     name = service.get("name")
     if not isinstance(name, str):
         return None
     name = name.strip()
     if name.startswith(_MODEL_SERVICE_NAME_PREFIX):
         name = name[len(_MODEL_SERVICE_NAME_PREFIX) :]
-    if not name.startswith(_MODEL_SERVICE_REQUIRED_PREFIX):
+    prefix = f"{parent_schema}." if parent_schema is not None else _MODEL_SERVICE_REQUIRED_PREFIX
+    if not name.startswith(prefix):
         return None
     return name or None
 
@@ -2382,24 +2383,29 @@ def list_model_service_entries(
     workspace: str,
     token: str,
     *,
+    parent_schema: str | None = None,
     page_size: int = _MODEL_SERVICES_PAGE_SIZE,
     max_pages: int = 100,
     use_cache: bool = True,
 ) -> tuple[list[ModelServiceEntry], str | None]:
-    """List all `system.ai.*` model services via the UC model-services API.
+    """List model services in ``parent_schema`` (``system.ai`` by default) via the UC API.
 
     Pages through ``/api/2.1/unity-catalog/model-services`` scoped to the
-    ``system.ai`` schema (``parent=schemas/system.ai``) with a bounded
+    requested schema (``parent=schemas/<catalog>.<schema>``) with a bounded
     ``page_size`` (the endpoint 499s without one) and returns the de-duplicated
     entries sorted by id. Returns (entries, reason); reason is None on success,
     otherwise it describes why the list is empty (HTTP/network error or no
     services). Scoping matters: the unscoped metastore listing walks every schema
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
-    ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
+    requested schema's subset.
 
-    A successful result is memoized per workspace for the life of the process; pass
-    ``use_cache=False`` to force a fresh walk.
+    Successful default-schema results are memoized per workspace for the life of the process;
+    pass ``use_cache=False`` to force a fresh walk. Other schemas bypass that cache.
     """
+    parent = (
+        f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
+    )
+    use_cache = use_cache and parent == _MODEL_SERVICE_PARENT_SCHEMA
     if use_cache:
         cached = _MODEL_SERVICES_CACHE.get(workspace)
         if cached is not None:
@@ -2412,7 +2418,7 @@ def list_model_service_entries(
     last_reason: str | None = None
     for _ in range(max_pages):
         params: dict[str, str] = {
-            "parent": _MODEL_SERVICE_PARENT_SCHEMA,
+            "parent": parent,
             "page_size": str(page_size),
         }
         if page_token:
@@ -2427,7 +2433,7 @@ def list_model_service_entries(
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
             if isinstance(service, dict):
-                model_id = _model_service_id(service)
+                model_id = _model_service_id(service, parent_schema=parent_schema)
                 if model_id and model_id not in entries:
                     entries[model_id] = ModelServiceEntry(
                         model_id, _model_service_api_types(service)
@@ -3815,9 +3821,10 @@ _BARE_MODEL_NAME_PATTERN = re.compile(
 
 
 def bare_model_name(model: str) -> str:
-    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.`` and
-    ``databricks-`` prefixes, or ``[...]`` hint."""
-    match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
+    """``model`` lowercased, without its catalog/schema, provider service or region prefix,
+    ``anthropic.`` and ``databricks-`` prefixes, or ``[...]`` hint."""
+    name = unqualified_model_name(model.lower().split("[", 1)[0])
+    match = _BARE_MODEL_NAME_PATTERN.match(name)
     return match.group("name") if match else ""
 
 
@@ -4166,8 +4173,9 @@ def list_provider_service_models(
     """The models the gateway lists for Model Provider Service ``service_name``, and why listing
     failed. An empty listing is not a failure.
 
-    Anthropic and Bedrock services list through the Anthropic models route, others through the
-    Codex model catalog."""
+    Anthropic-API providers use the Anthropic catalog; other providers use the Codex catalog.
+    """
+
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
         reason = listing.error_msg

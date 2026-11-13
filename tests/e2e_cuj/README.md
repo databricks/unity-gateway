@@ -155,6 +155,8 @@ before continuing. Later occurrences are handled the same way; any other dialog 
 After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
 until no background work remains, including a child resumed after its initial answer.
 Only then does the test close the task view and submit `/exit`.
+These Claude launches pass `--disallowedTools ScheduleWakeup,CronCreate`: a reminder the model
+schedules to check on its subagent would outlive the finished child and hold `/exit` open.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The Claude and Codex explicit-model precedence cases both run; the routing-disabled case

@@ -236,6 +236,7 @@ export function registerIsaacFeedback(
     return { text: 'Could not open the feedback form. Retry /isaac-feedback in the Claude terminal.' };
   });
 
+  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
     if (command?.action !== 'off') return next(e);

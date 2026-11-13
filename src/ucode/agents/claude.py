@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from ucode import managed_resolve
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -95,7 +96,6 @@ from ucode.managed_files import (
     windows_claude_managed_settings_path,
     withdrawn_list_items,
 )
-from ucode.managed_resolve import managed_claude_family_models, managed_default_model
 from ucode.mcp_oauth import (
     CLAUDE_CODE_CIMD_CLIENT_ID,
     MCP_OAUTH_CALLBACK_PORT,
@@ -120,6 +120,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -293,7 +294,7 @@ CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
 )
-# Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
+# Relayed drops the user scope to deliberately omit stale credentials. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
 
@@ -498,6 +499,9 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
             conflicts.append("env.ANTHROPIC_BASE_URL")
         if env.get("ANTHROPIC_CUSTOM_HEADERS"):
             conflicts.append("env.ANTHROPIC_CUSTOM_HEADERS")
+        for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+            if env.get(key):
+                conflicts.append(f"env.{key}")
     return conflicts
 
 
@@ -714,6 +718,11 @@ def render_overlay(
         }
         keys.append(["modelPicker"])
 
+    for option in overlay.get("modelPicker", {}).get("options", []):
+        display_model = unwrap_anthropic_gateway_model(option["model"])
+        if display_model != option["model"] and not option.get("description"):
+            option["description"] = f"Managed by your organization ({display_model})"
+
     if otel_tracing:
         otel_env = _otel_trace_env(workspace)
         env.update(otel_env)
@@ -827,8 +836,8 @@ def managed_model_inputs(state: dict, managed: dict | None) -> ManagedModelInput
     """
     if managed is None:
         return ManagedModelInputs({}, None, None)
-    defaults = managed_claude_family_models(managed) or {}
-    root_model = managed_default_model(managed, "claude")
+    defaults = managed_resolve.managed_claude_family_models(managed) or {}
+    root_model = managed_resolve.managed_default_model(managed, "claude")
     picker_catalog = None
     if defaults and not state.get("claude_static_models"):
         picker_catalog = default_model_picker_catalog(defaults, launch_model=root_model)
@@ -2687,6 +2696,13 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
 
 
+def _relayed_credential_override() -> dict:
+    return {
+        "apiKeyHelper": "",
+        "env": dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+    }
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -2711,9 +2727,10 @@ def _build_claude_argv(
     through as a second, colliding flag.
 
     ``relayed`` adds ``--setting-sources`` to exclude the user scope (see
-    :data:`_RELAYED_SETTING_SOURCES`), so a stale user-scope apiKeyHelper cannot
-    filter through and shadow the subscription OAuth. That also drops the user-scope
-    MCP servers, so they are handed back via ``--mcp-config`` (see
+    :data:`_RELAYED_SETTING_SOURCES`) and independently applies launch-scoped empty
+    ``apiKeyHelper`` and Anthropic API credentials, so project, local, or caller settings
+    cannot shadow the native subscription OAuth. That also drops the user-scope MCP
+    servers, so they are handed back separately via ``--mcp-config`` (see
     :func:`_relayed_mcp_config_args`).
     """
     source_args = (
@@ -2722,7 +2739,13 @@ def _build_claude_argv(
         else []
     )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    if not caller_values and settings_override is None and not server_side_web_search:
+    credential_override = _relayed_credential_override() if relayed else None
+    if (
+        not caller_values
+        and settings_override is None
+        and not server_side_web_search
+        and credential_override is None
+    ):
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
         return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
@@ -2736,6 +2759,8 @@ def _build_claude_argv(
         merged = _merge_claude_settings(merged, settings_override)
     if server_side_web_search:
         _enable_server_side_web_search(merged)
+    if credential_override is not None:
+        merged = _merge_claude_settings(merged, credential_override)
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -2757,15 +2782,20 @@ def _claude_launch_argv(
     settings_override: dict | None = None,
     server_side_web_search: bool = False,
 ) -> Iterator[list[str]]:
-    """Keep oversized Windows settings off the command line for the child's lifetime."""
+    """Keep launch settings containing credentials off the command line."""
     argv = _build_claude_argv(binary, tool_args, relayed, settings_override, server_side_web_search)
     settings_index = argv.index("--settings") + 1
-    if current_os() != OS.WINDOWS or not argv[settings_index].startswith("{"):
+    inline_settings = argv[settings_index].startswith("{")
+    if not inline_settings:
         yield argv
         return
     command_line = subprocess.list2cmdline(argv)
     # CreateProcess includes the terminating NUL in its 32,767 UTF-16 code unit limit.
-    if len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 < 32_767:
+    oversized_windows_command = (
+        current_os() == OS.WINDOWS
+        and len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 >= 32_767
+    )
+    if not relayed and not oversized_windows_command:
         yield argv
         return
     with TemporaryDirectory(prefix="ug-claude-") as directory:
@@ -2778,12 +2808,15 @@ def _claude_launch_argv(
 
 def _has_subscription_login() -> bool:
     """True when Claude Code holds a Claude subscription login that a relayed launch will use."""
+    credential_override = _relayed_credential_override()
+    settings_args = ["--settings", json.dumps(credential_override, separators=(",", ":"))]
     try:
         result = subprocess_cross_os.run(
             [
                 SPEC["binary"],
                 "--setting-sources",
                 _RELAYED_SETTING_SOURCES,
+                *settings_args,
                 "auth",
                 "status",
                 "--json",

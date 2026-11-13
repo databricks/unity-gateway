@@ -35,7 +35,11 @@ from utils.evidence import (
     tool_outputs,
 )
 from utils.harness import ANSI
-from utils.managed import MANAGED_CONFIG_FIXTURES, use_smart_routing_fixture
+from utils.managed import (
+    MANAGED_CONFIG_FIXTURES,
+    use_managed_config_fixture,
+    use_smart_routing_fixture,
+)
 from utils.request_recorder import TuiRequestRecorder, served_inference_request
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
@@ -433,24 +437,38 @@ def test_smart_routing_codex_route_subagent_hook(
     assert row["requested_model"] == updated["model"], row
 
 
+SMART_ROUTER_CASES = [
+    (False, None),
+    (True, None),
+    (True, MANAGED_DEFAULT),
+    (False, "subagent_only_v0"),
+    (False, "subagent_only_v1"),
+    (True, "subagent_orch_v0"),
+]
+SMART_ROUTER_CASE_IDS = [
+    "routing-only",
+    "orchestration",
+    MANAGED_DEFAULT,
+    "subagent_only_v0",
+    "subagent_only_v1",
+    "subagent_orch_v0",
+]
 SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
     "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION",
+    SMART_ROUTER_CASES,
+    ids=SMART_ROUTER_CASE_IDS,
+)
+
+# GLM child sessions intermittently fail SubagentHandback, so GLM stays out of the shared Claude
+# routing menu and gets one launch case whose menu offers only GLM.
+CLAUDE_GLM_ROUTING_FIXTURE = "claude_smart_routing_glm"
+CLAUDE_AT_LAUNCH_VERSIONS = pytest.mark.parametrize(
+    "orchestration_enabled, SMART_ROUTER_CONFIG_VERSION, routing_fixture",
     [
-        (False, None),
-        (True, None),
-        (True, MANAGED_DEFAULT),
-        (False, "subagent_only_v0"),
-        (False, "subagent_only_v1"),
-        (True, "subagent_orch_v0"),
+        *((*case, None) for case in SMART_ROUTER_CASES),
+        (False, "subagent_only_v0", CLAUDE_GLM_ROUTING_FIXTURE),
     ],
-    ids=[
-        "routing-only",
-        "orchestration",
-        MANAGED_DEFAULT,
-        "subagent_only_v0",
-        "subagent_only_v1",
-        "subagent_orch_v0",
-    ],
+    ids=[*SMART_ROUTER_CASE_IDS, "subagent_only_v0-glm"],
 )
 
 # Codex is opted out under the managed default (subagent_orch_v0_claude_only), so these Codex
@@ -476,9 +494,18 @@ CODEX_SMART_ROUTER_VERSIONS = pytest.mark.parametrize(
 
 
 def _select_smart_router_version(
-    session, agent: str, workspace, tmp_path, orchestration_enabled, config_version
+    session,
+    agent: str,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    config_version,
+    routing_fixture: str | None = None,
 ) -> None:
-    """Choose the legacy flags, a subagent selector, or the managed default; install the fixture."""
+    """Choose the legacy flags, a subagent selector, or the managed default; install the fixture.
+
+    ``routing_fixture`` replaces the workspace's shared routing fixture for a selector case.
+    """
     session.env["TMPDIR"] = str(tmp_path)
     if config_version is None:
         session.env["ENABLE_SMART_ROUTING_V2"] = "1"
@@ -487,6 +514,10 @@ def _select_smart_router_version(
             session.env["ENABLE_SMART_ROUTER_ORCHESTRATOR"] = "1"
     elif config_version != MANAGED_DEFAULT:
         session.env["SMART_ROUTER_CONFIG_VERSION"] = config_version
+    if routing_fixture is not None:
+        assert config_version is not None, "a routing fixture enables managed smart routing"
+        use_managed_config_fixture(session, routing_fixture)
+        return
     # Managed smart routing would override the legacy env vars set above.
     use_smart_routing_fixture(session, agent, workspace, smart_routing=config_version is not None)
 
@@ -660,13 +691,19 @@ def test_smart_router_claude_resumes_same_subagent_with_send_message(
 @pytest.mark.claude
 @pytest.mark.managed_fixture
 @pytest.mark.soft_fail
-@SMART_ROUTER_VERSIONS
+@CLAUDE_AT_LAUNCH_VERSIONS
 def test_smart_router_routes_claude_subagent_at_launch(
-    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+    live_session,
+    workspace,
+    tmp_path,
+    orchestration_enabled,
+    SMART_ROUTER_CONFIG_VERSION,
+    routing_fixture,
 ):
     """Scenario: launch Claude with the legacy flags, a subagent selector, or only the managed
     config's smart routing default and, without touching the Smart Router skill, spawn one child in
-    the real TUI.
+    the real TUI. The ``subagent_only_v0-glm`` case offers only GLM, so its parent and routed
+    child both run on GLM.
 
     Expected: routing-only cases install Smart Router; enabling orchestration also installs
     Smart Router Orchestrator. The uniquely tagged calculation completes in native parent and
@@ -679,7 +716,13 @@ def test_smart_router_routes_claude_subagent_at_launch(
     """
     session = live_session
     _select_smart_router_version(
-        session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
+        session,
+        "claude",
+        workspace,
+        tmp_path,
+        orchestration_enabled,
+        SMART_ROUTER_CONFIG_VERSION,
+        routing_fixture,
     )
     with TuiRequestRecorder(workspace) as recorder:
         # Configure through the forwarding URL using the public CLI, keeping ug state real.
