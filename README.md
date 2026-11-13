@@ -279,6 +279,11 @@ Databricks requests only: Claude Code's and Codex's gateway requests, and ug's o
 (workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
 Nothing is written to a config file.
 
+`UG_HEADERS` is inherited by every child process, including an agent started from another agent's
+session, so an agent launch drops an inherited `Databricks-Custom-Coding-Agent` and the gateway
+attributes the session from ug's `User-Agent`. To name the coding agent yourself, pass
+`--header "Databricks-Custom-Coding-Agent: <name>"` on that launch.
+
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
   Only `ug configure` installs or upgrades it beside the managed settings (with sudo, or as an
