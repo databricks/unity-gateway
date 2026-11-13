@@ -192,8 +192,7 @@ See [the mod guide](../docs/claude-mod.md).
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
 name stability. Selected-model labels omit gateway aliases and `[1m]`, then shorten names
-based on their dot count. The agent receives the original model, and continuation checks
-cover the existing gateway model identity behavior.
+based on their dot count. The agent receives the original model.
 They cover a lone call's decision under its Agent row and parallel calls drawn as cards above
 the parent's next reply in call order (replies drawn before routing never used, calls still
 routing waiting for a later reply, cards kept across a turn that

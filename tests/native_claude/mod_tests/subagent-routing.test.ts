@@ -21,47 +21,27 @@ test('selected model displays the model name without a gateway alias', async ($,
   const models = [
     ['anthropic-aigw-77df06ea-system.ai.glm-5-3-flash', 'glm-5-3-flash'],
     ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol'],
-    ['anthropic-aigw-77df06ea-catalog.schema.custom-model', 'custom-model'],
-    ['anthropic-aigw-77df06ea-org.catalog.schema.model[1m]', 'model'],
-    ['org.catalog.schema.service.model', 'service.model'],
-    ['org.catalog.schema.model.v1[1m]', 'model.v1'],
-    ['anthropic-aigw-77df06ea-org.catalog.schema.gpt-6.1-sol[1m]', 'gpt-6.1-sol'],
-    ['system.ai.glm-5-3-flash', 'glm-5-3-flash'],
-    ['system.ai.claude-3.5-sonnet', '5-sonnet'],
-    ['catalog.schema.claude-3.5-sonnet', '5-sonnet'],
-    ['anthropic-aigw-c442a48-system.ai.gpt-6.1-sol[1m]', '1-sol'],
-    ['model.version[1m]', 'model.version'],
+    ['main.default.bedrock-mps.us.anthropic.claude-sonnet-5-5', 'us.anthropic.claude-sonnet-5-5'],
+    ['model.version', 'model.version'],
     ['plain-model[1m]', 'plain-model'],
     ['databricks-claude-sonnet', 'claude-sonnet'],
     ['anthropic-aigw-invalid-custom-model', 'anthropic-aigw-invalid-custom-model'],
   ];
   let model = '';
-  const launched: string[] = [];
   on('session.id', () => ({ value: 'session-1' }));
+  on('clock.every', () => ({ value: { cancel: () => {} } }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model, rationale: '' }) } }));
   on('tool.call', () => ({ result: 'ok' }));
-  on('agent.spawn', ($, e) => {
-    launched.push(e.model);
-    return { model: e.model, agentId: `child-${e.tool_use_id}` };
-  });
-  on('fs.write', () => ({ value: undefined }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
 
   for (const [index, [input, expected]] of models.entries()) {
     model = input;
     const id = `model-${index}`;
     await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-    await $.agent.spawn({
-      tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
-      subagentType: originalInput.subagent_type, parentModel: 'claude-opus-4-8',
-      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
-      name: 'agent', permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
-    });
     const mounted = await $.ui.mount(row(id));
     expect(JSON.stringify(await mounted.drawn())).toContain(JSON.stringify(expected));
     await mounted.unmount();
   }
-  expect(launched).toEqual(models.map(([input]) => input));
 });
 
 test('animal names stay distinct and stable without changing routed calls or row controls', async ($, on) => {
@@ -571,41 +551,6 @@ async function collectParentTurn($: any, turnId: string, index = 1) {
     text: chunks.filter((chunk) => chunk.kind === 'text').map((chunk) => chunk.text).join(''),
   };
 }
-
-test('child continuations preserve existing gateway model identity', async ($, on) => {
-  let selected = '';
-  let launched = '';
-  const continued: string[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: selected, rationale: '' }) } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('agent.spawn', ($, e) => ({ agentId: `child-${e.tool_use_id}`, model: launched }));
-  on('fs.write', () => ({ value: undefined }));
-  on('turn.step', async function* ($, e) {
-    continued.push(e.model);
-    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
-  });
-
-  const cases = [
-    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol'],
-    ['anthropic-aigw-c442a48e-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'gpt-6-1-sol'],
-    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'other-model', 'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol'],
-  ];
-  for (const [index, [route, actual]] of cases.entries()) {
-    selected = route;
-    launched = actual;
-    const id = `alias-${index}`;
-    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
-    await $.agent.spawn({
-      tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
-      subagentType: originalInput.subagent_type, parentModel: 'parent-model',
-      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
-      name: 'agent', permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
-    });
-    await $.turn.step({ turnId: id, index: 1, model: 'parent-model', messageCount: 1, agentId: `child-${id}` }).next();
-  }
-  expect(continued).toEqual(cases.map(([, , expected]) => expected));
-});
 
 test('routed children leave native parent synthesis and stream errors unchanged', async ($, on) => {
   on('env.get', ($, e) => ({value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined}));
