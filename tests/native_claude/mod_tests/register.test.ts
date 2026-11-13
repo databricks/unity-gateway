@@ -2,6 +2,7 @@ import type { AgentInfo, On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
+import { parseSmartRouterCommand } from '../hooks/isaac-feedback.ts';
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
@@ -294,10 +295,13 @@ test('explanation commands leave routing and feedback controls untouched', { opt
   const initial = { ...env };
   let processes = 0;
   on('process.run', () => { processes++; return { value: { exitCode: 0, stdout: '', stderr: '' } }; });
-  for (const action of ['explain\t on', 'explain  latest', 'explain\t off']) {
-    await $.command.run({ command: 'smart-router', args: action });
+  for (const action of ['on', 'latest', 'off']) {
+    const args = ` explain\t ${action} `;
+    expect(parseSmartRouterCommand(args)).toEqual({ action: 'explain', explanationAction: action });
+    await $.command.run({ command: 'smart-router', args });
   }
-  for (const args of ['explain', 'explain invalid', 'explain on extra']) {
+  for (const args of ['explain', 'explain invalid', 'explain on extra', 'explain off --feedback-collected']) {
+    expect(parseSmartRouterCommand(args)).toBeUndefined();
     expect((await $.command.run({ command: 'smart-router', args })).text)
       .toBe('Usage: /smart-router explain on|off|latest');
   }

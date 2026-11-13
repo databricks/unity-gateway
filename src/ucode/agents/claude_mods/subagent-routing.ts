@@ -1,4 +1,5 @@
 import type { On, PluginOptions } from 'claude-code'
+import { parseSmartRouterCommand } from './isaac-feedback.ts'
 
 type NumericDetails = Record<string, number>
 type ExplanationModel = {
@@ -11,10 +12,10 @@ type RoutingExplanation = {
   recipe?: string; formula?: string
 }
 type RoutingRecord = {
-  name: string; task: string; model: string; rationale: string; seconds?: number
+  generation: number; name: string; task: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }; explanation?: RoutingExplanation
 }
-type ExplanationState = { enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
+type ExplanationState = { generation: number; enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
 const EXPLANATION_PANE = 'smart-router-explanation'
 const EXPLANATION_OPEN_FAILURE = 'Could not open the native routing explanation pane.'
@@ -47,10 +48,16 @@ function numericDetails(value: unknown): NumericDetails | undefined {
 const unwrapGatewayModel = (model: string): string =>
   model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
 
-const canonicalModel = (model: string): string => {
+const explanationModelId = (model: string): string => {
   const original = unwrapGatewayModel(model)
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length >= 3 ? original : original.replace(/\[1m\]$/, '')
+}
+
+const canonicalModel = (model: string): string => {
+  const original = unwrapGatewayModel(model)
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
 
 function utf8Length(value: string): number {
@@ -87,7 +94,7 @@ function parseExplanation(
   const selectedModel = safeText(value.selected_model, 160)
   const summary = safeText(value.summary, 2000)
   if (!selectedModel || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
-      || selectedModel !== canonicalModel(routedModel) || !summary
+      || selectedModel !== explanationModelId(routedModel) || !summary
       || !Array.isArray(value.models) || value.models.length < 1
       || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
 
@@ -181,6 +188,7 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
 }
 
 const whyHandler = ($: any, state: ExplanationState, record: RoutingRecord) => async () => {
+  if (!state.enabled || record.generation !== state.generation) return
   if (!await openExplanation($, state, record)) $.ui.toast(EXPLANATION_OPEN_FAILURE)
 }
 
@@ -260,21 +268,24 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
-  let routingGeneration = 0
   // Claude folds parallel Agent rows into its own block, which no hook reaches, so a call
   // that was routing alongside another is drawn as a card above the parent's next reply.
   // A lone call keeps its decision under its own row.
   const grouped = new Set<string>()
   const records = new Map<string, RoutingRecord>()
+  // Keep a reviewed call's selected route until its native spawn and receipt finish,
+  // even when a session reset discards its display record.
+  const activeRoutes = new Map<string, RoutingRecord>()
   // The reply each batch is drawn above.
   const anchors = new Map<string, string[]>()
   // Replies already drawn before a batch was routed are never its anchor.
   const seen = new Set<string>()
-  const explanationState: ExplanationState = { enabled: false }
+  const explanationState: ExplanationState = { generation: 0, enabled: false }
 
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
-    const [verb, action] = e.args.trim().split(/\s+/)
-    if (verb !== 'explain') return next(e)
+    const command = parseSmartRouterCommand(e.args)
+    if (command?.action !== 'explain') return next(e)
+    const action = command.explanationAction
     if (action === 'on') {
       if (!(options.routeCommand as readonly string[]).length) {
         return { text: 'Routing explanations are unavailable because subagent routing is not configured.' }
@@ -356,12 +367,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const generation = routingGeneration
+    const generation = explanationState.generation
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let explanation: RoutingExplanation | undefined
     let sessionId: string | undefined
     let spinner: { cancel: () => void } | undefined
+    let name = ''
+    let startedAt: number | undefined
     if (tool_use_id) {
       if (!names.has(tool_use_id)) {
         if (!unusedNames.length) unusedNames.push(...ANIMALS)
@@ -369,6 +382,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
         const cycle = Math.floor(names.size / ANIMALS.length)
         names.set(tool_use_id, cycle ? `${animal} ${cycle + 1}` : animal)
       }
+      name = names.get(tool_use_id)!
       // Parallel calls start together, so one still routing means this call is not alone.
       if (pending.size) {
         for (const id of pending.keys()) {
@@ -381,13 +395,16 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
         cards.unplaced.push(tool_use_id)
       }
       pending.set(tool_use_id, undefined)
-      pending.set(tool_use_id, await now($))
+      startedAt = await now($)
+      if (generation === explanationState.generation) pending.set(tool_use_id, startedAt)
       // Mods have no global timers; $.clock redraws the spinner while the router answers.
       // The frame comes from the clock, so parallel calls do not speed it up.
       try {
-        spinner = $.clock.every(SPINNER_INTERVAL_MS, () => $.ui.invalidate('ui.render'))
+        spinner = $.clock.every(SPINNER_INTERVAL_MS, () => {
+          if (generation === explanationState.generation) $.ui.invalidate('ui.render')
+        })
       } catch {}
-      $.ui.invalidate('ui.render')
+      if (generation === explanationState.generation) $.ui.invalidate('ui.render')
     }
     try {
       sessionId = await $.session.id()
@@ -416,54 +433,65 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       } catch {
         // Optional display metadata must never discard a valid model selection.
       }
-      if (!explanation) $.ui.log('Smart Router returned invalid explanation details; keeping its selected model.')
+      if (!explanation) $.ui.log('Smart Router returned invalid explanation details; keeping its selected model.', { to: 'debug' })
     }
-    const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
+    const seconds = await secondsSince($, startedAt)
+    let record: RoutingRecord | undefined
     if (tool_use_id) {
-      pending.delete(tool_use_id)
+      if (generation === explanationState.generation) pending.delete(tool_use_id)
       if (route) {
-        const record: RoutingRecord = {
-          name: names.get(tool_use_id)!,
+        record = {
+          generation,
+          name,
           task: input.description || input.subagent_type || tool,
           model: route.model,
           rationale: route.rationale,
           seconds,
           explanation,
         }
-        records.set(tool_use_id, record)
-        if (generation === routingGeneration) explanationState.latest = record
+        activeRoutes.set(tool_use_id, record)
+        if (generation === explanationState.generation) {
+          records.set(tool_use_id, record)
+          explanationState.latest = record
+        }
       }
-      if (generation === routingGeneration) $.ui.invalidate('ui.render')
+      if (generation === explanationState.generation) $.ui.invalidate('ui.render')
     }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
-    const result = await next(e)
-    const record = tool_use_id ? records.get(tool_use_id) : undefined
-    if (result.deny !== undefined || result.isError || !record?.spawned) return result
-    const identity = JSON.stringify({
-      agent_id: record.spawned.agentId,
-      selected_model: record.model,
-      launched_model: record.spawned.model ?? null,
-    })
-    return { ...result, context: [...(result.context ?? []),
-      `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
-      + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
-    ] }
+    try {
+      const result = await next(e)
+      if (result.deny !== undefined || result.isError || !record?.spawned) return result
+      const identity = JSON.stringify({
+        agent_id: record.spawned.agentId,
+        selected_model: record.model,
+        launched_model: record.spawned.model ?? null,
+      })
+      return { ...result, context: [...(result.context ?? []),
+        `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
+        + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
+      ] }
+    } finally {
+      if (tool_use_id && activeRoutes.get(tool_use_id) === record) activeRoutes.delete(tool_use_id)
+    }
   })
 
   on('agent.spawn', async ($, e, next) => {
-    const route = e.resume ? undefined : records.get(e.tool_use_id)
+    const route = e.resume ? undefined : activeRoutes.get(e.tool_use_id) ?? records.get(e.tool_use_id)
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
-      $.ui.invalidate('ui.render')
+      if (records.get(e.tool_use_id) === route) $.ui.invalidate('ui.render')
     }
-    if (name && result.agentId) {
+    if (name && result.agentId && records.get(e.tool_use_id) === route) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
-        await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(result.agentId)}.json`,
-          JSON.stringify({ session_id: await $.session.id(), name }))
+        const sessionId = await $.session.id()
+        if (records.get(e.tool_use_id) === route) {
+          await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(result.agentId)}.json`,
+            JSON.stringify({ session_id: sessionId, name }))
+        }
       } catch {
         $.ui.log('Could not save the subagent display name; its bottom bar will use the native label.')
       }
@@ -472,18 +500,21 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    const generation = explanationState.generation
     const record = records.get(e.requestId)
     const name = names.get(e.requestId)
     const original = await next(name && (record || pending.has(e.requestId)) ? {
       ...e,
       props: { ...e.props, tool: name },
     } : e)
+    if (generation !== explanationState.generation) return next(e)
     if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
       const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
       const seconds = await secondsSince($, pending.get(e.requestId))
+      if (generation !== explanationState.generation) return next(e)
       const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',
@@ -502,16 +533,20 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
   // also says routing is under way, timed from the oldest call still waiting.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
+    const generation = explanationState.generation
     if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
     const seconds = starts.length ? await secondsSince($, Math.min(...starts)) : undefined
+    if (generation !== explanationState.generation) return next(e)
     const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
     const what = pending.size > 1 ? `Selecting models for ${pending.size} agents` : 'Selecting a model'
     return next({ ...e, props: { ...e.props, message: `${what}…${elapsed}`, suffix: '' } })
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const generation = explanationState.generation
     const original = await next(e)
+    if (generation !== explanationState.generation) return original
     if (!seen.has(e.requestId)) {
       seen.add(e.requestId)
       // A call still routing waits for a later reply; one that failed routing is dropped.
@@ -529,8 +564,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
-    routingGeneration++
+    explanationState.generation++
     pending.clear()
+    records.clear()
+    names.clear()
+    unusedNames.splice(0, unusedNames.length, ...ANIMALS)
+    grouped.clear()
+    anchors.clear()
+    seen.clear()
+    cards.unplaced = []
     routedModels.reset()
     explanationState.latest = undefined
     explanationState.paneRecord = undefined

@@ -467,11 +467,12 @@ def select_route(
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
     params = payload["route_selection"][0].get("params")
-    explanation = _parse_routing_explanation(
-        params.get("routing_explanation") if isinstance(params, dict) else None,
-        model,
-        offered_routes,
-    )
+    raw_explanation = params.get("routing_explanation") if isinstance(params, dict) else None
+    explanation = _parse_routing_explanation(raw_explanation, model, offered_routes)
+    if raw_explanation is not None and explanation is None:
+        logging.getLogger(__name__).debug(
+            "Discarded routing explanation: invalid schema or offered-model identities"
+        )
     return (
         RoutingDecision(
             model=model,
@@ -520,6 +521,9 @@ def resolve_spawn_route(
     if decision.explanation is not None and not _explanation_matches_request_ids(
         decision.explanation, payload
     ):
+        logging.getLogger(__name__).debug(
+            "Discarded routing explanation: session or tool-call identity does not match request"
+        )
         decision = replace(decision, explanation=None)
     routed_model = model_id_mapper(decision.model)
     return SpawnRoute(tool_input, task, decision, routed_model)

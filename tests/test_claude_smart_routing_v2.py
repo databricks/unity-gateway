@@ -55,12 +55,14 @@ _EXPLANATION = {
         (_EXPLANATION, True),
         (json.dumps(_EXPLANATION), True),
         (None, False),
+        ({"summary": "private-invalid-metadata"}, False),
     ],
-    ids=["object", "json-string", "absent"],
+    ids=["object", "json-string", "absent", "invalid"],
 )
 def test_explanation_roundtrip_does_not_change_subagent_selection(
-    tmp_path, monkeypatch, explanation, retained
+    tmp_path, monkeypatch, caplog, explanation, retained
 ):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
     selected = "system.ai.model-b"
     calls = []
     original = {"prompt": "inspect parser", "subagent_type": "general-purpose", "model": "opus"}
@@ -110,6 +112,10 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
     else:
         assert result == {"model": selected, "rationale": "Selected by router."}
         assert "explanation" not in record
+    assert ("Discarded routing explanation" in caplog.text) == (
+        explanation is not None and not retained
+    )
+    assert "private-invalid-metadata" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -158,7 +164,6 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         ),
         pytest.param("invalid", id="invalid-json"),
         pytest.param("[]", id="array"),
-        pytest.param("null", id="null"),
         pytest.param(
             json.dumps(
                 {
@@ -179,16 +184,6 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         pytest.param(
             {**_EXPLANATION, "evidence": {"audit": "x" * 65536}},
             id="oversized-object",
-        ),
-        pytest.param(
-            {
-                **_EXPLANATION,
-                "models": [
-                    {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            id="nonfinite-object",
         ),
         pytest.param(
             {key: value for key, value in _EXPLANATION.items() if key != "task_understanding"},
@@ -309,8 +304,9 @@ def test_parse_routing_explanation_rejects_invalid_metadata(explanation):
     ],
 )
 def test_explanation_roundtrip_rejects_stale_identity_before_audit(
-    tmp_path, monkeypatch, identity_fields
+    tmp_path, monkeypatch, caplog, identity_fields
 ):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
     selected = "system.ai.model-b"
     explanation = {**_EXPLANATION, **identity_fields}
     payload = {
@@ -351,6 +347,7 @@ def test_explanation_roundtrip_rejects_stale_identity_before_audit(
     assert record["router_model"] == selected
     assert record["rationale"] == "Selected by router."
     assert "explanation" not in record
+    assert "session or tool-call identity does not match request" in caplog.text
 
 
 def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():

@@ -173,16 +173,10 @@ export function register(on: On, options: PluginOptions): void {
   registerRoutingLogs(on, options, launchedEnabled);
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const [verb, explainAction, ...explainExtra] = e.args.trim().split(/\s+/);
-    if (verb === 'explain') {
-      if (explainExtra.length || !['on', 'off', 'latest'].includes(explainAction)) {
-        return {text: 'Usage: /smart-router explain on|off|latest'};
-      }
-      if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-      return next(e);
-    }
     const command = parseSmartRouterCommand(e.args);
-    if (!command) return {text: 'Usage: /smart-router on|off|logs|explain on|off|latest'};
+    if (!command) return {text: /^explain(?:\s|$)/.test(e.args.trim())
+      ? 'Usage: /smart-router explain on|off|latest'
+      : 'Usage: /smart-router on|off|logs|explain on|off|latest'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (command.action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
@@ -198,7 +192,7 @@ export function register(on: On, options: PluginOptions): void {
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
-    if (!command) return next(e);
+    if (!command || command.action === 'explain') return next(e);
     const action = command.action;
     try {
       await setRouting($, options, action === 'on', true);

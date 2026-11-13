@@ -158,6 +158,49 @@ test('routing changes only the matching spawn model and joins its display name t
   expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
 });
 
+test('child turns preserve native context suffixes without changing exact catalog identities', async ($, on) => {
+  const cases = [
+    ['main.default.claude-sonnet-4.5', 'main.default.claude-sonnet-4.5[1m]', 'main.default.claude-sonnet-4.5[1m]'],
+    ['system.ai.model-b', 'anthropic-aigw-12345678-system.ai.model-b[1m]', 'anthropic-aigw-12345678-system.ai.model-b[1m]'],
+    ['system.ai.model-b', 'anthropic-aigw-c442a48-system.ai.model-b[1m]', 'anthropic-aigw-c442a48-system.ai.model-b[1m]'],
+    ['custom.catalog.code', 'custom.catalog.code[1m]', 'custom.catalog.code'],
+    ['model-b', 'model-c', 'model-b'],
+  ];
+  let selected = '';
+  let launched = '';
+  let stepModel = '';
+  const forwarded: any[] = [];
+  on('env.get', () => ({ value: '0' }));
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: selected, rationale: 'Selected for the task',
+  }) } }));
+  on('tool.call', ($, e) => { forwarded.push(e); return { result: 'ok' }; });
+  on('agent.spawn', ($, e) => {
+    expect(e.model).toBe(selected);
+    return { agentId: `child-${e.tool_use_id}`, model: launched };
+  });
+  on('fs.write', () => ({ value: undefined }));
+  on('turn.step', async function* ($, e) {
+    stepModel = e.model;
+    yield { kind: 'text', index: 0, text: 'Native child response' };
+    return { turnId: e.turnId, index: e.index, answer: 'Native child response', toolUses: [], stopReason: 'end_turn', usage: null };
+  });
+  for (const [index, [route, resolved, expected]] of cases.entries()) {
+    selected = route;
+    launched = resolved;
+    const id = `context-${index}`;
+    const input = { tool: 'Agent' as const, tool_use_id: id, ...originalInput };
+    await $.tool.call(input);
+    expect(forwarded[index]).toEqual(input);
+    await $.agent.spawn({ tool_use_id: id, prompt: originalInput.prompt });
+    const stream = $.turn.step({ turnId: id, index: 1, model: 'parent-model', messageCount: 1, agentId: `child-${id}` });
+    expect((await stream.next()).value).toEqual({ kind: 'text', index: 0, text: 'Native child response' });
+    expect((await stream.next()).done).toBe(true);
+    expect(stepModel).toBe(expected);
+  }
+});
+
 test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];
@@ -685,6 +728,7 @@ for (const [name, details, diagnostic] of [
 ] as const) {
   test(`${name} explanation shows no details while preserving the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
     const logs: string[] = [];
+    const logDestinations: unknown[] = [];
     const routed = 'system.ai.model-b[1m]';
     const forwarded: any[] = [];
     on('session.id', () => ({ value: 'session-1' }));
@@ -693,7 +737,7 @@ for (const [name, details, diagnostic] of [
     }) } }));
     on('tool.call', () => ({ result: 'ok' }));
     on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
-    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    on('ui.log', ($, e) => { logs.push(e.text); logDestinations.push(e.to); return { value: undefined }; });
     on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
     on('ui.open', () => ({ value: undefined }));
     on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
@@ -703,6 +747,7 @@ for (const [name, details, diagnostic] of [
     await $.tool.call({ tool: 'Agent', tool_use_id: name, ...originalInput });
     expect(logs).toEqual(diagnostic
       ? ['Smart Router returned invalid explanation details; keeping its selected model.'] : []);
+    expect(logDestinations).toEqual(diagnostic ? ['debug'] : []);
     await $.command.run({ command: 'smart-router', args: 'explain latest' });
     const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
     expect(JSON.stringify(await pane.drawn())).toContain('No routing explanation details were returned.');
@@ -752,13 +797,23 @@ for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
 }
 
 for (const reason of ['clear', 'resume'] as const) {
-test(`session ${reason} clears the latest explanation and closes its pane without disabling explanations`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+test(`session ${reason} clears routing UI while pending routes keep their native spawn and receipt`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   on('session.end', () => ({ sessionId: 'session-1' }));
   let closes = 0;
   let panePlaced = false;
   let completePendingRoute: (() => void) | undefined;
   let onRouteStarted: (() => void) | undefined;
   const routeStarted = new Promise<void>((resolve) => { onRouteStarted = resolve; });
+  let completePendingSpawn: (() => void) | undefined;
+  let onSpawnStarted: (() => void) | undefined;
+  const spawnStarted = new Promise<void>((resolve) => { onSpawnStarted = resolve; });
+  const finish = new Map<string, (result: any) => void>();
+  let onRouteForwarded: () => void = () => {};
+  const routeForwarded = new Promise<void>((resolve) => { onRouteForwarded = resolve; });
+  let onSpawnForwarded: () => void = () => {};
+  const spawnForwarded = new Promise<void>((resolve) => { onSpawnForwarded = resolve; });
+  const stepModels: string[] = [];
+  on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined }));
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', ($, e) => {
     const request = JSON.parse(e.init.stdin);
@@ -775,13 +830,37 @@ test(`session ${reason} clears the latest explanation and closes its pane withou
       onRouteStarted?.();
     });
   });
-  on('tool.call', () => ({ result: 'ok' }));
+  const forwarded: any[] = [];
+  on('tool.call', ($, e) => {
+    forwarded.push(e);
+    if (e.tool_use_id.startsWith('pending-')) {
+      return new Promise((resolve) => {
+        finish.set(e.tool_use_id, resolve);
+        if (e.tool_use_id === 'pending-before-clear') onRouteForwarded();
+        else onSpawnForwarded();
+      });
+    }
+    return { result: 'ok' };
+  });
   const spawns: any[] = [];
-  on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model, agentId: `child-${e.tool_use_id}` }; });
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  on('agent.spawn', async ($, e) => {
+    spawns.push(e);
+    if (e.tool_use_id === 'pending-spawn') {
+      await new Promise<void>((resolve) => { completePendingSpawn = resolve; onSpawnStarted?.(); });
+    }
+    return { model: e.model, agentId: `child-${e.tool_use_id}` };
+  });
+  const writes: any[] = [];
+  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
+  on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.props.tool ?? 'original reply'] }));
   on('ui.open', () => { panePlaced = true; return { value: undefined }; });
   on('ui.panes', () => ({ value: panePlaced ? [{ id: 'smart-router-explanation', isPlaced: true }] : [] }));
   on('ui.close', () => { closes++; panePlaced = false; return { value: undefined }; });
+  on('turn.step', async function* ($, e) {
+    stepModels.push(e.model);
+    yield { kind: 'text', index: 0, text: 'Native child response' };
+    return { turnId: e.turnId, index: e.index, answer: 'Native child response', toolUses: [], stopReason: 'end_turn', usage: null };
+  });
 
   await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'before-clear', ...originalInput });
@@ -790,6 +869,14 @@ test(`session ${reason} clears the latest explanation and closes its pane withou
   expect(panePlaced).toBe(true);
   const pendingRoute = $.tool.call({ tool: 'Agent', tool_use_id: 'pending-before-clear', ...originalInput });
   await routeStarted;
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'anchored-before-clear', ...originalInput });
+  const anchored = await $.ui.mount(reply('anchored'));
+  expect(JSON.stringify(await anchored.drawn())).toContain('Selected Model');
+  await anchored.unmount();
+  const pendingSpawn = $.tool.call({ tool: 'Agent', tool_use_id: 'pending-spawn', ...originalInput });
+  await spawnForwarded;
+  const nativeSpawn = $.agent.spawn({ tool_use_id: 'pending-spawn', prompt: originalInput.prompt });
+  await spawnStarted;
   const closesBeforeEnd = closes;
   await $.session.end({ reason });
 
@@ -798,13 +885,43 @@ test(`session ${reason} clears the latest explanation and closes its pane withou
   expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
     .toBe('No completed routing decision is available in this session.');
   completePendingRoute?.();
-  await pendingRoute;
+  await routeForwarded;
+  const routedChild = await $.agent.spawn({ tool_use_id: 'pending-before-clear', prompt: originalInput.prompt });
+  finish.get('pending-before-clear')!({ result: routedChild.agentId, context: ['Native context'] });
+  completePendingSpawn?.();
+  const spawnedChild = await nativeSpawn;
+  finish.get('pending-spawn')!({ result: spawnedChild.agentId, context: ['Native context'] });
+  const results = await Promise.all([pendingRoute, pendingSpawn]);
+  for (const [index, id] of ['pending-before-clear', 'pending-spawn'].entries()) {
+    expect(forwarded.find(e => e.tool_use_id === id)).toEqual({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    expect(spawns.find(e => e.tool_use_id === id).model).toBe('system.ai.model-b');
+    expect(results[index].result).toBe(`child-${id}`);
+    expect(results[index].context?.[0]).toBe('Native context');
+    expect(results[index].context?.[1]).toContain(`"agent_id":"child-${id}"`);
+    expect(results[index].context?.[1]).toContain('"selected_model":"system.ai.model-b"');
+    expect(results[index].context?.[1]).toContain('"launched_model":"system.ai.model-b"');
+    const stream = $.turn.step({ turnId: id, index: 1, model: 'parent-model', messageCount: 1, agentId: `child-${id}` });
+    expect((await stream.next()).value).toEqual({ kind: 'text', index: 0, text: 'Native child response' });
+    expect((await stream.next()).done).toBe(true);
+    expect(stepModels[index]).toBe('system.ai.model-b');
+  }
+  expect(writes).toEqual([]);
   expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
     .toBe('No completed routing decision is available in this session.');
-  await $.agent.spawn({ tool_use_id: 'pending-before-clear', prompt: 'inspect' });
-  expect(spawns[0].model).toBe('system.ai.model-b');
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'after-clear', ...originalInput });
-  const afterClear = await $.ui.mount(row('after-clear'));
+  for (const id of ['before-clear', 'anchored-before-clear', 'pending-before-clear', 'pending-spawn']) {
+    const oldRow = await $.ui.mount(row(id));
+    expect(await oldRow.find({ type: 'Text', text: 'Agent' })).toBeDefined();
+    expect(await oldRow.find({ type: 'Text', text: /Selected Model|Selecting a model|Why this model/ })).toBeUndefined();
+    await oldRow.unmount();
+  }
+  for (const id of ['anchored', 'new-reply']) {
+    const oldReply = await $.ui.mount(reply(id));
+    expect(await oldReply.find({ type: 'Text', text: /Selected Model|Why this model/ })).toBeUndefined();
+    await oldReply.unmount();
+  }
+  // Reusing a formerly grouped row must behave as a fresh lone call.
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'anchored-before-clear', ...originalInput });
+  const afterClear = await $.ui.mount(row('anchored-before-clear'));
   expect(JSON.stringify(await afterClear.drawn())).toContain('Why this model?');
   await afterClear.unmount();
 });
