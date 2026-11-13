@@ -953,7 +953,7 @@ class TestClaudeLanguageLoopbackProxy:
 
     def test_json_recursion_error_passes_through(self, _language_proxy):
         proxy_url, captured = _language_proxy
-        depth = 10_000
+        depth = 500_000
         body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
         with pytest.raises(RecursionError):
             json.loads(body)
