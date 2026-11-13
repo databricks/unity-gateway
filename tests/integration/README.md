@@ -57,8 +57,9 @@ It replaces the obsolete stdio-only expectation; this checks configuration, not 
 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
-execution inputs and row controls. They cover a lone call's decision under its Agent row,
-parallel calls as cards above the parent's next reply in call order, calls
+execution inputs and row controls. Selected-model labels omit gateway aliases and `system.ai.`
+while retaining the full model ID for the spawn. They cover a lone call's decision under its
+Agent row, parallel calls as cards above the parent's next reply in call order, calls
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live

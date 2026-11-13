@@ -17,6 +17,44 @@ const reply = (id: string) => ({
   props: { text: 'reply', isFirstOfReply: true },
 });
 
+test('selected model displays the model name without a gateway alias', async ($, on) => {
+  const models = [
+    ['anthropic-aigw-77df06ea-system.ai.glm-5-3-flash', 'glm-5-3-flash'],
+    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol[1m]'],
+    ['anthropic-aigw-77df06ea-catalog.schema.custom-model', 'catalog.schema.custom-model'],
+    ['system.ai.glm-5-3-flash', 'glm-5-3-flash'],
+    ['databricks-claude-sonnet', 'claude-sonnet'],
+    ['anthropic-aigw-invalid-system.ai.glm-5-3-flash', 'anthropic-aigw-invalid-system.ai.glm-5-3-flash'],
+  ];
+  let model = '';
+  const launched: string[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model, rationale: '' }) } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  on('agent.spawn', ($, e) => {
+    launched.push(e.model);
+    return { model: e.model, agentId: `child-${e.tool_use_id}` };
+  });
+  on('fs.write', () => ({ value: undefined }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+
+  for (const [index, [input, expected]] of models.entries()) {
+    model = input;
+    const id = `model-${index}`;
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    await $.agent.spawn({
+      tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: originalInput.subagent_type, parentModel: 'claude-opus-4-8',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: 'agent', permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+    });
+    const mounted = await $.ui.mount(row(id));
+    expect(JSON.stringify(await mounted.drawn())).toContain(JSON.stringify(expected));
+    await mounted.unmount();
+  }
+  expect(launched).toEqual(models.map(([input]) => input));
+});
+
 test('animal names stay distinct and stable without changing routed calls or row controls', async ($, on) => {
   const input = { ...originalInput, subagent_type: 'ug-smart-router:ucode-route-sonnet-hash', run_in_background: true };
   const names: string[] = [];
