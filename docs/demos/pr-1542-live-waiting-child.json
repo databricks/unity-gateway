@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "pr": "https://github.com/databricks/unity-gateway/pull/1542",
+  "recorded_at": "2026-11-13T21:07:23Z",
+  "source_commit": "f082e17997c42bb66f3cfdaf3e348960d064235c",
+  "product_source_unchanged_from": "6ecb6f2b142ec0c52c93ee3910b0910800a860e2",
+  "source_tree": "6f2869bdadff0b09cbd8fa168ad1744757596f2f",
+  "native_runtime": "2.1.316 (Claude Code)",
+  "native_runtime_sha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "media": {
+    "file": "pr-1542-live-waiting-child.mp4",
+    "sha256": "85b8aea14963dfe9b060e42aa369f9e0a0062c1aa49d4b0f694e3280b3f07717",
+    "bytes": 613042,
+    "duration_seconds": 58.0,
+    "width": 1600,
+    "height": 1080,
+    "frames_per_second": 10
+  },
+  "models": {
+    "parent": "system.ai.claude-sonnet-4-6",
+    "child": "system.ai.claude-haiku-4-5"
+  },
+  "inputs": "Local CSV with three region rows. The report command waits 30 seconds before calculating totals; this delay is disclosed in the video.",
+  "live_execution": "The native parent and child used real model requests and responses through the existing Databricks gateway authentication. No model responses or notifications were injected.",
+  "capture": "Real-time native PTY screen capture. A passive observer records the native notification, current agents and unchanged product filter result.",
+  "observed": {
+    "same_direct_child_verified": true,
+    "waiting_origin": "task-notification",
+    "waiting_state": "waiting",
+    "empty_waiting_payload_verified": true,
+    "production_filter_drop": true,
+    "parent_responses_before_report": 2,
+    "parent_responses_total": 3,
+    "child_responses_total": 4,
+    "background_report_commands": 1,
+    "final_report": {
+      "regions": 3,
+      "jobs": 42,
+      "succeeded": 39,
+      "failed": 3,
+      "success_rate_percent": 92.86
+    },
+    "same_child_substantive_handback_delivered": true
+  },
+  "native_warning": "Prompt dropped by a hook: Run CSV report in background is still running in the background.",
+  "validation": "Verified direct-child identity, native origin/state and exact waiting payload; the empty notice made no parent request. The same child handed back the computed report. Loaded production hook bytes match the recorded source. Full video decode and phase-frame inspection passed.",
+  "limits": "This live success journey covers Claude 2.1.316 with the named models. Earlier-runtime compatibility, error paths, routing classification and billing accuracy were not exercised in this recording."
+}
