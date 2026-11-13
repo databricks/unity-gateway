@@ -235,7 +235,8 @@ def test_relayed_inline_settings_are_private_and_cleaned_up(large_settings, monk
         settings_path = Path(argv[argv.index("--settings") + 1])
         assert all("saved-secret" not in argument for argument in argv)
         assert not argv[argv.index("--settings") + 1].startswith("{")
-        assert settings_path.stat().st_mode & 0o777 == 0o600
+        if sys.platform != "win32":
+            assert settings_path.stat().st_mode & 0o777 == 0o600
         settings = json.loads(settings_path.read_text(encoding="utf-8"))
         assert settings["env"]["UNRELATED_SECRET"] == "saved-secret"
         assert settings["hooks"] == caller["hooks"]
