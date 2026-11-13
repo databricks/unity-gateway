@@ -26,7 +26,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, managed_files
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -135,8 +135,10 @@ from ucode.managed_config import (
 )
 from ucode.managed_files import (
     MANAGED_FILES_SUPPORTED_OSES,
+    OS,
     SKIP_OS_SETTINGS_ENV,
     ManagedFileWriteUnavailable,
+    _running_as_root,
     config_scope,
     current_os,
     explicit_managed_writes,
@@ -144,6 +146,7 @@ from ucode.managed_files import (
     managed_settings_skipped,
     managed_write_session,
     per_user_paths,
+    published_agent_config_used,
     request_explicit_managed_writes,
     set_config_scope,
     set_machine_wide_only,
@@ -1400,6 +1403,11 @@ def _prompt_for_model_location() -> str:
         print_err("Model location must be `<catalog>.<schema>`.")
 
 
+PUBLISHED_AGENT_CONFIG_NOTE = (
+    "This machine's machine-wide settings come from your workspace's published agent configuration."
+)
+
+
 def configure_workspace_command(
     tool: str | None = None,
     selected_tools: list[str] | None = None,
@@ -1449,6 +1457,8 @@ def _configure_workspace_command(
 ) -> int:
     if tool is not None and selected_tools is not None:
         raise RuntimeError("Use either --agent or --agents, not both.")
+    if published_agent_config_used():
+        print_note(PUBLISHED_AGENT_CONFIG_NOTE)
     refuse_user_scope_over_managed_files([tool] if tool else selected_tools or [])
 
     # The Databricks-vs-Model-Provider-Service picker is shown only on the fully
@@ -1936,6 +1946,8 @@ def status() -> int:
             f"Workspace-managed ({managed_freshness})" if managed else "Self-configured",
         )
     )
+    if published_agent_config_used():
+        provider_rows.append(("Machine-wide settings", "From the published agent configuration"))
     policy = (managed or {}).get("budget_policy")
     if isinstance(policy, dict):
         provider_rows.append(("Policy", str(policy.get("display_name") or "coding-agents-default")))
@@ -2027,6 +2039,30 @@ def _print_managed_revert_result(display: str, result: str, path: Path | None) -
     )
 
 
+def _revert_published_agent_config() -> str | None:
+    """Remove a managed run's machine-wide files when this revert runs as root, for example from an
+    MDM policy. Returns the outcome to print, or None when no published agent configuration was used."""
+    if not published_agent_config_used():
+        return None
+    from ucode import published_agent_config
+
+    # Only root removes them. `sudo -n` also succeeds for a developer with passwordless or
+    # recently used sudo, whose own revert must leave the organization's files.
+    if not _running_as_root():
+        print_note(
+            "This machine's machine-wide settings come from a published agent configuration, so "
+            "`ug revert` leaves them. It still reverts your own settings. An administrator can "
+            "remove them with `sudo ug revert`."
+        )
+        return "managed, left as is"
+    try:
+        removed = published_agent_config.revert_machine()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        print_warning(f"Could not remove the published agent configuration's settings: {exc}")
+        return "failed"
+    return f"removed ({', '.join(removed)})" if removed else "unchanged"
+
+
 def revert() -> int:
     from ucode.agents.desktop.setup import revert_desktop
 
@@ -2040,9 +2076,26 @@ def revert() -> int:
         copilot_agent.sweep_session_registries()
     except OSError as exc:
         print_warning(f"Could not remove leftover Copilot session files: {exc}")
-    claude_managed_result = claude_agent.revert_managed_settings()
-    codex_managed_result = codex_agent.revert_managed_config()
-    workspace_policy_result = revert_machine_policy()
+    # Read before reverting: a root revert deletes the marker file along with the files.
+    used_published_agent_config = published_agent_config_used()
+    published_agent_config_result = _revert_published_agent_config()
+    if used_published_agent_config and published_agent_config_result in (
+        "managed, left as is",
+        "failed",
+    ):
+        # The managed run's files come and go together, so the ordinary restores must not run
+        # while they remain.
+        claude_managed_result = codex_managed_result = workspace_policy_result = (
+            "managed, left as is"
+            if published_agent_config_result == "managed, left as is"
+            else "see published agent configuration"
+        )
+    else:
+        # After a root revert removed the managed run's files, these remove what an earlier
+        # ordinary `ug configure --global` left, such as the header mod and its backups.
+        claude_managed_result = claude_agent.revert_managed_settings()
+        codex_managed_result = codex_agent.revert_managed_config()
+        workspace_policy_result = revert_machine_policy()
     from ucode.agents import vscode
 
     try:
@@ -2080,6 +2133,8 @@ def revert() -> int:
         "Codex", codex_managed_result, codex_agent.codex_managed_config_path()
     )
     print_kv("Unity Gateway workspace policy", workspace_policy_result)
+    if published_agent_config_result is not None:
+        print_kv("Published agent configuration settings", published_agent_config_result)
     print_kv("Pi settings", "restored" if pi_settings_restored else "unchanged")
     print_kv("VS Code extension", vscode_result)
     for client, spec in MCP_CLIENTS.items():
@@ -3105,9 +3160,34 @@ def auth_token_cmd(
     if not workspace:
         print_err("No workspace configured. Run `ug configure` first.")
         raise typer.Exit(1)
-    if profile is None and not explicit_host:
+    saved_workspace = state.get("workspace")
+    # A machine-wide helper (a managed run's `ug auth-token --host <ws>`) runs as each developer and
+    # carries no per-user choices, so a host matching the saved workspace uses the saved ones. Only
+    # on a machine with a managed run: a per-user helper already names its choices.
+    uses_saved_choices = not explicit_host or (
+        published_agent_config_used()
+        and isinstance(saved_workspace, str)
+        and bool(saved_workspace.strip())
+        and normalize_workspace_url(saved_workspace) == normalize_workspace_url(workspace)
+    )
+    saved_oauth = state.get("custom_oauth")
+    if (
+        uses_saved_choices
+        and explicit_host
+        and profile is None
+        and client_id is None
+        and not use_pat
+        and isinstance(saved_oauth, dict)
+        and isinstance(saved_oauth.get("client_id"), str)
+        and isinstance(saved_oauth.get("scopes"), list)
+    ):
+        client_id = saved_oauth["client_id"]
+        redirect_url = saved_oauth.get("redirect_url") or None
+        scopes = ",".join(saved_oauth["scopes"])
+        profile = saved_oauth.get("profile") or None
+    if profile is None and uses_saved_choices:
         profile = state.get("profile")
-    if client_id is None and (use_pat or state.get("use_pat")):
+    if client_id is None and (use_pat or (uses_saved_choices and state.get("use_pat"))):
         # --use-pat explicitly means "serve the profile's static PAT". Fail
         # closed if it can't be read rather than falling through to OAuth —
         # `auth token` cannot serve a PAT-only profile, so that path would
@@ -3485,6 +3565,10 @@ def _auto_configure_tool(
     existing = load_state()
     workspace = existing.get("workspace")
     profile = existing.get("profile")
+    if published_agent_config_used():
+        print_note(PUBLISHED_AGENT_CONFIG_NOTE)
+        # The managed run chose the machine's workspace, so the first launch needs no prompt.
+        workspace = workspace or managed_state_workspace()
     if not workspace:
         workspace, profile = _prompt_for_configuration(tool)
     configure_kwargs = {"custom_oauth": custom_oauth} if custom_oauth is not None else {}
@@ -5238,6 +5322,8 @@ def configure(
             "--global",
             help="Write only machine-wide Claude Code/Codex settings and, on macOS, provision Claude "
             "Desktop through MDM, requesting sudo when needed. Leave per-user agent settings alone. "
+            "When the workspace publishes an agent configuration, rebuild the machine-wide files "
+            "from it (see docs/admin-managed-settings-reference.md). "
             "Desktop MDM requires a shared runtime; without --global, Desktop writes only user-level files.",
         ),
     ] = False,
@@ -5257,6 +5343,14 @@ def configure(
             "'low' prints terse single-line status instead.",
         ),
     ] = "normal",
+    from_file: Annotated[
+        str | None,
+        typer.Option(
+            "--from-file",
+            help="With --global --dry-run: preview the machine-wide files a draft agent "
+            "configuration (the JSON `ug export` writes) produces, instead of the published one.",
+        ),
+    ] = None,
 ) -> None:
     """Configure workspace URL and Unity Gateway."""
     if ctx.invoked_subcommand is not None:
@@ -5266,6 +5360,29 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    if from_file is not None and not (global_scope and dry_run):
+        print_err("--from-file previews a draft, so it requires --global --dry-run.")
+        raise typer.Exit(2)
+    if global_scope and not user_scope:
+        # Raises typer.Exit when the workspace publishes an agent configuration; otherwise the
+        # merge below runs as before.
+        _configure_global_from_agent_config(
+            from_file=from_file,
+            dry_run=dry_run,
+            workspace=workspace if workspace is not None else workspaces,
+            profile=profile if profile is not None else profiles,
+            agent=agent,
+            agents=agents,
+            conflicting={
+                "--use-pat": use_pat,
+                "--client-id": client_id is not None,
+                "--mcp": mcp is not None,
+                "--provider": provider is not None,
+                "--model-location": model_location is not None,
+                "--enable-databricks-ai-tools": bool(enable_databricks_ai_tools),
+                "--enable-server-side-web-search": enable_server_side_web_search is not None,
+            },
+        )
     try:
         if global_scope and user_scope:
             raise RuntimeError("Use either --global or --user, not both.")
@@ -5493,6 +5610,167 @@ def configure(
         raise typer.Exit(130) from None
     finally:
         set_machine_wide_only(False)
+
+
+def _global_workspace(workspace: str | None, profile: str | None) -> str | None:
+    """The workspace a ``ug configure --global`` run targets without prompting, if one is known."""
+    workspace = workspace or os.environ.get("UG_WORKSPACE") or None
+    if workspace is None and profile is not None:
+        workspace = _parse_profile_option(profile)[0][0]
+    if workspace is None and (marker := managed_files.published_agent_config_marker()) is not None:
+        saved = marker.get("workspace")
+        workspace = saved if isinstance(saved, str) and saved else None
+    return workspace
+
+
+def _configure_global_from_agent_config(
+    *,
+    from_file: str | None,
+    dry_run: bool,
+    workspace: str | None,
+    profile: str | None,
+    agent: str | None,
+    agents: str | None,
+    conflicting: dict[str, bool],
+) -> None:
+    """A managed run: ``ug configure --global`` on a workspace that publishes an agent configuration.
+
+    Rebuilds each supported agent's machine-wide files from the configuration and the ownership
+    tables (see :mod:`ucode.published_agent_config`), provisions Claude Desktop on macOS, and exits
+    with the documented code. When no published agent configuration was used on this machine yet,
+    it returns without doing anything if the workspace publishes no configuration or isn't known,
+    so the caller's merge runs as before.
+    """
+    from ucode import published_agent_config
+    from ucode.agents.desktop.setup import configure_claude_desktop, revert_claude_desktop_mdm
+
+    try:
+        if current_os() not in (OS.LINUX, OS.MACOS):
+            if from_file is not None:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_USAGE,
+                    "--from-file previews macOS and Linux files only.",
+                )
+            return
+        try:
+            target = _global_workspace(workspace, profile)
+        except RuntimeError as exc:
+            raise published_agent_config.ManagedRunError(
+                published_agent_config.EXIT_USAGE, str(exc)
+            ) from exc
+        if target is None:
+            if from_file is not None:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_USAGE, "--from-file requires --workspace <url>."
+                )
+            return
+        if env_bool(SKIP_OS_SETTINGS_ENV):
+            if from_file is None:
+                return  # The merge rejects --global under the opt-out with its own message.
+            raise published_agent_config.ManagedRunError(
+                published_agent_config.EXIT_USAGE,
+                f"`ug configure --global` writes machine-wide settings, which "
+                f"{SKIP_OS_SETTINGS_ENV} turns off. Unset {SKIP_OS_SETTINGS_ENV}.",
+            )
+        key, host = published_agent_config.resolve_host(target)
+        # An explicit --global overrides a saved user scope, and marks the run that may write past
+        # the marker file.
+        set_config_scope("global")
+        set_machine_wide_only(True)
+        token: str | None = None
+        if from_file is not None:
+            raw: dict | None = published_agent_config.load_draft(from_file)
+        else:
+            try:
+                install_databricks_cli()
+            except RuntimeError as exc:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_USAGE, str(exc)
+                ) from exc
+            try:
+                token = published_agent_config.sign_in(host, profile)
+            except published_agent_config.SignInUnavailable:
+                if published_agent_config_used():
+                    raise
+                # Sign in as the merge would, so the published configuration decides the run.
+                try:
+                    ensure_databricks_auth(
+                        host, profile, quiet=True, workspace_id=split_workspace_key(key)[1]
+                    )
+                except RuntimeError as exc:
+                    raise published_agent_config.ManagedRunError(
+                        published_agent_config.EXIT_FETCH, f"Could not sign in to {host}: {exc}"
+                    ) from exc
+                token = published_agent_config.sign_in(host, profile)
+            try:
+                raw = published_agent_config.fetch_published(host, token)
+            except published_agent_config.ManagedRunError as exc:
+                if published_agent_config_used():
+                    raise
+                # Before the first managed run, keep the merge working through a failed read; the
+                # next successful run rebuilds the files.
+                print_warning(
+                    f"{str(exc).rstrip('.')}. Merging into the machine-wide files instead."
+                )
+                return
+        if raw is None:
+            if published_agent_config_used():
+                raise published_agent_config.no_config_error(host)
+            return
+        used = [flag for flag, present in conflicting.items() if present]
+        if used:
+            raise published_agent_config.ManagedRunError(
+                published_agent_config.EXIT_USAGE,
+                f"{host} publishes an agent configuration, which decides the machine-wide "
+                f"settings, so `ug configure --global` can't be combined with {', '.join(used)}.",
+            )
+        if agent is not None and agents is not None:
+            raise published_agent_config.ManagedRunError(
+                published_agent_config.EXIT_USAGE, "Use either --agent or --agents, not both."
+            )
+        agent, agents = _drop_per_user_agents(agent, agents)
+        if agent is None and agents == "":
+            # Every requested agent has only per-user settings: nothing to write.
+            raise typer.Exit(published_agent_config.EXIT_OK)
+        selected = published_agent_config.parse_agents(agents if agents is not None else agent)
+        if not dry_run:
+            published_agent_config.check_privileges()
+            try:
+                _require_shared_installation()
+            except RuntimeError as exc:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_USAGE, str(exc)
+                ) from exc
+        published_agent_config.run(
+            key=key,
+            raw=raw,
+            agents=selected,
+            dry_run=dry_run,
+            source=from_file,
+            profile=profile,
+            token=token,
+        )
+        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
+        if from_file is None and "claude" in selected:
+            if "claude" in enabled:
+                # Best effort, as before: a Desktop failure warns without failing the run. A dry
+                # run only previews it.
+                configure_claude_desktop({"workspace": key, "profile": profile})
+            elif not dry_run and revert_claude_desktop_mdm() == "removed":
+                # Claude's managed file is gone, so Desktop must stop pointing at the gateway too.
+                print_note(
+                    "Removed Claude Desktop's MDM policy, because the agent configuration no "
+                    "longer enables Claude."
+                )
+    except published_agent_config.ManagedRunError as exc:
+        print_err(str(exc))
+        raise typer.Exit(exc.code) from None
+    except KeyboardInterrupt:
+        print_err("Interrupted.")
+        raise typer.Exit(130) from None
+    finally:
+        set_machine_wide_only(False)
+    raise typer.Exit(published_agent_config.EXIT_OK)
 
 
 # Only these agents have machine-wide settings; every other agent is configured per user.

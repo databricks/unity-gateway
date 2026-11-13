@@ -16,6 +16,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,12 @@ _machine_wide_only = False
 MANAGED_BACKUP_DIR = APP_DIR / "managed-backups"
 MANAGED_BACKUP_MANIFEST_PATH = MANAGED_BACKUP_DIR / "manifest.json"
 MANAGED_FINGERPRINT_VERSION = 1
+# Written by a managed run: `ug configure --global` on a workspace that publishes an agent
+# configuration. While it exists, the machine-wide files come from that published agent
+# configuration, and every other run leaves them alone.
+PUBLISHED_AGENT_CONFIG_MARKER_PATH = Path("/etc/unitygateway/agents-state.json")
+CODEX_SYSTEM_REQUIREMENTS_PATH = Path("/etc/codex/requirements.toml")
+CODEX_SYSTEM_CONFIG_PATH = Path("/etc/codex/config.toml")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
 _managed_write_notice_shown = False
@@ -123,6 +130,9 @@ _SUDO_REPLACE_TARGETS = {
             Path("/etc/claude-code/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
             _POSIX_UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            PUBLISHED_AGENT_CONFIG_MARKER_PATH,
+            CODEX_SYSTEM_REQUIREMENTS_PATH,
+            CODEX_SYSTEM_CONFIG_PATH,
             *(CLAUDE_HEADER_MOD_ROOTS[OS.LINUX] / name for name in CLAUDE_HEADER_MOD_FILES),
         }
     ),
@@ -131,6 +141,9 @@ _SUDO_REPLACE_TARGETS = {
             Path("/Library/Application Support/ClaudeCode/managed-settings.json"),
             Path("/etc/codex/managed_config.toml"),
             _POSIX_UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+            PUBLISHED_AGENT_CONFIG_MARKER_PATH,
+            CODEX_SYSTEM_REQUIREMENTS_PATH,
+            CODEX_SYSTEM_CONFIG_PATH,
             CLAUDE_DESKTOP_POLICY_PATH,
             CLAUDE_DESKTOP_MDM_ROOT / "ug",
             CLAUDE_DESKTOP_MDM_ROOT / "otel-headers.sh",
@@ -184,6 +197,31 @@ def per_user_paths(paths: list[str]) -> list[str]:
     return found
 
 
+def published_agent_config_marker() -> dict | None:
+    """The marker a managed run left on this machine, or None when it left none.
+
+    Only a root-owned regular file counts, so a developer can't create or forge one.
+    """
+    if current_os() not in (OS.LINUX, OS.MACOS):
+        return None
+    try:
+        info = PUBLISHED_AGENT_CONFIG_MARKER_PATH.lstat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        return None
+    try:
+        data = json.loads(PUBLISHED_AGENT_CONFIG_MARKER_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def published_agent_config_used() -> bool:
+    """Whether this machine's machine-wide agent settings come from a published agent configuration."""
+    return published_agent_config_marker() is not None
+
+
 def managed_settings_skipped() -> bool:
     """Whether OS-managed settings are opted out via ``UG_SKIP_OS_SETTINGS`` or the ``user`` scope.
 
@@ -196,9 +234,15 @@ def managed_settings_skipped() -> bool:
     password and never hits the "OS-managed settings could not be updated" failure on hosts where
     that write is blocked. ug also trusts whatever OS-managed files exist and doesn't check them
     against its own settings; the agents apply their native precedence. ``ug configure --user`` has
-    the same effect.
+    the same effect, and so does :func:`published_agent_config_used`, because then only the managed
+    run, an explicit ``ug configure --global`` (:func:`machine_wide_only`), writes the machine-wide
+    files.
     """
-    return env_bool(SKIP_OS_SETTINGS_ENV) or _config_scope == "user"
+    return (
+        env_bool(SKIP_OS_SETTINGS_ENV)
+        or _config_scope == "user"
+        or (published_agent_config_used() and not _machine_wide_only)
+    )
 
 
 def managed_files_supported() -> bool:

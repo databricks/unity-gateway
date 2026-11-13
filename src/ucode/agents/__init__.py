@@ -30,7 +30,12 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
+from ucode.managed_files import (
+    config_scope,
+    machine_wide_only,
+    managed_write_batch,
+    published_agent_config_used,
+)
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -528,8 +533,11 @@ def resolve_gemini_provider_model(
 
 
 def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
-    """Run by ``ug configure`` before any agent is configured; launches use the files present."""
-    if config_scope() != "user":
+    """Run by ``ug configure`` before any agent is configured; launches use the files present.
+
+    When the files come from a published agent configuration, the managed run owns them, so the
+    refusal doesn't apply."""
+    if config_scope() != "user" or published_agent_config_used():
         return
     for tool in tools:
         if tool == AGENT_CLAUDE:
@@ -552,7 +560,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
     apply. ``managed`` is the manifest from that read; None means no managed config is present.
     """
-    if config_scope() != "user" or managed is None:
+    if config_scope() != "user" or managed is None or published_agent_config_used():
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "

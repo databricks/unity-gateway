@@ -130,6 +130,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
+    # A developer's own machine may use a published agent configuration; tests opt in explicitly.
+    monkeypatch.setattr(
+        managed_files_mod,
+        "PUBLISHED_AGENT_CONFIG_MARKER_PATH",
+        tmp_path / "etc" / "agents-state.json",
+    )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")

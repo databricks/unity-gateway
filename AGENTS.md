@@ -147,6 +147,23 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 </details>
 
+A managed run is `ug configure --global` on a workspace that publishes an agent configuration.
+It doesn't follow the tables above. It runs as root and rebuilds each supported agent's
+machine-wide files from scratch. It reads the agent configuration and the agent's ownership table
+in `src/ucode/ownership/<agent>.toml`, and the code lives in `published_agent_config.py`. To
+support another agent, add its ownership table, its file builder in `published_agent_config.py`,
+and its tests.
+
+- When a change makes ug write, strip, or reserve an agent key, update the matching table entry.
+  Then run `uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md`.
+  Otherwise `tests/test_ownership.py` fails.
+- The run leaves the marker file `/etc/unitygateway/agents-state.json`. While the marker file
+  exists (`managed_files.published_agent_config_used()`), every other run skips the machine-wide
+  files, as `UG_SKIP_OS_SETTINGS` does, and reads the agent configuration that the managed run
+  saved.
+- Without the marker file, a workspace with no agent configuration makes `--global` merge as the
+  tables describe.
+
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
 and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux requires Desktop to have opened once.

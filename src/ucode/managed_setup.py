@@ -32,6 +32,7 @@ from ucode.databricks import (
 )
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
+    AGENT_NATIVE_CONFIG_VARIANTS,
 )
 from ucode.managed_resolve import static_model_list
 
@@ -246,6 +247,10 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
         config["agent_native_settings"] = settings
+    for variant in AGENT_NATIVE_CONFIG_VARIANTS:
+        native = agent_config.get(variant)
+        if isinstance(native, dict) and native:
+            config[variant] = native
 
     entry: dict = {"agent": AGENT_TOOL_TO_ENUM[tool]}
     if config:

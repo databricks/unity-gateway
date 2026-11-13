@@ -41,6 +41,15 @@ def parse_header_line(line: str) -> tuple[str, str] | None:
     return (name, value) if _is_sendable_value(value) else None
 
 
+def published_agent_config_headers_warning(display: str) -> str:
+    """Why ``display`` drops a launch's headers on a machine with a managed run."""
+    return (
+        f"{display} won't send your `ug --header` / UG_HEADERS headers: this machine's settings come "
+        "from your workspace's published agent configuration, which doesn't support per-launch "
+        "headers. Ask your admin to add them to the agent configuration's `http_headers`."
+    )
+
+
 def ug_headers(value: str | None = None) -> dict[str, str]:
     """``UG_HEADERS`` as ``{name: value}``, one ``Name: value`` per line.
 

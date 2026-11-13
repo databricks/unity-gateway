@@ -46,8 +46,11 @@ from ucode.managed_files import (
     SKIP_OS_SETTINGS_ENV,
     UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
     current_os,
+    machine_wide_only,
     managed_file_fingerprint,
     managed_settings_skipped,
+    published_agent_config_marker,
+    published_agent_config_used,
     update_workspace_policy,
 )
 from ucode.os_compatibility import system_cross_os
@@ -84,6 +87,10 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 }
 
 MAX_SPEC_VERSION = 1
+
+# The variants of AgentConfig's `agent_native_config` oneof, by proto field name. Proto JSON puts
+# the variant directly on AgentConfig, so the normalized agent entry keeps it under the same key.
+AGENT_NATIVE_CONFIG_VARIANTS = ("claude_code", "codex")
 
 # The last authoritative read's outcome, persisted alongside the config so a launch can replay it
 # without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome is what
@@ -180,6 +187,10 @@ class AgentConfig:
     vscode_integration_enabled: bool | None = None
     # Harness-native settings delivered verbatim into the agent's managed settings file.
     settings: dict | None = None
+    # The `agent_native_config` oneof, keyed by the variant's proto field name (`claude_code`,
+    # `codex`, ...) and kept verbatim. The server rejects an entry that sets it together with
+    # `agent_native_settings`.
+    native_config: dict[str, dict] | None = None
 
     @classmethod
     def from_wire(cls, config: object) -> AgentConfig:
@@ -190,6 +201,11 @@ class AgentConfig:
         agent_models = AgentModels.from_wire(
             config_dict.get("default_models"), config_dict.get("models")
         )
+        native_config = {
+            variant: value
+            for variant in AGENT_NATIVE_CONFIG_VARIANTS
+            if (value := _as_dict(config_dict.get(variant)))
+        }
         return cls(
             http_headers=headers or None,
             models=agent_models,
@@ -197,6 +213,7 @@ class AgentConfig:
             otel_tracing_enabled=_enabled_flag(config_dict.get("tracing")),
             vscode_integration_enabled=_enabled_flag(config_dict.get("vscode_integration")),
             settings=_as_dict(config_dict.get("agent_native_settings")) or None,
+            native_config=native_config or None,
         )
 
     def to_internal(self) -> dict:
@@ -215,6 +232,8 @@ class AgentConfig:
             result["vscode_integration_enabled"] = self.vscode_integration_enabled
         if self.settings:
             result["agent_native_settings"] = self.settings
+        if self.native_config:
+            result.update(self.native_config)
         return result
 
 
@@ -919,6 +938,17 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     workspace = selected if force_refresh else managed_launch_workspace(selected)
     if not workspace:
         return ManagedConfigResult(None, False)
+    if published_agent_config_used() and not machine_wide_only():
+        # The managed run fetched the policy and saved a copy; per-user runs read that copy, so the
+        # per-user settings follow the same policy as the machine-wide files, with no request.
+        saved = load_managed_state(workspace)
+        marker_workspace = (published_agent_config_marker() or {}).get("workspace")
+        if saved is None and marker_workspace and marker_workspace != workspace:
+            print_warning(
+                f"This machine's settings come from {marker_workspace}'s published agent "
+                f"configuration, so {workspace}'s agent configuration isn't applied."
+            )
+        return ManagedConfigResult(saved, False)
     host = split_workspace_key(workspace)[0]
     if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)
