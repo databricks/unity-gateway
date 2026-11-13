@@ -1631,6 +1631,25 @@ class TestResumedSessionModel:
 
         assert copilot.resumed_session_model(args, self.MODELS) is None
 
+    def test_a_launch_without_a_resume_flag_reads_no_sessions(self, config_dir, monkeypatch):
+        _save_session(config_dir, SESSION_ID, _started(f"dbx-responses/{GPT}"))
+
+        def no_listing(path):
+            raise AssertionError(f"listed {path}")
+
+        monkeypatch.setattr(copilot.Path, "iterdir", no_listing)
+
+        assert copilot.resumed_session_model(["-p", "hi"], self.MODELS) is None
+
+    def test_a_cut_off_character_in_the_events_still_reads_the_model(self, config_dir):
+        _save_session(config_dir, SESSION_ID, _started(f"dbx-responses/{GPT}"))
+        events = config_dir / "session-state" / SESSION_ID / "events.jsonl"
+        events.write_bytes(events.read_bytes() + b'{"type": "x", "data": "\xe2\x82')
+
+        model = copilot.resumed_session_model(["--resume", SESSION_ID], self.MODELS)
+
+        assert model is not None and model.ref == GPT_REF
+
     def test_a_session_on_current_names_or_a_gone_model_needs_nothing(self, config_dir):
         _save_session(config_dir, SESSION_ID, _started(f"dbx-responses/{GPT}"), _changed(GPT_REF))
         _save_session(config_dir, "gone", _started("dbx-responses/system.ai.gpt-4o"))

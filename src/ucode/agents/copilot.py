@@ -1194,6 +1194,8 @@ def _resumed_session_dir(tool_args: list[str]) -> Path | None:
             latest = False
         elif arg == "--continue":
             value, latest = None, True
+    if not value and not latest:
+        return None
     root = COPILOT_CONFIG_DIR / "session-state"
     try:
         sessions = {
@@ -1217,7 +1219,8 @@ def resumed_session_model(tool_args: list[str], catalog: list[CopilotModel]) -> 
         return None
     last: str | None = None
     try:
-        with (session / "events.jsonl").open(encoding="utf-8") as events:
+        # A write Copilot cut off can leave a partial character; that line just fails to parse.
+        with (session / "events.jsonl").open(encoding="utf-8", errors="replace") as events:
             for line in events:
                 if "Model" not in line:
                     continue

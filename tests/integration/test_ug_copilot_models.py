@@ -3,6 +3,7 @@
 import pytest
 from utils.constants import (
     CLAUDE_TEST_MODEL,
+    CLAUDE_TEST_MODEL_LABEL,
     COPILOT_DEEPSEEK_TEST_MODEL,
     COPILOT_GLM_TEST_MODEL,
     COPILOT_GPT_TEST_MODEL,
@@ -175,7 +176,7 @@ def test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command(live_sess
 
     with AgentTerminal(session, "copilot", command, "copilot-model-switch") as tui:
         tui.boot()
-        tui.wait_for(lambda screen: "Claude Haiku 4.5" in screen, "the readable model label")
+        tui.wait_for(lambda screen: CLAUDE_TEST_MODEL_LABEL in screen, "the readable model label")
         tui.submit(claude_task.prompt)
         tui.wait_for_task(claude_task)
         tui.submit(f"/model {gpt_ref}")
