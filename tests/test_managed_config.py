@@ -247,6 +247,26 @@ class TestNormalize:
         cfg = normalize_managed_config(raw)
         assert cfg["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}
 
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ("system.ai.*", mc_mod.MCP_SOURCE_SCHEMA),
+            ("main.tools.github", mc_mod.MCP_SOURCE_NAME),
+            ("system.*", None),
+            ("a.b.c.d", None),
+            ("*", None),
+            ("a.b.c*", None),
+            ("a.*.*", None),
+            ("*.a.b", None),
+            ("a..b", None),
+            ("a. b.c", None),
+            ("a.b. *", None),
+        ],
+    )
+    def test_mcp_source_kind(self, source, kind):
+        # The one rule shared by the resolver, MDM, and export validation.
+        assert mc_mod.mcp_source_kind(source) == kind
+
     def test_skills_ignore_sources(self):
         # Only mcp_servers has `sources`; a stray skills value must not become a selector.
         cfg = normalize_managed_config({"skills": {"sources": ["system.ai.*"]}})

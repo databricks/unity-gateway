@@ -233,7 +233,7 @@ def _validate_selector(selector: dict, *, allow_sources: bool = False) -> None:
         raise RuntimeError(
             "MDM skill and MCP names must be fully qualified catalog.schema.name values."
         )
-    sources = selector.get("sources", [])
+    sources = selector.get("sources") or []
     if sources and not allow_sources:
         raise RuntimeError("MDM skills don't support sources; use names or a catalog location.")
     if not isinstance(sources, list) or any(

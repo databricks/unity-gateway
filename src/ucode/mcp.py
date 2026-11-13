@@ -1080,7 +1080,8 @@ def _resolve_managed_mcp_sources(
     doesn't exist or isn't readable (HTTP 404) is skipped with a warning, so one bad entry doesn't
     drop the other schemas. Any other discovery failure, including a rate limit, propagates like a
     single location does, so a partial listing never unregisters servers from a schema that only
-    failed transiently.
+    failed transiently. The cost is that a persistent non-404 failure on one schema blocks managed
+    MCP setup for the whole run, exactly as it does for a single ``unity_catalog_location`` today.
     """
     kinds = {source: mcp_source_kind(source) for source in sources}
     malformed = sorted(source for source, kind in kinds.items() if kind is None)
@@ -1123,7 +1124,10 @@ def _discover_managed_location(
     *,
     token: str | None = None,
 ) -> list[dict]:
-    """Every MCP service under ``location``; no ``original_servers``, as the managed set is separate."""
+    """Every MCP service under ``location``.
+
+    Passes no ``original_servers``: the managed set is tracked separately from the user's servers.
+    """
     if token is not None:
         return _resolve_location_mcp_servers(workspace, profile, clients, location, [], token=token)
     return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
@@ -2079,8 +2083,8 @@ def _resolve_location_mcp_servers(
     is removed by ``apply_mcp_server_changes``), plus any existing skills
     connection, preserved untouched. Raises the distinct
     :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429) so callers can
-    skip gracefully, and plain ``RuntimeError`` for an invalid location (HTTP 404 from the listing
-    API) or any other listing failure.
+    skip gracefully, :class:`McpLocationNotFound` (a ``RuntimeError``) for an invalid location
+    (HTTP 404 from the listing API), and plain ``RuntimeError`` for any other listing failure.
 
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name

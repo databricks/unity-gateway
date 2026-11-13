@@ -348,12 +348,12 @@ def _validate_uc_names_or_location(
             f"{field}.unity_catalog_location must be a <catalog>.<schema> (got: {location})."
         )
     has_sources = False
-    if "sources" in selector and not allow_sources:
+    if selector.get("sources") and not allow_sources:
         errors.append(f"{field}.sources is not supported; use names or unity_catalog_location.")
     elif isinstance(selector.get("sources"), list):
         sources = selector["sources"]
         if any(not isinstance(source, str) or not source for source in sources):
-            errors.append(f"{field}.sources must not contain empty entries.")
+            errors.append(f"{field}.sources entries must be non-empty strings.")
         clean_sources = [source for source in sources if isinstance(source, str) and source]
         has_sources = bool(clean_sources)
         bad = [source for source in clean_sources if mcp_source_kind(source) is None]
@@ -378,8 +378,8 @@ def serialize_managed_config(manifest: dict) -> dict:
 
     The exact inverse of :func:`ucode.managed_config.normalize_managed_config`: tool names become
     ``CODING_AGENT_*`` enums, internal ``models`` slots become ``default_models`` map keys, and the
-    ``mcp_servers`` / ``skills`` ``{names, location}`` selectors become ``{names,
-    unity_catalog_location}``. Agents this build doesn't recognize are dropped, mirroring the read
+    ``mcp_servers`` / ``skills`` selectors become ``{names, unity_catalog_location}`` (plus
+    ``sources`` for ``mcp_servers``). Agents this build doesn't recognize are dropped, mirroring the read
     side.
 
     Output-only proto fields (``workspace_id``, ``retrieved_time``, user ids) are never emitted.
@@ -497,8 +497,8 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
     - ``default_agent`` is required once any agent configuration is present, must appear in
       ``enabled_agents``, and that agent must have a non-empty ``default_model``;
     - every ``enabled_agents`` key must be an agent this ucode build knows;
-    - ``mcp_servers`` and ``skills`` each carry either non-empty ``names`` or a
-      ``unity_catalog_location``, not both;
+    - ``mcp_servers`` and ``skills`` each carry exactly one of non-empty ``names`` or a
+      ``unity_catalog_location`` (``mcp_servers`` may instead carry non-empty ``sources``);
     - ``smart_defaults`` needs a ``budget_id``, and each tier needs a ``spending_percentage`` in
       [0, 1] (unique across tiers), a ``recommended_agent`` that appears in ``enabled_agents``, and
       a ``recommended_model``.

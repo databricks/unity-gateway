@@ -3843,6 +3843,36 @@ class TestResolveManagedMcpServers:
         assert {s["name"] for s in out} == {"system-ai-github", "main-tools-foo"}
         assert len(warned) == 1 and "main.typo.*" in warned[0]
 
+    def test_sources_skip_a_schema_the_listing_api_reports_missing(self, monkeypatch):
+        # Drives the real discovery path: the listing API's HTTP 404 for one schema must be skipped
+        # while the other schema and the exact name register, and the token is used as given.
+        warned: list[str] = []
+        listed: list[tuple[str, str]] = []
+        monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
+        monkeypatch.setattr(
+            mcp,
+            "get_databricks_token",
+            lambda *a, **k: pytest.fail("must use the caller's token"),
+        )
+
+        def fake_list(workspace, token, parent):
+            listed.append((parent, token))
+            if parent == "main.typo":
+                return [], "HTTP 404 Not Found: NOT_FOUND"
+            return ["system.ai.github"], None
+
+        monkeypatch.setattr(mcp, "list_mcp_services", fake_list)
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.ai.*", "main.typo.*", "main.tools.foo"]},
+            WS,
+            None,
+            ["claude"],
+            token="tok",
+        )
+        assert sorted(listed) == [("main.typo", "tok"), ("system.ai", "tok")]
+        assert {s["name"] for s in out} == {"system-ai-github", "main-tools-foo"}
+        assert len(warned) == 1 and "main.typo" in warned[0]
+
     def test_sources_propagate_other_discovery_failures(self, monkeypatch):
         # Only a missing schema is skipped; any other failure must not yield a partial set.
         def fake_loc(ws, profile, clients, location, original, services=None):
