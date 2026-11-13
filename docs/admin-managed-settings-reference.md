@@ -52,8 +52,9 @@ agent configuration instead of fetching it.
 | `codex.requirements` | Codex | `/etc/codex/requirements.toml` | No |
 
 `agent_native_config` has one variant per agent, such as `claude_code` and `codex`. The server
-accepts only Claude Code's MCP controls in `agent_native_settings`, and rejects an entry that sets
-both `agent_native_settings` and `agent_native_config`. `ug` writes whichever is set.
+doesn't check what the native fields contain: `ug` decides what is written, from the ownership
+tables below. The server rejects an entry that sets both `agent_native_settings` and
+`agent_native_config`. `ug` writes whichever is set.
 
 Each field is a JSON object. Codex fields have the same structure as the TOML file. Values are
 written as given, including `null` for Claude Code. Codex drops `null` values, because TOML has no
@@ -107,6 +108,7 @@ machine-wide files when the workspace publishes no agent configuration.
 | `ug claude` or `ug codex`, later runs | Launches without checking the machine-wide files |
 | `ug configure` | Updates the developer's own settings |
 | `ug status` | Shows `Machine-wide settings: From the published agent configuration` |
+| `ug --header` or `UG_HEADERS` | Not sent. The launch warns, because a managed run doesn't support per-launch headers. Add them to the agent configuration's `http_headers` instead |
 | `ug revert` | Reverts the developer's own settings and leaves the machine-wide files |
 | `ug revert` as root | Deletes the machine-wide files, the saved agent configuration, and the marker file. It then removes what an earlier `ug configure --global` without a published agent configuration left, such as the header mod |
 | `claude` or `codex` | Uses the gateway, the sign-in, and the native fields, after one `ug claude` or `ug codex` run. Discovered models, tracing, and smart routing need `ug` |
