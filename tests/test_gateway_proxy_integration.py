@@ -665,11 +665,13 @@ class TestGatewayAuthProxyEndToEnd:
 
 
 class TestClaudeLanguageProxyEndToEnd:
-    @pytest.mark.parametrize(("expired", "expected_status"), [(False, 200), (True, 503)])
+    @pytest.mark.parametrize(
+        ("remaining_seconds", "expected_status"), [(3600, 200), (300, 200), (-60, 503)]
+    )
     def test_health_checks_cached_token_without_forwarding_or_refreshing(
-        self, make_gateway, expired, expected_status
+        self, make_gateway, remaining_seconds, expected_status
     ):
-        expiry = time.time() + (-60 if expired else 3600)
+        expiry = time.time() + remaining_seconds
         payload = base64.urlsafe_b64encode(json.dumps({"exp": expiry}).encode()).decode()
         provider = _counting_token(f"e30.{payload.rstrip('=')}.signature")
         gw = make_gateway()
@@ -682,7 +684,7 @@ class TestClaudeLanguageProxyEndToEnd:
                     timeout=10,
                 )
                 assert response.status_code == expected_status
-                if not expired:
+                if expected_status == 200:
                     assert response.content == b""
             bad_secret = httpx.get(
                 url,

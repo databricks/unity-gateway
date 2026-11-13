@@ -193,9 +193,9 @@ class TokenCache:
             self._token = token
             self._expiry = expiry
 
-    def _fresh_enough(self) -> bool:
+    def _fresh_enough(self, *, buffer_seconds: float = _REFRESH_BUFFER_S) -> bool:
         with self._state_lock:
-            return bool(self._token) and time.time() < self._expiry - _REFRESH_BUFFER_S
+            return bool(self._token) and time.time() < self._expiry - buffer_seconds
 
     def _ensure_fresh(self) -> None:
         if self._fresh_enough():
@@ -916,7 +916,7 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
         return hmac.compare_digest(supplied.encode(), self.session_secret.encode())
 
     def _discard(self) -> None:
-        if not self.cache._fresh_enough():
+        if not self.cache._fresh_enough(buffer_seconds=0):
             self._reject(503, "Claude language proxy token is not fresh.")
             return
         super()._discard()
