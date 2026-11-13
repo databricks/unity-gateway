@@ -14,7 +14,8 @@ approval dialogs, preserving the sandbox.
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
 `--smart-router-name` input records and forwards the recipe.
 These journeys do not intercept inference or establish exact HTTP metadata/usage-table
-ingestion. Controls-read failures and evidence-parser boundaries have separate
+ingestion. Silent controls-read failure, bounded retry, later-turn recovery, and
+evidence-parser boundaries have separate
 [component coverage](../README.md); live journeys do not induce file-access failures.
 
 Subagent calculation journeys use short native task names. Offline evidence checks

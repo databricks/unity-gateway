@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.constants import SMART_ROUTING_ENV_KEYS
-from ucode.smart_routing import codex_interposer, codex_metadata, session_env
+from ucode.smart_routing import codex_interposer, session_env
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
     RoutingMetadata,
@@ -73,6 +73,46 @@ def test_real_hook_stamps_latest_shared_state_without_routing_when_disabled(
     route.assert_not_called()
 
 
+@pytest.mark.parametrize("failure", ["transient", "permission", "invalid", "missing"])
+def test_hook_controls_failure_never_stamps_inherited_launch_state(tmp_path, monkeypatch, failure):
+    controls = tmp_path / "controls.json"
+    disabled = dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+    controls.write_text(json.dumps(disabled))
+    monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
+    monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+    monkeypatch.setattr(session_env, "CONTROLS_READ_RETRY_SECONDS", 0)
+    errors = {
+        "transient": [PermissionError("controls locked"), disabled],
+        "permission": PermissionError("controls locked"),
+        "invalid": ValueError("invalid controls"),
+        "missing": FileNotFoundError("controls missing"),
+    }
+    read = Mock(side_effect=errors[failure])
+    monkeypatch.setattr(session_env, "_read", read)
+    token = Mock(side_effect=AssertionError("Unknown or off controls must not route"))
+    monkeypatch.setattr(cli, "_router_hook_token", token)
+    result = CliRunner().invoke(
+        cli.app,
+        ["codex-router-hook", "route-subagent", "--host", "https://example.com"],
+        input=json.dumps(
+            {
+                "tool_name": "collaboration.spawn_agent",
+                "tool_input": {"task_name": "nested", "message": "work"},
+            }
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stderr == ""
+    if failure == "transient":
+        updated = json.loads(result.stdout)["hookSpecificOutput"]["updatedInput"]
+        assert updated == {"task_name": "nested__sr_off", "message": "work"}
+    else:
+        assert result.stdout == ""
+    attempts = {"transient": 2, "permission": session_env.CONTROLS_READ_ATTEMPTS}
+    assert read.call_count == attempts.get(failure, 1)
+    token.assert_not_called()
+
+
 class Wire:
     def __init__(self):
         self.messages = []
@@ -85,17 +125,22 @@ class Wire:
 def controller(tmp_path):
     controls = tmp_path / "controls.json"
     controls.write_text("{}")
-    upstream, tui = Wire(), Wire()
-    metadata = RoutingMetadata(tui, controls, lambda _: None)
-    return metadata, upstream, tui, controls
+    tui = Wire()
+    metadata = RoutingMetadata(controls, lambda _: None)
+    return metadata, tui, controls
 
 
-@pytest.mark.parametrize("entrypoint", ["startup", "turn"])
+@pytest.mark.parametrize("entrypoint", ["read", "turn"])
 def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatch, entrypoint):
     async def run():
-        metadata, upstream, tui, _ = controller(tmp_path)
-        read = Mock(side_effect=[PermissionError("controls locked"), False])
-        monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
+        metadata, tui, _ = controller(tmp_path)
+        read = Mock(
+            side_effect=[
+                PermissionError("controls locked"),
+                dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"),
+            ]
+        )
+        monkeypatch.setattr(session_env, "_read", read)
         message = {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
 
         if entrypoint == "turn":
@@ -106,7 +151,7 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
         else:
             assert await asyncio.wait_for(metadata.enabled(), 2) is False
         assert read.call_count == 2
-        assert upstream.messages == tui.messages == []
+        assert tui.messages == []
 
     asyncio.run(run())
 
@@ -118,7 +163,6 @@ class StreamingWire(Wire):
         self.outgoing = asyncio.Queue()
         self.read_finished = asyncio.Event()
         self.closed = False
-        self.tui_messages_at_close = []
 
     async def send(self, raw):
         await super().send(raw)
@@ -135,9 +179,10 @@ class StreamingWire(Wire):
 @pytest.fixture
 def running_interposer(tmp_path, monkeypatch):
     @asynccontextmanager
-    async def run():
+    async def run(*, controls_text="{}", log=lambda _: None):
         controls = tmp_path / "controls.json"
-        controls.write_text("{}")
+        if controls_text is not None:
+            controls.write_text(controls_text)
         upstream, tui = StreamingWire(), StreamingWire()
 
         @asynccontextmanager
@@ -145,13 +190,12 @@ def running_interposer(tmp_path, monkeypatch):
             try:
                 yield upstream
             finally:
-                upstream.tui_messages_at_close = list(tui.messages)
                 upstream.closed = True
 
         monkeypatch.setattr(codex_interposer, "connect", connect)
         task = asyncio.create_task(
             codex_interposer._handle_tui(
-                tui, "ws://localhost", None, lambda _: None, session_controls=controls
+                tui, "ws://localhost", None, log, session_controls=controls
             )
         )
         try:
@@ -176,7 +220,7 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
             retry_started = asyncio.Event()
             release_read = threading.Event()
             loop = asyncio.get_running_loop()
-            original_read = codex_metadata.session_routing_enabled
+            original_read = session_env._read
             attempts = 0
 
             def read(path):
@@ -190,7 +234,7 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
                         raise TimeoutError("test did not release the controls read")
                 return original_read(path)
 
-            monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
+            monkeypatch.setattr(session_env, "_read", read)
             try:
                 user_input = {
                     "id": "input",
@@ -245,32 +289,70 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
     asyncio.run(run())
 
 
-def test_persistent_per_turn_controls_denial_reports_recovery_before_teardown(
-    running_interposer, monkeypatch
+@pytest.mark.parametrize("controls_text", [None, "{invalid"])
+def test_bad_controls_do_not_prevent_connection(running_interposer, controls_text):
+    async def run():
+        async with running_interposer(controls_text=controls_text) as (task, upstream, tui, _):
+            initialize = {"id": "init", "method": "initialize", "params": {"clientInfo": {}}}
+            tui.incoming.put_nowait(initialize)
+            forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert forwarded["params"]["capabilities"] == {"experimentalApi": True}
+            assert not task.done()
+            assert not upstream.closed
+            assert all(message.get("method") != "error" for message in tui.messages)
+            tui.incoming.put_nowait(None)
+            await asyncio.wait_for(task, 2)
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        PermissionError("controls locked"),
+        ValueError("invalid controls"),
+        FileNotFoundError("missing"),
+    ],
+    ids=["permission", "invalid", "missing"],
+)
+def test_controls_failure_is_silent_and_recovers_on_next_turn(
+    running_interposer, monkeypatch, error
 ):
     async def run():
-        async with running_interposer() as (task, upstream, tui, controls):
-            read = Mock(side_effect=PermissionError("controls locked"))
-            monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
-            tui.incoming.put_nowait(
-                {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
+        logs = []
+        async with running_interposer(log=logs.append) as (task, upstream, tui, controls):
+            read = Mock(side_effect=error)
+            message = {
+                "id": "input",
+                "method": "turn/start",
+                "params": {
+                    "threadId": "main",
+                    "responsesapiClientMetadataPatch": {"other": "kept"},
+                },
+            }
+            with monkeypatch.context() as denied:
+                denied.setattr(session_env, "_read", read)
+                tui.incoming.put_nowait(message)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == message
+            attempts = (
+                session_env.CONTROLS_READ_ATTEMPTS if isinstance(error, PermissionError) else 1
             )
+            assert read.call_count == attempts
+            assert not task.done()
+            assert not upstream.closed
+            assert any(str(controls) in line and str(error) in line for line in logs)
 
-            error = await asyncio.wait_for(tui.outgoing.get(), 2)
-            assert error["method"] == "error"
-            assert error["params"]["willRetry"] is False
-            assert str(controls) in error["params"]["message"]
-            assert "controls locked" in error["params"]["message"]
-            assert "restart Codex through ug" in error["params"]["message"]
-            with pytest.raises(PermissionError, match="controls locked"):
-                await asyncio.wait_for(task, 2)
-
-            assert read.call_count == codex_metadata.CONTROLS_READ_ATTEMPTS
-            assert upstream.messages == []
-            assert [message for message in tui.messages if message.get("method") == "error"] == [
-                error
-            ]
-            assert error in upstream.tui_messages_at_close
+            controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+            next_turn = {"id": "next", "method": "turn/start", "params": {"threadId": "main"}}
+            tui.incoming.put_nowait(next_turn)
+            forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert forwarded["params"]["responsesapiClientMetadataPatch"] == {
+                ROUTING_STATE_KEY: "off"
+            }
+            assert upstream.messages == [message, forwarded]
+            assert all(message.get("method") != "error" for message in tui.messages)
+            tui.incoming.put_nowait(None)
+            await asyncio.wait_for(task, 2)
             assert upstream.closed
             assert upstream.read_finished.is_set() and tui.read_finished.is_set()
 
@@ -282,7 +364,7 @@ def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(
     tmp_path, existing_patch
 ):
     async def run():
-        metadata, _, _, controls = controller(tmp_path)
+        metadata, _, controls = controller(tmp_path)
         metadata.children.add("child")
         for enabled in (True, False, True):
             controls.write_text(
@@ -356,7 +438,7 @@ def test_toggle_finishes_normally_and_next_turn_uses_latest_state(running_interp
 
 
 def test_child_navigation_does_not_change_child_attribution(tmp_path):
-    metadata, _, _, _ = controller(tmp_path)
+    metadata, _, _ = controller(tmp_path)
     metadata.observe({"id": 1, "result": {"thread": {"id": "main", "source": "cli"}}})
     metadata.observe(
         {

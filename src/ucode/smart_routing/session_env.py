@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import errno
 import json
+import logging
 import os
 import sys
 import tempfile
+import time
 from collections.abc import Mapping, MutableMapping
 from pathlib import Path
 
@@ -20,6 +22,8 @@ from ucode.smart_routing.config import resolve_environment
 
 SESSION_ENV_VAR = "UCODE_SESSION_ENV_FILE"
 SESSION_PYTHON_ENV_VAR = "UCODE_SMART_ROUTER_PYTHON"
+CONTROLS_READ_ATTEMPTS = 10
+CONTROLS_READ_RETRY_SECONDS = 0.1
 _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 
@@ -57,15 +61,29 @@ def _read(path: Path) -> dict[str, str]:
     return _validate(json.loads(path.read_text(encoding="utf-8")))
 
 
+def _read_with_retry(path: Path) -> dict[str, str]:
+    attempts_remaining = CONTROLS_READ_ATTEMPTS
+    while True:
+        try:
+            return _read(path)
+        except PermissionError:
+            attempts_remaining -= 1
+            if not attempts_remaining:
+                raise
+            time.sleep(CONTROLS_READ_RETRY_SECONDS)
+
+
 def session_routing_enabled(path: Path) -> bool:
-    overrides = _read(path)
+    overrides = _read_with_retry(path)
     return not all(
         overrides.get(key) == "0"
         for key in (ENABLE_SMART_ROUTING_ENV_VAR, ENABLE_SUBAGENT_ROUTING_ENV_VAR)
     )
 
 
-def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:
+def effective_environment(
+    env: Mapping[str, str] | None = None, *, agent: str, strict: bool = False
+) -> dict[str, str]:
     """Overlay the latest session controls on the hook process environment."""
     effective = resolve_environment(env, agent=agent)
     try:
@@ -73,13 +91,13 @@ def effective_environment(env: Mapping[str, str] | None = None, *, agent: str) -
     except RuntimeError:
         return effective
     try:
-        effective.update(_read(path))
+        effective.update(_read_with_retry(path))
     except (OSError, UnicodeError, ValueError) as exc:
-        print(
-            f"Smart Router could not read session controls at {path} ({exc}); "
-            "using the inherited environment.",
-            file=sys.stderr,
+        logging.getLogger(__name__).debug(
+            "Smart Router could not read session controls at %s: %s", path, exc
         )
+        if strict:
+            raise
     return effective
 
 
@@ -87,7 +105,7 @@ def set_session_environment(values: Mapping[str, str]) -> bool:
     """Atomically replace changed session overrides."""
     path = session_env_path()
     try:
-        current = _read(path)
+        current = _read_with_retry(path)
     except PermissionError as exc:
         raise RuntimeError(
             f"Permission denied reading Smart Router session controls at {path}. "

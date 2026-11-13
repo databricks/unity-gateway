@@ -19,10 +19,35 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_subagent_audit_mismatch_is_silent(monkeypatch, caplog, agent):
+    caplog.set_level("DEBUG", logger="ucode.cli")
+    audit = Mock(
+        return_value={
+            "matches_router_decision": False,
+            "requested_model": "requested",
+            "model": "launched",
+        }
+    )
+    monkeypatch.setattr(f"ucode.smart_routing.{agent}_routing.record_subagent_start", audit)
+    result = runner.invoke(
+        cli.app,
+        [f"{agent}-router-hook", "record-subagent"],
+        input="{}",
+        env={"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == result.stderr == ""
+    audit.assert_called_once_with({})
+    assert "router requested requested" in caplog.text
+    assert "started launched" in caplog.text
+
+
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.
     monkeypatch.setattr(skills, "_skills_source", lambda: Path(__file__).parents[1] / "skills")
+    monkeypatch.setattr(session_env, "CONTROLS_READ_RETRY_SECONDS", 0)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])

@@ -243,10 +243,8 @@ async def _handle_tui(
     )
     async with connect(uri, max_size=None) as upstream:
         controller = (
-            RoutingMetadata(tui, session_controls, log) if session_controls is not None else None
+            RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
-        if controller is not None:
-            await controller.enabled()
         queued_frames: asyncio.Queue = asyncio.Queue()
 
         def parse(frame) -> dict | None:

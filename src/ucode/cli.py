@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -3186,9 +3187,11 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    enabled = smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
-    )
+    try:
+        environment = effective_environment(agent=AGENT_CODEX, strict=True)
+    except (OSError, UnicodeError, ValueError):
+        return
+    enabled = smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CODEX)
 
     from ucode.smart_routing.codex_routing import (
         is_spawn_agent_tool,
@@ -3221,14 +3224,10 @@ def codex_router_hook_cmd(
                 )
             )
         elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Codex started "
-                        f"{record.get('model')}."
-                    }
-                )
+            logging.getLogger(__name__).debug(
+                "Smart Routing mismatch: router requested %s, but Codex started %s",
+                record.get("requested_model"),
+                record.get("model"),
             )
         # When matched is None the harness didn't report the subagent model —
         # the PreToolUse hook already injected the routed model, so emit nothing.
@@ -3367,14 +3366,10 @@ def claude_router_hook_cmd(
                 )
             )
         elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Claude Code started "
-                        f"{record.get('model')}."
-                    }
-                )
+            logging.getLogger(__name__).debug(
+                "Smart Routing mismatch: router requested %s, but Claude Code started %s",
+                record.get("requested_model"),
+                record.get("model"),
             )
         # When matched is None the harness didn't report the subagent model —
         # routing already injected the selected model, so emit nothing.

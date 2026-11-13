@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -526,7 +527,9 @@ def _route_print_mode_prompt(
     try:
         decision = _route_claude_prompt(state, token, prompt, catalog.model_ids)
     except RuntimeError as exc:
-        print_warning(f"Smart routing couldn't pick a model ({exc}); using Claude's default.")
+        logging.getLogger(__name__).debug(
+            "Smart routing couldn't pick a model (%s); using Claude's default", exc
+        )
         return None
     display = catalog.model_id_to_display_name.get(decision.model, decision.model)
     print_note(format_routing_notice(display, decision.rationale))

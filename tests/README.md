@@ -3,10 +3,15 @@
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
-Controls reads retry permission denials up to ten times at startup and main-turn
-submission. Handler cases verify that main input and steering
+Controls reads retry permission denials up to ten times during main-turn
+submission and hook execution. Missing or malformed controls do not prevent connection.
+Handler cases verify that main input and steering
 wait while approvals, child interrupts, and upstream events continue; recovery uses the
-latest state, and persistent per-turn failures report one actionable error before teardown.
+latest state. Persistent failures forward the original request without a metadata update
+or user-facing error, and a later turn can recover without reconnecting. Hook cases ensure
+an unreadable off state never becomes an on stamp through inherited launch flags.
+Shared controls, routing fallback, and subagent model-mismatch diagnostics use debug logs
+instead of terminal warnings or hook messages. Audit records remain available.
 These cases control filesystem and transport boundaries, not native Windows contention.
 
 `test_codex_interaction_evidence.py` requires native delivery receipts matching the
@@ -18,8 +23,6 @@ across first-prompt and subagent-only modes, preserving provider arguments, cont
 recipe metadata, saved configuration, and process cleanup.
 See the [integration guide](integration/README.md) for live continuity journeys and their
 transport/backend validation limits.
-Polling, active-turn tracking, toggle-command waiting, internal interrupt RPCs, and their
-component cases were removed: toggles no longer interrupt turns or refresh active metadata.
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace
