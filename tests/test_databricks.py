@@ -6801,3 +6801,54 @@ class TestModelServicesNeedSubscriptionRelay:
         models = ["main.default.sonnet"]
         assert not db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
         assert db_mod.model_services_need_subscription_relay("https://ws", "tok", models)
+
+
+class TestModelsAcceptRelayCredentials:
+    """Claude Desktop sends one credential for every model, so it relays only when all accept it."""
+
+    _helpers = TestModelServicesNeedSubscriptionRelay
+
+    def _patch(self, monkeypatch, services: dict, relayed: set[str]) -> list[str]:
+        return self._helpers._patch(self, monkeypatch, services, relayed)
+
+    def test_relay_backed_hosted_and_system_models_accept(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.sonnet": self._helpers._service(
+                    "main.default.sonnet", self._helpers._external("main.default.anthropic")
+                ),
+                "main.default.oss": self._helpers._service(
+                    "main.default.oss", self._helpers._hosted("system.ai.kimi")
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        models = ["system.ai.claude-sonnet-5-5", "main.default.sonnet[1m]", "main.default.oss"]
+        assert db_mod.models_accept_relay_credentials("https://ws", "tok", models)
+        # system.* ids are Databricks-hosted and never looked up.
+        assert "system.ai.claude-sonnet-5-5" not in calls
+
+    @pytest.mark.parametrize("on_fallback", [False, True])
+    def test_an_api_key_provider_rejects(self, monkeypatch, on_fallback):
+        keyed = self._helpers._external("main.default.keyed-mps", traffic=0 if on_fallback else 100)
+        service = self._helpers._service("main.default.svc", self._helpers._hosted("system.ai.x"))
+        if on_fallback:
+            service["config"]["routing"]["fallback"] = {"destinations": [keyed]}
+        else:
+            service["config"]["routing"]["destinations"].append(keyed)
+        self._patch(monkeypatch, {"main.default.svc": service}, set())
+        assert not db_mod.models_accept_relay_credentials("https://ws", "tok", ["main.default.svc"])
+
+    def test_unconfirmed_and_unrecognized_models_reject(self, monkeypatch):
+        self._patch(monkeypatch, {}, {"main.default.anthropic"})
+        for model in ("main.default.gone", "claude-sonnet-5-5"):
+            assert not db_mod.models_accept_relay_credentials("https://ws", "tok", [model])
+
+    @pytest.mark.parametrize(
+        ("mps", "accepts"), [("main.default.anthropic", True), ("main.x.keyed", False)]
+    )
+    def test_a_sources_mps_model_ref_checks_its_provider(self, monkeypatch, mps, accepts):
+        self._patch(monkeypatch, {}, {"main.default.anthropic"})
+        ref = f"{mps}.claude-sonnet-5-5"
+        assert db_mod.models_accept_relay_credentials("https://ws", "tok", [ref]) is accepts
