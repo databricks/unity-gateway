@@ -124,6 +124,24 @@ class TestIsDatabricksRoutedModel:
         assert not gateway_proxy.is_databricks_routed_model("")
 
 
+class TestIsUcModelService:
+    def test_three_part_names_are_model_services(self):
+        for model in ("my_catalog.my_schema.my_model", "main.default.claude_seat_fallback"):
+            assert gateway_proxy.is_uc_model_service(model), model
+
+    def test_databricks_hosted_ids_are_not_model_services(self):
+        for model in (
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-oss-120b",
+            "databricks-meta-llama-3-3-70b-instruct",
+        ):
+            assert not gateway_proxy.is_uc_model_service(model), model
+
+    def test_bare_and_missing_ids_are_not_model_services(self):
+        for model in ("claude-opus-4-1", "claude-3-7-sonnet-20250219", "a.b", "", None):
+            assert not gateway_proxy.is_uc_model_service(model), model
+
+
 class TestRequestModel:
     def test_extracts_model_from_json_body(self):
         assert gateway_proxy._request_model(b'{"model": "system.ai.x", "n": 1}') == "system.ai.x"
@@ -830,6 +848,38 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestRelayedModelServiceRouting:
+    def test_uc_model_service_keeps_oauth_and_swap_without_mps(self):
+        # A UC model service may route to a relayed provider: the OAuth stays in
+        # Authorization, the swap header carries the Databricks token, and the MPS header
+        # is dropped so the service's own routing chooses the destination.
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=TestRelayedOssRouting._CLIENT_HEADERS,
+            body=b'{"model": "my_catalog.my_schema.claude_seat_fallback"}',
+        )._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer anthropic-oauth"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert "Databricks-Model-Provider-Service" not in sent
+
+    def test_system_ai_still_routes_to_gateway_auth(self):
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=TestRelayedOssRouting._CLIENT_HEADERS,
+            body=b'{"model": "system.ai.claude-opus-4-8"}',
+        )._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer tok1"
+        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in sent
 
 
 class TestCodexRelayProxy:
