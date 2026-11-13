@@ -47,10 +47,12 @@ const ANIMALS = [
   'Magpie', 'Osprey', 'Owl', 'Parrot', 'Pelican', 'Penguin', 'Puffin', 'Raven', 'Robin', 'Swan',
 ]
 
-const shortModel = (model: string): string => model
-  .replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
-  .replace(/^system\.ai\./, '')
-  .replace(/^databricks-/, '')
+const shortModel = (model: string): string => {
+  const unwrapped = model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
+  const parts = unwrapped.split('.')
+  const name = parts.length >= 3 ? parts[parts.length - 1] : unwrapped
+  return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
+}
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]

@@ -20,11 +20,15 @@ const reply = (id: string) => ({
 test('selected model displays the model name without a gateway alias', async ($, on) => {
   const models = [
     ['anthropic-aigw-77df06ea-system.ai.glm-5-3-flash', 'glm-5-3-flash'],
-    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol[1m]'],
-    ['anthropic-aigw-77df06ea-catalog.schema.custom-model', 'catalog.schema.custom-model'],
+    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol'],
+    ['anthropic-aigw-77df06ea-catalog.schema.custom-model', 'custom-model'],
+    ['anthropic-aigw-77df06ea-org.catalog.schema.model[1m]', 'model'],
+    ['org.catalog.schema.service.model', 'model'],
     ['system.ai.glm-5-3-flash', 'glm-5-3-flash'],
+    ['model.version[1m]', 'model.version'],
+    ['plain-model[1m]', 'plain-model'],
     ['databricks-claude-sonnet', 'claude-sonnet'],
-    ['anthropic-aigw-invalid-system.ai.glm-5-3-flash', 'anthropic-aigw-invalid-system.ai.glm-5-3-flash'],
+    ['anthropic-aigw-invalid-custom-model', 'anthropic-aigw-invalid-custom-model'],
   ];
   let model = '';
   const launched: string[] = [];

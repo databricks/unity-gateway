@@ -191,10 +191,11 @@ See [the mod guide](../docs/claude-mod.md).
 
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
-name stability. They check that selected-model labels omit gateway aliases and the `system.ai.`
-prefix without changing the model sent to the agent. They cover a lone call's decision under its
-Agent row and parallel calls drawn as cards above the parent's next reply in call order (replies
-drawn before routing never used, calls still routing waiting for a later reply, cards kept across a turn that
+name stability. Selected-model labels omit gateway aliases, show only the last component of
+names with at least two dots, and remove `[1m]`, without changing the model sent to the agent.
+They cover a lone call's decision under its Agent row and parallel calls drawn as cards above
+the parent's next reply in call order (replies drawn before routing never used, calls still
+routing waiting for a later reply, cards kept across a turn that
 ends while a background agent runs and dropped on abort), distinct IDs for identical tasks,
 nothing above the prompt, pending row and turn-spinner routing timers, and disabled/failed
 routing. They do not establish live
