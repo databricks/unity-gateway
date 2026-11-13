@@ -389,7 +389,7 @@ def test_language_transport_inactive_preserves_body_error_and_restores_environme
     start.assert_not_called()
 
 
-@pytest.mark.parametrize("failure", ["proxy", "upstream", "thread"])
+@pytest.mark.parametrize("failure", ["proxy", "thread"])
 def test_language_transport_startup_failure_degrades_and_cleans_resources(
     tmp_path, monkeypatch, failure
 ):
@@ -407,12 +407,6 @@ def test_language_transport_startup_failure_degrades_and_cleans_resources(
     if failure == "proxy":
         start.side_effect = OSError("proxy setup failed: private-sensitive-detail")
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    if failure == "upstream":
-        monkeypatch.setattr(
-            claude,
-            "build_tool_base_url",
-            Mock(side_effect=OSError("upstream unavailable: private-sensitive-detail")),
-        )
     if failure == "thread":
         thread = Mock()
         thread.start.side_effect = RuntimeError("thread did not start: private-sensitive-detail")

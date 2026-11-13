@@ -84,13 +84,14 @@ It replaces the obsolete stdio-only expectation; this checks configuration, not 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
-parallel calls as cards above the parent's next reply in call order, calls
+and parallel calls as cards above the parent's next reply in call order.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
 provider latency or token renewal behavior. Child-language component coverage also checks
 configured language and task-language fallback on child and summary requests, parent/classifier passthrough,
-authentication, and private-header stripping. Live language checks must inspect both
+authentication, and private-header stripping. Generated-language compliance is a manual
+live-model check, not an assertion in this automated suite. Inspect both
 child replies and progress summaries with English, non-English and unset settings,
 including foreign-language source files and explicit translations. With no setting,
 the fallback follows the task text delivered to the child. Request
@@ -101,8 +102,9 @@ Proxy diagnostic component tests keep background logs out of interactive termina
 while preserving them in `~/.ucode/logs/gateway-proxy.log`. Language-proxy refresh errors
 omit raw exception text from both the file and redirected stderr while retaining the
 sign-in hint. The file is created with private permissions.
-The existing smart-routing CUJs and resumed-child journey exercise the native task view
-and prompt after requests complete.
+The existing smart-routing CUJs and resumed-child journey use this task-view parser to
+wait for child completion before inspecting replies and returning to the prompt. The
+empty history section is not an active task and must not keep that wait pending.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component

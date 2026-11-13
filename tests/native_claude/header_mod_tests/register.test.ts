@@ -107,6 +107,7 @@ test('language transport follows settings and reloads across provider switches',
   await $.session.start(start);
   expect(env.ANTHROPIC_BASE_URL).toBe('https://other.example');
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
+  expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBeUndefined();
 });
 
 for (const [name, raw] of [
@@ -174,20 +175,21 @@ for (const failure of ['settings', 'env-get', 'env-set'] as const) {
       UG_HEADERS: 'X-Added: yes',
       UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
     };
+    let fail = false;
     on('session.start', ($, e) => ({ cwd: e.cwd }));
     on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '' } }));
     on('settings.read', () => {
-      if (failure === 'settings') throw new Error('settings unavailable');
+      if (fail && failure === 'settings') throw new Error('settings unavailable');
       return { value: { language: 'English' } };
     });
     on('env.get', ($, e) => {
-      if (failure === 'env-get' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
+      if (fail && failure === 'env-get' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
         throw new Error('environment read unavailable');
       }
       return { value: env[e.name] };
     });
     on('env.set', ($, e) => {
-      if (failure === 'env-set' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
+      if (fail && failure === 'env-set' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
         throw new Error('environment write unavailable');
       }
       env[e.name] = e.value;
@@ -199,6 +201,9 @@ for (const failure of ['settings', 'env-get', 'env-set'] as const) {
       return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
     });
     await $.session.start(start);
+    expect(env.ANTHROPIC_BASE_URL).toBe(url);
+    fail = true;
+    env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = undefined;
     const stream = $.turn.step({turnId: 'turn', index: 1, model: 'parent-model', messageCount: 1, agentId: undefined});
     while (!(await stream.next()).done) { /* Drain the native turn. */ }
     expect(turns).toBe(1);
@@ -220,18 +225,24 @@ for (const failure of ['unavailable', 'expired credential'] as const) {
     on('session.start', ($, e) => ({ cwd: e.cwd }));
     on('settings.read', () => ({ value: { language: 'English' } }));
     let checks = 0;
+    let recovered = false;
+    const warnings: string[] = [];
+    on('ui.log', ($, e) => { expect(e.to).toBe('debug'); warnings.push(e.text); return { value: undefined }; });
     on('http.fetch', ($, e) => {
       expect(e.url).toBe(`${url}/_ug_language_health`);
       expect(e.init.headers).toEqual({ 'X-UG-Language-Session': 'session-secret' });
-      if (++checks === 1) return { value: { status: 200, ok: true, headers: {}, text: '' } };
+      if (++checks === 1 || recovered) return { value: { status: 200, ok: true, headers: {}, text: '' } };
       if (failure === 'unavailable') throw new Error('Connection refused');
       return { value: { status: 503, ok: false, headers: {}, text: '' } };
     });
     let turns = 0;
     on('turn.step', async function* ($, e) {
       turns++;
-      expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
-      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep');
+      expect(env.ANTHROPIC_BASE_URL).toBe(recovered ? url : upstream);
+      if (!recovered) {
+        expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep');
+        expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBeUndefined();
+      }
       return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null };
     });
     await $.session.start(start);
@@ -241,7 +252,95 @@ for (const failure of ['unavailable', 'expired credential'] as const) {
       while (!(await stream.next()).done) { /* Drain the native turn. */ }
     }
     expect(turns).toBe(2);
-    expect(checks).toBe(2);
+    expect(checks).toBe(failure === 'unavailable' ? 2 : 3);
+    expect(warnings).toEqual(['Optional subagent language inheritance is unavailable; continuing without it.']);
+    if (failure === 'unavailable') {
+      expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe('');
+    } else {
+      expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe(JSON.stringify({ url, upstream, secret: 'session-secret' }));
+      recovered = true;
+      const stream = $.turn.step({ turnId: 'turn', index: 2, model: 'parent-model', messageCount: 1, agentId: undefined });
+      while (!(await stream.next()).done) { /* Drain the next native turn; no replay. */ }
+      expect(turns).toBe(3);
+      expect(checks).toBe(4);
+      expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBe('1');
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toContain('X-UG-Response-Language: English');
+      expect(warnings.length).toBe(1);
+    }
+  });
+}
+
+for (const [name, inherited, configured] of [
+  ['inherited enable', '1', undefined],
+  ['settings enable after activation', undefined, '1'],
+  ['settings disable after activation', undefined, '0'],
+] as const) {
+  test(`fallback preserves ${name} of gateway identity headers`, async ($, on) => {
+    const upstream = 'https://workspace.example/ai-gateway/anthropic';
+    const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
+    const env: Record<string, string | undefined> = {
+      ANTHROPIC_BASE_URL: upstream,
+      CLAUDE_CODE_GATEWAY_HINT_HEADERS: inherited,
+      UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
+    };
+    on('env.get', ($, e) => ({ value: env[e.name] }));
+    on('env.set', ($, e) => { env[e.name] = e.value; return { value: undefined }; });
+    on('session.start', ($, e) => ({ cwd: e.cwd }));
+    let settingsHint: string | undefined;
+    let unavailable = false;
+    on('http.fetch', () => ({ value: {
+      status: unavailable ? 503 : 200, ok: !unavailable, headers: {}, text: '',
+    } }));
+    on('settings.read', () => ({ value: { language: 'English', env: {
+      ...(settingsHint === undefined ? {} : { CLAUDE_CODE_GATEWAY_HINT_HEADERS: settingsHint }),
+    } } }));
+    await $.session.start(start);
+    expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBe('1');
+    settingsHint = configured;
+    if (configured !== undefined) env.CLAUDE_CODE_GATEWAY_HINT_HEADERS = configured;
+    unavailable = true;
+    await $.session.start(start);
+    expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+    expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBe(configured ?? inherited);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS ?? '').not.toContain('session-secret');
+  });
+}
+
+for (const [afterActivation, corruption] of [[false, 'forged'], [true, 'forged'], [true, ''], [true, '{']] as const) {
+  test(`settings cannot replace the launch descriptor ${afterActivation ? 'after activation' : 'at startup'} with ${JSON.stringify(corruption)}`, async ($, on) => {
+    const upstream = 'https://workspace.example/ai-gateway/anthropic';
+    const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
+    const attacker = 'http://127.0.0.1:23456/ai-gateway/anthropic';
+    const launch = JSON.stringify({ url, upstream, secret: 'launch-secret' });
+    // The second case also tries to turn fallback itself into an attacker redirect.
+    const forged = corruption === 'forged' ? JSON.stringify({ url: afterActivation ? url : attacker, upstream: afterActivation ? attacker : upstream, secret: 'forged-secret' }) : corruption;
+    let configured = afterActivation ? undefined : forged;
+    const env: Record<string, string | undefined> = {
+      ANTHROPIC_BASE_URL: upstream,
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Required: keep',
+      UG_CLAUDE_LANGUAGE_PROXY: configured ?? launch,
+    };
+    let checks = 0;
+    on('env.get', ($, e) => ({ value: env[e.name] }));
+    on('env.set', ($, e) => { env[e.name] = e.value; return { value: undefined }; });
+    on('settings.read', () => ({ value: { env: { UG_CLAUDE_LANGUAGE_PROXY: configured } } }));
+    on('session.start', ($, e) => ({ cwd: e.cwd }));
+    on('http.fetch', ($, e) => {
+      checks++;
+      expect(e.url).toBe(`${url}/_ug_language_health`);
+      return { value: { status: 200, ok: true, headers: {}, text: '' } };
+    });
+    await $.session.start(start);
+    if (afterActivation) {
+      expect(env.ANTHROPIC_BASE_URL).toBe(url);
+      configured = forged;
+      env.UG_CLAUDE_LANGUAGE_PROXY = forged;
+      await $.session.start(start);
+    }
+    expect(checks).toBe(afterActivation ? 1 : 0);
+    expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep');
     expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe('');
+    expect(env.CLAUDE_CODE_GATEWAY_HINT_HEADERS).toBeUndefined();
   });
 }

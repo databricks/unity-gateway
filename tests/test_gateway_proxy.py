@@ -330,14 +330,6 @@ class TestRelayResponseClientDisconnect:
             if interactive and os.name != "nt":
                 assert path.stat().st_mode & 0o777 == 0o600
 
-    def test_default_refresh_failure_keeps_interactive_sign_in_hint(self, monkeypatch, capsys):
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
-        gateway_proxy.log_token_refresh_failure(RuntimeError("refresh unavailable"))
-        output = capsys.readouterr()
-        assert output.out == ""
-        assert "token refresh failed: refresh unavailable" in output.err
-        assert "databricks auth login" in output.err
-
 
 class TestProxyDiagnosticFile:
     def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
@@ -778,17 +770,21 @@ class TestRetryOn401:
         assert client.sent_tokens == ["Bearer tok1"]
         assert b"hi" in bytes(out.data)
 
-    def test_failed_refresh_surfaces_reauth_hint(self, capsys):
+    def test_failed_refresh_surfaces_reauth_hint(self, monkeypatch, capsys):
         # When the forced refresh itself fails (the Databricks OAuth session is
         # dead, not just the access token), the user must be told to run
         # `databricks auth login` rather than left with a bare 401 that reads as
         # an Anthropic `/login` prompt. We still retry + relay whatever comes.
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
         client = _FakeClient([_FakeResp(401, b"a"), _FakeResp(401, b"b")])
         cache = _RefreshFailsCache()
         out = _Collect()
         _handle_handler(client, cache, out)._handle()
         assert cache.refreshed == 1  # a refresh was attempted
-        assert "databricks auth login" in capsys.readouterr().err
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert "token refresh failed: mint failed" in output.err
+        assert "databricks auth login" in output.err
         assert b"401" in bytes(out.data)  # the response is still relayed
 
 

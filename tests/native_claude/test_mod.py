@@ -73,11 +73,20 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("sources", "disable_nonessential"),
-    [("user", False), ("project,local", False), ("project,local", True)],
+    ("sources", "disable_nonessential", "health_failure"),
+    [
+        ("user", False, "closed"),
+        ("project,local", False, "closed"),
+        ("project,local", True, "closed"),
+        ("project,local", True, "stalled-headers"),
+        ("project,local", True, "stalled-body"),
+        ("project,local", True, "forged-settings"),
+        ("project,local", True, "empty-settings"),
+        ("project,local", True, "malformed-settings"),
+    ],
 )
 def test_language_transport_uses_native_settings_sources(
-    native_binary, tmp_path, sources, disable_nonessential
+    native_binary, tmp_path, sources, disable_nonessential, health_failure
 ):
     for path, text in _header_mod_files(tmp_path).items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -93,6 +102,7 @@ export function register(on) {
   });
   on('command.run', {command: 'language-probe'}, async ($) => ({text: JSON.stringify({
     language: (await $.settings.read()).language,
+    configuredTransport: (await $.settings.read()).env?.UG_CLAUDE_LANGUAGE_PROXY,
     hints: await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS'),
     base: await $.env.get('ANTHROPIC_BASE_URL'),
     headers: await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
@@ -112,6 +122,23 @@ export function register(on) {
     server, cache, client = start_claude_language_proxy(
         upstream, lambda _force: "fixture-only", session_secret="fixture-session"
     )
+    stall_health = threading.Event()
+    release_health = threading.Event()
+    health_requested = threading.Event()
+
+    class HealthHandler(server.RequestHandlerClass):
+        def _discard(self):
+            if not stall_health.is_set():
+                return super()._discard()
+            health_requested.set()
+            if health_failure == "stalled-body":
+                self.send_response(200)
+                self.send_header("Content-Length", "1")
+                self.end_headers()
+                self.wfile.flush()
+            release_health.wait(timeout=45)
+
+    server.RequestHandlerClass = HealthHandler
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
     proxy = f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic"
@@ -159,12 +186,12 @@ export function register(on) {
     reader = threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout], daemon=True)
     reader.start()
 
-    def send(prompt, *, expect_error=False):
+    def send(prompt, *, expect_error=False, timeout=10):
         proc.stdin.write(
             json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n"
         )
         proc.stdin.flush()
-        deadline = time.monotonic() + 10
+        deadline = time.monotonic() + timeout
         while True:
             event = json.loads(lines.get(timeout=max(0, deadline - time.monotonic())))
             if event.get("type") == "result":
@@ -203,13 +230,47 @@ export function register(on) {
                     assert "X-UG-Response-Language: English" not in observed["headers"]
                 else:
                     assert "X-UG-Response-Language:" not in observed["headers"]
-            server.shutdown()
-            server.server_close()
-            send("Reply with OK.", expect_error=True)
+            if health_failure.endswith("settings"):
+                forged = {
+                    "forged-settings": json.dumps(
+                        {"url": proxy, "upstream": "http://127.0.0.1:2", "secret": "forged"}
+                    ),
+                    "empty-settings": "",
+                    "malformed-settings": "{",
+                }[health_failure]
+                project_settings.write_text(
+                    json.dumps({"env": {"UG_CLAUDE_LANGUAGE_PROXY": forged}})
+                )
+                deadline = time.monotonic() + 5
+                while probe().get("configuredTransport") != forged:
+                    assert time.monotonic() < deadline, "Native settings reload did not apply"
+                    time.sleep(0.05)
+            elif health_failure == "closed":
+                server.shutdown()
+                server.server_close()
+            else:
+                stall_health.set()
+            started = time.monotonic()
+            event = send("Reply with OK.", expect_error=True, timeout=45)
+            elapsed = time.monotonic() - started
+            assert event["usage"]["output_tokens"] == 0
             observed = probe()
             assert observed["base"] == upstream
             assert "x-ug-" not in observed["headers"].lower()
+            assert observed.get("hints") is None
+            if health_failure.startswith("stalled"):
+                assert health_requested.is_set()
+                assert 29 <= elapsed < 45
+                assert not release_health.is_set()
+                assert (
+                    "Optional subagent language inheritance is unavailable; continuing without it."
+                    in (tmp_path / "debug.log").read_text()
+                )
+                (tmp_path / "native-health-timeout.json").write_text(
+                    json.dumps({"failure": health_failure, "seconds": elapsed, "state": observed})
+                )
     finally:
+        release_health.set()
         proc.terminate()
         try:
             proc.wait(timeout=5)
