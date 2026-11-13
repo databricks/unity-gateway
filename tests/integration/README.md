@@ -1,5 +1,8 @@
 # Integration tests
 
+The trusted scan producer's component coverage and staged enforcement are documented in
+the [main test guide](../README.md). This prerequisite does not change integration authorization.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity

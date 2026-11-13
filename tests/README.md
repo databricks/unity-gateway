@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_security_scan_request.py` verifies the default-branch Security Scan's request
+validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
+This prerequisite installs the producer and reusable consumer without making existing CI
+wait. See [the rollout guide](../.github/security/ROLLOUT.md) for subsequent enforcement and
+required organization settings. These tests do not validate live GitHub event delivery.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
