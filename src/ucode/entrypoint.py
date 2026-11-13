@@ -71,47 +71,14 @@ def main() -> None:
         return
 
     from ucode import metrics
-    from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 
-    agents = {
-        AGENT_CLAUDE,
-        AGENT_CODEX,
-        "gemini",
-        "opencode",
-        AGENT_COPILOT,
-        "pi",
-        "kilo",
-        "cursor",
-        "antigravity",
-    }
-    commands = agents | {
-        "configure",
-        "usage",
-        "status",
-        "revert",
-        "doctor",
-        "agents",
-        "skills",
-        "mcp",
-        "export",
-        "web",
-        "upgrade",
-        "mcp-proxy",
-        "auth-token",
-        "otel-proxy",
-        "otel-headers",
-        "claude-router-hook",
-        "codex-router-hook",
-    }
-    command = sys.argv[1] if len(sys.argv) > 1 and sys.argv[1] in commands else "launch"
+    is_mcp_proxy = sys.argv[1:2] == ["mcp-proxy"]
     enabled = not any(arg in {"--help", "-h"} for arg in sys.argv[1:])
     if enabled:
-        metrics.begin(command, started)
-        if command in agents or command == "launch":
-            metrics.start_agent(command if command in agents else "unknown")
+        metrics.begin("mcp-proxy" if is_mcp_proxy else metrics.COMMAND_OPERATION, started)
     try:
         import_started = time.perf_counter()
-        if command == "mcp-proxy":
+        if is_mcp_proxy:
             from ucode.mcp_proxy_runtime import main as command_main
         else:
             from ucode.cli import main as command_main
@@ -120,10 +87,7 @@ def main() -> None:
         )
         command_main()
     except BaseException as exc:
-        if not isinstance(exc, (KeyboardInterrupt, SystemExit)):
-            metrics.failure(command, exc)
-        elif isinstance(exc, SystemExit) and exc.code not in (None, 0):
-            metrics.failure(command, exc)
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         raise
     finally:
         metrics.finish()
