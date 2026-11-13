@@ -680,7 +680,14 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
     await pane.select({ key: 'compare-model', value: 'model-a' });
     expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
     await pane.press({ key: 'numbers' });
-    expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.0004 USD');
+    const numbers = ['Quality estimate: 0.800', 'Est. cost: 0.0004 USD',
+      'Routing score: 0.700', 'Components: quality 0.800', 'Vs. routed: quality -0.100'];
+    const visibleNumbers = JSON.stringify(await pane.drawn());
+    for (const text of numbers) expect(visibleNumbers).toContain(text);
+    await pane.press({ key: 'numbers' });
+    const hiddenNumbers = JSON.stringify(await pane.drawn());
+    for (const text of numbers) expect(hiddenNumbers).not.toContain(text);
+    expect(hiddenNumbers).toContain('Show numbers');
   } else {
     expect(JSON.stringify(await pane.drawn())).toContain('Chosen: Model B');
     await pane.select({ key: 'compare-model', value: customModel ? `${customModel}[1m]` : 'model-a' });

@@ -240,6 +240,26 @@ class TestHelp:
         toggle.assert_called_once_with(True, None)
         launch.assert_not_called()
 
+    @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])
+    def test_configure_forwards_mdm_flag(self, monkeypatch, args, expected):
+        requests = []
+        monkeypatch.setattr(cli_mod, "request_mdm_os", requests.append)
+
+        def stop():
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", stop)
+        runner.invoke(app, ["configure", *args])
+        assert requests == [expected, None]
+
+    def test_configure_restores_an_inherited_mdm_os(self, monkeypatch):
+        monkeypatch.setenv("MDM_OS", "Mac")
+        monkeypatch.setattr(
+            cli_mod, "install_databricks_cli", lambda: (_ for _ in ()).throw(RuntimeError("stop"))
+        )
+        runner.invoke(app, ["configure", "--mdm"])
+        assert os.environ["MDM_OS"] == "Mac"
+
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
         assert result.exit_code == 0
@@ -1068,7 +1088,7 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
-    @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
+    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
     @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
     def test_codex_routing_version_requires_upgrade_or_explicit_disable(
         self, tmp_path, monkeypatch, installed_version, recovery
