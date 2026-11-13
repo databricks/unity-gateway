@@ -5,6 +5,31 @@ type RoutingRecord = {
   spawned?: { agentId: string; model?: string; background: boolean }
 }
 
+const routingDiagnostics = (stderr: string): string[] => {
+  const records: string[] = []
+  for (const line of stderr.slice(-32768).split('\n').slice(-8)) {
+    if (!line.startsWith('[ug-routing] ') || line.length > 4096) continue
+    try {
+      const record: unknown = JSON.parse(line.slice('[ug-routing] '.length))
+      if (!record || typeof record !== 'object' || !('v' in record) || record.v !== 1
+          || !('event' in record) || typeof record.event !== 'string'
+          || !['request_start', 'request_finish', 'hook_start', 'hook_finish'].includes(record.event)) continue
+      const safe: Record<string, string | number> = { v: 1, event: record.event }
+      for (const [key, value] of Object.entries(record)) {
+        if (['phase', 'outcome', 'error_type'].includes(key)
+            && typeof value === 'string' && /^[A-Za-z_]{1,64}$/.test(value)) safe[key] = value
+        if (['client_request_id', 'server_request_id', 'hook_id', 'tool_use_id'].includes(key)
+            && typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value)) safe[key] = value
+        if (['at', 'elapsed_ms', 'timeout_s', 'http_status', 'open_response_ms',
+          'read_body_ms', 'decode_response_ms', 'route_option_count'].includes(key)
+            && typeof value === 'number' && Number.isFinite(value) && value >= 0) safe[key] = value
+      }
+      records.push('[ug-routing] ' + JSON.stringify(safe))
+    } catch {}
+  }
+  return records
+}
+
 const safeText = (value: unknown, limit: number): string | undefined => {
   if (typeof value !== 'string') return undefined
   const clean = value
@@ -164,25 +189,46 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       } catch {}
       $.ui.invalidate('ui.render')
     }
+    const hookStarted = await now($)
+    let hookOutcome = 'process_error'
+    const diagnosticToolId = typeof tool_use_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(tool_use_id)
+      ? tool_use_id : undefined
+    const logDiagnostic = (text: string) => {
+      try { $.ui.log(text, { to: 'debug' }) } catch {}
+    }
+    logDiagnostic('[ug-routing] ' + JSON.stringify({
+      v: 1, event: 'command_start', tool_use_id: diagnosticToolId, timeout_ms: 35000,
+    }))
     try {
       const session_id = await $.session.id()
       const result = await $.process.run(command, {
         stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
         timeoutMs: 35000,
       })
+      for (const diagnostic of routingDiagnostics(result.stderr)) logDiagnostic(diagnostic)
+      hookOutcome = 'nonzero_exit'
       if (result.exitCode !== 0) throw new Error('Router command failed')
       // An empty response means routing is disabled or no model could be selected.
+      hookOutcome = 'invalid_output'
       route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
           typeof route.rationale !== 'string')) {
         throw new Error('Invalid routing response')
       }
+      hookOutcome = route === undefined ? 'empty_output' : 'resolved'
     } catch {
       route = undefined
       $.ui.log('Smart Router could not route this subagent; using its original settings.')
     } finally {
       spinner?.cancel()
+      const seconds = await secondsSince($, hookStarted)
+      logDiagnostic('[ug-routing] ' + JSON.stringify({
+        v: 1, event: 'command_finish', outcome: hookOutcome,
+        tool_use_id: diagnosticToolId,
+        elapsed_ms: seconds === undefined ? undefined : Math.round(seconds * 1000),
+        timeout_ms: 35000,
+      }))
     }
     const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
     if (tool_use_id) {

@@ -58,6 +58,62 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     assert recorded["stderr"] == result.stderr
 
 
+def test_failed_routing_diagnostics_survive_command_artifact_capture(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+
+    result = session.run(
+        "-c",
+        "import json; from ucode.smart_routing.routing import select_route; "
+        "decision, error = select_route('http://127.0.0.1:1', 'private-bearer', "
+        "'private-task', [('model', 'claude')], router_name='stable', timeout=0.1); "
+        "print(json.dumps({'decision': decision, 'failed': error is not None}))",
+        timeout=10,
+    )
+
+    assert json.loads(result.stdout) == {"decision": None, "failed": True}
+    records = [
+        json.loads(line.removeprefix("[ug-routing] "))
+        for line in result.stderr.splitlines()
+        if line.startswith("[ug-routing] ")
+    ]
+    assert [record["event"] for record in records] == ["request_start", "request_finish"]
+    assert records[-1]["outcome"] == "transport_error"
+    assert records[0]["client_request_id"] == records[1]["client_request_id"]
+    recorded = json.loads((session.artifacts / "command-1.json").read_text())
+    assert recorded["stderr"] == result.stderr
+    assert recorded["timeout_s"] == 10
+    assert recorded["elapsed_ms"] >= 0
+    assert recorded["started_at"] > 0
+    assert "private-" not in result.stderr
+
+
+def test_native_routing_artifact_excludes_other_debug_content(tmp_path):
+    session = UserSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
+    debug = session.home / ".claude/debug"
+    debug.mkdir(parents=True)
+    record = {
+        "v": 1,
+        "event": "request_finish",
+        "outcome": "timeout",
+        "client_request_id": "attempt-1",
+        "elapsed_ms": 20001,
+    }
+    (debug / "session.txt").write_text(
+        "private-debug-line\n[ug-routing] invalid-json\n"
+        + "2026-11-13 [DEBUG] [ug-routing] "
+        + json.dumps({**record, "prompt": "private-task", "authorization": "private-token"})
+        + "\n[ug-routing] "
+        + json.dumps({"v": 2, "event": "request_finish"}),
+    )
+
+    session.collect_routing_diagnostics()
+
+    assert json.loads((session.artifacts / "routing-diagnostics.json").read_text()) == [record]
+
+
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
     from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 

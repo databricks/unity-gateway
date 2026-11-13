@@ -128,7 +128,8 @@ test('routing changes only the matching spawn model and joins its display name t
   const result = await $.agent.spawn(forwarded[0]);
   expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
   expect(writes.length).toBe(2);
-  expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
+  expect(logs.filter((line) => !line.startsWith('[ug-routing] ')))
+    .toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
 });
 
 test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
@@ -163,7 +164,7 @@ test('a lone call ignores extra updatedInput and keeps its decision under its ow
   expect(calls[0].tool_use_id).toBe('call-a');
   expect(calls[0]).toEqual({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
   expect(calls[1]).toEqual({ tool: 'Agent', tool_use_id: 'call-b', ...originalInput });
-  expect(logs).toEqual([]);
+  expect(logs.filter((line) => !line.startsWith('[ug-routing] '))).toEqual([]);
 
   for (const [id, model] of [['call-a', 'claude-sonnet-5'], ['call-b', 'claude-opus-4-8']]) {
     const done = await $.ui.mount(row(id));
@@ -340,7 +341,10 @@ for (const [name, result, warningCount] of [
     const warnings: string[] = [];
     on('session.id', () => ({ value: 'session-1' }));
     on('process.run', () => result);
-    on('ui.log', ($, e) => { warnings.push(e.text); return { value: undefined }; });
+    on('ui.log', ($, e) => {
+      if (!e.text.startsWith('[ug-routing] ')) warnings.push(e.text);
+      return { value: undefined };
+    });
     on('tool.call', ($, e) => { calls.push(e); return { deny: 'user policy' }; });
     on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
     const answer = await $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...originalInput });
@@ -650,4 +654,47 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
   expect(spawn.result.toolUses).toEqual(tools);
   expect(spawn.chunks.map(chunk => chunk.kind)).toEqual(['thinking', 'text', 'tool', 'input', 'tool', 'input']);
   expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
+});
+
+test('captured routing diagnostics retain timings and IDs without raw stderr or request content', async ($, on) => {
+  const logs: string[] = [];
+  const calls: string[] = [];
+  const clientRequestId = '34b42518-4fc9-4e45-9f4a-765e5fe63292';
+  const diagnostic = '[ug-routing] ' + JSON.stringify({
+    v: 1, event: 'request_finish', client_request_id: clientRequestId,
+    phase: 'open_response', outcome: 'timeout', elapsed_ms: 20001, timeout_s: 20,
+    prompt: 'private-task', error: 'private-error', authorization: 'private-bearer',
+  });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('ui.log', ($, e) => {
+    if (e.text.startsWith('[ug-routing] ')) expect(e.to).toBe('debug');
+    logs.push(e.text);
+    return { value: undefined };
+  });
+  on('process.run', ($, e) => {
+    const id = JSON.parse(e.init.stdin).tool_use_id;
+    return { value: {
+      exitCode: id === 'nonzero' ? 1 : 0,
+      stdout: id === 'resolved' ? JSON.stringify({ model: 'claude-sonnet-5', rationale: 'Selected' }) : '',
+      stderr: ['private-stderr', '[ug-routing] invalid-json',
+        '[ug-routing] ' + JSON.stringify({ v: 1, event: 'private-event' }), diagnostic,
+        '[ug-routing] ' + 'x'.repeat(4096)].join('\n'),
+    } };
+  });
+  on('tool.call', ($, e) => { calls.push(e.tool_use_id); return { result: 'unchanged' }; });
+  for (const id of ['resolved', 'empty', 'nonzero']) {
+    expect(await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput }))
+      .toEqual({ result: 'unchanged' });
+  }
+  const records = logs.filter((line) => line.startsWith('[ug-routing] '))
+    .map((line) => JSON.parse(line.slice('[ug-routing] '.length)));
+  expect(records.filter((record) => record.event === 'request_finish')).toEqual(
+    Array.from({ length: 3 }, () => ({ v: 1, event: 'request_finish', client_request_id: clientRequestId,
+      phase: 'open_response', outcome: 'timeout', elapsed_ms: 20001, timeout_s: 20 })),
+  );
+  expect(records.filter((record) => record.event === 'command_finish').map((record) => record.outcome))
+    .toEqual(['resolved', 'empty_output', 'nonzero_exit']);
+  expect(records.filter((record) => record.event === 'command_start').map((record) => record.tool_use_id))
+    .toEqual(calls);
+  expect(logs.join('\n')).not.toMatch(/private-/);
 });

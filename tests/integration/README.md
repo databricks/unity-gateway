@@ -1,5 +1,45 @@
 # Integration tests
 
+## Routing diagnostics
+
+Router calls emit versioned `[ug-routing]` JSON records on stderr. `request_start`
+and `request_finish` share a UUID sent as `X-Client-Request-Id`. Look up that client
+ID in backend telemetry when supported, or use the response's `server_request_id`
+when present. Missing response IDs do not prove that the server never received a request.
+
+Records include the configured socket timeout, elapsed time, HTTP status, outcome,
+exception class, and the last operation: `open_response`, `read_body`,
+`decode_response`, or `validate_selection`. `open_response` includes connection setup
+and waiting for response headers; it does not isolate DNS, TLS, or server time.
+The socket timeout is not a total request deadline. Subagent `hook_start` and
+`hook_finish` records join the request by `hook_id` and report whether a routing
+decision was resolved, not whether a child launched.
+
+The integration TUI harness enables native Claude debug logging with `--debug-file`
+inside the isolated test home. The Claude mod forwards bounded, allowlisted request
+diagnostics from its captured child stderr into native debug logs. Its separate
+`command_start` and `command_finish`
+records distinguish a resolved response, empty output, nonzero exit, malformed output,
+and a process error. Empty output without a request failure is not proof that routing
+was disabled. A process killed before its stderr is returned may leave only the mod's
+command events; `process_error` does not establish that the 35-second limit expired.
+
+Command artifacts already retain stderr and now include start time, elapsed milliseconds,
+and the subprocess timeout. Before deleting an integration case's temporary home,
+the fixture collects allowlisted routing records from the last 256 KiB of up to
+16 native Claude debug files into `routing-diagnostics.json`. It does not upload
+whole debug logs. Native TUI artifacts also retain the terminal transcript.
+New structured diagnostics exclude prompts, rationale, credentials, raw error messages,
+response bodies, and arbitrary headers. No production log store or exporter is installed.
+Existing command/transcript artifacts retain their existing redaction policy.
+
+`../test_routing_diagnostics.py` covers controlled transport failures and content-free
+request records. `../test_integration_contract.py` checks diagnostic retention after a
+real refused local connection. The native mod component tests check captured-stderr
+forwarding and unchanged fallback behavior. A native command without inference verifies
+that debug records reach the filtered artifact. These checks do not establish live gateway
+recovery or backend trace indexing.
+
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.

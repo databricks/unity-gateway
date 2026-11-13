@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 from session import Session
 
+from tests.integration.utils.harness import UserSession
 from ucode.agents.claude import _header_mod_files
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
@@ -46,6 +47,64 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
             assert "./register.ts hooks: session.start" in result.stdout
+
+
+def test_native_debug_records_survive_artifact_collection(native_binary, tmp_path):
+    """Exercise native debug persistence without inference or gateway credentials."""
+    plugin = tmp_path / "plugin"
+    _write_routed_claude_plugin(plugin, [])
+    (plugin / "hooks/hooks.json").write_text('{"modules":["./diagnostic-probe.ts"]}')
+    (plugin / "hooks/diagnostic-probe.ts").write_text("""
+import type { Register } from 'claude-code';
+export const register: Register = (on) => {
+  on('session.start', {isInteractive: false}, async ($, e, next) => {
+    await $.command.register({name: 'routing-debug-probe', description: 'Debug probe', immediate: true});
+    return next(e);
+  });
+  on('command.run', {command: 'routing-debug-probe'}, ($) => {
+    $.ui.log('[ug-routing] {"v":1,"event":"command_finish","outcome":"resolved","tool_use_id":"native-probe"}', {to: 'debug'});
+    return {text: 'diagnostic emitted'};
+  });
+};
+""")
+    session = UserSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
+    debug = session.home / ".claude/debug/session.txt"
+    debug.parent.mkdir(parents=True)
+    result = subprocess.run(
+        [
+            native_binary,
+            "-p",
+            "--setting-sources",
+            "user",
+            "--plugin-dir",
+            str(plugin),
+            "--debug-file",
+            str(debug),
+            "/routing-debug-probe",
+        ],
+        cwd=tmp_path,
+        env={
+            **{
+                key: os.environ[key]
+                for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP")
+                if key in os.environ
+            },
+            "HOME": str(tmp_path),
+            "CLAUDE_CONFIG_DIR": str(tmp_path / "config"),
+            "CLAUDE_CODE_ELEGANT_MEADOW": "1",
+            "DISABLE_AUTOUPDATER": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    session.collect_routing_diagnostics()
+    records = json.loads((session.artifacts / "routing-diagnostics.json").read_text())
+    assert records == [
+        {"v": 1, "event": "command_finish", "outcome": "resolved", "tool_use_id": "native-probe"}
+    ]
 
 
 def test_header_mod_validation_and_merge(native_binary, tmp_path):

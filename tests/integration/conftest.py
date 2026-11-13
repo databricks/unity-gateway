@@ -147,6 +147,7 @@ def session(request, installed_binary):
         try:
             yield user
         finally:
+            user.collect_routing_diagnostics()
             try:
                 # Restore machine-level settings through the same public CLI that
                 # created them. A later fresh-home test must not inherit this setup.
