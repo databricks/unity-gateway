@@ -1597,11 +1597,17 @@ added through `ug mcp add`, while retaining the original model/authentication-fi
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
+### Routing explanation coverage
+
 Routing explanation component tests cover opt-in native panes, seven- and eight-digit
 gateway model IDs, request-identity checks, per-model selection, optional numeric
 estimates, malformed metadata, and pane-open feedback. Python rejects explanation shapes
 the native renderer cannot display while preserving valid route choices when optional
-details are invalid. These checks do not establish deployed-service explanation
+details are invalid. Declared session and tool-call identities must match the request before
+an explanation enters the response or audit log, including identities nested in evidence.
+Pending routes cannot restore the latest explanation after clear or resume; the selected
+spawn model remains intact. Custom catalog IDs with dotted names retain their identity.
+These checks do not establish deployed-service explanation
 availability. See the Claude mod guide for the optional service response contract.
 
 Routed child identity regressions cover model-visible launch context, original-result

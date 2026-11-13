@@ -54,173 +54,9 @@ _EXPLANATION = {
     [
         (_EXPLANATION, True),
         (json.dumps(_EXPLANATION), True),
-        ({**_EXPLANATION, "models": _EXPLANATION["models"][:1]}, False),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    _EXPLANATION["models"][0],
-                    {**_EXPLANATION["models"][1], "id": "unoffered"},
-                ],
-            },
-            False,
-        ),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    _EXPLANATION["models"][0],
-                    {**_EXPLANATION["models"][1], "id": "model-b", "considered": True},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            False,
-        ),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    *_EXPLANATION["models"],
-                    {
-                        "id": "unoffered",
-                        "name": "Unoffered model",
-                        "selected": False,
-                        "considered": True,
-                        "reason": "Outside the offered menu.",
-                    },
-                ],
-            },
-            False,
-        ),
         (None, False),
-        ("invalid", False),
-        ("[]", False),
-        ("null", False),
-        (
-            json.dumps(
-                {
-                    **_EXPLANATION,
-                    "models": [
-                        {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
-                        _EXPLANATION["models"][1],
-                    ],
-                }
-            ),
-            False,
-        ),
-        (json.dumps({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}), False),
-        ("[" * 2000 + "0" + "]" * 2000, False),
-        ({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}, False),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            False,
-        ),
-        ({key: value for key, value in _EXPLANATION.items() if key != "task_understanding"}, False),
-        ({**_EXPLANATION, "task_understanding": [""]}, False),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    {**_EXPLANATION["models"][0], "name": ""},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            False,
-        ),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            False,
-        ),
-        ({**_EXPLANATION, "selected_model": "alternative"}, False),
-        ({**_EXPLANATION, "session_id": "s\x1b[31m1"}, False),
-        ({**_EXPLANATION, "tool_use_id": "t\x00"}, False),
-        ({**_EXPLANATION, "session_id": "s" * 257}, False),
-        ({**_EXPLANATION, "tool_use_id": 1}, False),
-        ({**_EXPLANATION, "evidence": {"session_id": []}}, False),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    _EXPLANATION["models"][0],
-                    {**_EXPLANATION["models"][1], "selected": True, "considered": True},
-                ],
-            },
-            False,
-        ),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    {**_EXPLANATION["models"][0], "considered": False},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            False,
-        ),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    {**_EXPLANATION["models"][0], "selected": 1},
-                    _EXPLANATION["models"][1],
-                ],
-            },
-            False,
-        ),
-        (
-            {
-                **_EXPLANATION,
-                "models": [
-                    _EXPLANATION["models"][0],
-                    {**_EXPLANATION["models"][1], "considered": 1},
-                ],
-            },
-            False,
-        ),
     ],
-    ids=[
-        "object",
-        "json-string",
-        "missing-model",
-        "unoffered-model",
-        "duplicate-model",
-        "extra-model",
-        "absent",
-        "invalid-json",
-        "array",
-        "null",
-        "nonfinite-json",
-        "oversized-json",
-        "deeply-nested",
-        "oversized-object",
-        "nonfinite-object",
-        "missing-task-understanding",
-        "empty-task-understanding-item",
-        "empty-model-name",
-        "nonfinite-cost",
-        "invalid-selected-model",
-        "identity-ansi",
-        "identity-control",
-        "identity-too-long",
-        "identity-nonstring",
-        "evidence-identity-nonstring",
-        "double-selected",
-        "selected-not-considered",
-        "nonbool-selected",
-        "nonbool-considered",
-    ],
+    ids=["object", "json-string", "absent"],
 )
 def test_explanation_roundtrip_does_not_change_subagent_selection(
     tmp_path, monkeypatch, explanation, retained
@@ -234,16 +70,6 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         "tool_name": "Agent",
         "tool_input": original.copy(),
     }
-
-    if not retained:
-        assert (
-            routing._parse_routing_explanation(
-                explanation,
-                selected,
-                ((selected, "claude"), ("system.ai.alternative", "claude")),
-            )
-            is None
-        )
 
     def reply(request, timeout):
         calls.append(json.loads(request.data))
@@ -277,11 +103,254 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
     assert calls[0]["task"] == {"prompt": "inspect parser"}
     record = json.loads((tmp_path / "decisions.jsonl").read_text())
     assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    assert record["rationale"] == "Selected by router."
     if retained:
         expected = json.loads(explanation) if isinstance(explanation, str) else explanation
         assert result["explanation"] == record["explanation"] == expected
     else:
-        assert "explanation" not in result and "explanation" not in record
+        assert result == {"model": selected, "rationale": "Selected by router."}
+        assert "explanation" not in record
+
+
+@pytest.mark.parametrize(
+    "explanation",
+    [
+        pytest.param(
+            {**_EXPLANATION, "models": _EXPLANATION["models"][:1]},
+            id="missing-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "unoffered"},
+                ],
+            },
+            id="unoffered-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "model-b", "considered": True},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="duplicate-model",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    *_EXPLANATION["models"],
+                    {
+                        "id": "unoffered",
+                        "name": "Unoffered model",
+                        "selected": False,
+                        "considered": True,
+                        "reason": "Outside the offered menu.",
+                    },
+                ],
+            },
+            id="extra-model",
+        ),
+        pytest.param("invalid", id="invalid-json"),
+        pytest.param("[]", id="array"),
+        pytest.param("null", id="null"),
+        pytest.param(
+            json.dumps(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                        _EXPLANATION["models"][1],
+                    ],
+                }
+            ),
+            id="nonfinite-json",
+        ),
+        pytest.param(
+            json.dumps({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}),
+            id="oversized-json",
+        ),
+        pytest.param("[" * 2000 + "0" + "]" * 2000, id="deeply-nested"),
+        pytest.param(
+            {**_EXPLANATION, "evidence": {"audit": "x" * 65536}},
+            id="oversized-object",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="nonfinite-object",
+        ),
+        pytest.param(
+            {key: value for key, value in _EXPLANATION.items() if key != "task_understanding"},
+            id="missing-task-understanding",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "task_understanding": [""]},
+            id="empty-task-understanding-item",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "name": ""},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="empty-model-name",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "selected_model": "alternative"},
+            id="invalid-selected-model",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "session_id": "s\x1b[31m1"},
+            id="identity-ansi",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "tool_use_id": "t\x00"},
+            id="identity-control",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "session_id": "s" * 257},
+            id="identity-too-long",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "tool_use_id": 1},
+            id="identity-nonstring",
+        ),
+        pytest.param(
+            {**_EXPLANATION, "evidence": {"session_id": []}},
+            id="evidence-identity-nonstring",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "selected": True, "considered": True},
+                ],
+            },
+            id="double-selected",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "considered": False},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="selected-not-considered",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "selected": 1},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            id="nonbool-selected",
+        ),
+        pytest.param(
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "considered": 1},
+                ],
+            },
+            id="nonbool-considered",
+        ),
+    ],
+)
+def test_parse_routing_explanation_rejects_invalid_metadata(explanation):
+    assert (
+        routing._parse_routing_explanation(
+            explanation,
+            "system.ai.model-b",
+            (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "identity_fields",
+    [
+        pytest.param({"session_id": "stale-session", "tool_use_id": "t1"}, id="stale-session"),
+        pytest.param({"session_id": "s1", "tool_use_id": "stale-call"}, id="stale-tool-use"),
+        pytest.param(
+            {
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"session_id": "other-session"},
+            },
+            id="nested-session-conflict",
+        ),
+        pytest.param(
+            {
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"tool_use_id": "other-call"},
+            },
+            id="nested-tool-use-conflict",
+        ),
+    ],
+)
+def test_explanation_roundtrip_rejects_stale_identity_before_audit(
+    tmp_path, monkeypatch, identity_fields
+):
+    selected = "system.ai.model-b"
+    explanation = {**_EXPLANATION, **identity_fields}
+    payload = {
+        "session_id": "s1",
+        "tool_use_id": "t1",
+        "tool_name": "Agent",
+        "tool_input": {"prompt": "inspect parser", "subagent_type": "general-purpose"},
+    }
+
+    def reply(request, timeout):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": explanation},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        payload,
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
+    )
+
+    assert result == {"model": selected, "rationale": "Selected by router."}
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
+    assert record["router_model"] == selected
+    assert record["rationale"] == "Selected by router."
+    assert "explanation" not in record
 
 
 def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
@@ -307,11 +376,11 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
         "task_understanding": ["\x1b[32mStep\x1b[0m\x00 two"],
         "recipe": "\x1b[36mrecipe\x1b[0m",
         "formula": "formula\x7f text",
-        "session_id": "stale-session",
-        "tool_use_id": "stale-call",
+        "session_id": "s1",
+        "tool_use_id": "t1",
         "evidence": {
-            "session_id": "stale-session",
-            "tool_use_id": "stale-call",
+            "session_id": "s1",
+            "tool_use_id": "t1",
             "internal_trace": "discard this",
         },
         "internal_trace": "discard this",
@@ -352,11 +421,11 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
             "reason": "Excluded by the routing policy.",
         },
     ]
-    assert normalized["session_id"] == "stale-session"
-    assert normalized["tool_use_id"] == "stale-call"
+    assert normalized["session_id"] == "s1"
+    assert normalized["tool_use_id"] == "t1"
     assert normalized["evidence"] == {
-        "session_id": "stale-session",
-        "tool_use_id": "stale-call",
+        "session_id": "s1",
+        "tool_use_id": "t1",
     }
     assert set(normalized) == {
         "selected_model",
@@ -429,6 +498,8 @@ def test_gateway_wrappers_preserve_valid_explanation(tmp_path, monkeypatch, pref
 def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monkeypatch, wrapped):
     model_ids = [f"custom.catalog.model-{index:02d}" for index in range(20)]
     model_ids[1] = model_ids[0] + "[1m]"
+    model_ids[2] = "custom.catalog.namespace.model-02"
+    model_ids[3] = model_ids[2] + "[1m]"
     offered_models = [
         ("anthropic-aigw-01234567-" if wrapped else "") + model for model in model_ids
     ]

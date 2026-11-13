@@ -21,7 +21,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -197,8 +197,8 @@ def _explanation_model_id(model: str) -> str:
     model = unwrap_anthropic_gateway_model(model)
     if model.startswith("system.ai."):
         return model.removeprefix("system.ai.").removesuffix("[1m]")
-    # Brackets can be part of a three-part custom service name.
-    return model if len(model.split(".")) == 3 else model.removesuffix("[1m]")
+    # Brackets can be part of a catalog-qualified custom service name.
+    return model if len(model.split(".")) >= 3 else model.removesuffix("[1m]")
 
 
 def _safe_explanation_text(value: Any, limit: int) -> str | None:
@@ -377,6 +377,26 @@ def _parse_routing_explanation(
     return normalized
 
 
+def _explanation_matches_request_ids(explanation: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Reject explanation identities that do not describe this spawn request."""
+    evidence = explanation.get("evidence")
+    sources = (explanation, evidence) if isinstance(evidence, dict) else (explanation,)
+    for field in ("session_id", "tool_use_id"):
+        identities = [
+            source[field] for source in sources if field in source and source[field] is not None
+        ]
+        if not identities:
+            continue
+        expected = payload.get(field)
+        if (
+            not isinstance(expected, str)
+            or not expected
+            or any(identity != expected for identity in identities)
+        ):
+            return False
+    return True
+
+
 def configured_router_name() -> str:
     """Return the environment-selected router, falling back to ``stable``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
@@ -497,6 +517,10 @@ def resolve_spawn_route(
             "Smart Router could not route subagent: %s", reason or "no routing decision"
         )
         return None
+    if decision.explanation is not None and not _explanation_matches_request_ids(
+        decision.explanation, payload
+    ):
+        decision = replace(decision, explanation=None)
     routed_model = model_id_mapper(decision.model)
     return SpawnRoute(tool_input, task, decision, routed_model)
 

@@ -50,7 +50,7 @@ const unwrapGatewayModel = (model: string): string =>
 const canonicalModel = (model: string): string => {
   const original = unwrapGatewayModel(model)
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
-  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+  return original.split('.').length >= 3 ? original : original.replace(/\[1m\]$/, '')
 }
 
 function utf8Length(value: string): number {
@@ -260,6 +260,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
   const pending = new Map<string, number | undefined>()
+  let routingGeneration = 0
   // Claude folds parallel Agent rows into its own block, which no hook reaches, so a call
   // that was routing alongside another is drawn as a card above the parent's next reply.
   // A lone call keeps its decision under its own row.
@@ -275,6 +276,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const [verb, action] = e.args.trim().split(/\s+/)
     if (verb !== 'explain') return next(e)
     if (action === 'on') {
+      if (!(options.routeCommand as readonly string[]).length) {
+        return { text: 'Routing explanations are unavailable because subagent routing is not configured.' }
+      }
       explanationState.enabled = true
       $.ui.invalidate('ui.render')
       return { text: 'Routing explanations are on.' }
@@ -287,6 +291,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
       return { text: 'Routing explanations are off.' }
     }
+    if (action !== 'latest') return next(e)
     if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
     return await openExplanation($, explanationState, explanationState.latest)
       ? { text: 'Showing the latest routing explanation.' }
@@ -351,6 +356,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    const generation = routingGeneration
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let explanation: RoutingExplanation | undefined
@@ -425,9 +431,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
           explanation,
         }
         records.set(tool_use_id, record)
-        explanationState.latest = record
+        if (generation === routingGeneration) explanationState.latest = record
       }
-      $.ui.invalidate('ui.render')
+      if (generation === routingGeneration) $.ui.invalidate('ui.render')
     }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
     const result = await next(e)
@@ -523,6 +529,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    routingGeneration++
+    pending.clear()
     routedModels.reset()
     explanationState.latest = undefined
     explanationState.paneRecord = undefined

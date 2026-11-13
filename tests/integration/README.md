@@ -2083,12 +2083,8 @@ Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and re
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
-Routing explanation component tests cover opt-in native panes, seven- and eight-digit
-gateway model IDs, request-identity checks, per-model selection, optional numeric
-estimates, malformed metadata, and pane-open feedback. Python rejects explanation shapes
-the native renderer cannot display while preserving valid route choices when optional
-details are invalid. These checks do not establish deployed-service explanation
-availability. See the Claude mod guide for the optional service response contract.
+See [routing explanation component coverage](../README.md#routing-explanation-coverage)
+for the native pane and optional service-response checks.
 
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed
