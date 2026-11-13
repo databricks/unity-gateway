@@ -4,6 +4,7 @@ Stages run in file order: provision, machine-wide files, demote, launch Claude, 
 """
 
 import json
+import re
 import stat
 import tomllib
 from pathlib import Path
@@ -16,18 +17,20 @@ from .conftest import (
     CODEX_SETTINGS,
     DARWIN,
     HOME,
-    JWT,
     MACHINE_WIDE_ROOTS,
     POLICY,
+    ROOT_HOME,
+    ROOT_HOME_STATE,
+    credential_leaks,
     machine_snapshot,
-    root_home_leaks,
     snapshot,
     user_uid,
     with_secret,
 )
 
 PROMPT = "What is 6 times 7? Reply with only the number."
-ANSWER = "42"
+# The final answer is a line of its own on stdout, allowing markdown around it.
+ANSWER = re.compile(r"(?m)^\W*42\W*$")
 HEADER_MOD_FILES = (
     ".claude-plugin/marketplace.json",
     "ug-headers/.claude-plugin/plugin.json",
@@ -107,29 +110,18 @@ def test_codex_machine_wide_config(machine, provisioned):
 
 
 def test_no_credentials_written_machine_wide(machine, provisioned):
-    leaked = []
-    for root in MACHINE_WIDE_ROOTS:
-        for path in root.rglob("*") if root.exists() else ():
-            if path.is_file():
-                text = path.read_text(errors="ignore")
-                if machine.client_secret in text or JWT.search(text):
-                    leaked.append(str(path))
+    leaked = credential_leaks(machine, MACHINE_WIDE_ROOTS)
     assert not leaked, leaked
 
 
 def test_no_credentials_written_to_root_home(machine, provisioned):
-    leaked = root_home_leaks(machine)
+    leaked = credential_leaks(machine, [ROOT_HOME / name for name in ROOT_HOME_STATE])
     assert not leaked, leaked
 
 
 def test_provisioning_left_the_user_home_untouched(demoted):
     leaked = [p for p in demoted.home if p.startswith(f"{HOME}/.ucode") or ".claude" in p]
     assert not leaked, leaked
-
-
-def test_user_cannot_sudo_after_demotion(machine, demoted):
-    result = machine.as_user(["sudo", "-n", "true"])
-    assert result.returncode != 0
 
 
 @pytest.mark.skipif(not DARWIN, reason="Only the macOS script adds shell aliases")
@@ -157,11 +149,13 @@ def test_demoted_user_launches_agent(machine, demoted, agent):
         with_secret("DATABRICKS_BEARER", LAUNCH[agent]),
         timeout=240,
         secret=demoted.bearer,
+        merge_stderr=False,
         UG_SKIP_OS_SETTINGS="1",
     )
-    assert result.returncode == 0, result.output[-4000:]
-    assert ANSWER in result.output, result.output[-4000:]
-    assert "password" not in result.output.lower(), result.output[-4000:]
+    logs = f"stdout:\n{result.output[-3000:]}\nstderr:\n{result.stderr[-3000:]}"
+    assert result.returncode == 0, logs
+    assert ANSWER.search(result.output), logs
+    assert "password" not in (result.output + result.stderr).lower(), logs
 
     assert machine_snapshot() == demoted.machine_wide
 

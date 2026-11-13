@@ -208,7 +208,7 @@ service principal's token uses the scopes the provisioning script requests. Run 
 request or `ug configure` lines stop matching the macOS script's.
 `test_mdm_e2e_harness.py` (skipped on Windows) checks that a timed-out command's failure masks a
 minted credential in its command and output, that output masks token-shaped values, and that a timeout
-kills the command's descendants. `test_integration_contract.py` checks that `All integration tests`
+kills the command's descendants and process group, even after the leader exits. `test_integration_contract.py` checks that `All integration tests`
 accepts a skipped `mdm-provision` only on pinned runs.
 
 `test_budget.py` covers the workspace-authenticated spend-status client in

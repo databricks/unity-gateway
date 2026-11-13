@@ -1,6 +1,7 @@
 """The MDM E2E harness must not print a minted credential, or leave processes, when a command times out."""
 
 import os
+import subprocess
 import time
 
 import pytest
@@ -33,21 +34,35 @@ def test_output_masks_unregistered_jwt():
     assert result.output.strip() == "bearer ***"
 
 
-def test_timeout_kills_descendants(tmp_path):
+# A leader that exits leaves its child to init, outside the descendant walk.
+@pytest.mark.parametrize("leader", ["wait", "exit 0"], ids=["leader_waits", "leader_exits"])
+def test_timeout_kills_descendants(tmp_path, leader):
     pid_file = tmp_path / "child.pid"
     started = time.monotonic()
 
     with pytest.raises(pytest.fail.Exception):
-        harness.run(["sh", "-c", 'sleep 30 & echo $! > "$1"; wait', "sh", str(pid_file)], timeout=1)
+        harness.run(
+            ["sh", "-c", f'sleep 30 & echo $! > "$1"; {leader}', "sh", str(pid_file)], timeout=1
+        )
 
     # A surviving child keeps the output pipe open, so the timeout would wait for it to exit.
     assert time.monotonic() - started < 10
     child = int(pid_file.read_text())
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
+        if not _running(child):
             return
         time.sleep(0.1)
     pytest.fail(f"Background child {child} survived the timeout")
+
+
+def _running(pid: int) -> bool:
+    # A killed orphan can wait as a zombie for whichever process adopted it to reap it.
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")

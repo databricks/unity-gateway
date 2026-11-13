@@ -101,6 +101,7 @@ json.dump(out, sys.stdout)
 class Run:
     returncode: int
     output: str
+    stderr: str = ""
 
 
 # The client secret and every minted bearer, masked in any output a failure prints.
@@ -116,21 +117,28 @@ def scrub(text: str) -> str:
 
 
 def kill_tree(pid: int) -> None:
-    """Kill a process and every descendant, including ones under sudo that run as another user."""
+    """Kill a process, its descendants and its process group, including root-owned members.
+
+    The group catches a child whose parent already exited, which the descendant walk can't find.
+    The walk catches what sudo runs in a session of its own.
+    """
     listing = subprocess.run(
-        ["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=False
+        ["ps", "-A", "-o", "pid=,ppid=,pgid="], capture_output=True, text=True, check=False
     ).stdout
     children: dict[int, list[int]] = {}
+    targets = set()
     for line in listing.splitlines():
-        child, parent = map(int, line.split())
+        child, parent, group = map(int, line.split())
         children.setdefault(parent, []).append(child)
-    tree, stack = [], [pid]
+        if group == pid:
+            targets.add(child)
+    stack = [pid]
     while stack:
         current = stack.pop()
-        tree.append(current)
+        targets.add(current)
         stack.extend(children.get(current, ()))
     denied = []
-    for target in tree:
+    for target in sorted(targets):
         try:
             os.kill(target, signal.SIGKILL)
         except ProcessLookupError:
@@ -169,7 +177,15 @@ def run(argv, *, timeout, check=False, merge_stderr=True, secret=None) -> Run:
         timed_out = False
     except subprocess.TimeoutExpired:
         kill_tree(proc.pid)
-        stdout, stderr = proc.communicate()
+        try:
+            stdout, stderr = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            for stream in (proc.stdout, proc.stderr):
+                if stream:
+                    stream.close()
+            proc.kill()
+            proc.wait()
+            stdout, stderr = "(a process still held the output open after the kill)", ""
         timed_out = True
     # Outside the except block, so the failure doesn't chain TimeoutExpired, whose message holds
     # argv and with it any minted bearer, which GitHub doesn't mask.
@@ -178,9 +194,9 @@ def run(argv, *, timeout, check=False, merge_stderr=True, secret=None) -> Run:
             f"{scrub(str(argv[:4]))} timed out after {timeout}s:\n{scrub(stdout or '')[-4000:]}",
             pytrace=False,
         )
-    result = Run(proc.returncode, scrub(stdout))
+    result = Run(proc.returncode, scrub(stdout), scrub(stderr or ""))
     if check and result.returncode:
-        detail = result.output + scrub(stderr or "")
+        detail = result.output + result.stderr
         pytest.fail(
             f"{scrub(str(argv[:4]))} exited {result.returncode}:\n{detail[-4000:]}", pytrace=False
         )
@@ -208,7 +224,9 @@ class Machine:
         }
         return [f"{k}={v}" for k, v in values.items()]
 
-    def as_user(self, argv, *, home=str(HOME), timeout=60, secret=None, **extra) -> Run:
+    def as_user(
+        self, argv, *, home=str(HOME), timeout=60, secret=None, merge_stderr=True, **extra
+    ) -> Run:
         """Run as the test user from a clean environment, as a login from MDM-managed Macs would.
 
         A `secret` reaches the command on stdin; see `run` and `with_secret`.
@@ -218,6 +236,7 @@ class Machine:
             ["sudo", "-n", "-u", USER, "-H", "env", "-i", *self.env(home, **extra), *in_home],
             timeout=timeout,
             secret=secret,
+            merge_stderr=merge_stderr,
         )
 
     def mint_bearer(self) -> str:
@@ -276,8 +295,8 @@ def with_secret(name: str, argv) -> list[str]:
     return ["sh", "-c", f'IFS= read -r {name}; export {name}; exec "$@" </dev/null', "sh", *argv]
 
 
-def root_home_leaks(machine) -> list[str]:
-    """Files in root's state that hold the client secret or a token, read as root."""
+def credential_leaks(machine, roots) -> list[str]:
+    """Files under roots that hold the client secret or a token, read as root."""
     result = run(
         [
             "sudo",
@@ -287,14 +306,14 @@ def root_home_leaks(machine) -> list[str]:
             "-c",
             CREDENTIAL_SCAN,
             JWT.pattern,
-            *(str(ROOT_HOME / name) for name in ROOT_HOME_STATE),
+            *(str(root) for root in roots),
         ],
         timeout=120,
         check=True,
         merge_stderr=False,
         secret=machine.client_secret,
     )
-    return result.output.split()
+    return result.output.splitlines()
 
 
 def snapshot(roots) -> dict:
