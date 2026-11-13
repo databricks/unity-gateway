@@ -326,23 +326,27 @@ test('a turn that ends while the reply waits on a background agent keeps its car
   await final.unmount();
 });
 
-for (const [name, result, warningCount] of [
-  ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0],
-  ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1],
-  ['invalid JSON', { value: { exitCode: 0, stdout: 'invalid', stderr: '' } }, 1],
-  ['missing model', { value: { exitCode: 0, stdout: JSON.stringify({ rationale: 'Selected' }), stderr: '' } }, 1],
-  ['invalid model', { value: { exitCode: 0, stdout: JSON.stringify({ model: 42, rationale: 'Selected' }), stderr: '' } }, 1],
-  ['missing rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5' }), stderr: '' } }, 1],
-  ['invalid rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5', rationale: 42 }), stderr: '' } }, 1],
-  ['process unavailable', { deny: 'process unavailable' }, 1],
+for (const [name, result, warningCount, outcome] of [
+  ['disabled', { value: { exitCode: 0, stdout: '', stderr: '' } }, 0, 'empty_output'],
+  ['command failure', { value: { exitCode: 1, stdout: '', stderr: 'failure' } }, 1, 'nonzero_exit'],
+  ['invalid JSON', { value: { exitCode: 0, stdout: 'invalid', stderr: '' } }, 1, 'invalid_output'],
+  ['missing model', { value: { exitCode: 0, stdout: JSON.stringify({ rationale: 'Selected' }), stderr: '' } }, 1, 'invalid_output'],
+  ['invalid model', { value: { exitCode: 0, stdout: JSON.stringify({ model: 42, rationale: 'Selected' }), stderr: '' } }, 1, 'invalid_output'],
+  ['missing rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5' }), stderr: '' } }, 1, 'invalid_output'],
+  ['invalid rationale', { value: { exitCode: 0, stdout: JSON.stringify({ model: 'system.ai.claude-sonnet-5', rationale: 42 }), stderr: '' } }, 1, 'invalid_output'],
+  ['process unavailable', { deny: 'process unavailable' }, 1, 'process_error'],
 ] as const) {
   test(`${name} forwards the original call without a routing annotation`, async ($, on) => {
     const calls: any[] = [];
     const warnings: string[] = [];
+    const outcomes: string[] = [];
     on('session.id', () => ({ value: 'session-1' }));
     on('process.run', () => result);
     on('ui.log', ($, e) => {
-      if (!e.text.startsWith('[ug-routing] ')) warnings.push(e.text);
+      if (e.text.startsWith('[ug-routing] ')) {
+        const record = JSON.parse(e.text.slice('[ug-routing] '.length));
+        if (record.event === 'command_finish') outcomes.push(record.outcome);
+      } else warnings.push(e.text);
       return { value: undefined };
     });
     on('tool.call', ($, e) => { calls.push(e); return { deny: 'user policy' }; });
@@ -353,6 +357,7 @@ for (const [name, result, warningCount] of [
     expect(calls[0].subagent_type).toBe(originalInput.subagent_type);
     expect(calls[0].model).toBe(originalInput.model);
     expect(warnings.length).toBe(warningCount);
+    expect(outcomes).toEqual([outcome]);
     for (const mount of [row('call-a'), reply('after')]) {
       const ui = await $.ui.mount(mount);
       expect(await ui.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();

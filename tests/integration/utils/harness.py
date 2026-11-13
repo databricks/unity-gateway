@@ -223,7 +223,7 @@ class UserSession:
         records = []
         try:
             paths = sorted(
-                (self.home / ".claude/debug").glob("*.txt"),
+                (path for path in (self.home / ".claude/debug").glob("*.txt") if path.is_file()),
                 key=lambda path: path.stat().st_mtime,
             )[-16:]
             for path in paths:

@@ -155,6 +155,31 @@ def test_native_routing_artifact_excludes_other_debug_content(tmp_path):
     assert json.loads((session.artifacts / "routing-diagnostics.json").read_text()) == [record]
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are unavailable on this platform")
+def test_native_routing_collection_skips_fifo_without_blocking(tmp_path):
+    script = """
+import json, os, sys
+from pathlib import Path
+from tests.integration.utils.harness import UserSession
+root = Path(sys.argv[1])
+session = UserSession(root, root, Path(sys.executable), root / 'artifacts')
+debug = session.home / '.claude/debug'
+debug.mkdir(parents=True)
+os.mkfifo(debug / 'unopened.txt')
+record = {'v': 1, 'event': 'command_finish', 'outcome': 'resolved'}
+(debug / 'regular.txt').write_text('[ug-routing] ' + json.dumps(record))
+session.collect_routing_diagnostics()
+assert json.loads((session.artifacts / 'routing-diagnostics.json').read_text()) == [record]
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
     from ucode.databricks import SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION
 
