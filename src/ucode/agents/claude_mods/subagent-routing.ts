@@ -51,6 +51,8 @@ const unwrapGatewayModel = (model: string): string =>
 const explanationModelId = (model: string): string => {
   const original = unwrapGatewayModel(model)
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  // Explanation IDs preserve every catalog suffix; execution matching below also accepts
+  // native [1m] expansion on dotted model versions such as main.default.claude-sonnet-4.5.
   return original.split('.').length >= 3 ? original : original.replace(/\[1m\]$/, '')
 }
 
@@ -91,9 +93,10 @@ function parseExplanation(
   const serialized = JSON.stringify(value)
   if (Object.keys(value).length > 32 || utf8Length(serialized) > MAX_EXPLANATION_BYTES
       || !matchesRequestIdentity(value, sessionId, toolUseId)) return undefined
-  const selectedModel = safeText(value.selected_model, 160)
+  const selectedModel = value.selected_model
   const summary = safeText(value.summary, 2000)
-  if (!selectedModel || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
+  if (typeof selectedModel !== 'string' || selectedModel.trim() !== selectedModel
+      || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
       || selectedModel !== explanationModelId(routedModel) || !summary
       || !Array.isArray(value.models) || value.models.length < 1
       || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
@@ -104,10 +107,11 @@ function parseExplanation(
   const models: ExplanationModel[] = []
   for (const candidate of value.models) {
     if (!isObject(candidate)) return undefined
-    const id = safeText(candidate.id, 160)
+    const id = candidate.id
     const name = safeText(candidate.name, 128)
     const reason = safeText(candidate.reason, 1200)
-    if (!id || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(id) || ids.has(id)
+    if (typeof id !== 'string' || id.trim() !== id
+        || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(id) || ids.has(id)
         || !name || !reason || typeof candidate.selected !== 'boolean'
         || typeof candidate.considered !== 'boolean' || (candidate.selected && !candidate.considered)) return undefined
     ids.add(id)
@@ -287,7 +291,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (command?.action !== 'explain') return next(e)
     const action = command.explanationAction
     if (action === 'on') {
-      if (!(options.routeCommand as readonly string[]).length) {
+      if (!(options.routeCommand as readonly string[] | undefined)?.length) {
         return { text: 'Routing explanations are unavailable because subagent routing is not configured.' }
       }
       explanationState.enabled = true
@@ -302,7 +306,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
       return { text: 'Routing explanations are off.' }
     }
-    if (action !== 'latest') return next(e)
     if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
     return await openExplanation($, explanationState, explanationState.latest)
       ? { text: 'Showing the latest routing explanation.' }
@@ -327,8 +330,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const detail = selected ?? explanation.models.find((model) => model.selected)!
     const numberText = (label: string, value: number | undefined, suffix = '') => value === undefined
       ? undefined : Text({ children: [`${label}: ${value.toFixed(3)}${suffix}`] })
-    const costText = detail.estimatedCostUsd === undefined ? undefined
-      : Text({ children: [`Est. cost: ${detail.estimatedCostUsd.toPrecision(3)} USD`] })
+    const cost = detail.estimatedCostUsd
+    const costText = cost === undefined ? undefined
+      : Text({ children: [`Est. cost: ${cost > 0 && cost < 1e-6
+        ? '<0.000001' : cost.toFixed(6).replace(/\.?0+$/, '')} USD`] })
     const breakdown = (label: string, values: NumericDetails | undefined) => values && Object.keys(values).length
       ? Text({ dimColor: true, children: [`${label}: ${Object.entries(values)
         .map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`] }) : undefined
@@ -365,8 +370,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
-    const command = options.routeCommand as readonly string[]
-    if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    const command = options.routeCommand as readonly string[] | undefined
+    if (!command?.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const generation = explanationState.generation
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
@@ -507,14 +512,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       ...e,
       props: { ...e.props, tool: name },
     } : e)
-    if (generation !== explanationState.generation) return next(e)
+    if (generation !== explanationState.generation) return original
     if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
       const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
       const seconds = await secondsSince($, pending.get(e.requestId))
-      if (generation !== explanationState.generation) return next(e)
+      if (generation !== explanationState.generation) return original
       const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',

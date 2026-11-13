@@ -253,7 +253,7 @@ def _parse_routing_explanation(
     except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
         return None
 
-    selected_model = _safe_explanation_text(value.get("selected_model"), 160)
+    selected_model = value.get("selected_model")
     summary = _safe_explanation_text(value.get("summary"), 2000)
     task_understanding = value.get("task_understanding")
     models = value.get("models")
@@ -266,7 +266,7 @@ def _parse_routing_explanation(
             return None
         normalized_task_understanding.append(text)
     if (
-        not selected_model
+        not isinstance(selected_model, str)
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", selected_model)
         or selected_model != _explanation_model_id(routed_model)
         or not summary
@@ -288,13 +288,13 @@ def _parse_routing_explanation(
     for candidate in models:
         if not isinstance(candidate, dict):
             return None
-        model_id = _safe_explanation_text(candidate.get("id"), 160)
+        model_id = candidate.get("id")
         name = _safe_explanation_text(candidate.get("name"), 128)
         reason = _safe_explanation_text(candidate.get("reason"), 1200)
         selected = candidate.get("selected")
         considered = candidate.get("considered")
         if (
-            not model_id
+            not isinstance(model_id, str)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", model_id)
             or not name
             or not reason

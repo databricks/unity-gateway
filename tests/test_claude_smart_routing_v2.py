@@ -121,6 +121,28 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
 @pytest.mark.parametrize(
     "explanation",
     [
+        *[
+            pytest.param(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], field: value},
+                        _EXPLANATION["models"][1],
+                    ],
+                },
+                id=case,
+            )
+            for case, field, value in [
+                ("boolean-quality", "quality_estimate", True),
+                ("boolean-score", "routing_score", False),
+                ("negative-cost", "estimated_cost_usd", -0.1),
+                ("breakdown-array", "components", []),
+                ("breakdown-boolean", "components", {"quality": True}),
+                ("breakdown-nonfinite", "difference_from_winner", {"cost": float("nan")}),
+                ("breakdown-invalid-key", "components", {"cost\n": 1}),
+                ("breakdown-too-many", "components", {f"field{i}": i for i in range(9)}),
+            ]
+        ],
         pytest.param(
             {**_EXPLANATION, "models": _EXPLANATION["models"][:1]},
             id="missing-model",
@@ -280,6 +302,32 @@ def test_parse_routing_explanation_rejects_invalid_metadata(explanation):
     )
 
 
+@pytest.mark.parametrize("field", ["selected_model", "candidate_id"])
+@pytest.mark.parametrize(
+    "model_id",
+    ["\x1b[35mmodel-b\x1b[0m", "model-b\x00"],
+    ids=["ansi", "control"],
+)
+def test_explanation_rejects_corrupted_model_identity(field, model_id):
+    explanation = {**_EXPLANATION}
+    if field == "selected_model":
+        explanation[field] = model_id
+    else:
+        explanation["models"] = [
+            {**_EXPLANATION["models"][0], "id": model_id},
+            _EXPLANATION["models"][1],
+        ]
+
+    assert (
+        routing._parse_routing_explanation(
+            explanation,
+            "system.ai.model-b",
+            (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "identity_fields",
     [
@@ -364,7 +412,6 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
     }
     alternative = {
         **_EXPLANATION["models"][1],
-        "id": "\x1b[35malternative\x1b[0m",
         "internal_trace": "discard this too",
     }
     explanation = {

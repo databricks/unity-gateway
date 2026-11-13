@@ -678,7 +678,7 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
     await pane.select({ key: 'compare-model', value: 'model-a' });
     expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
     await pane.press({ key: 'numbers' });
-    expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.000400 USD');
+    expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.0004 USD');
   } else {
     expect(JSON.stringify(await pane.drawn())).toContain('Chosen: Model B');
     await pane.select({ key: 'compare-model', value: customModel ? `${customModel}[1m]` : 'model-a' });
@@ -732,9 +732,46 @@ test('explain on reports unavailable when subagent routing is not configured', {
   await shown.unmount();
 });
 
+test('explanation costs use decimal notation without rounding small costs to zero', { options: {
+  ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+} }, async ($, on) => {
+  let cost = 0;
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: explanationModel, rationale: 'Selected for the task', explanation: { ...explanation,
+      models: explanation.models.map((model) => ({ ...model, estimated_cost_usd: cost })),
+    },
+  }) } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  on('ui.open', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+    isPlaced: true, isShown: true, isFocused: true }] }));
+
+  for (const [index, [value, expected]] of ([
+    [0, '0'], [1234.567, '1234.567'], [0.000001, '0.000001'],
+    [0.00000012345, '<0.000001'], [Number.MIN_VALUE, '<0.000001'],
+  ] as const).entries()) {
+    cost = value;
+    await $.tool.call({ tool: 'Agent', tool_use_id: `cost-${index}`, ...originalInput });
+    await $.command.run({ command: 'smart-router', args: 'explain latest' });
+    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+    await pane.press({ key: 'numbers' });
+    expect(JSON.stringify(await pane.drawn())).toContain(`Est. cost: ${expected} USD`);
+    await pane.unmount();
+  }
+});
+
 for (const [name, details, diagnostic] of [
   ['missing', undefined, false],
   ['malformed', { ...explanation, selected_model: 'model-c' }, true],
+  ['corrupted selected identity', { ...explanation, selected_model: '\u001b[31mmodel-b\u001b[0m' }, true],
+  ['corrupted candidate identity', { ...explanation, models: explanation.models.map((model) => ({
+    ...model, id: `\u001b[31m${model.id}\u001b[0m`,
+  })) }, true],
+  ['trailing newline in candidate identity', { ...explanation, models: explanation.models.map((model) => ({
+    ...model, id: model.selected ? model.id : `${model.id}\n`,
+  })) }, true],
   ['wrong session identity', { ...explanation, session_id: 'another-session' }, true],
   ['wrong tool identity', { ...explanation, tool_use_id: 'another-tool' }, true],
 ] as const) {
@@ -809,6 +846,43 @@ for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
 }
 
 for (const reason of ['clear', 'resume'] as const) {
+test(`session ${reason} during native ToolUse rendering does not render the native row twice`, { options: {
+  ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+} }, async ($, on) => {
+  let renderCalls = 0;
+  let renderStarted!: () => void;
+  let finishRender!: () => void;
+  const started = new Promise<void>((resolve) => { renderStarted = resolve; });
+  const ready = new Promise<void>((resolve) => { finishRender = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('session.end', () => ({ sessionId: 'session-1' }));
+  on('clock.every', () => ({ value: { cancel: () => {} } }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: explanationModel, rationale: 'Selected for the task', explanation,
+  }) } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.close', () => ({ value: undefined }));
+  on('ui.render', async () => {
+    renderCalls++;
+    if (renderCalls === 1) { renderStarted(); await ready; }
+    return { type: 'Text', props: {}, children: ['original Agent row'] };
+  });
+
+  await $.command.run({ command: 'smart-router', args: 'explain on' });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'rendering', ...originalInput });
+  const rendering = $.ui.render(row('rendering'));
+  await started;
+  await $.session.end({ reason });
+  finishRender();
+  const rendered = await rendering;
+  expect(renderCalls).toBe(1);
+  const tree = JSON.stringify(rendered);
+  expect(tree).toContain('original Agent row');
+  expect(tree).not.toContain('Selected Model');
+  expect(tree).not.toContain('Why this model?');
+  expect(tree).not.toContain('Selecting a model');
+});
+
 test(`session ${reason} clears routing UI while pending routes keep their native spawn and receipt`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   on('session.end', () => ({ sessionId: 'session-1' }));
   let closes = 0;
