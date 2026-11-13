@@ -4,6 +4,9 @@ Subagent calculation journeys use short native task names. Offline evidence chec
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
 
+File-read tasks use six-character hidden values. Offline Copilot evidence checks
+reject truncated final answers and tool-result echoes; they do not measure live copying reliability.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
