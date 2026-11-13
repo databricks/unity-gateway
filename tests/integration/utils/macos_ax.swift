@@ -30,7 +30,13 @@ case "click" where arguments.count == 5:
     guard let target = all.first(where: { element in
         attribute(element, kAXRoleAttribute) == arguments[3]
             && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
-    }) else { fatalError("No \(arguments[3]) labelled \(arguments[4])") }
+    }) else {
+        let tree = all.map { element in
+            ([kAXRoleAttribute] + labels).map { attribute(element, $0) }.joined(separator: "\t")
+        }.joined(separator: "\n")
+        FileHandle.standardError.write(Data("Accessibility tree at failed click (PID \(pid)):\n\(tree)\n".utf8))
+        fatalError("No \(arguments[3]) labelled \(arguments[4])")
+    }
     var position = CGPoint.zero, size = CGSize.zero
     var value: CFTypeRef?
     AXUIElementCopyAttributeValue(target, kAXPositionAttribute as CFString, &value)
