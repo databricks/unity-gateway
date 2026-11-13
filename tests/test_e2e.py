@@ -31,9 +31,9 @@ from ucode.databricks import (
     build_shared_base_urls,
     build_tool_base_url,
     discover_model_services,
-    fetch_ai_gateway_claude_models,
     fetch_codex_models,
     fetch_gemini_models,
+    fetch_unity_gateway_claude_models,
     has_valid_databricks_auth,
     is_model_provider_feature_unavailable,
     list_model_provider_services,
@@ -164,7 +164,7 @@ class TestDatabricksAuth:
 # ---------------------------------------------------------------------------
 
 
-class TestAiGateway:
+class TestUnityGateway:
     def test_probe_unity_gateway_capabilities_does_not_raise(self, e2e_workspace, e2e_token):
         probe_unity_gateway_capabilities(e2e_workspace, e2e_token)
 
@@ -180,7 +180,7 @@ class TestAiGateway:
 
 class TestModelDiscovery:
     def test_fetch_claude_models_returns_dict(self, e2e_workspace, e2e_token):
-        models = fetch_ai_gateway_claude_models(e2e_workspace, e2e_token)
+        models = fetch_unity_gateway_claude_models(e2e_workspace, e2e_token)
         assert isinstance(models, dict)
         assert models, "No Claude models found — is the Anthropic route enabled on this workspace?"
 
@@ -370,10 +370,10 @@ class TestConfigureSubset:
 
         # Claude needs to be available on this workspace for the second run
         # to be a meaningful test.
-        from ucode.databricks import fetch_ai_gateway_claude_models, get_databricks_token
+        from ucode.databricks import fetch_unity_gateway_claude_models, get_databricks_token
 
         token = get_databricks_token(e2e_workspace)
-        if not fetch_ai_gateway_claude_models(e2e_workspace, token):
+        if not fetch_unity_gateway_claude_models(e2e_workspace, token):
             pytest.skip("No Claude models on this workspace; can't test multi-tool merge.")
 
         # Second run: pick claude only. Codex should remain in available_tools.
