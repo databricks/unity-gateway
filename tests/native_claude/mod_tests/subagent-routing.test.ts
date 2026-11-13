@@ -487,7 +487,7 @@ const explanation = {
 };
 
 for (const [modelCount, customNames] of [[2, false], [20, false], [2, true]] as const) {
-test(`explanations for ${modelCount} models with custom names ${customNames} preserve the route`, async ($, on) => {
+test(`explanations for ${modelCount} models with custom names ${customNames} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   const details = customNames ? {
     ...explanation, selected_model: 'custom.catalog.code',
     models: explanation.models.map((model) => ({ ...model,
@@ -554,7 +554,7 @@ test(`explanations for ${modelCount} models with custom names ${customNames} pre
 
 }
 
-test('seven-digit gateway wrappers keep their matching explanation', async ($, on) => {
+test('seven-digit gateway wrappers keep their matching explanation', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   const routedModel = 'anthropic-aigw-c442a48-system.ai.model-b';
   const spawns: any[] = [];
   on('session.id', () => ({ value: 'session-1' }));
@@ -594,7 +594,7 @@ for (const [name, details, diagnostic] of [
   ['wrong session identity', { ...explanation, session_id: 'another-session' }, true],
   ['wrong tool identity', { ...explanation, tool_use_id: 'another-tool' }, true],
 ] as const) {
-  test(`${name} explanation shows no details while preserving the route`, async ($, on) => {
+  test(`${name} explanation shows no details while preserving the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
     const logs: string[] = [];
     const routed = 'system.ai.model-b[1m]';
     const forwarded: any[] = [];
@@ -622,29 +622,77 @@ for (const [name, details, diagnostic] of [
 }
 
 for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
-  test(`a mismatched route-level ${mismatchedField} does not select a model`, async ($, on) => {
+  test(`a mismatched route-level ${mismatchedField} preserves the selected model`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
     const logs: string[] = [];
     const spawns: any[] = [];
     on('session.id', () => ({ value: 'session-1' }));
-    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: 'system.ai.model-b',
-      rationale: 'Selected for the task',
-      [mismatchedField]: 'another-request',
-    }) } }));
+    on('process.run', ($, e) => {
+      const request = JSON.parse(e.init.stdin);
+      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+        model: 'system.ai.model-b',
+        rationale: 'Selected for the task',
+        explanation: { ...explanation, session_id: request.session_id, tool_use_id: request.tool_use_id },
+        [mismatchedField]: 'another-request',
+      }) } };
+    });
     on('tool.call', () => ({ result: 'ok' }));
     on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model ?? 'native-default' }; });
     on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+    on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
 
     await $.tool.call({ tool: 'Agent', tool_use_id: 'request-1', ...originalInput });
+    await $.command.run({ command: 'smart-router', args: 'explain latest' });
+    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+    const tree = JSON.stringify(await pane.drawn());
+    expect(tree).toContain('No routing explanation details were returned.');
+    expect(tree).not.toContain('Model A');
+    await pane.unmount();
     await $.agent.spawn({ tool_use_id: 'request-1', prompt: 'inspect' });
 
-    expect(spawns[0].model).toBeUndefined();
-    expect(logs).toEqual(['Smart Router could not route this subagent; using its original settings.']);
+    expect(spawns[0].model).toBe('system.ai.model-b');
+    expect(logs).toEqual(['Smart Router returned invalid explanation details; keeping its selected model.']);
   });
 }
 
+for (const reason of ['clear', 'resume'] as const) {
+test(`session ${reason} clears the latest explanation and closes its pane without disabling explanations`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+  on('session.end', () => ({ sessionId: 'session-1' }));
+  let closes = 0;
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const request = JSON.parse(e.init.stdin);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.model-b',
+      rationale: 'Selected for the task',
+      explanation: { ...explanation, session_id: request.session_id, tool_use_id: request.tool_use_id },
+      session_id: request.session_id,
+      tool_use_id: request.tool_use_id,
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  on('ui.open', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [] }));
+  on('ui.close', () => { closes++; return { value: undefined }; });
 
-test('explanation parsing failures preserve a valid routed spawn', async ($, on) => {
+  await $.command.run({ command: 'smart-router', args: 'explain on' });
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'before-clear', ...originalInput });
+  await $.command.run({ command: 'smart-router', args: 'explain latest' });
+  const closesBeforeEnd = closes;
+  await $.session.end({ reason });
+
+  expect(closes).toBe(closesBeforeEnd + 1);
+  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
+    .toBe('No completed routing decision is available in this session.');
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'after-clear', ...originalInput });
+  const afterClear = await $.ui.mount(row('after-clear'));
+  expect(JSON.stringify(await afterClear.drawn())).toContain('Why this model?');
+  await afterClear.unmount();
+});
+}
+
+
+test('explanation parsing failures preserve a valid routed spawn', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   const forwarded: any[] = [];
   const logs: string[] = [];
   on('session.id', () => ({ value: 'session-1' }));
@@ -664,7 +712,7 @@ test('explanation parsing failures preserve a valid routed spawn', async ($, on)
 });
 
 
-test('the Why button reports when the explanation pane cannot be placed', async ($, on) => {
+test('the Why button reports when the explanation pane cannot be placed', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   const toasts: string[] = [];
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
@@ -686,7 +734,7 @@ test('the Why button reports when the explanation pane cannot be placed', async 
   await shown.unmount();
 });
 
-test('turning explanations off closes a pane that is still opening', async ($, on) => {
+test('turning explanations off closes a pane that is still opening', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let finishOpen!: () => void;
   let startedOpen!: () => void;
   const started = new Promise<void>((resolve) => { startedOpen = resolve; });
@@ -716,7 +764,7 @@ test('turning explanations off closes a pane that is still opening', async ($, o
 });
 
 for (const placed of [true, false]) {
-  test(`pane placement is read independently of the open return value: ${placed}`, async ($, on) => {
+  test(`pane placement is read independently of the open return value: ${placed}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
     let closes = 0;
     on('session.id', () => ({ value: 'session-1' }));
     on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:

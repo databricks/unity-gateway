@@ -17,6 +17,7 @@ type RoutingRecord = {
 type ExplanationState = { enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
 const EXPLANATION_PANE = 'smart-router-explanation'
+const EXPLANATION_OPEN_FAILURE = 'Could not open the native routing explanation pane.'
 const MAX_EXPLANATION_BYTES = 64 * 1024
 const isObject = (value: unknown): value is Record<string, any> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -68,10 +69,6 @@ function matchesIdentityFields(value: Record<string, any>, sessionId?: string, t
     if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
   }
   return true
-}
-
-function matchesTopLevelRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
-  return !isObject(value) || matchesIdentityFields(value, sessionId, toolUseId)
 }
 
 function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
@@ -177,6 +174,11 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
   } catch {}
   return false
 }
+
+const whyHandler = ($: any, state: ExplanationState, record: RoutingRecord) => async () => {
+  if (!await openExplanation($, state, record)) $.ui.toast(EXPLANATION_OPEN_FAILURE)
+}
+
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -286,7 +288,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
     return await openExplanation($, explanationState, explanationState.latest)
       ? { text: 'Showing the latest routing explanation.' }
-      : { text: 'Could not open the native routing explanation pane.' }
+      : { text: EXPLANATION_OPEN_FAILURE }
   })
 
   on('ui.render', { component: 'Pane' }, ($, e, next) => {
@@ -390,8 +392,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
-          typeof route.rationale !== 'string' ||
-          !matchesTopLevelRequestIdentity(route, sessionId, tool_use_id))) {
+          typeof route.rationale !== 'string')) {
         throw new Error('Invalid routing response')
       }
     } catch {
@@ -487,11 +488,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    const onWhy = explanationState.enabled ? async () => {
-      if (!await openExplanation($, explanationState, record)) {
-        $.ui.toast('Could not open the native routing explanation pane.')
-      }
-    } : undefined
+    const onWhy = explanationState.enabled ? whyHandler($, explanationState, record) : undefined
     return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4, onWhy)] })
   })
 
@@ -520,16 +517,17 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => {
       const record = records.get(id)!
-      const onWhy = explanationState.enabled ? async () => {
-        if (!await openExplanation($, explanationState, record)) {
-          $.ui.toast('Could not open the native routing explanation pane.')
-        }
-      } : undefined
+      const onWhy = explanationState.enabled ? whyHandler($, explanationState, record) : undefined
       return card($, e, record, onWhy)
     }), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     routedModels.reset()
+    explanationState.latest = undefined
+    explanationState.paneRecord = undefined
+    explanationState.modelId = undefined
+    $.ui.invalidate('ui.render')
+    try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
     return next(e)
   })
 }

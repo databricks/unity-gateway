@@ -81,6 +81,10 @@ test('a launch without routing keeps the command inert', { options: { ...ROUTED,
   const reply = await $.command.run({ command: 'smart-router', args: 'off' });
 
   expect(reply.text).toContain('was not enabled');
+  const explain = await $.command.run({ command: 'smart-router', args: 'explain on' });
+  expect(explain.text).toContain('was not enabled');
+  const invalidExplain = await $.command.run({ command: 'smart-router', args: 'explain invalid' });
+  expect(invalidExplain.text).toBe('Usage: /smart-router explain on|off|latest');
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
 });
 

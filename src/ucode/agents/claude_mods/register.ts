@@ -173,8 +173,14 @@ export function register(on: On, options: PluginOptions): void {
   registerRoutingLogs(on, options, launchedEnabled);
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const [verb] = e.args.trim().split(/\s+/);
-    if (verb === 'explain') return next(e);
+    const [verb, explainAction, ...explainExtra] = e.args.trim().split(/\s+/);
+    if (verb === 'explain') {
+      if (explainExtra.length || !['on', 'off', 'latest'].includes(explainAction)) {
+        return {text: 'Usage: /smart-router explain on|off|latest'};
+      }
+      if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
+      return next(e);
+    }
     const command = parseSmartRouterCommand(e.args);
     if (!command) return {text: 'Usage: /smart-router on|off|logs|explain on|off|latest'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
