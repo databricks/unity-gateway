@@ -120,6 +120,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -713,6 +714,11 @@ def render_overlay(
             ],
         }
         keys.append(["modelPicker"])
+
+    for option in overlay.get("modelPicker", {}).get("options", []):
+        display_model = unwrap_anthropic_gateway_model(option["model"])
+        if display_model != option["model"] and not option.get("description"):
+            option["description"] = f"Managed by your organization ({display_model})"
 
     if otel_tracing:
         otel_env = _otel_trace_env(workspace)
