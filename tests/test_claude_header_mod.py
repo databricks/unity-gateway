@@ -33,7 +33,8 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     def _write(target, text):
         writes.append(str(target))
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
+        # Exact bytes: write_text would turn "\n" into CRLF on Windows and defeat the byte compare.
+        target.write_bytes(text.encode("utf-8"))
 
     monkeypatch.setattr(managed_files, "_sudo_replace", _write)
     monkeypatch.setattr(managed_files, "_sudo_remove", lambda path: path.unlink())

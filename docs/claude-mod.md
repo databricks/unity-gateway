@@ -21,7 +21,24 @@ the `routeCommand` plugin option, and continues with the original input. The mat
 `agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
 name and permissions. The routing response contains `model`, `rationale`, and optional explanation details;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
-Forks and resumed agents keep their native model. This preserves
+New native launches offer task roles without generated model-specific agent types.
+Smart Router chooses the execution model independently of the requested role or name.
+In subagent-only mode, the native tool description explains that a requested model
+outside the built-in choices does not prevent a general-purpose launch; the router
+selects an available execution model.
+After a successful spawn, the Agent/Task result carries model-visible context with the
+child ID, router-selected model, and model reported by Claude's spawn result. The parent
+reply delivers each recorded completion once from that request's owned children, without parsing
+model-written references. Model identity and running status stay in the native routing
+UI; assistant replies do not duplicate successful lifecycle updates. Interrupted or
+failed children still produce an explicit report. Spawn-step prose is buffered and suppressed before
+streaming or transcript storage. Missing host model
+information remains explicitly unknown. Denials and tool errors retain their original
+results without a success annotation. If Claude reports a different model than the route,
+the routing row also shows `Launched Model` separately. This is host launch metadata,
+not verification of the provider's underlying model version. Usage telemetry may name a
+provider backend; it does not replace the confirmed launch identity in reports.
+Forks keep their native model; resumed routed children keep the router-selected model. This preserves
 auto mode's review of the tool input instead of invalidating it with a routing rewrite.
 The display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
@@ -169,7 +186,21 @@ Before submitting, Cancel or Escape leaves routing on and sends nothing. A missi
 `isaac` executable at launch or an unavailable form leaves routing on. A feedback submission failure after a valid
 reason leaves routing off and reports the failure in the transcript. The form makes no model requests.
 
-In these sessions, with the same flag enabled, `/isaac-feedback` uses the same native
+After the form turns routing off, the mod logs `Smart Router is off` to the transcript, the
+reply an off without the form gives.
+
+To turn routing off after collecting the reason somewhere other than the mod's form, first
+have Isaac save that feedback, then send `/smart-router off --feedback-collected`. The mod
+skips its form and turns routing off right away. A plain `/smart-router off` still opens the
+form. `--feedback-collected` works only after `off` and does nothing when the feedback rule
+is off.
+
+Today `--feedback-collected` is honored only when `ISAAC_LAUNCH_MODE=omni`, where Omnigent's
+Web UI is the caller. Those sessions also skip the CLI's reason rule. To support a caller in
+another launch mode, widen both checks: the one in `isaac-feedback.ts` and the one in
+`_toggle_current_smart_routing_session` in `cli.py`.
+
+In sessions with `ISAAC_SMART_ROUTER_FEEDBACK` enabled, `/isaac-feedback` uses the same native
 form, capture, and background uploader as `/smart-router off`. It remains available
 after routing is turned off so users can report on an earlier routed task. It asks
 for a category when none was supplied, and for feedback text when the invocation is empty.

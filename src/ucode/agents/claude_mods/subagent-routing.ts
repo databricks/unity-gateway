@@ -12,7 +12,7 @@ type RoutingExplanation = {
 }
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
-  explanation?: RoutingExplanation
+  spawned?: { agentId: string; model?: string; background: boolean }; explanation?: RoutingExplanation
 }
 type ExplanationState = { enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
@@ -20,7 +20,6 @@ const EXPLANATION_PANE = 'smart-router-explanation'
 const MAX_EXPLANATION_BYTES = 64 * 1024
 const isObject = (value: unknown): value is Record<string, any> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value))
-
 const safeText = (value: unknown, limit: number): string | undefined => {
   if (typeof value !== 'string') return undefined
   const clean = value
@@ -44,8 +43,11 @@ function numericDetails(value: unknown): NumericDetails | undefined {
   return Object.fromEntries(entries as [string, number][])
 }
 
+const unwrapGatewayModel = (model: string): string =>
+  model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
+
 const canonicalModel = (model: string): string => {
-  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
+  const original = unwrapGatewayModel(model)
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
@@ -60,16 +62,22 @@ function utf8Length(value: string): number {
   return bytes
 }
 
-function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
-  if (!isObject(value)) return true
-  for (const source of [value, value.evidence]) {
-    if (!isObject(source)) continue
-    for (const [field, expected] of [['session_id', sessionId], ['tool_use_id', toolUseId]] as const) {
-      const actual = source[field]
-      if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
-    }
+function matchesIdentityFields(value: Record<string, any>, sessionId?: string, toolUseId?: string): boolean {
+  for (const [field, expected] of [['session_id', sessionId], ['tool_use_id', toolUseId]] as const) {
+    const actual = value[field]
+    if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
   }
   return true
+}
+
+function matchesTopLevelRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
+  return !isObject(value) || matchesIdentityFields(value, sessionId, toolUseId)
+}
+
+function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
+  if (!isObject(value)) return true
+  return [value, value.evidence].every((source) => !isObject(source)
+    || matchesIdentityFields(source, sessionId, toolUseId))
 }
 
 function parseExplanation(
@@ -121,6 +129,18 @@ function parseExplanation(
   return { selectedModel, summary, taskUnderstanding: taskUnderstanding as string[], models, recipe, formula }
 }
 
+const children = new Map<string, RoutingRecord>()
+export const routedModels = {
+  started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
+  model(agentId?: string) {
+    const child = agentId ? children.get(agentId) : undefined
+    const resolved = child?.spawned?.model
+    return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
+      ? resolved : child?.model
+  },
+  reset() { children.clear() },
+}
+
 const ANIMALS = [
   'Otter', 'Panda', 'Lynx', 'Fox', 'Badger', 'Beaver', 'Bison', 'Bobcat', 'Camel', 'Caribou',
   'Cheetah', 'Chipmunk', 'Cougar', 'Coyote', 'Deer', 'Dingo', 'Dolphin', 'Donkey', 'Elephant', 'Elk',
@@ -134,7 +154,13 @@ const ANIMALS = [
   'Magpie', 'Osprey', 'Owl', 'Parrot', 'Pelican', 'Penguin', 'Puffin', 'Raven', 'Robin', 'Swan',
 ]
 
-const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
+const shortModel = (model: string): string => {
+  const unwrapped = unwrapGatewayModel(model)
+  const parts = unwrapped.split('.')
+  const name = parts.length > 3 ? parts.slice(3).join('.')
+    : parts.length === 3 ? parts[2] : unwrapped
+  return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
+}
 
 async function openExplanation($: any, state: ExplanationState, record: RoutingRecord): Promise<boolean> {
   state.showNumbers = false
@@ -186,6 +212,11 @@ const selection = (
       ...(onWhy ? [Button({ key: 'why-this-model', label: 'Why this model?', onPress: onWhy })] : []),
     ],
   })]
+  if (record.spawned?.model && record.spawned.model !== record.model) {
+    lines.push(Box({ paddingLeft: reasonPadding,
+      children: [Text({ children: [`Launched Model: ${safeText(record.spawned.model, 240)}`] })],
+    }))
+  }
   if (record.rationale) {
     lines.push(Box({
       paddingLeft: reasonPadding,
@@ -217,6 +248,7 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
 }
 
 export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+  routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.
@@ -275,12 +307,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const detail = selected ?? explanation.models.find((model) => model.selected)!
     const numberText = (label: string, value: number | undefined, suffix = '') => value === undefined
       ? undefined : Text({ children: [`${label}: ${value.toFixed(3)}${suffix}`] })
+    const costText = detail.estimatedCostUsd === undefined ? undefined
+      : Text({ children: [`Est. cost: ${detail.estimatedCostUsd.toPrecision(3)} USD`] })
     const breakdown = (label: string, values: NumericDetails | undefined) => values && Object.keys(values).length
       ? Text({ dimColor: true, children: [`${label}: ${Object.entries(values)
         .map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`] }) : undefined
     const detailLines = [
       numberText('Quality estimate', detail.qualityEstimate),
-      numberText('Est. cost', detail.estimatedCostUsd, ' USD'),
+      costText,
       numberText('Routing score', detail.routingScore),
       breakdown('Components', detail.components),
       breakdown('Vs. routed', detail.differenceFromWinner),
@@ -313,7 +347,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const { tool, tool_use_id, agentId, ...input } = e
+    const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let explanation: RoutingExplanation | undefined
     let sessionId: string | undefined
@@ -356,7 +390,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
-          typeof route.rationale !== 'string')) {
+          typeof route.rationale !== 'string' ||
+          !matchesTopLevelRequestIdentity(route, sessionId, tool_use_id))) {
         throw new Error('Invalid routing response')
       }
     } catch {
@@ -392,14 +427,30 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       $.ui.invalidate('ui.render')
     }
-    // Auto mode reviewed this input; choose the child's model at agent.spawn instead.
-    return next(e)
+    // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
+    const result = await next(e)
+    const record = tool_use_id ? records.get(tool_use_id) : undefined
+    if (result.deny !== undefined || result.isError || !record?.spawned) return result
+    const identity = JSON.stringify({
+      agent_id: record.spawned.agentId,
+      selected_model: record.model,
+      launched_model: record.spawned.model ?? null,
+    })
+    return { ...result, context: [...(result.context ?? []),
+      `Smart Router launch: ${identity}. Use the launched_model from this receipt when identifying `
+      + 'this child. Report only that model in ordinary updates and answers; do not compare it with the requested model unless the user asks about the difference.',
+    ] }
   })
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
+    if (route && result.agentId && !result.deny) {
+      route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
+      routedModels.started(route)
+      $.ui.invalidate('ui.render')
+    }
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
@@ -436,7 +487,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    const onWhy = explanationState.enabled ? () => { void openExplanation($, explanationState, record) } : undefined
+    const onWhy = explanationState.enabled ? async () => {
+      if (!await openExplanation($, explanationState, record)) {
+        $.ui.toast('Could not open the native routing explanation pane.')
+      }
+    } : undefined
     return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4, onWhy)] })
   })
 
@@ -465,8 +520,16 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => {
       const record = records.get(id)!
-      const onWhy = explanationState.enabled ? () => { void openExplanation($, explanationState, record) } : undefined
+      const onWhy = explanationState.enabled ? async () => {
+        if (!await openExplanation($, explanationState, record)) {
+          $.ui.toast('Could not open the native routing explanation pane.')
+        }
+      } : undefined
       return card($, e, record, onWhy)
     }), original] })
+  })
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
+    routedModels.reset()
+    return next(e)
   })
 }

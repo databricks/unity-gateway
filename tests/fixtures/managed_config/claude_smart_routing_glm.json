@@ -1,19 +1,17 @@
 {
   "spec_version": 1,
-  "default_agent": "CODING_AGENT_CODEX",
+  "default_agent": "CODING_AGENT_CLAUDE_CODE",
   "enabled_agents": [
     {
-      "agent": "CODING_AGENT_CODEX",
+      "agent": "CODING_AGENT_CLAUDE_CODE",
       "config": {
         "models": {
           "model_services": [
-            "system.ai.gpt-5-6-sol",
-            "system.ai.gpt-5-6-terra",
-            "system.ai.gpt-5-6-luna"
+            "system.ai.glm-5-3-flash"
           ]
         },
         "default_models": {
-          "default_model": "system.ai.gpt-5-6-terra"
+          "default_model": "system.ai.glm-5-3-flash"
         },
         "smart_routing": {
           "enabled": true

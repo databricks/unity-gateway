@@ -28,7 +28,7 @@ NATIVE_MODEL_ALIASES = {
 CLAUDE_GPT_LUNA_MODEL = "system.ai.gpt-6-luna"
 CLAUDE_GPT_SOL_MODEL = "system.ai.gpt-6-1-sol"
 CODEX_SOL_MODEL = "system.ai.gpt-5-6-sol"
-CODEX_LUNA_MODEL = "system.ai.gpt-5-6-luna"
+CODEX_LUNA_MODEL = "system.ai.gpt-6-luna"
 # TuiRequestRecorder lowercases recorded header names.
 RUN_HEADER = "x-ug-e2e-run"
 AGENT_HEADER = "x-ug-e2e-agent"
@@ -47,7 +47,7 @@ CODING_AGENT_BY_CLI_NAME = {
 
 MODEL_PROVIDER_SERVICE_FIXTURES = {
     CLAUDE: ("ug_e2e.providers.anthropic", "claude-haiku-4-5-20251001"),
-    CODEX: ("ug_e2e.providers.openai", "gpt-5-nano"),
+    CODEX: ("ug_e2e.providers.openai", "gpt-6-luna"),
 }
 
 SANDBOX_MCP_SERVICE_NAME = "system.ai.sandbox"

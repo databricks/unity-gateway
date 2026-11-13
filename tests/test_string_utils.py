@@ -2,7 +2,11 @@
 
 import pytest
 
-from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
+from ucode.string_utils import (
+    is_valid_catalog_schema,
+    is_valid_catalog_schema_name,
+    model_picker_label,
+)
 
 
 @pytest.mark.parametrize("value", ["system.ai", "main.default", "my-catalog.my_schema"])
@@ -38,3 +42,29 @@ def test_catalog_schema_name(value):
 )
 def test_invalid_catalog_schema_name(value):
     assert not is_valid_catalog_schema_name(value)
+
+
+@pytest.mark.parametrize(
+    ("model", "label"),
+    [
+        ("system.ai.claude-haiku-4-5", "Claude Haiku 4.5"),
+        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "Claude Haiku 5.5"),
+        ("main.default.lilly-personal-anthropic.claude-opus-5-5", "Claude Opus 5.5"),
+        ("main.default.lilly-personal-anthropic.claude-sonnet-5-5", "Claude Sonnet 5.5"),
+        ("main.default.lill-oai.gpt-6.1-sol", "GPT 6.1 Sol"),
+        ("main.default.lill-oai.gpt-6.1-terra", "GPT 6.1 Terra"),
+        ("system.ai.gpt-6.1-sol", "GPT 6.1 Sol"),
+        ("gpt-6.1-sol", "GPT 6.1 Sol"),
+        ("main.team.custom", "Custom"),
+        ("system.ai.gpt-5-6-luna", "GPT 5.6 Luna"),
+        ("system.ai.glm-5-3-flash", "GLM 5.3 Flash"),
+        ("system.ai.kimi-k3", "Kimi K3"),
+        ("system.ai.kimi-k3-1-pro", "Kimi K3.1 Pro"),
+        ("system.ai.deepseek-v4-1-flash-1017", "DeepSeek V4.1 Flash 1017"),
+        ("system.ai.qwen3-next-80b", "Qwen3 Next 80B"),
+        ("o1-2024-12-17", "O1 2024.12.17"),
+        ("a--1", "A  1"),
+    ],
+)
+def test_model_picker_label(model, label):
+    assert model_picker_label(model) == label

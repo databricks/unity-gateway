@@ -49,7 +49,6 @@ _EXPLANATION = {
 }
 
 
-@pytest.mark.parametrize("wrapped", [False, True])
 @pytest.mark.parametrize(
     ("explanation", "retained"),
     [
@@ -68,6 +67,28 @@ _EXPLANATION = {
         ("[" * 2000 + "0" + "]" * 2000, False),
         ({"summary": "x" * 65536}, False),
         ({"score": float("nan")}, False),
+        ({key: value for key, value in _EXPLANATION.items() if key != "task_understanding"}, False),
+        ({**_EXPLANATION, "task_understanding": [""]}, False),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "name": ""},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            False,
+        ),
         ({**_EXPLANATION, "selected_model": "alternative"}, False),
         (
             {
@@ -126,6 +147,10 @@ _EXPLANATION = {
         "deeply-nested",
         "oversized-object",
         "nonfinite-object",
+        "missing-task-understanding",
+        "empty-task-understanding-item",
+        "empty-model-name",
+        "nonfinite-cost",
         "invalid-selected-model",
         "double-selected",
         "selected-not-considered",
@@ -134,10 +159,9 @@ _EXPLANATION = {
     ],
 )
 def test_explanation_roundtrip_does_not_change_subagent_selection(
-    tmp_path, monkeypatch, explanation, retained, wrapped
+    tmp_path, monkeypatch, explanation, retained
 ):
-    prefix = "anthropic-aigw-01234567-" if wrapped else ""
-    selected = prefix + "system.ai.model-b"
+    selected = "system.ai.model-b"
     calls = []
     original = {"prompt": "inspect parser", "subagent_type": "general-purpose", "model": "opus"}
     payload = {
@@ -169,7 +193,7 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         payload,
         workspace="https://example.com",
         token="token",
-        available_models=[selected, prefix + "system.ai.alternative"],
+        available_models=[selected, "system.ai.alternative"],
         audit_decision=True,
     )
     assert result["model"] == selected
@@ -184,6 +208,43 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         assert result["explanation"] == record["explanation"] == expected
     else:
         assert "explanation" not in result and "explanation" not in record
+
+
+@pytest.mark.parametrize("prefix", ["anthropic-aigw-c442a48-", "anthropic-aigw-01234567-"])
+def test_gateway_wrappers_preserve_valid_explanation(tmp_path, monkeypatch, prefix):
+    selected = prefix + "system.ai.model-b"
+
+    def reply(request, timeout):
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "route_selection": [
+                        {
+                            "route_option": {"model": selected},
+                            "params": {"routing_explanation": _EXPLANATION},
+                        }
+                    ],
+                    "rationale": "Selected by router.",
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
+    monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    result = v2.route_claude_subagent(
+        {
+            "session_id": "wrapped-session",
+            "tool_use_id": "wrapped-call",
+            "tool_name": "Agent",
+            "tool_input": {"prompt": "inspect the repository"},
+        },
+        workspace="https://example.com",
+        token="token",
+        available_models=[selected, prefix + "system.ai.alternative"],
+    )
+
+    assert result["model"] == selected
+    assert result["explanation"] == _EXPLANATION
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
@@ -556,10 +617,7 @@ class TestV2Launch:
             display_model="Claude Sonnet 5",
             rationale="Selected for the parser task.",
         )
-        assert captured["plugin_models"] == {
-            "system.ai.claude-opus-4-8",
-            "system.ai.claude-sonnet-5",
-        }
+        assert captured["plugin_models"] == set()
         assert captured["settings"]["modelOverrides"] == {
             "claude-opus-4-8": "system.ai.claude-opus-4-8",
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
@@ -576,6 +634,9 @@ class TestV2Launch:
         command = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "routeCommand"
         ]
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "logsCommand"
+        ] == ["/bin/ug", "smart-router-logs"]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -751,6 +812,7 @@ class TestV2Launch:
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": [
                     "/bin/ug",
                     "claude-router-hook",
@@ -772,7 +834,7 @@ class TestV2Launch:
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "PreToolUse" not in settings["hooks"]
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
+        assert captured["plugin_models"] == set()
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"].count("--agents") == 1
         assert captured["argv"].count("--plugin-dir") == 2
@@ -1172,6 +1234,23 @@ class TestSubagentRouting:
             assert requested_agent not in notice
             assert ("[orchestrator on]" in notice) == (orchestrator_enabled == "1")
 
+    @pytest.mark.parametrize("orchestration", ["0", "1"])
+    def test_native_plugin_offers_roles_without_model_specific_agent_types(
+        self, tmp_path, monkeypatch, orchestration
+    ):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestration)
+        v2._write_routed_claude_plugin(tmp_path)
+
+        agents = list((tmp_path / "agents").glob("*.md"))
+        assert not any(agent.stem.startswith("ucode-route-") for agent in agents)
+        assert {agent.stem for agent in agents} == (
+            {"explorer", "researcher", "worker", "tester", "reviewer"}
+            if orchestration == "1"
+            else set()
+        )
+        assert (tmp_path / "hooks/subagent-routing.ts").is_file()
+
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
         models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3", "system.ai.gpt-5-6-sol"]
@@ -1441,7 +1520,9 @@ class TestV2HeadlessClaude:
         assert prompts == []
         assert launched["argv"].count("--model") == 1
 
-    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch):
+    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch, capsys, caplog):
+        caplog.set_level("DEBUG", logger="ucode.smart_routing.v2")
+
         def fail():
             raise RuntimeError("router timed out")
 
@@ -1451,6 +1532,9 @@ class TestV2HeadlessClaude:
 
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
+        output = capsys.readouterr()
+        assert "router timed out" not in output.out + output.err
+        assert "router timed out" in caplog.text
 
 
 def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):

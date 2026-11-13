@@ -1,4 +1,4 @@
-"""Shared AI Gateway routing helpers for coding-agent sessions and subagents.
+"""Shared Unity Gateway routing helpers for coding-agent sessions and subagents.
 
 Both the Codex and Claude Code integrations route through the workspace's
 configured router at ``/ai-gateway/routing/v1/routes:select``. The
@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import textwrap
@@ -36,7 +37,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
 ROUTING_BOX_WIDTH = 73
-_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
+_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 
@@ -92,7 +93,7 @@ def _format_box(lines: list[str]) -> str:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """One model selection returned by the AI Gateway router."""
+    """One model selection returned by the Unity Gateway router."""
 
     model: str
     rationale: str = ""
@@ -200,6 +201,127 @@ def _explanation_model_id(model: str) -> str:
     return model if len(model.split(".")) == 3 else model.removesuffix("[1m]")
 
 
+def _safe_explanation_text(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()[:limit]
+    return clean or None
+
+
+def _valid_explanation_number(value: Any, *, non_negative: bool = False) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and abs(value) <= 1e12
+        and math.isfinite(value)
+        and (not non_negative or value >= 0)
+    )
+
+
+def _valid_explanation_details(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) <= 8
+        and all(
+            isinstance(key, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,63}", key)
+            and _valid_explanation_number(number)
+            for key, number in value.items()
+        )
+    )
+
+
+def _parse_routing_explanation(
+    value: Any,
+    routed_model: str,
+    offered_routes: tuple[tuple[str, str | None], ...],
+) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            if len(value.encode("utf-8")) > 65536:
+                return None
+            value = json.loads(value)
+        except (UnicodeEncodeError, ValueError, RecursionError):
+            return None
+    if not isinstance(value, dict) or len(value) > 32:
+        return None
+    try:
+        if len(json.dumps(value, allow_nan=False).encode("utf-8")) > 65536:
+            return None
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        return None
+
+    selected_model = _safe_explanation_text(value.get("selected_model"), 160)
+    summary = _safe_explanation_text(value.get("summary"), 2000)
+    task_understanding = value.get("task_understanding")
+    models = value.get("models")
+    if (
+        not selected_model
+        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", selected_model)
+        or selected_model != _explanation_model_id(routed_model)
+        or not summary
+        or not isinstance(task_understanding, list)
+        or len(task_understanding) > 8
+        or any(not _safe_explanation_text(item, 240) for item in task_understanding)
+        or not isinstance(models, list)
+        or len(models) < 1
+    ):
+        return None
+
+    offered_models = {_explanation_model_id(model) for model, _ in offered_routes}
+    model_ids: list[str] = []
+    selected_ids: list[str] = []
+    numeric_fields = {
+        "quality_estimate": False,
+        "estimated_cost_usd": True,
+        "routing_score": False,
+    }
+    detail_fields = ("components", "difference_from_winner")
+    for candidate in models:
+        if not isinstance(candidate, dict):
+            return None
+        model_id = _safe_explanation_text(candidate.get("id"), 160)
+        name = _safe_explanation_text(candidate.get("name"), 128)
+        reason = _safe_explanation_text(candidate.get("reason"), 1200)
+        selected = candidate.get("selected")
+        considered = candidate.get("considered")
+        if (
+            not model_id
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", model_id)
+            or not name
+            or not reason
+            or not isinstance(selected, bool)
+            or not isinstance(considered, bool)
+            or (selected and not considered)
+        ):
+            return None
+        model_ids.append(model_id)
+        if selected:
+            selected_ids.append(model_id)
+        if any(
+            field in candidate
+            and not _valid_explanation_number(candidate[field], non_negative=non_negative)
+            for field, non_negative in numeric_fields.items()
+        ):
+            return None
+        if any(field in candidate and not _valid_explanation_details(candidate[field]) for field in detail_fields):
+            return None
+
+    if (
+        len(model_ids) != len(offered_models)
+        or set(model_ids) != offered_models
+        or len(model_ids) != len(set(model_ids))
+        or selected_ids != [selected_model]
+    ):
+        return None
+    for field, limit in (("recipe", 240), ("formula", 500)):
+        if field in value and not _safe_explanation_text(value[field], limit):
+            return None
+    return value
+
+
 def configured_router_name() -> str:
     """Return the environment-selected router, falling back to ``stable``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
@@ -270,36 +392,11 @@ def select_route(
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
     params = payload["route_selection"][0].get("params")
-    explanation = params.get("routing_explanation") if isinstance(params, dict) else None
-    try:
-        if isinstance(explanation, str):
-            explanation = json.loads(explanation) if len(explanation) <= 65536 else None
-        if (
-            not isinstance(explanation, dict)
-            or len(json.dumps(explanation, allow_nan=False).encode("utf-8")) > 65536
-        ):
-            explanation = None
-        if explanation is not None:
-            models = explanation.get("models")
-            normalized_selected = _explanation_model_id(model)
-            offered_models = {_explanation_model_id(model) for model, _ in offered_routes}
-            if (
-                not isinstance(models, list)
-                or len(models) != len(offered_models)
-                or any(not isinstance(item, dict) for item in models)
-                or {item.get("id") for item in models} != offered_models
-                or explanation.get("selected_model") != normalized_selected
-                or any(
-                    not isinstance(item.get("selected"), bool)
-                    or item["selected"] != (item.get("id") == normalized_selected)
-                    or not isinstance(item.get("considered"), bool)
-                    or (item["selected"] and not item["considered"])
-                    for item in models
-                )
-            ):
-                explanation = None
-    except (TypeError, ValueError, RecursionError):
-        explanation = None
+    explanation = _parse_routing_explanation(
+        params.get("routing_explanation") if isinstance(params, dict) else None,
+        model,
+        offered_routes,
+    )
     return (
         RoutingDecision(
             model=model,
@@ -341,7 +438,7 @@ def resolve_spawn_route(
     )
     decision, reason = decision_fn(task)
     if decision is None:
-        logging.getLogger(__name__).warning(
+        logging.getLogger(__name__).debug(
             "Smart Router could not route subagent: %s", reason or "no routing decision"
         )
         return None
