@@ -6,7 +6,13 @@ import os
 import pytest
 from test_ug_smart_routing_hooks import _select_smart_router_version, _toggle_with_skill
 from utils.agents.codex import assert_agent_interaction_completed, completed_command_outputs
-from utils.evidence import agent_sessions, assistant_answers, fresh_id, tool_outputs
+from utils.evidence import (
+    agent_sessions,
+    assistant_answers,
+    fresh_id,
+    is_child_session,
+    tool_outputs,
+)
 from utils.terminal import AgentTerminal
 
 
@@ -25,28 +31,25 @@ def _native_agents(session):
     return agents
 
 
+def _root_sessions(session):
+    return (
+        records
+        for path, records in agent_sessions(session, "codex").items()
+        if not is_child_session("codex", path, records)
+    )
+
+
 def _root_answers(session):
-    children = {identity for identity, _ in _native_agents(session).values()}
     return [
         answer
-        for records in agent_sessions(session, "codex").values()
-        if not any(
-            row.get("type") == "session_meta" and row["payload"]["id"] in children
-            for row in records
-        )
+        for records in _root_sessions(session)
         for answer in assistant_answers("codex", records)
     ]
 
 
 def _root_user_prompts(session):
-    children = {identity for identity, _ in _native_agents(session).values()}
     prompts = []
-    for records in agent_sessions(session, "codex").values():
-        if any(
-            row.get("type") == "session_meta" and row["payload"]["id"] in children
-            for row in records
-        ):
-            continue
+    for records in _root_sessions(session):
         for row in records:
             payload = row.get("payload", {})
             if row.get("type") != "response_item" or payload.get("role") != "user":
@@ -68,14 +71,9 @@ def _wait_for(tui, predicate, description, *, timeout):
 
 def _assert_toggle_executed_once(session, enabled):
     flag = "--enable-smart-routing" if enabled else "--disable-smart-routing"
-    children = {identity for identity, _ in _native_agents(session).values()}
     outputs = [
         output
-        for records in agent_sessions(session, "codex").values()
-        if not any(
-            row.get("type") == "session_meta" and row["payload"]["id"] in children
-            for row in records
-        )
+        for records in _root_sessions(session)
         for output in completed_command_outputs(
             records, command_contains=f"-m ucode.cli codex {flag}"
         )

@@ -340,17 +340,40 @@ def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(
 
 @pytest.mark.parametrize("queued", [False, True])
 @pytest.mark.parametrize("cancel", [False, True])
-def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, queued, cancel):
+@pytest.mark.parametrize("enabled", [False, True])
+def test_toggle_interrupts_only_main_and_preserves_conversation_tree(
+    tmp_path, queued, cancel, enabled
+):
     async def run():
         metadata, upstream, tui, controls = controller(tmp_path)
+        controls.write_text(
+            json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if enabled else {})
+        )
+        await metadata.initialize()
         metadata.roots["main"] = RootTurn(active="main-turn")
         metadata.children.add("child")
+        request = {
+            "id": "toggle",
+            "method": "turn/start",
+            "params": {
+                "threadId": "main",
+                "input": [
+                    {"type": "text", "text": f"$smart-router {'on' if enabled else 'off'}"},
+                    {"type": "skill", "name": "smart-router"},
+                ],
+            },
+        }
+        forwarded = await metadata.before_tui(copy.deepcopy(request))
+        assert forwarded["params"]["input"] == request["params"]["input"]
+        metadata.observe({"id": "toggle", "result": {"turn": {"id": "main-turn"}}})
         child_turn = {
             "method": "turn/started",
             "params": {"threadId": "child", "turn": {"id": "child-turn"}},
         }
         assert metadata.observe(child_turn) is False
-        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+        controls.write_text(
+            json.dumps({} if enabled else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+        )
 
         def reply(message):
             if message["method"] == "turn/interrupt":
@@ -399,6 +422,8 @@ def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, q
             assert tui.messages == [{"id": "escape", "result": {}}]
         metadata.client_idle.set()
         await task
+        assert metadata.applied is enabled
+        assert metadata.ready.is_set()
         assert "main" in metadata.roots and "child" in metadata.children
         assert all(message["params"]["threadId"] == "main" for message in upstream.messages)
         assert all(
@@ -410,7 +435,7 @@ def test_toggle_interrupts_only_main_and_preserves_conversation_tree(tmp_path, q
             forwarded = await queued_input
             assert forwarded["params"]["input"] == [{"type": "text", "text": "new work"}]
             assert forwarded["params"]["responsesapiClientMetadataPatch"] == {
-                ROUTING_STATE_KEY: "off"
+                ROUTING_STATE_KEY: "on" if enabled else "off"
             }
 
     asyncio.run(run())
@@ -424,50 +449,6 @@ def test_idle_toggle_does_not_start_inference_or_add_a_prompt(tmp_path):
         await metadata.refresh()
         assert upstream.messages == []
         assert metadata.applied is False
-        assert metadata.ready.is_set()
-
-    asyncio.run(run())
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize(
-    "request_text", ["$smart-router {state}", "Turn Smart Router {state}.", "Continue work."]
-)
-def test_toggle_stops_main_without_starting_it_again(tmp_path, enabled, request_text):
-    async def run():
-        metadata, upstream, _, controls = controller(tmp_path)
-        metadata.roots["main"] = RootTurn(active="toggle-turn")
-        request = {
-            "id": "toggle",
-            "method": "turn/start",
-            "params": {
-                "threadId": "main",
-                "input": [
-                    {"type": "text", "text": request_text.format(state="on" if enabled else "off")},
-                    {"type": "skill", "name": "smart-router"},
-                ],
-            },
-        }
-        await metadata.before_tui(request)
-        metadata.observe({"id": "toggle", "result": {"turn": {"id": "toggle-turn"}}})
-        controls.write_text(
-            json.dumps({} if enabled else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-        )
-
-        def reply(message):
-            metadata.observe(
-                {
-                    "method": "turn/completed",
-                    "params": {"threadId": "main", "turn": {"id": "toggle-turn"}},
-                }
-            )
-            result = {} if message["method"] == "turn/interrupt" else {"turn": {"id": "again"}}
-            metadata.observe({"id": message["id"], "result": result})
-
-        upstream.on_send = reply
-        await metadata.refresh()
-        assert [message["method"] for message in upstream.messages] == ["turn/interrupt"]
-        assert metadata.applied == enabled
         assert metadata.ready.is_set()
 
     asyncio.run(run())

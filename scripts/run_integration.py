@@ -80,7 +80,6 @@ WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
     # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
-    "test_ug_smart_routing_hooks.py::test_smart_router_routes_codex_subagent_at_launch",
     "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_subagent_routing_off",
     "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_subagent_routing_back_on",
 }

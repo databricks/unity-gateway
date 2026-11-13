@@ -3203,13 +3203,7 @@ def codex_router_hook_cmd(
         return
     if not isinstance(payload, dict):
         return
-    if not enabled:
-        if event == "route-subagent" and is_spawn_agent_tool(payload.get("tool_name")):
-            from ucode.smart_routing.codex_metadata import stamp_spawn
-
-            output = stamp_spawn(payload, enabled=False)
-            if output is not None:
-                sys.stdout.write(json.dumps(output))
+    if not enabled and event != "route-subagent":
         return
     if event == "session-start":
         record_session_start(payload)
@@ -3239,25 +3233,26 @@ def codex_router_hook_cmd(
         # When matched is None the harness didn't report the subagent model —
         # the PreToolUse hook already injected the routed model, so emit nothing.
         return
-    if event != "route-subagent" or not host:
+    if event != "route-subagent":
         return
     from ucode.smart_routing.codex_metadata import stamp_spawn
 
     if not is_spawn_agent_tool(payload.get("tool_name")):
         return
-    token = _router_hook_token(host, profile, use_pat)
-    output = (
-        route_pre_tool_use(
-            payload,
-            workspace=host,
-            token=token,
-            available_models=model or [],
-            audit_decision=True,
-        )
-        if token
-        else None
-    )
-    output = stamp_spawn(payload, enabled=True, output=output)
+    output = None
+    if enabled:
+        if not host:
+            return
+        token = _router_hook_token(host, profile, use_pat)
+        if token:
+            output = route_pre_tool_use(
+                payload,
+                workspace=host,
+                token=token,
+                available_models=model or [],
+                audit_decision=True,
+            )
+    output = stamp_spawn(payload, enabled=enabled, output=output)
     if output is not None:
         sys.stdout.write(json.dumps(output))
 

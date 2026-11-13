@@ -1,33 +1,18 @@
 # Integration tests
 
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
-empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning
-an off toggle. It checks old-child identity/continuity, off markers on a new sibling
-and grandchild, messages across both branches, and follow-up to the original child.
-It reads native transcripts and exclusive file receipts without intercepting inference.
-It does not by itself establish exact HTTP metadata serialization or usage-table ingestion.
-Message checks use native delivery receipts, including when Codex invokes tools through code mode.
-Toggle confirmations also read successful native command completions, so an interrupted
-code-mode wrapper does not hide a completed CLI command.
-Select with `--codex-version 0.167.2 -- -k test_codex_routing_toggle`.
-Use `--smart-router-name` for an explicit recipe; reported inputs retain that selection.
-Windows remote-TUI provider forwarding has separate component coverage; these live
-journeys exercise the native platform where the runner executes.
-Component checks also cover the TUI's nullable metadata patch; verify attribution
-on later user turns when querying the usage table.
-The live journeys also require the exact submitted user-prompt count, proving that
-metadata handoffs add no synthetic prompt to the native conversation history.
-Toggles stop after the successful CLI receipt and metadata handoff;
-they require no final assistant reply. Both journeys assert one successful command
-per requested transition, followed by normal user tasks in the same conversation.
-The busy child uses UG's installed Python on both platforms. Windows command approvals
-use the native UI; the toggle matcher also recognizes the explicit environment guard
-and wrapped command presentation, while rejecting additional commands.
-Native blank lines around the command do not change approval matching.
-The known PowerShell environment guard's quoted diagnostic label may vary; its
-checks, exit, and toggle command must still match, with no interpolation or extra commands.
-Controls-read retry, input gating, and error-before-teardown behavior have separate
-[component coverage](../README.md); these live journeys do not induce file-access failures.
+empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
+off toggle. Native transcripts and exclusive file receipts verify old-child identity
+and process continuity, new sibling/grandchild off markers, cross-branch delivery, and
+follow-up to the original child. Each transition requires exactly one successful CLI
+execution, and root history must contain only submitted user prompts: handoffs add no
+prompt or automatic continuation. Windows uses UG's installed Python and native
+approval dialogs, preserving the sandbox.
+Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
+`--smart-router-name` input records and forwards the recipe.
+These journeys do not intercept inference or establish exact HTTP metadata/usage-table
+ingestion. Controls-read failures and evidence-parser boundaries have separate
+[component coverage](../README.md); live journeys do not induce file-access failures.
 
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
@@ -1082,8 +1067,8 @@ the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
-a new CLI confirmation in native tool-result records, and a new assistant answer after each
-skill invocation.
+a new CLI confirmation in native tool-result records, and a completed answer to the
+following calculation. Skill toggles interrupt the main turn without continuing it.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
@@ -1093,6 +1078,10 @@ failures leave controls unchanged. Permission failures request native approval;
 full-disk errors retain their own diagnostic. These checks do not simulate a native approval.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
+Codex launch routing is covered by the initial phase of
+`test_smart_router_skill_turns_codex_subagent_routing_back_on`, using the same legacy
+and preset cases as the former launch-only test. The separate off-before-first-child
+journey remains because it covers disabling before any child has been spawned.
 With orchestration enabled through legacy flags or a preset, both routed Codex children must show
 `[orchestrator on]` in their own subagent banner. Codex's managed default is opted out
 (`subagent_orch_v0_claude_only`) and has no skill-toggle case. Claude shows the selected

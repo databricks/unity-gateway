@@ -911,46 +911,6 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
 @pytest.mark.managed_fixture
 @pytest.mark.codex_smart_routing
 @CODEX_SMART_ROUTER_VERSIONS
-def test_smart_router_routes_codex_subagent_at_launch(
-    live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
-):
-    """Scenario: launch Codex with the legacy flags or a subagent selector and, without touching the
-    Smart Router skill, spawn one child in the real TUI.
-
-    Expected: routing-only cases install Smart Router; enabling orchestration also installs
-    Smart Router Orchestrator. The uniquely tagged calculation completes in a native child
-    session, shows the subagent-routing banner (including [orchestrator on] when orchestration
-    is enabled), and produces one live gateway decision correlated with that child. No
-    first-prompt model selection occurs; the metadata interposer remains active.
-    """
-    session = live_session
-    _select_smart_router_version(
-        session, "codex", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
-    )
-    session.run(
-        "configure",
-        "--workspace",
-        workspace,
-        "--skip-validate",
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    )
-    with AgentTerminal(
-        session, "codex", [str(session.binary), "codex"], "smart-router-launch"
-    ) as tui:
-        tui.boot()
-        _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
-        tui.exit_normally()
-        transcript = "".join(tui.output)
-    assert SMART_ROUTING_BANNER not in transcript, transcript
-    assert "[ROUTE]" not in session.routing_log("codex")
-
-
-@pytest.mark.live
-@pytest.mark.codex
-@pytest.mark.managed_fixture
-@pytest.mark.codex_smart_routing
-@CODEX_SMART_ROUTER_VERSIONS
 def test_smart_router_skill_turns_codex_subagent_routing_off(
     live_session, workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
 ):

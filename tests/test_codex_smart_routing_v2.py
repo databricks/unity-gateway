@@ -250,11 +250,10 @@ class TestLaunchCodex:
                 assert path.read_text() == content
         assert codex._smart_routing_config_model({"codex_default_model": "admin"}) == "admin"
 
-    @pytest.mark.parametrize(
-        ("platform_name", "tui_has_provider"), [("posix", False), ("nt", True)]
-    )
+    @pytest.mark.parametrize("platform_name", ["posix", "nt"])
+    @pytest.mark.parametrize("first_prompt", [False, True])
     def test_owns_app_server_interposer_and_tui_lifecycle(
-        self, tmp_path, monkeypatch, platform_name, tui_has_provider
+        self, tmp_path, monkeypatch, platform_name, first_prompt
     ):
         processes = []
         interposer_args = {}
@@ -267,7 +266,8 @@ class TestLaunchCodex:
             b'subagent_usage_hint_text = "user child hint"\n'
         )
         user_config.write_bytes(saved_config)
-        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1" if first_prompt else "0")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0" if first_prompt else "1")
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
         monkeypatch.setattr(v2, "os", SimpleNamespace(name=platform_name, environ=os.environ))
         monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
@@ -344,7 +344,11 @@ class TestLaunchCodex:
         assert "--model system.ai.gpt-5-6-sol" in hook_override
         assert "--model system.ai.glm-5-2" in hook_override
         config_values = processes[0].argv[3:-2:2]
-        native_overrides = tomllib.loads("\n".join(config_values))["features"]["multi_agent_v2"]
+        config = tomllib.loads("\n".join(config_values))
+        assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
+            v2.routing.configured_router_name()
+        )
+        native_overrides = config["features"]["multi_agent_v2"]
         assert native_overrides["non_code_mode_only"] is False
         assert "features.multi_agent_v2.non_code_mode_only=false" in config_values
         for key, role in (
@@ -381,7 +385,7 @@ class TestLaunchCodex:
             "gpt-start",
             "--search",
         ]
-        if tui_has_provider:
+        if platform_name == "nt":
             assert tui_argv[:4] == [
                 "codex",
                 "--config",
@@ -398,10 +402,18 @@ class TestLaunchCodex:
             "system.ai.gpt-5-6-sol",
             "system.ai.glm-5-2",
         ]
-        assert interposer_args["kwargs"]["workspace"] == WS
+        assert interposer_args["kwargs"]["session_controls"] == Path(
+            os.environ["UCODE_SESSION_ENV_FILE"]
+        )
+        assert interposer_args["kwargs"]["workspace"] == (WS if first_prompt else None)
         assert token_calls == [(WS, "myprof")]
-        assert interposer_args["kwargs"]["token_provider"]() == "token-2"
-        assert token_calls == [(WS, "myprof"), (WS, "myprof")]
+        if first_prompt:
+            assert interposer_args["kwargs"]["token_provider"]() == "token-2"
+            assert token_calls == [(WS, "myprof"), (WS, "myprof")]
+        else:
+            assert interposer_args["kwargs"]["token_provider"] is None
+        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == ("0" if first_prompt else "1")
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token-1"
         assert interposer_args["kwargs"]["switch_message_fn"] is v2.format_routing_notice
         assert stopped == [True]
         assert processes[0].terminated is True
@@ -458,119 +470,6 @@ class TestLaunchCodex:
         )
         assert "x-databricks-workspace" in provider_arg
         assert "eng-ml-inference" in provider_arg
-
-    @pytest.mark.parametrize("os_name", ["posix", "nt"])
-    def test_subagent_only_launch_uses_metadata_interposer_without_routing_main(
-        self, tmp_path, monkeypatch, os_name
-    ):
-        monkeypatch.setattr(v2, "os", SimpleNamespace(**{**vars(os), "name": os_name}))
-        user_config = tmp_path / "config.toml"
-        saved_config = (
-            b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
-            b'root_agent_usage_hint_text = "user root hint"\n'
-            b'subagent_usage_hint_text = "user child hint"\n'
-        )
-        user_config.write_bytes(saved_config)
-        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
-        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
-        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
-        processes = []
-
-        class Process:
-            def __init__(self, argv, **kwargs):
-                self.argv = argv
-                self.terminated = False
-                processes.append(self)
-
-            def wait(self, timeout=None):
-                return 0
-
-            def terminate(self):
-                self.terminated = True
-
-        monkeypatch.setattr(v2.subprocess, "Popen", Process)
-        monkeypatch.setattr(v2, "_free_port", lambda: 41001)
-        monkeypatch.setattr(v2, "_wait_for_app_server", lambda *_a, **_k: True)
-        interposer = {}
-
-        def start_interposer(*args, **kwargs):
-            interposer.update(kwargs)
-            return 41002, lambda: None
-
-        monkeypatch.setattr(codex_interposer, "start_interposer_thread", start_interposer)
-
-        with pytest.raises(SystemExit) as exc:
-            v2.launch_codex(
-                {"workspace": WS, "codex_models": ["system.ai.gpt-5-6-sol"]},
-                ["--search"],
-                binary="codex",
-                start_model="gpt-start",
-                render_overlay=codex.render_overlay,
-            )
-
-        assert exc.value.code == 0
-        argv = processes[0].argv
-        assert argv[0] == "codex"
-        assert argv[1] == "app-server"
-        tui_argv = processes[1].argv
-        assert tui_argv[0] == "codex"
-        assert tui_argv[-5:] == [
-            "--remote",
-            "ws://127.0.0.1:41002",
-            "--model",
-            "gpt-start",
-            "--search",
-        ]
-        assert interposer["workspace"] is None
-        assert interposer["token_provider"] is None
-        assert interposer["session_controls"] == Path(os.environ["UCODE_SESSION_ENV_FILE"])
-        assert processes[0].terminated
-        assert 'model="gpt-start"' in argv
-        config_values = [argv[index + 1] for index, arg in enumerate(argv) if arg == "--config"]
-        config = tomllib.loads("\n".join(config_values))
-        tui_provider_args = tui_argv[1:-5]
-        if os_name == "nt":
-            assert tui_provider_args[::2] == ["--config", "--config"]
-            assert tomllib.loads("\n".join(tui_provider_args[1::2])) == {
-                "model_provider": config["model_provider"],
-                "model_providers": config["model_providers"],
-            }
-        else:
-            assert not tui_provider_args
-        assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
-            v2.routing.configured_router_name()
-        )
-        native_overrides = config["features"]["multi_agent_v2"]
-        assert native_overrides["non_code_mode_only"] is False
-        assert "features.multi_agent_v2.non_code_mode_only=false" in argv
-        for key, role in (
-            ("root_agent_usage_hint_text", "You are /root,"),
-            ("subagent_usage_hint_text", "You are a child agent"),
-        ):
-            prefix = f"features.multi_agent_v2.{key}="
-            hint = json.loads(
-                next(arg.removeprefix(prefix) for arg in argv if arg.startswith(prefix))
-            )
-            assert hint.startswith(role)
-            assert v2.CODEX_V2_COLLABORATION_GUIDANCE in hint
-            assert native_overrides[key] == hint
-        assert user_config.read_bytes() == saved_config
-        hook_override = next(arg for arg in argv if arg.startswith("hooks.PreToolUse="))
-        assert "codex-router-hook route-subagent" in hook_override
-        assert "--model system.ai.gpt-5-6-sol" in hook_override
-        assert (
-            "shell_environment_policy.set.UCODE_SESSION_ENV_FILE="
-            + json.dumps(os.environ["UCODE_SESSION_ENV_FILE"])
-        ) in argv
-        assert (
-            "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
-            + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
-        ) in argv
-        # The hook subprocesses inherit the launch environment and pass the routing gate.
-        assert os.environ[v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "1"
-        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
 
     def test_v2_pre_tool_hook_leaves_saved_hooks_to_codex(self, tmp_path, monkeypatch):
         codex_home = tmp_path / ".codex"
