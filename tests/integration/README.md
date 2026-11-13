@@ -14,6 +14,13 @@ router or model-quality measurements. Guidance identifies the launched model wit
 unsolicited comparisons with the requested model; comparisons remain available when asked.
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
+The four logs-pane component tests group rendering/background refresh, reader failures
+including truncated output, missing configuration, and launch gating. Their controlled reader
+does not establish live pane coverage; exact styling and missing-width fallback are not asserted.
+The pending-reader case checks nonblocking subagent startup, queued refreshes for parallel
+spawns, and no reads on ordinary turns or resumed/denied spawns. Missing/unreadable log behavior
+is covered through the CLI tests; the redundant
+direct-reader case and UUID failure injection were removed.
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
 integration gating are documented in the [main test guide](../README.md).
@@ -103,6 +110,11 @@ Select it through the runner with `--claude-version 2.1.314` and
 `-- -k test_smart_router_claude_resumes_same_subagent_with_send_message`.
 Offline evidence checks accept both recipient forms and reject a missing recipient,
 a wrong resumed child, a failed send, or a missing/crossed tool result.
+
+`../test_agent_claude.py` covers relayed argv construction and settings merging: credential blanks
+override caller values while preferences survive, normal launches remain unchanged, and managed
+settings conflicts remain rejected. Subscription-status argv uses the fixed credential blanks.
+These component checks do not establish native or live subscription/gateway behavior.
 
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged
@@ -1085,7 +1097,10 @@ workspace smart-routing warning ("enabled for Codex in this workspace, but it is
 only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json`, `codex_smart_routing_off.json`, or
 `codex_smart_routing_ca_off.json`): the same models without `smart_routing`, because managed
-smart routing overrides individual routing env vars.
+smart routing overrides individual routing env vars. The shared Claude fixtures omit GLM. Only
+`test_smart_router_routes_claude_subagent_at_launch[subagent_only_v0-glm]` loads
+`claude_smart_routing_glm.json`, which offers only GLM, so that case's parent and routed child run
+on GLM; the off and back-on journeys keep their six cases.
 Claude's toggle variants are temporarily non-blocking on both CI platforms; see
 [Soft-fail tests](#soft-fail-tests). Their assertions and local
 selection are unchanged. Codex toggles and the direct hook journeys remain required.
@@ -1576,8 +1591,8 @@ not provide that setup or affect unit tests, installation checks, or dedicated C
 
 Only the three Claude Smart Router toggle tests (`test_smart_router_routes_claude_subagent_at_launch`,
 `test_smart_router_skill_turns_claude_subagent_routing_off` and
-`test_smart_router_skill_turns_claude_subagent_routing_back_on`) and their six variants each carry
-`soft_fail`. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
+`test_smart_router_skill_turns_claude_subagent_routing_back_on`) carry `soft_fail`: six variants
+each, plus the launch test's `subagent_only_v0-glm` case. The **Soft-fail journeys · claude · Linux/Windows (non-blocking)** jobs run those cases
 unchanged, with the pinned Claude version and existing e2e workspace/bearer. They run after
 Full and Managed config finish, one OS at a time, to avoid adding concurrent inference load.
 They use `continue-on-error`, stay outside `All integration tests`, and upload separate
@@ -1827,6 +1842,15 @@ Use `-- -m tui` for the six interactive journeys or
   output, keyboard actions, exit status, routing logs, and actual agent-session records.
 - `install.log` for resolution/bootstrap failures.
 
+Isolated integration sessions enable the existing `UCODE_RELAYED_PROXY_DIAGNOSTICS`
+transport logger for every agent. Headless `command-*.json` artifacts retain its
+`[ucode-relay]` events in `stderr`; TUI artifacts retain them in terminal output.
+Request IDs correlate upstream-header timings, status codes, response byte counts,
+disconnects and transport exception classes. The logger excludes request headers,
+bodies and credentials. Antigravity's native stream-json events remain in headless
+command `stdout`; its raw native logs are not archived. These diagnostics do not
+change agent timeouts, task retries or success assertions.
+
 Unknown onboarding screens fail with their actual screen text. Update terminal
 selectors only after confirming the agent's intended UI changed; do not seed its
 onboarding state or relax the prompt/task assertions. Test homes are deleted after
@@ -2041,6 +2065,21 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+`ucode.agents.model_sources` owns schema/provider wildcard dispatch and provider-ID qualification.
+`ty` checks the schema catalog callbacks registered in `SCHEMA_MODEL_CATALOGS`.
+Copilot schema wildcards use UC model-service entries and the existing Copilot catalog builder,
+which includes Claude, GPT, and supported open models while filtering incompatible APIs.
+Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
+and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
+wire APIs and Claude limits. These checks use controlled discovery responses.
+Claude picker description checks cover static and discovered gateway aliases with seven- and
+eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
+context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
+is not covered by these component checks.
+Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
+component coverage. No installed-agent journey currently covers mixed wildcard sources or
+proves inference with qualified MPS models.
 
 Antigravity MCP web-search evidence compares homepage slash variants and ignores
 `utm_source` attribution while retaining the completed-call and official-URL checks.

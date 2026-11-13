@@ -6,6 +6,7 @@ import json
 from typing import cast
 
 from ucode.config_io import APP_DIR, is_dry_run
+from ucode.constants import MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
     CustomOAuthConfig,
@@ -460,6 +461,39 @@ def desktop_uses_claude_subscription_relay(state: dict) -> bool:
     return bool(state.get("claude_relayed")) and not state.get(
         CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY
     )
+
+
+def get_managed_model_source_expansions(state: dict, tool: str) -> dict[str, list[str]]:
+    """Return valid last-configure wildcard expansions for this workspace and agent."""
+    saved = state.get(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY)
+    by_tool = saved.get(tool) if isinstance(saved, dict) else None
+    if not isinstance(by_tool, dict):
+        return {}
+    return {
+        source: targets
+        for source, targets in by_tool.items()
+        if isinstance(source, str)
+        and isinstance(targets, list)
+        and targets
+        and all(isinstance(target, str) and target for target in targets)
+    }
+
+
+def set_managed_model_source_expansions(
+    state: dict, tool: str, expansions: dict[str, list[str]]
+) -> dict:
+    """Record or clear an agent's last successful live wildcard expansions."""
+    saved = state.get(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY)
+    saved = dict(saved) if isinstance(saved, dict) else {}
+    if expansions:
+        saved[tool] = expansions
+    else:
+        saved.pop(tool, None)
+    if saved:
+        state[MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY] = saved
+    else:
+        state.pop(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY, None)
+    return state
 
 
 def get_provider_service(state: dict, tool: str) -> str | None:

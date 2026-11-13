@@ -1589,6 +1589,10 @@ class TestListProviderServiceModels:
         ("main.ucode.claude_haiku", "claude_haiku"),
         ("gpt-5.5", "gpt-5.5"),
         ("main.default.gpt-5.5", "gpt-5.5"),
+        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "claude-haiku-5-5"),
+        ("main.default.lill-oai.gpt-6.1-sol", "gpt-6.1-sol"),
+        ("main.default.lill-oai.gpt-6.1-terra", "gpt-6.1-terra"),
+        ("system.ai.claude-opus-4-7[foo.bar]", "claude-opus-4-7"),
         # An Azure deployment names its region with a slash.
         ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
         ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
