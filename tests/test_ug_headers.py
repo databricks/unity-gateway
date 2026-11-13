@@ -79,28 +79,21 @@ def test_header_flag_appends_to_ug_headers(monkeypatch):
     assert os.environ["UG_HEADERS"] == "X-Env: 1\nX-Flag: 2"
 
 
-def test_agent_launch_drops_an_inherited_coding_agent(monkeypatch):
+@pytest.mark.parametrize(
+    "args",
+    [["copilot", "--help"], ["agy", "--help"], ["cursor", "--help"], []],
+    ids=["agent command", "alias command", "cursor (not in TOOL_ALIASES)", "bare ug"],
+)
+def test_agent_launch_drops_an_inherited_coding_agent(monkeypatch, args):
+    # `--help` still runs ug's own callback, the code under test, without launching the agent.
+    monkeypatch.setattr("ucode.cli._launch_managed_default", lambda *_, **__: None)
     monkeypatch.setenv(
         "UG_HEADERS",
         "x-databricks-traffic-id: abc\ndatabricks-custom-coding-agent: claude-code\nX-Env: 1",
     )
-    # `--help` still runs ug's own callback, the code under test, without launching the agent.
-    result = CliRunner().invoke(app, ["copilot", "--help"])
-    assert result.exit_code == 0, result.output
-    assert os.environ["UG_HEADERS"] == "x-databricks-traffic-id: abc\nX-Env: 1"
-
-
-@pytest.mark.parametrize(
-    "args",
-    [["agy", "--help"], ["cursor", "--help"], []],
-    ids=["alias command", "cursor (not in TOOL_ALIASES)", "bare ug"],
-)
-def test_every_agent_launch_form_drops_an_inherited_coding_agent(monkeypatch, args):
-    monkeypatch.setattr("ucode.cli._launch_managed_default", lambda *_, **__: None)
-    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: claude-code\nX-Env: 1")
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 0, result.output
-    assert os.environ["UG_HEADERS"] == "X-Env: 1"
+    assert os.environ["UG_HEADERS"] == "x-databricks-traffic-id: abc\nX-Env: 1"
 
 
 def test_agent_launch_keeps_its_own_coding_agent_header(monkeypatch):

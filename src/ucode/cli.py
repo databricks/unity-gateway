@@ -4593,7 +4593,9 @@ def default(
         typer.Option(
             "--header",
             help="Extra `Name: value` header for this launch's Claude Code, Codex, and ug "
-            "Databricks requests (repeatable). A header already sent keeps its value.",
+            "Databricks requests (repeatable). A header already sent keeps its value. An agent "
+            "launch drops a Databricks-Custom-Coding-Agent inherited through UG_HEADERS; pass "
+            "it here to set one.",
         ),
     ] = None,
 ) -> None:
