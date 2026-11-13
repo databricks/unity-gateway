@@ -39,7 +39,7 @@ on:
         default: 1.5.4-5037094733742080
         required: true
       vscode_version:
-        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux lane)
+        description: Exact VS Code version, which pins its bundled Copilot Chat (non-blocking Linux and Windows lane)
         default: 1.144.0
         required: true
       dependency:

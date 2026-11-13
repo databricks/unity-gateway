@@ -114,50 +114,21 @@ def test_ug_configure_copilot_vscode_installs_and_reverts_the_extension(live_ses
 
 
 @pytest.mark.harness_latest
-def test_vscode_copilot_chat_reads_a_file_on_a_databricks_claude_model(live_session, workspace):
+def test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window(live_session, workspace):
     """Scenario: after `ug configure --agents copilot`, a developer opens VS Code for the first time,
     continues without signing in to GitHub, trusts the folder, adds the model providers from Copilot
     Chat's model picker, picks the Databricks Claude test model and asks Agent mode to read a local
-    file.
+    file. In the same window they pick the GPT test model and ask it to read another file.
 
     Expected: everything happens through visible clicks and keys on a fresh profile; no settings or
-    VS Code state is seeded. The chat answer contains the file's value, which is never in the
-    prompt. Every request of the turn reaches the gateway's Anthropic Messages route through a
-    recording forwarder, for the picked model, with ug's User-Agent naming the Copilot Chat bundled
-    in the pinned VS Code, and gets a non-empty HTTP 200. VS Code's saved chat records the
-    Databricks model, a tool call, the value, and no error. Limits: one pinned VS Code,
-    signed out of GitHub, Copilot Chat's local agent.
-    """
-    session = live_session
-    with TuiRequestRecorder(workspace) as recorder:
-        _configure(session, recorder.url)
-        label = model_label(ug_extension_config(session), CLAUDE_TEST_MODEL)
-        with VSCode(session, "claude") as vscode:
-            vscode.finish_first_launch()
-            vscode.pick_model(label)
-            task = FileTask(session)
-            checkpoint = recorder.checkpoint()
-            answer = vscode.wait_for_answer(vscode.send(task.prompt))
-            _assert_turn(
-                session, recorder, checkpoint, task, answer, CLAUDE_TEST_MODEL, CLAUDE_ROUTE
-            )
-            [turn] = chat_requests(session, 1)
-    assert turn["model"] == f"databricks-unity-gateway/{CLAUDE_TEST_MODEL}", turn
-    assert turn["tools"], turn
-    assert turn["error"] is None, turn
-    assert task.value in turn["text"], turn
-
-
-def test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window(live_session, workspace):
-    """Scenario: in one VS Code window set up as above, a developer asks the Databricks Claude test
-    model to read one local file, then picks the GPT test model in the model picker and asks it to
-    read another.
-
-    Expected: each answer contains its own file's value, which is never in a prompt. The first turn's
-    requests reach the Anthropic Messages route for Claude and the second turn's the Responses route
-    for GPT, each with ug's User-Agent and a non-empty HTTP 200, so no turn falls back to another
-    model. VS Code's saved chat records both turns on their Databricks models, with tool calls and no
-    error. Limits as in the Claude CUJ.
+    VS Code state is seeded. Each answer contains its own file's value, which is never in a prompt.
+    Every request of the Claude turn reaches the gateway's Anthropic Messages route, and every
+    request of the GPT turn the Responses route, through a recording forwarder, for the picked
+    model, with ug's User-Agent naming the Copilot Chat bundled in the pinned VS Code, and gets a
+    non-empty HTTP 200, so no turn falls back to another model. VS Code's saved chat records both
+    turns on their Databricks models, with tool calls, the values, and no error. After the window
+    closes, no file under the home holds the bearer. Limits: one pinned VS Code, signed out of
+    GitHub, Copilot Chat's local agent.
     """
     session = live_session
     with TuiRequestRecorder(workspace) as recorder:
@@ -189,13 +160,14 @@ def test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window(live_sess
         assert turn["tools"], turn
         assert turn["error"] is None, turn
         assert task.value in turn["text"], turn
+    assert_no_bearer_on_disk(session)
 
 
 def test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model(
     live_session, workspace, codex_provider, codex_provider_model
 ):
     """Scenario: a developer runs `ug configure --agents copilot --provider` with an OpenAI Model
-    Provider Service, opens VS Code for the first time as in the Claude CUJ, picks the service's
+    Provider Service, opens VS Code for the first time as in the switch CUJ, picks the service's
     GPT model in Copilot Chat's model picker and asks Agent mode to read a local file.
 
     Expected: the extension lists the service's own model id. The answer contains the file's value,
@@ -233,7 +205,7 @@ def test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model(
 def test_vscode_copilot_chat_starts_on_the_managed_default_model(live_session, workspace):
     """Scenario: under the injected `copilot_vscode_defaults` managed config (the Claude and GPT
     test models, GPT as the default, an admin HTTP header), a developer runs `ug configure`, opens
-    VS Code for the first time as in the Claude CUJ, and asks Agent mode to read a local file
+    VS Code for the first time as in the switch CUJ, and asks Agent mode to read a local file
     without touching the model picker's model list.
 
     Expected: once the model providers are added, the chat's model is the managed default, not
@@ -285,7 +257,7 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
     runs `ug configure --agents copilot --provider` with an Anthropic Model Provider Service, and
     reopens VS Code on the same profile.
 
-    Expected: the first turn completes as in the Claude CUJ. After the reconfigure, the extension
+    Expected: the first turn completes as in the switch CUJ. After the reconfigure, the extension
     lists only the service's models; in the reopened window, searching the model picker finds no
     workspace Claude model, and picking the service's model completes a turn whose requests reach
     the Anthropic Messages route with the provider service header, for the service's model, with a

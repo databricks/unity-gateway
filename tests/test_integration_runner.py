@@ -232,7 +232,7 @@ def test_antigravity_has_no_windows_build():
         runner.antigravity_archive_url("1.4.9-4962164969177088", "win32", "AMD64")
 
 
-def test_vscode_version_is_exact_and_needs_a_pinned_copilot():
+def test_vscode_version_is_exact_and_needs_a_pinned_copilot(capsys):
     args = runner.arguments(
         ["--copilot-version", "1.0.91", "--vscode-version", "1.144.0", "--installation-only"],
         environment={},
@@ -244,8 +244,10 @@ def test_vscode_version_is_exact_and_needs_a_pinned_copilot():
                 ["--copilot-version", "1.0.91", "--vscode-version", version, "--installation-only"],
                 environment={},
             )
+    capsys.readouterr()
     with pytest.raises(SystemExit):
         runner.arguments(["--vscode-version", "1.144.0", "--installation-only"], environment={})
+    assert "--vscode-version requires --copilot-version" in capsys.readouterr().err
 
 
 def test_vscode_has_no_headless_journey():
