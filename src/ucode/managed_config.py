@@ -49,6 +49,7 @@ from ucode.managed_files import (
     machine_wide_only,
     managed_file_fingerprint,
     managed_settings_skipped,
+    published_agent_config_marker,
     published_agent_config_used,
     update_workspace_policy,
 )
@@ -940,7 +941,14 @@ def refresh_managed_config(state: dict, *, force_refresh: bool = False) -> Manag
     if published_agent_config_used() and not machine_wide_only():
         # The managed run fetched the policy and saved a copy; per-user runs read that copy, so the
         # per-user settings follow the same policy as the machine-wide files, with no request.
-        return ManagedConfigResult(load_managed_state(workspace), False)
+        saved = load_managed_state(workspace)
+        marker_workspace = (published_agent_config_marker() or {}).get("workspace")
+        if saved is None and marker_workspace and marker_workspace != workspace:
+            print_warning(
+                f"This machine's settings come from {marker_workspace}'s published agent "
+                f"configuration, so {workspace}'s agent configuration isn't applied."
+            )
+        return ManagedConfigResult(saved, False)
     host = split_workspace_key(workspace)[0]
     if not _machine_policy_installable() and _installed_config(workspace) is None:
         return _refresh_user_cache(state, workspace, force_refresh=force_refresh)

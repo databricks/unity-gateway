@@ -3162,9 +3162,11 @@ def auth_token_cmd(
         raise typer.Exit(1)
     saved_workspace = state.get("workspace")
     # A machine-wide helper (a managed run's `ug auth-token --host <ws>`) runs as each developer and
-    # carries no per-user choices, so a host matching the saved workspace uses the saved ones.
+    # carries no per-user choices, so a host matching the saved workspace uses the saved ones. Only
+    # on a machine with a managed run: a per-user helper already names its choices.
     uses_saved_choices = not explicit_host or (
-        isinstance(saved_workspace, str)
+        published_agent_config_used()
+        and isinstance(saved_workspace, str)
         and bool(saved_workspace.strip())
         and normalize_workspace_url(saved_workspace) == normalize_workspace_url(workspace)
     )
@@ -5640,7 +5642,7 @@ def _configure_global_from_agent_config(
     so the caller's merge runs as before.
     """
     from ucode import published_agent_config
-    from ucode.agents.desktop.setup import configure_claude_desktop
+    from ucode.agents.desktop.setup import configure_claude_desktop, revert_claude_desktop_mdm
 
     try:
         if current_os() not in (OS.LINUX, OS.MACOS):
@@ -5662,13 +5664,29 @@ def _configure_global_from_agent_config(
                     published_agent_config.EXIT_USAGE, "--from-file requires --workspace <url>."
                 )
             return
+        if env_bool(SKIP_OS_SETTINGS_ENV):
+            if from_file is None:
+                return  # The merge rejects --global under the opt-out with its own message.
+            raise published_agent_config.ManagedRunError(
+                published_agent_config.EXIT_USAGE,
+                f"`ug configure --global` writes machine-wide settings, which "
+                f"{SKIP_OS_SETTINGS_ENV} turns off. Unset {SKIP_OS_SETTINGS_ENV}.",
+            )
         key, host = published_agent_config.resolve_host(target)
-        # Marks the explicit --global, which lets the run write past the marker file.
+        # An explicit --global overrides a saved user scope, and marks the run that may write past
+        # the marker file.
+        set_config_scope("global")
         set_machine_wide_only(True)
         token: str | None = None
         if from_file is not None:
             raw: dict | None = published_agent_config.load_draft(from_file)
         else:
+            try:
+                install_databricks_cli()
+            except RuntimeError as exc:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_USAGE, str(exc)
+                ) from exc
             try:
                 token = published_agent_config.sign_in(host, profile)
             except published_agent_config.SignInUnavailable:
@@ -5684,7 +5702,17 @@ def _configure_global_from_agent_config(
                         published_agent_config.EXIT_FETCH, f"Could not sign in to {host}: {exc}"
                     ) from exc
                 token = published_agent_config.sign_in(host, profile)
-            raw = published_agent_config.fetch_published(host, token)
+            try:
+                raw = published_agent_config.fetch_published(host, token)
+            except published_agent_config.ManagedRunError as exc:
+                if published_agent_config_used():
+                    raise
+                # Before the first managed run, keep the merge working through a failed read; the
+                # next successful run rebuilds the files.
+                print_warning(
+                    f"{str(exc).rstrip('.')}. Merging into the machine-wide files instead."
+                )
+                return
         if raw is None:
             if published_agent_config_used():
                 raise published_agent_config.no_config_error(host)
@@ -5723,10 +5751,17 @@ def _configure_global_from_agent_config(
             token=token,
         )
         enabled = normalize_managed_config(raw).get("enabled_agents") or {}
-        if from_file is None and "claude" in selected and "claude" in enabled:
-            # Best effort, as before: a Desktop failure warns without failing the run. A dry run
-            # only previews it.
-            configure_claude_desktop({"workspace": key, "profile": profile})
+        if from_file is None and "claude" in selected:
+            if "claude" in enabled:
+                # Best effort, as before: a Desktop failure warns without failing the run. A dry
+                # run only previews it.
+                configure_claude_desktop({"workspace": key, "profile": profile})
+            elif not dry_run and revert_claude_desktop_mdm() == "removed":
+                # Claude's managed file is gone, so Desktop must stop pointing at the gateway too.
+                print_note(
+                    "Removed Claude Desktop's MDM policy, because the agent configuration no "
+                    "longer enables Claude."
+                )
     except published_agent_config.ManagedRunError as exc:
         print_err(str(exc))
         raise typer.Exit(exc.code) from None

@@ -1217,25 +1217,33 @@ def _agent_managed_file_entries(
 
 def resolve_machine_mcp_entries(
     manifest: dict, workspace: str, *, profile: str | None = None, token: str | None = None
-) -> dict[str, dict[str, dict]]:
+) -> tuple[dict[str, dict[str, dict]], set[str]]:
     """The managed config's ``mcp_servers`` as machine-wide entries, for a managed run.
 
-    Returns ``{agent: {name: entry}}`` for Claude and Codex. A ``unity_catalog_location`` is listed
-    as the run's own identity (``token``, else ``profile``). Entries carry no Databricks CLI
-    profile, since one machine file serves every developer and each signs in as themselves: Claude
-    gets only the native HTTP entries Claude Code signs in to itself, and Codex every server ug
-    registers for it. Raises ``RuntimeError`` when the servers can't be resolved.
+    Returns ``{agent: {name: entry}}`` for Claude and Codex, and the name of every server ug
+    registers for Claude, in the managed file or for each developer. A ``unity_catalog_location``
+    is listed as the run's own identity (``token``, else ``profile``). Entries carry no Databricks
+    CLI profile, since one machine file serves every developer and each signs in as themselves:
+    Claude gets only the native HTTP entries Claude Code signs in to itself, and Codex every server
+    ug registers for it. Raises ``RuntimeError`` when the servers can't be resolved.
     """
     selector = manifest.get("mcp_servers")
     if not isinstance(selector, dict) or not selector:
-        return {"claude": {}, "codex": {}}
+        return {"claude": {}, "codex": {}}, set()
     servers = _resolve_managed_mcp_servers(
         selector, workspace, profile, ["claude", "codex"], token=token
     )
-    return {
+    entries = {
         agent: _agent_managed_file_entries(agent, servers, workspace, None, False)
         for agent in ("claude", "codex")
     }
+    claude_names = {
+        name
+        for server in servers
+        if "claude" in _mcp_server_clients(server)
+        if (name := _server_name(server))
+    }
+    return entries, claude_names
 
 
 def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]:

@@ -130,7 +130,7 @@ class TestClaudeParity:
         for path in claude.CLAUDE_BLANKED_CREDENTIAL_PATHS:
             assert entries[".".join(path)].cls == ownership.RESERVED
         assert entries[claude.MANAGED_MCP_SETTINGS_KEY].cls == ownership.RESERVED
-        assert not entries[claude.CLAUDE_ALLOWED_MCP_SERVERS_KEY].in_managed_file
+        assert entries[claude.CLAUDE_ALLOWED_MCP_SERVERS_KEY].cls == ownership.SHARED_LIST
         assert entries[".".join(claude.CLAUDE_PERMISSIONS_DENY_PATH)].cls == ownership.SHARED_LIST
 
 
@@ -225,6 +225,16 @@ class TestCompose:
             ug_table_names={("mcp",): {"github"}},
         )
         assert composed.doc["mcp"] == {"jira": {"url": "j"}, "github": {"url": "ug"}}
+
+    def test_a_dropped_shared_table_entry_is_reported_once(self):
+        composed = ownership.compose(
+            self.ENTRIES,
+            native={"mcp": {"github": {"url": "evil", "headers": {"X": "1"}}}},
+            ug_values={"mcp": {"github": {"url": "ug"}}},
+            features=set(),
+            ug_table_names={("mcp",): {"github"}},
+        )
+        assert [item.path for item in composed.items] == ["mcp.github"]
 
     def test_ug_may_not_write_keys_the_table_does_not_reserve(self):
         with pytest.raises(ValueError, match="ownership table"):
