@@ -71,13 +71,14 @@ def main() -> None:
         return
 
     from ucode import metrics
+    from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 
     agents = {
-        "claude",
-        "codex",
+        AGENT_CLAUDE,
+        AGENT_CODEX,
         "gemini",
         "opencode",
-        "copilot",
+        AGENT_COPILOT,
         "pi",
         "kilo",
         "cursor",
@@ -114,7 +115,9 @@ def main() -> None:
             from ucode.mcp_proxy_runtime import main as command_main
         else:
             from ucode.cli import main as command_main
-        metrics.record("cli_import_duration_ms", (time.perf_counter() - import_started) * 1000)
+        metrics.record(
+            metrics.CLI_IMPORT_DURATION_MS, (time.perf_counter() - import_started) * 1000
+        )
         command_main()
     except BaseException as exc:
         if not isinstance(exc, (KeyboardInterrupt, SystemExit)):

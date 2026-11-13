@@ -184,8 +184,8 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         codex.detach_app_model_catalog()
     try:
         with metrics.measure(
-            "dependency_install_duration_ms",
-            operation="dependency_install",
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
             dependency=tool,
             action="downgrade" if version else "update",
             continued_with_fallback=True,
@@ -303,8 +303,8 @@ def install_tool_binary(
         codex.detach_app_model_catalog()
     try:
         with metrics.measure(
-            "dependency_install_duration_ms",
-            operation="dependency_install",
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
             dependency=tool,
             action="install",
             continued_with_fallback=not strict,
@@ -349,8 +349,8 @@ def _run_native_installer(tool: str, installer: Callable[[], None], *, strict: b
     print_warning(f"`{spec['binary']}` was not found. Installing {spec['display']}...")
     try:
         with metrics.measure(
-            "dependency_install_duration_ms",
-            operation="dependency_install",
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
             dependency=tool,
             action="install",
             continued_with_fallback=not strict,
@@ -407,7 +407,7 @@ def tool_version_error(tool: str) -> str | None:
 
 
 @metrics.timed(
-    "dependency_setup_duration_ms",
+    metrics.DEPENDENCY_SETUP_DURATION_MS,
     label_args={"tool": "agent", "skip_cli_version_check": "cli_version_check_skipped"},
     interactive_wait=False,
 )
@@ -590,7 +590,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     )
 
 
-@metrics.timed("agent_configuration_duration_ms", label_args={"tool": "agent"})
+@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS, label_args={"tool": "agent"})
 def configure_tool(
     tool: str,
     state: dict,
