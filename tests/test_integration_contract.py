@@ -908,28 +908,19 @@ def _run_security_gate(
         )
         return "scan"
 
-    def fetch(args, timeout):
-        assert authenticated, "Fork gates must not use authenticated gh"
-        assert args[:2] == ["gh", "api"] and args[3:] == ["--paginate", "--slurp"]
+    def fetch(request, timeout):
+        assert request.get_header("Authorization") == (
+            "Bearer test-token" if authenticated else None
+        )
         assert timeout == 30
-        which = endpoint_kind(args[2])
-        result = pages(which, calls[which])
-        calls[which] += 1
-        return json.dumps(result).encode()
-
-    def public_fetch(url, timeout):
-        assert not authenticated
-        assert isinstance(url, str), "No authenticated Request headers on the public API path"
-        assert timeout == 30
-        endpoint, page = url.rsplit("&page=", 1)
+        endpoint, page = request.full_url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
         if page == "1":
             calls[which] += 1
         return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
 
-    monkeypatch.setattr(subprocess, "check_output", fetch)
-    monkeypatch.setattr(urllib.request, "urlopen", public_fetch)
+    monkeypatch.setattr(urllib.request, "urlopen", fetch)
     monkeypatch.setattr("time.sleep", lambda _: None)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
@@ -980,19 +971,16 @@ def test_security_gate_api_errors_block_ci(monkeypatch, authenticated):
     monkeypatch.setenv("GITHUB_API_URL", "https://api.github.com")
 
     def fail(*args, **kwargs):
-        if authenticated:
-            raise subprocess.CalledProcessError(1, "gh api")
-        raise urllib.error.HTTPError("https://api.github.com", 403, "rate limit", {}, None)
+        raise urllib.error.HTTPError("https://api.github.com", 403, "forbidden", {}, None)
 
-    monkeypatch.setattr(subprocess, "check_output", fail)
     monkeypatch.setattr(urllib.request, "urlopen", fail)
-    error = subprocess.CalledProcessError if authenticated else urllib.error.HTTPError
-    with pytest.raises(error):
+    with pytest.raises(urllib.error.HTTPError):
         exec(compile(script, "security-gate.yml", "exec"), {})
 
 
 @pytest.mark.parametrize("status", [403, 429])
-def test_security_gate_explains_public_rate_limits(monkeypatch, status):
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_security_gate_explains_rate_limits(monkeypatch, status, authenticated):
     script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
     for key, value in {
@@ -1000,7 +988,7 @@ def test_security_gate_explains_public_rate_limits(monkeypatch, status):
         "PR_NUMBER": "7",
         "HEAD_SHA": HEAD,
         "PR_UPDATED_AT": "",
-        "GH_TOKEN": "",
+        "GH_TOKEN": "test-token" if authenticated else "",
         "GITHUB_API_URL": "https://api.github.com",
     }.items():
         monkeypatch.setenv(key, value)

@@ -45,7 +45,6 @@ jobs:
           import json
           import os
           import re
-          import subprocess
           import sys
           import time
           import urllib.error
@@ -57,29 +56,27 @@ jobs:
           if not re.fullmatch(r"[1-9][0-9]*", pr) or not re.fullmatch(r"[0-9a-f]{40}", sha):
               sys.exit("::error::Security Gate requires a PR number and an authorized commit SHA.")
           def workflow_runs(endpoint):
-              if os.environ.get("GH_TOKEN"):
-                  pages = json.loads(subprocess.check_output(
-                      ["gh", "api", endpoint, "--paginate", "--slurp"], timeout=30
-                  ))
-              else:
-                  pages = []
-                  while True:
-                      url = f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
-                      try:
-                          with urllib.request.urlopen(url, timeout=30) as response:
-                              pages.append(json.load(response))
-                      except urllib.error.HTTPError as error:
-                          if error.code == 429 or (error.code == 403 and (
-                              error.headers.get("X-RateLimit-Remaining") == "0"
-                              or error.headers.get("Retry-After")
-                          )):
-                              reset = error.headers.get("X-RateLimit-Reset", "not supplied")
-                              sys.exit("::error::GitHub public API rate limit reached; tests remain blocked. "
-                                       "Re-run failed CI jobs after the quota resets. "
-                                       f"Reset time (Unix seconds): {reset}.")
-                          raise
-                      if len(pages[-1]["workflow_runs"]) < 100:
-                          break
+              token = os.environ.get("GH_TOKEN")
+              headers = {"Authorization": f"Bearer {token}"} if token else {}
+              pages = []
+              while True:
+                  url = f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
+                  request = urllib.request.Request(url, headers=headers)
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          pages.append(json.load(response))
+                  except urllib.error.HTTPError as error:
+                      if error.code == 429 or (error.code == 403 and (
+                          error.headers.get("X-RateLimit-Remaining") == "0"
+                          or error.headers.get("Retry-After")
+                      )):
+                          reset = error.headers.get("X-RateLimit-Reset", "not supplied")
+                          sys.exit("::error::GitHub API rate limit reached; tests remain blocked. "
+                                   "Re-run failed CI jobs after the quota resets. "
+                                   f"Reset time (Unix seconds): {reset}.")
+                      raise
+                  if len(pages[-1]["workflow_runs"]) < 100:
+                      break
               return [run for page in pages for run in page["workflow_runs"]]
 
           request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"

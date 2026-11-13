@@ -1415,16 +1415,15 @@ requires a successful `workflow_run` scan for that run ID. A same-named PR-autho
 satisfy it. All ordinary PR gates use hosted runners and the public API. Authorized comment
 runs use main's gate on the allowlisted pool. Queries are scoped to the selected CI request,
 with one-minute polling and an explicit retry message when public API quotas are exhausted.
-`test_security_gate_waits_for_the_current_scan` covers both API paths, failure/timeout,
+`test_security_gate_waits_for_the_current_scan` covers authenticated and anonymous requests, failure/timeout,
 pagination and scan provenance; the request and comment tests cover mismatched identities.
-`test_security_gate_explains_public_rate_limits` checks 403/429 retry messages.
+`test_security_gate_explains_rate_limits` checks 403/429 retry messages.
 The workflow-expression tests verify runner/token selection. These component tests do not
 establish live event delivery, organization runner restrictions or ruleset enforcement.
 
-[The rollout guide](../.github/security/ROLLOUT.md) describes the producer-first deployment,
-required-workflow rule and runner-group restrictions. Until the organization configures those
-controls, ordinary PR workflows remain editable and the full administrative boundary is not
-established. Push, schedule, dispatch and merge-queue events retain the existing bypass policy.
+Organization rules must require the verifier from protected main and restrict runner access;
+PR workflow definitions alone cannot enforce those controls. Push, schedule, dispatch and
+merge-queue events retain the existing bypass policy.
 
 `test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
