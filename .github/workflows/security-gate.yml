@@ -1,0 +1,122 @@
+name: Security Gate
+
+# Adapted from omnigent-ai/omnigent (Apache-2.0). Each caller waits for the
+# independent security-scan.yml run; this workflow never checks out PR code.
+# Missing results, API errors and timeouts block CI, just like scan findings.
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: PR number for a comment-triggered run.
+        type: number
+        required: false
+      head-sha:
+        description: Commit selected by the caller's authorization job.
+        type: string
+        required: false
+
+permissions:
+  actions: read
+
+jobs:
+  gate:
+    name: Security Gate
+    # PR workflow definitions are editable, so every PR gate uses a hosted runner.
+    # Only main's authorized comment path needs the allowlisted pool.
+    runs-on: >-
+      ${{ fromJSON(
+        github.event_name == 'issue_comment' &&
+        '{"group":"databricks-protected-runner-group","labels":"linux-ubuntu-latest"}' ||
+        '"ubuntu-latest"'
+      ) }}
+    timeout-minutes: 25
+    steps:
+      - name: Wait for the shared Security Scan
+        # Queue runs rely on PR admission checks and invalidation after head updates.
+        # Live verification blocks rollout; see tests/README.md#security-scan-rollout.
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
+        env:
+          GH_TOKEN: ${{ github.event_name == 'issue_comment' && github.token || '' }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
+          # Comments reuse an existing scan; their timestamp must not exclude it.
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo, pr, sha, updated = (os.environ[key] for key in (
+              "REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"
+          ))
+          if not re.fullmatch(r"[1-9][0-9]*", pr) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+              sys.exit("::error::Security Gate requires a PR number and an authorized commit SHA.")
+          def workflow_runs(endpoint):
+              token = os.environ.get("GH_TOKEN")
+              headers = {"Authorization": f"Bearer {token}"} if token else {}
+              pages = []
+              while True:
+                  url = f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
+                  request = urllib.request.Request(url, headers=headers)
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          pages.append(json.load(response))
+                  except urllib.error.HTTPError as error:
+                      if error.code == 429 or (error.code == 403 and (
+                          error.headers.get("X-RateLimit-Remaining") == "0"
+                          or error.headers.get("Retry-After")
+                      )):
+                          reset = error.headers.get("X-RateLimit-Reset", "not supplied")
+                          sys.exit("::error::GitHub API rate limit reached; tests remain blocked. "
+                                   "Re-run failed CI jobs after the quota resets. "
+                                   f"Reset time (Unix seconds): {reset}.")
+                      sys.exit(f"::error::GitHub API returned HTTP {error.code}; tests remain blocked. "
+                               "Check API access and GitHub status, then re-run failed CI jobs.")
+                  except (urllib.error.URLError, TimeoutError) as error:
+                      sys.exit(f"::error::GitHub API request failed ({error}); tests remain blocked. "
+                               "Check connectivity and GitHub status, then re-run failed CI jobs.")
+                  if len(pages[-1]["workflow_runs"]) < 100:
+                      break
+              return [run for page in pages for run in page["workflow_runs"]]
+
+          request_endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
+          print(f"Waiting for main's Security Scan for PR #{pr} on {sha}", flush=True)
+          request = None
+          for attempt in range(11):
+              if attempt:
+                  time.sleep(120)
+              if request is None:
+                  requests = [run for run in workflow_runs(request_endpoint)
+                              if run["event"] == "pull_request"
+                              and run["path"] == ".github/workflows/ci.yml"
+                              and run["display_title"] == f"CI #{pr}"
+                              and run["head_sha"] == sha and run["created_at"] >= updated]
+                  request = max(requests, key=lambda run: run["id"], default=None)
+              if request is None:
+                  continue
+              scan_endpoint = (f"repos/{repo}/actions/workflows/security-scan.yml/runs"
+                               f"?event=workflow_run&created=%3E%3D{request['created_at']}&per_page=100")
+              # workflow_run definitions come from main. A PR-authored check with
+              # the same name cannot satisfy this provenance and request-ID check.
+              runs = [run for run in workflow_runs(scan_endpoint)
+                      if run["event"] == "workflow_run"
+                      and run["path"] == ".github/workflows/security-scan.yml"
+                      and run["display_title"] == f"Security Scan for CI run {request['id']}"
+                      and run["created_at"] >= request["created_at"]]
+              latest = max(runs, key=lambda run: run["id"], default=None)
+              if latest and latest["status"] == "completed":
+                  conclusion = latest["conclusion"]
+                  print(f"Security Scan: {conclusion}. {latest['html_url']}")
+                  if conclusion != "success":
+                      print("::error::Security Scan must succeed before CI can run. "
+                            "Resolve or approve the scan, then re-run failed CI jobs.")
+                  sys.exit(0 if conclusion == "success" else 1)
+          sys.exit("::error::Security Scan did not complete within 20 minutes. "
+                   "Check its run, then re-run failed CI jobs.")
+          PY

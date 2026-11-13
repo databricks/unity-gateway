@@ -1,5 +1,12 @@
 # Integration tests
 
+`../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
+fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
+checks run on both platforms. These are not live GitHub or credentialed integration checks.
+
+The trusted scan producer's component coverage and staged enforcement are documented in
+the [main test guide](../README.md). This prerequisite does not change integration authorization.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
