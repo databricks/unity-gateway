@@ -20,7 +20,7 @@ const unwrapGatewayModel = (model: string): string =>
   model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
 
 const canonicalModel = (model: string): string => {
-  const original = unwrapGatewayModel(model)
+  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }
@@ -53,8 +53,7 @@ const ANIMALS = [
 const shortModel = (model: string): string => {
   const unwrapped = unwrapGatewayModel(model)
   const parts = unwrapped.split('.')
-  const name = unwrapped.startsWith('system.ai.') ? unwrapped.slice('system.ai.'.length)
-    : parts.length > 3 ? parts.slice(3).join('.')
+  const name = parts.length > 3 ? parts.slice(3).join('.')
     : parts.length === 3 ? parts[2] : unwrapped
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }

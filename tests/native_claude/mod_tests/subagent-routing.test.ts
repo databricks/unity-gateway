@@ -27,8 +27,9 @@ test('selected model displays the model name without a gateway alias', async ($,
     ['org.catalog.schema.model.v1[1m]', 'model.v1'],
     ['anthropic-aigw-77df06ea-org.catalog.schema.gpt-6.1-sol[1m]', 'gpt-6.1-sol'],
     ['system.ai.glm-5-3-flash', 'glm-5-3-flash'],
-    ['system.ai.claude-3.5-sonnet', 'claude-3.5-sonnet'],
-    ['anthropic-aigw-c442a48-system.ai.gpt-6.1-sol[1m]', 'gpt-6.1-sol'],
+    ['system.ai.claude-3.5-sonnet', '5-sonnet'],
+    ['catalog.schema.claude-3.5-sonnet', '5-sonnet'],
+    ['anthropic-aigw-c442a48-system.ai.gpt-6.1-sol[1m]', '1-sol'],
     ['model.version[1m]', 'model.version'],
     ['plain-model[1m]', 'plain-model'],
     ['databricks-claude-sonnet', 'claude-sonnet'],
@@ -571,7 +572,7 @@ async function collectParentTurn($: any, turnId: string, index = 1) {
   };
 }
 
-test('child continuations use matching launched models for seven- and eight-digit gateway aliases', async ($, on) => {
+test('child continuations preserve existing gateway model identity', async ($, on) => {
   let selected = '';
   let launched = '';
   const continued: string[] = [];
@@ -586,7 +587,7 @@ test('child continuations use matching launched models for seven- and eight-digi
   });
 
   const cases = [
-    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'gpt-6-1-sol'],
+    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol'],
     ['anthropic-aigw-c442a48e-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'gpt-6-1-sol'],
     ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'other-model', 'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol'],
   ];
