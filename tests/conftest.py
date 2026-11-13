@@ -262,12 +262,13 @@ def e2e_state(e2e_workspace):
 def metrics_recorder(monkeypatch):
     from unittest.mock import Mock
 
-    from ucode import metrics, metrics_export
+    from ucode import metrics
+    from ucode.metrics import exporter
 
     # Tests exercise collection and real SDK aggregation without sending developer telemetry.
     runtime = metrics.Recorder("claude", metrics.time.perf_counter())
     monkeypatch.setattr(metrics, "_runtime", runtime)
-    monkeypatch.setattr(metrics_export, "send_in_background", Mock(return_value=None))
+    monkeypatch.setattr(exporter, "send_in_background", Mock(return_value=None))
     yield runtime
     runtime.stop.set()
     runtime.wake.set()

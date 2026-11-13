@@ -37,6 +37,41 @@ Tests live in `tests/`.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
+## CLI performance metrics
+
+Use `from ucode import metrics` for instrumentation. The recorder and helpers live in
+`src/ucode/metrics/__init__.py`; `metrics/exporter.py` aggregates observations with the
+OTel SDK and uploads OTLP to `/api/2.0/ai-gateway/ug-cli/otel/v1/metrics` in a detached process.
+Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
+
+- Keep `begin`/`finish` at the CLI lifecycle boundary and `start_agent`/`agent_handoff`
+  around agent startup. Individual operations must not create or replace the recorder.
+- Call `metrics.bind(workspace, token)` where an operation obtains, reuses, or refreshes
+  its workspace token. Reuse those credentials; never authenticate solely for telemetry.
+  Use the selected workspace key, including its workspace selector. Observations recorded
+  before the first binding belong to that first workspace; pass `workspace=` explicitly
+  when an operation targets a different workspace.
+- Use `@metrics.timed("<operation>_duration_ms")` for a whole synchronous operation,
+  including its retries. It binds existing `workspace`/`token` arguments and records raised
+  errors. Use `metrics.measure(..., operation="<operation>")` for a smaller code block;
+  `metrics.annotate(...)` adds labels discovered during that measurement. Use
+  `metrics.record(...)` for counters, byte sizes, or durations measured across callbacks.
+- Report handled errors with `metrics.failure(operation, error, ...)`; set
+  `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
+  (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
+  result or exception; telemetry must never rerun an operation or change its exit status.
+- Register new names in `DURATION_METRICS` or `COUNTER_METRICS`, and labels in the typed
+  label allowlists. String values must be bounded identifiers; never record tokens, URLs,
+  prompts, response bodies, or raw exception messages. A new non-duration histogram also
+  needs an entry in `METRICS` and its unit and bucket configuration in `exporter.py`.
+- Keep OTel SDK imports and uploads in the exporter. Recording must not wait for locks,
+  process startup, pipe writes, or networking. The daemon worker drains at most 1,000 queued
+  observations every 60 seconds or on a flush signal, with one uploader at a time. Never
+  join it on the command path; losing telemetry, including the final batch, is acceptable.
+- Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
+  tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
+  recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.
+
 ## Smart-routing configuration
 
 `SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in

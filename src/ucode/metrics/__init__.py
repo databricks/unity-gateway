@@ -174,7 +174,7 @@ class Recorder:
         self.wake.set()
 
     def _export_once(self) -> None:
-        from ucode.metrics_export import send_in_background
+        from ucode.metrics.exporter import send_in_background
 
         # A stalled reporter must not produce unbounded children or a second export queue.
         if not self.export_lock.acquire(blocking=False):

@@ -11,8 +11,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import metrics, metrics_export
-from ucode.metrics_export import send_in_background
+from ucode import metrics
+from ucode.metrics import exporter
+from ucode.metrics.exporter import send_in_background
 from ucode.os_compatibility import subprocess_cross_os
 
 HOST = "https://workspace.example.invalid"
@@ -71,7 +72,7 @@ def test_stalled_uploader_does_not_block_handoff_or_exit(metrics_recorder, monke
         return child
 
     # Only the OS process/pipe boundary is controlled; serialization and recorder run normally.
-    monkeypatch.setattr(metrics_export, "send_in_background", send_in_background)
+    monkeypatch.setattr(exporter, "send_in_background", send_in_background)
     monkeypatch.setattr(subprocess_cross_os, "popen", Mock(side_effect=spawn))
     metrics.bind(HOST, "unused-token")
     metrics.record("ug_usage_duration_ms", 12)
@@ -112,13 +113,14 @@ def test_process_exits_while_export_worker_is_stalled():
     code = """
 import os
 import threading
-from ucode import metrics, metrics_export
+from ucode import metrics
+from ucode.metrics import exporter
 entered = threading.Event()
 stalled = threading.Event()
 def upload(*args):
     entered.set()
     stalled.wait()
-metrics_export.send_in_background = upload
+exporter.send_in_background = upload
 os.environ['UG_ENABLE_METRICS_EXPORT'] = '1'
 metrics.begin('usage')
 metrics.record('ug_usage_duration_ms', 12)
@@ -207,7 +209,7 @@ def test_failed_process_creation_is_isolated_and_worker_can_export_again(
             raise OSError("process creation failed")
         return child
 
-    monkeypatch.setattr(metrics_export, "send_in_background", send_in_background)
+    monkeypatch.setattr(exporter, "send_in_background", send_in_background)
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
     metrics.bind(HOST, "unused-token")
     metrics.record("ug_usage_duration_ms", 12)

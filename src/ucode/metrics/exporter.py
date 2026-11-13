@@ -68,7 +68,7 @@ def send_in_background(observations: list, credentials: dict):
     )
     with suppress(OSError):
         reporter = subprocess_cross_os.popen(
-            [sys.executable, "-P", "-m", "ucode.metrics_export"],
+            [sys.executable, "-P", "-m", "ucode.metrics.exporter"],
             stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

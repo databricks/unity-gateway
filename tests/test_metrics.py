@@ -13,7 +13,8 @@ import pytest
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
-from ucode import databricks, metrics, metrics_export, workspace
+from ucode import databricks, metrics, workspace
+from ucode.metrics import exporter
 
 HOST = "https://dbc-test.cloud.databricks.com"
 
@@ -74,10 +75,7 @@ def test_no_credentials_means_no_upload_or_login(monkeypatch):
     login = Mock(side_effect=AssertionError("telemetry must not acquire credentials"))
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
     monkeypatch.setattr(databricks, "get_databricks_token", login)
-    assert (
-        metrics_export.send_in_background([(None, "dependency_setup_duration_ms", 12, {})], {})
-        is None
-    )
+    assert exporter.send_in_background([(None, "dependency_setup_duration_ms", 12, {})], {}) is None
     spawn.assert_not_called()
     login.assert_not_called()
 
@@ -120,9 +118,7 @@ def test_failed_startup_is_flushed_with_its_duration(metrics_recorder, monkeypat
 def test_periodic_export_uses_60_seconds_and_stops(metrics_recorder, monkeypatch):
     flushed = threading.Event()
     metrics.record("ug_usage_duration_ms", 12)
-    monkeypatch.setattr(
-        metrics_export, "send_in_background", Mock(side_effect=lambda *_: flushed.set())
-    )
+    monkeypatch.setattr(exporter, "send_in_background", Mock(side_effect=lambda *_: flushed.set()))
     waits = []
 
     def wait(seconds):
@@ -144,7 +140,7 @@ def test_busy_reporter_keeps_queue_bounded_without_more_children(metrics_recorde
     for n in range(1100):
         metrics.record("proxy_response_bytes", n)
     metrics.flush()
-    metrics_export.send_in_background.assert_not_called()
+    exporter.send_in_background.assert_not_called()
     assert len(metrics_recorder.pending) == 1000
 
 
@@ -168,7 +164,7 @@ def test_shutdown_drops_tail_without_waiting_for_busy_export(metrics_recorder, b
         assert finished.wait(2), "shutdown waited for the busy exporter"
         assert metrics._runtime is None
         assert metrics_recorder.stop.is_set()
-        metrics_export.send_in_background.assert_not_called()
+        exporter.send_in_background.assert_not_called()
         if busy == "reporter":
             metrics_recorder.reporter.wait.assert_not_called()
     finally:
@@ -182,9 +178,7 @@ def test_shutdown_failure_preserves_command_exception(metrics_recorder, monkeypa
     original = RuntimeError("command failed")
     # Fault the clock and upload boundaries, not the cleanup method under test.
     monkeypatch.setattr(metrics.time, "perf_counter", Mock(side_effect=OSError("clock failed")))
-    monkeypatch.setattr(
-        metrics_export, "send_in_background", Mock(side_effect=OSError("spawn failed"))
-    )
+    monkeypatch.setattr(exporter, "send_in_background", Mock(side_effect=OSError("spawn failed")))
 
     with pytest.raises(RuntimeError) as raised:
         try:
@@ -206,7 +200,7 @@ def test_export_failure_does_not_change_command_result(metrics_recorder, monkeyp
         attempted.set()
         raise OSError("full")
 
-    monkeypatch.setattr(metrics_export, "send_in_background", fail_upload)
+    monkeypatch.setattr(exporter, "send_in_background", fail_upload)
     metrics.flush()
     assert attempted.wait(2)
     assert not metrics_recorder.pending
@@ -349,7 +343,7 @@ def metric_data(data):
 
 
 def test_sdk_aggregates_histograms_and_delta_counters_without_empty_metrics():
-    result = metrics_export.aggregate(
+    result = exporter.aggregate(
         [
             ("ug_usage_duration_ms", 10, {"command": "usage", "show_all": False}),
             ("ug_usage_duration_ms", 30, {"command": "usage", "show_all": False}),
@@ -380,7 +374,7 @@ def test_sdk_aggregates_histograms_and_delta_counters_without_empty_metrics():
 
 
 def test_sdk_preserves_individual_labels_and_excludes_unknown_attributes():
-    result = metrics_export.aggregate(
+    result = exporter.aggregate(
         [
             ("ug_usage_duration_ms", 10, {"show_all": False, "prompt": "private"}),
             ("ug_usage_duration_ms", 30, {"show_all": True, "api_operation": "https://private"}),
@@ -407,7 +401,7 @@ def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
     monkeypatch.setattr(requests.Session, "send", send)
     netrc_lookup = Mock(side_effect=AssertionError("telemetry must use its bound bearer"))
     monkeypatch.setattr(requests.sessions, "get_netrc_auth", netrc_lookup)
-    metrics_export.export_batch(
+    exporter.export_batch(
         {
             "workspace": HOST + "?w=111",
             "token": "fake-token",
@@ -445,7 +439,7 @@ def test_exporter_stops_after_disabled_endpoint(monkeypatch):
         return response
 
     monkeypatch.setattr(requests.Session, "post", post)
-    metrics_export.export_batch(
+    exporter.export_batch(
         {
             "workspace": HOST,
             "token": "fake",
@@ -486,7 +480,7 @@ def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(monkeypatch):
     child = Mock(stdin=Pipe())
     spawn = Mock(return_value=child)
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
-    returned = metrics_export.send_in_background(
+    returned = exporter.send_in_background(
         [(HOST, "ug_usage_duration_ms", 10, {"command": "usage"})],
         {HOST: ("fake-workspace-token", {"X-Databricks-Workspace-Id": "111"})},
     )
@@ -517,7 +511,7 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
     thread = Mock()
     upload = Mock()
     monkeypatch.setattr(metrics.threading, "Thread", thread)
-    monkeypatch.setattr(metrics_export, "send_in_background", upload)
+    monkeypatch.setattr(exporter, "send_in_background", upload)
 
     metrics.begin("claude")
     metrics.start_agent("claude")
@@ -538,7 +532,7 @@ def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, value):
     monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
     handed_off = threading.Event()
     upload = Mock(side_effect=lambda *_: handed_off.set())
-    monkeypatch.setattr(metrics_export, "send_in_background", upload)
+    monkeypatch.setattr(exporter, "send_in_background", upload)
 
     metrics.begin("usage")
     runtime = metrics._runtime
@@ -562,7 +556,7 @@ def test_collection_uses_ug_flag_independently_of_global_otel_setting(monkeypatc
     monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", "1")
     monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
     upload = Mock(return_value=None)
-    monkeypatch.setattr(metrics_export, "send_in_background", upload)
+    monkeypatch.setattr(exporter, "send_in_background", upload)
     metrics.begin("usage")
     runtime = metrics._runtime
     try:
