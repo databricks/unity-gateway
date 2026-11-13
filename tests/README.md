@@ -1385,9 +1385,9 @@ Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
 Open Code Review with the trusted UG rubric and inline findings.
 It reuses the review service principal through the Databricks gateway's Anthropic route.
-Adding either `ug-review` or `code-review` also requests
-review on in-repository PRs. Fork reviews accept a member comment, or the author's comment
-when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered run has no secrets.
+Adding either `ug-review` or `code-review`, or marking a draft ready for review, also
+requests review on in-repository PRs. Fork reviews accept a member comment, or the author's
+comment when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered run has no secrets.
 Label removal and ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers
 gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,

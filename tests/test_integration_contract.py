@@ -785,7 +785,9 @@ def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_check
     workflow = _workflow("ug-review.yml")
 
     assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
-    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert re.search(
+        r"(?m)^on:\n  pull_request:\n    types: \[labeled, ready_for_review\]\n", workflow
+    )
     assert (
         'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
     )
