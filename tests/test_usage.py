@@ -19,23 +19,26 @@ SHARED = "ALERT_CONFIGURATION_SCOPE_TYPE_SHARED"
 
 class TestRenderBudgetLimits:
     @pytest.mark.parametrize(
-        ("scope_type", "time_period", "expected_label"),
+        ("scope_type", "time_period", "expected_label", "expected_period"),
         [
-            (PER_USER, "WEEK", "WEEK personal limit"),
+            (PER_USER, "WEEK", "Week personal limit", "this week"),
             (
                 "ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP",
                 "MONTH",
-                "Monthly scope ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP limit",
+                "Monthly per-group limit",
+                "this month",
             ),
+            ("ALERT_CONFIGURATION_SCOPE_TYPE_FUTURE", "WEEK", "Week future limit", "this week"),
             (
-                "ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP",
-                "WEEK",
-                "WEEK scope ALERT_CONFIGURATION_SCOPE_TYPE_PER_GROUP limit",
+                PER_USER,
+                "ALERT_CONFIGURATION_TIME_PERIOD_UNSPECIFIED",
+                "Unspecified personal limit",
+                "this unspecified",
             ),
         ],
     )
-    def test_preserves_unknown_enums_with_generic_labels(
-        self, scope_type, time_period, expected_label
+    def test_renders_unknown_enums_as_readable_generic_labels(
+        self, scope_type, time_period, expected_label, expected_period
     ):
         result = render_budget_limits(
             [
@@ -53,19 +56,21 @@ class TestRenderBudgetLimits:
         text = Text.from_markup(result).plain
 
         assert expected_label in text
+        assert "ALERT_CONFIGURATION" not in text
+        assert time_period not in text
         assert "85.25% used" in text
         assert "0% used" in text
         assert "Daily shared limit" in text
         assert "Monthly shared limit" not in text
         assert "Monthly personal limit" not in text
         if scope_type == PER_USER:
-            assert "$10.00 of $20.00 used · $10.00 remaining for period WEEK" in text
+            assert f"$10.00 of $20.00 used · $10.00 remaining {expected_period}" in text
+            assert "for period" not in text
             assert "today" not in text
-            assert "this month" not in text
         else:
             assert "$" not in text
 
-    def test_displays_unknown_enums_as_literal_text(self):
+    def test_escapes_markup_in_unknown_enum_values(self):
         result = render_budget_limits(
             [
                 BudgetLimitStatus(
@@ -75,8 +80,8 @@ class TestRenderBudgetLimits:
         )
         text = Text.from_markup(result)
 
-        assert "[red]WEEK[/red] personal limit" in text.plain
-        assert "$20.00 limit for period [red]WEEK[/red]" in text.plain
+        assert "[red]week[/red] personal limit" in text.plain
+        assert "$20.00 limit this [red]week[/red]" in text.plain
         assert all(span.style != "red" for span in text.spans)
 
     def test_shows_limits_in_one_list(self):
@@ -210,7 +215,7 @@ class TestRenderBudgetLimits:
         )
 
         for index in range(6):
-            assert f"PERIOD_{index} personal limit" in result
+            assert f"Period-{index} personal limit" in result
         assert result.count("% used") == 6
         assert "Showing " not in result
 
