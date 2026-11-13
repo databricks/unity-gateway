@@ -1094,6 +1094,8 @@ def _resolve_managed_mcp_sources(
         {source[: -len(".*")] for source, kind in kinds.items() if kind == MCP_SOURCE_SCHEMA}
     )
     names = [source for source, kind in kinds.items() if kind == MCP_SOURCE_NAME]
+    if locations and token is None:
+        token = get_databricks_token(workspace, profile)
     working: list[dict] = []
     for location in locations:
         try:
@@ -1105,15 +1107,22 @@ def _resolve_managed_mcp_sources(
         except McpLocationNotFound as exc:
             print_warning(f"Skipping managed mcp_servers source `{location}.*`: {exc}")
     working.extend(_named_mcp_server_entries(names, workspace, clients))
-    # A name can also be covered by a schema pattern; register it once.
+    # A name can also be covered by a schema pattern; register it once. Entry names replace dots
+    # with dashes, so two different services (`main.a-b.c`, `main.a.b-c`) can map to one name;
+    # keep the first and say so rather than dropping the second silently.
     deduped: list[dict] = []
-    seen: set[str] = set()
+    url_by_name: dict[str, object] = {}
     for server in working:
         name = _server_name(server)
-        if name in seen:
+        if name in url_by_name:
+            if url_by_name[name] != server.get("url"):
+                print_warning(
+                    f"Skipping managed MCP service at {server.get('url')}: its entry name `{name}` "
+                    "is already used by another service."
+                )
             continue
         if name:
-            seen.add(name)
+            url_by_name[name] = server.get("url")
         deduped.append(server)
     return deduped
 
@@ -1167,6 +1176,10 @@ def _named_mcp_server_entries(names: list[str], workspace: str, clients: list[st
     for full_name in sorted(set(names)):
         entry_name = full_name.replace(".", "-")
         if entry_name in seen:
+            print_warning(
+                f"Skipping managed MCP service `{full_name}`: its entry name `{entry_name}` is "
+                "already used by another service."
+            )
             continue
         seen.add(entry_name)
         working.append(

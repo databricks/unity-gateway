@@ -2843,9 +2843,11 @@ def list_mcp_services(
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
-    A scoped listing that fails after its first page returns the pages it already has with no
-    error, unless ``strict`` is set: then any failed page is reported, so a caller that removes
-    servers missing from the listing never acts on a partial one.
+    A scoped listing whose later page fails returns the services it already has with no error,
+    unless ``strict`` is set. Strict mode reports every incomplete listing (a failed later page, a
+    repeated page token, the page limit, or a malformed body) so a caller that removes servers
+    missing from the listing never acts on a partial one. A later-page failure is prefixed with
+    ``incomplete listing:`` so it never reads as a missing schema (``HTTP 404``).
     """
     hostname = workspace_hostname(workspace)
     expected_prefix = parent + "." if parent is not None else None
@@ -2867,10 +2869,15 @@ def list_mcp_services(
         url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
         timeout = max(1, min(10, int(deadline - time.monotonic() + 1))) if deadline else 30
         payload, reason = _http_get_json(url, token, timeout=timeout)
+        if strict and not isinstance(payload, dict):
+            failure = reason or "unexpected MCP listing response"
+            if page_token:
+                return sorted(seen_names), f"incomplete listing: {failure}"
+            return sorted(seen_names), failure
         if payload is None:
             # An interrupted metastore listing is incomplete, even if earlier pages
             # returned services. Keep the scoped caller's existing behavior.
-            if parent is None or strict or not seen_names:
+            if parent is None or not seen_names:
                 return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}

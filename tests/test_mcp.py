@@ -3655,6 +3655,10 @@ class TestPurgeCrossWorkspaceSkillsEntry:
 
 
 class TestResolveManagedMcpServers:
+    @pytest.fixture(autouse=True)
+    def _no_real_token_lookup(self, monkeypatch):
+        monkeypatch.setattr(mcp, "get_databricks_token", lambda *a, **k: "tok")
+
     def test_location_registers_the_whole_schema(self, monkeypatch):
         captured: dict = {}
 
@@ -3810,7 +3814,7 @@ class TestResolveManagedMcpServers:
             "_resolve_location_mcp_servers",
             lambda *a, **k: pytest.fail("no valid schema pattern to discover"),
         )
-        bad = ["system.*", "main.tools.c*", "a .b.*"]
+        bad = ["system.*", "a.b.c.d", "*", "main.tools.c*", "a.*.*", "a. b.c", "a .b.*"]
         out = mcp._resolve_managed_mcp_servers(
             {"sources": [*bad, "system.ai.slack"]}, WS, None, ["claude"]
         )
@@ -3871,8 +3875,40 @@ class TestResolveManagedMcpServers:
                 {"sources": ["system.ai.*"]}, WS, None, ["claude"], token="tok"
             )
 
+    def test_sources_fail_when_a_later_page_returns_404(self, monkeypatch):
+        # A 404 on page 2 is an incomplete listing, not a missing schema, so the schema's servers
+        # must not be dropped.
+        import ucode.databricks as db_mod
+
+        def fake_get(url, token, timeout=30, **kwargs):
+            if "page_token" in url:
+                return None, "HTTP 404 Not Found: NOT_FOUND"
+            return {"mcp_services": [{"name": "system.ai.github"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        with pytest.raises(RuntimeError, match="incomplete listing") as excinfo:
+            mcp._resolve_managed_mcp_servers(
+                {"sources": ["system.ai.*"]}, WS, None, ["claude"], token="tok"
+            )
+        assert not isinstance(excinfo.value, mcp.McpLocationNotFound)
+
+    def test_sources_warn_when_two_services_share_an_entry_name(self, monkeypatch):
+        warned: list[str] = []
+        monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            lambda *a, **k: pytest.fail("exact names need no discovery"),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["main.a-b.c", "main.a.b-c"]}, WS, None, ["claude"]
+        )
+        assert [s["url"] for s in out] == [mcp.build_mcp_service_url(WS, "main.a-b.c")]
+        assert len(warned) == 1 and "main-a-b-c" in warned[0]
+
+    # The deprecated single location keeps the lenient paging it always had: on a failed later
+    # page it registers the pages it got. Only `sources` requires a complete listing.
     def test_location_keeps_its_lenient_paging(self, monkeypatch):
-        # The deprecated single location still accepts the pages it got (existing behavior).
         self._two_page_listing_that_fails_on_page_two(monkeypatch)
         out = mcp._resolve_managed_mcp_servers(
             {"unity_catalog_location": "system.ai"}, WS, None, ["claude"], token="tok"

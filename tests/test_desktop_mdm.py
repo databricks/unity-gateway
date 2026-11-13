@@ -737,14 +737,3 @@ def test_configure_refuses_to_overwrite_a_corrupt_policy(device):
     with pytest.raises(RuntimeError, match="not this UG deployment"):
         mdm.configure(WORKSPACE, "admin")
     assert mdm.POLICY_PATH.read_bytes() == b"not a plist"
-
-
-def test_mcp_selector_accepts_sources():
-    mdm._validate_selector({"sources": ["main.exa.*", "system.ai.*", "main.tools.foo"]})
-
-
-# Representative boundaries; the full grammar is covered by test_mcp_source_kind.
-@pytest.mark.parametrize("source", ["a.*", "a.b.c*", "a. b.c"])
-def test_mcp_selector_rejects_malformed_sources(source):
-    with pytest.raises(RuntimeError, match="catalog.schema.name or catalog.schema"):
-        mdm._validate_selector({"sources": [source]})

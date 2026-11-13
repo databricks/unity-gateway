@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ucode import config_io, databricks, managed_files
 from ucode.agents.desktop import claude_config, cowork, setup
-from ucode.managed_config import get_managed_config, mcp_source_kind, normalize_managed_config
+from ucode.managed_config import get_managed_config, normalize_managed_config
 from ucode.managed_resolve import (
     managed_enabled_tools,
     managed_provider_service,
@@ -232,13 +232,6 @@ def _validate_selector(selector: dict) -> None:
     ):
         raise RuntimeError(
             "MDM skill and MCP names must be fully qualified catalog.schema.name values."
-        )
-    sources = selector.get("sources") or []
-    if not isinstance(sources, list) or any(
-        not isinstance(source, str) or mcp_source_kind(source) is None for source in sources
-    ):
-        raise RuntimeError(
-            "MDM MCP sources must be catalog.schema.name or catalog.schema.* values."
         )
 
 
