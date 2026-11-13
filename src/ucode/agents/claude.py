@@ -293,7 +293,7 @@ CLAUDE_OPTIONAL_CUSTOM_HEADER_NAMES = frozenset({AI_GATEWAY_REQUEST_TAGS_HEADER.
 CLAUDE_OPTIONAL_ATTRIBUTION_HEADER_NAMES = frozenset(
     {"user-agent", SMART_ROUTER_RECIPE_HEADER.casefold()}
 )
-# Relayed drops the user scope to deliberately omit the stale apiKeyHelper. Only applied to relayed
+# Relayed drops the user scope to deliberately omit stale credentials. Only applied to relayed
 # launches — normal launches keep loading user settings (hooks/permissions) as before.
 _RELAYED_SETTING_SOURCES = "project,local"
 
@@ -498,6 +498,9 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
             conflicts.append("env.ANTHROPIC_BASE_URL")
         if env.get("ANTHROPIC_CUSTOM_HEADERS"):
             conflicts.append("env.ANTHROPIC_CUSTOM_HEADERS")
+        for key in CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS:
+            if env.get(key):
+                conflicts.append(f"env.{key}")
     return conflicts
 
 
@@ -2687,32 +2690,11 @@ def _relayed_mcp_config_args(tool_args: list[str]) -> list[str]:
     return ["--mcp-config", json.dumps({"mcpServers": servers}, separators=(",", ":"))]
 
 
-def _relayed_user_credential_override() -> dict | None:
-    # Claude can load user settings as project settings when launched from home.
-    try:
-        project_dir = Path.cwd() / ".claude"
-    except OSError:
-        return None
-    config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    user_dir = Path(config_dir) if config_dir else Path.home() / ".claude"
-    names = ("settings.json", "settings.local.json")
-    user_paths = set()
-    for name in names:
-        try:
-            user_paths.add((user_dir / name).resolve())
-        except (OSError, RuntimeError):
-            continue
-    for name in names:
-        try:
-            project_path = (project_dir / name).resolve()
-        except (OSError, RuntimeError):
-            continue
-        if project_path in user_paths:
-            return {
-                "apiKeyHelper": "",
-                "env": dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
-            }
-    return None
+def _relayed_credential_override() -> dict:
+    return {
+        "apiKeyHelper": "",
+        "env": dict.fromkeys(CLAUDE_BLANKED_CREDENTIAL_ENV_KEYS, ""),
+    }
 
 
 def _build_claude_argv(
@@ -2739,9 +2721,10 @@ def _build_claude_argv(
     through as a second, colliding flag.
 
     ``relayed`` adds ``--setting-sources`` to exclude the user scope (see
-    :data:`_RELAYED_SETTING_SOURCES`), so a stale user-scope apiKeyHelper cannot
-    filter through and shadow the subscription OAuth. That also drops the user-scope
-    MCP servers, so they are handed back via ``--mcp-config`` (see
+    :data:`_RELAYED_SETTING_SOURCES`) and independently applies launch-scoped empty
+    ``apiKeyHelper`` and Anthropic API credentials, so project, local, or caller settings
+    cannot shadow the native subscription OAuth. That also drops the user-scope MCP
+    servers, so they are handed back separately via ``--mcp-config`` (see
     :func:`_relayed_mcp_config_args`).
     """
     source_args = (
@@ -2750,7 +2733,7 @@ def _build_claude_argv(
         else []
     )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    credential_override = _relayed_user_credential_override() if relayed else None
+    credential_override = _relayed_credential_override() if relayed else None
     if (
         not caller_values
         and settings_override is None
@@ -2814,12 +2797,8 @@ def _claude_launch_argv(
 
 def _has_subscription_login() -> bool:
     """True when Claude Code holds a Claude subscription login that a relayed launch will use."""
-    credential_override = _relayed_user_credential_override()
-    settings_args = (
-        ["--settings", json.dumps(credential_override, separators=(",", ":"))]
-        if credential_override is not None
-        else []
-    )
+    credential_override = _relayed_credential_override()
+    settings_args = ["--settings", json.dumps(credential_override, separators=(",", ":"))]
     try:
         result = subprocess_cross_os.run(
             [
