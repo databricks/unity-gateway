@@ -1,0 +1,56 @@
+{
+  "source_commit": "3c080f7db0e7beb0d3285b57ed52360d018724d9",
+  "recorded_at": "2026-11-13T20:24:17.631193+00:00",
+  "runtime": {
+    "name": "Claude Code",
+    "version": "2.1.322",
+    "sha256": "bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478",
+    "python": "3.12"
+  },
+  "capture": "Live native PTY output rendered in real time at 10 fps; sidebar uses events observed during the same execution.",
+  "duration_seconds": 16.3,
+  "video": {
+    "file": "native-cooldown.mp4",
+    "bytes": 245467,
+    "sha256": "b193923d1fcea4a9774fa0953d6923874d01126c7e04a12e829a6f21184becca"
+  },
+  "poster": {
+    "file": "cooldown-poster.png",
+    "bytes": 377601,
+    "sha256": "791e0ffb98af6acd7e046b480b01fd77e78988d4ce5b7a026c6db1da740139c0"
+  },
+  "controlled_inputs": {
+    "user_prompt": "Start a background child to return the prepared local fixture response.",
+    "parent_model": "claude-opus-4-6",
+    "initial_candidates": [
+      "system.ai.glm-5-3-flash",
+      "system.ai.claude-haiku-5-5"
+    ],
+    "model_and_router_responses": "Prepared local HTTP fixtures; the router fixture selects glm-5-3-flash whenever it remains eligible, otherwise claude-haiku-5-5.",
+    "native_max_retries": 0,
+    "network": "Isolated network namespace with only loopback enabled."
+  },
+  "observed_execution": {
+    "initial_model": "system.ai.glm-5-3-flash",
+    "initial_response_status": 429,
+    "native_failure_notice": true,
+    "cooldown_seconds": 60,
+    "next_request_after_failure_seconds": 4.048836946487427,
+    "next_route_exclusions": [
+      "glm-5-3-flash"
+    ],
+    "next_request_candidates": [
+      "system.ai.claude-haiku-5-5"
+    ],
+    "replacement_model": "system.ai.claude-haiku-5-5",
+    "native_replacement_completion": true
+  },
+  "verification": {
+    "generated_mod_matches_source": true,
+    "native_python_entry_point_bound_to_source": true,
+    "full_video_decode_errors": 0,
+    "focused_cases_passed": 62,
+    "focused_junit_sha256": "2d3dee4107a24515c52ce34cc6f7ce5e2cacfd23906765d462504f6d35a4017b"
+  },
+  "limits": "Demonstrates native failure notification, cooldown exclusion and replacement launch with controlled inputs. Does not establish live instruction following, provider compatibility, quota recovery or billing."
+}
