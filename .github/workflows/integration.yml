@@ -867,6 +867,12 @@ jobs:
         run: |
           uv run --no-project --python 3.12 --with pytest pytest \
             -c tests/e2e_mdm/pytest.ini --confcutdir=tests/e2e_mdm --rootdir=. tests/e2e_mdm -v
+      - name: Installed versions
+        if: ${{ !cancelled() }}
+        run: |
+          for tool in ug claude codex; do
+            printf '%s: ' "$tool"; /usr/local/bin/"$tool" --version 2>&1 || true
+          done
 
   dedicated-cuj-plan:
     name: Plan E2E CUJs

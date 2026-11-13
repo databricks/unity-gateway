@@ -120,7 +120,8 @@ def test_no_credentials_written_to_root_home(machine, provisioned):
 
 
 def test_provisioning_left_the_user_home_untouched(demoted):
-    leaked = [p for p in demoted.home if p.startswith(f"{HOME}/.ucode") or ".claude" in p]
+    state = tuple(f"{HOME}/{name}" for name in (".ucode", ".claude", ".codex", ".databricks"))
+    leaked = [p for p in demoted.home if p.startswith(state)]
     assert not leaked, leaked
 
 
