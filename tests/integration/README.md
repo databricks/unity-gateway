@@ -12,7 +12,8 @@ root and match its thread ID, excluding native temporary threads used for titles
 Windows uses UG's installed Python and native
 approval dialogs, preserving the sandbox.
 The busy child's full assignment is an ordinary input file so the parent only passes
-its filename. The follow-up asks for a new receipt and identifies the old answer.
+its absolute path. Gate and value paths are absolute too, preserving access if a child
+changes directories. The follow-up asks for a new receipt and identifies the old answer.
 Assertions still require every native child, message delivery, and completed answer.
 
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit

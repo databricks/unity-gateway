@@ -25,8 +25,9 @@ See the [integration guide](integration/README.md) for live continuity journeys 
 transport/backend validation limits.
 
 The busy-child journey passes its full assignment through an ordinary input file and
-distinguishes the follow-up receipt from the original answer. Continuity assertions remain
-the same; model task omission or a stale answer still fails the journey.
+uses absolute input paths so a child changing directories can still run its gate command.
+It distinguishes the follow-up receipt from the original answer. Continuity assertions
+remain the same; model task omission or a stale answer still fails the journey.
 
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace

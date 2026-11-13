@@ -146,9 +146,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
     )
     assignment = (
-        f'Run {python} "{gate.name}" exactly once. This command waits for a release file; '
+        f'Run {python} "{gate}" exactly once. This command waits for a release file; '
         "let it run without restarting it. After it finishes, spawn exactly one child with "
-        f"task_name nested, fork_turns none, asking it to read {secret.name} and return its "
+        f'task_name nested, fork_turns none, asking it to read "{secret}" and return its '
         "entire contents. Then use send_message to send 'old sibling reached new sibling' "
         "to /root/new__sr_off. Wait for your child's answer and return that value."
     )
@@ -163,7 +163,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         tui.boot()
         tui.submit(
             "Spawn exactly one native child with task_name old, fork_turns none, and message "
-            f"'Read {assignment_file.name} and complete every instruction in it.' "
+            f"'Read \"{assignment_file}\" and complete every instruction in it.' "
             f"End your turn with ONLY 'started {marker}' immediately "
             "after spawning. Do not wait for it or run its commands yourself."
         )
