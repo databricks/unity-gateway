@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from ucode import custom_oauth
-from ucode.agents import copilot
+from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.telemetry import client_platform
 
@@ -99,6 +99,45 @@ class TestClassifyCopilotModel:
 
 
 class TestBuildCopilotCatalog:
+    def test_provider_wildcards_reach_the_registry_with_qualified_ids(self, monkeypatch):
+        services = {
+            "main.default.lilly-personal-anthropic": (
+                "anthropic",
+                ["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+            ),
+            "main.default.lill-oai": ("openai", ["gpt-6.1-sol", "gpt-6.1-terra"]),
+        }
+        monkeypatch.setattr(
+            model_sources,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"provider_type": services[name][0]}, None),
+        )
+        monkeypatch.setattr(
+            model_sources,
+            "list_provider_service_models",
+            lambda workspace, token, name, provider: (services[name][1], None),
+        )
+        models, _ = model_sources.resolve_model_sources(
+            [SONNET, *(f"{service}.*" for service in services)], "copilot", WS, "token"
+        )
+        state = {"copilot_static_models": models}
+        result = copilot.render_providers_config(copilot.copilot_catalog(state), PROXY, "secret")
+
+        expected = {SONNET: "anthropic"}
+        expected.update(
+            (f"{service}.{model}", "anthropic" if provider == "anthropic" else "responses")
+            for service, (provider, names) in services.items()
+            for model in names
+        )
+        assert {entry["id"] for entry in result["models"]} == set(expected)
+        assert copilot.unservable_static_models(state) == []
+        for entry in result["models"]:
+            assert entry["wireModel"] == entry["id"]
+            assert entry["provider"] == copilot.PROVIDER_NAMES[expected[entry["id"]]]
+            if expected[entry["id"]] == "anthropic":
+                assert entry["modelId"].startswith("claude-")
+                assert entry["maxPromptTokens"] == 872_000
+
     def test_orders_claude_by_family_newest_first_then_gpt(self):
         models = catalog(
             "system.ai.gpt-5-4",

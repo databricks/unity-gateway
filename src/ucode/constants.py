@@ -51,6 +51,7 @@ UG_HEADERS_ENV_VAR = "UG_HEADERS"
 UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
 # Saved by `ug configure --enable-server-side-web-search`; absent means off.
 CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY = "claude_server_side_web_search"
+MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY = "managed_model_source_expansions"
 
 
 # MCP server registration scopes. Claude Code supports local/project/user; the

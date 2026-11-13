@@ -72,6 +72,15 @@ def test_duplicate_labels_fall_back_to_full_ids_but_not_hidden_aliases(bundled):
     assert models[4]["visibility"] == "hide"
 
 
+def test_provider_labels_keep_dotted_versions_and_full_slugs(bundled):
+    names = ["main.default.lill-oai.gpt-6.1-sol", "main.default.lill-oai.gpt-6.1-terra"]
+    models = catalog.build_codex_catalog(bundled, names)["models"]
+
+    assert [(m["slug"], m["display_name"]) for m in models] == list(
+        zip(names, ["GPT 6.1 Sol", "GPT 6.1 Terra"], strict=True)
+    )
+
+
 def test_only_selected_gpt_models_get_hidden_routing_aliases(bundled):
     names = ["system.ai.gpt-6-astra", "system.ai.gpt-5-2", "gpt-5.2"]
     models = catalog.build_codex_catalog(bundled, names)["models"]

@@ -663,17 +663,79 @@ class TestRenderOverlay:
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
+    @pytest.mark.parametrize("source", ["static", "discovered"])
+    def test_picker_description_hides_gateway_prefix_without_changing_model(self, source):
+        glm = "anthropic-aigw-77df06ae-system.ai.glm-5-3-flash"
+        gpt = "anthropic-aigw-c442a48e-system.ai.gpt-6-1-sol"
+        short_gpt = "anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]"
+        plain = "system.ai.claude-haiku-5-5"
+        models = [glm, gpt, short_gpt, plain]
+        kwargs = (
+            {"static_models": models}
+            if source == "static"
+            else {
+                "picker_catalog": db_mod.AnthropicModelCatalog(
+                    model_ids=models, model_id_to_display_name={}
+                )
+            }
+        )
+
+        overlay, _ = claude.render_overlay(WS, "s4", **kwargs)
+
+        options = overlay["modelPicker"]["options"]
+        assert [option["model"] for option in options] == [glm, f"{gpt}[1m]", short_gpt, plain]
+        assert options[0]["description"] == "Managed by your organization (system.ai.glm-5-3-flash)"
+        assert (
+            options[1]["description"] == "Managed by your organization (system.ai.gpt-6-1-sol[1m])"
+        )
+        assert options[2]["description"] == options[1]["description"]
+        assert "description" not in options[3]
+        if source == "static":
+            assert overlay["availableModels"] == models
+            assert all("behavesAs" not in option for option in options)
+
+    def test_picker_preserves_explicit_description_for_gateway_alias(self):
+        model = "anthropic-aigw-1234abcd-system.ai.claude-haiku-5-5"
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[model],
+            model_id_to_display_name={model: "Claude Haiku 5.5"},
+            model_id_to_description={model: "For quick tasks"},
+        )
+
+        overlay, _ = claude.render_overlay(WS, "s4", picker_catalog=catalog)
+
+        assert overlay["modelPicker"]["options"] == [
+            {
+                "model": model,
+                "label": "Claude Haiku 5.5",
+                "description": "For quick tasks",
+                "behavesAs": "claude-haiku-5-5",
+            }
+        ]
+
     def test_static_models_label_is_prettified(self):
-        # Picker labels drop the ``system.ai.`` prefix and are title-cased with a dotted version.
         static = [
             "system.ai.claude-opus-4-8",
             "system.ai.glm-5-3",
             "system.ai.kimi-k3",
             "databricks-custom-model",
+            "main.default.lilly-personal-anthropic.claude-haiku-5-5",
+            "main.default.lilly-personal-anthropic.claude-opus-5-5",
+            "main.default.lilly-personal-anthropic.claude-sonnet-5-5",
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
-        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+        assert labels == [
+            "Claude Opus 4.8",
+            "GLM 5.3",
+            "Kimi K3",
+            "Databricks Custom Model",
+            "Claude Haiku 5.5",
+            "Claude Opus 5.5",
+            "Claude Sonnet 5.5",
+        ]
+        assert overlay["availableModels"] == static
+        assert [opt["model"] for opt in overlay["modelPicker"]["options"]] == static
 
 
 class TestRenderOverlayOtelTracing:

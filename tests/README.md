@@ -1570,3 +1570,18 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+`ucode.agents.model_sources` owns schema/provider wildcard dispatch and provider-ID qualification.
+`ty` checks the schema catalog callbacks registered in `SCHEMA_MODEL_CATALOGS`.
+Copilot schema wildcards use UC model-service entries and the existing Copilot catalog builder,
+which includes Claude, GPT, and supported open models while filtering incompatible APIs.
+Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
+and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
+wire APIs and Claude limits. These checks use controlled discovery responses.
+Claude picker description checks cover static and discovered gateway aliases with seven- and
+eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
+context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
+is not covered by these component checks.
+Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
+component coverage. No installed-agent journey currently covers mixed wildcard sources or
+proves inference with qualified MPS models.
