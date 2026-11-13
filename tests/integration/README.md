@@ -1,7 +1,8 @@
 # Integration tests
 
 Comment-triggered `/integration-test` runs require authorization and a successful shared
-Security Scan for the same pinned PR commit before CI secrets are supplied. The gate, runner
+Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
+that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner
 selection and failure-reporting component tests are documented in the [main test guide](../README.md).
 They do not exercise live GitHub comment delivery or credentialed integration runs.
 

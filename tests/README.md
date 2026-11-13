@@ -1358,22 +1358,28 @@ or skipped dependency fails the gate, and a running integration suite keeps it
 pending. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
-One independent `Security Scan` (`security-scan.yml`) runs per PR event and statically scans
-authors GitHub does not report as owners, members, or collaborators. CI and the publish-skills
-workflow each start with `Security Gate` (`security-gate.yml`), which waits for that shared run.
-Fork PR gates use GitHub-hosted runners and the public, unauthenticated API; same-repository
-PRs and authorized comment runs use the allowlisted runner group and a read-only token.
-Public API rate limits fail closed, like other API errors. The gate matches the workflow path,
-PR number, head SHA and event timestamp, then requires success; findings, missing results, API errors and timeouts block
-tests and fail the required `test` and `e2e` checks. Trusted authors pass the scan in seconds;
-push, schedule, dispatch and merge-queue events do not wait. A maintainer can apply
-`skip-security-scan` and close/reopen the PR to refresh all workflows' event payloads.
-`test_security_gate_waits_for_the_current_scan` covers pending, successful, failed, absent,
-stale and unrelated runs, including empty fork PR associations and paginated results over both
-API paths. `test_security_gate_api_errors_block_ci` checks authenticated API failures and public
-API rate limits. `test_security_gate_runner_and_token_respect_event_trust` evaluates the workflow
-expressions to keep fork PR gates on hosted runners without a token. These component tests
-do not validate live runner access, workflow scheduling or GitHub API permissions.
+One shared `Security Scan` runs from the default branch on `workflow_run: requested` for
+PR CI. Its protected resolver validates the PR, source repository, branch and commit against
+GitHub; its separate hosted job statically scans the PR using policy from the workflow's main
+commit. `tests/test_security_scan_request.py` covers request validation and that policy wiring.
+There is no bootstrap pass when the trusted workflow is missing.
+
+CI and publisher tests wait through `Security Gate`. The gate finds the PR's CI request and
+requires a successful `workflow_run` scan for that run ID. A same-named PR-authored scan cannot
+satisfy it. All ordinary PR gates use hosted runners and the public API. Authorized comment
+runs use main's gate on the allowlisted pool. Queries are scoped to the selected CI request,
+with one-minute polling and an explicit retry message when public API quotas are exhausted.
+`test_security_gate_waits_for_the_current_scan` covers both API paths, failure/timeout,
+pagination and scan provenance; the request and comment tests cover mismatched identities.
+`test_security_gate_explains_public_rate_limits` checks 403/429 retry messages.
+The workflow-expression tests verify runner/token selection. These component tests do not
+establish live event delivery, organization runner restrictions or ruleset enforcement.
+
+[The rollout guide](../.github/security/ROLLOUT.md) describes the producer-first deployment,
+required-workflow rule and runner-group restrictions. Until the organization configures those
+controls, ordinary PR workflows remain editable and the full administrative boundary is not
+established. Push, schedule, dispatch and merge-queue events retain the existing bypass policy.
+
 `test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
 `test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be

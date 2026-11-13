@@ -1,35 +1,88 @@
 name: Security Scan
-run-name: 'Security Scan #${{ github.event.pull_request.number }}'
+run-name: 'Security Scan for CI run ${{ github.event.workflow_run.id }}'
 
 # Statically scans PRs from untrusted authors (anyone GitHub doesn't report as
 # OWNER, MEMBER, or COLLABORATOR) for committed secrets, exfiltration and
 # obfuscated exec, edits to privileged paths, known-vulnerable locked
 # dependencies, and local semgrep rules. It never runs PR code and gets no
-# secrets. The scanner and the trust decision come from `main`, so a PR can't
-# edit them; the PR head is only read, from a separate `pr/` checkout.
+# secrets. workflow_run loads this entire workflow from the default branch.
+# The PR head is only read, from a separate `pr/` checkout on a hosted runner.
 #
-# Runs once per PR event. CI, publisher tests and authorized /integration-test
-# runs use security-gate.yml to wait for this result before running PR code.
-# Trusted authors pass in seconds; scheduled, push and merge-queue CI bypass the gate.
-#
-# The org IP allow list blocks GitHub-hosted runners from the GitHub API, so
-# this job makes no API calls: it fetches this public repository anonymously
-# and reads labels from the event payload.
+# Runs once when PR CI is requested, before its waiting gate can release tests.
+# Re-running CI reuses its scan; re-run this workflow to rescan that request.
 #
 # Adapted from omnigent-ai/omnigent (Apache-2.0), .github/workflows/security-scan.yml.
-on:
-  pull_request:
+on: # zizmor: ignore[dangerous-triggers] main-only metadata resolver; separate read-only hosted scan never executes PR code
+  workflow_run:
+    workflows: [CI]
+    types: [requested]
 
 permissions:
   contents: read
 
 concurrency:
-  group: security-scan-${{ github.event.pull_request.number }}
+  group: security-scan-${{ github.event.workflow_run.id }}
   cancel-in-progress: true
 
 jobs:
+  resolve:
+    name: Resolve scan request
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    outputs:
+      metadata: ${{ steps.pr.outputs.metadata }}
+    steps:
+      - name: Validate the requested PR against GitHub
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          event = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
+          request = event["workflow_run"]
+          match = re.fullmatch(r"CI #([1-9][0-9]*)", request["display_title"])
+          if (request["event"] != "pull_request" or
+                  request["path"] != ".github/workflows/ci.yml" or not match):
+              sys.exit("::error::Expected a PR CI request with its PR number in the run name.")
+          repo, number = os.environ["REPO"], int(match[1])
+          pr = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{repo}/pulls/{number}"], timeout=30
+          ))
+          head_repo = pr["head"]["repo"]
+          if (pr["number"] != number or pr["state"] != "open" or not head_repo or
+                  pr["base"]["repo"]["full_name"] != repo or
+                  pr["head"]["sha"] != request["head_sha"] or
+                  head_repo["id"] != request["head_repository"]["id"] or
+                  pr["head"]["ref"] != request["head_branch"]):
+              sys.exit("::error::CI request no longer matches the open PR's head and repository.")
+          if not all(re.fullmatch(r"[0-9a-f]{40}", pr[side]["sha"]) for side in ("head", "base")):
+              sys.exit("::error::GitHub did not return valid PR commit SHAs.")
+          metadata = {
+              "head_sha": pr["head"]["sha"], "base_sha": pr["base"]["sha"],
+              "author_association": pr["author_association"],
+              "author": pr["user"]["login"], "author_type": pr["user"]["type"],
+              "head_repo": head_repo["full_name"],
+              "labels": [label["name"] for label in pr["labels"]],
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("metadata=" + json.dumps(metadata) + "\n")
+          PY
+
   scan:
     name: Security Scan
+    needs: resolve
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -39,48 +92,44 @@ jobs:
       - name: Check out scanner from main
         env:
           REPO: ${{ github.repository }}
+          POLICY_SHA: ${{ github.workflow_sha }}
         run: |
           # Plain git, so no action pin supplied by the PR runs before the scan.
           git init -q .
           git remote add origin "$GITHUB_SERVER_URL/$REPO.git"
           git sparse-checkout set --no-cone .github/scripts/security-scan .github/security
-          git fetch -q --depth=1 origin main
+          git fetch -q --depth=1 origin "$POLICY_SHA"
           git checkout -q --detach FETCH_HEAD
 
       - name: Trust gate
         id: gate
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          AUTHOR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
-          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          EVENT_NAME: pull_request
+          AUTHOR_ASSOCIATION: ${{ fromJSON(needs.resolve.outputs.metadata).author_association }}
+          PR_AUTHOR: ${{ fromJSON(needs.resolve.outputs.metadata).author }}
+          PR_AUTHOR_TYPE: ${{ fromJSON(needs.resolve.outputs.metadata).author_type }}
+          PR_HEAD_REPO: ${{ fromJSON(needs.resolve.outputs.metadata).head_repo }}
           REPO: ${{ github.repository }}
-          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
-        run: |
-          # Until this lands on main the scanner is absent there; proceed so the
-          # introducing PR isn't blocked by its own check.
-          if [ ! -f .github/scripts/security-scan/should-scan.sh ]; then
-            echo "::warning::security scanner not present on main yet; proceeding without scan (bootstrap)."
-            echo "scan=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          bash .github/scripts/security-scan/should-scan.sh
+          PR_LABELS: ${{ toJSON(fromJSON(needs.resolve.outputs.metadata).labels) }}
+        run: bash .github/scripts/security-scan/should-scan.sh
 
       - name: Check out PR head for static analysis
         if: ${{ steps.gate.outputs.scan == 'true' }}
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}  # untrusted: only read, never executed
-          path: pr
-          fetch-depth: 0
-          persist-credentials: false
+        env:
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).head_sha }}
+          BASE_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).base_sha }}
+        run: |
+          git init -q pr
+          git -C pr remote add origin "$GITHUB_SERVER_URL/$REPO.git"
+          git -C pr fetch -q --no-tags origin "$HEAD_SHA" "$BASE_SHA"
+          git -C pr checkout -q --detach "$HEAD_SHA"
 
       - name: Compute PR diff
         if: ${{ steps.gate.outputs.scan == 'true' }}
         env:
           REPO: ${{ github.repository }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).base_sha }}
         run: |
           git -C pr fetch -q --no-tags "$GITHUB_SERVER_URL/$REPO.git" "$BASE_SHA"
           # --no-renames lists a moved file's old path too, so moving a workflow away is caught.
@@ -117,7 +166,7 @@ jobs:
         # --no-config: never read the PR's uv settings (it could add a package index).
         if: ${{ steps.gate.outputs.scan == 'true' }}
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).base_sha }}
         run: |
           git -C pr show "$BASE_SHA:uv.lock" > base-uv.lock 2>/dev/null || : > base-uv.lock
           python3 .github/scripts/security-scan/locked-pins.py base-uv.lock | sort > base-pins.txt
@@ -165,8 +214,8 @@ jobs:
       - name: Explain the maintainer waiver (on failure)
         if: ${{ failure() }}
         run: |
-          # A re-run reuses the original event, so it wouldn't see a label added since.
-          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (this requires Triage permission, so a fork author cannot self-waive), then closing and reopening the PR so CI starts again with the label."
+          # Re-run all jobs so the resolver reads the updated labels from GitHub.
+          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (requires Triage permission), then re-running all jobs in this Security Scan and re-running failed CI jobs."
           echo "::error::$MSG"
           {
             echo "### Security Scan failed"

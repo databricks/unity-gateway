@@ -1,4 +1,5 @@
 name: CI
+run-name: 'CI #${{ github.event.pull_request.number || github.run_id }}'
 
 on:
   schedule:

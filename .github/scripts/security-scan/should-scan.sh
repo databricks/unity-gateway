@@ -28,8 +28,8 @@ emit() {
   echo "scan=$1 ($2)"
 }
 
-# PR_LABELS is the event's label-name JSON array, set by GitHub (no API call:
-# the org IP allow list blocks GitHub-hosted runners from the API).
+# PR_LABELS comes from the trusted resolver's GitHub API response. The scan
+# runner itself needs no API access.
 has_skip_label() {
   [[ "${PR_LABELS:-[]}" == *"\"$SKIP_LABEL\""* ]]
 }

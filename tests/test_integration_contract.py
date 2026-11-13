@@ -761,10 +761,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ci.split("\n  lint:\n", 1)[1].split("\n  test:\n", 1)[0].count("needs: security-gate") == 1
     )
     assert gate_job in publish and publish.count("    needs: security-gate\n") == 2
-    assert re.search(r"(?m)^on:\n  pull_request:\n\n", scan)
+    assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
-    assert "group: security-scan-${{ github.event.pull_request.number }}" in scan
-    assert "run-name: 'Security Scan #${{ github.event.pull_request.number }}'" in scan
+    assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
+    assert "run-name: 'Security Scan for CI run ${{ github.event.workflow_run.id }}'" in scan
+    assert "run-name: 'CI #${{ github.event.pull_request.number || github.run_id }}'" in ci
+    assert 'origin "$POLICY_SHA"' in scan and "${{ github.workflow_sha }}" in scan
+    assert "bootstrap" not in scan
     assert re.search(r"(?m)^on:\n  workflow_call:\n    inputs:\n", gate)
     assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in gate
     assert "PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}" in gate
@@ -785,12 +788,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 30),
-        ([[{"status": "queued", "conclusion": None}]], False, 30),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 30),
-        ([[{"display_title": "Security Scan #8"}]], False, 30),
-        ([[{"head_sha": "a" * 40}]], False, 30),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 30),
+        ([[]], False, 15),
+        ([[{"status": "queued", "conclusion": None}]], False, 15),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 15),
+        ([[{"display_title": "Security Scan #8"}]], False, 15),
+        ([[{"event": "pull_request"}]], False, 15),
+        ([[{"event": "workflow_dispatch"}]], False, 15),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 15),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -823,6 +827,7 @@ def _run_security_gate(
     updated="2026-11-13T00:00:00Z",
     pr="7",
     sha=HEAD,
+    request_change=None,
 ):
     script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
@@ -838,58 +843,85 @@ def _run_security_gate(
     scan = {
         "id": 1,
         "path": ".github/workflows/security-scan.yml",
-        "display_title": "Security Scan #7",
-        "head_sha": HEAD,
+        "display_title": "Security Scan for CI run 42",
+        "event": "workflow_run",
+        "head_sha": "b" * 40,  # The trusted workflow runs at main, not the PR head.
         "created_at": "2026-11-13T00:00:00Z",
         "status": "completed",
         "conclusion": "success",
         "html_url": "https://example/scan/1",
         "pull_requests": [],  # GitHub can omit PR associations on fork runs.
     }
-    calls = 0
+    request = {
+        "id": 42,
+        "path": ".github/workflows/ci.yml",
+        "display_title": "CI #7",
+        "event": "pull_request",
+        "head_sha": HEAD,
+        "created_at": "2026-11-13T00:00:00Z",
+    } | (request_change or {})
+    calls = {"request": 0, "scan": 0}
 
-    def pages(index):
+    def pages(which, index):
         changes = responses[min(index, len(responses) - 1)]
+        runs = [request] if which == "request" else [scan | change for change in changes]
         return [
             {"workflow_runs": [scan | {"path": "other.yml"}] * 100},
-            {"workflow_runs": [scan | change for change in changes]},
+            {"workflow_runs": runs},
         ]
 
+    def endpoint_kind(endpoint):
+        if endpoint == (
+            f"repos/databricks/unity-gateway/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
+        ):
+            return "request"
+        assert endpoint == (
+            "repos/databricks/unity-gateway/actions/workflows/security-scan.yml/runs"
+            "?event=workflow_run&created=%3E%3D2026-11-13T00:00:00Z&per_page=100"
+        )
+        return "scan"
+
     def fetch(args, timeout):
-        nonlocal calls
         assert authenticated, "Fork gates must not use authenticated gh"
-        assert args == [
-            "gh",
-            "api",
-            f"repos/databricks/unity-gateway/actions/runs?event=pull_request&head_sha={sha}&per_page=100",
-            "--paginate",
-            "--slurp",
-        ]
+        assert args[:2] == ["gh", "api"] and args[3:] == ["--paginate", "--slurp"]
         assert timeout == 30
-        result = pages(calls)
-        calls += 1
+        which = endpoint_kind(args[2])
+        result = pages(which, calls[which])
+        calls[which] += 1
         return json.dumps(result).encode()
 
     def public_fetch(url, timeout):
-        nonlocal calls
         assert not authenticated
         assert isinstance(url, str), "No authenticated Request headers on the public API path"
         assert timeout == 30
         endpoint, page = url.rsplit("&page=", 1)
-        assert endpoint == (
-            "https://api.github.com/repos/databricks/unity-gateway/actions/runs"
-            f"?event=pull_request&head_sha={sha}&per_page=100"
-        )
+        assert endpoint.startswith("https://api.github.com/")
+        which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
         if page == "1":
-            calls += 1
-        return io.StringIO(json.dumps(pages(calls - 1)[int(page) - 1]))
+            calls[which] += 1
+        return io.StringIO(json.dumps(pages(which, calls[which] - 1)[int(page) - 1]))
 
     monkeypatch.setattr(subprocess, "check_output", fetch)
     monkeypatch.setattr(urllib.request, "urlopen", public_fetch)
     monkeypatch.setattr("time.sleep", lambda _: None)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
-    return result.value.code, calls
+    return result.value.code, max(calls.values())
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"event": "push"},
+        {"display_title": "CI #8"},
+        {"path": ".github/workflows/other.yml"},
+        {"created_at": "2026-11-12T00:00:00Z"},
+        {"id": 43},  # A scan of request 42 cannot satisfy a different request.
+    ],
+)
+def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
+    code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
+    assert code != 0 and calls == 15
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -900,7 +932,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 30)
+    assert calls == (1 if matches_commit else 15)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
@@ -932,15 +964,52 @@ def test_security_gate_api_errors_block_ci(monkeypatch, authenticated):
         exec(compile(script, "security-gate.yml", "exec"), {})
 
 
+@pytest.mark.parametrize("status", [403, 429])
+def test_security_gate_explains_public_rate_limits(monkeypatch, status):
+    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
+    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
+    for key, value in {
+        "REPO": "databricks/unity-gateway",
+        "PR_NUMBER": "7",
+        "HEAD_SHA": HEAD,
+        "PR_UPDATED_AT": "",
+        "GH_TOKEN": "",
+        "GITHUB_API_URL": "https://api.github.com",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    def fail(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://api.github.com",
+            status,
+            "rate limited",
+            {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1794602022"},
+            None,
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    with pytest.raises(SystemExit, match="rate limit reached; tests remain blocked") as result:
+        exec(compile(script, "security-gate.yml", "exec"), {})
+    assert "Re-run failed CI jobs" in str(result.value)
+    assert "1794602022" in str(result.value)
+
+
+def test_required_security_verifier_uses_main_policy():
+    workflow = _workflow("required-security.yml")
+    assert "  pull_request:" in workflow and "  merge_group:" in workflow
+    assert "uses: databricks/unity-gateway/.github/workflows/security-gate.yml@main" in workflow
+    assert "secrets:" not in workflow and "cancel-in-progress:" not in workflow
+
+
 @pytest.mark.parametrize(
     ("event_name", "head_repo", "hosted", "waits"),
     [
         ("pull_request", "external/fork", True, True),
-        ("pull_request", "databricks/unity-gateway", False, True),
+        ("pull_request", "databricks/unity-gateway", True, True),
         ("issue_comment", "", False, True),
-        ("merge_group", "", False, False),
-        ("push", "", False, False),
-        ("schedule", "", False, False),
+        ("merge_group", "", True, False),
+        ("push", "", True, False),
+        ("schedule", "", True, False),
     ],
 )
 def test_security_gate_runner_and_token_respect_event_trust(event_name, head_repo, hosted, waits):
