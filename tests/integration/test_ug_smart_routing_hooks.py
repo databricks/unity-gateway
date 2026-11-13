@@ -29,6 +29,7 @@ from utils.evidence import (
     SubagentCalculation,
     agent_sessions,
     assert_subagent_routed,
+    assistant_answers,
     codex_routing_display_for_task,
     is_child_session,
     read_jsonl,
@@ -253,8 +254,15 @@ def _toggle_with_skill(
         return confirmations
 
     before_confirmations = confirmation_count()
-    metadata_marker = f"[METADATA] main turns updated: state={state}"
-    before_updates = session.routing_log("codex").count(metadata_marker)
+
+    def root_answer_count():
+        return sum(
+            len(assistant_answers(agent, records))
+            for path, records in agent_sessions(session, agent).items()
+            if not is_child_session(agent, path, records)
+        )
+
+    before_answers = root_answer_count()
     tui.submit(invocation)
     approval_sent = False
     python = (
@@ -284,7 +292,7 @@ def _toggle_with_skill(
         return (
             controls_now == expected
             and confirmation_count() == before_confirmations + 1
-            and session.routing_log("codex").count(metadata_marker) > before_updates
+            and root_answer_count() > before_answers
         )
 
     tui.wait_for(

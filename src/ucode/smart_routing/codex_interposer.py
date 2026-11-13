@@ -243,12 +243,10 @@ async def _handle_tui(
     )
     async with connect(uri, max_size=None) as upstream:
         controller = (
-            RoutingMetadata(upstream, tui, session_controls, log)
-            if session_controls is not None
-            else None
+            RoutingMetadata(tui, session_controls, log) if session_controls is not None else None
         )
         if controller is not None:
-            await controller.initialize()
+            await controller.enabled()
         queued_frames: asyncio.Queue = asyncio.Queue()
 
         def parse(frame) -> dict | None:
@@ -265,9 +263,7 @@ async def _handle_tui(
             async for frame in tui:
                 message = parse(frame)
                 if message is not None and message.get("method") in (None, "turn/interrupt"):
-                    forwarded = await controller.before_tui(message)
-                    if forwarded is not None:
-                        await upstream.send(json.dumps(forwarded))
+                    await upstream.send(frame)
                 else:
                     await queued_frames.put(frame)
             await queued_frames.put(None)
@@ -286,8 +282,6 @@ async def _handle_tui(
                     message = parse(frame)
                     if controller is not None and message is not None:
                         message = await controller.before_tui(message)
-                        if message is None:
-                            continue
                         frame = json.dumps(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
                     if result.needs_settings_update and sess.thread_id:
@@ -319,8 +313,8 @@ async def _handle_tui(
         async def app_to_tui():
             async for frame in upstream:
                 message = parse(frame)
-                if controller is not None and message is not None and controller.observe(message):
-                    continue
+                if controller is not None and message is not None:
+                    controller.observe(message)
                 await tui.send(frame)
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
@@ -331,7 +325,6 @@ async def _handle_tui(
         tasks = {a, b}
         if controller is not None:
             tasks.add(asyncio.create_task(read_tui()))
-            tasks.add(asyncio.create_task(controller.watch()))
         try:
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             for task in done:

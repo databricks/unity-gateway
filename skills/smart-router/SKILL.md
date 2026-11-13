@@ -3,18 +3,13 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
 metadata:
-  version: "1.5.0"
+  version: "1.6.0"
 ---
 
 # Smart Router
 
 Use the Python executable exported by the launching Unity Gateway installation.
 Keep its path quoted and do not substitute `ug` or `python` from PATH.
-
-In Codex, send the matching message verbatim before running the toggle command:
-
-- For `off`: "Turning Smart Router off. Codex may briefly show “Conversation interrupted” while applying routing settings. Existing subagents will keep running."
-- For `on`: "Turning Smart Router on. Codex may briefly show “Conversation interrupted” while applying routing settings. Existing subagents will keep running."
 
 - In Claude Code, run exactly `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing` for `on` or
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`.
@@ -54,4 +49,6 @@ Continue in the root unless the user explicitly requests a subagent. Honor that 
 native tools and normal harness model selection, without Smart Router Orchestrator; keep routing off.
 Existing children can finish. When turned on, apply the `smart-router-orchestrator`
 skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
-Do not change the orchestration feature flag. Return the command's result.
+Do not change the orchestration feature flag. Return the command's result briefly, then stop.
+In Codex, the current main turn keeps its original routing attribution; the next user turn
+gets the new state. Do not interrupt, restart, or reload any conversation.

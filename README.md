@@ -581,14 +581,12 @@ configured Databricks provider directly. All routed Codex launches use the app-s
 interposer, including subagent-only presets. First-prompt model selection still follows
 the selected preset.
 
-Smart Router toggles keep every conversation loaded. UG interrupts only the active
-main turn after the toggle command finishes, then waits for the next user message.
-It starts no extra inference and adds no user prompt. The next main turn receives
-fresh native routing metadata. Existing subagents keep
-running with their original attribution; new children, including descendants spawned
-by an old child, get the latest state through the spawn hook. Main commands may be
-interrupted; their existing task history is preserved for the next user turn.
-Repeating the current state does not interrupt anything.
+Smart Router toggles keep every conversation loaded and do not interrupt any turn.
+The toggle turn finishes normally with its original routing attribution; the next
+main turn receives the new state. UG adds no user prompt or automatic continuation.
+Existing subagents keep running with their original attribution; new children,
+including descendants spawned by an old child, get the latest state through the
+spawn hook. Repeating the current state leaves session controls unchanged.
 
 Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
 `smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`).

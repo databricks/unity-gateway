@@ -97,7 +97,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     Expected: one uninterrupted old child retains its ID and on marker. New sibling and
     grandchild have off markers. Messages across both branches succeed, the original child
     resumes, hidden file values reach completed answers, and no conversation is reloaded.
-    Native transcripts prove identity and continuity with no additional user prompts;
+    Native transcripts prove identity and continuity with no interrupted turns or additional user prompts;
     usage-table validation is separate.
     """
     session = live_session
@@ -207,10 +207,6 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     assert agents["/root/old__sr_on"][0] == old_id
     assert started.read_text() == finished.read_text()
     old_records = agents["/root/old__sr_on"][1]
-    assert not any(
-        row.get("type") == "event_msg" and row["payload"].get("type") == "turn_aborted"
-        for row in old_records
-    )
     outputs = [
         output
         for records in agent_sessions(session, "codex").values()
@@ -221,6 +217,10 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         old_records, "/root/new__sr_off", agents["/root/new__sr_off"][0]
     )
     all_records = [row for records in agent_sessions(session, "codex").values() for row in records]
+    assert not any(
+        row.get("type") == "event_msg" and row["payload"].get("type") == "turn_aborted"
+        for row in all_records
+    )
     assert_agent_interaction_completed(
         all_records,
         "/root/old__sr_on/nested__sr_off",
@@ -231,7 +231,12 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     assert len(_root_user_prompts(session)) == 4
     _assert_toggle_executed_once(session, False)
     log = session.routing_log("codex")
-    assert "[METADATA] main turns updated: state=off" in log, log
+    states = [
+        line.split("state=", 1)[1].split()[0]
+        for line in log.splitlines()
+        if "[METADATA] main turn:" in line
+    ]
+    assert states == ["on", "on", "off", "off"], log
     session.record(
         "routing-metadata-agents.json", {name: identity for name, (identity, _) in agents.items()}
     )
@@ -249,7 +254,8 @@ def test_codex_routing_toggle_without_children_and_repeated_state(
     session CLI, then complete a task in the same TUI.
 
     Expected: both transitions complete; repeated on leaves the controls file unchanged,
-    causes no additional handoff, and a subsequent answer completes in the original root.
+    causes no interruption, and a subsequent answer completes in the original root.
+    Each toggle turn keeps its starting attribution; the next user turn sees the change.
     The native history contains only the three submitted user prompts.
     """
     session = live_session
@@ -266,17 +272,27 @@ def test_codex_routing_toggle_without_children_and_repeated_state(
         _toggle_with_skill(tui, session, "codex", True, False)
         (controls,) = tmp_path.glob("ug-session-env-*/env.json")
         before = controls.stat().st_mtime_ns
-        handoffs = session.routing_log("codex").count("[METADATA] main turns updated")
         session.env["UCODE_SESSION_ENV_FILE"] = str(controls)
         result = session.run("codex", "--enable-smart-routing")
         assert "already on" in result.stdout
         assert controls.stat().st_mtime_ns == before
         tui.submit(f"Reply with only {marker}. Use no tools.")
         tui.wait_for(lambda _: marker in _root_answers(session), "a final main answer", timeout=120)
-        assert session.routing_log("codex").count("[METADATA] main turns updated") == handoffs
         tui.exit_normally()
     assert not _native_agents(session)
     assert len(_root_user_prompts(session)) == 3
     _assert_toggle_executed_once(session, False)
     _assert_toggle_executed_once(session, True)
     assert json.loads(controls.read_text()) == {}
+    records = [row for root in _root_sessions(session) for row in root]
+    assert not any(
+        row.get("type") == "event_msg" and row["payload"].get("type") == "turn_aborted"
+        for row in records
+    )
+    log = session.routing_log("codex")
+    states = [
+        line.split("state=", 1)[1].split()[0]
+        for line in log.splitlines()
+        if "[METADATA] main turn:" in line
+    ]
+    assert states == ["on", "off", "on"], log

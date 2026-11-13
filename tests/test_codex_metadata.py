@@ -1,4 +1,4 @@
-"""Native metadata attribution and main-turn handoff behavior."""
+"""Native metadata attribution at main-turn and subagent-spawn boundaries."""
 
 import asyncio
 import copy
@@ -15,7 +15,6 @@ from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing import codex_interposer, codex_metadata, session_env
 from ucode.smart_routing.codex_metadata import (
     ROUTING_STATE_KEY,
-    RootTurn,
     RoutingMetadata,
     stamp_spawn,
 )
@@ -77,24 +76,21 @@ def test_real_hook_stamps_latest_shared_state_without_routing_when_disabled(
 class Wire:
     def __init__(self):
         self.messages = []
-        self.on_send = None
 
     async def send(self, raw):
         message = json.loads(raw)
         self.messages.append(message)
-        if self.on_send:
-            self.on_send(message)
 
 
 def controller(tmp_path):
     controls = tmp_path / "controls.json"
     controls.write_text("{}")
     upstream, tui = Wire(), Wire()
-    metadata = RoutingMetadata(upstream, tui, controls, lambda _: None)
+    metadata = RoutingMetadata(tui, controls, lambda _: None)
     return metadata, upstream, tui, controls
 
 
-@pytest.mark.parametrize("entrypoint", ["initialize", "refresh", "turn"])
+@pytest.mark.parametrize("entrypoint", ["startup", "turn"])
 def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatch, entrypoint):
     async def run():
         metadata, upstream, tui, _ = controller(tmp_path)
@@ -108,8 +104,7 @@ def test_controls_read_retries_denial_and_uses_latest_state(tmp_path, monkeypatc
                 ROUTING_STATE_KEY: "off"
             }
         else:
-            await asyncio.wait_for(getattr(metadata, entrypoint)(), 2)
-            assert metadata.applied is False
+            assert await asyncio.wait_for(metadata.enabled(), 2) is False
         assert read.call_count == 2
         assert upstream.messages == tui.messages == []
 
@@ -182,17 +177,7 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
             release_read = threading.Event()
             loop = asyncio.get_running_loop()
             original_read = codex_metadata.session_routing_enabled
-            original_before_tui = RoutingMetadata.before_tui
-            steering_started, steering_released = asyncio.Event(), asyncio.Event()
             attempts = 0
-
-            async def before_tui(metadata, message):
-                if message.get("id") != "steer":
-                    return await original_before_tui(metadata, message)
-                steering_started.set()
-                forwarded = await original_before_tui(metadata, message)
-                steering_released.set()
-                return forwarded
 
             def read(path):
                 nonlocal attempts
@@ -206,9 +191,7 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
                 return original_read(path)
 
             monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
-            monkeypatch.setattr(RoutingMetadata, "before_tui", before_tui)
             try:
-                await asyncio.wait_for(retry_started.wait(), 2)
                 user_input = {
                     "id": "input",
                     "method": "turn/start",
@@ -225,20 +208,23 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
                     "method": "turn/interrupt",
                     "params": {"threadId": "child", "turnId": "child-turn"},
                 }
-                for message in (steering, user_input, approval, child_interrupt):
+                main_interrupt = {
+                    "id": "escape",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": "main", "turnId": "main-turn"},
+                }
+                for message in (user_input, steering, approval, child_interrupt, main_interrupt):
                     tui.incoming.put_nowait(message)
-                await asyncio.wait_for(steering_started.wait(), 2)
-                assert not steering_released.is_set()
-                for expected in (approval, child_interrupt):
+                await asyncio.wait_for(retry_started.wait(), 2)
+                for expected in (approval, child_interrupt, main_interrupt):
                     assert await asyncio.wait_for(upstream.outgoing.get(), 2) == expected
-                assert upstream.messages == [approval, child_interrupt]
+                assert upstream.messages == [approval, child_interrupt, main_interrupt]
                 child_update = {"method": "turn/started", "params": {"threadId": "child"}}
                 upstream.incoming.put_nowait(child_update)
                 assert await asyncio.wait_for(tui.outgoing.get(), 2) == child_update
 
                 controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
                 release_read.set()
-                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == steering
                 forwarded = await asyncio.wait_for(upstream.outgoing.get(), 2)
                 assert forwarded == {
                     **user_input,
@@ -247,6 +233,7 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
                         "responsesapiClientMetadataPatch": {ROUTING_STATE_KEY: "off"},
                     },
                 }
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == steering
                 assert all(message.get("method") != "error" for message in tui.messages)
                 tui.incoming.put_nowait(None)
                 await asyncio.wait_for(task, 2)
@@ -258,24 +245,16 @@ def test_controls_recovery_gates_main_input_and_preserves_forwarding(
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("entrypoint", ["poll", "turn"])
-def test_persistent_controls_denial_reports_recovery_before_teardown(
-    running_interposer, monkeypatch, entrypoint
+def test_persistent_per_turn_controls_denial_reports_recovery_before_teardown(
+    running_interposer, monkeypatch
 ):
-    async def wait_for_poll(self):
-        await asyncio.Event().wait()
-
-    if entrypoint == "turn":
-        monkeypatch.setattr(RoutingMetadata, "watch", wait_for_poll)
-
     async def run():
         async with running_interposer() as (task, upstream, tui, controls):
             read = Mock(side_effect=PermissionError("controls locked"))
             monkeypatch.setattr(codex_metadata, "session_routing_enabled", read)
-            if entrypoint == "turn":
-                tui.incoming.put_nowait(
-                    {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
-                )
+            tui.incoming.put_nowait(
+                {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
+            )
 
             error = await asyncio.wait_for(tui.outgoing.get(), 2)
             assert error["method"] == "error"
@@ -304,7 +283,6 @@ def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(
 ):
     async def run():
         metadata, _, _, controls = controller(tmp_path)
-        metadata.roots["main"] = RootTurn()
         metadata.children.add("child")
         for enabled in (True, False, True):
             controls.write_text(
@@ -338,123 +316,46 @@ def test_turn_metadata_preserves_other_fields_and_does_not_modify_child_input(
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("queued", [False, True])
-@pytest.mark.parametrize("cancel", [False, True])
-@pytest.mark.parametrize("enabled", [False, True])
-def test_toggle_interrupts_only_main_and_preserves_conversation_tree(
-    tmp_path, queued, cancel, enabled
-):
+def test_toggle_finishes_normally_and_next_turn_uses_latest_state(running_interposer):
     async def run():
-        metadata, upstream, tui, controls = controller(tmp_path)
-        controls.write_text(
-            json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if enabled else {})
-        )
-        await metadata.initialize()
-        metadata.roots["main"] = RootTurn(active="main-turn")
-        metadata.children.add("child")
-        request = {
-            "id": "toggle",
-            "method": "turn/start",
-            "params": {
-                "threadId": "main",
-                "input": [
-                    {"type": "text", "text": f"$smart-router {'on' if enabled else 'off'}"},
-                    {"type": "skill", "name": "smart-router"},
-                ],
-            },
-        }
-        forwarded = await metadata.before_tui(copy.deepcopy(request))
-        assert forwarded["params"]["input"] == request["params"]["input"]
-        metadata.observe({"id": "toggle", "result": {"turn": {"id": "main-turn"}}})
-        child_turn = {
-            "method": "turn/started",
-            "params": {"threadId": "child", "turn": {"id": "child-turn"}},
-        }
-        assert metadata.observe(child_turn) is False
-        controls.write_text(
-            json.dumps({} if enabled else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
-        )
-
-        def reply(message):
-            if message["method"] == "turn/interrupt":
-                metadata.observe(
-                    {
-                        "method": "turn/completed",
-                        "params": {"threadId": "main", "turn": {"id": "main-turn"}},
-                    }
-                )
-                result = {}
-            else:
-                pytest.fail(f"Unexpected automatic request: {message['method']}")
-            metadata.observe({"id": message["id"], "result": result})
-
-        upstream.on_send = reply
-        metadata.client_idle.clear()
-        task = asyncio.create_task(metadata.refresh())
-        await asyncio.sleep(0)
-        queued_input = None
-        if queued:
-            queued_input = asyncio.create_task(
-                metadata.before_tui(
-                    {
-                        "id": "user-start",
-                        "method": "turn/start",
-                        "params": {
-                            "threadId": "main",
-                            "input": [{"type": "text", "text": "new work"}],
-                        },
-                    }
-                )
-            )
-            await asyncio.sleep(0)
-            assert not queued_input.done()
-        if cancel:
-            assert (
-                await metadata.before_tui(
-                    {
-                        "id": "escape",
-                        "method": "turn/interrupt",
-                        "params": {"threadId": "main", "turnId": "main-turn"},
-                    }
-                )
-                is None
-            )
-            assert tui.messages == [{"id": "escape", "result": {}}]
-        metadata.client_idle.set()
-        await task
-        assert metadata.applied is enabled
-        assert metadata.ready.is_set()
-        assert "main" in metadata.roots and "child" in metadata.children
-        assert all(message["params"]["threadId"] == "main" for message in upstream.messages)
-        assert all(
-            message["method"] not in {"thread/unsubscribe", "thread/resume"}
-            for message in upstream.messages
-        )
-        assert [message["method"] for message in upstream.messages] == ["turn/interrupt"]
-        if queued_input is not None:
-            forwarded = await queued_input
-            assert forwarded["params"]["input"] == [{"type": "text", "text": "new work"}]
-            assert forwarded["params"]["responsesapiClientMetadataPatch"] == {
-                ROUTING_STATE_KEY: "on" if enabled else "off"
+        async with running_interposer() as (task, upstream, tui, controls):
+            start = {"id": "toggle", "method": "turn/start", "params": {"threadId": "main"}}
+            tui.incoming.put_nowait(start)
+            first = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert first["params"]["responsesapiClientMetadataPatch"] == {ROUTING_STATE_KEY: "on"}
+            started = {
+                "method": "turn/started",
+                "params": {"threadId": "main", "turn": {"id": "toggle-turn"}},
             }
+            upstream.incoming.put_nowait(started)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == started
+
+            controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+            confirmation = {
+                "method": "item/agentMessage/delta",
+                "params": {"threadId": "main", "delta": "Smart Router is off."},
+            }
+            completed = {
+                "method": "turn/completed",
+                "params": {"threadId": "main", "turn": {"id": "toggle-turn"}},
+            }
+            for message in (confirmation, completed):
+                upstream.incoming.put_nowait(message)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == message
+            assert upstream.messages == [first]
+
+            next_turn = {"id": "next", "method": "turn/start", "params": {"threadId": "main"}}
+            tui.incoming.put_nowait(next_turn)
+            second = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert second["params"]["responsesapiClientMetadataPatch"] == {ROUTING_STATE_KEY: "off"}
+            assert upstream.messages == [first, second]
+            tui.incoming.put_nowait(None)
+            await asyncio.wait_for(task, 2)
 
     asyncio.run(run())
 
 
-def test_idle_toggle_does_not_start_inference_or_add_a_prompt(tmp_path):
-    async def run():
-        metadata, upstream, _, controls = controller(tmp_path)
-        metadata.roots["main"] = RootTurn()
-        controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
-        await metadata.refresh()
-        assert upstream.messages == []
-        assert metadata.applied is False
-        assert metadata.ready.is_set()
-
-    asyncio.run(run())
-
-
-def test_child_navigation_does_not_become_main_and_internal_replies_stay_private(tmp_path):
+def test_child_navigation_does_not_change_child_attribution(tmp_path):
     metadata, _, _, _ = controller(tmp_path)
     metadata.observe({"id": 1, "result": {"thread": {"id": "main", "source": "cli"}}})
     metadata.observe(
@@ -468,68 +369,4 @@ def test_child_navigation_does_not_become_main_and_internal_replies_stay_private
             },
         }
     )
-    assert list(metadata.roots) == ["main"]
     assert metadata.children == {"child"}
-    assert metadata.observe({"id": "ug-routing-metadata-private", "result": {}})
-
-
-def test_failed_update_keeps_new_input_blocked_but_allows_child_interrupts(tmp_path):
-    async def run():
-        metadata, upstream, _, _ = controller(tmp_path)
-        metadata.roots["main"] = RootTurn(active="turn")
-        metadata.children.add("child")
-
-        def reject(message):
-            metadata.observe({"id": message["id"], "error": {"message": "rejected"}})
-
-        upstream.on_send = reject
-        with pytest.raises(RuntimeError, match="rejected"):
-            await metadata.refresh()
-        assert not metadata.ready.is_set()
-        child_interrupt = {
-            "id": "stop-child",
-            "method": "turn/interrupt",
-            "params": {"threadId": "child", "turnId": "child-turn"},
-        }
-        assert await asyncio.wait_for(metadata.before_tui(child_interrupt), 1) == child_interrupt
-        approval = {"id": "approve", "result": {"decision": "accept"}}
-        assert await metadata.before_tui(approval) == approval
-        pending = asyncio.create_task(
-            metadata.before_tui(
-                {"id": "input", "method": "turn/start", "params": {"threadId": "main"}}
-            )
-        )
-        await asyncio.sleep(0)
-        assert not pending.done()
-        pending.cancel()
-        await asyncio.gather(pending, return_exceptions=True)
-
-    asyncio.run(run())
-
-
-def test_toggle_command_finishes_before_main_is_interrupted(tmp_path):
-    async def run():
-        metadata, upstream, _, _ = controller(tmp_path)
-        metadata.roots["main"] = RootTurn(active="turn")
-        item = {
-            "type": "commandExecution",
-            "id": "toggle",
-            "command": '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing',
-        }
-        metadata.observe({"method": "item/started", "params": {"threadId": "main", "item": item}})
-        task = asyncio.create_task(metadata.refresh())
-        await asyncio.sleep(0)
-        assert upstream.messages == []
-
-        def reply(message):
-            metadata.observe({"id": message["id"], "result": {}})
-            metadata.observe(
-                {"method": "turn/completed", "params": {"threadId": "main", "turn": {"id": "turn"}}}
-            )
-
-        upstream.on_send = reply
-        metadata.observe({"method": "item/completed", "params": {"threadId": "main", "item": item}})
-        await task
-        assert [message["method"] for message in upstream.messages] == ["turn/interrupt"]
-
-    asyncio.run(run())

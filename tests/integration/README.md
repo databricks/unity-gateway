@@ -5,8 +5,9 @@ empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
 and process continuity, new sibling/grandchild off markers, cross-branch delivery, and
 follow-up to the original child. Each transition requires exactly one successful CLI
-execution, and root history must contain only submitted user prompts: handoffs add no
-prompt or automatic continuation. Windows uses UG's installed Python and native
+execution, all turns must finish without interruption, and root history must contain
+only submitted user prompts. Main metadata stays unchanged during the toggle turn
+and changes on the next user turn. Windows uses UG's installed Python and native
 approval dialogs, preserving the sandbox.
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
 `--smart-router-name` input records and forwards the recipe.
@@ -1068,7 +1069,7 @@ for routing-only cases, and both `smart-router-orchestrator` and `smart-router` 
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a completed answer to the
-following calculation. Skill toggles interrupt the main turn without continuing it.
+following calculation. Skill toggles finish normally without interrupting the main turn.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
