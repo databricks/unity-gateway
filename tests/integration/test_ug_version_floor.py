@@ -18,10 +18,10 @@ from utils.terminal import TerminalProcess
 
 pytestmark = pytest.mark.installation
 
-_FLOORS = {"claude": (2, 1, 290), "codex": (0, 145, 0)}
+_FLOORS = {"claude": (2, 1, 290), "codex": (0, 156, 0)}
 _REQUIREMENTS = {
     "claude": "ug requires Claude Code 2.1.290 or newer",
-    "codex": "ug requires Codex 0.145.0 or newer",
+    "codex": "ug requires Codex 0.156.0 or newer",
 }
 _UPGRADE_PROMPTS = {
     "claude": "Upgrade Claude Code if available?",
