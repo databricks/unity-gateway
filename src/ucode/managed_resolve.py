@@ -1,6 +1,6 @@
 """Resolve the effective agent settings from the managed config plus local ucode state.
 
-The managed config (``/etc/unitygateway/managed-settings.json``, published through the AI Gateway
+The managed config (``/etc/unitygateway/managed-settings.json``, published through the Unity Gateway
 and refreshed from the workspace at launch through :mod:`ucode.managed_config`) and the developer's own
 ucode state (``~/.ucode/state.json``) stay separate files — they are never merged on disk. Instead
 this module resolves them *per key* at config-write time: whatever the manifest specifies wins, and
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from ucode.agents.model_sources import SCHEMA_MODEL_CATALOGS
 from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
 from ucode.state import MANAGED_OVERLAY_KEY
 
@@ -35,7 +36,7 @@ _CLAUDE_FAMILY_SLOTS = {
 }
 
 # Agents whose writers support the per-agent managed OTLP tracing flag.
-OTEL_TRACING_TOOLS = ("claude", "codex")
+OTEL_TRACING_TOOLS = ("claude", "codex", "copilot")
 
 # Agents that receive the config's harness-native `agent_native_settings`. Claude only, matching the
 # server: Codex's MCP lockdown is the requirements.toml [mcp_servers] allowlist, which ug doesn't
@@ -82,8 +83,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
     """The state keys to layer over local state so ``tool``'s writer sees managed settings.
 
     Each agent reads models from a different shape, so the manifest's list has to be translated.
-    Supported tracing flags and harness-native settings are also mapped to the state key each
-    writer consumes.
+    Supported tracing flags, Copilot's VS Code switch and harness-native settings are also mapped
+    to the state key each writer consumes.
     """
     overrides: dict[str, object] = {}
     models = _manifest_models(managed, tool)
@@ -99,7 +100,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
-    if tool in ("claude", "codex", "copilot"):
+    if tool in SCHEMA_MODEL_CATALOGS:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
@@ -111,6 +112,8 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         overrides[f"{tool}_http_headers"] = http_headers
     if tool in OTEL_TRACING_TOOLS and managed_otel_tracing_enabled(managed, tool):
         overrides[f"{tool}_otel_tracing"] = True
+    if tool == "copilot" and _agent_entry(managed, tool).get("vscode_integration_enabled") is False:
+        overrides["copilot_vscode_integration"] = False
     settings = _as_dict(_agent_entry(managed, tool).get("agent_native_settings"))
     if tool in SETTINGS_PASSTHROUGH_TOOLS and settings:
         overrides[f"{tool}_settings_passthrough"] = settings
@@ -194,8 +197,10 @@ def managed_supplies_models(managed: dict | None, tool: str) -> bool:
     """True when the managed config already says which models ``tool`` should use.
 
     Lets the launch path skip Databricks model discovery, whose whole purpose is to find the models
-    the config has now specified. Any of the three counts: a provider (the agent routes by header and
-    pins no Databricks model), a ``default_model``, or at least one entry in ``models``.
+    the config has now specified. Any of the following counts: a provider (the agent routes by
+    header and pins no Databricks model), a ``default_model``, or at least one entry in the
+    legacy ``models`` key. A static list (``sources``/``model_services``) alone doesn't count:
+    Claude still needs discovery to pick a default when the config names none.
     """
     model_config = _agent_model_config(managed or {}, tool)
     if _str(model_config.get("model_provider_service")) or _str(model_config.get("default_model")):
@@ -219,17 +224,33 @@ def managed_unity_catalog_location(managed: dict, tool: str) -> str | None:
 
 
 def managed_static_models(managed: dict, tool: str) -> list[str] | None:
-    """The explicit model allow-list (``model_config.model_services``) the config sets for ``tool``.
+    """The explicit model allow-list (``model_config.sources`` or ``model_services``) for ``tool``.
 
     Static curation: the launch path writes exactly these into the agent's picker allow-list
     (Claude's ``availableModels``/``modelPicker``, Codex's ``model_catalog_json``) instead of
     discovering the workspace's models. The order is the admin's; empty and non-string entries are
-    dropped. None when unset."""
-    model_services = _agent_model_config(managed, tool).get("model_services")
-    if isinstance(model_services, list):
-        listed = [model for model in (_str(item) for item in model_services) if model]
-        return listed or None
-    return None
+    dropped. None when unset. ``sources`` entries may be 4-part MPS model refs, used as-is."""
+    return static_model_list(_agent_model_config(managed, tool)) or None
+
+
+def _static_model_list_key(model_config: dict) -> str:
+    """Prefer ``sources`` to the legacy ``model_services`` oneof."""
+    return "sources" if "sources" in model_config else "model_services"
+
+
+def static_model_list(model_config: dict) -> list[str]:
+    """The static model list from one agent's ``model_config``: ``sources`` or the legacy
+    ``model_services`` (a oneof). Empty and non-string entries are dropped; empty when unset."""
+    models = model_config.get(_static_model_list_key(model_config))
+    if not isinstance(models, list):
+        return []
+    return [model for model in (_str(item) for item in models) if model]
+
+
+def set_static_model_list(model_config: dict, models: list[str]) -> None:
+    """Write the static model list to the key it was read from (``sources`` over the legacy
+    ``model_services``), so a reader of :func:`static_model_list` sees the written list."""
+    model_config[_static_model_list_key(model_config)] = models
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:

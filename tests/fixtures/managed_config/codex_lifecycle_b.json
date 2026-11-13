@@ -7,11 +7,11 @@
       "config": {
         "models": {
           "model_services": [
-            "system.ai.gpt-5-4-nano"
+            "system.ai.gpt-6-luna"
           ]
         },
         "default_models": {
-          "default_model": "system.ai.gpt-5-4-nano"
+          "default_model": "system.ai.gpt-6-luna"
         }
       }
     }

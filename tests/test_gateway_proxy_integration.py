@@ -8,7 +8,7 @@ of those exercise is the whole thing wired together over real sockets: the
 real `rfile`, the pooled `httpx` client streaming to a real upstream and back,
 and `_relay_response` writing to a real `wfile`.
 
-These tests stand up a fake AI Gateway upstream, start the *real* relay or OTLP
+These tests stand up a fake Unity Gateway upstream, start the *real* relay or OTLP
 proxy pointed at it, and drive it with a real HTTP client — so a regression
 anywhere in that chain is caught.
 Fully hermetic: no agent binary, no network, no workspace credentials.
@@ -42,7 +42,7 @@ class _CapturedRequest:
 
 
 class _FakeGateway:
-    """Real HTTP server standing in for the workspace AI Gateway upstream.
+    """Real HTTP server standing in for the workspace Unity Gateway upstream.
 
     Records each forwarded request and returns a scripted response: a status code
     plus a list of body byte-chunks (flushed with an optional inter-chunk delay so
@@ -456,6 +456,36 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.path == "/ai-gateway/anthropic/v1/messages"
         assert req.header("x-api-key") is None
         assert req.header("Authorization") == "Bearer dbx-token"
+
+    def test_forwards_traces_and_drops_metrics_on_allowed_otel_paths(self, make_gateway):
+        gw = make_gateway()
+        traces, metrics = "/ai-gateway/otel/v1/traces", "/ai-gateway/otel/v1/metrics"
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, traces, metrics),
+            discarded_paths=(metrics,),
+        ) as proxy_url:
+            sent = httpx.post(
+                f"{proxy_url}{traces}",
+                headers={"x-api-key": _SESSION_SECRET, "Content-Type": "application/x-protobuf"},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            dropped = httpx.post(
+                f"{proxy_url}{metrics}",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            unauthenticated = httpx.post(f"{proxy_url}{metrics}", content=b"", timeout=10)
+        assert sent.status_code == 200
+        assert (dropped.status_code, dropped.content) == (200, b"")
+        assert unauthenticated.status_code == 401
+        assert [req.path for req in gw.requests] == [traces]
+        assert gw.requests[0].header("Authorization") == "Bearer dbx-token"
+        assert gw.requests[0].header("x-api-key") is None
+        assert gw.requests[0].body == b"\x0a\x00"
 
     @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
     def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):

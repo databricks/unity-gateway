@@ -1,13 +1,9 @@
 """Shared constants for the integration CUJs."""
 
-import os
-
 CLAUDE_TEST_MODEL = "system.ai.claude-haiku-4-5"
 CLAUDE_RELAY_TEST_MODEL = "claude-haiku-4-5-20251001"
-# nano sometimes nests powershell inside Codex's pwsh, breaking `$` expansion in its file reads.
-CODEX_TEST_MODEL = "system.ai.gpt-5-6-luna" if os.name == "nt" else "system.ai.gpt-5-4-nano"
-# Copilot discovers models from the gateway's Anthropic route, which doesn't list gpt-5-4-nano.
-COPILOT_GPT_TEST_MODEL = "system.ai.gpt-5-6-luna"
+CODEX_TEST_MODEL = "system.ai.gpt-6-luna"
+COPILOT_GPT_TEST_MODEL = "system.ai.gpt-6-luna"
 # Open models Copilot calls on Chat Completions, one per family ug registers.
 COPILOT_GLM_TEST_MODEL = "system.ai.glm-5-2"
 COPILOT_KIMI_TEST_MODEL = "system.ai.kimi-k3"
@@ -21,5 +17,5 @@ COPILOT_HEADLESS_FLAGS = (
     "--disable-builtin-mcps",
 )
 
-MANAGED_CLAUDE_PROVIDER_SERVICE = "main.default.ci_e2e_anthropic_mps"
+MANAGED_CLAUDE_PROVIDER_SERVICE = "main.ucode.dont_delete_ci_company_anthropic_mps"
 MANAGED_CODEX_PROVIDER_SERVICE = "main.default.ci_e2e_openai_mps"
