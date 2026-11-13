@@ -9,6 +9,10 @@ COPILOT_GLM_TEST_MODEL = "system.ai.glm-5-2"
 COPILOT_KIMI_TEST_MODEL = "system.ai.kimi-k3"
 COPILOT_DEEPSEEK_TEST_MODEL = "system.ai.deepseek-v4-1-flash-1017"
 
+# A model the ChatGPT plan serves through the relay. The gateway's relayed /codex/v1/models returns
+# the API catalog, so Codex's bundled default is rejected for a ChatGPT account; pin this one.
+CODEX_RELAYED_MODEL = "gpt-6-luna"
+
 COPILOT_HEADLESS_FLAGS = (
     "--allow-all-tools",
     "--output-format",

@@ -630,6 +630,7 @@ jobs:
       UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
       DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}
       DEPENDENCY: ${{ inputs.dependency }}
       AGENT: ${{ matrix.agent }}
       CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || inputs.codex_version || '0.156.0' }}
