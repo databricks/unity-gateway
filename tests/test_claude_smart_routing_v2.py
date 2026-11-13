@@ -7,6 +7,7 @@ import json
 import os
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -438,6 +439,20 @@ class TestV2Launch:
 
     def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", "previous-transport")
+        transport_events = []
+
+        @contextmanager
+        def language_transport(_state):
+            with monkeypatch.context() as transport_env:
+                transport_env.setenv("UG_CLAUDE_LANGUAGE_PROXY", "active-transport")
+                transport_events.append("enter")
+                try:
+                    yield
+                finally:
+                    transport_events.append("exit")
+
+        monkeypatch.setattr(claude, "subagent_language_transport", language_transport)
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
@@ -473,6 +488,8 @@ class TestV2Launch:
 
         class FakeProcess:
             def __init__(self, argv, **_kwargs):
+                assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == "active-transport"
+                transport_events.append("spawn")
                 captured["argv"] = argv
                 settings_path = Path(argv[argv.index("--settings") + 1])
                 captured["settings_path"] = settings_path
@@ -486,6 +503,8 @@ class TestV2Launch:
                 assert (plugin_dir / "hooks/register.ts").is_file()
 
             def wait(self):
+                assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == "active-transport"
+                transport_events.append("wait")
                 return 4
 
             def send_signal(self, _signal):
@@ -506,6 +525,8 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 4
+        assert transport_events == ["enter", "spawn", "wait", "exit"]
+        assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == "previous-transport"
         settings = captured["settings"]
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
             "options": {

@@ -72,8 +72,13 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
             assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" in writes
 
 
-@pytest.mark.parametrize("sources", ["user", "project,local"])
-def test_language_transport_uses_native_settings_sources(native_binary, tmp_path, sources):
+@pytest.mark.parametrize(
+    ("sources", "disable_nonessential"),
+    [("user", False), ("project,local", False), ("project,local", True)],
+)
+def test_language_transport_uses_native_settings_sources(
+    native_binary, tmp_path, sources, disable_nonessential
+):
     for path, text in _header_mod_files(tmp_path).items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text)
@@ -104,7 +109,12 @@ export function register(on) {
     project_settings.parent.mkdir()
     project_settings.write_text(json.dumps({"language": "English"}))
     upstream = "http://127.0.0.1:1"
-    proxy = "http://127.0.0.1:9/ai-gateway/anthropic"
+    server, cache, client = start_claude_language_proxy(
+        upstream, lambda _force: "fixture-only", session_secret="fixture-session"
+    )
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    server_thread.start()
+    proxy = f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic"
     proc = subprocess.Popen(
         [
             native_binary,
@@ -132,7 +142,7 @@ export function register(on) {
             "CLAUDE_CONFIG_DIR": str(config_dir),
             "ANTHROPIC_API_KEY": "fixture-only",
             "ANTHROPIC_BASE_URL": upstream,
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1" if disable_nonessential else "0",
             "DISABLE_AUTOUPDATER": "1",
             "CLAUDE_CODE_ELEGANT_MEADOW": "1",
             "CLAUDE_CODE_MAX_RETRIES": "0",
@@ -193,6 +203,12 @@ export function register(on) {
                     assert "X-UG-Response-Language: English" not in observed["headers"]
                 else:
                     assert "X-UG-Response-Language:" not in observed["headers"]
+            server.shutdown()
+            server.server_close()
+            send("Reply with OK.", expect_error=True)
+            observed = probe()
+            assert observed["base"] == upstream
+            assert "x-ug-" not in observed["headers"].lower()
     finally:
         proc.terminate()
         try:
@@ -203,6 +219,11 @@ export function register(on) {
         reader.join(timeout=5)
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             stream.close()
+        server.shutdown()
+        server.server_close()
+        cache.stop()
+        client.close()
+        server_thread.join(timeout=5)
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):

@@ -5,6 +5,7 @@ import { headerLines } from '../hooks/register.ts';
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 
 function setup(on: On, env: Record<string, string | undefined>) {
+  on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '' } }));
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
     env[e.name] = e.value;
@@ -174,6 +175,7 @@ for (const failure of ['settings', 'env-get', 'env-set'] as const) {
       UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
     };
     on('session.start', ($, e) => ({ cwd: e.cwd }));
+    on('http.fetch', () => ({ value: { status: 200, ok: true, headers: {}, text: '' } }));
     on('settings.read', () => {
       if (failure === 'settings') throw new Error('settings unavailable');
       return { value: { language: 'English' } };
@@ -202,5 +204,44 @@ for (const failure of ['settings', 'env-get', 'env-set'] as const) {
     expect(turns).toBe(1);
     expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
     expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep\nX-Added: yes');
+  });
+}
+
+for (const failure of ['unavailable', 'expired credential'] as const) {
+  test(`${failure} language transport restores direct routing without replaying a turn`, async ($, on) => {
+    const upstream = 'https://workspace.example/ai-gateway/anthropic';
+    const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
+    const env: Record<string, string | undefined> = {
+      ANTHROPIC_BASE_URL: upstream, ANTHROPIC_CUSTOM_HEADERS: 'X-Required: keep',
+      UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
+    };
+    on('env.get', ($, e) => ({ value: env[e.name] }));
+    on('env.set', ($, e) => { env[e.name] = e.value; return { value: undefined }; });
+    on('session.start', ($, e) => ({ cwd: e.cwd }));
+    on('settings.read', () => ({ value: { language: 'English' } }));
+    let checks = 0;
+    on('http.fetch', ($, e) => {
+      expect(e.url).toBe(`${url}/_ug_language_health`);
+      expect(e.init.headers).toEqual({ 'X-UG-Language-Session': 'session-secret' });
+      if (++checks === 1) return { value: { status: 200, ok: true, headers: {}, text: '' } };
+      if (failure === 'unavailable') throw new Error('Connection refused');
+      return { value: { status: 503, ok: false, headers: {}, text: '' } };
+    });
+    let turns = 0;
+    on('turn.step', async function* ($, e) {
+      turns++;
+      expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+      expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep');
+      return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null };
+    });
+    await $.session.start(start);
+    expect(env.ANTHROPIC_BASE_URL).toBe(url);
+    for (let index = 0; index < 2; index++) {
+      const stream = $.turn.step({ turnId: 'turn', index, model: 'parent-model', messageCount: 1, agentId: undefined });
+      while (!(await stream.next()).done) { /* Drain the native turn. */ }
+    }
+    expect(turns).toBe(2);
+    expect(checks).toBe(2);
+    expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe('');
   });
 }

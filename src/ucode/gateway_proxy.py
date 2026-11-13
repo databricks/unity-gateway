@@ -915,6 +915,12 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
         supplied = self.headers.get(_LANGUAGE_SESSION_HEADER, "")
         return hmac.compare_digest(supplied.encode(), self.session_secret.encode())
 
+    def _discard(self) -> None:
+        if not self.cache._fresh_enough():
+            self._reject(503, "Claude language proxy token is not fresh.")
+            return
+        super()._discard()
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         header, stripped, route = super()._forward_target(body)
         return (
@@ -981,5 +987,6 @@ def start_claude_language_proxy(
             "allowed_path_prefixes": (_ANTHROPIC_PATH_PREFIX,),
             "sign_in_hint": "Refresh your workspace sign-in and restart ug claude.",
             "dropped_chat_completions_fields": frozenset(),
+            "discarded_paths": frozenset({"/ai-gateway/anthropic/_ug_language_health"}),
         },
     )

@@ -16,6 +16,7 @@ Fully hermetic: no agent binary, no network, no workspace credentials.
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import gzip
 import json
@@ -664,6 +665,35 @@ class TestGatewayAuthProxyEndToEnd:
 
 
 class TestClaudeLanguageProxyEndToEnd:
+    @pytest.mark.parametrize(("expired", "expected_status"), [(False, 200), (True, 503)])
+    def test_health_checks_cached_token_without_forwarding_or_refreshing(
+        self, make_gateway, expired, expected_status
+    ):
+        expiry = time.time() + (-60 if expired else 3600)
+        payload = base64.urlsafe_b64encode(json.dumps({"exp": expiry}).encode()).decode()
+        provider = _counting_token(f"e30.{payload.rstrip('=')}.signature")
+        gw = make_gateway()
+        with _running_language_proxy(gw, provider) as proxy_url:
+            url = proxy_url + "/ai-gateway/anthropic/_ug_language_health"
+            for _ in range(2):
+                response = httpx.get(
+                    url,
+                    headers={"X-UG-Language-Session": _LANGUAGE_SESSION_SECRET},
+                    timeout=10,
+                )
+                assert response.status_code == expected_status
+                if not expired:
+                    assert response.content == b""
+            bad_secret = httpx.get(
+                url,
+                headers={"X-UG-Language-Session": "wrong-secret"},
+                timeout=10,
+            )
+            assert bad_secret.status_code == 401
+
+        assert provider.calls == [True]
+        assert gw.requests == []
+
     def test_forwards_child_request_with_gateway_auth_and_private_headers_stripped(
         self, make_gateway
     ):
