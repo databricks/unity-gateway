@@ -161,7 +161,7 @@ class TestHelp:
             assert command not in output
 
     def test_managed_authoring_commands_are_removed(self):
-        # Authoring moved to the AI Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
+        # Authoring moved to the Unity Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
         assert runner.invoke(app, ["setup"]).exit_code != 0
         assert runner.invoke(app, ["setup", "mcps"]).exit_code != 0
         assert runner.invoke(app, ["publish"]).exit_code != 0
@@ -1427,7 +1427,7 @@ class TestSubcommandRouting:
         catalog = db_mod.AnthropicModelCatalog(
             model_ids=[],
             model_id_to_display_name={},
-            error_msg="AI Gateway returned no Anthropic model ids",
+            error_msg="Unity Gateway returned no Anthropic model ids",
         )
         with _launch_policy_patches(None, picker_catalog=catalog) as calls:
             result = runner.invoke(app, ["claude", option, value])
@@ -1435,7 +1435,7 @@ class TestSubcommandRouting:
         assert result.exit_code == 1
         output = " ".join(_strip_ansi(result.output).split())
         assert f"Could not discover Claude models for {source}" in output
-        assert "AI Gateway returned no Anthropic model ids" in output
+        assert "Unity Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 
@@ -2154,14 +2154,14 @@ class TestManagedClaudeModelDiscovery:
         calls = self._invoke(
             monkeypatch,
             managed,
-            catalog_error="AI Gateway returned no Anthropic model ids",
+            catalog_error="Unity Gateway returned no Anthropic model ids",
         )
 
         assert calls["result"].exit_code == 1
         output = _strip_ansi(calls["result"].output)
         assert "Could not discover Claude models for Model Provider Service" in output
         assert "main.default.anthropic-mps" in output
-        assert "AI Gateway returned no Anthropic model ids" in output
+        assert "Unity Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 
@@ -3129,6 +3129,24 @@ class TestStatus:
         assert "Models (2, managed): system.ai.claude-opus-4-8, system.ai.claude-sonnet-5" in output
         assert "Default model: system.ai.claude-opus-4-8" in output
         assert "Tracing: enabled" in output
+
+    def test_status_shows_copilot_vscode_turned_off_by_managed_config(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        for enabled, shown in ((False, True), (True, False)):
+            managed = {"enabled_agents": {"copilot": {"vscode_integration_enabled": enabled}}}
+            with (
+                patch("ucode.cli.load_state", return_value=state),
+                patch("ucode.cli.load_managed_state", return_value=managed),
+            ):
+                result = runner.invoke(app, ["status"])
+
+            output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+            assert result.exit_code == 0, result.output
+            assert ("VS Code: off (workspace-managed)" in output) is shown
 
     def test_status_labels_self_configured_setup(self, monkeypatch):
         with (
@@ -8504,25 +8522,15 @@ class TestInstalledMachineWorkspace:
 
     # Every agent takes the same `_launch_tool` path, so Claude stands in for the agents next to
     # the bare launch.
-    @pytest.mark.parametrize(
-        ("selection", "tool"),
-        [("state", None), ("state", "claude"), ("flag", None), ("flag", "claude")],
-    )
+    @pytest.mark.parametrize("tool", [None, "claude"])
     @pytest.mark.parametrize("dry_run", [False, True])
-    def test_foreign_workspace_launch_fails_before_setup(
-        self, monkeypatch, tool, selection, dry_run
-    ):
+    def test_foreign_workspace_flag_fails_before_setup(self, monkeypatch, tool, dry_run):
         from ucode.managed_config import save_managed_state
 
         cli_mod.set_dry_run(False)
         save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
         monkeypatch.setattr(
-            cli_mod,
-            "load_state",
-            lambda: {
-                **MINIMAL_STATE,
-                "workspace": self.SELECTED if selection == "state" else self.INSTALLED,
-            },
+            cli_mod, "load_state", lambda: {**MINIMAL_STATE, "workspace": self.INSTALLED}
         )
         for helper in (
             "set_current_workspace",
@@ -8539,9 +8547,7 @@ class TestInstalledMachineWorkspace:
                 lambda *args, **kwargs: pytest.fail("mismatch must fail before setup"),
             )
         args = [tool] if tool else []
-        args += ["--skip-preflight"]
-        if selection == "flag":
-            args += ["--workspace", self.SELECTED]
+        args += ["--skip-preflight", "--workspace", self.SELECTED]
         if dry_run:
             args = ["--dry-run", *args]
         result = runner.invoke(app, args)
@@ -8552,6 +8558,41 @@ class TestInstalledMachineWorkspace:
         assert self.INSTALLED in output
         assert self.SELECTED in output
         assert "IT team or an administrator" in output
+
+    def test_stale_saved_workspace_switches_to_installed_and_sets_up_again(self):
+        """An admin switched the machine since this user configured: follow it, don't refuse."""
+        from ucode.managed_config import save_managed_state
+        from ucode.state import load_full_state, load_state
+
+        cli_mod.set_dry_run(False)
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        real_save_state({"workspace": self.INSTALLED, "available_tools": ["claude"]})
+        real_save_state({"workspace": self.SELECTED, "available_tools": ["claude"]})
+
+        state = cli_mod._launch_workspace_state(None)
+
+        assert state["workspace"] == self.INSTALLED
+        # Set up again, so the launch rewrites the user's agent settings for this workspace.
+        assert "available_tools" not in state
+        assert load_state()["workspace"] == self.INSTALLED
+        # The other workspace's saved setup is kept, only no longer selected.
+        assert load_full_state()["workspaces"][self.SELECTED]["available_tools"] == ["claude"]
+
+    def test_stale_saved_workspace_dry_run_uses_installed_without_saving(self):
+        from ucode.managed_config import save_managed_state
+        from ucode.state import load_state
+
+        save_managed_state(self.INSTALLED, {"default_agent": "CODING_AGENT_CLAUDE_CODE"})
+        real_save_state({"workspace": self.SELECTED, "available_tools": ["claude"]})
+        cli_mod.set_dry_run(True)
+        try:
+            state = cli_mod._launch_workspace_state(None)
+        finally:
+            cli_mod.set_dry_run(False)
+
+        assert state["workspace"] == self.INSTALLED
+        assert "available_tools" not in state
+        assert load_state()["workspace"] == self.SELECTED
 
     def test_bare_launch_without_user_workspace_uses_installed_workspace(self, monkeypatch):
         from ucode.managed_config import save_managed_state

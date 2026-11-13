@@ -9,6 +9,27 @@ import pytest
 from ucode.smart_routing import claude_routing, routing
 
 
+@pytest.mark.parametrize("gateway_hash", ["c442a48", "bf79c578", "BF79C578"])
+def test_gateway_model_unwrap_preserves_model_and_context_hint(gateway_hash):
+    model = "system.ai.gpt-6-1-sol[1m]"
+
+    assert routing.unwrap_anthropic_gateway_model(f"anthropic-aigw-{gateway_hash}-{model}") == model
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "system.ai.gpt-6-1-sol[1m]",
+        "anthropic-aigw-123456-system.ai.gpt-6-1-sol",
+        "anthropic-aigw-123456789-system.ai.gpt-6-1-sol",
+        "anthropic-aigw-zzzzzzz-system.ai.gpt-6-1-sol",
+        "anthropic-aigw-c442a48-",
+    ],
+)
+def test_gateway_model_unwrap_leaves_other_ids_unchanged(model):
+    assert routing.unwrap_anthropic_gateway_model(model) == model
+
+
 @pytest.mark.parametrize(
     ("tool_name", "expected"),
     [("Agent", True), ("Task", True), (" task ", True), ("Bash", False), (None, False)],

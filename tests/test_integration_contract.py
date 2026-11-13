@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.harness import clean_environment
+from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -36,6 +36,26 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
 
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+
+
+def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "0")
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+
+    result = session.run(
+        "-c",
+        "from ucode.gateway_proxy import log_proxy_diagnostic; "
+        "log_proxy_diagnostic('request_start', request_id='diagnostic-check')",
+    )
+
+    prefix, payload = result.stderr.strip().split(" ", 1)
+    assert prefix == "[ucode-relay]"
+    assert json.loads(payload) == {"event": "request_start", "request_id": "diagnostic-check"}
+    recorded = json.loads((session.artifacts / "command-1.json").read_text())
+    assert recorded["stderr"] == result.stderr
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
@@ -111,6 +131,44 @@ def _ci_marker_expression(job, agent, *, smart_routing=False):
     )
 
 
+def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
+    jobs = _integration_jobs()
+    job = jobs["codex-desktop-macos"]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-desktop-macos" in {name.strip() for name in needs.group(1).split(",")}
+    assert "runs-on: macos-latest" in job
+    assert "continue-on-error:" not in job
+    assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
+    assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
+    assert "shasum -a 256 -c" in job
+    assert "--macos-desktop" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
+def test_latest_harness_runs_the_newest_signed_chatgpt_app():
+    workflow = _workflow("harness-latest.yml")
+    entry = re.search(
+        r"(?m)^          - suite: desktop\n            runner: (.+)\n            managed: true\n"
+        r"            marker: (.+)$",
+        workflow,
+    )
+    assert entry is not None
+    assert entry.group(1) == "macos-latest"
+    assert "codex-app-prod/appcast.xml" in workflow
+    # No hash exists for an unseen build, so Apple's signature checks stand in for it.
+    assert "codesign --verify --deep --strict /Applications/ChatGPT.app" in workflow
+    assert "spctl --assess --type execute /Applications/ChatGPT.app" in workflow
+    assert re.search(r"(?m)^          OPENAI_TEAM_ID: [A-Z0-9]{10}$", workflow)
+    assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
+    assert "${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }}" in workflow
+    assert _collect_integration_cases(entry.group(2)) == {
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
 def test_soft_fail_ci_is_non_blocking_on_both_platforms():
     jobs = _integration_jobs()
     job = jobs["soft-fail"]
@@ -167,7 +225,7 @@ def _collect_integration_cases(expression):
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
+def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     if agent == "codex":
         workflow = WORKFLOW.read_text()
         assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.154\.0", workflow)
@@ -205,7 +263,72 @@ def test_smoke_and_full_together_cover_every_blocking_live_case(agent):
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
     assert not smoke & full
-    assert smoke | full == _collect_integration_cases(f"live and {agent} and not soft_fail")
+    selected = smoke | full
+    if agent == "claude":
+        staging = _collect_integration_cases(
+            f"({_ci_marker_expression(jobs['anthropic-mps'], agent)}) and live"
+        )
+        assert not selected & staging
+        selected |= staging
+    assert selected == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
+    monkeypatch.setenv("UG_INTEGRATION_AGENTS", "claude,codex,copilot")
+    jobs = _integration_jobs()
+    job = jobs["anthropic-mps"]
+    assert not re.search(r"(?m)^    needs:", job)
+    assert "UCODE_TEST_WORKSPACE: https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com" in job
+    assert "DATABRICKS_CLIENT_ID: 39206fba-a07b-4954-b8f9-4a1c9c069bba" in job
+    assert "DATABRICKS_CLIENT_SECRET: ${{ secrets.UG_ANTHROPIC_MPS_CLIENT_SECRET }}" in job
+    assert "DATABRICKS_BEARER:" not in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "agent: [claude, copilot]" in job
+    assert "fail-fast: false" in job
+    assert "group: databricks-protected-runner-group" in job
+    assert (
+        "labels: ${{ matrix.os == 'windows-latest' && 'windows-server-latest' "
+        "|| 'linux-ubuntu-latest' }}"
+    ) in job
+    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in job
+    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in job
+    assert "steps: *live-steps" in job
+    assert "continue-on-error: ${{ matrix.agent == 'copilot' }}" in job
+    assert (
+        "timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || "
+        "matrix.os == 'windows-latest' && 85 || 40 }}"
+    ) in job
+    assert "AGENT: ${{ matrix.agent }}" in job
+    assert "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}" in job
+    selected = set()
+    for agent in ("claude", "copilot"):
+        cases = _collect_integration_cases(_ci_marker_expression(job, agent))
+        assert not selected & cases
+        selected |= cases
+    assert selected == _collect_integration_cases("anthropic_mps")
+    assert '--npm-registry "$NPM_REGISTRY"' in jobs["smoke"]
+    for job_name, agent in (("full", "claude"), ("managed", "claude"), ("copilot", "copilot")):
+        assert not selected & _collect_integration_cases(
+            _ci_marker_expression(jobs[job_name], agent)
+        )
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    required = {name.strip() for name in needs.group(1).split(",")}
+    assert "anthropic-mps" in required
+
+
+def test_anthropic_mps_fixtures_use_the_same_service():
+    from scripts.run_integration import arguments
+    from tests.integration.utils.constants import MANAGED_CLAUDE_PROVIDER_SERVICE
+
+    expected = "main.ucode.dont_delete_ci_company_anthropic_mps"
+    args = arguments(["--claude-version", "2.1.290", "--installation-only"], environment={})
+    assert args.claude_provider == MANAGED_CLAUDE_PROVIDER_SERVICE == expected
+    for name in ("claude_mps", "claude_mps_defaults"):
+        config = json.loads(
+            (Path(__file__).parent / "fixtures" / "managed_config" / f"{name}.json").read_text()
+        )
+        assert config["enabled_agents"][0]["config"]["models"]["model_provider_service"] == expected
 
 
 def test_smoke_and_full_journeys_run_every_agent_and_os_in_parallel():
@@ -260,6 +383,9 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing
             "subagent_only_v1",
             "subagent_orch_v0",
         )
+    } | {
+        "test_ug_smart_routing_hooks.py::test_smart_router_routes_claude_subagent_at_launch"
+        "[subagent_only_v0-glm]"
     }
 
 
@@ -463,7 +589,9 @@ FORK_GUARD = (
 )
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
+    "anthropic-mps",
     "cowork-inference-windows",
+    "cowork-inference-macos",
     "workspace",
     "smoke",
     "headless-windows",
@@ -474,6 +602,7 @@ SKIPPED_ON_FORK_PRS = {
     "antigravity",
     "managed",
     "managed-opencode",
+    "codex-desktop-macos",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -656,7 +785,9 @@ def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_check
     workflow = _workflow("ug-review.yml")
 
     assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
-    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert re.search(
+        r"(?m)^on:\n  pull_request:\n    types: \[labeled, ready_for_review\]\n", workflow
+    )
     assert (
         'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
     )
@@ -700,18 +831,19 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "installation-windows",
         "headless-windows",
         "cowork-inference-windows",
+        "cowork-inference-macos",
         "workspace",
         "smoke",
         "full",
         "antigravity",
         "managed",
+        "codex-desktop-macos",
         "dedicated-cuj-plan",
         "dedicated-cuj",
     ],
 )
 @pytest.mark.parametrize("job_result", ["success", "failure", "cancelled", "skipped"])
-@pytest.mark.parametrize("cowork_expected", ["success", "skipped"])
-def test_integration_ci_gate_requires_every_job(failed_job, job_result, cowork_expected):
+def test_integration_ci_gate_requires_every_job(failed_job, job_result):
     workflow = Path(__file__).parent.parent / ".github/workflows/integration.yml"
     gate = workflow.read_text().split("\n  cujs:\n", 1)[1]
     script = re.search(r"          python3 - <<'PY'\n(.*?)          PY", gate, re.DOTALL)
@@ -723,26 +855,26 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result, cowork_e
             "installation-windows",
             "headless-windows",
             "cowork-inference-windows",
+            "cowork-inference-macos",
             "workspace",
             "smoke",
             "full",
             "antigravity",
             "managed",
+            "codex-desktop-macos",
             "dedicated-cuj-plan",
             "dedicated-cuj",
         )
     }
-    results["cowork-inference-windows"]["result"] = cowork_expected
     results[failed_job]["result"] = job_result
     result = subprocess.run(
         [sys.executable, "-c", textwrap.dedent(script.group(1))],
-        env={"RESULTS": json.dumps(results), "COWORK_EXPECTED": cowork_expected},
+        env={"RESULTS": json.dumps(results)},
         capture_output=True,
         text=True,
         timeout=10,
     )
-    expected_result = cowork_expected if failed_job == "cowork-inference-windows" else "success"
-    if job_result == expected_result:
+    if job_result == "success":
         assert result.returncode == 0, result.stderr
         assert "All integration jobs passed:" in result.stdout
     else:
@@ -926,22 +1058,84 @@ def test_live_suites_use_fresh_id_for_random_ids():
     assert not offenders, f"Use fresh_id() from integration/utils/evidence.py: {offenders}"
 
 
-def test_cowork_ci_permissions_and_required_gate():
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_permissions_and_required_gate(job_name):
     jobs = _integration_jobs()
-    job = jobs["cowork-inference-windows"]
+    job = jobs[job_name]
     assert "github.event_name != 'merge_group'" in job
-    assert "inputs.ug_version == 'checkout'" in job
-    assert "inputs.claude_version == '2.1.290'" in job
-    assert "inputs.dependency == ''" in job
+    condition = re.search(r"(?m)^    if: (.*)$", job)
+    assert condition is not None
+    assert condition.group(1) == (
+        "${{ github.event_name != 'merge_group' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.head.repo.full_name == github.repository) }}"
+    )
     assert "id-token:" not in job
     assert "continue-on-error:" not in job
     needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
     assert needs is not None
-    assert "cowork-inference-windows" in {name.strip() for name in needs.group(1).split(",")}
+    assert job_name in {name.strip() for name in needs.group(1).split(",")}
     for caller in ("ci.yml", "fork-integration.yml"):
         integration = _workflow(caller).split("\n  integration:\n", 1)[1].split("\n  #", 1)[0]
         integration = re.split(r"\n  [a-z-]+:\n", integration, maxsplit=1)[0]
         assert "id-token:" not in integration
+
+
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_covers_each_claude_model_source(job_name):
+    job = _integration_jobs()[job_name]
+    assert "      fail-fast: false\n" in job
+    hosted = (
+        "            provider: ''\n            model: system.ai.claude-haiku-4-5\n"
+        "            relay: false\n"
+    )
+    relay = (
+        "            provider: main.ucode.ci_e2e_anthropic_relay_mps\n"
+        "            model: claude-haiku-4-5-20251001\n            relay: true\n"
+    )
+    legacy_anthropic = (
+        "            provider: main.ucode.ci_e2e_anthropic_nonrelay_mps\n"
+        "            model: claude-haiku-4-5-20251001\n            relay: false\n"
+    )
+    assert hosted in job
+    assert relay in job
+    # Windows runs the non-relay service in the staging anthropic-mps lane instead.
+    assert (legacy_anthropic in job) is job_name.endswith("macos")
+    for variable in ("PROVIDER", "MODEL", "RELAY"):
+        assert f"      UG_COWORK_{variable}: ${{{{ matrix.source.{variable.lower()} }}}}\n" in job
+    # Only the relay source receives the subscription token.
+    tokens = re.findall(r"(?m)^\s+CLAUDE_CODE_OAUTH_TOKEN: (.*)$", job)
+    assert tokens
+    assert set(tokens) == {"${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}"}
+    artifact = "cowork-inference" if job_name.endswith("windows") else "cowork-inference-macos"
+    assert re.findall(r"(?m)^          name: (cowork-inference.*)$", job) == [
+        f"{artifact}-${{{{ matrix.source.id }}}}"
+    ]
+
+
+def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
+    jobs = _integration_jobs()
+    job = jobs["anthropic-mps"]
+    assert (
+        "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
+        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+    ) in job
+    assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
+    assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
+    assert "      UG_COWORK_RELAY: false\n" in job
+    # The shared live steps reach every live job; only this lane opts in.
+    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_DESKTOP:" in body]
+    assert opted_in == ["anthropic-mps"]
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    live_steps = workflow.split("    steps: &live-steps\n", 1)[1].split("\n\n", 1)[0]
+    desktop = live_steps.split("      - name: Install Claude Desktop\n", 1)[1]
+    gates = re.findall(r"(?m)^        if: (.*)$", desktop)
+    # Every Desktop step is skipped unless the lane opts in through the install step.
+    assert gates[0] == "${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}"
+    assert all("steps.desktop-" in gate for gate in gates[1:])
+    assert len(gates) == desktop.count("      - name: ") + 1
+    assert "DATABRICKS_BEARER_COMMAND=" in desktop
+    assert "name: cowork-inference-anthropic\n" in desktop
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")

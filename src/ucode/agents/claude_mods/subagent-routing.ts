@@ -16,6 +16,9 @@ const safeText = (value: unknown, limit: number): string | undefined => {
   return clean || undefined
 }
 
+const unwrapGatewayModel = (model: string): string =>
+  model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
+
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
     .replace(/^databricks-claude-/, 'system.ai.claude-')
@@ -49,7 +52,13 @@ const ANIMALS = [
   'Magpie', 'Osprey', 'Owl', 'Parrot', 'Pelican', 'Penguin', 'Puffin', 'Raven', 'Robin', 'Swan',
 ]
 
-const shortModel = (model: string): string => model.replace(/^system\.ai\./, '').replace(/^databricks-/, '')
+const shortModel = (model: string): string => {
+  const unwrapped = unwrapGatewayModel(model)
+  const parts = unwrapped.split('.')
+  const name = parts.length > 3 ? parts.slice(3).join('.')
+    : parts.length === 3 ? parts[2] : unwrapped
+  return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
+}
 // Native terminal notices omit Retry-After, so expire this local hint after one minute.
 const RATE_LIMIT_COOLDOWN_MS = 60_000
 // Claude's own spinner glyphs, played forwards then back as Claude does.
