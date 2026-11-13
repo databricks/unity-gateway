@@ -12,7 +12,7 @@ type RoutingExplanation = {
   recipe?: string; formula?: string
 }
 type RoutingRecord = {
-  generation: number; name: string; task: string; model: string; rationale: string; seconds?: number
+  generation: number; toolUseId: string; name: string; task: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }; explanation?: RoutingExplanation
 }
 type ExplanationState = { generation: number; enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
@@ -228,7 +228,7 @@ const selection = (
       ...(record.seconds === undefined ? [] : [
         Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] }),
       ]),
-      ...(onWhy ? [Button({ key: 'why-this-model', label: 'Why this model?', onPress: onWhy })] : []),
+      ...(onWhy ? [Button({ key: `why-this-model-${record.toolUseId}`, label: 'Why this model?', onPress: onWhy })] : []),
     ],
   })]
   if (record.spawned?.model && record.spawned.model !== record.model) {
@@ -447,6 +447,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       if (route) {
         record = {
           generation,
+          toolUseId: tool_use_id,
           name,
           task: input.description || input.subagent_type || tool,
           model: route.model,

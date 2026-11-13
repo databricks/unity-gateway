@@ -99,9 +99,11 @@ selection. Opening a pane uses the saved decision and never reruns the router.
 The explanation object contains `selected_model`, `summary`, `task_understanding`
 (a list of short strings), and `models`. Each model entry contains `id`, `name`,
 `selected`, `considered`, and `reason`; exactly one selected entry must match the routed
-model. Model IDs use the offered name with any synthetic Anthropic gateway wrapper,
-the `system.ai.` prefix, and `[1m]` context hint removed; the client requires one explanation row per distinct offered model and
-rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
+model. Model IDs remove any synthetic Anthropic gateway wrapper. For `system.ai.` IDs,
+the client also removes that prefix and a trailing `[1m]` context hint. Other IDs with
+at least three dot-separated parts retain their full offered name, including `[1m]` when
+present; shorter IDs drop that suffix. The client requires one explanation row per distinct
+offered model and rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
 and `difference_from_winner` supply the numeric view. Optional `recipe` and `formula`
 identify the scoring policy. Any supplied `session_id` or `tool_use_id`, including
 inside `evidence`, must match the current call. The service must describe the same

@@ -54,10 +54,38 @@ _EXPLANATION = {
     [
         (_EXPLANATION, True),
         (json.dumps(_EXPLANATION), True),
+        (
+            {**_EXPLANATION, "session_id": "s1", "tool_use_id": "t1"},
+            True,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "evidence": {"session_id": "s1", "tool_use_id": "t1"},
+            },
+            True,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "session_id": "s1",
+                "tool_use_id": "t1",
+                "evidence": {"session_id": "s1", "tool_use_id": "t1"},
+            },
+            True,
+        ),
         (None, False),
         ({"summary": "private-invalid-metadata"}, False),
     ],
-    ids=["object", "json-string", "absent", "invalid"],
+    ids=[
+        "object",
+        "json-string",
+        "matching-direct-identities",
+        "matching-nested-identities",
+        "matching-direct-and-nested-identities",
+        "absent",
+        "invalid",
+    ],
 )
 def test_explanation_roundtrip_does_not_change_subagent_selection(
     tmp_path, monkeypatch, caplog, explanation, retained

@@ -323,6 +323,7 @@ test('parallel cards open each call’s own routing explanation', { options: { E
   let started: () => void = () => {};
   const bothStarted = new Promise<void>((resolve) => { started = resolve; });
   on('session.id', () => ({ value: 'session-1' }));
+  on('clock.every', () => ({ value: { cancel: () => {} } }));
   on('process.run', async ($, e) => {
     const request = JSON.parse(e.init.stdin);
     const { tool_use_id } = request;
@@ -354,32 +355,26 @@ test('parallel cards open each call’s own routing explanation', { options: { E
 
   releases.get('call-b')!();
   await callB;
-  const cardB = await $.ui.mount(reply('reply-after-call-b'));
-  const cardBTree = JSON.stringify(await cardB.drawn());
-  expect(cardBTree).toContain('Compute 1+1 (agent B)');
-  expect(cardBTree).not.toContain('Compute 1+1 (agent A)');
-  await cardB.press({ key: 'why-this-model' });
-  const explanationB = await $.ui.mount({
-    ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation',
-  });
-  expect(JSON.stringify(await explanationB.drawn())).toContain('Explanation for call-b');
-  await explanationB.press({ key: 'close' });
-  await explanationB.unmount();
-  await cardB.unmount();
-
   releases.get('call-a')!();
   await callA;
-  const cardA = await $.ui.mount(reply('reply-after-call-a'));
-  const cardATree = JSON.stringify(await cardA.drawn());
-  expect(cardATree).toContain('Compute 1+1 (agent A)');
-  expect(cardATree).not.toContain('Compute 1+1 (agent B)');
-  await cardA.press({ key: 'why-this-model' });
-  const explanationA = await $.ui.mount({
-    ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation',
-  });
-  expect(JSON.stringify(await explanationA.drawn())).toContain('Explanation for call-a');
-  await explanationA.unmount();
-  await cardA.unmount();
+  const cards = await $.ui.mount(reply('reply-after-both-routes'));
+  const tree = JSON.stringify(await cards.drawn());
+  expect(tree).toContain('Compute 1+1 (agent A)');
+  expect(tree).toContain('Compute 1+1 (agent B)');
+  const whyButtons = await cards.findAll({ type: 'Button', text: 'Why this model?' });
+  expect(whyButtons.length).toBe(2);
+  expect(new Set(whyButtons.map(({ key }) => key)).size).toBe(2);
+
+  for (const [id, key] of [['call-b', 'why-this-model-call-b'], ['call-a', 'why-this-model-call-a']]) {
+    await cards.press({ key });
+    const pane = await $.ui.mount({
+      ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation',
+    });
+    expect(JSON.stringify(await pane.drawn())).toContain(`Explanation for ${id}`);
+    await pane.press({ key: 'close' });
+    await pane.unmount();
+  }
+  await cards.unmount();
 });
 
 test('an aborted turn leaves no card for the next turn, but a finished one keeps them for the reply', async ($, on) => {
@@ -651,7 +646,7 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
   await $.tool.call({ tool: 'Agent', tool_use_id: 'shown', ...originalInput });
   const shown = await $.ui.mount(row('shown'));
   expect(JSON.stringify(await shown.drawn())).toContain('Why this model?');
-  await shown.press({ key: 'why-this-model' });
+  await shown.press({ key: 'why-this-model-shown' });
   await shown.unmount();
 
   if (canonicalJourney) {
@@ -959,8 +954,8 @@ test(`session ${reason} clears routing UI while pending routes keep their native
   await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'before-clear', ...originalInput });
   const oldWhy = await $.ui.mount(row('before-clear'));
-  expect(await oldWhy.find({ type: 'Button', key: 'why-this-model' })).toBeDefined();
-  await $.ui.press({ plugin: 'ug-smart-router', key: 'why-this-model', surface: 'terminal' });
+  expect(await oldWhy.find({ type: 'Button', key: 'why-this-model-before-clear' })).toBeDefined();
+  await $.ui.press({ plugin: 'ug-smart-router', key: 'why-this-model-before-clear', surface: 'terminal' });
   expect(opens).toBe(1);
   expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
     .toBe('Showing the latest routing explanation.');
@@ -983,7 +978,7 @@ test(`session ${reason} clears routing UI while pending routes keep their native
   expect(panePlaced).toBe(false);
   // Direct press dispatches the still-hosted button; mounted.press would redraw
   // the invalidated row first and remove the stale callback we want to exercise.
-  await $.ui.press({ plugin: 'ug-smart-router', key: 'why-this-model', surface: 'terminal' });
+  await $.ui.press({ plugin: 'ug-smart-router', key: 'why-this-model-before-clear', surface: 'terminal' });
   expect(opens).toBe(opensBeforeEnd);
   expect(panePlaced).toBe(false);
   await oldWhy.unmount();
@@ -1079,7 +1074,7 @@ test(`the Why button reports ${failure} failure and clears its pane record`, { o
   await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'unplaced-pane', ...originalInput });
   const shown = await $.ui.mount(row('unplaced-pane'));
-  await shown.press({ key: 'why-this-model' });
+  await shown.press({ key: 'why-this-model-unplaced-pane' });
 
   expect(toasts).toEqual(['Could not open the native routing explanation pane.']);
   const stalePane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
