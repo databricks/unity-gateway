@@ -15,21 +15,32 @@ from functools import wraps
 from typing import Any
 from urllib.parse import urlsplit
 
+UG_STARTUP_DURATION_MS = "ug_startup_duration_ms"
+CLI_IMPORT_DURATION_MS = "cli_import_duration_ms"
+DEPENDENCY_SETUP_DURATION_MS = "dependency_setup_duration_ms"
+DEPENDENCY_INSTALL_OPERATION = "dependency_install"
+DEPENDENCY_INSTALL_DURATION_MS = f"{DEPENDENCY_INSTALL_OPERATION}_duration_ms"
+AGENT_CONFIGURATION_DURATION_MS = "agent_configuration_duration_ms"
+SKILLS_REFRESH_OPERATION = "skills_refresh"
+SKILLS_REFRESH_DURATION_MS = f"{SKILLS_REFRESH_OPERATION}_duration_ms"
+COMMAND_OPERATION = "command"
+UG_CLI_ERROR = "ug_cli_error"
+
 MAX_OBSERVATIONS = 1000
 EXPORT_INTERVAL_SECONDS = 60
 DURATION_METRICS = frozenset(
     {
-        "ug_startup_duration_ms",
-        "cli_import_duration_ms",
-        "dependency_setup_duration_ms",
-        "dependency_install_duration_ms",
+        UG_STARTUP_DURATION_MS,
+        CLI_IMPORT_DURATION_MS,
+        DEPENDENCY_SETUP_DURATION_MS,
+        DEPENDENCY_INSTALL_DURATION_MS,
         "databricks_token_fetch_duration_ms",
         "databricks_login_duration_ms",
         "coding_agent_config_fetch_duration_ms",
         "model_service_access_check_duration_ms",
         "model_service_discovery_duration_ms",
-        "agent_configuration_duration_ms",
-        "skills_refresh_duration_ms",
+        AGENT_CONFIGURATION_DURATION_MS,
+        SKILLS_REFRESH_DURATION_MS,
         "routing_decision_duration_ms",
         "ug_usage_duration_ms",
         "http_request_duration_ms",
@@ -38,7 +49,7 @@ DURATION_METRICS = frozenset(
         "proxy_request_duration_ms",
     }
 )
-COUNTER_METRICS = frozenset({"http_retry_count", "proxy_auth_retry_count", "ug_cli_error"})
+COUNTER_METRICS = frozenset({"http_retry_count", "proxy_auth_retry_count", UG_CLI_ERROR})
 METRICS = DURATION_METRICS | COUNTER_METRICS | {"proxy_response_bytes"}
 STRING_LABELS = frozenset(
     {
@@ -315,7 +326,7 @@ def failure(
             if type(code) is int:
                 labels["process_exit_code"] = code
         record(
-            "ug_cli_error",
+            UG_CLI_ERROR,
             1,
             phase=labels.pop("phase", runtime.phase),
             operation=operation,
@@ -430,7 +441,7 @@ def mark_login() -> None:
 def mark_interactive_wait() -> None:
     current = _scope.get()
     while current is not None:
-        if current["name"] == "dependency_setup_duration_ms":
+        if current["name"] == DEPENDENCY_SETUP_DURATION_MS:
             current["labels"]["interactive_wait"] = True
         current = current["parent"]
 
@@ -461,7 +472,7 @@ def agent_handoff() -> None:
     runtime = _runtime
     if runtime is not None and runtime.startup:
         record(
-            "ug_startup_duration_ms",
+            UG_STARTUP_DURATION_MS,
             (time.perf_counter() - runtime.started) * 1000,
             **runtime.startup_labels,
         )
@@ -489,7 +500,7 @@ def finish() -> None:
     with suppress(Exception):
         if runtime.startup:
             runtime.record(
-                "ug_startup_duration_ms",
+                UG_STARTUP_DURATION_MS,
                 (time.perf_counter() - runtime.started) * 1000,
                 None,
                 runtime.startup_labels,

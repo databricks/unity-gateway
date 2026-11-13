@@ -570,7 +570,9 @@ def _update_stale_skills(
     return updated
 
 
-@metrics.timed("skills_refresh_duration_ms", deadline_reached=False, continued_with_fallback=True)
+@metrics.timed(
+    metrics.SKILLS_REFRESH_DURATION_MS, deadline_reached=False, continued_with_fallback=True
+)
 def refresh_downloaded_skills_on_launch(state: dict) -> None:
     """Update downloaded skills whose UC source changed, before an agent launches.
 
@@ -604,7 +606,7 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             if updated:
                 print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
-        metrics.failure("skills_refresh", exc, continued_with_fallback=True)
+        metrics.failure(metrics.SKILLS_REFRESH_OPERATION, exc, continued_with_fallback=True)
         print_note(f"Skipped checking for skill updates: {exc}")
 
 

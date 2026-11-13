@@ -985,7 +985,7 @@ def _refresh_windows_path() -> None:
     clear_databricks_cli_cache()
 
 
-@metrics.timed("dependency_install_duration_ms", dependency="databricks_cli")
+@metrics.timed(metrics.DEPENDENCY_INSTALL_DURATION_MS, dependency="databricks_cli")
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
     metrics.annotate(action="update" if brew_subcommand == "upgrade" else "install")
     system = platform.system()
