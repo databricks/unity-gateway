@@ -70,6 +70,15 @@ Codex smart routing now requires 0.164.0, including existing managed-enabled
 workspaces. See the [compatibility and upgrade note](#codex-smart-routing-compatibility)
 for upgrading or launching with `--disable-smart-routing`.
 
+`ug pi` launches Pi with `PI_CACHE_RETENTION=long` unless you set it, so GPT models ask
+for 24-hour prompt-cache retention and Claude models write 1-hour cache entries instead of
+5-minute ones. Anthropic prices a 1-hour cache write at twice the base input price, against
+1.25 times for a 5-minute write: Claude's cache survives idle gaps of up to an hour, but each
+write costs more. gpt-oss models keep the short default, because the gateway rejects the
+retention field for them. Run `PI_CACHE_RETENTION=short ug pi` to keep Pi's default. Pi's Claude
+requests also carry a session-affinity header, a hint meant to keep a conversation on one
+AI Gateway destination when traffic splitting is configured.
+
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
 Unknown Databricks models produce an error; this option does not add models
