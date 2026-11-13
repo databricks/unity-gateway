@@ -16,6 +16,10 @@ The models need Copilot Chat, which VS Code turns off in a profile that never fi
 extension then offers, once per profile, to turn it on (what + in the model picker does), and lists the models as
 soon as Copilot Chat starts, with no restart.
 
+Once per configure, once its models are listed, the extension also opens the chat on the workspace's default model
+(else the first model), in Local and Copilot sessions alike. Without that, VS Code applies the default model only to
+an empty chat whose model you didn't pick and Copilot didn't set. Your own `chat.defaultModel` wins.
+
 The models are the ones the Copilot CLI gets: the workspace's managed model list when its managed
 config has one, else the models `ug configure` discovered. With `--provider <catalog.schema.name>`
 they are a Model Provider Service's: the config then names the service, every request carries the

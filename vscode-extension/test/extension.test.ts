@@ -4,7 +4,18 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, NOTICE_SHOWN_KEY, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, whenCopilotChatIsOn, type Settings } from "../src/extension";
+import {
+  DatabricksModels,
+  NOTICE_SHOWN_KEY,
+  PROVIDER_HEADER,
+  readConfig,
+  requestHeaders,
+  SWITCHED_KEY,
+  switchToDefaultModel,
+  userAgent,
+  whenCopilotChatIsOn,
+  type Settings,
+} from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
 import { host, LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
@@ -390,5 +401,78 @@ describe("whenCopilotChatIsOn", () => {
     whenCopilotChatIsOn(context(), () => {}, () => {});
     await settle();
     assert.deepEqual(host.notices, []);
+  });
+});
+
+describe("switchToDefaultModel", () => {
+  const CHANGE = "workbench.action.chat.open";
+  const selector = (model: { vendor: string; id: string }) => ({ modelSelector: { vendor: model.vendor, id: model.id } });
+  const VENDOR = "databricks-unity-gateway";
+  const sonnet = { vendor: VENDOR, id: "system.ai.claude-sonnet-5-5", family: "claude-sonnet-5-5" };
+  const luna = { vendor: VENDOR, id: "system.ai.gpt-6-luna", family: "gpt-6-luna" };
+  const settings = (defaultModel?: string): Settings => ({
+    workspace: "https://ws",
+    authCommand: "true",
+    provider: "",
+    models: [
+      { id: sonnet.id, api: "anthropic" },
+      { id: luna.id, api: "responses" },
+    ],
+    ...(defaultModel ? { defaultModel } : {}),
+  });
+  const context = () => {
+    const state = new Map<string, unknown>();
+    return {
+      subscriptions: [],
+      globalState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => void state.set(key, value) },
+    } as unknown as vscode.ExtensionContext;
+  };
+  afterEach(() => host.reset());
+
+  it("opens the chat on the default model once per configuration", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    host.settings = { "chat.defaultModel": luna.id };
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    assert.deepEqual(host.commandArgs, [selector(luna)]);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), "config-1");
+    await switchToDefaultModel(ctx, settings(luna.id), "config-2", () => {});
+    assert.deepEqual(host.commandArgs, [selector(luna), selector(luna)]);
+  });
+
+  it("opens it on the first model without a default", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    await switchToDefaultModel(context(), settings(), "config-1", () => {});
+    assert.deepEqual(host.commandArgs, [selector(sonnet)]);
+  });
+
+  it("leaves the chats alone when the developer chose another default model", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    host.settings = { "chat.defaultModel": "gpt-4.1" };
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    assert.deepEqual(host.executed, []);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), undefined);
+  });
+
+  it("waits for a later try while VS Code doesn't list the model", async () => {
+    host.commands = [CHANGE];
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    assert.deepEqual(host.executed, []);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), undefined);
+  });
+
+  it("logs, and doesn't retry, when VS Code has no command to switch", async () => {
+    host.chatModels = [sonnet];
+    const lines: string[] = [];
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(sonnet.id), "config-1", (line) => lines.push(line));
+    assert.match(lines[0] ?? "", /Couldn't switch the chat to system.ai.claude-sonnet-5-5/);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), "config-1");
   });
 });

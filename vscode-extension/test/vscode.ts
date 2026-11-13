@@ -50,6 +50,8 @@ export const host = {
   choice: undefined as string | undefined,
   remoteName: undefined as string | undefined,
   showNotice: (): Promise<string | undefined> => Promise.resolve(host.choice),
+  chatModels: [] as { vendor: string; id: string; family: string }[],
+  commandArgs: [] as unknown[],
   reset(): void {
     this.copilotChat = undefined;
     this.extensionListeners = [];
@@ -59,7 +61,13 @@ export const host = {
     this.notices = [];
     this.choice = undefined;
     this.remoteName = undefined;
+    this.chatModels = [];
+    this.commandArgs = [];
   },
+};
+export const lm = {
+  selectChatModels: async (selector: { vendor?: string; id?: string }) =>
+    host.chatModels.filter((model) => model.vendor === selector.vendor && (!selector.id || model.id === selector.id)),
 };
 export const env = {
   get remoteName() {
@@ -77,11 +85,12 @@ export const workspace = {
   getConfiguration: (section: string) => ({ get: (key: string) => host.settings[`${section}.${key}`] }),
 };
 export const commands = {
-  executeCommand: async (id: string) => {
+  executeCommand: async (id: string, ...args: unknown[]) => {
     if (!host.commands.includes(id)) {
       throw new Error(`command '${id}' not found`);
     }
     host.executed.push(id);
+    host.commandArgs.push(...args);
   },
 };
 export const window = {

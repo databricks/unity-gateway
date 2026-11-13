@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
@@ -251,6 +252,41 @@ export function whenCopilotChatIsOn(context: vscode.ExtensionContext, ready: (la
   void offerToTurnOn(context).catch((error: unknown) => log(`Couldn't turn on Copilot Chat: ${String(error)}`));
 }
 
+const VENDOR = "databricks-unity-gateway";
+const OPEN_CHAT_COMMAND = "workbench.action.chat.open";
+export const SWITCHED_KEY = "modelSwitchedForConfig";
+
+/** Opens the chat on the configured default model, else the first model, once per `configKey`. VS Code applies the
+ * default model setting only to an empty chat whose model the user didn't pick, VS Code didn't restore and Copilot
+ * didn't set, so a chat left on a Copilot model would otherwise stay there. A developer's own default model wins. */
+export async function switchToDefaultModel(
+  context: vscode.ExtensionContext,
+  settings: Settings,
+  configKey: string,
+  log: (line: string) => void,
+): Promise<void> {
+  const model = settings.models.find(({ id }) => id === settings.defaultModel) ?? settings.models[0];
+  if (!model || context.globalState.get(SWITCHED_KEY) === configKey) {
+    return;
+  }
+  const own = vscode.workspace.getConfiguration("chat").get("defaultModel");
+  if (typeof own === "string" && own && own !== model.id) {
+    return;
+  }
+  const [chat] = await vscode.lm.selectChatModels({ vendor: VENDOR, id: model.id });
+  if (!chat) {
+    return;
+  }
+  await context.globalState.update(SWITCHED_KEY, configKey);
+  try {
+    // VS Code's own command, not API. Its model selector also finds the model in a Copilot session, where a model
+    // from an extension is wrapped under the agent host's vendor and the change-model command can't name it.
+    await vscode.commands.executeCommand(OPEN_CHAT_COMMAND, { modelSelector: { vendor: chat.vendor, id: chat.id } });
+  } catch (error) {
+    log(`Couldn't switch the chat to ${model.id}: ${String(error)}`);
+  }
+}
+
 const offerToTurnOn = async (context: vscode.ExtensionContext): Promise<void> => {
   const choice = await vscode.window.showInformationMessage("Databricks models need Copilot Chat, which is turned off.", TURN_ON);
   // Only once the user answered: a window closed first asks again next time.
@@ -269,10 +305,12 @@ const offerToTurnOn = async (context: vscode.ExtensionContext): Promise<void> =>
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Unity Gateway", { log: true });
   // Read once: ug changes the file only by reinstalling the extension, which takes a restart to load.
-  const settings = readConfig(readConfigFile(join(context.extensionPath, CONFIG_FILE)));
+  const configText = readConfigFile(join(context.extensionPath, CONFIG_FILE));
+  const settings = readConfig(configText);
+  const configKey = createHash("sha256").update(configText ?? "").digest("hex");
   const headers = () => requestHeaders(vscode.extensions.getExtension(COPILOT_CHAT)?.packageJSON?.version, settings.headers);
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
-  context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
+  context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider(VENDOR, provider));
   const warn = (line: string) => output.warn(line);
   if (settings.otel && settings.workspace && settings.authCommand) {
     const receiver = startReceiver(settings.otel, settings.workspace, new Tokens(settings.authCommand), headers, warn);
@@ -288,17 +326,17 @@ export function activate(context: vscode.ExtensionContext): void {
     syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
       (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
     );
-  void sync();
+  const synced = sync();
   // VS Code lists a provider's models only when a chat view asks or the provider reports a change, so a window that
   // was open when ug installed the extension never lists them otherwise.
   whenCopilotChatIsOn(
     context,
     (late) => {
       provider.refresh();
-      if (late) {
-        // Copilot Chat's own settings exist only once it's on.
-        void sync();
-      }
+      // Copilot Chat's own settings exist only once it's on.
+      void (late ? sync() : synced)
+        .then(() => switchToDefaultModel(context, settings, configKey, warn))
+        .catch((error: unknown) => warn(`Couldn't switch to a Databricks model: ${String(error)}`));
     },
     warn,
   );

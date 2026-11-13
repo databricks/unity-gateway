@@ -83,3 +83,4 @@ def test_ug_configure_installs_the_extension_build_that_refreshes_its_models(
     assert config["models"], config
     assert "onDidChangeLanguageModelChatInformation" in bundle
     assert "workbench.action.chat.manage" in bundle
+    assert "modelSelector" in bundle
