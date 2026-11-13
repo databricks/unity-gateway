@@ -698,9 +698,8 @@ class TestValidate:
         manifest = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}}
         assert validate_manifest(manifest) == []
 
-    @pytest.mark.parametrize(
-        "bad", ["system.*", "a.b.c.d", "*", "main.tools.c*", "a.*.*", "a. b.c"]
-    )
+    # Representative boundaries; the full grammar is covered by test_mcp_source_kind.
+    @pytest.mark.parametrize("bad", ["system.*", "main.tools.c*"])
     def test_malformed_mcp_source_is_rejected(self, bad):
         errors = validate_manifest({"mcp_servers": {"sources": ["system.ai.*", bad]}})
         assert any("mcp_servers.sources must be" in e and bad in e for e in errors)

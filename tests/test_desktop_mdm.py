@@ -739,17 +739,12 @@ def test_configure_refuses_to_overwrite_a_corrupt_policy(device):
     assert mdm.POLICY_PATH.read_bytes() == b"not a plist"
 
 
-@pytest.mark.parametrize("source", ["system.ai.*", "main.tools.foo"])
-def test_mcp_selector_accepts_sources(source):
-    mdm._validate_selector({"sources": ["main.exa.*", source]}, allow_sources=True)
+def test_mcp_selector_accepts_sources():
+    mdm._validate_selector({"sources": ["main.exa.*", "system.ai.*", "main.tools.foo"]})
 
 
-@pytest.mark.parametrize("source", ["a.*", "*", "a.b.c*", "a.*.*", "a.b.c.d", "a. b.c", "a.b. *"])
+# Representative boundaries; the full grammar is covered by test_mcp_source_kind.
+@pytest.mark.parametrize("source", ["a.*", "a.b.c*", "a. b.c"])
 def test_mcp_selector_rejects_malformed_sources(source):
     with pytest.raises(RuntimeError, match="catalog.schema.name or catalog.schema"):
-        mdm._validate_selector({"sources": [source]}, allow_sources=True)
-
-
-def test_skills_selector_rejects_sources():
-    with pytest.raises(RuntimeError, match="don't support sources"):
-        mdm._validate_selector({"sources": ["system.ai.*"]})
+        mdm._validate_selector({"sources": [source]})

@@ -21,6 +21,7 @@ from pathlib import Path
 from ucode.managed_config import (
     load_managed_configuration,
     managed_state_workspace,
+    mcp_source_kind,
     normalize_managed_config,
 )
 from ucode.managed_setup import validate_manifest
@@ -62,12 +63,39 @@ def build_export_payload() -> dict:
             "No managed configuration found locally. Run `ug configure` against a workspace that "
             "publishes one to install its policy, then re-run `ug export`."
         )
-    errors = validate_manifest(normalize_managed_config(config), None)
+    errors = validate_manifest(normalize_managed_config(config), None) + _raw_mcp_sources_errors(
+        config
+    )
     if errors:
         detail = "\n".join(f"  - {error}" for error in errors)
         raise RuntimeError(f"The managed config is not valid, so it was not exported:\n{detail}")
     config = {key: value for key, value in config.items() if key not in _SERVER_OWNED_FIELDS}
     return {"workspace": workspace, "spec_version": EXPORT_SPEC_VERSION, **config}
+
+
+def _raw_mcp_sources_errors(config: dict) -> list[str]:
+    """Check ``mcp_servers.sources`` exactly as it will be exported.
+
+    Normalization drops blank and non-string entries before :func:`validate_manifest` sees them,
+    but export emits the raw config, so validate the raw list too.
+    """
+    mcp_servers = config.get("mcp_servers")
+    sources = mcp_servers.get("sources") if isinstance(mcp_servers, dict) else None
+    if sources is None:
+        return []
+    if not isinstance(sources, list):
+        return ["mcp_servers.sources must be a list."]
+    bad = [
+        repr(source)
+        for source in sources
+        if not isinstance(source, str) or mcp_source_kind(source) is None
+    ]
+    if not bad:
+        return []
+    return [
+        "mcp_servers.sources entries must be <catalog>.<schema>.<name> or <catalog>.<schema>.* "
+        f"(got: {', '.join(bad)})."
+    ]
 
 
 def export_command(file_path: str | None = None) -> None:

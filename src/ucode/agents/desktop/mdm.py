@@ -215,7 +215,7 @@ def _publish(source: Path | None, files: dict[Path, bytes | None]) -> None:
         ) from exc
 
 
-def _validate_selector(selector: dict, *, allow_sources: bool = False) -> None:
+def _validate_selector(selector: dict) -> None:
     location = selector.get("unity_catalog_location")
     if location is not None and (
         not isinstance(location, str)
@@ -234,8 +234,6 @@ def _validate_selector(selector: dict, *, allow_sources: bool = False) -> None:
             "MDM skill and MCP names must be fully qualified catalog.schema.name values."
         )
     sources = selector.get("sources") or []
-    if sources and not allow_sources:
-        raise RuntimeError("MDM skills don't support sources; use names or a catalog location.")
     if not isinstance(sources, list) or any(
         not isinstance(source, str) or mcp_source_kind(source) is None for source in sources
     ):
@@ -305,7 +303,7 @@ def configure(workspace: str, profile: str | None) -> None:
             parent_schema = managed_unity_catalog_location(managed, "claude")
     settings = setup.resolve_gateway_profile(state, parent_schema=parent_schema, token=token)
     selector = (managed or {}).get("mcp_servers") or {}
-    _validate_selector(selector, allow_sources=True)
+    _validate_selector(selector)
     servers = _resolve_managed_mcp_servers(selector, workspace, profile, ["claude"], token=token)
     user_profile = "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
     helper = MDM_ROOT / "ug"

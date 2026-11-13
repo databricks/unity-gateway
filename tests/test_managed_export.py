@@ -129,6 +129,21 @@ class TestBuildPayload:
             with pytest.raises(RuntimeError, match="not valid"):
                 export_mod.build_export_payload()
 
+    def test_mcp_sources_export_verbatim(self):
+        raw = {**FULL_RAW_CONFIG, "mcp_servers": {"sources": ["system.ai.*", "main.exa.*"]}}
+        with _with_config(raw):
+            payload = export_mod.build_export_payload()
+        assert payload["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*"]}
+
+    @pytest.mark.parametrize("bad", ["", 3, "main.tools.c*"])
+    def test_raw_mcp_sources_are_validated_as_exported(self, bad):
+        # Normalization drops a blank or non-string entry, but export emits the raw list, so the
+        # raw entry must be rejected rather than exported.
+        raw = {**FULL_RAW_CONFIG, "mcp_servers": {"sources": ["system.ai.*", bad]}}
+        with _with_config(raw):
+            with pytest.raises(RuntimeError, match="mcp_servers.sources entries must be"):
+                export_mod.build_export_payload()
+
     def test_falls_back_to_managed_state_workspace(self):
         managed_config_mod.save_managed_state(WORKSPACE, FULL_RAW_CONFIG)
         with patch.object(export_mod, "load_state", return_value={}):

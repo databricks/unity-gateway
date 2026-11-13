@@ -1078,10 +1078,10 @@ def _resolve_managed_mcp_sources(
 
     Each ``.*`` pattern discovers its schema; each exact name is built directly. A schema that
     doesn't exist or isn't readable (HTTP 404) is skipped with a warning, so one bad entry doesn't
-    drop the other schemas. Any other discovery failure, including a rate limit, propagates like a
-    single location does, so a partial listing never unregisters servers from a schema that only
-    failed transiently. The cost is that a persistent non-404 failure on one schema blocks managed
-    MCP setup for the whole run, exactly as it does for a single ``unity_catalog_location`` today.
+    drop the other schemas. Any other discovery failure, including a rate limit or a failed later
+    page, propagates, so a partial listing never unregisters servers from a schema that only
+    failed transiently. A persistent non-404 failure on one schema therefore blocks managed MCP
+    setup for the run, as it does for a single ``unity_catalog_location``.
     """
     kinds = {source: mcp_source_kind(source) for source in sources}
     malformed = sorted(source for source, kind in kinds.items() if kind is None)
@@ -1098,7 +1098,9 @@ def _resolve_managed_mcp_sources(
     for location in locations:
         try:
             working.extend(
-                _discover_managed_location(location, workspace, profile, clients, token=token)
+                _discover_managed_location(
+                    location, workspace, profile, clients, token=token, strict_listing=True
+                )
             )
         except McpLocationNotFound as exc:
             print_warning(f"Skipping managed mcp_servers source `{location}.*`: {exc}")
@@ -1123,14 +1125,18 @@ def _discover_managed_location(
     clients: list[str],
     *,
     token: str | None = None,
+    strict_listing: bool = False,
 ) -> list[dict]:
     """Every MCP service under ``location``.
 
     Passes no ``original_servers``: the managed set is tracked separately from the user's servers.
     """
+    kwargs: dict = {}
     if token is not None:
-        return _resolve_location_mcp_servers(workspace, profile, clients, location, [], token=token)
-    return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
+        kwargs["token"] = token
+    if strict_listing:
+        kwargs["strict_listing"] = True
+    return _resolve_location_mcp_servers(workspace, profile, clients, location, [], **kwargs)
 
 
 def _drop_malformed_mcp_names(names: list[str], label: str) -> list[str]:
@@ -2046,8 +2052,8 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
 class McpLocationNotFound(RuntimeError):
     """MCP-service discovery found no such schema, or no USE permission on it (HTTP 404).
 
-    A ``RuntimeError`` subtype, so single-location callers keep failing as before, while a
-    multi-schema ``sources`` resolve can skip just that schema.
+    A ``RuntimeError`` subtype: a single-location configure fails on it, while a multi-schema
+    ``sources`` resolve skips just that schema.
     """
 
 
@@ -2075,6 +2081,7 @@ def _resolve_location_mcp_servers(
     services: set[str] | None = None,
     *,
     token: str | None = None,
+    strict_listing: bool = False,
 ) -> list[dict]:
     """Build the desired MCP server list for ``--location <cat>.<schema>``.
 
@@ -2098,7 +2105,10 @@ def _resolve_location_mcp_servers(
 
     token = token if token is not None else get_databricks_token(workspace, profile)
     with spinner(f"Discovering MCP services in {location}..."):
-        names, reason = list_mcp_services(workspace, token, parent=location)
+        if strict_listing:
+            names, reason = list_mcp_services(workspace, token, parent=location, strict=True)
+        else:
+            names, reason = list_mcp_services(workspace, token, parent=location)
 
     if reason and reason.startswith("HTTP 404"):
         raise McpLocationNotFound(

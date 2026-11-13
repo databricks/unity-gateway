@@ -3744,8 +3744,10 @@ class TestResolveManagedMcpServers:
     def _fake_schema_listing(listings: dict[str, list[str]], discovered: list[str]):
         """A `_resolve_location_mcp_servers` stand-in that serves fixed per-schema listings."""
 
-        def fake_loc(ws, profile, clients, location, original, services=None):
+        def fake_loc(ws, profile, clients, location, original, services=None, **kwargs):
             assert original == [] and services is None
+            # `sources` discovery must not accept a partial listing.
+            assert kwargs.get("strict_listing") is True
             discovered.append(location)
             return [
                 {"name": n.replace(".", "-"), "url": "u", "auth": "proxy", "clients": clients}
@@ -3788,15 +3790,17 @@ class TestResolveManagedMcpServers:
         assert by_name["main-tools-foo"]["clients"] == ["claude", "codex"]
 
     def test_sources_register_a_service_once_when_a_pattern_also_covers_it(self, monkeypatch):
+        discovered: list[str] = []
         monkeypatch.setattr(
             mcp,
             "_resolve_location_mcp_servers",
-            self._fake_schema_listing({"system.ai": ["system.ai.github"]}, []),
+            self._fake_schema_listing({"system.ai": ["system.ai.github"]}, discovered),
         )
         out = mcp._resolve_managed_mcp_servers(
             {"sources": ["system.ai.*", "system.ai.github", "system.ai.*"]}, WS, None, ["claude"]
         )
         assert [s["name"] for s in out] == ["system-ai-github"]
+        assert discovered == ["system.ai"]
 
     def test_sources_skip_malformed_entries_with_a_warning(self, monkeypatch):
         warned: list[str] = []
@@ -3806,42 +3810,12 @@ class TestResolveManagedMcpServers:
             "_resolve_location_mcp_servers",
             lambda *a, **k: pytest.fail("no valid schema pattern to discover"),
         )
-        bad = ["system.*", "a.b.c.d", "*", "main.tools.c*", "a.*.*", "a. b.c", "a .b.*"]
+        bad = ["system.*", "main.tools.c*", "a .b.*"]
         out = mcp._resolve_managed_mcp_servers(
             {"sources": [*bad, "system.ai.slack"]}, WS, None, ["claude"]
         )
         assert [s["name"] for s in out] == ["system-ai-slack"]
         assert len(warned) == 1 and all(entry in warned[0] for entry in bad)
-
-    def test_sources_discover_a_repeated_pattern_once(self, monkeypatch):
-        discovered: list[str] = []
-        monkeypatch.setattr(
-            mcp,
-            "_resolve_location_mcp_servers",
-            self._fake_schema_listing({"system.ai": ["system.ai.github"]}, discovered),
-        )
-        mcp._resolve_managed_mcp_servers(
-            {"sources": ["system.ai.*", "system.ai.*"]}, WS, None, ["claude"]
-        )
-        assert discovered == ["system.ai"]
-
-    def test_sources_skip_a_missing_schema_and_keep_the_rest(self, monkeypatch):
-        # A typo'd or unreadable schema (HTTP 404) is skipped with a warning; the other schema and
-        # the exact name still register.
-        warned: list[str] = []
-        monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
-
-        def fake_loc(ws, profile, clients, location, original, services=None):
-            if location == "main.typo":
-                raise mcp.McpLocationNotFound(f"Invalid location: `{location}`")
-            return [{"name": "system-ai-github", "url": "u", "auth": "proxy", "clients": clients}]
-
-        monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
-        out = mcp._resolve_managed_mcp_servers(
-            {"sources": ["system.ai.*", "main.typo.*", "main.tools.foo"]}, WS, None, ["claude"]
-        )
-        assert {s["name"] for s in out} == {"system-ai-github", "main-tools-foo"}
-        assert len(warned) == 1 and "main.typo.*" in warned[0]
 
     def test_sources_skip_a_schema_the_listing_api_reports_missing(self, monkeypatch):
         # Drives the real discovery path: the listing API's HTTP 404 for one schema must be skipped
@@ -3855,7 +3829,8 @@ class TestResolveManagedMcpServers:
             lambda *a, **k: pytest.fail("must use the caller's token"),
         )
 
-        def fake_list(workspace, token, parent):
+        def fake_list(workspace, token, parent, **kwargs):
+            assert kwargs.get("strict") is True
             listed.append((parent, token))
             if parent == "main.typo":
                 return [], "HTTP 404 Not Found: NOT_FOUND"
@@ -3873,9 +3848,40 @@ class TestResolveManagedMcpServers:
         assert {s["name"] for s in out} == {"system-ai-github", "main-tools-foo"}
         assert len(warned) == 1 and "main.typo" in warned[0]
 
+    @staticmethod
+    def _two_page_listing_that_fails_on_page_two(monkeypatch):
+        """Serve `system.ai` as page 1 (`system.ai.github`) then fail page 2 with HTTP 500."""
+        import ucode.databricks as db_mod
+
+        def fake_get(url, token, timeout=30, **kwargs):
+            if "page_token" in url:
+                return None, "HTTP 500 Internal Server Error"
+            return {"mcp_services": [{"name": "system.ai.github"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+    def test_sources_fail_on_a_later_page_error_instead_of_registering_a_partial_set(
+        self, monkeypatch
+    ):
+        # A first page followed by a failed page is an incomplete listing; registering it would
+        # unregister the servers on the unseen pages, so the resolve fails and nothing changes.
+        self._two_page_listing_that_fails_on_page_two(monkeypatch)
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            mcp._resolve_managed_mcp_servers(
+                {"sources": ["system.ai.*"]}, WS, None, ["claude"], token="tok"
+            )
+
+    def test_location_keeps_its_lenient_paging(self, monkeypatch):
+        # The deprecated single location still accepts the pages it got (existing behavior).
+        self._two_page_listing_that_fails_on_page_two(monkeypatch)
+        out = mcp._resolve_managed_mcp_servers(
+            {"unity_catalog_location": "system.ai"}, WS, None, ["claude"], token="tok"
+        )
+        assert [s["name"] for s in out] == ["system-ai-github"]
+
     def test_sources_propagate_other_discovery_failures(self, monkeypatch):
         # Only a missing schema is skipped; any other failure must not yield a partial set.
-        def fake_loc(ws, profile, clients, location, original, services=None):
+        def fake_loc(ws, profile, clients, location, original, services=None, **kwargs):
             raise RuntimeError(f"Failed to list MCP services at `{location}`: HTTP 500")
 
         monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
@@ -3903,7 +3909,7 @@ class TestResolveManagedMcpServers:
     def test_sources_propagate_a_rate_limited_schema(self, monkeypatch):
         # A partial result would unregister the rate-limited schema's servers, so the whole resolve
         # fails the same way a single location does and the caller skips MCP setup this run.
-        def fake_loc(ws, profile, clients, location, original, services=None):
+        def fake_loc(ws, profile, clients, location, original, services=None, **kwargs):
             if location == "main.exa":
                 raise mcp.McpServiceListingRateLimited(location)
             return [{"name": "system-ai-github", "url": "u", "auth": "proxy", "clients": clients}]

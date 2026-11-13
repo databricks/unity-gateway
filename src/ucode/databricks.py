@@ -2821,6 +2821,7 @@ def list_mcp_services(
     on_services: Callable[[list[str]], None] | None = None,
     deadline: float | None = None,
     cancel_event: threading.Event | None = None,
+    strict: bool = False,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
 
@@ -2842,6 +2843,9 @@ def list_mcp_services(
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
+    A scoped listing that fails after its first page returns the pages it already has with no
+    error, unless ``strict`` is set: then any failed page is reported, so a caller that removes
+    servers missing from the listing never acts on a partial one.
     """
     hostname = workspace_hostname(workspace)
     expected_prefix = parent + "." if parent is not None else None
@@ -2866,7 +2870,7 @@ def list_mcp_services(
         if payload is None:
             # An interrupted metastore listing is incomplete, even if earlier pages
             # returned services. Keep the scoped caller's existing behavior.
-            if parent is None or not seen_names:
+            if parent is None or strict or not seen_names:
                 return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
@@ -2890,12 +2894,12 @@ def list_mcp_services(
         if not page_token:
             break
         if page_token in seen_tokens:
-            if parent is None:
+            if parent is None or strict:
                 return sorted(seen_names), "MCP listing repeated a page token"
             break
         seen_tokens.add(page_token)
     else:
-        if parent is None:
+        if parent is None or strict:
             return sorted(seen_names), f"MCP listing exceeded {max_pages} pages"
     return sorted(seen_names), None
 
