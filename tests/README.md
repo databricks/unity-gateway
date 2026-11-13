@@ -24,6 +24,10 @@ recipe metadata, saved configuration, and process cleanup.
 See the [integration guide](integration/README.md) for live continuity journeys and their
 transport/backend validation limits.
 
+The busy-child journey passes its full assignment through an ordinary input file and
+distinguishes the follow-up receipt from the original answer. Continuity assertions remain
+the same; model task omission or a stale answer still fails the journey.
+
 Direct Anthropic MPS coverage uses
 `main.ucode.dont_delete_ci_company_anthropic_mps` in staging workspace
 `4168069418041172` (`dbc-1bb9e8f5-bf3a`). Integration's `anthropic-mps`

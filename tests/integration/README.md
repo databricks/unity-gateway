@@ -11,6 +11,10 @@ and changes on the next user turn. Timing assertions require a single persisted
 root and match its thread ID, excluding native temporary threads used for titles.
 Windows uses UG's installed Python and native
 approval dialogs, preserving the sandbox.
+The busy child's full assignment is an ordinary input file so the parent only passes
+its filename. The follow-up asks for a new receipt and identifies the old answer.
+Assertions still require every native child, message delivery, and completed answer.
+
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
 `--smart-router-name` input records and forwards the recipe.
 These journeys do not intercept inference or establish exact HTTP metadata/usage-table

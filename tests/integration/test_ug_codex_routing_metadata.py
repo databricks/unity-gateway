@@ -152,6 +152,8 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         "entire contents. Then use send_message to send 'old sibling reached new sibling' "
         "to /root/new__sr_off. Wait for your child's answer and return that value."
     )
+    assignment_file = session.cwd / f"{marker}-assignment.md"
+    assignment_file.write_text(assignment)
     with AgentTerminal(
         session,
         "codex",
@@ -160,8 +162,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     ) as tui:
         tui.boot()
         tui.submit(
-            "Spawn exactly one native child with task_name old, fork_turns none, and this "
-            f"assignment: {assignment}\nEnd your turn with ONLY 'started {marker}' immediately "
+            "Spawn exactly one native child with task_name old, fork_turns none, and message "
+            f"'Read {assignment_file.name} and complete every instruction in it.' "
+            f"End your turn with ONLY 'started {marker}' immediately "
             "after spawning. Do not wait for it or run its commands yourself."
         )
         _wait_for(
@@ -207,7 +210,9 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         tui.submit(
             "Use send_message to /root/old__sr_on/nested__sr_off with message 'root reached "
             "grandchild'. Then use followup_task to /root/old__sr_on asking it to reply exactly "
-            f"'{receipt}'. Wait for its answer, then reply with that exact answer. Spawn nothing."
+            f"'{receipt}'. Wait until that child returns '{receipt}' for this new task; "
+            f"its earlier answer '{value}' belongs to the completed original task. "
+            "Then reply with the new answer. Spawn nothing."
         )
         _wait_for(
             tui,
