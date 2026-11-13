@@ -3238,54 +3238,6 @@ def _model_service_routes_to_claude_relay(
     return False, conclusive
 
 
-def _model_service_routable_providers(service: dict) -> list[str]:
-    """The Model Provider Services ``service`` can route to: live primary and fallback
-    destinations (a fallback carries no traffic share until the primary fails)."""
-    routing = (service.get("config") or {}).get("routing") or {}
-    fallback = (routing.get("fallback") or {}).get("destinations")
-    providers = model_service_primary_providers(service)
-    for destination in fallback if isinstance(fallback, list) else []:
-        if not isinstance(destination, dict) or destination.get("is_deleted"):
-            continue
-        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
-        if isinstance(provider, str) and provider:
-            providers.append(provider.removeprefix("model-provider-services/"))
-    return providers
-
-
-def models_accept_relay_credentials(workspace: str, token: str, models: list[str]) -> bool:
-    """True when every model in ``models`` accepts a credential-swapped (subscription relay)
-    request, so a client that sends one credential for every model, like Claude Desktop, can relay.
-
-    Databricks-hosted destinations accept it, as does a Claude subscription relay; an MPS without
-    relayed auth (an API key) rejects it. ``system.*`` ids are Databricks-hosted. Anything that
-    can't be confirmed (a failed lookup, an unrecognized id) counts as rejecting.
-    """
-    for model in models:
-        name = model.removesuffix("[1m]")
-        if name.startswith("system."):
-            continue
-        parts = name.split(".")
-        if len(parts) == 4:  # a `sources` MPS model ref: catalog.schema.mps.model
-            providers = [".".join(parts[:3])]
-        elif len(parts) == 3:
-            service, reason = get_model_service(name, workspace, token)
-            if service is None:
-                _debug("relay credentials", f"{name}: {reason}")
-                return False
-            providers = _model_service_routable_providers(service)
-        else:
-            return False
-        for provider in providers:
-            entry, reason = get_model_provider_service(provider, workspace, token)
-            if entry is None:
-                _debug("relay credentials", f"{provider}: {reason}")
-                return False
-            if not (entry.get("relayed") and entry.get("provider_type") == "anthropic"):
-                return False
-    return True
-
-
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from
 # the catalog) is what lets an arbitrary developer pull a config that routes through an MPS in that
 # schema; without it they hit "User does not have USE_SCHEMA on Schema <catalog>.<schema>".
