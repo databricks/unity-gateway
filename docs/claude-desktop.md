@@ -17,8 +17,12 @@ headers as Claude Code. There is no separate Desktop checkbox or managed field.
 - Claude Desktop installed on macOS, Windows, or Linux. On Windows, UG can initialize application data before the first launch when it
   detects Claude's registered MSIX package and executable. On Linux, open it once
   to initialize application data.
-- A named Databricks CLI OAuth profile with gateway/model access. A bearer token
-  alone is not enough for Desktop's credential helper.
+- A named Databricks CLI profile with gateway/model access: an OAuth profile, or a PAT
+  profile configured with `--use-pat`. A bearer token in the environment alone is not
+  enough: Desktop starts MCP connectors with a near-empty environment, so
+  `DATABRICKS_BEARER` and `DATABRICKS_BEARER_COMMAND` never reach UG's connector proxy.
+  The proxy reads an OAuth login or the profile's PAT from disk instead. Custom OAuth
+  profiles are not supported, and macOS MDM provisioning still requires OAuth profiles.
 - At least one Claude-named model in the configured static list or gateway catalog.
 - For an Anthropic subscription relay, Claude Code installed and signed in on the
   same OS user account.
@@ -197,8 +201,9 @@ as do downloaded skill additions and removals. Start a new Cowork session
 to use the updated skills. MCP entries run the absolute
 `ug mcp-proxy` executable with the selected workspace and CLI profile; no bearer token is
 stored in the profile. Proxy authentication is unchanged. A UG Desktop profile for the
-same workspace must exist before connector registration; native profile setup still requires
-a Databricks CLI OAuth profile. Custom OAuth is not yet supported for Cowork MCP servers.
+same workspace must exist before connector registration. With a `--use-pat` profile, the
+credential helper, OTel headers helper, and connectors all pass `--use-pat` and read the
+profile's PAT. Custom OAuth is not yet supported for Cowork MCP servers.
 
 Reconfigure removes MCP declarations from the generated plugin and registers them in
 the profile instead. Skills and hooks remain in `ug@unity-gateway-cowork`; the old

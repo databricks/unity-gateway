@@ -252,6 +252,18 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
             -Capability mcp -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/mcp"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Revoke the Desktop PAT
+        if: always()
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+          if (Test-Path -LiteralPath $python) {
+            & $python scripts/cowork-inference/desktop-pat.py revoke --state "$env:RUNNER_TEMP/cowork-pat-id"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -347,6 +359,15 @@ jobs:
         run: |
           pkill -f '/Applications/Claude.app/Contents/' || test "$?" = 1
           pkill -x Terminal || test "$?" = 1
+      - name: Revoke the Desktop PAT
+        if: always()
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          if [ -n "${UG_COWORK_PYTHON:-}" ]; then
+            "$UG_COWORK_PYTHON" scripts/cowork-inference/desktop-pat.py revoke --state "$RUNNER_TEMP/cowork-pat-id"
+          fi
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2

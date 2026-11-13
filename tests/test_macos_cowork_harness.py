@@ -28,6 +28,8 @@ def test_desktop_evidence_redacts_credentials_and_preserves_diagnostics(monkeypa
         redact(text) == "failed [REDACTED] [REDACTED] Authorization: Bearer [REDACTED] [REDACTED]"
     )
     assert redact("token sk-ant-oat01-unknown_secret-1") == "token [REDACTED]"
+    fake_pat = "dapi" + "0" * 32 + "-2"  # built at runtime so it never looks like a token
+    assert redact(f"pat {fake_pat} end") == "pat [REDACTED] end"
     assert redact("Claude responded: 48213") == "Claude responded: 48213"
 
 
@@ -864,3 +866,35 @@ def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
         "desktop-log-Library-Logs-Claude-3p-mcp-server-web_search.log": "x" * 10
         + "connector started"
     }
+
+
+def test_desktop_pat_profile_is_minted_on_disk_and_revoked(monkeypatch, tmp_path):
+    pat_script = runpy.run_path(str(SCRIPTS.parent / "desktop-pat.py"))
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    monkeypatch.setenv("DATABRICKS_BEARER", "issuer-bearer")
+    calls = []
+
+    def workspace_api(path, payload):
+        calls.append((path, payload))
+        if path.endswith("/create"):
+            return {"token_value": "dapi-new", "token_info": {"token_id": "token-1"}}
+        return {}
+
+    # The Tokens API needs a live workspace; profile and state handling stay real.
+    monkeypatch.setitem(pat_script["create"].__globals__, "call", workspace_api)
+    config, state = tmp_path / "databrickscfg", tmp_path / "pat-id"
+    pat_script["create"](config, "desktop-ci", state)
+    assert config.read_text() == (
+        "[desktop-ci]\nhost = https://workspace.example\nauth_type = pat\ntoken = dapi-new\n"
+    )
+    if os.name == "posix":
+        assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    assert state.read_text() == "token-1"
+    assert "token-1" not in config.read_text()
+    pat_script["revoke"](state)
+    pat_script["revoke"](state)
+    assert calls == [
+        ("/api/2.0/token/create", {"lifetime_seconds": 7200, "comment": "ug-ci-cowork-desktop"}),
+        ("/api/2.0/token/delete", {"token_id": "token-1"}),
+    ]
+    assert not state.exists()

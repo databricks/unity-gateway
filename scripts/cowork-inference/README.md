@@ -89,6 +89,13 @@ After inference, three fresh Cowork tasks run through the same native UI:
    Desktop jobs, not the staging `anthropic-mps` lane.
    UG writes the connector's absolute command from the `ug` on `PATH`, so both install scripts
    add the test runtime to `PATH`, as an installed `ug` would be.
+   Desktop starts connectors with a near-empty environment, so the job's `DATABRICKS_BEARER`
+   never reaches UG's connector proxy. These jobs therefore configure a PAT profile:
+   `desktop-pat.py` mints a two-hour workspace PAT with the job's bearer (comment
+   `ug-ci-cowork-desktop`), writes it to the `desktop-ci` profile in `~/.databrickscfg`, and
+   `ug configure` runs with `--use-pat`. An always-run step revokes the PAT. Only its token id
+   is kept outside the profile, the job masks it in logs, and evidence redaction covers its value
+   and any `dapi…` token.
 
 `session-evidence.py` reads the native Desktop transcript belonging to the submitted
 prompt and requires an assistant `end_turn`. Failed tools, mismatched result IDs,

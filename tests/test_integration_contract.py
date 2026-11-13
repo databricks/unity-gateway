@@ -1124,6 +1124,11 @@ def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
     assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in step
     assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in step
     assert ("-Capability mcp" in step) or ("--capability mcp" in step)
+    # The PAT minted for Desktop's connectors is revoked even when the job fails.
+    revoke = job.split("      - name: Revoke the Desktop PAT\n", 1)[1].split("      - name: ", 1)[0]
+    assert "        if: always()\n" in revoke
+    assert "desktop-pat.py revoke" in revoke
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in revoke
     # configure selects the MCP service; the staging lane's workspace is not asked to serve it.
     assert "      UG_COWORK_MCP: true\n" in job
     assert "UG_COWORK_MCP:" not in _integration_jobs()["anthropic-mps"]

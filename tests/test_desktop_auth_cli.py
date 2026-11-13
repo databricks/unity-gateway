@@ -41,6 +41,39 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
     assert "Sign-in diagnostic" in result.stderr
 
 
+@pytest.mark.parametrize("pat", ["dapi-profile-pat", None])
+def test_desktop_auth_use_pat_returns_the_profile_pat(monkeypatch, runner, tmp_path, pat):
+    config = tmp_path / "databrickscfg"
+    lines = ["[pat-profile]", "host = https://workspace.example"]
+    lines += ["auth_type = pat", f"token = {pat}"] if pat else ["auth_type = databricks-cli"]
+    config.write_text("\n".join(lines) + "\n")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+    # ensure_pat_bearer exports the PAT; setenv first so teardown removes it.
+    monkeypatch.setenv("DATABRICKS_BEARER", "")
+    monkeypatch.delenv("DATABRICKS_BEARER")
+    monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+
+    result = runner.invoke(
+        app,
+        [
+            "claude-desktop-auth",
+            "--host",
+            "https://workspace.example",
+            "--profile",
+            "pat-profile",
+            "--use-pat",
+        ],
+    )
+
+    if pat:
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout == pat + "\n"
+    else:
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert "has no personal access token" in unstyle(result.stderr)
+
+
 def test_desktop_auth_emits_relay_credential_json(monkeypatch, runner):
     from ucode import desktop_auth
 

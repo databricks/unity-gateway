@@ -7,8 +7,19 @@ $relay = $env:UG_COWORK_RELAY -eq 'true'
 $targetModel = if ($env:UG_COWORK_MODEL) { $env:UG_COWORK_MODEL } else { 'system.ai.claude-haiku-4-5' }
 if ($relay -and -not $provider) { throw 'A relay test requires a model provider service' }
 $config = Join-Path $env:USERPROFILE '.databrickscfg'
-@('[desktop-ci]', "host = $env:UCODE_TEST_WORKSPACE", 'auth_type = databricks-cli') |
-    Set-Content -LiteralPath $config
+# Desktop gives connectors a near-empty environment, so MCP lanes use a PAT profile read from disk.
+$usePat = $env:UG_COWORK_MCP -eq 'true'
+if ($usePat) {
+    $python = Join-Path (Split-Path -Parent $env:UG_COWORK_TEST_BINARY) 'python.exe'
+    $pat = & $python "$PSScriptRoot/desktop-pat.py" create --config $config `
+        --state (Join-Path $env:RUNNER_TEMP 'cowork-pat-id')
+    if ($LASTEXITCODE -ne 0 -or -not $pat) { throw 'Could not mint the Desktop PAT' }
+    "::add-mask::$pat"
+    "UG_COWORK_PAT=$pat" | Add-Content $env:GITHUB_ENV
+} else {
+    @('[desktop-ci]', "host = $env:UCODE_TEST_WORKSPACE", 'auth_type = databricks-cli') |
+        Set-Content -LiteralPath $config
+}
 $root = Join-Path $env:LOCALAPPDATA 'Claude-3p'
 $rootExisted = Test-Path $root
 if (-not $env:CLAUDE_DESKTOP_EXECUTABLE -or
@@ -23,14 +34,16 @@ $report = [ordered]@{
     profile = 'desktop-ci'
     modelProvider = $provider
     relay = $relay
+    usePat = $usePat
 }
 $report | ConvertTo-Json |
     Set-Content "$env:RUNNER_TEMP/cowork-inference/configuration.json"
 $providerArgs = if ($provider) { @('--provider', $provider) } else { @() }
 $mcpService = (Get-Content -Raw -LiteralPath "$PSScriptRoot/task-fixture.json" | ConvertFrom-Json).mcpService
 $mcpArgs = if ($env:UG_COWORK_MCP -eq 'true') { @('--mcp', $mcpService) } else { @() }
+$patArgs = if ($usePat) { @('--use-pat') } else { @() }
 & $env:UG_COWORK_TEST_BINARY configure --profile desktop-ci `
-    --agents claude --user --disable-databricks-ai-tools --skip-validate --skip-upgrade @providerArgs @mcpArgs
+    --agents claude --user --disable-databricks-ai-tools --skip-validate --skip-upgrade @providerArgs @mcpArgs @patArgs
 if ($LASTEXITCODE -ne 0) { throw 'UG configure failed' }
 $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
 if (-not (Test-Path $profilePath)) { throw 'UG did not create its Desktop profile' }

@@ -150,8 +150,29 @@ def configure():
     if RELAY and not (PROVIDER and os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()):
         raise RuntimeError("A relay test requires a provider service and CLAUDE_CODE_OAUTH_TOKEN")
     config = Path.home() / ".databrickscfg"
-    config.write_text(f"[desktop-ci]\nhost = {workspace}\nauth_type = databricks-cli\n")
-    config.chmod(0o600)
+    # Desktop gives connectors a near-empty environment, so MCP lanes use a PAT profile on disk.
+    if MCP_SERVICE:
+        minted = process.run(
+            [
+                sys.executable,
+                str(Path(__file__).parents[1] / "desktop-pat.py"),
+                "create",
+                "--config",
+                str(config),
+                "--state",
+                str(TEMP / "cowork-pat-id"),
+            ],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=60,
+        )
+        if minted.returncode or not minted.stdout.strip():
+            raise RuntimeError("Could not mint the Desktop PAT: " + redact(minted.stderr)[-500:])
+        os.environ["UG_COWORK_PAT"] = minted.stdout.strip()
+    else:
+        config.write_text(f"[desktop-ci]\nhost = {workspace}\nauth_type = databricks-cli\n")
+        config.chmod(0o600)
     result = process.run(
         [
             str(Path(sys.executable).parent / "ug"),
@@ -165,6 +186,7 @@ def configure():
             "--skip-upgrade",
             *(["--provider", PROVIDER] if PROVIDER else []),
             *(["--mcp", MCP_SERVICE] if MCP_SERVICE else []),
+            *(["--use-pat"] if MCP_SERVICE else []),
         ],
         capture_output=True,
         text=True,
