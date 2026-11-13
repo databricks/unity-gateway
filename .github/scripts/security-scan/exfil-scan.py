@@ -29,10 +29,11 @@ Exit:    non-zero if any BLOCKING finding; 0 otherwise.
 
 from __future__ import annotations
 
-import ast
 import os
 import re
 import sys
+
+from diff_utils import diff_path
 
 # Network / exfil sinks.
 _NETWORK = re.compile(
@@ -48,7 +49,7 @@ _NETWORK_JS = re.compile(r"\bfetch\(|XMLHttpRequest|axios|\bhttps?\.request\(")
 _JS_FILE = re.compile(r"\.(js|mjs|cjs|jsx|ts|tsx)$")
 
 # Secret-NAMED credential sources: the env var names UG's CI fills from secrets
-# (tests/test_integration_contract.py keeps the list in sync), plus runner tokens and
+# (tests/test_security_scan.py keeps the list in sync), plus runner tokens and
 # credential files. Case-sensitive whole names, so code like `get_databricks_token`
 # or a test's `_SESSION_SECRET` doesn't count.
 _SECRET = re.compile(
@@ -66,13 +67,14 @@ _STANDALONE = re.compile(
     r"|(json\.dumps|dict|str|repr)\(\s*os\.environ"  # dump the whole environ
     # Not after `.`: JS `regex.exec(` is a method call, not dynamic exec.
     r"|(?<![\w.$])(?:eval|exec)\s*\(|__import__\s*\("  # dynamic exec
-    r"|pickle\.loads|marshal\.loads"  # deserialization exec
-    r"|base64\.(b64decode|decodebytes)|codecs\.decode",  # decode (paired below)
+    r"|pickle\.loads|marshal\.loads",  # deserialization exec
     re.IGNORECASE,
 )
 _DECODE = re.compile(r"base64|b64decode|decodebytes|fromhex|codecs\.decode", re.IGNORECASE)
 _EXEC = re.compile(
-    r"(?<![\w.$])(?:eval|exec)\s*\(|__import__\s*\(|subprocess|os\.system|popen", re.IGNORECASE
+    r"(?<![\w.$])(?:eval|exec)\s*\(|__import__\s*\("
+    r"|\bsubprocess\.\w+\s*\(|\bos\.(?:system|popen)\s*\(|\bpopen\s*\(",
+    re.IGNORECASE,
 )
 
 # Files that execute during `uv sync` / pytest collection -- INFO, so the
@@ -80,7 +82,7 @@ _EXEC = re.compile(
 _HIGH_RISK = re.compile(
     r"(^|/)conftest\.py$|(^|/)setup\.py$|(^|/)pyproject\.toml$"
     r"|^\.github/|(^|/)sitecustomize\.py$|\.pth$"
-    r"|(^|/)_token_usage\.py$|(^|/)noxfile\.py$|(^|/)tox\.ini$|(^|/)Makefile$",
+    r"|(^|/)_token_usage\.py$|(^|/)noxfile\.py$|(^|/)tox\.ini$|(^|/)Makefile$|(^|/)[Jj]ustfile$",
 )
 
 
@@ -101,23 +103,13 @@ def _changed_files_and_added(diff: str) -> dict[str, list[str]]:
         if line.startswith("diff --git "):
             current, in_hunk = None, False
         elif not in_hunk and line.startswith("+++ "):
-            current = _diff_path(line[4:])
+            current = diff_path(line[4:])
             by_file.setdefault(current, [])
         elif line.startswith("@@"):
             in_hunk = True
         elif in_hunk and current is not None and line.startswith("+"):
             by_file[current].append(line[1:])
     return by_file
-
-
-def _diff_path(header: str) -> str:
-    """Return the path in a ``+++`` header, decoding git's quoting (``"b/donn\\303\\251es.py"``)."""
-    if header.startswith('"'):
-        try:
-            header = ast.literal_eval("b" + header).decode("utf-8", "replace")
-        except (SyntaxError, ValueError):
-            pass
-    return header.removeprefix("b/")
 
 
 def scan_diff(diff: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -141,10 +133,7 @@ def scan_diff(diff: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
         if has_net and has_secret:
             blocking.append((path, "exfil shape: secret-named source + network sink in one file"))
         for ln in added:
-            if _STANDALONE.search(ln) and not (
-                # a lone base64/decode call is INFO; only block decode+exec
-                _DECODE.search(ln) and not _EXEC.search(ln)
-            ):
+            if _STANDALONE.search(ln):
                 blocking.append((path, f"high-risk call: {ln.strip()[:80]}"))
                 break
             if _DECODE.search(ln) and _EXEC.search(ln):

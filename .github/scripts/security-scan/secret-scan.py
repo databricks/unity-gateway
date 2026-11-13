@@ -26,6 +26,8 @@ import os
 import re
 import sys
 
+from diff_utils import diff_path as decode_diff_path
+
 HIGH_CONFIDENCE = [
     ("AWS access key id", re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("GitHub token", re.compile(r"\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b")),
@@ -91,7 +93,7 @@ def main() -> int:
                 in_hunk = False
                 continue
             if not in_hunk and line.startswith("+++ "):
-                cur_file = line[6:] if line.startswith("+++ b/") else line[4:]
+                cur_file = decode_diff_path(line[4:])
                 continue
             if line.startswith("@@"):
                 in_hunk = True
@@ -118,7 +120,7 @@ def main() -> int:
                             "(long, high-entropy value)."
                         )
                 new_lineno += 1
-            elif not line.startswith("-"):
+            elif line.startswith(" "):
                 # context line advances the new-file counter too
                 new_lineno += 1
 
