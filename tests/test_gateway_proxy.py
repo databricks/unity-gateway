@@ -391,18 +391,31 @@ class TestTokenCache:
 
 
 class _FakeResp:
-    def __init__(self, status: int, body: bytes = b"", headers: dict | None = None):
+    def __init__(
+        self,
+        status: int,
+        body: bytes = b"",
+        headers: dict | None = None,
+        *,
+        chunks: list[bytes] | None = None,
+    ):
         self.status_code = status
         self._body = body
         self.headers = headers or {}
         self.read_called = False
+        self._chunks = iter(chunks if chunks is not None else [body])
+        self.raw_iterations = 0
+        self.raw_chunks_yielded = 0
 
     def read(self):
         self.read_called = True
         return self._body
 
     def iter_raw(self, _n=None):
-        yield self._body
+        self.raw_iterations += 1
+        for chunk in self._chunks:
+            self.raw_chunks_yielded += 1
+            yield chunk
 
     def __enter__(self):
         return self
@@ -487,7 +500,7 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
-    @pytest.mark.parametrize("status", [401, 403])
+    @pytest.mark.parametrize("status", [400, 401, 403])
     @pytest.mark.parametrize("same_token", [False, True])
     def test_concurrent_rejections_share_one_refresh(self, status, same_token):
         forces = []
@@ -506,7 +519,10 @@ class TestRetryOn401:
                     barrier.wait()
                 return response
 
-        clients = [RejectedClient([_FakeResp(status), _FakeResp(200, b"ok")]) for _ in range(8)]
+        clients = [
+            RejectedClient([_FakeResp(status, b"Invalid Token"), _FakeResp(200, b"ok")])
+            for _ in range(8)
+        ]
         outputs = [_Collect() for _ in clients]
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = [
@@ -573,10 +589,24 @@ class TestRetryOn401:
         assert client.sent_tokens == ["Bearer tok1", "Bearer tok2"]
         assert bytes(output.data).endswith(b"ok")
 
-    def test_401_forces_refresh_and_retries(self):
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (401, b'{"e":1}'),
+            (400, b"Invalid Token"),
+            (400, b'{"error_code":"UNAUTHENTICATED","message":"Invalid Token"}'),
+            (400, b'{"error":{"type":"authentication_error","message":"Invalid Token"}}'),
+            (400, b"Invalid Token".ljust(4095)),
+            (400, b"Invalid Token".ljust(4096)),
+        ],
+    )
+    @pytest.mark.parametrize("split_chunks", [False, True])
+    def test_401_forces_refresh_and_retries(self, status, body, split_chunks):
         # A stale swap token yields 401; the proxy force-refreshes and retries,
         # this time succeeding, so Claude Code never sees the 401.
-        client = _FakeClient([_FakeResp(401, b'{"e":1}'), _FakeResp(200, b"ok")])
+        chunks = [body[:7], body[7:37], body[37:]] if split_chunks else [body]
+        response = _FakeResp(status, body, chunks=[chunk for chunk in chunks if chunk])
+        client = _FakeClient([response, _FakeResp(200, b"ok")])
         cache = _FakeCache()
         out = _Collect()
         _handle_handler(client, cache, out)._handle()
@@ -585,15 +615,68 @@ class TestRetryOn401:
         assert b"200" in bytes(out.data)
         assert b"ok" in bytes(out.data)
 
-    def test_persistent_401_is_relayed(self):
+    @pytest.mark.parametrize("status", [400, 401])
+    def test_persistent_401_is_relayed(self, status):
         # If the retry also 401s, it's genuinely the Anthropic layer — relay it so
         # Claude Code re-auths Anthropic (correct), rather than looping forever.
-        client = _FakeClient([_FakeResp(401, b"a"), _FakeResp(401, b"b")])
+        client = _FakeClient(
+            [_FakeResp(status, b"Invalid Token"), _FakeResp(status, b"still invalid")]
+        )
         cache = _FakeCache()
         out = _Collect()
         _handle_handler(client, cache, out)._handle()
         assert cache.refreshed == 1
-        assert b"401" in bytes(out.data)
+        assert str(status).encode() in bytes(out.data)
+        assert bytes(out.data).endswith(b"still invalid")
+        assert len(client.sent_tokens) == 2
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"Invalid model",
+            b'{"error":{"message":"Invalid token budget"}}',
+            b'{"message":"Invalid Token length"}',
+            b'{"error":"Invalid Token",',
+            b'{"input":"Invalid Token"}',
+            b"null",
+            b"\xff",
+            b"[" * 1500 + b"]" * 1500,
+            b'{"message":"Invalid Token","padding":"' + b"x" * 8192 + b'"}',
+            b"Invalid model".ljust(4096),
+            b"Invalid Token".ljust(4097),
+            b"Invalid Token".ljust(8192),
+        ],
+    )
+    @pytest.mark.parametrize("split_chunks", [False, True])
+    def test_other_400_is_relayed_without_refresh(self, monkeypatch, body, split_chunks):
+        # The 4,097-byte case reaches the cap before its final byte arrives.
+        boundary = 4096 if len(body) == 4097 else 4097
+        chunks = [body[:2048], body[2048:boundary], body[boundary:]] if split_chunks else [body]
+        chunks = [chunk for chunk in chunks if chunk]
+        response = _FakeResp(400, body, {"X-Request-Id": "original"}, chunks=chunks)
+        client = _FakeClient([response])
+        cache = _FakeCache()
+        output = _Collect()
+        handler = _handle_handler(client, cache, output)
+        relay = handler._relay_response
+
+        def relay_after_bounded_peek(resp, **kwargs):
+            expected_prefix_chunks = 2 if split_chunks and len(body) > 4097 else len(chunks)
+            assert response.raw_chunks_yielded == expected_prefix_chunks
+            if split_chunks and len(body) == 8192:
+                assert response.raw_chunks_yielded < len(chunks)
+            relay(resp, **kwargs)
+
+        monkeypatch.setattr(handler, "_relay_response", relay_after_bounded_peek)
+        handler._handle()
+        assert cache.refreshed == 0
+        assert client.sent_tokens == ["Bearer tok1"]
+        assert b"400" in bytes(output.data)
+        assert b"X-Request-Id: original" in bytes(output.data)
+        assert bytes(output.data).split(b"\r\n\r\n", 1)[1] == body
+        assert not response.read_called
+        assert response.raw_iterations == 1
+        assert response.raw_chunks_yielded == len(chunks)
 
     def test_success_first_try_does_not_refresh(self):
         client = _FakeClient([_FakeResp(200, b"hi")])

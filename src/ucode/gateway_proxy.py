@@ -36,6 +36,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from itertools import chain
 from typing import Any, cast
 from urllib.parse import unquote
 
@@ -84,6 +85,7 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
+_AUTH_ERROR_BODY_LIMIT = 4096
 
 
 def _diagnostics_enabled() -> bool:
@@ -267,6 +269,28 @@ def _request_model(body: bytes | None) -> str | None:
     return model if isinstance(model, str) else None
 
 
+def _is_invalid_token_error(body: bytes) -> bool:
+    """Recognize the gateway's explicit token rejection without retrying other 400s."""
+    try:
+        message = body.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return False
+    if message.lower() in {"invalid token", "invalid access token"}:
+        return True
+    try:
+        payload = json.loads(message)
+    except (ValueError, RecursionError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    error = payload.get("error", payload)
+    message = error.get("message") if isinstance(error, dict) else None
+    return isinstance(message, str) and message.strip().lower() in {
+        "invalid token",
+        "invalid access token",
+    }
+
+
 class _ProxyHandler(BaseHTTPRequestHandler):
     # Set by the server factory.
     cache: TokenCache
@@ -341,18 +365,38 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
-                if resp.status_code not in (401, 403):
-                    self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
+                body_chunks = None
+                token_rejected = resp.status_code in (401, 403)
+                if resp.status_code == 400 and resp.headers.get(
+                    "content-encoding", "identity"
+                ).strip().lower() in ("", "identity"):
+                    # Peek at a bounded raw error body; preserve its exact bytes on passthrough.
+                    remaining_chunks = resp.iter_raw()
+                    prefix_chunks: list[bytes] = []
+                    prefix_size = 0
+                    for chunk in remaining_chunks:
+                        prefix_chunks.append(chunk)
+                        prefix_size += len(chunk)
+                        if prefix_size > _AUTH_ERROR_BODY_LIMIT:
+                            break
+                    body_chunks = chain(prefix_chunks, remaining_chunks)
+                    token_rejected = prefix_size <= _AUTH_ERROR_BODY_LIMIT and (
+                        _is_invalid_token_error(b"".join(prefix_chunks))
+                    )
+                if not token_rejected:
+                    self._relay_response(
+                        resp,
+                        diagnostic_id=diagnostic_id,
+                        started=started,
+                        body_chunks=body_chunks,
+                    )
                     return
                 # Auth rejected. Drain the (small) error body so the pooled
                 # connection can be reused, then fall through to one retry.
-                resp.read()
-            # A relayed 401/403 may be a stale Databricks swap token rather than a
-            # bad Anthropic OAuth — the two are indistinguishable from the status
-            # alone. Force-refresh the Databricks token and retry once. If it was the
-            # Anthropic layer, the retry still 401s and we relay it verbatim, so a
-            # genuine re-auth is triggered; a stale-Databricks 401 self-heals here
-            # instead of surfacing to Claude Code as a spurious Anthropic prompt.
+                if body_chunks is None:
+                    resp.read()
+            # Authentication rejection can mean a stale Databricks token. Refresh once;
+            # a persistent rejection still reaches the agent with its original detail.
             try:
                 self.cache.refresh(rejected_generation=generation)
             except RuntimeError as exc:
@@ -405,6 +449,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         *,
         diagnostic_id: str | None = None,
         started: float | None = None,
+        body_chunks: Iterable[bytes] | None = None,
     ) -> None:
         started = started if started is not None else time.monotonic()
         chunks = 0
@@ -422,7 +467,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # With ``chunk_size=None`` (the default), raw upstream chunks are
             # yielded as they arrive and pings keep the downstream connection
             # alive even before the model produces a large content block.
-            for chunk in resp.iter_raw():
+            for chunk in resp.iter_raw() if body_chunks is None else body_chunks:
                 if chunk:
                     if first_byte_ms is None:
                         first_byte_ms = round((time.monotonic() - started) * 1000)
@@ -532,7 +577,8 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             or encoding not in ("identity", "gzip", "deflate")
         ):
             return super()._relay_response(resp, **kwargs)
-        body = resp.read()
+        body_chunks = kwargs.get("body_chunks")
+        body = resp.read() if body_chunks is None else b"".join(body_chunks)
         body = self.bad_request_rewriter(body) or body
         try:
             self.send_response(400)

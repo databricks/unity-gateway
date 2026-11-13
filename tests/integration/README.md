@@ -85,6 +85,15 @@ Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct 
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
 parallel calls as cards above the parent's next reply in call order, calls
+Proxy authentication component checks also cover a bounded, identity-encoded HTTP 400
+`Invalid Token` rejection: one refresh, shared concurrent refreshes, and unchanged request
+bytes. Other 400 bodies, oversized errors, persistent rejection and compressed passthrough
+remain covered. Existing local socket scenarios exercise both proxy routes and error-body
+rewriters. This does not establish which route a production session used or live token renewal.
+The handler component matrix checks the exact 4,096/4,097-byte inspection boundary
+and split-iterator handoff, including an 8,192-byte response with an unread third
+chunk after inspection. The existing socket cases retain compressed-response coverage.
+
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
