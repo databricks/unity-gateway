@@ -70,7 +70,7 @@ NO_MANAGED_CONFIG_MESSAGE = "No coding-agent config has been set up by your work
 # Telemetry: whether this machine was provisioned through MDM, and on which OS. `ug configure --mdm`
 # saves it beside the workspace policy; every run exports it as `MDM_OS`.
 _MDM_OS_NAMES = {OS.MACOS: "Mac", OS.WINDOWS: "Windows", OS.LINUX: "Linux"}
-# None keeps the saved value; otherwise the value `ug configure --mdm/--no-mdm` saves this run.
+# None outside `ug configure`; otherwise what this configure saves (`MDM_OS_NONE` clears it).
 _requested_mdm_os: str | None = None
 # `MDM_OS` as this process inherited it, used when nothing is saved.
 _inherited_mdm_os: str | None = None
@@ -732,25 +732,29 @@ def save_managed_state(
 
 
 def request_mdm_os(enabled: bool | None) -> None:
-    """Record ``ug configure --mdm`` (True) / ``--no-mdm`` (False) and set ``MDM_OS`` to match.
+    """Record ``ug configure`` with (True) or without (False) ``--mdm``; None ends the request.
 
-    None keeps the saved value, read again for the scope configure selected.
+    Only the machine-wide managed settings hold ``mdm_os``, so a run that can't install them
+    (``--user``, ``UG_SKIP_OS_SETTINGS``) ignores ``--mdm`` and leaves the saved value alone.
     """
     global _requested_mdm_os
-    if enabled is None:
+    if enabled is None or not _machine_policy_installable():
+        if enabled:
+            print_warning(
+                "--mdm is ignored: it is saved only in machine-wide managed settings, which "
+                "`--user` and UG_SKIP_OS_SETTINGS don't write."
+            )
         _requested_mdm_os = None
     else:
         _requested_mdm_os = _MDM_OS_NAMES.get(current_os(), MDM_OS_NONE) if enabled else MDM_OS_NONE
     _apply_mdm_os_env()
 
 
-def _mdm_os_path() -> Path:
-    return MANAGED_CONFIG_PATH if _machine_policy_installable() else USER_MANAGED_CONFIG_PATH
-
-
 def saved_mdm_os() -> str | None:
-    """The ``mdm_os`` saved by ``ug configure --mdm``, or None."""
-    value = config_io.read_json_safe(_mdm_os_path()).get("mdm_os")
+    """The ``mdm_os`` saved by ``ug configure --mdm`` in machine-wide managed settings, or None."""
+    if not _machine_policy_installable():
+        return None
+    value = config_io.read_json_safe(MANAGED_CONFIG_PATH).get("mdm_os")
     return value if isinstance(value, str) and value else None
 
 
@@ -778,14 +782,13 @@ def export_mdm_os() -> Callable[[], None]:
 
 
 def save_requested_mdm_os() -> None:
-    """Save this run's ``--mdm``/``--no-mdm`` where launches read it; warn when it can't be saved.
+    """Save ``mdm_os`` for ``--mdm``, or clear it without, in machine-wide managed settings.
 
-    It is telemetry, so a failed write never fails configure: ``MDM_OS`` still applies to this run.
+    It is telemetry, so a failed write warns and never fails configure.
     """
     if _requested_mdm_os is None:
         return
-    path = _mdm_os_path()
-    existing = config_io.read_json_safe(path)
+    existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
     desired = {key: value for key, value in existing.items() if key != "mdm_os"}
     if _requested_mdm_os != MDM_OS_NONE:
         desired["mdm_os"] = _requested_mdm_os
@@ -793,28 +796,10 @@ def save_requested_mdm_os() -> None:
         return
     text = json.dumps(desired, indent=2) + "\n" if desired else None
     try:
-        if path == MANAGED_CONFIG_PATH:
-            update_workspace_policy(path, text, interactive=True, allow_sudo=True)
-        else:
-            _write_user_cache(text)
+        update_workspace_policy(MANAGED_CONFIG_PATH, text, interactive=True, allow_sudo=True)
     except RuntimeError as exc:
-        flag = "--no-mdm" if _requested_mdm_os == MDM_OS_NONE else "--mdm"
-        print_warning(
-            f"Could not save {flag} to {path}: {exc} {MDM_OS_ENV} is set for this run only. "
-            f"Rerun `ug configure {flag}` where you can update that file."
-        )
-
-
-def clear_user_mdm_os() -> None:
-    """Drop ``mdm_os`` from the per-user policy cache, for ``ug revert``."""
-    existing = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH)
-    if "mdm_os" not in existing:
-        return
-    remaining = {key: value for key, value in existing.items() if key != "mdm_os"}
-    try:
-        _write_user_cache(json.dumps(remaining, indent=2) + "\n" if remaining else None)
-    except RuntimeError as exc:
-        print_warning(f"Could not clear mdm_os from {USER_MANAGED_CONFIG_PATH}: {exc}")
+        action = "save --mdm to" if _requested_mdm_os != MDM_OS_NONE else "clear mdm_os from"
+        print_warning(f"Could not {action} {MANAGED_CONFIG_PATH}: {exc}")
 
 
 def _require_policy_write(allow_write: bool) -> None:
@@ -828,10 +813,8 @@ def revert_machine_policy() -> str:
     """Remove the installed workspace policy for ``ug revert``: "removed", "unchanged", or "failed".
 
     Nothing else writes this file, so revert deletes it outright. Without sudo it warns and keeps
-    the file, like the other machine-wide settings revert restores. Also clears ``mdm_os`` from the
-    per-user cache.
+    the file, like the other machine-wide settings revert restores.
     """
-    clear_user_mdm_os()
     if not _machine_policy_installable() or not MANAGED_CONFIG_PATH.exists():
         return "unchanged"
     try:
@@ -1173,25 +1156,15 @@ def _save_user_cache(workspace: str, config: dict, *, outcome: str) -> None:
         "config": config,
         "outcome": outcome,
     }
-    mdm_os = config_io.read_json_safe(USER_MANAGED_CONFIG_PATH).get("mdm_os")
-    if mdm_os is not None:
-        payload["mdm_os"] = mdm_os
-    _write_user_cache(json.dumps(payload, indent=2) + "\n")
-
-
-def _write_user_cache(text: str | None) -> None:
-    """Write (or, for None, remove) the per-user policy cache at mode 0600."""
     if config_io.is_dry_run():
         console.print(
-            f"\n[bold]\\[dry run] {USER_MANAGED_CONFIG_PATH}[/bold]\n{text or '(remove)'}"
+            f"\n[bold]\\[dry run] {USER_MANAGED_CONFIG_PATH}[/bold]\n"
+            f"{json.dumps(payload, indent=2)}\n"
         )
         return
+    config_io.ensure_parent_dir(USER_MANAGED_CONFIG_PATH)
     try:
-        if text is None:
-            USER_MANAGED_CONFIG_PATH.unlink(missing_ok=True)
-            return
-        config_io.ensure_parent_dir(USER_MANAGED_CONFIG_PATH)
-        USER_MANAGED_CONFIG_PATH.write_text(text, encoding="utf-8")
+        USER_MANAGED_CONFIG_PATH.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(
             f"Failed to write managed state file: {USER_MANAGED_CONFIG_PATH}"

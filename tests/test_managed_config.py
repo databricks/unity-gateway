@@ -2069,12 +2069,18 @@ class TestMdmOs:
         self._save(True)
         assert self._saved() == {"mdm_os": "Linux"}
 
-    def test_no_mdm_clears_it(self):
+    def test_configure_without_mdm_clears_it(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
         self._save(True)
-        mc_mod.request_mdm_os(False)
-        mc_mod.save_requested_mdm_os()
-        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+        self._save(False)
+        assert self._saved() == {"workspace": WORKSPACE, "config": RAW_MANIFEST}
+        mc_mod.export_mdm_os()
         assert os.environ["MDM_OS"] == "None"
+
+    def test_configure_without_mdm_removes_a_file_holding_only_it(self):
+        self._save(True)
+        self._save(False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
 
     def test_failed_write_warns_and_keeps_the_run_value(self, monkeypatch):
         save_managed_state(WORKSPACE, RAW_MANIFEST)
@@ -2091,7 +2097,7 @@ class TestMdmOs:
 
         assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
         assert os.environ["MDM_OS"] == "Linux"
-        assert len(warnings) == 1 and "--mdm" in warnings[0] and "this run only" in warnings[0]
+        assert len(warnings) == 1 and "save --mdm" in warnings[0]
 
     def test_saved_after_a_failed_policy_read(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
@@ -2101,15 +2107,26 @@ class TestMdmOs:
         mc_mod.save_requested_mdm_os()
         assert self._saved() == {"mdm_os": "Linux"}
 
-    def test_skip_mode_saves_per_user_beside_an_installed_policy(self, monkeypatch):
+    @pytest.mark.parametrize("mode", ["user_scope", "skip_os_settings"])
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_without_machine_settings_mdm_is_a_no_op(self, monkeypatch, mode, enabled):
+        import ucode.managed_files as mf_mod
+
         save_managed_state(WORKSPACE, RAW_MANIFEST)
-        before = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
-        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
         self._save(True)
+        before = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+        if mode == "user_scope":
+            monkeypatch.setattr(mf_mod, "_config_scope", "user")
+        else:
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        warnings: list[str] = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        self._save(enabled)
 
         assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
-        assert self._saved(mc_mod.USER_MANAGED_CONFIG_PATH) == {"mdm_os": "Linux"}
-        assert mc_mod.saved_mdm_os() == "Linux"
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert os.environ["MDM_OS"] == "None"
+        assert len(warnings) == (1 if enabled else 0)
 
     def test_scope_change_reads_the_selected_scope(self, monkeypatch):
         import ucode.managed_files as mf_mod
@@ -2130,10 +2147,3 @@ class TestMdmOs:
         assert self._saved() == {"mdm_os": "Windows"}
         assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
         assert mc_mod.saved_mdm_os() == "Windows"
-
-    def test_revert_clears_the_per_user_value(self, monkeypatch):
-        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-        self._save(True)
-        mc_mod.revert_machine_policy()
-        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
-        assert mc_mod.saved_mdm_os() is None

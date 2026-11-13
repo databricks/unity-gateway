@@ -702,7 +702,7 @@ def mask_user_agent_versions(value: object, key: object = None) -> object:
     prompt for sudo to replace) the root-owned file. The ``(<os>; <arch>)`` suffix is dropped too:
     it describes the machine that owns the file, and keeping it would force one sudo rewrite on the
     first ug upgrade that adds it. Its ``mdm`` field is kept during ``ug configure``/``ug revert``,
-    so ``--mdm/--no-mdm`` rewrites a file that no longer matches; a launch ignores it, so an unsaved
+    so adding or dropping ``--mdm`` rewrites a file that no longer matches; a launch ignores it, so an unsaved
     MDM change never becomes a policy conflict. Only User-Agent headers are masked: a
     ``User-Agent`` key, or a ``User-Agent:`` line in a header string; every other value compares
     exactly."""

@@ -240,9 +240,7 @@ class TestHelp:
         toggle.assert_called_once_with(True, None)
         launch.assert_not_called()
 
-    @pytest.mark.parametrize(
-        ("args", "expected"), [([], None), (["--mdm"], True), (["--no-mdm"], False)]
-    )
+    @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])
     def test_configure_forwards_mdm_flag(self, monkeypatch, args, expected):
         requests = []
         monkeypatch.setattr(cli_mod, "request_mdm_os", requests.append)

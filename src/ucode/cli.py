@@ -5268,13 +5268,14 @@ def configure(
         ),
     ] = False,
     mdm: Annotated[
-        bool | None,
+        bool,
         typer.Option(
-            "--mdm/--no-mdm",
-            help="Mark this machine as provisioned through MDM, saved in the Unity Gateway "
-            "managed settings and exported as MDM_OS for telemetry. Omit to keep the saved choice.",
+            "--mdm",
+            help="Mark this machine as provisioned through MDM in the machine-wide Unity Gateway "
+            "managed settings; `ug` then adds `mdm` to its User-Agent and sets MDM_OS. Configure "
+            "without it clears the mark. Ignored with --user.",
         ),
-    ] = None,
+    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
