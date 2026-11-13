@@ -60,6 +60,21 @@ test('animal names stay distinct and stable without changing routed calls or row
   expect(names[100]).toMatch(/ 2$/);
 });
 
+test('selected model drops any Unity Catalog catalog and schema prefix', async ($, on) => {
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: 'ai_devtools_prod.default.gpt-6-luna-fast', rationale: 'Selected for the task',
+  }) } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  on('ui.render', ($, event) => ({ type: 'Text', props: {}, children: [`${event.props.tool}`] }));
+
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'luna', ...originalInput });
+  const mounted = await $.ui.mount(row('luna'));
+  expect(await mounted.find({ type: 'Text', text: 'gpt-6-luna-fast' })).toBeDefined();
+  expect(await mounted.find({ type: 'Text', text: /ai_devtools_prod|default\./ })).toBeUndefined();
+  await mounted.unmount();
+});
+
 test('routing changes only the matching spawn model and joins its display name to the child ID', async ($, on) => {
   const writes: any[] = [];
   const forwarded: any[] = [];
