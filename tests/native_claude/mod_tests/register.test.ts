@@ -297,6 +297,10 @@ test('explanation commands leave routing and feedback controls untouched', { opt
   for (const action of ['explain\t on', 'explain  latest', 'explain\t off']) {
     await $.command.run({ command: 'smart-router', args: action });
   }
+  for (const args of ['explain', 'explain invalid', 'explain on extra']) {
+    expect((await $.command.run({ command: 'smart-router', args })).text)
+      .toBe('Usage: /smart-router explain on|off|latest');
+  }
   expect(env).toEqual(initial);
   expect(writes).toEqual([]);
   expect(processes).toBe(0);

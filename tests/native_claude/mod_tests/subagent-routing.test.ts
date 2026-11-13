@@ -514,6 +514,10 @@ test(`explanations for ${modelCount} models with custom names ${customNames} pre
   on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model, agentId: `child-${e.tool_use_id}` }; });
   on('fs.write', () => ({ value: undefined }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  on('ui.open', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+    isPlaced: true, isShown: true, isFocused: true }] }));
+  on('ui.close', () => ({ value: undefined }));
 
   await $.tool.call({ tool: 'Agent', tool_use_id: 'off-by-default', ...originalInput });
   const hidden = await $.ui.mount(row('off-by-default'));
@@ -572,6 +576,10 @@ test('seven-digit gateway wrappers keep their matching explanation', { options: 
   on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model, agentId: 'child-seven-digit' }; });
   on('fs.write', () => ({ value: undefined }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  on('ui.open', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+    isPlaced: true, isShown: true, isFocused: true }] }));
+  on('ui.close', () => ({ value: undefined }));
 
   await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'seven-digit', ...originalInput });
@@ -606,6 +614,10 @@ for (const [name, details, diagnostic] of [
     on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
     on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
     on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+    on('ui.open', () => ({ value: undefined }));
+    on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+      isPlaced: true, isShown: true, isFocused: true }] }));
+    on('ui.close', () => ({ value: undefined }));
 
     await $.tool.call({ tool: 'Agent', tool_use_id: name, ...originalInput });
     expect(logs).toEqual(diagnostic
@@ -639,6 +651,10 @@ for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
     on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model ?? 'native-default' }; });
     on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
     on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+    on('ui.open', () => ({ value: undefined }));
+    on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
+      isPlaced: true, isShown: true, isFocused: true }] }));
+    on('ui.close', () => ({ value: undefined }));
 
     await $.tool.call({ tool: 'Agent', tool_use_id: 'request-1', ...originalInput });
     await $.command.run({ command: 'smart-router', args: 'explain latest' });
@@ -712,16 +728,26 @@ test('explanation parsing failures preserve a valid routed spawn', { options: { 
 });
 
 
-test('the Why button reports when the explanation pane cannot be placed', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+for (const failure of ['unplaced', 'open', 'panes', 'close']) {
+test(`the Why button reports ${failure} failure and clears its pane record`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   const toasts: string[] = [];
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
     '{"model":"model-b","rationale":"Selected for the task"}',
   } }));
   on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', () => ({ value: undefined }));
-  on('ui.panes', () => ({ value: [] }));
-  on('ui.close', () => ({ value: undefined }));
+  on('ui.open', () => {
+    if (failure === 'open') throw new Error('Pane opening failed');
+    return { value: undefined };
+  });
+  on('ui.panes', () => {
+    if (failure === 'panes') throw new Error('Pane lookup failed');
+    return { value: [] };
+  });
+  on('ui.close', () => {
+    if (failure === 'close') throw new Error('Pane closing failed');
+    return { value: undefined };
+  });
   on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined }; });
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
 
@@ -731,8 +757,14 @@ test('the Why button reports when the explanation pane cannot be placed', { opti
   await shown.press({ key: 'why-this-model' });
 
   expect(toasts).toEqual(['Could not open the native routing explanation pane.']);
+  const stalePane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+  const rendered = JSON.stringify(await stalePane.drawn());
+  expect(rendered).toContain('original Agent row');
+  expect(rendered).not.toContain('Selected route:');
+  await stalePane.unmount();
   await shown.unmount();
 });
+}
 
 test('turning explanations off closes a pane that is still opening', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let finishOpen!: () => void;

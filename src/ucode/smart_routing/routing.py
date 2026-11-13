@@ -257,14 +257,19 @@ def _parse_routing_explanation(
     summary = _safe_explanation_text(value.get("summary"), 2000)
     task_understanding = value.get("task_understanding")
     models = value.get("models")
+    if not isinstance(task_understanding, list) or len(task_understanding) > 8:
+        return None
+    normalized_task_understanding = []
+    for item in task_understanding:
+        text = _safe_explanation_text(item, 240)
+        if not text:
+            return None
+        normalized_task_understanding.append(text)
     if (
         not selected_model
         or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", selected_model)
         or selected_model != _explanation_model_id(routed_model)
         or not summary
-        or not isinstance(task_understanding, list)
-        or len(task_understanding) > 8
-        or any(not _safe_explanation_text(item, 240) for item in task_understanding)
         or not isinstance(models, list)
         or len(models) < 1
     ):
@@ -279,6 +284,7 @@ def _parse_routing_explanation(
         "routing_score": False,
     }
     detail_fields = ("components", "difference_from_winner")
+    normalized_models = []
     for candidate in models:
         if not isinstance(candidate, dict):
             return None
@@ -311,6 +317,20 @@ def _parse_routing_explanation(
             for field in detail_fields
         ):
             return None
+        normalized_candidate = {
+            "id": model_id,
+            "name": name,
+            "selected": selected,
+            "considered": considered,
+            "reason": reason,
+        }
+        normalized_candidate.update(
+            {field: candidate[field] for field in numeric_fields if field in candidate}
+        )
+        normalized_candidate.update(
+            {field: dict(candidate[field]) for field in detail_fields if field in candidate}
+        )
+        normalized_models.append(normalized_candidate)
 
     if (
         len(model_ids) != len(offered_models)
@@ -319,10 +339,42 @@ def _parse_routing_explanation(
         or selected_ids != [selected_model]
     ):
         return None
+    normalized = {
+        "selected_model": selected_model,
+        "summary": summary,
+        "task_understanding": normalized_task_understanding,
+        "models": normalized_models,
+    }
     for field, limit in (("recipe", 240), ("formula", 500)):
-        if field in value and not _safe_explanation_text(value[field], limit):
-            return None
-    return value
+        if field in value:
+            text = _safe_explanation_text(value[field], limit)
+            if not text:
+                return None
+            normalized[field] = text
+
+    identity_fields = ("session_id", "tool_use_id")
+    evidence = value.get("evidence")
+    normalized_evidence = {}
+    for source, destination in ((value, normalized), (evidence, normalized_evidence)):
+        if not isinstance(source, dict):
+            continue
+        for field in identity_fields:
+            if field not in source:
+                continue
+            identity = source[field]
+            if identity is None:
+                destination[field] = None
+                continue
+            if (
+                not isinstance(identity, str)
+                or len(identity.encode("utf-16-le", errors="surrogatepass")) // 2 > 256
+                or re.search(r"[\x00-\x1f\x7f-\x9f]", identity)
+            ):
+                return None
+            destination[field] = identity
+    if normalized_evidence:
+        normalized["evidence"] = normalized_evidence
+    return normalized
 
 
 def configured_router_name() -> str:

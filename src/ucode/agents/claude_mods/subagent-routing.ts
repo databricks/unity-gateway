@@ -172,6 +172,11 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
     if (state.paneRecord && panes.some((pane) => pane.id === EXPLANATION_PANE && pane.isPlaced)) return true
     await $.ui.close({ id: EXPLANATION_PANE })
   } catch {}
+  if (state.paneRecord === record) {
+    state.paneRecord = undefined
+    state.modelId = undefined
+    $.ui.invalidate('ui.render')
+  }
   return false
 }
 
@@ -267,15 +272,12 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const explanationState: ExplanationState = { enabled: false }
 
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
-    const [verb, action, ...extra] = e.args.trim().split(/\s+/)
+    const [verb, action] = e.args.trim().split(/\s+/)
     if (verb !== 'explain') return next(e)
-    if (extra.length || (action !== 'on' && action !== 'off' && action !== 'latest')) {
-      return { text: 'Usage: /smart-router explain on|off|latest' }
-    }
     if (action === 'on') {
       explanationState.enabled = true
       $.ui.invalidate('ui.render')
-      return { text: 'Routing explanations are on for this session.' }
+      return { text: 'Routing explanations are on.' }
     }
     if (action === 'off') {
       explanationState.enabled = false
@@ -283,7 +285,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       explanationState.modelId = undefined
       $.ui.invalidate('ui.render')
       try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
-      return { text: 'Routing explanations are off for this session.' }
+      return { text: 'Routing explanations are off.' }
     }
     if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
     return await openExplanation($, explanationState, explanationState.latest)
@@ -397,7 +399,6 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
     } catch {
       route = undefined
-      explanation = undefined
       $.ui.log('Smart Router could not route this subagent; using its original settings.')
     } finally {
       spinner?.cancel()

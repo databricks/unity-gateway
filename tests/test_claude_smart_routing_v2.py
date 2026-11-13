@@ -90,6 +90,11 @@ _EXPLANATION = {
             False,
         ),
         ({**_EXPLANATION, "selected_model": "alternative"}, False),
+        ({**_EXPLANATION, "session_id": "s\x1b[31m1"}, False),
+        ({**_EXPLANATION, "tool_use_id": "t\x00"}, False),
+        ({**_EXPLANATION, "session_id": "s" * 257}, False),
+        ({**_EXPLANATION, "tool_use_id": 1}, False),
+        ({**_EXPLANATION, "evidence": {"session_id": []}}, False),
         (
             {
                 **_EXPLANATION,
@@ -152,6 +157,11 @@ _EXPLANATION = {
         "empty-model-name",
         "nonfinite-cost",
         "invalid-selected-model",
+        "identity-ansi",
+        "identity-control",
+        "identity-too-long",
+        "identity-nonstring",
+        "evidence-identity-nonstring",
         "double-selected",
         "selected-not-considered",
         "nonbool-selected",
@@ -170,6 +180,16 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         "tool_name": "Agent",
         "tool_input": original.copy(),
     }
+
+    if not retained:
+        assert (
+            routing._parse_routing_explanation(
+                explanation,
+                selected,
+                ((selected, "claude"), ("system.ai.alternative", "claude")),
+            )
+            is None
+        )
 
     def reply(request, timeout):
         calls.append(json.loads(request.data))
@@ -208,6 +228,110 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         assert result["explanation"] == record["explanation"] == expected
     else:
         assert "explanation" not in result and "explanation" not in record
+
+
+def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
+    selected = {
+        **_EXPLANATION["models"][0],
+        "name": " \x1b[34mSelected\x1b[0m model ",
+        "reason": " Best\x01 fit ",
+        "quality_estimate": 0.91,
+        "estimated_cost_usd": 0.24,
+        "routing_score": -0.1,
+        "components": {"quality": 0.91},
+        "difference_from_winner": {"quality": -0.09},
+        "internal_trace": {"discard": "this"},
+    }
+    alternative = {
+        **_EXPLANATION["models"][1],
+        "id": "\x1b[35malternative\x1b[0m",
+        "internal_trace": "discard this too",
+    }
+    explanation = {
+        **_EXPLANATION,
+        "summary": "\x1b[31mSummary\x1b[0m\x01more\n" + "x" * 2050,
+        "task_understanding": ["\x1b[32mStep\x1b[0m\x00 two"],
+        "recipe": "\x1b[36mrecipe\x1b[0m",
+        "formula": "formula\x7f text",
+        "session_id": "stale-session",
+        "tool_use_id": "stale-call",
+        "evidence": {
+            "session_id": "stale-session",
+            "tool_use_id": "stale-call",
+            "internal_trace": "discard this",
+        },
+        "internal_trace": "discard this",
+        "models": [selected, alternative],
+    }
+    original = json.loads(json.dumps(explanation))
+
+    normalized = routing._parse_routing_explanation(
+        explanation,
+        "system.ai.model-b",
+        (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+    )
+
+    assert normalized is not None
+    summary_prefix = "Summary more "
+    assert normalized["summary"] == summary_prefix + "x" * (2000 - len(summary_prefix))
+    assert normalized["task_understanding"] == ["Step two"]
+    assert normalized["recipe"] == "recipe"
+    assert normalized["formula"] == "formula text"
+    assert normalized["models"] == [
+        {
+            "id": "model-b",
+            "name": "Selected model",
+            "selected": True,
+            "considered": True,
+            "reason": "Best fit",
+            "quality_estimate": 0.91,
+            "estimated_cost_usd": 0.24,
+            "routing_score": -0.1,
+            "components": {"quality": 0.91},
+            "difference_from_winner": {"quality": -0.09},
+        },
+        {
+            "id": "alternative",
+            "name": "Alternative",
+            "selected": False,
+            "considered": False,
+            "reason": "Excluded by the routing policy.",
+        },
+    ]
+    assert normalized["session_id"] == "stale-session"
+    assert normalized["tool_use_id"] == "stale-call"
+    assert normalized["evidence"] == {
+        "session_id": "stale-session",
+        "tool_use_id": "stale-call",
+    }
+    assert set(normalized) == {
+        "selected_model",
+        "summary",
+        "task_understanding",
+        "models",
+        "recipe",
+        "formula",
+        "session_id",
+        "tool_use_id",
+        "evidence",
+    }
+    assert explanation == original
+
+    null_identity = {
+        **_EXPLANATION,
+        "session_id": None,
+        "tool_use_id": None,
+        "evidence": {"session_id": None, "tool_use_id": None},
+    }
+    normalized_null_identity = routing._parse_routing_explanation(
+        null_identity,
+        "system.ai.model-b",
+        (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
+    )
+    assert normalized_null_identity is not None
+    assert normalized_null_identity["session_id"] is None
+    assert normalized_null_identity["tool_use_id"] is None
+    assert normalized_null_identity["evidence"] == {"session_id": None, "tool_use_id": None}
 
 
 @pytest.mark.parametrize("prefix", ["anthropic-aigw-c442a48-", "anthropic-aigw-01234567-"])
