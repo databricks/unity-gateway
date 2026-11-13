@@ -191,8 +191,10 @@ See [the mod guide](../docs/claude-mod.md).
 
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
-name stability. Selected-model labels omit gateway aliases, show only the last component of
-names with at least two dots, and remove `[1m]`, without changing the model sent to the agent.
+name stability. Selected-model labels omit gateway aliases, catalog qualifiers and `[1m]`
+while preserving dotted versions under `system.ai` and organization-qualified catalog paths.
+The agent receives the original model. Continuation checks cover matching seven- and eight-digit
+aliases without accepting a different launched model.
 They cover a lone call's decision under its Agent row and parallel calls drawn as cards above
 the parent's next reply in call order (replies drawn before routing never used, calls still
 routing waiting for a later reply, cards kept across a turn that

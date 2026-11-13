@@ -23,8 +23,12 @@ test('selected model displays the model name without a gateway alias', async ($,
     ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]', 'gpt-6-1-sol'],
     ['anthropic-aigw-77df06ea-catalog.schema.custom-model', 'custom-model'],
     ['anthropic-aigw-77df06ea-org.catalog.schema.model[1m]', 'model'],
-    ['org.catalog.schema.service.model', 'model'],
+    ['org.catalog.schema.service.model', 'service.model'],
+    ['org.catalog.schema.model.v1[1m]', 'model.v1'],
+    ['anthropic-aigw-77df06ea-org.catalog.schema.gpt-6.1-sol[1m]', 'gpt-6.1-sol'],
     ['system.ai.glm-5-3-flash', 'glm-5-3-flash'],
+    ['system.ai.claude-3.5-sonnet', 'claude-3.5-sonnet'],
+    ['anthropic-aigw-c442a48-system.ai.gpt-6.1-sol[1m]', 'gpt-6.1-sol'],
     ['model.version[1m]', 'model.version'],
     ['plain-model[1m]', 'plain-model'],
     ['databricks-claude-sonnet', 'claude-sonnet'],
@@ -566,6 +570,41 @@ async function collectParentTurn($: any, turnId: string, index = 1) {
     text: chunks.filter((chunk) => chunk.kind === 'text').map((chunk) => chunk.text).join(''),
   };
 }
+
+test('child continuations use matching launched models for seven- and eight-digit gateway aliases', async ($, on) => {
+  let selected = '';
+  let launched = '';
+  const continued: string[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ model: selected, rationale: '' }) } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  on('agent.spawn', ($, e) => ({ agentId: `child-${e.tool_use_id}`, model: launched }));
+  on('fs.write', () => ({ value: undefined }));
+  on('turn.step', async function* ($, e) {
+    continued.push(e.model);
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
+  });
+
+  const cases = [
+    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'gpt-6-1-sol'],
+    ['anthropic-aigw-c442a48e-system.ai.gpt-6-1-sol', 'gpt-6-1-sol', 'gpt-6-1-sol'],
+    ['anthropic-aigw-c442a48-system.ai.gpt-6-1-sol', 'other-model', 'anthropic-aigw-c442a48-system.ai.gpt-6-1-sol'],
+  ];
+  for (const [index, [route, actual]] of cases.entries()) {
+    selected = route;
+    launched = actual;
+    const id = `alias-${index}`;
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    await $.agent.spawn({
+      tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
+      subagentType: originalInput.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: 'agent', permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+    });
+    await $.turn.step({ turnId: id, index: 1, model: 'parent-model', messageCount: 1, agentId: `child-${id}` }).next();
+  }
+  expect(continued).toEqual(cases.map(([, , expected]) => expected));
+});
 
 test('routed children leave native parent synthesis and stream errors unchanged', async ($, on) => {
   on('env.get', ($, e) => ({value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined}));
