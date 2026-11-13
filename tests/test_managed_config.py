@@ -247,6 +247,11 @@ class TestNormalize:
         cfg = normalize_managed_config(raw)
         assert cfg["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}
 
+    def test_skills_ignore_sources(self):
+        # Only mcp_servers has `sources`; a stray skills value must not become a selector.
+        cfg = normalize_managed_config({"skills": {"sources": ["system.ai.*"]}})
+        assert "skills" not in cfg
+
     def test_codex_provider_service(self):
         codex = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["codex"]
         assert codex["model_config"]["model_provider_service"] == "main.default.openai-mps"

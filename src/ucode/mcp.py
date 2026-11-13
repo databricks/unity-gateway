@@ -39,6 +39,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.managed_config import MCP_SOURCE_NAME, MCP_SOURCE_SCHEMA, mcp_source_kind
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     explicit_managed_writes,
@@ -1041,21 +1042,17 @@ def _resolve_managed_mcp_servers(
     sources?}``). The API sets exactly one; if several are present, ``sources`` wins, then
     ``unity_catalog_location``, then ``names``:
 
-    - ``sources`` lists exact ``<catalog>.<schema>.<service>`` names and ``<catalog>.<schema>.*``
-      patterns. Each pattern discovers its schema via :func:`_resolve_location_mcp_servers`, and
-      each exact name is built directly, so one config can span several schemas (e.g. ``system.ai``
-      plus a team schema).
-    - a ``unity_catalog_location`` (deprecated) registers every MCP service under that one
-      ``<catalog>.<schema>`` through the same discovery;
-    - ``names`` registers exactly those services. Each is a full ``<catalog>.<schema>.<service>``
-      whose proxy URL is deterministic, so its entry is built directly here with no discovery or
-      narrowing call.
+    - ``sources`` mixes exact ``<catalog>.<schema>.<service>`` names with ``<catalog>.<schema>.*``
+      patterns, so one config can span several schemas (e.g. ``system.ai`` plus a team schema);
+      see :func:`_resolve_managed_mcp_sources`.
+    - a ``unity_catalog_location`` (deprecated) registers every MCP service under that one schema
+      via :func:`_resolve_location_mcp_servers` (with no ``original_servers``);
+    - ``names`` registers exactly those services, built directly (see
+      :func:`_named_mcp_server_entries`).
 
-    Either way the managed set is tracked on its own and never entangles the developer's own servers
-    or the skills connection. An entry that isn't a full three-part FQN (or a ``.*`` schema pattern
-    in ``sources``) is skipped with a warning, so an admin's typo in one entry never blocks the
-    developer from the valid entries. A discovery failure for any schema propagates exactly as for a
-    single location, so a partial listing never unregisters servers from a schema that failed.
+    The managed set is tracked on its own and never entangles the developer's own servers or the
+    skills connection. A malformed entry is skipped with a warning, so an admin's typo in one entry
+    never blocks the developer from the valid entries.
     """
     sources = [s for s in (selector.get("sources") or []) if isinstance(s, str) and s]
     if sources:
@@ -1077,17 +1074,34 @@ def _resolve_managed_mcp_sources(
     *,
     token: str | None = None,
 ) -> list[dict]:
-    """Resolve managed ``mcp_servers.sources`` (exact FQNs and ``catalog.schema.*`` patterns)."""
-    locations = sorted({s[: -len(".*")] for s in sources if _is_mcp_schema_pattern(s)})
-    names = [s for s in sources if not _is_mcp_schema_pattern(s)]
+    """Resolve managed ``mcp_servers.sources`` into one deduplicated server list.
+
+    Each ``.*`` pattern discovers its schema; each exact name is built directly. A schema that
+    doesn't exist or isn't readable (HTTP 404) is skipped with a warning, so one bad entry doesn't
+    drop the other schemas. Any other discovery failure, including a rate limit, propagates like a
+    single location does, so a partial listing never unregisters servers from a schema that only
+    failed transiently.
+    """
+    kinds = {source: mcp_source_kind(source) for source in sources}
+    malformed = sorted(source for source, kind in kinds.items() if kind is None)
+    if malformed:
+        print_warning(
+            "Skipping managed mcp_servers source(s) that aren't `<catalog>.<schema>.<service>` "
+            f"or `<catalog>.<schema>.*`: {', '.join(malformed)}."
+        )
+    locations = sorted(
+        {source[: -len(".*")] for source, kind in kinds.items() if kind == MCP_SOURCE_SCHEMA}
+    )
+    names = [source for source, kind in kinds.items() if kind == MCP_SOURCE_NAME]
     working: list[dict] = []
     for location in locations:
-        working.extend(
-            _discover_managed_location(location, workspace, profile, clients, token=token)
-        )
-    working.extend(
-        _named_mcp_server_entries(_drop_malformed_mcp_names(names, "source(s)"), workspace, clients)
-    )
+        try:
+            working.extend(
+                _discover_managed_location(location, workspace, profile, clients, token=token)
+            )
+        except McpLocationNotFound as exc:
+            print_warning(f"Skipping managed mcp_servers source `{location}.*`: {exc}")
+    working.extend(_named_mcp_server_entries(names, workspace, clients))
     # A name can also be covered by a schema pattern; register it once.
     deduped: list[dict] = []
     seen: set[str] = set()
@@ -1101,12 +1115,6 @@ def _resolve_managed_mcp_sources(
     return deduped
 
 
-def _is_mcp_schema_pattern(source: str) -> bool:
-    """Whether ``source`` is ``<catalog>.<schema>.*`` (every MCP service in that schema)."""
-    parts = source.split(".")
-    return len(parts) == 3 and parts[2] == "*" and all(part.strip() for part in parts[:2])
-
-
 def _discover_managed_location(
     location: str,
     workspace: str,
@@ -1115,7 +1123,7 @@ def _discover_managed_location(
     *,
     token: str | None = None,
 ) -> list[dict]:
-    """Every MCP service under ``location``, with no ``original_servers`` (managed set is separate)."""
+    """Every MCP service under ``location``; no ``original_servers``, as the managed set is separate."""
     if token is not None:
         return _resolve_location_mcp_servers(workspace, profile, clients, location, [], token=token)
     return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
@@ -2031,6 +2039,14 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
     return [s for s in servers if s.get("kind") == SKILLS_MCP_KIND]
 
 
+class McpLocationNotFound(RuntimeError):
+    """MCP-service discovery found no such schema, or no USE permission on it (HTTP 404).
+
+    A ``RuntimeError`` subtype, so single-location callers keep failing as before, while a
+    multi-schema ``sources`` resolve can skip just that schema.
+    """
+
+
 class McpServiceListingRateLimited(RuntimeError):
     """MCP-service discovery (`ListMcpServices`) was rate-limited (HTTP 429).
 
@@ -2081,7 +2097,7 @@ def _resolve_location_mcp_servers(
         names, reason = list_mcp_services(workspace, token, parent=location)
 
     if reason and reason.startswith("HTTP 404"):
-        raise RuntimeError(
+        raise McpLocationNotFound(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )

@@ -3806,11 +3806,53 @@ class TestResolveManagedMcpServers:
             "_resolve_location_mcp_servers",
             lambda *a, **k: pytest.fail("no valid schema pattern to discover"),
         )
+        bad = ["system.*", "a.b.c.d", "*", "main.tools.c*", "a.*.*", "a. b.c", "a .b.*"]
         out = mcp._resolve_managed_mcp_servers(
-            {"sources": ["system.*", "a.b.c.d", "*", "system.ai.slack"]}, WS, None, ["claude"]
+            {"sources": [*bad, "system.ai.slack"]}, WS, None, ["claude"]
         )
         assert [s["name"] for s in out] == ["system-ai-slack"]
-        assert warned and all(bad in warned[0] for bad in ("system.*", "a.b.c.d"))
+        assert len(warned) == 1 and all(entry in warned[0] for entry in bad)
+
+    def test_sources_discover_a_repeated_pattern_once(self, monkeypatch):
+        discovered: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            self._fake_schema_listing({"system.ai": ["system.ai.github"]}, discovered),
+        )
+        mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.ai.*", "system.ai.*"]}, WS, None, ["claude"]
+        )
+        assert discovered == ["system.ai"]
+
+    def test_sources_skip_a_missing_schema_and_keep_the_rest(self, monkeypatch):
+        # A typo'd or unreadable schema (HTTP 404) is skipped with a warning; the other schema and
+        # the exact name still register.
+        warned: list[str] = []
+        monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
+
+        def fake_loc(ws, profile, clients, location, original, services=None):
+            if location == "main.typo":
+                raise mcp.McpLocationNotFound(f"Invalid location: `{location}`")
+            return [{"name": "system-ai-github", "url": "u", "auth": "proxy", "clients": clients}]
+
+        monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.ai.*", "main.typo.*", "main.tools.foo"]}, WS, None, ["claude"]
+        )
+        assert {s["name"] for s in out} == {"system-ai-github", "main-tools-foo"}
+        assert len(warned) == 1 and "main.typo.*" in warned[0]
+
+    def test_sources_propagate_other_discovery_failures(self, monkeypatch):
+        # Only a missing schema is skipped; any other failure must not yield a partial set.
+        def fake_loc(ws, profile, clients, location, original, services=None):
+            raise RuntimeError(f"Failed to list MCP services at `{location}`: HTTP 500")
+
+        monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            mcp._resolve_managed_mcp_servers(
+                {"sources": ["system.ai.*", "main.tools.foo"]}, WS, None, ["claude"]
+            )
 
     def test_sources_take_precedence_over_a_location(self, monkeypatch):
         discovered: list[str] = []

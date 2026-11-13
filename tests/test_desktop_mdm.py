@@ -737,3 +737,19 @@ def test_configure_refuses_to_overwrite_a_corrupt_policy(device):
     with pytest.raises(RuntimeError, match="not this UG deployment"):
         mdm.configure(WORKSPACE, "admin")
     assert mdm.POLICY_PATH.read_bytes() == b"not a plist"
+
+
+@pytest.mark.parametrize("source", ["system.ai.*", "main.tools.foo"])
+def test_mcp_selector_accepts_sources(source):
+    mdm._validate_selector({"sources": ["main.exa.*", source]}, allow_sources=True)
+
+
+@pytest.mark.parametrize("source", ["a.*", "*", "a.b.c*", "a.*.*", "a.b.c.d", "a. b.c", "a.b. *"])
+def test_mcp_selector_rejects_malformed_sources(source):
+    with pytest.raises(RuntimeError, match="catalog.schema.name or catalog.schema"):
+        mdm._validate_selector({"sources": [source]}, allow_sources=True)
+
+
+def test_skills_selector_rejects_sources():
+    with pytest.raises(RuntimeError, match="don't support sources"):
+        mdm._validate_selector({"sources": ["system.ai.*"]})

@@ -32,6 +32,7 @@ from ucode.databricks import (
 )
 from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
+    mcp_source_kind,
 )
 from ucode.managed_resolve import static_model_list
 
@@ -292,9 +293,9 @@ def _is_uc_fqn(name: str, *, parts: int) -> bool:
     return len(segments) == parts and all(segments)
 
 
-def _uc_names_or_location_payload(selector: dict) -> dict:
-    """Serialize the internal ``{names, unity_catalog_location}`` selector back to the wire
-    ``{names, unity_catalog_location}`` shape shared by ``mcp_servers`` and ``skills``."""
+def _uc_names_or_location_payload(selector: dict, *, allow_sources: bool = False) -> dict:
+    """Serialize the internal ``{names, unity_catalog_location, sources}`` selector back to the wire
+    shape shared by ``mcp_servers`` and ``skills``; only ``mcp_servers`` has ``sources``."""
     body: dict = {}
     names = selector.get("names")
     if isinstance(names, list):
@@ -304,14 +305,23 @@ def _uc_names_or_location_payload(selector: dict) -> dict:
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
         body["unity_catalog_location"] = location
+    sources = selector.get("sources") if allow_sources else None
+    if isinstance(sources, list):
+        clean_sources = [source for source in sources if isinstance(source, str) and source]
+        if clean_sources:
+            body["sources"] = clean_sources
     return body
 
 
-def _validate_uc_names_or_location(field: str, selector: dict) -> list[str]:
-    """Validate a ``{names, unity_catalog_location}`` selector (``mcp_servers`` or ``skills``).
+def _validate_uc_names_or_location(
+    field: str, selector: dict, *, allow_sources: bool = False
+) -> list[str]:
+    """Validate a ``{names, unity_catalog_location, sources}`` selector (``mcp_servers``/``skills``).
 
-    Exactly one of a non-empty ``names`` list or a ``unity_catalog_location`` must be set: ``names``
-    are 3-part ``<catalog>.<schema>.<name>`` FQNs, ``unity_catalog_location`` a 2-part ``<catalog>.<schema>``.
+    Exactly one of a non-empty ``names`` list, a ``unity_catalog_location``, or (``mcp_servers``
+    only, ``allow_sources``) a non-empty ``sources`` list must be set: ``names`` are 3-part
+    ``<catalog>.<schema>.<name>`` FQNs, ``unity_catalog_location`` a 2-part ``<catalog>.<schema>``,
+    and each ``sources`` entry an exact FQN or a ``<catalog>.<schema>.*`` pattern.
     Mirrors the server's enforcement so an admin catches it locally instead of via an
     ``INVALID_PARAMETER_VALUE`` round-trip, and keeps the serialize/normalize round-trip exact (a
     degenerate selector would serialize to nothing and not survive the round-trip).
@@ -337,10 +347,29 @@ def _validate_uc_names_or_location(field: str, selector: dict) -> list[str]:
         errors.append(
             f"{field}.unity_catalog_location must be a <catalog>.<schema> (got: {location})."
         )
-    if has_names and has_location:
-        errors.append(f"{field}: set either names or unity_catalog_location, not both.")
-    elif not has_names and not has_location and not errors:
-        errors.append(f"{field}: set either names or unity_catalog_location.")
+    has_sources = False
+    if "sources" in selector and not allow_sources:
+        errors.append(f"{field}.sources is not supported; use names or unity_catalog_location.")
+    elif isinstance(selector.get("sources"), list):
+        sources = selector["sources"]
+        if any(not isinstance(source, str) or not source for source in sources):
+            errors.append(f"{field}.sources must not contain empty entries.")
+        clean_sources = [source for source in sources if isinstance(source, str) and source]
+        has_sources = bool(clean_sources)
+        bad = [source for source in clean_sources if mcp_source_kind(source) is None]
+        if bad:
+            errors.append(
+                f"{field}.sources must be <catalog>.<schema>.<name> or <catalog>.<schema>.* "
+                f"(got: {', '.join(bad)})."
+            )
+    choices = "names or unity_catalog_location" + (" (or sources)" if allow_sources else "")
+    set_count = sum((has_names, has_location, has_sources))
+    if set_count > 1:
+        errors.append(
+            f"{field}: set either {choices}, not " + ("several." if allow_sources else "both.")
+        )
+    elif set_count == 0 and not errors:
+        errors.append(f"{field}: set either {choices}.")
     return errors
 
 
@@ -379,7 +408,7 @@ def serialize_managed_config(manifest: dict) -> dict:
 
     mcp_servers = manifest.get("mcp_servers")
     if isinstance(mcp_servers, dict):
-        selector = _uc_names_or_location_payload(mcp_servers)
+        selector = _uc_names_or_location_payload(mcp_servers, allow_sources=True)
         if selector:
             payload["mcp_servers"] = selector
 
@@ -515,7 +544,9 @@ def validate_manifest(manifest: dict, state: dict | None = None) -> list[str]:
 
     mcp_servers = manifest.get("mcp_servers")
     if isinstance(mcp_servers, dict):
-        errors.extend(_validate_uc_names_or_location("mcp_servers", mcp_servers))
+        errors.extend(
+            _validate_uc_names_or_location("mcp_servers", mcp_servers, allow_sources=True)
+        )
 
     skills = manifest.get("skills")
     if isinstance(skills, dict):

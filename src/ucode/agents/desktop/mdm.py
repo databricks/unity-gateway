@@ -16,7 +16,7 @@ from pathlib import Path
 
 from ucode import config_io, databricks, managed_files
 from ucode.agents.desktop import claude_config, cowork, setup
-from ucode.managed_config import get_managed_config, normalize_managed_config
+from ucode.managed_config import get_managed_config, mcp_source_kind, normalize_managed_config
 from ucode.managed_resolve import (
     managed_enabled_tools,
     managed_provider_service,
@@ -215,7 +215,7 @@ def _publish(source: Path | None, files: dict[Path, bytes | None]) -> None:
         ) from exc
 
 
-def _validate_selector(selector: dict) -> None:
+def _validate_selector(selector: dict, *, allow_sources: bool = False) -> None:
     location = selector.get("unity_catalog_location")
     if location is not None and (
         not isinstance(location, str)
@@ -234,13 +234,10 @@ def _validate_selector(selector: dict) -> None:
             "MDM skill and MCP names must be fully qualified catalog.schema.name values."
         )
     sources = selector.get("sources", [])
+    if sources and not allow_sources:
+        raise RuntimeError("MDM skills don't support sources; use names or a catalog location.")
     if not isinstance(sources, list) or any(
-        not isinstance(source, str)
-        or len(source.split(".")) != 3
-        or any(not part.strip() or part != part.strip() for part in source.split("."))
-        or ("*" in source and not source.endswith(".*"))
-        or "*" in source[:-1]
-        for source in sources
+        not isinstance(source, str) or mcp_source_kind(source) is None for source in sources
     ):
         raise RuntimeError(
             "MDM MCP sources must be catalog.schema.name or catalog.schema.* values."
@@ -308,7 +305,7 @@ def configure(workspace: str, profile: str | None) -> None:
             parent_schema = managed_unity_catalog_location(managed, "claude")
     settings = setup.resolve_gateway_profile(state, parent_schema=parent_schema, token=token)
     selector = (managed or {}).get("mcp_servers") or {}
-    _validate_selector(selector)
+    _validate_selector(selector, allow_sources=True)
     servers = _resolve_managed_mcp_servers(selector, workspace, profile, ["claude"], token=token)
     user_profile = "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
     helper = MDM_ROOT / "ug"
