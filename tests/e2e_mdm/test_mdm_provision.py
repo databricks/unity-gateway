@@ -55,7 +55,12 @@ ALIASES = {
     "claude": "UG_SKIP_OS_SETTINGS=1 ug claude",
     "codex": "UG_SKIP_OS_SETTINGS=1 ug codex",
 }
-SHELL_RCS = (Path("/etc/zshrc"), Path("/etc/bashrc"))
+# Each shell's system startup files, on macOS and Red Hat, then Debian.
+SHELL_RCS = {
+    "zsh": (Path("/etc/zshrc"), Path("/etc/zsh/zshrc")),
+    "bash": (Path("/etc/bashrc"), Path("/etc/bash.bashrc")),
+}
+REQUIRED_SHELLS = {"zsh", "bash"} if DARWIN else {"bash"}
 
 
 def assert_root_owned(path, mode=0o644):
@@ -125,11 +130,11 @@ def test_provisioning_left_the_user_home_untouched(demoted):
     assert not leaked, leaked
 
 
-@pytest.mark.skipif(not DARWIN, reason="Only the macOS script adds shell aliases")
 def test_shell_aliases_installed(machine, demoted):
-    rcs = [rc for rc in SHELL_RCS if rc.exists()]
-    assert Path("/etc/zshrc") in rcs, rcs
-    for rc in rcs:
+    shells = {shell: [rc for rc in rcs if rc.exists()] for shell, rcs in SHELL_RCS.items()}
+    shells = {shell: rcs for shell, rcs in shells.items() if rcs}
+    assert REQUIRED_SHELLS <= set(shells), shells
+    for rc in (rc for rcs in shells.values() for rc in rcs):
         st = rc.stat()
         assert st.st_uid == 0 and not st.st_mode & 0o022, f"{rc}: {st.st_uid} {oct(st.st_mode)}"
         text = rc.read_text()
@@ -137,7 +142,7 @@ def test_shell_aliases_installed(machine, demoted):
         assert text.count("# END unity-gateway") == 1, text
 
     # A login shell, as Terminal opens, run as the developer without sudo.
-    for shell in ("zsh", "bash"):
+    for shell in shells:
         result = machine.as_user([shell, "-l", "-i", "-c", "alias claude codex"])
         assert result.returncode == 0, result.output[-4000:]
         for name, command in ALIASES.items():

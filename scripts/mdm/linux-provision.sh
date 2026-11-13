@@ -1,14 +1,23 @@
 #!/bin/bash
 #
-# Linux twin of scripts/mdm/macos-provision.sh for the MDM E2E test: same
-# steps, install layout and arguments, with python3 in place of plutil and
-# the Linux builds of Claude Code and Codex. Run as root.
+# Linux MDM provisioning script, the counterpart of macos-provision.sh for
+# MDM or configuration management tools: install ug, the Databricks CLI,
+# Claude Code and Codex machine-wide and run `ug configure` as root, which
+# writes the workspace policy at /etc/unitygateway/managed-settings.json
+# and the Claude Code and Codex managed settings. It also adds `claude` and
+# `codex` aliases to the system zsh and bash startup files, so users launch
+# with `claude` or `codex` in a new terminal, with no sudo.
 #
-#   $4  Databricks workspace URL
+# Arguments match macos-provision.sh, so $1-$3 are ignored:
+#   $4  Databricks workspace URL, starting with https://
 #   $5  Service principal OAuth client id
 #   $6  Service principal OAuth client secret
 #
-# Set UG_INSTALL_SPEC to a uv tool spec to install ug from a local checkout.
+# Set UG_INSTALL_SPEC to a uv tool spec to install ug from somewhere other
+# than the repository's main branch, e.g. a local checkout.
+#
+# The token is used for this run only; developers sign in with their own
+# OAuth. Needs access to PyPI, GitHub, astral.sh and downloads.claude.ai.
 
 set -euo pipefail
 umask 022
@@ -24,11 +33,30 @@ UV_URL=https://astral.sh/uv/install.sh
 CLI_URL=https://raw.githubusercontent.com
 CLI_URL="$CLI_URL/databricks/setup-cli/main/install.sh"
 
+# ug must be in a shared path: the machine-wide agent settings
+# run it by absolute path for every user.
 export UV_TOOL_DIR="$PREFIX/tools"
 export UV_TOOL_BIN_DIR=/usr/local/bin
 export UV_PYTHON_INSTALL_DIR="$PREFIX/python"
 export UV_PYTHON_PREFERENCE=only-managed
 mkdir -p /usr/local/bin
+
+# Get ug from git; python3 reads the JSON responses below
+missing=()
+for cmd in curl git python3 tar unzip; do
+  command -v "$cmd" >/dev/null || missing+=("$cmd")
+done
+if [ "${#missing[@]}" -gt 0 ]; then
+  if command -v apt-get >/dev/null; then
+    apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${missing[@]}"
+  elif command -v dnf >/dev/null; then
+    dnf install -y -q "${missing[@]}"
+  else
+    echo "Install ${missing[*]} and run this again." >&2
+    exit 1
+  fi
+fi
 
 if ! command -v uv >/dev/null; then
   curl -LsSf "$UV_URL" \
@@ -93,3 +121,16 @@ export DATABRICKS_BEARER
 
 ug configure --global --workspace "$WORKSPACE" \
   --agents claude,codex </dev/null
+
+# Aliases for every user's interactive zsh and bash shells, in the
+# Debian and Red Hat locations. The block is rewritten on each run.
+for rc in /etc/bash.bashrc /etc/bashrc /etc/zsh/zshrc /etc/zshrc; do
+  [ -f "$rc" ] || continue
+  sed -i '/^# BEGIN unity-gateway/,/^# END unity-gateway/d' "$rc"
+  cat >>"$rc" <<'ALIASES'
+# BEGIN unity-gateway (managed by MDM)
+alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
+alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
+# END unity-gateway
+ALIASES
+done
