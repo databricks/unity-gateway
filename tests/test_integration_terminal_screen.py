@@ -46,6 +46,7 @@ def test_terminal_preserves_redacted_proxy_diagnostics_outside_screen(tmp_path, 
     assert "[ucode-relay]" not in recorded["transcript"]
     assert "test-secret-bearer" not in json.dumps(recorded)
     event = json.loads(recorded["proxy_diagnostics"].strip().removeprefix("[ucode-relay] "))
+    assert isinstance(event.pop("timestamp_ms"), int)
     assert event == {"event": "request_start", "request_id": "<redacted>"}
 
 

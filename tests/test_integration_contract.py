@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -45,6 +46,7 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     project.mkdir()
     session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
 
+    started_ms = int(time.time() * 1000)
     result = session.run(
         "-c",
         "from ucode.gateway_proxy import log_proxy_diagnostic; "
@@ -53,7 +55,9 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
 
     prefix, payload = result.stderr.strip().split(" ", 1)
     assert prefix == "[ucode-relay]"
-    assert json.loads(payload) == {"event": "request_start", "request_id": "diagnostic-check"}
+    event = json.loads(payload)
+    assert started_ms <= event.pop("timestamp_ms") <= int(time.time() * 1000)
+    assert event == {"event": "request_start", "request_id": "diagnostic-check"}
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["stderr"] == result.stderr
 
