@@ -306,7 +306,10 @@ def _parse_routing_explanation(
             for field, non_negative in numeric_fields.items()
         ):
             return None
-        if any(field in candidate and not _valid_explanation_details(candidate[field]) for field in detail_fields):
+        if any(
+            field in candidate and not _valid_explanation_details(candidate[field])
+            for field in detail_fields
+        ):
             return None
 
     if (

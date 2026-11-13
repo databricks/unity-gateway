@@ -632,7 +632,7 @@ for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
       [mismatchedField]: 'another-request',
     }) } }));
     on('tool.call', () => ({ result: 'ok' }));
-    on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model }; });
+    on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model ?? 'native-default' }; });
     on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
 
     await $.tool.call({ tool: 'Agent', tool_use_id: 'request-1', ...originalInput });

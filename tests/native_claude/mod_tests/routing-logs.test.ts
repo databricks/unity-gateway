@@ -122,5 +122,5 @@ test('missing reader configuration shows an error', { options: { ENABLE_SMART_RO
 
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
   expect((await $.command.run(command)).text).toContain('was not enabled');
-  expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs');
+  expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs|explain on|off|latest');
 });

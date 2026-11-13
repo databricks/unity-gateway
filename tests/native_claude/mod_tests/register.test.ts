@@ -367,7 +367,7 @@ test('an omni launch skips the form only for an off marked --feedback-collected'
 test('--feedback-collected is accepted only after off', { options: ROUTED }, async ($, on) => {
   const { env, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
   for (const args of ['on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected']) {
-    expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs');
+    expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs|explain on|off|latest');
   }
   expect(runs).toEqual([]);
 
