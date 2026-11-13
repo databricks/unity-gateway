@@ -47,6 +47,10 @@ def desktop(request, monkeypatch, tmp_path):
         desktop_setup, "get_databricks_token", lambda host, profile: "component-token"
     )
     monkeypatch.setattr(
+        desktop_setup, "model_services_need_subscription_relay", lambda *args: False
+    )
+    monkeypatch.setattr(desktop_setup, "models_accept_relay_credentials", lambda *args: False)
+    monkeypatch.setattr(
         desktop_setup,
         "list_anthropic_model_catalog",
         lambda *args, **kwargs: AnthropicModelCatalog(
@@ -739,7 +743,8 @@ def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, mon
 
 
 def test_relay_for_cli_model_services_keeps_desktop_on_gateway_auth(desktop, monkeypatch):
-    # Relay-backed model services in a static list are CLI-only: Desktop has no per-model proxy.
+    # Desktop has no per-model proxy: without a list whose every model accepts relay credentials,
+    # relay-backed model services stay CLI-only.
     monkeypatch.setattr(
         desktop_setup.shutil, "which", lambda binary: pytest.fail("no relay helper expected")
     )
@@ -1060,3 +1065,60 @@ def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, ca
         assert "Open Claude Desktop once" not in output
     assert not desktop.parent.exists()
     assert not claude_desktop.APP_DIR.exists()
+
+
+def test_static_list_skips_relay_backed_services_on_gateway_auth(desktop, monkeypatch, capsys):
+    # Desktop keeps gateway auth for a static list, so a relay-backed service would get a 400.
+    sonnet = "main.default.claude-anthropic-sonnet-5-5"
+    oss = "main.default.claude-custom-oss-large"
+    monkeypatch.setattr(
+        desktop_setup,
+        "model_services_need_subscription_relay",
+        lambda _ws, _token, models: models == [sonnet],
+    )
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_static_models": [sonnet, oss],
+            "claude_relayed": True,
+            "claude_relayed_for_model_services": True,
+        }
+    )
+    assert [model["name"] for model in configured_profile(desktop)["inferenceModels"]] == [oss]
+    assert sonnet in capsys.readouterr().out
+
+
+def test_static_list_relays_on_desktop_when_every_model_accepts_it(desktop, monkeypatch):
+    # Desktop sends one credential for every model; relay is safe when all listed models accept it.
+    sonnet = "main.default.claude-anthropic-sonnet-5-5"
+    oss = "main.default.claude-custom-oss-large"
+    claude_binary = os.path.abspath(os.path.join("bin", "claude"))
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: claude_binary)
+    checked: list[list[str]] = []
+    monkeypatch.setattr(
+        desktop_setup,
+        "models_accept_relay_credentials",
+        lambda _ws, _token, models: checked.append(models) or True,
+    )
+    monkeypatch.setattr(
+        desktop_setup, "model_services_need_subscription_relay", lambda *args: pytest.fail("kept")
+    )
+    desktop_setup.configure_claude_desktop(
+        {
+            "workspace": "https://workspace.example",
+            "profile": "chosen-profile",
+            "claude_static_models": [sonnet, oss],
+            "claude_relayed": True,
+            "claude_relayed_for_model_services": True,
+        }
+    )
+    profile = configured_profile(desktop)
+    assert checked == [[sonnet, oss]]
+    assert profile["inferenceCredentialHelperArgs"][-3:] == [
+        "--relay",
+        "--claude-binary",
+        claude_binary,
+    ]
+    assert [model["name"] for model in profile["inferenceModels"]] == [sonnet, oss]
+    assert MODEL_PROVIDER_SERVICE_HEADER not in profile["inferenceCustomHeaders"]

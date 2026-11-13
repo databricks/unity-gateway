@@ -20,9 +20,19 @@ from ucode.agents.desktop.claude import (
 from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert_code, revert_cowork
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
-from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
+from ucode.databricks import (
+    build_tool_base_url,
+    get_databricks_token,
+    list_anthropic_model_catalog,
+    model_services_need_subscription_relay,
+    models_accept_relay_credentials,
+)
 from ucode.managed_files import ManagedFileWriteUnavailable, machine_wide_only
-from ucode.state import desktop_uses_claude_subscription_relay, get_provider_service
+from ucode.state import (
+    CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
+    desktop_uses_claude_subscription_relay,
+    get_provider_service,
+)
 from ucode.string_utils import model_picker_label
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
@@ -125,7 +135,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
     if sys.platform != "darwin" and not can_initialize_claude_desktop_directory(directory):
         raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
-    relayed = desktop_uses_claude_subscription_relay(state)
+    relayed = _desktop_relays(state)
     claude_binary = None
     if relayed:
         claude_binary = shutil.which("claude")
@@ -140,7 +150,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
     if not isinstance(profile, str) or not profile:
         raise RuntimeError("Select an explicit Databricks CLI profile and run ug configure again.")
 
-    settings = resolve_gateway_profile(state, parent_schema=parent_schema)
+    settings = resolve_gateway_profile(state, parent_schema=parent_schema, desktop_relayed=relayed)
 
     write_claude_desktop_profile(
         **settings,
@@ -171,8 +181,33 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
     print_success("Claude Desktop gateway profile configured. Quit and reopen Claude Desktop.")
 
 
+def _desktop_relays(state: dict) -> bool:
+    """True when Claude Desktop should take the subscription relay.
+
+    Besides a relayed provider, a static list whose relay-backed services made Claude Code launch
+    relayed qualifies, but only when every listed model accepts relay credentials: Desktop sends
+    one credential for every model, and an MPS without relayed auth rejects it."""
+    if desktop_uses_claude_subscription_relay(state):
+        return True
+    workspace = state.get("workspace")
+    models = state.get("claude_static_models")
+    if not (
+        state.get("claude_relayed")
+        and state.get(CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY)
+        and isinstance(workspace, str)
+        and isinstance(models, list)
+    ):
+        return False
+    token = get_databricks_token(workspace, state.get("profile"))
+    return models_accept_relay_credentials(workspace, token, models)
+
+
 def resolve_gateway_profile(
-    state: dict, *, parent_schema: str | None = None, token: str | None = None
+    state: dict,
+    *,
+    parent_schema: str | None = None,
+    token: str | None = None,
+    desktop_relayed: bool | None = None,
 ) -> dict:
     workspace = state["workspace"]
     profile = state.get("profile")
@@ -186,6 +221,21 @@ def resolve_gateway_profile(
     )
     if static_models:
         model_ids = static_models
+        if desktop_relayed is None:
+            desktop_relayed = desktop_uses_claude_subscription_relay(state)
+        if not desktop_relayed:
+            # Desktop keeps gateway auth here, which a relay-backed model service rejects (400).
+            relay_backed = [
+                model
+                for model in model_ids
+                if model_services_need_subscription_relay(workspace, token, [model])
+            ]
+            if relay_backed:
+                print_note(
+                    f"Claude Desktop skips {', '.join(relay_backed)}: it needs the Claude "
+                    "subscription relay, which only `ug claude` supports for now."
+                )
+                model_ids = [model for model in model_ids if model not in relay_backed]
     else:
         if not catalog.model_ids:
             raise RuntimeError(catalog.error_msg or "Gateway model discovery returned no models.")
