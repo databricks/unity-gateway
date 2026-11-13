@@ -1,7 +1,7 @@
 # Unity Gateway (`ug`)
 
-Unity Gateway runs coding agents through Databricks AI Gateway. It configures
-Codex, Claude Code, Gemini CLI, OpenCode, GitHub Copilot CLI, Pi, and Google
+Unity Gateway runs coding agents through your Databricks workspace. It configures
+Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, and Google
 Antigravity CLI, and can
 register Databricks MCP servers for Cursor Agent.
 
@@ -51,6 +51,7 @@ ug codex
 ug claude
 ug gemini
 ug opencode
+ug kilo
 ug copilot
 ug pi
 ug antigravity   # Google Antigravity CLI; `ug agy` is an alias
@@ -77,7 +78,8 @@ to discovery or change ug's saved default.
 `ug antigravity` (or `ug agy`) runs Google's Antigravity CLI 1.2.15 or later in its
 Enterprise Gateway mode, so it never asks for Google sign-in. It offers the workspace's
 Gemini models under the names Antigravity knows them by (`system.ai.gemini-3-8-flash` is
-`gemini-3.8-flash`) and starts on the newest. A local proxy refreshes the Databricks token
+`gemini-3.8-flash`) and explicitly selects the newest for each launch, including headless
+sessions. A local proxy refreshes the Databricks token
 for the whole session and maps each name back to its Databricks model. `--model` accepts
 either name, or one of Antigravity's thinking tiers such as `gemini-3.8-flash-high`.
 `--provider` routes through a Gemini Enterprise Model Provider Service, as with
@@ -256,7 +258,7 @@ registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
 ### Server-side web search for Claude Code
 
 ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
-`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the Unity Gateway's server-side search,
 writing no file. If the OS-managed settings, their `managed-settings.d`
 drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
 To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
@@ -287,7 +289,9 @@ Nothing is written to a config file.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
-Cursor models still run through your Cursor account.
+Cursor models still run through your Cursor account. `vscode` can be included in `--agents` to
+install ug's extension for Copilot Chat in VS Code; it is configure-only, with no `ug vscode`
+launch command.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
@@ -351,7 +355,7 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
+Connection-backed Unity Gateway MCP services use native HTTP OAuth in Claude Code,
 Codex, and Cursor when the workspace publishes a compatible client. Claude Code
 uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
 the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
@@ -362,7 +366,7 @@ the original request. Use the same Databricks account in the browser and CLI pro
 If no browser opens, use the URL in the MCP server log; click Login if the provider
 popup is blocked. This flow requires the workspace's MCP service login page and user-credential API;
 it does not require CLI `auth login --resource` or a CLI upgrade.
-V2 AI Gateway servers can be added with typed selectors such as
+V2 Unity Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
@@ -540,6 +544,15 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
+When a model response launches a subagent, UG buffers that step and removes
+premature model claims before displaying or storing them. After launch, UG renders
+the parent's report directly from that request's child records: animal name,
+verified model, completion state and the recorded child answer. No special parent
+output format or Stop-hook retry is required. This replaces free-form parent
+summaries for that delegated request. Tool calls remain available, background
+completion follows the same path, and a fresh main-agent request replies normally.
+Routing-enabled responses are buffered until each model step completes.
+
 ### Codex smart-routing compatibility
 
 Smart routing now requires Codex 0.164.0
@@ -564,8 +577,28 @@ For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
 Custom values for these fields do not apply during that session. The saved config
 files are unchanged, as are native delegation-mode controls. Requests use the
-configured Databricks provider directly. Subagent-only routing launches the native
-TUI directly; first-prompt routing uses the existing app-server interposer.
+configured Databricks provider directly. All routed Codex launches use the app-server
+interposer, including subagent-only presets. First-prompt model selection still follows
+the selected preset.
+
+Smart Router toggles keep every conversation loaded and do not interrupt any turn.
+The toggle turn finishes normally with its original routing attribution; the next
+main turn receives the new state. UG adds no user prompt or automatic continuation.
+Existing subagents keep running with their original attribution; new children,
+including descendants spawned by an old child, get the latest state through the
+spawn hook. Repeating the current state leaves session controls unchanged.
+
+Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
+`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`).
+The hook stamps child task names with `__sr_on` or `__sr_off`, which Codex places in
+`agent_name`. Parse only the final path segment: `/root/old__sr_on/new__sr_off`
+means off for that grandchild. A child's marker takes precedence over main state.
+Off is recorded as `DISABLED`; on uses the recipe name. Older clients can fall back
+to `Databricks-Smart-Router-Recipe`. These values describe client-requested routing,
+not proof that the router selected a different model. Native internal agents that
+bypass `spawn_agent` have no guaranteed marker. Reserve `smart_router_state` for
+per-turn metadata; a static Codex `responses_api_metadata` entry with that name
+would override dynamic values.
 
 ### Smart Router Orchestrator
 
@@ -679,10 +712,12 @@ preferences are ignored and their files are left untouched. See the bundled
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |
+| Kilo | `~/.ucode/kilo-xdg/kilo/kilo.json`, `~/.ucode/kilo-xdg/kilo/plugin/ucode-auth.js` |
 | GitHub Copilot CLI | `~/.copilot/ucode.env`, `~/.copilot/mcp-config.json` (or `$COPILOT_HOME/mcp-config.json`) |
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
+| VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents vscode`, uninstalled by `ug revert`; your `settings.json` is never edited |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
 Workspace policy is root-owned but readable without sudo. Configure installs it only when the
@@ -761,10 +796,10 @@ auth helper retains its existing shared deadline.
 
 ## Documentation
 
-- [Databricks AI Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
-- [Databricks AI Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
+- [Databricks Unity Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
+- [Databricks Unity Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
 - [Databricks CLI authentication](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)
-- [Monitor AI Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
+- [Monitor Unity Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
 
 ## Security
 

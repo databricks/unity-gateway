@@ -315,10 +315,7 @@ class TestV2Launch:
             display_model="Claude Sonnet 5",
             rationale="Selected for the parser task.",
         )
-        assert captured["plugin_models"] == {
-            "system.ai.claude-opus-4-8",
-            "system.ai.claude-sonnet-5",
-        }
+        assert captured["plugin_models"] == set()
         assert captured["settings"]["modelOverrides"] == {
             "claude-opus-4-8": "system.ai.claude-opus-4-8",
             "claude-sonnet-5": "system.ai.claude-sonnet-5",
@@ -335,6 +332,9 @@ class TestV2Launch:
         command = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "routeCommand"
         ]
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "logsCommand"
+        ] == ["/bin/ug", "smart-router-logs"]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -511,6 +511,7 @@ class TestV2Launch:
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 **v2.CLAUDE_SAVINGS_OPTION_DEFAULTS,
+                "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": [
                     "/bin/ug",
                     "claude-router-hook",
@@ -532,7 +533,7 @@ class TestV2Launch:
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "PreToolUse" not in settings["hooks"]
         assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
-        assert captured["plugin_models"] == {"system.ai.claude-opus-4-8"}
+        assert captured["plugin_models"] == set()
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"].count("--agents") == 1
         assert captured["argv"].count("--plugin-dir") == 2
@@ -958,6 +959,23 @@ class TestSubagentRouting:
             assert requested_agent not in notice
             assert ("[orchestrator on]" in notice) == (orchestrator_enabled == "1")
 
+    @pytest.mark.parametrize("orchestration", ["0", "1"])
+    def test_native_plugin_offers_roles_without_model_specific_agent_types(
+        self, tmp_path, monkeypatch, orchestration
+    ):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestration)
+        v2._write_routed_claude_plugin(tmp_path)
+
+        agents = list((tmp_path / "agents").glob("*.md"))
+        assert not any(agent.stem.startswith("ucode-route-") for agent in agents)
+        assert {agent.stem for agent in agents} == (
+            {"explorer", "researcher", "worker", "tester", "reviewer"}
+            if orchestration == "1"
+            else set()
+        )
+        assert (tmp_path / "hooks/subagent-routing.ts").is_file()
+
     def test_writes_routed_agents_as_launch_scoped_plugin(self, tmp_path):
         plugin_dir = tmp_path / "routing-plugin"
         models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3", "system.ai.gpt-5-6-sol"]
@@ -1227,7 +1245,9 @@ class TestV2HeadlessClaude:
         assert prompts == []
         assert launched["argv"].count("--model") == 1
 
-    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch):
+    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch, capsys, caplog):
+        caplog.set_level("DEBUG", logger="ucode.smart_routing.v2")
+
         def fail():
             raise RuntimeError("router timed out")
 
@@ -1237,6 +1257,9 @@ class TestV2HeadlessClaude:
 
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
+        output = capsys.readouterr()
+        assert "router timed out" not in output.out + output.err
+        assert "router timed out" in caplog.text
 
 
 def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):

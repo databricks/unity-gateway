@@ -350,4 +350,4 @@ class TestPricerCommand:
         fallback = self.run(price_cache, usage, controls=controls)
         assert fallback.returncode == 0, fallback.stderr
         assert json.loads(fallback.stdout) == {"savings": saved("$0.18", "60%")}
-        assert b"using the inherited environment" in fallback.stderr
+        assert fallback.stderr == b""

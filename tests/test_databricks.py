@@ -1589,6 +1589,10 @@ class TestListProviderServiceModels:
         ("main.ucode.claude_haiku", "claude_haiku"),
         ("gpt-5.5", "gpt-5.5"),
         ("main.default.gpt-5.5", "gpt-5.5"),
+        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "claude-haiku-5-5"),
+        ("main.default.lill-oai.gpt-6.1-sol", "gpt-6.1-sol"),
+        ("main.default.lill-oai.gpt-6.1-terra", "gpt-6.1-terra"),
+        ("system.ai.claude-opus-4-7[foo.bar]", "claude-opus-4-7"),
         # An Azure deployment names its region with a slash.
         ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
         ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
@@ -1971,6 +1975,61 @@ class TestListMcpServices:
         assert reason is None
         assert names == ["main.schema3.github", "main.schema3.slack"]
 
+    @staticmethod
+    def _paged(monkeypatch, second_page):
+        """Serve a first page of `main.s.a` with a next token, then ``second_page``."""
+
+        def fake_get(url, token, timeout=30):
+            if "page_token" in url:
+                return second_page
+            return {"mcp_services": [{"name": "main.s.a"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+    @pytest.mark.parametrize(
+        "second_page",
+        [
+            (None, "HTTP 404 Not Found: NOT_FOUND"),
+            (None, "HTTP 500 Internal Server Error"),
+            (None, None),
+            (["not", "a", "dict"], None),
+            ({"mcp_services": {"name": "main.s.b"}}, None),
+            # The same token again: the listing would loop rather than finish.
+            ({"mcp_services": [], "next_page_token": "p2"}, None),
+        ],
+    )
+    def test_strict_reports_every_incomplete_scoped_listing(self, monkeypatch, second_page):
+        self._paged(monkeypatch, second_page)
+        lenient = db_mod.list_mcp_services(WS, "token", parent="main.s")
+        strict = db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True)
+        assert lenient == (["main.s.a"], None)
+        # A later-page failure is marked incomplete, so it never reads as a missing schema.
+        assert strict[0] == ["main.s.a"]
+        assert strict[1] and strict[1].startswith("incomplete listing: ")
+
+    def test_strict_reports_the_page_limit(self, monkeypatch):
+        tokens = iter(range(10))
+
+        def fake_get(url, token, timeout=30):
+            return {"mcp_services": [], "next_page_token": f"t{next(tokens)}"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        _names, reason = db_mod.list_mcp_services(
+            WS, "token", parent="main.s", max_pages=3, strict=True
+        )
+        assert reason == "incomplete listing: MCP listing exceeded 3 pages"
+
+    def test_strict_rejects_a_malformed_first_page(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: ({"mcp_services": "main.s.a"}, None),
+        )
+        assert db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True) == (
+            [],
+            "unexpected MCP listing response",
+        )
+
     def test_http_404_reason_surfaces_for_invalid_parent(self, monkeypatch):
         monkeypatch.setattr(
             db_mod,
@@ -2129,9 +2188,171 @@ class TestWalkCatalogSchemas:
         assert reason == "no user UC catalogs found"
         assert probed == []
 
+    def test_streams_probe_before_other_catalog_finishes_listing(self, monkeypatch):
+        slow_catalog_started = threading.Event()
+        release_slow_catalog = threading.Event()
+        first_result = threading.Event()
+        collected: list[str] = []
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": "fast"}, {"name": "slow"}], None
+            if kwargs["extra_params"]["catalog_name"] == "slow":
+                slow_catalog_started.set()
+                release_slow_catalog.wait(timeout=5)
+                return [{"name": "later"}], None
+            return [{"name": "first"}], None
+
+        def collect(result, done, total):
+            collected.append(result)
+            first_result.set()
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=lambda catalog, schema: f"{catalog}.{schema}",
+                    collect=collect,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert slow_catalog_started.wait(timeout=2)
+            assert first_result.wait(timeout=2)
+            assert collected[0] == "fast.first"
+        finally:
+            release_slow_catalog.set()
+            thread.join(timeout=2)
+        assert not thread.is_alive()
+        assert not failures
+        assert set(collected) == {"fast.first", "slow.later"}
+
+    def test_busy_probe_queue_does_not_starve_catalog_listing(self, monkeypatch):
+        third_catalog_started = threading.Event()
+        release_probes = threading.Event()
+        failures: list[Exception] = []
+
+        def fake_pages(url, token, *, items_key, **kwargs):
+            if items_key == "catalogs":
+                return [{"name": name} for name in ("first", "second", "third")], None
+            catalog = kwargs["extra_params"]["catalog_name"]
+            if catalog == "third":
+                third_catalog_started.set()
+            return ([{"name": f"s{i}"} for i in range(30)] if catalog == "first" else []), None
+
+        def probe(catalog, schema):
+            release_probes.wait(timeout=3)
+            return f"{catalog}.{schema}"
+
+        def run_walk():
+            try:
+                db_mod.walk_catalog_schemas(
+                    WS,
+                    "token",
+                    deadline=time.monotonic() + 5,
+                    probe=probe,
+                    collect=lambda *args: None,
+                    max_workers=2,
+                )
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        monkeypatch.setattr(db_mod, "_paginated_json_items", fake_pages)
+        thread = threading.Thread(target=run_walk, daemon=True)
+        thread.start()
+        try:
+            assert third_catalog_started.wait(timeout=1.5)
+        finally:
+            release_probes.set()
+            thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert not failures
+
 
 class TestListAllMcpServices:
-    """Workspace-wide walk: catalogs -> schemas -> per-schema mcp-services."""
+    """Metastore listing, with the catalog/schema walk as a compatibility fallback."""
+
+    def test_metastore_pages_stream_with_metadata_before_callbacks(self, monkeypatch):
+        urls = []
+        metadata = {}
+        emitted = []
+
+        def fake_get(url, token, timeout=30):
+            urls.append(url)
+            if len(urls) == 1:
+                return {
+                    "mcp_services": [
+                        {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                        {
+                            "name": "mcp-services/main.tools.inactive",
+                            "config": {"connection": {"status": "FAILED"}},
+                        },
+                    ],
+                    "next_page_token": "second",
+                }, None
+            return {
+                "mcp_services": [
+                    {"name": "mcp-services/other.ops.pager", "comment": "Pager"},
+                    {"name": "mcp-services/main.tools.linear", "comment": "Linear"},
+                ]
+            }, None
+
+        def on_services(new_names):
+            emitted.append([(name, metadata[name]["comment"]) for name in new_names])
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", metadata=metadata, on_services=on_services
+        )
+
+        assert reason is None
+        assert names == ["main.tools.linear", "other.ops.pager"]
+        assert emitted == [
+            [("main.tools.linear", "Linear")],
+            [("other.ops.pager", "Pager")],
+        ]
+        assert len(urls) == 2
+        assert all("parent=" not in url and "view=BASIC" in url for url in urls)
+        assert "page_size=200" in urls[0]
+        assert "page_token=second" in urls[1]
+
+    def test_metastore_mid_page_failure_keeps_partial_result_and_reason(self, monkeypatch):
+        calls = []
+
+        def fake_get(url, token, timeout=30):
+            calls.append(url)
+            if len(calls) == 1:
+                return {
+                    "mcp_services": [{"name": "mcp-services/main.tools.linear"}],
+                    "next_page_token": "second",
+                }, None
+            return None, "HTTP 503 Service Unavailable"
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        names, reason = db_mod.list_all_mcp_services(WS, "token")
+        assert names == ["main.tools.linear"]
+        assert reason == "HTTP 503 Service Unavailable"
+        assert len(calls) == 2
+
+    def test_invalid_token_does_not_fall_back_to_schema_walk(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (None, "HTTP 401 Unauthorized"),
+        )
+        monkeypatch.setattr(
+            db_mod,
+            "walk_catalog_schemas",
+            lambda *args, **kwargs: pytest.fail("auth failure must not start schema walk"),
+        )
+        assert db_mod.list_all_mcp_services(WS, "bad-token") == ([], "HTTP 401 Unauthorized")
 
     def _fake_http(self, catalogs, schemas_by_catalog, services_by_schema):
         """Route `_http_get_json` by URL to the right stubbed payload."""
@@ -2143,6 +2364,8 @@ class TestListAllMcpServices:
                 cat = url.split("catalog_name=")[1].split("&")[0]
                 return {"schemas": [{"name": s} for s in schemas_by_catalog.get(cat, [])]}, None
             if "unity-catalog/mcp-services" in url:
+                if "parent=" not in url:
+                    return None, "HTTP 400 Bad Request: parent is required"
                 # parent is url-encoded as `schemas%2F<cat>.<schema>`
                 parent = url.split("parent=")[1].split("&")[0]
                 schema_ref = parent.replace("schemas%2F", "").replace("schemas/", "")
@@ -2206,6 +2429,26 @@ class TestListAllMcpServices:
         assert progress[-1][0] == 2
         assert progress[-1][2] == 2
 
+    def test_timeout_keeps_streamed_services_and_reports_partial_listing(self, monkeypatch):
+        def walk(workspace, token, *, probe, collect, **kwargs):
+            collect(probe("main", "tools"), 1, 2)
+            return "deadline exceeded while listing UC schemas"
+
+        monkeypatch.setattr(db_mod, "walk_catalog_schemas", walk)
+        monkeypatch.setattr(
+            db_mod,
+            "list_mcp_services",
+            lambda workspace, token, parent, **kwargs: (["main.tools.linear"], None),
+        )
+        streamed: list[list[str]] = []
+        names, reason = db_mod.list_all_mcp_services(
+            WS, "token", on_services=streamed.append, on_progress=lambda *_: None
+        )
+
+        assert names == ["main.tools.linear"]
+        assert streamed == [["main.tools.linear"]]
+        assert reason == "deadline exceeded while listing MCP services"
+
     def test_skips_internal_catalogs(self, monkeypatch):
         monkeypatch.setattr(
             db_mod,
@@ -2224,7 +2467,13 @@ class TestListAllMcpServices:
 
     def test_returns_reason_when_no_catalogs(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, timeout=30: ({"catalogs": []}, None)
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: (
+                ({"catalogs": []}, None)
+                if "unity-catalog/catalogs" in url
+                else (None, "HTTP 400 Bad Request: parent is required")
+            ),
         )
 
         names, reason = db_mod.list_all_mcp_services(WS, "token")
@@ -6263,7 +6512,7 @@ class TestWalkCatalogSchemasCancellation:
             return f"{cat}.{schema}"
 
         start = time.monotonic()
-        db_mod.walk_catalog_schemas(
+        reason = db_mod.walk_catalog_schemas(
             WS,
             "tok",
             deadline=start + 0.1,
@@ -6272,6 +6521,7 @@ class TestWalkCatalogSchemasCancellation:
         )
         assert time.monotonic() - start < 1.5
         assert len(collected) < N
+        assert reason == "deadline exceeded while listing UC schemas"
 
     def test_all_probes_collected_on_full_success(self, monkeypatch):
         N = 20

@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
 metadata:
-  version: "1.4.1"
+  version: "1.6.0"
 ---
 
 # Smart Router
@@ -20,6 +20,9 @@ In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"`; keep the remaining arguments the same.
 If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
+
+If the command reports that Smart Router is already on or already off, return that
+result and stop. Do not retry, restart a turn, or request feedback for unchanged settings.
 
 If Codex reports permission denied reading the session controls, request native
 approval for the same command with `sandbox_permissions="require_escalated"` and
@@ -49,4 +52,6 @@ skill to further work only if the session was launched with `ENABLE_SMART_ROUTER
 For launches with `ENABLE_SMART_ROUTING_SAVINGS=1`, off/on also disables/restores
 savings tracking and its display row. All earlier versioned presets disable savings;
 `subagent_orch_savings_v0` enables it with subagent routing and orchestration.
-Do not change the orchestration or savings launch baseline. Return the command's result.
+Do not change the orchestration or savings launch baseline. Return the command's result briefly, then stop.
+In Codex, the current main turn keeps its original routing attribution; the next user turn
+gets the new state. Do not interrupt, restart, or reload any conversation.

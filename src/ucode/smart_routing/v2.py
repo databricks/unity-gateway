@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import signal
@@ -51,7 +52,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -63,7 +63,7 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing
+from ucode.smart_routing import claude_routing, orchestrator, routing, session_log
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
@@ -99,6 +99,7 @@ HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
+# Omnigent matches the "ug-smart-router" plugin name exactly; update Omnigent if it changes.
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
 # Native plugin options for the savings mod, at the values Claude fills in for a launch that omits
 # them: no pricer (the estimate is off) and no orchestrator skill version to show.
@@ -372,6 +373,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": (
             orchestrator.CLAUDE_AGENT_DESCRIPTION
             if orchestrator.enabled(source, agent=AGENT_CLAUDE)
@@ -470,8 +472,8 @@ def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
-    """Write exact-model agents for launch-scoped loading through --plugin-dir."""
+def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = None) -> None:
+    """Write the native routing mod and roles; model IDs support legacy hook agents."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {
@@ -504,6 +506,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                     "default": [],
                     "title": "Subagent router",
                     "description": "CLI argument list for a subagent routing decision",
+                },
+                "logsCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Smart Router logs reader",
+                    "description": "CLI argument list for reading session routing logs",
                 },
                 **{
                     key: {"type": "string", "title": key, "description": "Original routing flag"}
@@ -544,7 +553,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             },
         },
     )
-    for name, definition in _routed_claude_agent_definitions(model_ids).items():
+    for name, definition in _routed_claude_agent_definitions(model_ids or []).items():
         slug = name.partition(":")[2]
         write_text_file(
             plugin_dir / "agents" / f"{slug}.md",
@@ -570,6 +579,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "extra-body.ts",
         "isaac-feedback.ts",
         "routing-state.ts",
+        "routing-logs.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
@@ -641,7 +651,9 @@ def _route_print_mode_prompt(
     try:
         decision = _route_claude_prompt(state, token, prompt, catalog.model_ids)
     except RuntimeError as exc:
-        print_warning(f"Smart routing couldn't pick a model ({exc}); using Claude's default.")
+        logging.getLogger(__name__).debug(
+            "Smart routing couldn't pick a model (%s); using Claude's default", exc
+        )
         return None
     display = catalog.model_id_to_display_name.get(decision.model, decision.model)
     print_note(format_routing_notice(display, decision.rationale))
@@ -662,6 +674,7 @@ def route_claude_subagent(
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
     """
+    started = time.monotonic()
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
@@ -671,6 +684,7 @@ def route_claude_subagent(
         default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
     )
+    routing_ms = round((time.monotonic() - started) * 1000)
     if route is None:
         return None
     if audit_decision:
@@ -680,6 +694,14 @@ def route_claude_subagent(
             route.task,
             route.decision,
             route.routed_model,
+        )
+        session_log.append_decision(
+            AGENT_CLAUDE,
+            payload,
+            route.task,
+            route.decision,
+            route.routed_model,
+            routing_ms=routing_ms,
         )
     if hook_output:
         updated_input = {
@@ -892,9 +914,11 @@ def launch_claude(
             # The savings pricer reads rates from this cache, since it runs after every turn and
             # can't wait on the network; the refresh below fills it.
             price_cache = pricing.price_cache_path(APP_DIR, state_workspace_key(state) or workspace)
+            route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
             mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
-                "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
+                "routeCommand": route_command,
+                "logsCommand": [route_command[0], "smart-router-logs"],
                 **_claude_savings_launch_options(
                     launch_dir, price_cache=price_cache, baseline_session_start=route_first_prompt
                 ),
@@ -911,7 +935,7 @@ def launch_claude(
                 )
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
+                _write_routed_claude_plugin(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)
@@ -1016,6 +1040,7 @@ def launch_codex(
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
+    overlay["responses_api_metadata.smart_router_recipe_name"] = routing.configured_router_name()
     overlay["features.hooks"] = True
     overlay["features.multi_agent_v2.non_code_mode_only"] = False
     overlay["features.multi_agent_v2.root_agent_usage_hint_text"] = (
@@ -1034,10 +1059,7 @@ def launch_codex(
         SESSION_PYTHON_ENV_VAR
     ]
     config_args = codex_config_args(overlay)
-    if not first_prompt_routing_enabled(agent=AGENT_CODEX):
-        # Subagent-only routing needs neither the app-server nor the interposer:
-        # the hooks ride in the CLI config, so launch the TUI directly.
-        exec_or_spawn([binary, *config_args, *tool_args])
+    first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
 
@@ -1063,10 +1085,11 @@ def launch_codex(
             LOOPBACK_HOST,
             app_server_url,
             available_models=available_models,
-            workspace=workspace,
-            token_provider=lambda: launch_token(state, workspace),
+            workspace=workspace if first_prompt else None,
+            token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
+            session_controls=session_env_path,
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []
