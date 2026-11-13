@@ -270,5 +270,6 @@ def metrics_recorder(monkeypatch):
     monkeypatch.setattr(metrics_export, "send_in_background", Mock(return_value=None))
     yield runtime
     runtime.stop.set()
+    runtime.wake.set()
     if runtime.thread:
         runtime.thread.join(timeout=2)

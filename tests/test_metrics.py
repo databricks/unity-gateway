@@ -119,14 +119,19 @@ def test_failed_startup_is_flushed_with_its_duration(metrics_recorder, monkeypat
 
 def test_periodic_export_uses_60_seconds_and_stops(metrics_recorder, monkeypatch):
     flushed = threading.Event()
-    monkeypatch.setattr(metrics_recorder, "flush", flushed.set)
+    metrics.record("ug_usage_duration_ms", 12)
+    monkeypatch.setattr(
+        metrics_export, "send_in_background", Mock(side_effect=lambda *_: flushed.set())
+    )
     waits = []
 
     def wait(seconds):
         waits.append(seconds)
-        return len(waits) > 1
+        if len(waits) > 1:
+            metrics_recorder.stop.set()
+        return False
 
-    monkeypatch.setattr(metrics_recorder.stop, "wait", wait)
+    monkeypatch.setattr(metrics_recorder.wake, "wait", wait)
     metrics_recorder.start_periodic()
     assert flushed.wait(2)
     metrics_recorder.thread.join(timeout=2)
@@ -195,8 +200,15 @@ def test_shutdown_failure_preserves_command_exception(metrics_recorder, monkeypa
 def test_export_failure_does_not_change_command_result(metrics_recorder, monkeypatch):
     metrics.bind(HOST, "not-a-real-token")
     metrics.record("ug_usage_duration_ms", 10)
-    monkeypatch.setattr(metrics_export, "send_in_background", Mock(side_effect=OSError("full")))
+    attempted = threading.Event()
+
+    def fail_upload(*_):
+        attempted.set()
+        raise OSError("full")
+
+    monkeypatch.setattr(metrics_export, "send_in_background", fail_upload)
     metrics.flush()
+    assert attempted.wait(2)
     assert not metrics_recorder.pending
 
 
@@ -384,14 +396,17 @@ def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
 
     sent = []
 
-    def post(_session, url, **kwargs):
-        sent.append((url, kwargs, dict(_session.headers)))
+    def send(_session, prepared, **kwargs):
+        sent.append((prepared, kwargs, _session.trust_env))
         response = requests.Response()
         response.status_code = 200
         response._content = b""
         return response
 
-    monkeypatch.setattr(requests.Session, "post", post)
+    # Intercept after preparation so real Requests authentication runs without network access.
+    monkeypatch.setattr(requests.Session, "send", send)
+    netrc_lookup = Mock(side_effect=AssertionError("telemetry must use its bound bearer"))
+    monkeypatch.setattr(requests.sessions, "get_netrc_auth", netrc_lookup)
     metrics_export.export_batch(
         {
             "workspace": HOST + "?w=111",
@@ -401,13 +416,16 @@ def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
         }
     )
     assert len(sent) == 1
-    url, kwargs, headers = sent[0]
+    prepared, kwargs, trust_env = sent[0]
+    headers = prepared.headers
     assert headers["Content-Type"] == "application/x-protobuf"
     assert headers["Authorization"] == "Bearer fake-token"
     assert headers["X-Databricks-Workspace-Id"] == "111"
-    assert url == HOST + "/api/2.0/ai-gateway/ug-cli/otel/v1/metrics"
+    assert prepared.url == HOST + "/api/2.0/ai-gateway/ug-cli/otel/v1/metrics"
+    assert trust_env is True
+    netrc_lookup.assert_not_called()
     assert kwargs["allow_redirects"] is False
-    request = ExportMetricsServiceRequest.FromString(kwargs["data"])
+    request = ExportMetricsServiceRequest.FromString(prepared.body)
     metric = request.resource_metrics[0].scope_metrics[0].metrics[0]
     assert metric.name == "ug_usage_duration_ms"
     assert metric.histogram.aggregation_temporality == 1  # OTLP DELTA
@@ -518,14 +536,17 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
 def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, value):
     monkeypatch.setattr(metrics, "_runtime", None)
     monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
-    upload = Mock(return_value=None)
+    handed_off = threading.Event()
+    upload = Mock(side_effect=lambda *_: handed_off.set())
     monkeypatch.setattr(metrics_export, "send_in_background", upload)
 
+    metrics.begin("usage")
+    runtime = metrics._runtime
     try:
-        metrics.begin("usage")
         metrics.bind(HOST, "fake-token")
         metrics.record("ug_usage_duration_ms", 12)
         metrics.flush()
+        assert handed_off.wait(2)
         upload.assert_called_once_with(
             [(HOST, "ug_usage_duration_ms", 12, {"command": "usage"})],
             {HOST: ("fake-token", {})},
@@ -533,6 +554,7 @@ def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, value):
         assert not metrics._runtime.pending
     finally:
         metrics.finish()
+        runtime.thread.join(timeout=2)
 
 
 def test_collection_uses_ug_flag_independently_of_global_otel_setting(monkeypatch):
@@ -541,12 +563,14 @@ def test_collection_uses_ug_flag_independently_of_global_otel_setting(monkeypatc
     monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
     upload = Mock(return_value=None)
     monkeypatch.setattr(metrics_export, "send_in_background", upload)
+    metrics.begin("usage")
+    runtime = metrics._runtime
     try:
-        metrics.begin("usage")
         metrics.record("ug_usage_duration_ms", 12)
         assert len(metrics._runtime.pending) == 1
     finally:
         metrics.finish()
+        runtime.thread.join(timeout=2)
 
 
 def test_interactive_dependency_prompt_is_visible_through_nested_installer(metrics_recorder):

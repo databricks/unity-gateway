@@ -152,7 +152,8 @@ def export_batch(batch: dict) -> None:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import Counter, Histogram
     from opentelemetry.sdk.metrics.export import AggregationTemporality, MetricExportResult
-    from requests import Session
+    from requests import PreparedRequest, Session
+    from requests.auth import AuthBase
 
     parsed = urlsplit(batch["workspace"])
     if parsed.scheme != "https" or not parsed.netloc:
@@ -165,11 +166,19 @@ def export_batch(batch: dict) -> None:
             kwargs["allow_redirects"] = False
             return super().post(url, *args, **kwargs)
 
+    class WorkspaceBearerAuth(AuthBase):
+        def __call__(self, r: PreparedRequest) -> PreparedRequest:
+            r.headers["Authorization"] = f"Bearer {batch['token']}"
+            return r
+
+    session = NoRedirectSession()
+    # Explicit auth prevents Requests from replacing the workspace bearer via .netrc.
+    session.auth = WorkspaceBearerAuth()
     exporter = OTLPMetricExporter(
         endpoint=endpoint,
         timeout=EXPORT_TIMEOUT_SECONDS,
-        session=NoRedirectSession(),
-        headers={**batch["headers"], "Authorization": f"Bearer {batch['token']}"},
+        session=session,
+        headers=batch["headers"],
         preferred_temporality={
             Counter: AggregationTemporality.DELTA,
             Histogram: AggregationTemporality.DELTA,

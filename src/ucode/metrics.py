@@ -79,6 +79,16 @@ _scope: ContextVar[dict[str, Any] | None] = ContextVar("ug_metric_scope", defaul
 _runtime: Recorder | None = None
 
 
+def _best_effort(fn: Callable[..., None]) -> Callable[..., None]:
+    # Use only for telemetry operations, never for the command being measured.
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        with suppress(Exception):
+            fn(*args, **kwargs)
+
+    return wrapped
+
+
 def _labels(values: dict[str, Any]) -> dict[str, str | bool | int]:
     result = {}
     for key, value in values.items():
@@ -109,14 +119,18 @@ class Recorder:
         )
         self.lock = threading.Lock()
         self.export_lock = threading.Lock()
+        self.worker_lock = threading.Lock()
         self.stop = threading.Event()
+        self.wake = threading.Event()
         self.thread: threading.Thread | None = None
         self.reporter = None
 
     def record(self, name: str, value: float | int, workspace: str | None, labels: dict) -> None:
         if name not in METRICS or not math.isfinite(value) or value < 0:
             return
-        with self.lock:
+        if not self.lock.acquire(blocking=False):
+            return
+        try:
             self.pending.append(
                 (
                     destination(workspace) if workspace else self.workspace,
@@ -125,6 +139,8 @@ class Recorder:
                     {**self.common, **_labels(labels)},
                 )
             )
+        finally:
+            self.lock.release()
 
     def bind(self, workspace: str, token: str) -> None:
         # The bearer is already available from the operation being measured. Never log in for telemetry.
@@ -137,7 +153,9 @@ class Recorder:
 
             headers = selector_headers(selected)
         key = destination(workspace)
-        with self.lock:
+        if not self.lock.acquire(blocking=False):
+            return
+        try:
             first_workspace = self.workspace is None
             self.workspace = key
             if len(self.credentials) >= 16 and key not in self.credentials:
@@ -148,8 +166,14 @@ class Recorder:
                 self.pending = deque(
                     ((w or key, n, v, a) for w, n, v, a in self.pending), maxlen=MAX_OBSERVATIONS
                 )
+        finally:
+            self.lock.release()
 
     def flush(self) -> None:
+        self.start_periodic()
+        self.wake.set()
+
+    def _export_once(self) -> None:
         from ucode.metrics_export import send_in_background
 
         # A stalled reporter must not produce unbounded children or a second export queue.
@@ -158,33 +182,51 @@ class Recorder:
         try:
             if self.reporter is not None and self.reporter.poll() is None:
                 return
-            with self.lock:
+            if not self.lock.acquire(blocking=False):
+                return
+            try:
                 observations = list(self.pending)
                 self.pending.clear()
                 credentials = dict(self.credentials)
-            self.reporter = send_in_background(observations, credentials)
+            finally:
+                self.lock.release()
+            if observations:
+                self.reporter = send_in_background(observations, credentials)
         finally:
             self.export_lock.release()
 
     def start_periodic(self) -> None:
-        if self.thread is not None:
+        if self.thread is not None or self.stop.is_set():
             return
+        if not self.worker_lock.acquire(blocking=False):
+            return
+        try:
+            if self.thread is None:
+                thread = threading.Thread(target=self._export_loop, name="ug-metrics", daemon=True)
+                thread.start()
+                self.thread = thread
+        finally:
+            self.worker_lock.release()
 
-        def export_loop():
-            while not self.stop.wait(EXPORT_INTERVAL_SECONDS):
-                flush()
+    def _export_loop(self) -> None:
+        while True:
+            self.wake.wait(EXPORT_INTERVAL_SECONDS)
+            self.wake.clear()
+            stopping = self.stop.is_set()
+            with suppress(Exception):
+                self._export_once()
+            if stopping:
+                return
 
-        self.thread = threading.Thread(target=export_loop, name="ug-metrics", daemon=True)
-        self.thread.start()
 
-
+@_best_effort
 def begin(command: str, started: float | None = None) -> None:
     global _runtime
     from ucode.env import env_bool
 
     if not env_bool("UG_ENABLE_METRICS_EXPORT"):
         return
-    _runtime = Recorder(command, time.perf_counter() if started is None else started)
+    runtime = Recorder(command, time.perf_counter() if started is None else started)
     if command in {
         "auth-token",
         "otel-proxy",
@@ -193,9 +235,12 @@ def begin(command: str, started: float | None = None) -> None:
         "claude-router-hook",
         "codex-router-hook",
     }:
-        _runtime.phase = "agent_session"
+        runtime.phase = "agent_session"
+    runtime.start_periodic()
+    _runtime = runtime
 
 
+@_best_effort
 def set_context(**labels: Any) -> None:
     if _runtime is not None:
         _runtime.common.update(_labels(labels))
@@ -218,6 +263,7 @@ def record(name: str, value: float | int, *, workspace: str | None = None, **lab
             pass
 
 
+@_best_effort
 def annotate(**labels: Any) -> None:
     if current := _scope.get():
         current["labels"].update(_labels(labels))
@@ -288,31 +334,37 @@ def measure(
     continued_with_fallback: bool = False,
     **labels: Any,
 ) -> Iterator[dict[str, Any]]:
-    values = _labels(labels)
-    if workspace and _runtime is not None:
-        workspace = destination(workspace)
-    if _runtime is None:
-        yield values
-        return
-    started = time.perf_counter()
-    scope = _scope.set(
-        {
-            "workspace": workspace,
-            "labels": values,
-            "fallback": continued_with_fallback,
-            "name": name,
-            "parent": _scope.get(),
-        }
-    )
+    values: dict[str, Any] = {}
+    scope = None
+    started = None
+    with suppress(Exception):
+        values = _labels(labels)
+        if _runtime is not None:
+            if workspace:
+                workspace = destination(workspace)
+            started = time.perf_counter()
+            scope = _scope.set(
+                {
+                    "workspace": workspace,
+                    "labels": values,
+                    "fallback": continued_with_fallback,
+                    "name": name,
+                    "parent": _scope.get(),
+                }
+            )
     try:
         yield values
     except Exception as exc:
-        if operation:
+        if operation and scope is not None:
             failure(operation, exc, continued_with_fallback=continued_with_fallback)
         raise
     finally:
-        record(name, (time.perf_counter() - started) * 1000, workspace=workspace, **values)
-        _scope.reset(scope)
+        with suppress(Exception):
+            if scope is not None and started is not None:
+                record(name, (time.perf_counter() - started) * 1000, workspace=workspace, **values)
+        with suppress(Exception):
+            if scope is not None:
+                _scope.reset(scope)
 
 
 def timed(
@@ -332,16 +384,22 @@ def timed(
         def wrapped(*args, **kwargs):
             if _runtime is None:
                 return fn(*args, **kwargs)
-            arguments = signature.bind(*args, **kwargs)
-            arguments.apply_defaults()
-            params = arguments.arguments
-            state = params.get("state") or {}
-            workspace = params.get("workspace") or state.get("workspace")
-            token = params.get("token")
-            if workspace and token:
-                bind(workspace, token)
-            values = {**labels, **{label: params[arg] for arg, label in (label_args or {}).items()}}
-            operation = name.removesuffix("_duration_ms")
+            try:
+                arguments = signature.bind(*args, **kwargs)
+                arguments.apply_defaults()
+                params = arguments.arguments
+                state = params.get("state") or {}
+                workspace = params.get("workspace") or state.get("workspace")
+                token = params.get("token")
+                if workspace and token:
+                    bind(workspace, token)
+                values = {
+                    **labels,
+                    **{label: params[arg] for arg, label in (label_args or {}).items()},
+                }
+                operation = name.removesuffix("_duration_ms")
+            except Exception:
+                return fn(*args, **kwargs)
             with measure(
                 name,
                 workspace=workspace,
@@ -350,8 +408,11 @@ def timed(
                 **values,
             ):
                 result = fn(*args, **kwargs)
-                if reason_result and isinstance(result, tuple) and isinstance(result[-1], str):
-                    failure(operation, result[-1], continued_with_fallback=continued_with_fallback)
+                with suppress(Exception):
+                    if reason_result and isinstance(result, tuple) and isinstance(result[-1], str):
+                        failure(
+                            operation, result[-1], continued_with_fallback=continued_with_fallback
+                        )
                 return result
 
         return wrapped
@@ -359,11 +420,13 @@ def timed(
     return decorate
 
 
+@_best_effort
 def mark_login() -> None:
     if _runtime is not None:
         _runtime.startup_labels["interactive_login"] = True
 
 
+@_best_effort
 def mark_interactive_wait() -> None:
     current = _scope.get()
     while current is not None:
@@ -372,31 +435,38 @@ def mark_interactive_wait() -> None:
         current = current["parent"]
 
 
+@_best_effort
 def start_agent(
     agent: str, *, preflight_skipped: bool = False, first_time_setup: bool = False
 ) -> None:
-    if _runtime is not None:
-        _runtime.startup = True
-        _runtime.phase = "startup"
+    runtime = _runtime
+    if runtime is not None:
+        runtime.startup = True
+        runtime.phase = "startup"
         set_context(agent=agent)
-        with _runtime.lock:
-            for _, _, _, attrs in _runtime.pending:
-                if attrs.get("agent") in (None, "unknown"):
-                    attrs["agent"] = agent
-        _runtime.startup_labels.update(
+        if runtime.lock.acquire(blocking=False):
+            try:
+                for _, _, _, attrs in runtime.pending:
+                    if attrs.get("agent") in (None, "unknown"):
+                        attrs["agent"] = agent
+            finally:
+                runtime.lock.release()
+        runtime.startup_labels.update(
             preflight_skipped=preflight_skipped, first_time_setup=first_time_setup
         )
 
 
+@_best_effort
 def agent_handoff() -> None:
-    if _runtime is not None and _runtime.startup:
+    runtime = _runtime
+    if runtime is not None and runtime.startup:
         record(
             "ug_startup_duration_ms",
-            (time.perf_counter() - _runtime.started) * 1000,
-            **_runtime.startup_labels,
+            (time.perf_counter() - runtime.started) * 1000,
+            **runtime.startup_labels,
         )
-        _runtime.startup = False
-        _runtime.phase = "agent_session"
+        runtime.startup = False
+        runtime.phase = "agent_session"
         flush()
         start_periodic()
 
@@ -409,13 +479,13 @@ def flush() -> None:
             pass
 
 
+@_best_effort
 def finish() -> None:
     global _runtime
     runtime = _runtime
     _runtime = None
     if runtime is None:
         return
-    runtime.stop.set()
     with suppress(Exception):
         if runtime.startup:
             runtime.record(
@@ -424,9 +494,11 @@ def finish() -> None:
                 None,
                 runtime.startup_labels,
             )
-    # Drop the final batch rather than wait for an existing exporter at command exit.
+    # A daemon may lose the final batch at exit/exec; never join it on the command path.
     with suppress(Exception):
         runtime.flush()
+    runtime.stop.set()
+    runtime.wake.set()
 
 
 def api_operation(url: str) -> str:
@@ -517,14 +589,15 @@ def http_result(fn: Callable):
     @wraps(fn)
     def wrapped(*args, **kwargs):
         result = fn(*args, **kwargs)
-        if _runtime is not None and result[-1] and _http_attempt.get() is None:
-            params = signature.bind(*args, **kwargs).arguments
-            current = _scope.get() or {}
-            failure(
-                api_operation(params["url"]),
-                result[-1],
-                continued_with_fallback=current.get("fallback", False),
-            )
+        with suppress(Exception):
+            if _runtime is not None and result[-1] and _http_attempt.get() is None:
+                params = signature.bind(*args, **kwargs).arguments
+                current = _scope.get() or {}
+                failure(
+                    api_operation(params["url"]),
+                    result[-1],
+                    continued_with_fallback=current.get("fallback", False),
+                )
         return result
 
     return wrapped
