@@ -6816,6 +6816,52 @@ class TestConfigureScopeFlags:
         mock_single.assert_called_once()
         assert "config_scope" not in cli_mod.load_full_state()
 
+    @pytest.mark.parametrize("signed_in", [True, False], ids=["signed_in", "signed_out"])
+    def test_global_scope_keeps_gateway_auth_for_a_relay_backed_static_list(self, signed_in):
+        # A relay is per-user, so a signed-in administrator's `--global` run must not go relayed:
+        # write_tool_config would reject it and fail the machine-wide setup.
+        relayed_calls: list[bool] = []
+
+        def configure_tool(_tool, state, _model=None, **kwargs):
+            relayed_calls.append(kwargs.get("relayed", False))
+            return state
+
+        with (
+            self._single_agent_env({"enabled_agents": {}}),
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[
+                    {
+                        "workspace": "https://first.databricks.com",
+                        "claude_static_models": ["main.default.relayed", "system.ai.kimi"],
+                    }
+                ],
+            ),
+            patch("ucode.agents.desktop.mdm.configure"),
+            patch(
+                "ucode.agents.resolve_launch_model",
+                side_effect=lambda _tool, state, _model: (state, "system.ai.kimi"),
+            ),
+            patch("ucode.agents.check_gateway_endpoint", return_value=True),
+            patch("ucode.agents.configure_tool", side_effect=configure_tool),
+            patch("ucode.agents.claude.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.claude.model_services_need_subscription_relay", return_value=True),
+            patch("ucode.agents.claude._has_subscription_login", return_value=signed_in),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agent",
+                    "claude",
+                    "--workspace",
+                    "https://first.databricks.com",
+                    "--global",
+                ],
+            )
+        assert result.exit_code == 0, _strip_ansi(result.output)
+        assert relayed_calls == [False]
+
     @pytest.mark.parametrize("managed", [True, False], ids=["managed_config", "picker"])
     def test_workspace_paths_refuse_before_configuring(self, tmp_path, managed):
         claude_managed = tmp_path / "managed-settings.json"

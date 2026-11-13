@@ -1557,6 +1557,9 @@ def static_models_need_subscription_relay(state: dict) -> bool:
     auth (and the rest of the list) instead of being sent to a browser login. A list of only
     ``system.*`` models makes no request.
     """
+    if machine_wide_only():
+        # `--global` writes settings for every user on the machine; the relay is per-user.
+        return False
     models = state.get("claude_static_models")
     custom = [
         model

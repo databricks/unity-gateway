@@ -760,6 +760,20 @@ class TestStaticModelsNeedSubscriptionRelay:
         )
         assert claude.static_models_need_subscription_relay(dict(self._STATE))
 
+    @pytest.mark.parametrize("signed_in", [True, False])
+    def test_global_configure_keeps_gateway_auth(self, monkeypatch, signed_in):
+        # `ug configure --global` can't write a relay, so a signed-in administrator mustn't turn
+        # the machine-wide (and MDM) setup relayed.
+        self._relay_backed(monkeypatch, signed_in=signed_in)
+        monkeypatch.setattr(
+            claude, "get_databricks_token", lambda *_a, **_k: pytest.fail("no lookup needed")
+        )
+        managed_files.set_machine_wide_only(True)
+        try:
+            assert not claude.static_models_need_subscription_relay(dict(self._STATE))
+        finally:
+            managed_files.set_machine_wide_only(False)
+
     def test_no_relay_backed_service_skips_the_login_check(self, monkeypatch):
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
         monkeypatch.setattr(
