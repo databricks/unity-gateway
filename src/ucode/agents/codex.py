@@ -22,6 +22,7 @@ import tomlkit
 from tomlkit.exceptions import ParseError
 
 from ucode.codex_config import (
+    CODEX_MODEL_PROVIDER_NAME,
     catalog_slugs,
     codex_config_args,
     codex_config_precedence_paths,
@@ -115,7 +116,6 @@ CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
 CODEX_APP_RELAY_PROVIDER_NAME = "DatabricksRelay"
