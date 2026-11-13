@@ -7,7 +7,9 @@ and process continuity, new sibling/grandchild off markers, cross-branch deliver
 follow-up to the original child. Each transition requires exactly one successful CLI
 execution, all turns must finish without interruption, and root history must contain
 only submitted user prompts. Main metadata stays unchanged during the toggle turn
-and changes on the next user turn. Windows uses UG's installed Python and native
+and changes on the next user turn. Timing assertions require a single persisted
+root and match its thread ID, excluding native temporary threads used for titles.
+Windows uses UG's installed Python and native
 approval dialogs, preserving the sandbox.
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
 `--smart-router-name` input records and forwards the recipe.

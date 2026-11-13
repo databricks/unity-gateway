@@ -60,6 +60,24 @@ def _root_user_prompts(session):
     return prompts
 
 
+def _assert_main_turn_states(session, expected):
+    root_ids = {
+        row["payload"]["id"]
+        for records in _root_sessions(session)
+        for row in records
+        if row.get("type") == "session_meta"
+    }
+    assert len(root_ids) == 1, root_ids
+    (root_id,) = root_ids
+    log = session.routing_log("codex")
+    states = [
+        line.split("state=", 1)[1].split()[0]
+        for line in log.splitlines()
+        if "[METADATA] main turn:" in line and line.endswith(f"thread={root_id}")
+    ]
+    assert states == expected, log
+
+
 def _wait_for(tui, predicate, description, *, timeout):
     def completed(screen):
         if tui.approve_windows_command(screen):
@@ -230,13 +248,7 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
     assert sum(receipt in answer for answer in assistant_answers("codex", old_records)) == 1
     assert len(_root_user_prompts(session)) == 4
     _assert_toggle_executed_once(session, False)
-    log = session.routing_log("codex")
-    states = [
-        line.split("state=", 1)[1].split()[0]
-        for line in log.splitlines()
-        if "[METADATA] main turn:" in line
-    ]
-    assert states == ["on", "on", "off", "off"], log
+    _assert_main_turn_states(session, ["on", "on", "off", "off"])
     session.record(
         "routing-metadata-agents.json", {name: identity for name, (identity, _) in agents.items()}
     )
@@ -289,10 +301,4 @@ def test_codex_routing_toggle_without_children_and_repeated_state(
         row.get("type") == "event_msg" and row["payload"].get("type") == "turn_aborted"
         for row in records
     )
-    log = session.routing_log("codex")
-    states = [
-        line.split("state=", 1)[1].split()[0]
-        for line in log.splitlines()
-        if "[METADATA] main turn:" in line
-    ]
-    assert states == ["on", "off", "on"], log
+    _assert_main_turn_states(session, ["on", "off", "on"])
