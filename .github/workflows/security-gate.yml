@@ -1,0 +1,63 @@
+name: Security Gate
+
+# Adapted from omnigent-ai/omnigent (Apache-2.0). Each caller waits for the
+# independent security-scan.yml run; this workflow never checks out PR code.
+# Missing results, API errors and timeouts block CI, just like scan findings.
+on:
+  workflow_call:
+
+permissions:
+  actions: read
+
+jobs:
+  gate:
+    name: Security Gate
+    # The org IP allow list blocks API calls from GitHub-hosted runners.
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Wait for the shared Security Scan
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          import time
+
+          repo, pr, sha, updated = (os.environ[key] for key in (
+              "REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"
+          ))
+          endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
+          print(f"Waiting for Security Scan #{pr} on {sha}", flush=True)
+          for _ in range(30):
+              pages = json.loads(subprocess.check_output(
+                  ["gh", "api", endpoint, "--paginate", "--slurp"], timeout=30
+              ))
+              # Fork runs can have an empty pull_requests array. The explicit
+              # run-name identifies the PR; the timestamp excludes pre-reopen waivers.
+              runs = [run for page in pages for run in page["workflow_runs"]
+                      if run["path"] == ".github/workflows/security-scan.yml"
+                      and run["display_title"] == f"Security Scan #{pr}"
+                      and run["head_sha"] == sha and run["created_at"] >= updated]
+              latest = max(runs, key=lambda run: run["id"], default=None)
+              if latest and latest["status"] == "completed":
+                  conclusion = latest["conclusion"]
+                  print(f"Security Scan: {conclusion}. {latest['html_url']}")
+                  if conclusion != "success":
+                      print("::error::Security Scan must succeed before CI can run. "
+                            "Resolve or approve the scan, then re-run failed CI jobs.")
+                  sys.exit(0 if conclusion == "success" else 1)
+              time.sleep(30)
+          sys.exit("::error::Security Scan did not complete within 15 minutes. "
+                   "Check its run, then re-run failed CI jobs.")
+          PY

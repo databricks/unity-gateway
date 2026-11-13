@@ -1,4 +1,5 @@
 name: Security Scan
+run-name: 'Security Scan #${{ github.event.pull_request.number }}'
 
 # Statically scans PRs from untrusted authors (anyone GitHub doesn't report as
 # OWNER, MEMBER, or COLLABORATOR) for committed secrets, exfiltration and
@@ -7,9 +8,9 @@ name: Security Scan
 # secrets. The scanner and the trust decision come from `main`, so a PR can't
 # edit them; the PR head is only read, from a separate `pr/` checkout.
 #
-# ci.yml and publish-skills-test.yml call it first and make their test jobs wait
-# on it, so a finding skips every test and fails the required checks. Trusted
-# authors and non-PR events (merge queue, push, schedule) pass in seconds.
+# Runs once per PR event. CI and publisher tests use security-gate.yml to wait
+# for this workflow's result before running PR code. Trusted authors pass in
+# seconds; non-PR CI events do not wait for a scan.
 #
 # The org IP allow list blocks GitHub-hosted runners from the GitHub API, so
 # this job makes no API calls: it fetches this public repository anonymously
@@ -17,13 +18,14 @@ name: Security Scan
 #
 # Adapted from omnigent-ai/omnigent (Apache-2.0), .github/workflows/security-scan.yml.
 on:
-  workflow_call:
+  pull_request:
 
 permissions:
   contents: read
 
-# No concurrency group: the callers' groups cancel superseded runs, and one here
-# would let two callers on the same PR cancel each other's scan.
+concurrency:
+  group: security-scan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   scan:

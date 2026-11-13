@@ -1358,10 +1358,19 @@ or skipped dependency fails the gate, and a running integration suite keeps it
 pending. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
-CI and the publish-skills workflow start with `Security Scan` (`security-scan.yml`), a static
-scan of PRs from authors GitHub does not report as owners, members, or collaborators. A finding
-skips every test job, so the `test` and `e2e` gates fail; trusted authors and merge-queue runs
-pass in seconds. `test_security_scan_runs_before_every_job_that_runs_pr_code` checks that wiring
+One independent `Security Scan` (`security-scan.yml`) runs per PR event and statically scans
+authors GitHub does not report as owners, members, or collaborators. CI and the publish-skills
+workflow each start with `Security Gate` (`security-gate.yml`), which waits for that shared run
+on the allowlisted runner group. The gate matches the workflow path, PR number, head SHA and
+event timestamp, then requires success; findings, missing results, API errors and timeouts block
+tests and fail the required `test` and `e2e` checks. Trusted authors pass the scan in seconds;
+non-PR events, including merge queue, do not wait. A maintainer can apply `skip-security-scan`
+and close/reopen the PR to refresh all workflows' event payloads.
+`test_security_gate_waits_for_the_current_scan` covers pending, successful, failed, absent,
+stale and unrelated runs, including empty fork PR associations and paginated results.
+`test_security_gate_api_errors_block_ci` checks API failure propagation. These component tests
+do not validate live runner access, workflow scheduling or GitHub API permissions.
+`test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
 `test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
 a name the exfil scan watches. `test_security_scan_parsers_survive_diff_and_path_tricks` checks

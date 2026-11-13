@@ -738,23 +738,125 @@ def test_no_workflow_uses_pull_request_target():
 
 def test_security_scan_runs_before_every_job_that_runs_pr_code():
     # A finding skips every test job, which fails the required test and e2e checks.
-    scan_job = "  security-scan:\n    name: Security Scan\n    uses: ./.github/workflows/security-scan.yml\n"
+    gate_job = (
+        "  security-gate:\n    name: Security Gate\n    permissions:\n"
+        "      actions: read\n    uses: ./.github/workflows/security-gate.yml\n"
+    )
     ci = _workflow("ci.yml")
     publish = _workflow("publish-skills-test.yml")
     scan = _workflow("security-scan.yml")
+    gate = _workflow("security-gate.yml")
 
-    assert scan_job in ci and "\n  lint:\n    name: Lint\n" in ci
+    assert gate_job in ci and "\n  lint:\n    name: Lint\n" in ci
     assert (
-        ci.split("\n  lint:\n", 1)[1].split("\n  test:\n", 1)[0].count("needs: security-scan") == 1
+        ci.split("\n  lint:\n", 1)[1].split("\n  test:\n", 1)[0].count("needs: security-gate") == 1
     )
-    assert scan_job in publish and publish.count("    needs: security-scan\n") == 2
-    assert re.search(r"(?m)^on:\n  workflow_call:\n\n", scan)
-    assert "${{ secrets." not in scan and "concurrency:" not in scan
+    assert gate_job in publish and publish.count("    needs: security-gate\n") == 2
+    assert re.search(r"(?m)^on:\n  pull_request:\n\n", scan)
+    assert "workflow_call:" not in scan
+    assert "group: security-scan-${{ github.event.pull_request.number }}" in scan
+    assert "run-name: 'Security Scan #${{ github.event.pull_request.number }}'" in scan
+    assert re.search(r"(?m)^on:\n  workflow_call:\n\n", gate)
+    assert "if: ${{ github.event_name == 'pull_request' }}" in gate
+    assert "group: databricks-protected-runner-group" in gate
+    assert "labels: linux-ubuntu-latest" in gate
+    assert "actions: read" in gate and "uses:" not in gate
+    assert "${{ secrets." not in scan + gate
     # The PR's .gitattributes must not hide changes from the diff-based scans.
     assert 'git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff' in scan
     # Unquoted path lists, and no `# nosemgrep` waivers from the PR itself.
     assert 'git -C pr diff --no-renames --name-only -z "$BASE_SHA...HEAD" > changed.txt' in scan
     assert scan.count("--disable-nosem --metrics=off") == 2
+
+
+@pytest.mark.parametrize(
+    ("responses", "accepted", "polls"),
+    [
+        ([[{}]], True, 1),
+        ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
+        ([[], [{}]], True, 2),
+        ([[]], False, 30),
+        ([[{"status": "queued", "conclusion": None}]], False, 30),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 30),
+        ([[{"display_title": "Security Scan #8"}]], False, 30),
+        ([[{"head_sha": "a" * 40}]], False, 30),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 30),
+        ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
+        ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
+    ]
+    + [
+        ([[{"conclusion": conclusion}]], False, 1)
+        for conclusion in [
+            "failure",
+            "cancelled",
+            "timed_out",
+            "skipped",
+            "neutral",
+            "action_required",
+        ]
+    ],
+)
+def test_security_gate_waits_for_the_current_scan(monkeypatch, responses, accepted, polls):
+    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
+    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
+    updated = "2026-11-13T00:00:00Z"
+    for key, value in {
+        "REPO": "databricks/unity-gateway",
+        "PR_NUMBER": "7",
+        "HEAD_SHA": HEAD,
+        "PR_UPDATED_AT": updated,
+    }.items():
+        monkeypatch.setenv(key, value)
+    scan = {
+        "id": 1,
+        "path": ".github/workflows/security-scan.yml",
+        "display_title": "Security Scan #7",
+        "head_sha": HEAD,
+        "created_at": updated,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": "https://example/scan/1",
+        "pull_requests": [],  # GitHub can omit PR associations on fork runs.
+    }
+    calls = 0
+
+    def fetch(args, timeout):
+        nonlocal calls
+        assert args == [
+            "gh",
+            "api",
+            f"repos/databricks/unity-gateway/actions/runs?event=pull_request&head_sha={HEAD}&per_page=100",
+            "--paginate",
+            "--slurp",
+        ]
+        assert timeout == 30
+        changes = responses[min(calls, len(responses) - 1)]
+        calls += 1
+        # Keep unrelated results on the first page to exercise pagination too.
+        return json.dumps(
+            [{"workflow_runs": []}, {"workflow_runs": [scan | change for change in changes]}]
+        ).encode()
+
+    monkeypatch.setattr(subprocess, "check_output", fetch)
+    monkeypatch.setattr("time.sleep", lambda _: None)
+    with pytest.raises(SystemExit) as result:
+        exec(compile(script, "security-gate.yml", "exec"), {})
+    assert (result.value.code == 0) == accepted
+    assert calls == polls
+
+
+def test_security_gate_api_errors_block_ci(monkeypatch):
+    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
+    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
+    for key in ["REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"]:
+        monkeypatch.setenv(key, "unused")
+
+    def fail(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "gh api")
+
+    monkeypatch.setattr(subprocess, "check_output", fail)
+    with pytest.raises(subprocess.CalledProcessError):
+        exec(compile(script, "security-gate.yml", "exec"), {})
 
 
 def test_exfil_scan_recognizes_every_ci_secret():

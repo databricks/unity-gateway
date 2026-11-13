@@ -20,14 +20,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name != 'schedule' }}
 
 jobs:
-  security-scan:
-    name: Security Scan
-    uses: ./.github/workflows/security-scan.yml
+  security-gate:
+    name: Security Gate
+    permissions:
+      actions: read
+    uses: ./.github/workflows/security-gate.yml
 
   lint:
     name: Lint
     # Every other job waits on lint, so a scan finding skips them all.
-    needs: security-scan
+    needs: security-gate
     runs-on: ubuntu-latest
     env:
       # See the test job: hosted runners can't reach the internal pypi-proxy,
