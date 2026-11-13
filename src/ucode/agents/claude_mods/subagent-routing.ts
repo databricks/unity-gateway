@@ -360,7 +360,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })] }),
       Text({ bold: true, children: [`${detail.name} — ${detail.considered ? 'considered' : 'not considered'}`] }),
       Text({ children: [detail.reason] }),
-      ...(detailLines.length ? [Button({ key: 'numbers',
+      ...(detailLines.length || explanation.formula ? [Button({ key: 'numbers',
         label: explanationState.showNumbers ? 'Hide numbers' : 'Show numbers',
         onPress: () => { explanationState.showNumbers = !explanationState.showNumbers; $.ui.invalidate('ui.render') },
       }), ...(explanationState.showNumbers ? detailLines : [])] : []),

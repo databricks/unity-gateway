@@ -624,6 +624,7 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: routedModel, rationale: 'Selected for the task', explanation: {
         ...details, session_id: request.session_id, tool_use_id: request.tool_use_id,
+        ...(modelCount === 20 ? { formula: 'quality - cost' } : {}),
         models: [...details.models, ...Array.from({ length: modelCount - 2 }, (_, i) => ({
           id: `alternative-${i}`, name: `Alternative ${i}`, selected: false, considered: true, reason: 'Lower expected fit.',
         }))],
@@ -665,6 +666,12 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
     const lastAlternative = JSON.stringify(await pane.drawn());
     expect(lastAlternative).toContain('Alternative 17 — considered');
     expect(lastAlternative).toContain('Lower expected fit.');
+    expect(lastAlternative).toContain('Show numbers');
+    expect(lastAlternative).not.toContain('Scoring formula:');
+    await pane.press({ key: 'numbers' });
+    const formulaOnly = JSON.stringify(await pane.drawn());
+    expect(formulaOnly).toContain('Scoring formula: quality - cost');
+    expect(formulaOnly).not.toContain('Est. cost:');
     expect(routeCalls).toBe(routeCallsBeforeCompare);
   } else if (canonicalJourney) {
     const tree = JSON.stringify(await pane.drawn());
