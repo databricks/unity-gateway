@@ -67,7 +67,7 @@ It submits a number-conversion prompt and requires both `Claude responded: 48213
 in the conversation pane and `Claude finished the response` within four minutes.
 The prompt spells the number in words so echoing the input cannot pass.
 
-After inference, two fresh Cowork tasks run through the same native UI:
+After inference, three fresh Cowork tasks run through the same native UI:
 
 1. Create `Documents/CoworkProbe/input.txt` with a random value absent from the prompt.
    Select that folder through the native picker and choose **Allow** for this task.
@@ -77,6 +77,28 @@ After inference, two fresh Cowork tasks run through the same native UI:
    using the account directory created by the inference task. Its instructions refer
    to a file containing another random value. Require successful `Skill` and `Read`
    calls, the reference file's value in the tool result, and an identical completed answer.
+3. The hosted Desktop jobs set `UG_COWORK_MCP`, so the initial `ug configure` also passes
+   `--mcp system.ai.web_search` (the service in `task-fixture.json`). The task requires the
+   Desktop profile's `web_search` connector to be UG's stdio proxy for that
+   service. Ask Cowork to search for Databricks' official website with that connector's
+   `mcp__web_search__web_search` tool, and not Desktop's native `WebSearch`; on Anthropic-direct
+   sources native search works and the model otherwise prefers it. Require a
+   successful `mcp__web_search__web_search` call with a nonempty query whose result contains a
+   `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
+   URLs, ignoring Markdown and trailing slashes. Search ranking and wording are not asserted;
+   Desktop's native web search cannot satisfy it. Desktop asks before the connector's first use;
+   the task approves it (**Allow for this task** on Windows 2.42304.2, **Allow once** on macOS
+   4.23118.0) and records the label. This runs in the hosted Windows and macOS
+   Desktop jobs, not the staging `anthropic-mps` lane.
+   UG writes the connector's absolute command from the `ug` on `PATH`, so both install scripts
+   add the test runtime to `PATH`, as an installed `ug` would be.
+   Desktop starts connectors with a near-empty environment, so the job's `DATABRICKS_BEARER`
+   never reaches UG's connector proxy. These jobs therefore configure a PAT profile:
+   `desktop-pat.py` mints a two-hour workspace PAT with the job's bearer (comment
+   `ug-ci-cowork-desktop`), writes it to the `desktop-ci` profile in `~/.databrickscfg`, and
+   `ug configure` runs with `--use-pat`. An always-run step revokes the PAT. Only its token id
+   is kept outside the profile, the job masks it in logs, and evidence redaction covers its value
+   and any `dapi…` token.
 
 `session-evidence.py` reads the native Desktop transcript belonging to the submitted
 prompt and requires an assistant `end_turn`. Failed tools, mismatched result IDs,
@@ -124,7 +146,8 @@ after three days.
 The named `desktop-ci` Databricks profile contains host/auth metadata, not a
 token. No Claude.ai login is used. The test verifies the configured provider/model
 and desktop response; it does not independently trace gateway HTTP requests.
-Code-tab, external MCP execution, file writes, and Cowork VM readiness are outside these tests.
+Code-tab, MCP services other than `system.ai.web_search`, file writes, and Cowork VM readiness are
+outside these tests.
 
 ## macOS
 

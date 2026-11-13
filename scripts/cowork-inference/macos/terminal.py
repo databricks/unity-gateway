@@ -27,6 +27,7 @@ OPTIONAL_PROBE_ENVIRONMENT = (
     "UG_COWORK_PROVIDER",
     "UG_COWORK_MODEL",
     "UG_COWORK_RELAY",
+    "UG_COWORK_MCP",
     "CLAUDE_CODE_OAUTH_TOKEN",
 )
 TERMINAL_TIMEOUT_SECONDS = PROBE_TIMEOUT_SECONDS + PROBE_CLEANUP_SECONDS + 30
@@ -96,7 +97,9 @@ def main():
         raise SystemExit("Use a disposable macOS GitHub Actions runner")
     parser = argparse.ArgumentParser()
     parser.add_argument("--child", type=Path)
-    parser.add_argument("--capability", choices=("inference", "file", "skill"), default="inference")
+    parser.add_argument(
+        "--capability", choices=("inference", "file", "skill", "mcp"), default="inference"
+    )
     args = parser.parse_args()
     if args.child:
         environment = args.child

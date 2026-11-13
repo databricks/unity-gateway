@@ -88,6 +88,23 @@ function New-CoworkTask {
             $task.expectedFile = Join-Path $installed[0].installPath 'skills/probe-summary/references/facts.txt'
             $task.skill = $fixture.skill
         }
+        'mcp' {
+            $profilePath = Join-Path $env:LOCALAPPDATA 'Claude-3p/configLibrary/5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json'
+            $desktopProfile = Get-Content -Raw -LiteralPath $profilePath | ConvertFrom-Json
+            $servers = @($desktopProfile.managedMcpServers | Where-Object { $_.name -eq $fixture.mcpServer })
+            if ($servers.Count -ne 1) { throw "Desktop profile is missing the $($fixture.mcpServer) connector" }
+            $arguments = @($servers[0].args)
+            $url = $arguments[[array]::IndexOf($arguments, '--url') + 1]
+            $expectedUrl = "$($env:UCODE_TEST_WORKSPACE.TrimEnd('/'))/ai-gateway/mcp-services/$($fixture.mcpService)"
+            if ($servers[0].transport -ne 'stdio' -or $url -ne $expectedUrl) {
+                throw "The $($fixture.mcpServer) connector does not proxy $($fixture.mcpService)"
+            }
+            # Diagnostic only: shows whether the connector starts outside Desktop and with Desktop's reduced env.
+            $check = & $python "$PSScriptRoot/mcp-connect-check.py" --profile $profilePath --server $fixture.mcpServer 2>&1 | Out-String
+            Protect-DiagnosticText $check | Set-Content -LiteralPath (Join-Path $evidence 'mcp-connect.json')
+            $task.mcpServer = $fixture.mcpServer
+            $task.mcpTool = $fixture.mcpTool
+        }
         }
     } finally {
         $env:CLAUDE_CONFIG_DIR = $previousConfigDirectory

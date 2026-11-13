@@ -3,6 +3,7 @@ import os
 import runpy
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -18,6 +19,13 @@ inspect_sessions = runpy.run_path(str(Path(__file__).parents[1] / "session-evide
 ]
 FIXTURE = json.loads((Path(__file__).parents[1] / "task-fixture.json").read_text())
 PLUGIN_ID = FIXTURE["pluginId"]
+# Desktop may ask before a connector tool's first use; the prompt label is not pinned.
+TOOL_PERMISSION_LABELS = (
+    "Allow once",
+    "Allow for this task",
+    "Allow for this chat",
+    "Always allow",
+)
 
 
 def session_root():
@@ -56,6 +64,8 @@ def prepare_task(capability, desktop):
             prompt=FIXTURE["prompts"]["file"],
         )
         return task
+    if capability == "mcp":
+        return prepare_mcp_task(task, desktop)
 
     marketplace = desktop.TEMP / FIXTURE["marketplace"]["name"]
     skill = marketplace / FIXTURE["skillDirectory"]
@@ -188,6 +198,69 @@ def matches_installed_skill(copy, source):
         return False
 
 
+def prepare_mcp_task(task, desktop):
+    profile_path = (
+        Path.home() / "Library/Application Support/Claude-3p/configLibrary/"
+        "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json"
+    )
+    profile = json.loads(profile_path.read_text())
+    servers = [
+        server
+        for server in profile.get("managedMcpServers", [])
+        if server.get("name") == FIXTURE["mcpServer"]
+    ]
+    if len(servers) != 1:
+        raise RuntimeError(f"Desktop profile is missing the {FIXTURE['mcpServer']} connector")
+    arguments = servers[0].get("args", [])
+    expected_url = (
+        os.environ["UCODE_TEST_WORKSPACE"].rstrip("/")
+        + "/ai-gateway/mcp-services/"
+        + FIXTURE["mcpService"]
+    )
+    if (
+        servers[0].get("transport") != "stdio"
+        or "--url" not in arguments
+        or arguments[arguments.index("--url") + 1] != expected_url
+    ):
+        raise RuntimeError(
+            f"The {FIXTURE['mcpServer']} connector does not proxy {FIXTURE['mcpService']}"
+        )
+    # Diagnostic only: shows whether the connector starts outside Desktop and with Desktop's reduced env.
+    check = process.run(
+        [
+            sys.executable,
+            str(Path(__file__).parents[1] / "mcp-connect-check.py"),
+            "--profile",
+            str(profile_path),
+            "--server",
+            FIXTURE["mcpServer"],
+        ],
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=120,
+    )
+    desktop.save("mcp-connect.json", check.stdout + check.stderr)
+    task.update(
+        mcpServer=FIXTURE["mcpServer"],
+        mcpTool=FIXTURE["mcpTool"],
+        prompt=FIXTURE["prompts"]["mcp"],
+    )
+    return task
+
+
+def approve_tool_permission(desktop, report):
+    try:
+        snapshot = desktop.ui("snapshot")
+    except (RuntimeError, subprocess.TimeoutExpired):
+        return  # Accessibility snapshots can time out; the next poll retries.
+    for label in TOOL_PERMISSION_LABELS:
+        if matches_labels(snapshot, label, enabled=True):
+            desktop.ui("click", label, wait_until_enabled=False)
+            report["toolPermission"] = label
+            return
+
+
 def runtime_task(task, root):
     """Return the task bound to Desktop's runtime skill copy, or None until it exists."""
     if task["capability"] != "skill":
@@ -209,6 +282,8 @@ def run_task(desktop, task, report):
     report["submitted"] = True
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
+        if task["capability"] == "mcp":
+            approve_tool_permission(desktop, report)
         runtime = runtime_task(task, Path(tempfile.gettempdir()) / "claude-hostloop-plugins")
         if task["capability"] == "skill":
             report["runtimeSkillCopyFound"] = runtime is not None
@@ -240,3 +315,23 @@ def capture_sessions(desktop, task):
             continue
         if task["prompt"] in text:
             desktop.save(f"native-session-{index}.jsonl", text)
+    if task["capability"] == "mcp":
+        capture_desktop_logs(desktop, started)
+
+
+DESKTOP_LOG_TAIL_BYTES = 200_000
+
+
+def capture_desktop_logs(desktop, started):
+    """Save Desktop's logs and UG's MCP proxy backend log, which explain a closed connector."""
+    paths = sorted((Path.home() / "Library/Logs").glob("Claude*/**/*.log"))
+    paths += sorted((Path.home() / ".ucode/mcp-proxy").glob("*/backend.log"))
+    for path in paths:
+        try:
+            if path.stat().st_mtime < started:
+                continue
+            data = path.read_bytes()[-DESKTOP_LOG_TAIL_BYTES:]
+        except FileNotFoundError:
+            continue
+        name = "-".join(path.relative_to(Path.home()).parts)
+        desktop.save(f"desktop-log-{name}", data.decode("utf-8", errors="replace"))

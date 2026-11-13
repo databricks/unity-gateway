@@ -28,6 +28,8 @@ def test_desktop_evidence_redacts_credentials_and_preserves_diagnostics(monkeypa
         redact(text) == "failed [REDACTED] [REDACTED] Authorization: Bearer [REDACTED] [REDACTED]"
     )
     assert redact("token sk-ant-oat01-unknown_secret-1") == "token [REDACTED]"
+    fake_pat = "dapi" + "0" * 32 + "-2"  # built at runtime so it never looks like a token
+    assert redact(f"pat {fake_pat} end") == "pat [REDACTED] end"
     assert redact("Claude responded: 48213") == "Claude responded: 48213"
 
 
@@ -761,3 +763,138 @@ def test_macos_skill_runtime_copy_waits_for_partial_copy(tasks, tmp_path):
     assert tasks.runtime_task(task, runtime) is None
     (copy.parents[1] / "SKILL.md").write_text("Read references/facts.txt")
     assert tasks.runtime_task(task, runtime)["expectedFile"] == str(copy)
+
+
+def _mcp_profile(tmp_path, servers):
+    library = tmp_path / "Library/Application Support/Claude-3p/configLibrary"
+    library.mkdir(parents=True)
+    (library / "5b36a0b9-b56d-47cf-b6a4-0904e0bc14f6.json").write_text(
+        json.dumps({"managedMcpServers": servers})
+    )
+
+
+WEB_SEARCH_PROXY = {
+    "name": "web_search",
+    "transport": "stdio",
+    "args": [
+        "mcp-proxy",
+        "--url",
+        "https://workspace.example/ai-gateway/mcp-services/system.ai.web_search",
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("servers", "error"),
+    [
+        ([WEB_SEARCH_PROXY], None),
+        ([], "missing the web_search connector"),
+        ([WEB_SEARCH_PROXY, WEB_SEARCH_PROXY], "missing the web_search connector"),
+        ([{**WEB_SEARCH_PROXY, "transport": "http"}], "does not proxy"),
+        (
+            [{**WEB_SEARCH_PROXY, "args": ["mcp-proxy", "--url", "https://other.example/x"]}],
+            "does not proxy",
+        ),
+        ([{**WEB_SEARCH_PROXY, "args": ["mcp-proxy"]}], "does not proxy"),
+    ],
+)
+def test_macos_mcp_task_requires_the_configured_web_search_connector(
+    tasks, tmp_path, monkeypatch, servers, error
+):
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    _mcp_profile(tmp_path, servers)
+    task = {"capability": "mcp"}
+    saved = {}
+
+    def connect_check(args, **kwargs):
+        assert Path(args[1]).name == "mcp-connect-check.py"
+        return subprocess.CompletedProcess(args, 0, stdout='{"fullEnvironment": {}}', stderr="")
+
+    # The connector check starts a live proxy; its result is diagnostic only.
+    monkeypatch.setattr(tasks, "process", SimpleNamespace(run=connect_check))
+    desktop = SimpleNamespace(save=saved.__setitem__)
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            tasks.prepare_mcp_task(task, desktop)
+        return
+    task = tasks.prepare_mcp_task(task, desktop)
+    assert saved["mcp-connect.json"] == '{"fullEnvironment": {}}'
+    assert (task["mcpServer"], task["mcpTool"]) == ("web_search", "web_search")
+    assert task["prompt"] == tasks.FIXTURE["prompts"]["mcp"]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_macos_configure_selects_the_mcp_service_only_when_enabled(monkeypatch, enabled):
+    if enabled:
+        monkeypatch.setenv("UG_COWORK_MCP", "true")
+    else:
+        monkeypatch.delenv("UG_COWORK_MCP", raising=False)
+    spec = importlib.util.spec_from_file_location("macos_cowork_probe_mcp", SCRIPTS / "probe.py")
+    probe = importlib.util.module_from_spec(spec)
+    monkeypatch.syspath_prepend(str(SCRIPTS))
+    monkeypatch.setenv("RUNNER_TEMP", "/tmp")
+    spec.loader.exec_module(probe)
+    assert probe.MCP_SERVICE == ("system.ai.web_search" if enabled else "")
+
+
+@pytest.mark.parametrize("label", [None, "Allow once", "Always allow"])
+def test_macos_mcp_task_approves_a_connector_prompt(tasks, label, monkeypatch):
+    rows = [["AXButton", label, "", "", "", "1", "0"]] if label else []
+    clicks, report = [], {}
+
+    def ui(*args, **kwargs):
+        if args[0] == "snapshot":
+            return json.dumps(rows)
+        clicks.append(args[1])
+        return "clicked"
+
+    tasks.approve_tool_permission(SimpleNamespace(ui=ui), report)
+    assert clicks == ([label] if label else [])
+    assert report.get("toolPermission") == label
+
+
+def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
+    logs = tmp_path / "Library/Logs/Claude-3p"
+    logs.mkdir(parents=True)
+    (logs / "mcp-server-web_search.log").write_text("x" * 10 + "connector started")
+    old = logs / "main.log"
+    old.write_text("stale")
+    os.utime(old, (0, 0))
+    saved = {}
+    tasks.capture_desktop_logs(SimpleNamespace(save=saved.__setitem__), started=1)
+    assert saved == {
+        "desktop-log-Library-Logs-Claude-3p-mcp-server-web_search.log": "x" * 10
+        + "connector started"
+    }
+
+
+def test_desktop_pat_profile_is_minted_on_disk_and_revoked(monkeypatch, tmp_path):
+    pat_script = runpy.run_path(str(SCRIPTS.parent / "desktop-pat.py"))
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    monkeypatch.setenv("DATABRICKS_BEARER", "issuer-bearer")
+    calls = []
+
+    def workspace_api(path, payload):
+        calls.append((path, payload))
+        if path.endswith("/create"):
+            return {"token_value": "dapi-new", "token_info": {"token_id": "token-1"}}
+        return {}
+
+    # The Tokens API needs a live workspace; profile and state handling stay real.
+    monkeypatch.setitem(pat_script["create"].__globals__, "call", workspace_api)
+    config, state = tmp_path / "databrickscfg", tmp_path / "pat-id"
+    pat_script["create"](config, "desktop-ci", state)
+    assert config.read_text() == (
+        "[desktop-ci]\nhost = https://workspace.example\nauth_type = pat\ntoken = dapi-new\n"
+    )
+    if os.name == "posix":
+        assert stat.S_IMODE(config.stat().st_mode) == 0o600
+    assert state.read_text() == "token-1"
+    assert "token-1" not in config.read_text()
+    pat_script["revoke"](state)
+    pat_script["revoke"](state)
+    assert calls == [
+        ("/api/2.0/token/create", {"lifetime_seconds": 7200, "comment": "ug-ci-cowork-desktop"}),
+        ("/api/2.0/token/delete", {"token_id": "token-1"}),
+    ]
+    assert not state.exists()

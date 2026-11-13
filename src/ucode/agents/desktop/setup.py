@@ -131,8 +131,9 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
         claude_binary = shutil.which("claude")
         if not claude_binary or not os.path.isabs(claude_binary):
             raise RuntimeError("Install Claude Code before configuring subscription relay.")
-    if state.get("custom_oauth") or state.get("use_pat"):
-        raise RuntimeError("Desktop currently requires a Databricks CLI OAuth profile.")
+    if state.get("custom_oauth"):
+        raise RuntimeError("Desktop does not support custom OAuth profiles yet.")
+    use_pat = bool(state.get("use_pat"))
     workspace = state.get("workspace")
     profile = state.get("profile")
     if not isinstance(workspace, str) or not workspace:
@@ -154,6 +155,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
             "--profile",
             profile,
             *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
+            *(["--use-pat"] if use_pat else []),
         ],
         otel_headers_command=[
             os.path.abspath(sys.executable),
@@ -165,6 +167,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
             *workspace_id_args(workspace),
             "--profile",
             profile,
+            *(["--use-pat"] if use_pat else []),
         ],
         profile_key=profile,
     )

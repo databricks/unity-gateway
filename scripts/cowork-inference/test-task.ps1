@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory)][ValidateSet('file', 'skill')][string]$Capability,
+    [Parameter(Mandatory)][ValidateSet('file', 'skill', 'mcp')][string]$Capability,
     [Parameter(Mandatory)][string]$OutputDirectory
 )
 
@@ -147,8 +147,17 @@ try {
     Invoke-Control (Wait-Control -Names @('Start task'))
     $report.submitted = $true
     $deadline = [DateTime]::UtcNow.AddSeconds(300)
+    # Desktop may ask before a connector tool's first use; the prompt label is not pinned.
+    $toolPermissionLabels = @('Allow once', 'Allow for this task', 'Allow for this chat', 'Always allow')
     do {
         Start-Sleep -Seconds 3
+        if ($task.capability -eq 'mcp') {
+            $allow = Find-Control -Names $toolPermissionLabels
+            if ($allow) {
+                $report.toolPermission = $allow.Current.Name
+                Invoke-Control $allow
+            }
+        }
         $rawEvidence = & $python "$PSScriptRoot/session-evidence.py" --task $taskPath `
             --sessions-root (Join-Path $env:LOCALAPPDATA 'Claude-3p/local-agent-mode-sessions') | Out-String
         if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the native Desktop session' }
@@ -186,6 +195,29 @@ try {
             $text = Get-Content $report.session.transcript -Raw
             Protect-DiagnosticText $text | Set-Content (Join-Path $evidence 'session.jsonl')
         } catch { $report.captureError = $_.Exception.Message }
+    }
+    if ($Capability -eq 'mcp') {
+        # Desktop's own logs show whether it started each connector; MSIX may virtualize AppData.
+        try {
+            $logRoots = @(
+                @(Get-ChildItem $env:APPDATA -Directory -Filter 'Claude*' -ErrorAction SilentlyContinue)
+                @(Get-ChildItem $env:LOCALAPPDATA -Directory -Filter 'Claude*' -ErrorAction SilentlyContinue)
+                @(Get-ChildItem (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'Claude_*' -ErrorAction SilentlyContinue)
+            )
+            $logs = @($logRoots | ForEach-Object {
+                Get-ChildItem $_.FullName -Recurse -File -Filter '*.log' -ErrorAction SilentlyContinue
+            } | Where-Object { $_.FullName -match '[\\/]logs[\\/]' -and $_.LastWriteTime -ge $started })
+            # UG's MCP proxy backend explains a connector that Desktop reports as closed.
+            $logs += @(Get-ChildItem (Join-Path $env:USERPROFILE '.ucode/mcp-proxy') -Recurse -File -Filter 'backend.log' -ErrorAction SilentlyContinue)
+            $logDirectory = Join-Path $evidence 'desktop-logs'
+            New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+            foreach ($log in $logs) {
+                $name = ($log.FullName.Substring($env:USERPROFILE.Length) -replace '[\\/:]', '-').Trim('-')
+                $text = (Get-Content -LiteralPath $log.FullName -Tail 2000 -ErrorAction Stop) -join "`n"
+                Protect-DiagnosticText $text | Set-Content -LiteralPath (Join-Path $logDirectory $name)
+            }
+            $report.desktopLogs = $logs.Count
+        } catch { $report.logCaptureError = $_.Exception.Message }
     }
     Remove-Item $taskPath -ErrorAction SilentlyContinue
     Protect-DiagnosticText ($report | ConvertTo-Json -Depth 8) | Set-Content (Join-Path $evidence 'result.json')

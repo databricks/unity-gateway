@@ -156,7 +156,7 @@ jobs:
     name: Cowork desktop tasks · Windows · ${{ matrix.source.name }}
     runs-on: windows-latest
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 50
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -176,6 +176,8 @@ jobs:
       UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
       UG_COWORK_MODEL: ${{ matrix.source.model }}
       UG_COWORK_RELAY: ${{ matrix.source.relay }}
+      # configure selects this lane's MCP service (task-fixture.json mcpService).
+      UG_COWORK_MCP: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -238,6 +240,30 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
             -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork MCP web search
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability mcp -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/mcp"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Revoke the Desktop PAT
+        if: always()
+        shell: pwsh
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+          if (Test-Path -LiteralPath $python) {
+            & $python scripts/cowork-inference/desktop-pat.py revoke --state "$env:RUNNER_TEMP/cowork-pat-id"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -250,13 +276,14 @@ jobs:
             ${{ runner.temp }}/cowork-inference/native-*.log
             ${{ runner.temp }}/cowork-inference/file/
             ${{ runner.temp }}/cowork-inference/skill/
+            ${{ runner.temp }}/cowork-inference/mcp/
           if-no-files-found: warn
 
   cowork-inference-macos:
     name: Cowork desktop tasks · macOS · ${{ matrix.source.name }}
     runs-on: macos-15-intel
     if: ${{ github.event_name != 'merge_group' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    timeout-minutes: 60
+    timeout-minutes: 80
     strategy:
       fail-fast: false
       matrix:
@@ -280,6 +307,8 @@ jobs:
       UG_COWORK_PROVIDER: ${{ matrix.source.provider }}
       UG_COWORK_MODEL: ${{ matrix.source.model }}
       UG_COWORK_RELAY: ${{ matrix.source.relay }}
+      # configure selects this lane's MCP service (task-fixture.json mcpService).
+      UG_COWORK_MCP: true
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
         with:
@@ -317,11 +346,28 @@ jobs:
           DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
         run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability skill'
+      - name: Assert Cowork MCP web search
+        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}
+        timeout-minutes: 19
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+        run: '"$UG_COWORK_PYTHON" scripts/cowork-inference/macos/terminal.py --capability mcp'
       - name: Stop desktop processes
         if: always()
         run: |
           pkill -f '/Applications/Claude.app/Contents/' || test "$?" = 1
           pkill -x Terminal || test "$?" = 1
+      - name: Revoke the Desktop PAT
+        if: always()
+        env:
+          UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+          DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+        run: |
+          if [ -n "${UG_COWORK_PYTHON:-}" ]; then
+            "$UG_COWORK_PYTHON" scripts/cowork-inference/desktop-pat.py revoke --state "$RUNNER_TEMP/cowork-pat-id"
+          fi
       - name: Upload Cowork inference evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
