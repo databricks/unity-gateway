@@ -311,6 +311,28 @@ def _running_gateway_auth_proxy(
         thread.join(timeout=2)
 
 
+_LANGUAGE_SESSION_SECRET = "test-language-session"
+
+
+@contextlib.contextmanager
+def _running_language_proxy(gateway: _FakeGateway, token_provider=None):
+    server, cache, client = gateway_proxy.start_claude_language_proxy(
+        gateway.base_url,
+        token_provider or _counting_token(),
+        session_secret=_LANGUAGE_SESSION_SECRET,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        cache.stop()
+        client.close()
+        thread.join(timeout=2)
+
+
 _SESSION_SECRET = "session-secret"
 
 
@@ -639,3 +661,85 @@ class TestGatewayAuthProxyEndToEnd:
         assert failures == ["refresh token revoked"]
         assert len(gw.requests) == 1
         assert capsys.readouterr().err == ""
+
+
+class TestClaudeLanguageProxyEndToEnd:
+    def test_forwards_child_request_with_gateway_auth_and_private_headers_stripped(
+        self, make_gateway
+    ):
+        path = "/ai-gateway/anthropic/v1/messages"
+        body = (
+            b'{"model":"routed-child-model","system":"Original system instructions",'
+            b'"messages":[{"role":"user","content":"Summarize the task."}],"tools":[]}'
+        )
+        headers = {
+            "Authorization": "Bearer caller-token",
+            "X-UG-Language-Session": _LANGUAGE_SESSION_SECRET,
+            "X-UG-Response-Language": "English",
+            "X-Claude-Code-Agent-Id": "child",
+            "X-Claude-Code-Request-Class": "subagent",
+        }
+        gw = make_gateway()
+        with _running_language_proxy(gw, _counting_token("gateway-token")) as proxy_url:
+            response = httpx.post(proxy_url + path, headers=headers, content=body, timeout=10)
+
+        assert response.status_code == 200
+        assert response.content == b'{"ok":true}'
+        assert len(gw.requests) == 1
+        forwarded = gw.requests[0]
+        assert forwarded.path == path
+        assert forwarded.header("Authorization") == "Bearer gateway-token"
+        assert forwarded.header("X-UG-Language-Session") is None
+        assert forwarded.header("X-UG-Response-Language") is None
+        payload = json.loads(forwarded.body)
+        assert payload["model"] == "routed-child-model"
+        assert payload["messages"] == json.loads(body)["messages"]
+        assert payload["system"][0] == {"type": "text", "text": "Original system instructions"}
+        assert "Always respond in English." in payload["system"][-1]["text"]
+
+    def test_rejects_bad_session_secret_and_non_allowlisted_path(self, make_gateway):
+        gw = make_gateway()
+        with _running_language_proxy(gw, _counting_token("gateway-token")) as proxy_url:
+            bad_secret = httpx.post(
+                proxy_url + "/ai-gateway/anthropic/v1/messages",
+                headers={"X-UG-Language-Session": "wrong-secret"},
+                content=b'{"model":"routed-child-model"}',
+                timeout=10,
+            )
+            bad_path = httpx.post(
+                proxy_url + "/not-allowlisted",
+                headers={"X-UG-Language-Session": _LANGUAGE_SESSION_SECRET},
+                content=b'{"model":"routed-child-model"}',
+                timeout=10,
+            )
+
+        assert bad_secret.status_code == 401
+        assert bad_path.status_code == 404
+        assert gw.requests == []
+
+    def test_json_recursion_error_passes_through_byte_for_byte(self, make_gateway):
+        depth = 500_000
+        body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+        with pytest.raises(RecursionError):
+            json.loads(body)
+        path = "/ai-gateway/anthropic/v1/messages"
+        headers = {
+            "Authorization": "Bearer caller-token",
+            "X-UG-Language-Session": _LANGUAGE_SESSION_SECRET,
+            "X-UG-Response-Language": "English",
+            "X-Claude-Code-Agent-Id": "child",
+            "X-Claude-Code-Request-Class": "subagent",
+        }
+        gw = make_gateway()
+        with _running_language_proxy(gw, _counting_token("gateway-token")) as proxy_url:
+            response = httpx.post(proxy_url + path, headers=headers, content=body, timeout=10)
+
+        assert response.status_code == 200
+        assert response.content == b'{"ok":true}'
+        assert len(gw.requests) == 1
+        forwarded = gw.requests[0]
+        assert forwarded.path == path
+        assert forwarded.body == body
+        assert forwarded.header("Authorization") == "Bearer gateway-token"
+        assert forwarded.header("X-UG-Language-Session") is None
+        assert forwarded.header("X-UG-Response-Language") is None

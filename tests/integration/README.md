@@ -98,7 +98,9 @@ construction alone does not establish generated language. The native task-view p
 also recognizes an empty earlier-session section without treating running or
 partially rendered task lists as complete.
 Proxy diagnostic component tests keep background logs out of interactive terminal output
-while preserving them in `~/.ucode/logs/gateway-proxy.log`; redirected stderr is unchanged.
+while preserving them in `~/.ucode/logs/gateway-proxy.log`. Language-proxy refresh errors
+omit raw exception text from both the file and redirected stderr while retaining the
+sign-in hint. The file is created with private permissions.
 The existing smart-routing CUJs and resumed-child journey exercise the native task view
 and prompt after requests complete.
 

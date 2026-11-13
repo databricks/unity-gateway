@@ -341,11 +341,14 @@ Malformed optional transport settings and startup failures preserve the normal l
 setup and agent-exit failures restore the environment and release acquired resources.
 `test_gateway_proxy.py` checks child and progress-summary language propagation,
 task-language fallback without a setting, translation guidance, malformed-input and
-token-count passthrough, unchanged parent and classifier payloads, session authentication
-and private-header stripping. Decoder recursion errors retain the original request.
+token-count passthrough, and unchanged parent and classifier payloads. The socket tests in
+`test_gateway_proxy_integration.py` retain session authentication, private-header stripping,
+and exact-byte forwarding after decoder recursion errors.
 Interactive proxy diagnostics and the language proxy's refresh failures go to
 `~/.ucode/logs/gateway-proxy.log` without writing into the agent's terminal.
-Other proxies retain their default stderr sign-in hint; redirected stderr is unchanged.
+Language-proxy refresh errors retain the sign-in hint but omit exception contents from
+both destinations; newly created log files are private. Other proxies retain their default
+stderr sign-in hint.
 These component checks establish request construction, not model language compliance.
 
 The required Isaac feedback form and background delivery notifications need manual

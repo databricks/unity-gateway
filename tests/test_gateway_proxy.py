@@ -10,7 +10,6 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock
 from urllib.parse import quote
 
@@ -282,12 +281,14 @@ class TestRelayResponseClientDisconnect:
         handler._relay_response(_FakeResponse(200, {}, [b"ok"]))
         assert capsys.readouterr().err == ""
 
-    @pytest.mark.parametrize("log_directory_available", [True, False])
+    @pytest.mark.parametrize(
+        ("interactive", "log_directory_available"), [(True, True), (True, False), (False, True)]
+    )
     def test_interactive_proxy_logs_preserve_terminal_output(
-        self, monkeypatch, capsys, tmp_path, log_directory_available
+        self, monkeypatch, capsys, tmp_path, interactive, log_directory_available
     ):
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: interactive)
         monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path)
         if not log_directory_available:
             (tmp_path / "logs").write_text("existing file")
@@ -300,20 +301,34 @@ class TestRelayResponseClientDisconnect:
             "http://127.0.0.1:1", lambda _force: "test-token", session_secret="test-secret"
         )
         try:
-            cache.report_refresh_failure(RuntimeError("refresh unavailable"))
+            cache.report_refresh_failure(
+                RuntimeError("Command: broker --token synthetic-credential; Stderr: private-error")
+            )
         finally:
             proxy.server_close()
             cache.stop()
             client.close()
 
-        assert capsys.readouterr() == ("", "")
+        output = capsys.readouterr()
+        path = tmp_path / "logs" / "gateway-proxy.log"
+        assert output.out == ""
+        if interactive:
+            assert output.err == ""
+        else:
+            assert not path.exists()
         if log_directory_available:
-            lines = (tmp_path / "logs" / "gateway-proxy.log").read_text().splitlines()
+            lines = (path.read_text() if interactive else output.err).splitlines()
             event = json.loads(lines[0].removeprefix("[ucode-relay] "))
             assert event["event"] == "response_complete"
             assert event["request_id"] == "local-id"
             assert event["bytes"] == 2
-            assert "token refresh failed: refresh unavailable" in lines[1]
+            assert "token refresh failed." in lines[1]
+            assert "Refresh your workspace sign-in and restart ug claude." in lines[1]
+            assert "synthetic-credential" not in "\n".join(lines)
+            assert "private-error" not in "\n".join(lines)
+            assert "Command:" not in "\n".join(lines)
+            if interactive and os.name != "nt":
+                assert path.stat().st_mode & 0o777 == 0o600
 
     def test_default_refresh_failure_keeps_interactive_sign_in_hint(self, monkeypatch, capsys):
         monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
@@ -863,62 +878,13 @@ class TestCodexRelayProxy:
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
 
 
-@pytest.fixture
-def _language_proxy():
-    captured = []
-
-    class _UpstreamHandler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", "0"))
-            captured.append(
-                {
-                    "path": self.path,
-                    "headers": {key.lower(): value for key, value in self.headers.items()},
-                    "body": self.rfile.read(length),
-                }
-            )
-            body = b'{"ok":true}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *_args):
-            return
-
-    upstream = ThreadingHTTPServer(("127.0.0.1", 0), _UpstreamHandler)
-    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-    upstream_thread.start()
-    proxy, cache, proxy_client = gateway_proxy.start_claude_language_proxy(
-        f"http://127.0.0.1:{upstream.server_port}",
-        lambda _force: "gateway-token",
-        session_secret="test-language-session",
-    )
-    proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
-    proxy_thread.start()
-    try:
-        yield f"http://127.0.0.1:{proxy.server_port}", captured
-    finally:
-        proxy.shutdown()
-        proxy.server_close()
-        cache.stop()
-        proxy_client.close()
-        upstream.shutdown()
-        upstream.server_close()
-
-
-def _language_proxy_headers(
+def _language_request_headers(
     *,
-    language=None,
-    agent_id=None,
-    request_class=None,
-    secret="test-language-session",
-):
-    headers = {
-        "Authorization": "Bearer caller-token",
-        "X-UG-Language-Session": secret,
-    }
+    language: str | None = None,
+    agent_id: str | None = None,
+    request_class: str | None = None,
+) -> dict[str, str]:
+    headers: dict[str, str] = {}
     if language is not None:
         headers["X-UG-Response-Language"] = quote(language, safe="")
     if agent_id is not None:
@@ -928,13 +894,22 @@ def _language_proxy_headers(
     return headers
 
 
-class TestClaudeLanguageLoopbackProxy:
+def _language_request_body(path: str, body: bytes, headers: dict[str, str]) -> bytes:
+    handler = object.__new__(gateway_proxy._ClaudeLanguageProxyHandler)
+    handler.path = path
+    # Match BaseHTTPRequestHandler's case-insensitive access for mixed-case request headers.
+    handler.headers = httpx.Headers(headers)
+    forwarded = handler._request_body(body)
+    assert forwarded is not None
+    return forwarded
+
+
+class TestClaudeLanguageRequestBody:
     @pytest.mark.parametrize("language", [None, "", " "])
     @pytest.mark.parametrize("request_class", ["subagent", "auxiliary"])
     def test_unset_language_follows_the_original_task_not_source_text(
-        self, _language_proxy, language, request_class
+        self, language, request_class
     ):
-        proxy_url, captured = _language_proxy
         original = {
             "model": "routed-child-model",
             "system": "Original system instructions",
@@ -952,16 +927,15 @@ class TestClaudeLanguageLoopbackProxy:
             ],
             "tools": [],
         }
-        response = httpx.post(
-            proxy_url + "/ai-gateway/anthropic/v1/messages",
-            headers=_language_proxy_headers(
+        body = json.dumps(original).encode()
+        rewritten = _language_request_body(
+            "/ai-gateway/anthropic/v1/messages",
+            body,
+            _language_request_headers(
                 language=language, agent_id="child", request_class=request_class
             ),
-            json=original,
-            timeout=5,
         )
-        assert response.status_code == 200
-        payload = json.loads(captured[-1]["body"])
+        payload = json.loads(rewritten)
         instruction = payload["system"][-1]["text"]
         assert "language of the original task assigned to you" in instruction
         assert "Use the requested target language for translations." in instruction
@@ -993,48 +967,22 @@ class TestClaudeLanguageLoopbackProxy:
             ("English", "/v1/messages", b'{"system":null}'),
         ],
     )
-    def test_invalid_language_or_body_and_token_count_pass_through(
-        self, _language_proxy, language, path, body
-    ):
-        proxy_url, captured = _language_proxy
-        response = httpx.post(
-            proxy_url + "/ai-gateway/anthropic" + path,
-            headers=_language_proxy_headers(
+    def test_invalid_language_or_body_and_token_count_pass_through(self, language, path, body):
+        forwarded = _language_request_body(
+            "/ai-gateway/anthropic" + path,
+            body,
+            _language_request_headers(
                 language=language, agent_id="child", request_class="subagent"
             ),
-            content=body,
-            timeout=5,
         )
-        assert response.status_code == 200
-        assert captured[-1]["body"] == body
-        assert "x-ug-language-session" not in captured[-1]["headers"]
-        assert "x-ug-response-language" not in captured[-1]["headers"]
-
-    def test_json_recursion_error_passes_through(self, _language_proxy):
-        proxy_url, captured = _language_proxy
-        depth = 500_000
-        body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
-        with pytest.raises(RecursionError):
-            json.loads(body)
-        response = httpx.post(
-            proxy_url + "/ai-gateway/anthropic/v1/messages",
-            headers=_language_proxy_headers(
-                language="English", agent_id="child", request_class="subagent"
-            ),
-            content=body,
-            timeout=5,
-        )
-        assert response.status_code == 200
-        assert captured[-1]["body"] == body
-        assert "x-ug-language-session" not in captured[-1]["headers"]
-        assert "x-ug-response-language" not in captured[-1]["headers"]
+        assert forwarded == body
 
     @pytest.mark.parametrize(
         "headers",
         [
-            _language_proxy_headers(language="English", request_class="subagent"),
-            _language_proxy_headers(language="English", request_class="auxiliary"),
-            _language_proxy_headers(
+            _language_request_headers(language="English", request_class="subagent"),
+            _language_request_headers(language="English", request_class="auxiliary"),
+            _language_request_headers(
                 language="Chinese", agent_id="classifier-1", request_class="classifier"
             ),
         ],
@@ -1044,29 +992,14 @@ class TestClaudeLanguageLoopbackProxy:
             "classifier-request",
         ],
     )
-    def test_parent_and_classifier_requests_are_unmodified(self, _language_proxy, headers):
-        proxy_url, captured = _language_proxy
+    def test_parent_and_classifier_requests_are_unmodified(self, headers):
         body = (
             b'{ "model": "routed-child-model", "tools": [], '
             b'"messages": [{"role":"user","content":"Summarize"}], '
             b'"system": "keep these exact bytes" }'
         )
-
-        response = httpx.post(
-            proxy_url + "/ai-gateway/anthropic/v1/messages",
-            headers=headers,
-            content=body,
-            timeout=5,
-        )
-
-        assert response.status_code == 200
-        assert len(captured) == 1
-        forwarded = captured[0]
-        assert forwarded["path"] == "/ai-gateway/anthropic/v1/messages"
-        assert forwarded["body"] == body
-        assert forwarded["headers"]["authorization"] == "Bearer gateway-token"
-        assert "x-ug-language-session" not in forwarded["headers"]
-        assert "x-ug-response-language" not in forwarded["headers"]
+        forwarded = _language_request_body("/ai-gateway/anthropic/v1/messages", body, headers)
+        assert forwarded == body
 
     @pytest.mark.parametrize(
         ("request_class", "language", "final_content_kind"),
@@ -1079,9 +1012,8 @@ class TestClaudeLanguageLoopbackProxy:
         ids=["child-english", "workflow-chinese", "summary-list-english", "summary-string-chinese"],
     )
     def test_child_system_and_auxiliary_user_instruction_preserve_request_fields(
-        self, _language_proxy, request_class, language, final_content_kind
+        self, request_class, language, final_content_kind
     ):
-        proxy_url, captured = _language_proxy
         if final_content_kind == "string":
             final_content = "Summarize the result."
         else:
@@ -1119,23 +1051,15 @@ class TestClaudeLanguageLoopbackProxy:
                 }
             ],
         }
-        body = json.dumps(original).encode()
-        headers = _language_proxy_headers(
+        headers = _language_request_headers(
             language=language,
             agent_id="native-child-1",
             request_class=request_class,
         )
-
-        response = httpx.post(
-            proxy_url + "/ai-gateway/anthropic/v1/messages",
-            headers=headers,
-            content=body,
-            timeout=5,
+        rewritten = _language_request_body(
+            "/ai-gateway/anthropic/v1/messages", json.dumps(original).encode(), headers
         )
-
-        assert response.status_code == 200
-        forwarded = captured[-1]
-        payload = json.loads(forwarded["body"])
+        payload = json.loads(rewritten)
         expected = json.loads(json.dumps(original))
         expected["system"].append(
             {
@@ -1167,27 +1091,3 @@ class TestClaudeLanguageLoopbackProxy:
                 },
             ]
         assert payload == expected
-        assert forwarded["headers"]["authorization"] == "Bearer gateway-token"
-        assert "x-ug-language-session" not in forwarded["headers"]
-        assert "x-ug-response-language" not in forwarded["headers"]
-
-    def test_bad_secret_and_non_allowlisted_path_are_rejected(self, _language_proxy):
-        proxy_url, captured = _language_proxy
-        body = b'{"model":"routed-child-model"}'
-
-        bad_secret = httpx.post(
-            proxy_url + "/ai-gateway/anthropic/v1/messages",
-            headers=_language_proxy_headers(secret="wrong-secret"),
-            content=body,
-            timeout=5,
-        )
-        bad_path = httpx.post(
-            proxy_url + "/not-allowlisted",
-            headers=_language_proxy_headers(),
-            content=body,
-            timeout=5,
-        )
-
-        assert bad_secret.status_code == 401
-        assert bad_path.status_code == 404
-        assert captured == []

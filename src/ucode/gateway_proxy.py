@@ -96,8 +96,9 @@ def _write_proxy_log(line: str) -> None:
         # Background writes corrupt the agent's cursor-controlled terminal rendering.
         try:
             path = APP_DIR / "logs" / "gateway-proxy.log"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as log:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as log:
                 log.write(line)
         except OSError:
             pass
@@ -959,8 +960,8 @@ def start_claude_language_proxy(
         handler_type=_ClaudeLanguageProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
-        on_refresh_failure=lambda exc: _write_proxy_log(
-            f"[ucode] Databricks token refresh failed: {exc}. "
+        on_refresh_failure=lambda _exc: _write_proxy_log(
+            "[ucode] Databricks token refresh failed. "
             "Refresh your workspace sign-in and restart ug claude.\n"
         ),
         handler_attrs={
