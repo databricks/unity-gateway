@@ -14,12 +14,18 @@ ROUTING_HOOK_COMMAND_MARKER = "codex-router-hook"
 
 
 def routing_models(state: dict) -> list[str]:
-    """Return the configured model services compatible with Codex routing."""
+    """Return the configured model services compatible with Codex routing.
+
+    GPT models come first so the default starting model stays a GPT.
+    """
     models: list[str] = []
     for key in ("codex_models", "oss_models"):
         values = state.get(key)
         if isinstance(values, list):
             models.extend(value for value in values if isinstance(value, str) and value)
+    claude_models = state.get("claude_models")
+    if isinstance(claude_models, dict):
+        models.extend(value for value in claude_models.values() if isinstance(value, str) and value)
     return list(dict.fromkeys(models))
 
 

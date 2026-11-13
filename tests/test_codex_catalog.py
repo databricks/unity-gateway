@@ -189,6 +189,25 @@ def test_known_hosted_capabilities(bundled, name, modalities, efforts):
     assert model["default_reasoning_level"] == efforts[-1]
 
 
+@pytest.mark.parametrize("name", ["system.ai.claude-opus-5-5", "claude-sonnet-5-5"])
+def test_hosted_claude_capabilities(bundled, name):
+    model = catalog.build_codex_catalog(bundled, [name])["models"][0]
+    assert model["input_modalities"] == ["text", "image"]
+    assert [level["effort"] for level in model["supported_reasoning_levels"]] == [
+        "low",
+        "medium",
+        "high",
+    ]
+    assert model["default_reasoning_level"] == "high"
+    assert model["context_window"] == model["max_context_window"] == 200_000
+
+
+def test_custom_schema_claude_names_keep_generic_defaults(bundled):
+    model = catalog.build_codex_catalog(bundled, ["main.team.claude-opus-5-5"])["models"][0]
+    assert model["input_modalities"] == ["text"]
+    assert model["context_window"] == 32768
+
+
 def test_unknown_uc_names_do_not_infer_gpt_or_hosted_capabilities(bundled):
     model = catalog.build_codex_catalog(bundled, ["custom.schema.kimi-k3"])["models"][0]
     assert model["input_modalities"] == ["text"]

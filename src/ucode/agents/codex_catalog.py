@@ -31,6 +31,9 @@ _HOSTED_CAPABILITIES = {
     "deepseek-v4-1-flash": (["text", "image"], ["low", "high", "xhigh", "max"]),
     "deepseek-v4-1-flash-1017": (["text", "image"], ["low", "high", "xhigh", "max"]),
 }
+# Conservative: Claude's 1M context is opt-in through separate `[1m]` ids.
+_CLAUDE_CAPABILITIES = (["text", "image"], ["low", "medium", "high"])
+_CLAUDE_CONTEXT_WINDOW = 200_000
 _HOSTED_DEFAULTS = {
     "input_modalities": ["text"],
     "context_window": 32768,
@@ -111,13 +114,18 @@ def build_codex_catalog(
                     default_reasoning_level="medium",
                     supported_reasoning_levels=_reasoning_levels(_GPT_FALLBACK_EFFORTS),
                 )
-            capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
+            hosted_name = name.removeprefix("system.ai.")
+            capabilities = _HOSTED_CAPABILITIES.get(hosted_name)
+            context_window = 1048576
+            if capabilities is None and hosted_name.startswith("claude-"):
+                capabilities = _CLAUDE_CAPABILITIES
+                context_window = _CLAUDE_CONTEXT_WINDOW
             if capabilities:
                 modalities, efforts = capabilities
                 model.update(
                     input_modalities=list(modalities),
-                    context_window=1048576,
-                    max_context_window=1048576,
+                    context_window=context_window,
+                    max_context_window=context_window,
                     default_reasoning_level=efforts[-1],
                     supported_reasoning_levels=_reasoning_levels(efforts),
                 )

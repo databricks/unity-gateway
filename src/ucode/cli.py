@@ -778,9 +778,11 @@ def configure_shared_state(
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
 
+    # Codex smart routing can also select Claude models.
     want_claude = (
         fetch_all
         or "claude" in tools
+        or "codex" in tools
         or "opencode" in tools
         or "kilo" in tools
         or "copilot" in tools

@@ -27,6 +27,24 @@ def test_routing_models_combines_and_deduplicates_codex_and_oss_models():
     ]
 
 
+def test_routing_models_appends_claude_models_after_gpt_and_oss_models():
+    assert routing_models(
+        {
+            "codex_models": ["system.ai.gpt-5-6-sol"],
+            "oss_models": ["system.ai.kimi-k3"],
+            "claude_models": {
+                "opus": "system.ai.claude-opus-5-5",
+                "sonnet": "system.ai.claude-sonnet-5-5",
+            },
+        }
+    ) == [
+        "system.ai.gpt-5-6-sol",
+        "system.ai.kimi-k3",
+        "system.ai.claude-opus-5-5",
+        "system.ai.claude-sonnet-5-5",
+    ]
+
+
 class _Response:
     def __init__(self, payload: dict):
         self.payload = payload

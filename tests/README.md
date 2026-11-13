@@ -1017,6 +1017,11 @@ do not cover plugin-write/process-start failures, native plugin refresh, or daem
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.
 
+`test_codex_routing.py` also checks that Codex routing candidates include discovered Claude
+models after GPT and OSS models, and `test_cli.py` that a Codex-only configure persists them.
+`test_codex_catalog.py` checks Claude catalog metadata (text and image, low/medium/high, 200k
+context) for `system.ai` names only. No live test delegates to a Claude or OSS Codex child yet.
+
 `test_claude_pty_replay.py` drives `run_claude_pty` against fake TUIs. One models Claude Code
 2.1.295 and later, which keep a hook-blocked prompt in the input box: `/model` must run as a
 command, and the replay must arrive unchanged after a switch, a switch timeout, or a missing

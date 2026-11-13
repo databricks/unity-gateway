@@ -7312,6 +7312,24 @@ class TestConfigureSharedStateUsePat:
         assert state["codex_models"] == ["system.ai.gpt-5-6-sol"]
         assert state["oss_models"] == ["system.ai.glm-5-2"]
 
+    def test_codex_only_configure_persists_discovered_claude_models(self, monkeypatch):
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                {"opus": "system.ai.claude-opus-5-5"},
+                ["system.ai.gpt-5-6-sol"],
+                [],
+                [],
+                None,
+            ),
+        )
+
+        state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["codex"])
+
+        assert state["claude_models"] == {"opus": "system.ai.claude-opus-5-5"}
+
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         monkeypatch.setattr(
