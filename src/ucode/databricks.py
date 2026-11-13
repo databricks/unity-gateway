@@ -33,6 +33,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode import metrics
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -1962,6 +1963,7 @@ def get_databricks_token(
     # same short-circuit baked into ``build_auth_shell_command``.
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     if bearer:
+        metrics.bind(workspace, bearer)
         _debug("get_databricks_token", "using DATABRICKS_BEARER env var")
         return bearer
 
@@ -1971,18 +1973,23 @@ def get_databricks_token(
     # running process, so the command is re-run on every fetch instead.
     command = os.environ.get("DATABRICKS_BEARER_COMMAND", "").strip()
     if command:
-        return _bearer_from_command(command)
+        token = _bearer_from_command(command)
+        metrics.bind(workspace, token)
+        return token
 
     _log_auth_diagnostics()
     # See has_valid_databricks_auth: resolve the profile from the host when
     # the caller didn't supply one, so duplicate-host cfgs don't break us.
     profile = profile or find_profile_name_for_host(workspace)
-    return _get_databricks_token_for_profile(
+    token = _get_databricks_token_for_profile(
         workspace,
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
     )
+
+    metrics.bind(workspace, token)
+    return token
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
