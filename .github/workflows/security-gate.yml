@@ -5,6 +5,15 @@ name: Security Gate
 # Missing results, API errors and timeouts block CI, just like scan findings.
 on:
   workflow_call:
+    inputs:
+      pr-number:
+        description: PR number for a comment-triggered run.
+        type: number
+        required: false
+      head-sha:
+        description: Commit selected by the caller's authorization job.
+        type: string
+        required: false
 
 permissions:
   actions: read
@@ -12,37 +21,56 @@ permissions:
 jobs:
   gate:
     name: Security Gate
-    # The org IP allow list blocks API calls from GitHub-hosted runners.
-    runs-on:
-      group: databricks-protected-runner-group
-      labels: linux-ubuntu-latest
+    # Fork workflow definitions are untrusted: use hosted runners and the public API.
+    # Authenticated API calls need the allowlisted pool for other events.
+    runs-on: >-
+      ${{ fromJSON(
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name != github.repository &&
+        '"ubuntu-latest"' ||
+        '{"group":"databricks-protected-runner-group","labels":"linux-ubuntu-latest"}'
+      ) }}
     timeout-minutes: 20
     steps:
       - name: Wait for the shared Security Scan
-        if: ${{ github.event_name == 'pull_request' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && github.token || '' }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}
+          HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}
+          # Comments reuse an existing scan; their timestamp must not exclude it.
           PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import re
           import subprocess
           import sys
           import time
+          import urllib.request
 
           repo, pr, sha, updated = (os.environ[key] for key in (
               "REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"
           ))
+          if not re.fullmatch(r"[1-9][0-9]*", pr) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+              sys.exit("::error::Security Gate requires a PR number and an authorized commit SHA.")
           endpoint = f"repos/{repo}/actions/runs?event=pull_request&head_sha={sha}&per_page=100"
           print(f"Waiting for Security Scan #{pr} on {sha}", flush=True)
           for _ in range(30):
-              pages = json.loads(subprocess.check_output(
-                  ["gh", "api", endpoint, "--paginate", "--slurp"], timeout=30
-              ))
+              if os.environ.get("GH_TOKEN"):
+                  pages = json.loads(subprocess.check_output(
+                      ["gh", "api", endpoint, "--paginate", "--slurp"], timeout=30
+                  ))
+              else:
+                  pages = []
+                  while True:
+                      url = f"{os.environ['GITHUB_API_URL']}/{endpoint}&page={len(pages) + 1}"
+                      with urllib.request.urlopen(url, timeout=30) as response:
+                          pages.append(json.load(response))
+                      if len(pages[-1]["workflow_runs"]) < 100:
+                          break
               # Fork runs can have an empty pull_requests array. The explicit
               # run-name identifies the PR; the timestamp excludes pre-reopen waivers.
               runs = [run for page in pages for run in page["workflow_runs"]

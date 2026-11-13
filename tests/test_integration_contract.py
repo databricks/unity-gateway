@@ -630,6 +630,7 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     authorize = workflow.split("\n  authorize:\n", 1)[1].split("\n  reject:\n", 1)[0]
     reject = workflow.split("\n  reject:\n", 1)[1].split("\n  integration:\n", 1)[0]
     integration = workflow.split("\n  integration:\n", 1)[1].split("\n  report:\n", 1)[0]
+    gate = workflow.split("\n  security-gate:\n", 1)[1].split("\n  integration:\n", 1)[0]
     report = workflow.split("\n  report:\n", 1)[1]
 
     assert re.search(r"(?m)^on:\n  issue_comment:\n    types: \[created\]\n", workflow)
@@ -643,11 +644,19 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
-    assert "needs: authorize" in integration
+    assert "needs: authorize" in gate
+    assert "uses: ./.github/workflows/security-gate.yml" in gate
+    assert "pr-number: ${{ github.event.issue.number }}" in gate
+    assert "head-sha: ${{ needs.authorize.outputs.sha }}" in gate
+    assert "actions: read" in gate and "secrets:" not in gate
+    assert "needs: [authorize, security-gate]" in integration
+    assert "if:" not in integration, "Both prerequisites must succeed before secrets are supplied"
     assert "group: fork-integration-${{ github.event.issue.number }}" in integration
     assert "uses: ./.github/workflows/integration.yml" in integration
     assert "ref: ${{ needs.authorize.outputs.sha }}" in integration
     assert "needs.authorize.result == 'success'" in report
+    assert "needs: [authorize, security-gate, integration]" in report
+    assert "SCAN_RESULT: ${{ needs.security-gate.result }}" in report
     assert "repos/$GITHUB_REPOSITORY/statuses/$SHA" in report
     assert "concurrency:" not in workflow.split("\njobs:\n", 1)[0], (
         "Workflow-level concurrency would let any PR comment cancel a run"
@@ -756,10 +765,11 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     assert "workflow_call:" not in scan
     assert "group: security-scan-${{ github.event.pull_request.number }}" in scan
     assert "run-name: 'Security Scan #${{ github.event.pull_request.number }}'" in scan
-    assert re.search(r"(?m)^on:\n  workflow_call:\n\n", gate)
-    assert "if: ${{ github.event_name == 'pull_request' }}" in gate
-    assert "group: databricks-protected-runner-group" in gate
-    assert "labels: linux-ubuntu-latest" in gate
+    assert re.search(r"(?m)^on:\n  workflow_call:\n    inputs:\n", gate)
+    assert "github.event_name == 'pull_request' || github.event_name == 'issue_comment'" in gate
+    assert "PR_NUMBER: ${{ inputs.pr-number || github.event.pull_request.number }}" in gate
+    assert "HEAD_SHA: ${{ inputs.head-sha || github.event.pull_request.head.sha }}" in gate
+    assert "PR_UPDATED_AT: ${{ github.event.pull_request.updated_at }}" in gate
     assert "actions: read" in gate and "uses:" not in gate
     assert "${{ secrets." not in scan + gate
     # The PR's .gitattributes must not hide changes from the diff-based scans.
@@ -796,15 +806,33 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ]
     ],
 )
-def test_security_gate_waits_for_the_current_scan(monkeypatch, responses, accepted, polls):
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_security_gate_waits_for_the_current_scan(
+    monkeypatch, responses, accepted, polls, authenticated
+):
+    code, calls = _run_security_gate(monkeypatch, responses, authenticated=authenticated)
+    assert (code == 0) == accepted
+    assert calls == polls
+
+
+def _run_security_gate(
+    monkeypatch,
+    responses,
+    *,
+    authenticated=True,
+    updated="2026-11-13T00:00:00Z",
+    pr="7",
+    sha=HEAD,
+):
     script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
-    updated = "2026-11-13T00:00:00Z"
     for key, value in {
         "REPO": "databricks/unity-gateway",
-        "PR_NUMBER": "7",
-        "HEAD_SHA": HEAD,
+        "PR_NUMBER": pr,
+        "HEAD_SHA": sha,
         "PR_UPDATED_AT": updated,
+        "GH_TOKEN": "test-token" if authenticated else "",
+        "GITHUB_API_URL": "https://api.github.com",
     }.items():
         monkeypatch.setenv(key, value)
     scan = {
@@ -812,7 +840,7 @@ def test_security_gate_waits_for_the_current_scan(monkeypatch, responses, accept
         "path": ".github/workflows/security-scan.yml",
         "display_title": "Security Scan #7",
         "head_sha": HEAD,
-        "created_at": updated,
+        "created_at": "2026-11-13T00:00:00Z",
         "status": "completed",
         "conclusion": "success",
         "html_url": "https://example/scan/1",
@@ -820,43 +848,172 @@ def test_security_gate_waits_for_the_current_scan(monkeypatch, responses, accept
     }
     calls = 0
 
+    def pages(index):
+        changes = responses[min(index, len(responses) - 1)]
+        return [
+            {"workflow_runs": [scan | {"path": "other.yml"}] * 100},
+            {"workflow_runs": [scan | change for change in changes]},
+        ]
+
     def fetch(args, timeout):
         nonlocal calls
+        assert authenticated, "Fork gates must not use authenticated gh"
         assert args == [
             "gh",
             "api",
-            f"repos/databricks/unity-gateway/actions/runs?event=pull_request&head_sha={HEAD}&per_page=100",
+            f"repos/databricks/unity-gateway/actions/runs?event=pull_request&head_sha={sha}&per_page=100",
             "--paginate",
             "--slurp",
         ]
         assert timeout == 30
-        changes = responses[min(calls, len(responses) - 1)]
+        result = pages(calls)
         calls += 1
-        # Keep unrelated results on the first page to exercise pagination too.
-        return json.dumps(
-            [{"workflow_runs": []}, {"workflow_runs": [scan | change for change in changes]}]
-        ).encode()
+        return json.dumps(result).encode()
+
+    def public_fetch(url, timeout):
+        nonlocal calls
+        assert not authenticated
+        assert isinstance(url, str), "No authenticated Request headers on the public API path"
+        assert timeout == 30
+        endpoint, page = url.rsplit("&page=", 1)
+        assert endpoint == (
+            "https://api.github.com/repos/databricks/unity-gateway/actions/runs"
+            f"?event=pull_request&head_sha={sha}&per_page=100"
+        )
+        if page == "1":
+            calls += 1
+        return io.StringIO(json.dumps(pages(calls - 1)[int(page) - 1]))
 
     monkeypatch.setattr(subprocess, "check_output", fetch)
+    monkeypatch.setattr(urllib.request, "urlopen", public_fetch)
     monkeypatch.setattr("time.sleep", lambda _: None)
     with pytest.raises(SystemExit) as result:
         exec(compile(script, "security-gate.yml", "exec"), {})
-    assert (result.value.code == 0) == accepted
-    assert calls == polls
+    return result.value.code, calls
 
 
-def test_security_gate_api_errors_block_ci(monkeypatch):
+@pytest.mark.parametrize("matches_commit", [True, False])
+def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
+    monkeypatch, matches_commit
+):
+    # Comments arrive after the scan: reuse it without a PR-event freshness cutoff.
+    sha = HEAD if matches_commit else "a" * 40
+    code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
+    assert (code == 0) == matches_commit
+    assert calls == (1 if matches_commit else 30)
+
+
+@pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
+def test_security_gate_rejects_missing_or_invalid_authorized_commit(monkeypatch, pr, sha):
+    code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", pr=pr, sha=sha)
+    assert code != 0 and calls == 0
+
+
+@pytest.mark.parametrize("authenticated", [True, False])
+def test_security_gate_api_errors_block_ci(monkeypatch, authenticated):
     script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
     for key in ["REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"]:
         monkeypatch.setenv(key, "unused")
+    monkeypatch.setenv("PR_NUMBER", "7")
+    monkeypatch.setenv("HEAD_SHA", HEAD)
+    monkeypatch.setenv("GH_TOKEN", "test-token" if authenticated else "")
+    monkeypatch.setenv("GITHUB_API_URL", "https://api.github.com")
 
     def fail(*args, **kwargs):
-        raise subprocess.CalledProcessError(1, "gh api")
+        if authenticated:
+            raise subprocess.CalledProcessError(1, "gh api")
+        raise urllib.error.HTTPError("https://api.github.com", 403, "rate limit", {}, None)
 
     monkeypatch.setattr(subprocess, "check_output", fail)
-    with pytest.raises(subprocess.CalledProcessError):
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    error = subprocess.CalledProcessError if authenticated else urllib.error.HTTPError
+    with pytest.raises(error):
         exec(compile(script, "security-gate.yml", "exec"), {})
+
+
+@pytest.mark.parametrize(
+    ("event_name", "head_repo", "hosted", "waits"),
+    [
+        ("pull_request", "external/fork", True, True),
+        ("pull_request", "databricks/unity-gateway", False, True),
+        ("issue_comment", "", False, True),
+        ("merge_group", "", False, False),
+        ("push", "", False, False),
+        ("schedule", "", False, False),
+    ],
+)
+def test_security_gate_runner_and_token_respect_event_trust(event_name, head_repo, hosted, waits):
+    from types import SimpleNamespace
+
+    workflow = _workflow("security-gate.yml")
+    runner = re.search(r"runs-on: >-\n(.*?)\n    timeout-minutes:", workflow, re.S)[1]
+    token = re.search(r"GH_TOKEN: (.*)", workflow)[1]
+    condition = re.search(r"        if: (.*)", workflow)[1]
+    github = SimpleNamespace(
+        event_name=event_name,
+        repository="databricks/unity-gateway",
+        token="test-token",
+        event=SimpleNamespace(
+            pull_request=SimpleNamespace(
+                head=SimpleNamespace(repo=SimpleNamespace(full_name=head_repo))
+            )
+        ),
+    )
+
+    def evaluate(expression):
+        expression = expression.strip().removeprefix("${{").removesuffix("}}")
+        expression = " ".join(expression.replace("&&", " and ").replace("||", " or ").split())
+        return eval(expression, {"__builtins__": {}}, {"github": github, "fromJSON": json.loads})
+
+    assert evaluate(runner) == (
+        "ubuntu-latest"
+        if hosted
+        else {"group": "databricks-protected-runner-group", "labels": "linux-ubuntu-latest"}
+    )
+    assert evaluate(token) == ("" if hosted else "test-token")
+    assert evaluate(condition) == waits
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the report step runs bash on Linux")
+@pytest.mark.parametrize(
+    ("scan_result", "integration_result", "state", "message"),
+    [
+        ("success", "success", "success", "Fork integration success"),
+        ("success", "failure", "failure", "Fork integration failure"),
+        ("failure", "skipped", "failure", "blocked by Security Scan (failure)"),
+        ("cancelled", "skipped", "failure", "blocked by Security Scan (cancelled)"),
+        ("skipped", "skipped", "failure", "blocked by Security Scan (skipped)"),
+    ],
+)
+def test_fork_integration_reports_scan_failure_on_authorized_commit(
+    tmp_path, scan_result, integration_result, state, message
+):
+    report = _workflow("fork-integration.yml").split("\n  report:\n", 1)[1]
+    script = textwrap.dedent(report.split("        run: |\n", 1)[1])
+    fake_gh = tmp_path / "gh"
+    fake_gh.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n')
+    fake_gh.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", script],
+        env={
+            "PATH": f"{tmp_path}:{os.environ['PATH']}",
+            "CALLS": str(tmp_path / "calls"),
+            "GITHUB_REPOSITORY": "databricks/unity-gateway",
+            "PR_NUMBER": "7",
+            "SHA": HEAD,
+            "RESULT": integration_result,
+            "SCAN_RESULT": scan_result,
+            "RUN_URL": "https://example/run",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text()
+    assert f"statuses/{HEAD} -f state={state}" in calls
+    assert message in calls
 
 
 def test_exfil_scan_recognizes_every_ci_secret():

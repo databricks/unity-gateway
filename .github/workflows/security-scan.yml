@@ -8,9 +8,9 @@ run-name: 'Security Scan #${{ github.event.pull_request.number }}'
 # secrets. The scanner and the trust decision come from `main`, so a PR can't
 # edit them; the PR head is only read, from a separate `pr/` checkout.
 #
-# Runs once per PR event. CI and publisher tests use security-gate.yml to wait
-# for this workflow's result before running PR code. Trusted authors pass in
-# seconds; non-PR CI events do not wait for a scan.
+# Runs once per PR event. CI, publisher tests and authorized /integration-test
+# runs use security-gate.yml to wait for this result before running PR code.
+# Trusted authors pass in seconds; scheduled, push and merge-queue CI bypass the gate.
 #
 # The org IP allow list blocks GitHub-hosted runners from the GitHub API, so
 # this job makes no API calls: it fetches this public repository anonymously

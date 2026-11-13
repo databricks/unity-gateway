@@ -1360,15 +1360,19 @@ tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 One independent `Security Scan` (`security-scan.yml`) runs per PR event and statically scans
 authors GitHub does not report as owners, members, or collaborators. CI and the publish-skills
-workflow each start with `Security Gate` (`security-gate.yml`), which waits for that shared run
-on the allowlisted runner group. The gate matches the workflow path, PR number, head SHA and
-event timestamp, then requires success; findings, missing results, API errors and timeouts block
+workflow each start with `Security Gate` (`security-gate.yml`), which waits for that shared run.
+Fork PR gates use GitHub-hosted runners and the public, unauthenticated API; same-repository
+PRs and authorized comment runs use the allowlisted runner group and a read-only token.
+Public API rate limits fail closed, like other API errors. The gate matches the workflow path,
+PR number, head SHA and event timestamp, then requires success; findings, missing results, API errors and timeouts block
 tests and fail the required `test` and `e2e` checks. Trusted authors pass the scan in seconds;
-non-PR events, including merge queue, do not wait. A maintainer can apply `skip-security-scan`
-and close/reopen the PR to refresh all workflows' event payloads.
+push, schedule, dispatch and merge-queue events do not wait. A maintainer can apply
+`skip-security-scan` and close/reopen the PR to refresh all workflows' event payloads.
 `test_security_gate_waits_for_the_current_scan` covers pending, successful, failed, absent,
-stale and unrelated runs, including empty fork PR associations and paginated results.
-`test_security_gate_api_errors_block_ci` checks API failure propagation. These component tests
+stale and unrelated runs, including empty fork PR associations and paginated results over both
+API paths. `test_security_gate_api_errors_block_ci` checks authenticated API failures and public
+API rate limits. `test_security_gate_runner_and_token_respect_event_trust` evaluates the workflow
+expressions to keep fork PR gates on hosted runners without a token. These component tests
 do not validate live runner access, workflow scheduling or GitHub API permissions.
 `test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
@@ -1381,8 +1385,15 @@ no automated tests.
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
 job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
 can request it only on their own PR. `/integration-test <sha>` additionally requires the
-current head to match that commit. Integration runs with CI secrets: this policy trusts
-prior contributors to run their own PR code. First-time contributors still need a member.
+current head to match that commit. After authorization, the shared gate must find a successful
+scan for that exact commit before integration receives CI secrets. A comment reuses the latest
+scan for the authorized SHA; its later timestamp does not invalidate the earlier scan.
+Missing or invalid PR/SHA inputs fail instead of skipping the gate. Scan failures, missing scans
+and API errors skip integration and post a failed `Fork integration` status on the authorized SHA.
+`test_security_gate_comment_requires_existing_scan_of_authorized_commit` covers reuse and SHA
+mismatches; `test_fork_integration_reports_scan_failure_on_authorized_commit` exercises the report.
+This policy still trusts prior contributors to request runs of their own PR code; first-time
+contributors need a member. Member-only authorization is a separate change.
 It posts a `Fork integration` status, and works on in-repo PRs too as an on-demand rerun.
 Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests

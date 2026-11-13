@@ -1,5 +1,10 @@
 # Integration tests
 
+Comment-triggered `/integration-test` runs require authorization and a successful shared
+Security Scan for the same pinned PR commit before CI secrets are supplied. The gate, runner
+selection and failure-reporting component tests are documented in the [main test guide](../README.md).
+They do not exercise live GitHub comment delivery or credentialed integration runs.
+
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
