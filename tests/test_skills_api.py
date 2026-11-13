@@ -1010,3 +1010,106 @@ class TestListAllSkillsMetastoreFirst:
 
         assert (refs, reason) == ([ref("triage")], None)
         assert progress == [(1, 1, 1)]
+
+
+class TestMetastoreListingParityWithWalk:
+    def test_skips_catalogs_and_schemas_the_walk_skips(self, monkeypatch):
+        payload = {
+            "skills": [
+                _skill_json("main.default.triage"),
+                _skill_json("system.ai.builtin"),
+                _skill_json("main.information_schema.x"),
+            ]
+        }
+        monkeypatch.setattr(sa, "_http_get_json", lambda url, token, timeout=30: (payload, None))
+
+        refs, reason = sa.list_metastore_skills(WS, "token", deadline=time.monotonic() + 30)
+
+        assert reason is None
+        assert [r.fqn for r in refs] == ["main.default.triage"]
+
+    def test_unnamed_skill_still_warns(self, monkeypatch):
+        payload = {"skills": [{"bundle_name": "orphan", "finalize_time": "t"}]}
+        monkeypatch.setattr(sa, "_http_get_json", lambda url, token, timeout=30: (payload, None))
+        warnings: list[str] = []
+        monkeypatch.setattr(sa, "print_warning", warnings.append)
+
+        refs, _ = sa.list_metastore_skills(WS, "token", deadline=time.monotonic() + 30)
+
+        assert refs == []
+        assert len(warnings) == 1 and "no name" in warnings[0]
+
+
+class TestListAllSkillsBatchBySchema:
+    def test_metastore_pages_are_regrouped_per_schema(self, monkeypatch):
+        pages = {
+            None: (
+                {
+                    "skills": [_skill_json("main.default.a"), _skill_json("ml.prod.b")],
+                    "next_page_token": "p2",
+                },
+                None,
+            ),
+            "p2": ({"skills": [_skill_json("main.default.c")]}, None),
+        }
+        monkeypatch.setattr(sa, "_http_get_json", _paged_http(pages, []))
+        batches: list[list[str]] = []
+
+        refs, reason = sa.list_all_skills(
+            WS,
+            "token",
+            on_skills=lambda batch: batches.append([r.fqn for r in batch]),
+            batch_by_schema=True,
+        )
+
+        assert reason is None
+        assert len(refs) == 3
+        assert batches == [["main.default.a", "main.default.c"], ["ml.prod.b"]]
+
+    def test_partial_metastore_listing_is_regrouped_too(self, monkeypatch):
+        monkeypatch.setattr(
+            sa,
+            "list_metastore_skills",
+            lambda *a, **k: (
+                [ref("a"), ref("b", catalog="ml", schema="prod")],
+                sa._SKILLS_WALK_TIMEOUT_REASON,
+            ),
+        )
+        batches: list[list[str]] = []
+
+        _, reason = sa.list_all_skills(
+            WS,
+            "token",
+            on_skills=lambda batch: batches.append([r.fqn for r in batch]),
+            batch_by_schema=True,
+        )
+
+        assert reason == sa._SKILLS_WALK_TIMEOUT_REASON
+        assert batches == [["main.default.a"], ["ml.prod.b"]]
+
+    def test_fallback_walk_still_streams_per_schema(self, monkeypatch):
+        monkeypatch.setattr(
+            sa,
+            "list_metastore_skills",
+            lambda *a, **k: ([], "HTTP 400 Bad Request: parent is required"),
+        )
+        monkeypatch.setattr(
+            sa, "walk_catalog_schemas", _walk_stub([("main", "default"), ("ml", "prod")])
+        )
+        by_schema = {
+            "main.default": [ref("a")],
+            "ml.prod": [ref("b", catalog="ml", schema="prod")],
+        }
+        monkeypatch.setattr(
+            sa, "list_schema_skills", lambda ws, tok, c, s: (by_schema[f"{c}.{s}"], None)
+        )
+        batches: list[list[str]] = []
+
+        sa.list_all_skills(
+            WS,
+            "token",
+            on_skills=lambda batch: batches.append([r.fqn for r in batch]),
+            batch_by_schema=True,
+        )
+
+        assert batches == [["main.default.a"], ["ml.prod.b"]]

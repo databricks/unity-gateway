@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from ucode.databricks import (
+    _UC_FUNCTIONS_SKIP_CATALOGS,
     _http_get_bytes,
     _http_get_json,
     _looks_like_definitive_auth_failure,
@@ -181,14 +182,22 @@ def get_skill(workspace: str, token: str, fqn: str) -> SkillRef | None:
     return _skill_ref(payload) if isinstance(payload, dict) else None
 
 
-def _in_catalog_schema(skill: dict) -> bool:
-    """Whether ``skill`` lives directly in a ``<catalog>.<schema>``, as the schema walk finds them.
+def _outside_schema_walk(skill: dict) -> bool:
+    """Whether the schema walk would never return ``skill``, so the metastore listing skips it.
 
-    The metastore listing can also return skills in nested schemas, which the
-    download flow cannot address; skip those quietly instead of warning per skill.
+    That covers skills in nested schemas, which the download flow cannot address,
+    and skills in catalogs or schemas the walk skips. They are skipped quietly
+    rather than warned about per skill, so both listing paths return the same set.
     """
     name = skill.get("name")
-    return isinstance(name, str) and len(name.split("/", 1)[-1].split(".")) == 3
+    if not isinstance(name, str):
+        return False
+    parts = name.split("/", 1)[-1].split(".")
+    if len(parts) > 3:
+        return True
+    return len(parts) == 3 and (
+        parts[0] in _UC_FUNCTIONS_SKIP_CATALOGS or parts[1] == "information_schema"
+    )
 
 
 def list_metastore_skills(
@@ -231,7 +240,7 @@ def list_metastore_skills(
         data = payload if isinstance(payload, dict) else {}
         new: list[SkillRef] = []
         for skill in data.get("skills") or []:
-            if not isinstance(skill, dict) or not _in_catalog_schema(skill):
+            if not isinstance(skill, dict) or _outside_schema_walk(skill):
                 continue
             skill_ref = _skill_ref(skill)
             if skill_ref and skill_ref.fqn not in by_fqn:
@@ -256,6 +265,7 @@ def list_all_skills(
     on_progress: Callable[[int, int, int], None] | None = None,
     on_skills: Callable[[list[SkillRef]], None] | None = None,
     cancel_event: threading.Event | None = None,
+    batch_by_schema: bool = False,
 ) -> tuple[list[SkillRef], str | None]:
     """Return every finalized skill across all ``<catalog>.<schema>`` in the workspace, by FQN.
 
@@ -263,25 +273,37 @@ def list_all_skills(
     its first page, falls back to walking catalogs -> schemas -> skills in
     parallel. Both paths share one wall-clock budget and return partial results
     once ``deadline_seconds`` is exceeded. ``on_skills`` receives newly-found refs
-    (deduped by FQN against everything emitted so far) per page or per schema so a
-    picker can stream them in. ``on_progress`` is called as each schema completes
-    with ``(schemas_done, schemas_total, skills_found)``; because it counts
-    schemas, passing it selects the schema walk. The workspace-wide counterpart to
-    ``list_schema_skills``.
+    (deduped by FQN against everything emitted so far) so a picker can stream them
+    in: one batch per metastore page, which can mix schemas, or one per schema on
+    the walk. ``batch_by_schema`` makes every batch one schema's complete set by
+    holding metastore pages until that listing ends. ``on_progress`` is called as
+    each schema completes with ``(schemas_done, schemas_total, skills_found)``;
+    because it counts schemas, passing it selects the schema walk. The
+    workspace-wide counterpart to ``list_schema_skills``.
     """
     deadline = time.monotonic() + deadline_seconds
     if on_progress is None:
         refs, reason = list_metastore_skills(
-            workspace, token, deadline=deadline, on_skills=on_skills, cancel_event=cancel_event
+            workspace,
+            token,
+            deadline=deadline,
+            on_skills=None if batch_by_schema else on_skills,
+            cancel_event=cancel_event,
         )
-        if reason is None:
-            return refs, None if refs else "no skills found"
-        if (
+        if reason is None or (
             refs
             or time.monotonic() >= deadline
             or (cancel_event is not None and cancel_event.is_set())
             or _looks_like_definitive_auth_failure(reason)
         ):
+            if batch_by_schema and on_skills is not None:
+                by_schema: dict[tuple[str, str], list[SkillRef]] = {}
+                for ref in refs:
+                    by_schema.setdefault((ref.catalog, ref.schema), []).append(ref)
+                for location in sorted(by_schema):
+                    on_skills(by_schema[location])
+            if reason is None and not refs:
+                return [], "no skills found"
             return refs, reason
     by_fqn: dict[str, SkillRef] = {}
 

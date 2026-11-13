@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ucode import managed_files, mcp
+from ucode import managed_files, mcp, skills_api
 from ucode.agents import claude
 
 WS = "https://example.databricks.com"
@@ -2935,6 +2935,49 @@ class TestSkillSchemaPicker:
         )
 
         assert message == "⚠️ Timed out after 30s, found 2 skill schemas"
+
+    def test_background_loader_counts_schemas_split_across_metastore_pages(self, monkeypatch):
+        def skill(fqn):
+            return {"name": f"skills/{fqn}", "bundle_name": fqn, "finalize_time": "t"}
+
+        pages = {
+            None: (
+                {
+                    "skills": [skill("main.default.a"), skill("ml.prod.b")],
+                    "next_page_token": "p2",
+                },
+                None,
+            ),
+            "p2": ({"skills": [skill("main.default.c")]}, None),
+        }
+
+        def get(url, token, timeout=30, **kwargs):
+            return pages[url.split("page_token=", 1)[1] if "page_token=" in url else None]
+
+        monkeypatch.setattr(skills_api, "_http_get_json", get)
+        appended = []
+
+        message = mcp._skill_schema_background_loader(WS, "token", set())(
+            appended.extend, threading.Event()
+        )
+
+        assert message is None
+        assert [(c.value, c.title) for c in appended] == [
+            ("main.default", "main.default  (2 skills)"),
+            ("ml.prod", "ml.prod  (1 skill)"),
+        ]
+
+    def test_background_loader_reports_incomplete_listing(self, monkeypatch):
+        def fake_list_all(ws, tok, *, on_skills=None, **kwargs):
+            return [_skill_ref("triage")], "HTTP 503 Service Unavailable"
+
+        monkeypatch.setattr(mcp, "list_all_skills", fake_list_all)
+
+        message = mcp._skill_schema_background_loader(WS, "token", set())(
+            lambda choices: None, threading.Event()
+        )
+
+        assert message == "⚠️ Discovery stopped before the full list loaded, found 1 skill schemas"
 
     def test_prompt_returns_selected_locations(self, monkeypatch):
         loader = lambda append: None  # noqa: E731

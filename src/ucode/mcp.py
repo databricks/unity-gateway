@@ -3481,8 +3481,8 @@ def _skill_schema_background_loader(
 ) -> Callable[[Callable[[list[questionary.Choice]], None], threading.Event], str | None]:
     """A picker ``background_loader`` that streams the workspace-wide skill walk in as schema rows.
 
-    ``list_all_skills`` probes one schema per call, so each ``on_skills`` batch is that schema's
-    complete skill set: one row per schema, carrying its exact skill count.
+    ``batch_by_schema`` makes each ``on_skills`` batch one schema's complete skill set: one row
+    per schema, carrying its exact skill count.
     """
 
     def loader(
@@ -3493,15 +3493,17 @@ def _skill_schema_background_loader(
             append([_skill_schema_choice(location, len(refs), location in in_scope)])
 
         found, reason = list_all_skills(
-            workspace, token, on_skills=on_skills, cancel_event=cancel_event
+            workspace, token, on_skills=on_skills, cancel_event=cancel_event, batch_by_schema=True
         )
-        if reason == _SKILLS_WALK_TIMEOUT_REASON:
-            schemas = len({(ref.catalog, ref.schema) for ref in found})
-            return (
-                f"⚠️ Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s, "
-                f"found {schemas} skill schemas"
-            )
-        return None
+        if cancel_event.is_set() or reason in (None, "no skills found"):
+            return None
+        schemas = len({(ref.catalog, ref.schema) for ref in found})
+        detail = (
+            f"Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s"
+            if reason == _SKILLS_WALK_TIMEOUT_REASON
+            else "Discovery stopped before the full list loaded"
+        )
+        return f"⚠️ {detail}, found {schemas} skill schemas"
 
     return loader
 
