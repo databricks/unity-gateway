@@ -241,6 +241,12 @@ class TestNormalize:
         assert cfg["mcp_servers"] == {"unity_catalog_location": "main.mcp"}
         assert cfg["skills"] == {"unity_catalog_location": "main.skills"}
 
+    def test_mcp_servers_carry_sources_across_several_schemas(self):
+        # `sources` lets one config keep `system.ai` and add a team schema plus a single service.
+        raw = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", " main.tools.foo ", ""]}}
+        cfg = normalize_managed_config(raw)
+        assert cfg["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}
+
     def test_codex_provider_service(self):
         codex = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["codex"]
         assert codex["model_config"]["model_provider_service"] == "main.default.openai-mps"

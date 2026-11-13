@@ -1037,46 +1037,113 @@ def _resolve_managed_mcp_servers(
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
-    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``), and
-    the two branches resolve differently:
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?,
+    sources?}``). The API sets exactly one; if several are present, ``sources`` wins, then
+    ``unity_catalog_location``, then ``names``:
 
-    - a ``unity_catalog_location`` registers every MCP service under that ``<catalog>.<schema>``, so
-      it discovers the set via :func:`_resolve_location_mcp_servers` (with no ``original_servers``);
+    - ``sources`` lists exact ``<catalog>.<schema>.<service>`` names and ``<catalog>.<schema>.*``
+      patterns. Each pattern discovers its schema via :func:`_resolve_location_mcp_servers`, and
+      each exact name is built directly, so one config can span several schemas (e.g. ``system.ai``
+      plus a team schema).
+    - a ``unity_catalog_location`` (deprecated) registers every MCP service under that one
+      ``<catalog>.<schema>`` through the same discovery;
     - ``names`` registers exactly those services. Each is a full ``<catalog>.<schema>.<service>``
       whose proxy URL is deterministic, so its entry is built directly here with no discovery or
       narrowing call.
 
     Either way the managed set is tracked on its own and never entangles the developer's own servers
-    or the skills connection. A ``names`` entry that isn't a full three-part FQN is skipped with a
-    warning, so an admin's typo in one entry never blocks the developer from the valid entries.
+    or the skills connection. An entry that isn't a full three-part FQN (or a ``.*`` schema pattern
+    in ``sources``) is skipped with a warning, so an admin's typo in one entry never blocks the
+    developer from the valid entries. A discovery failure for any schema propagates exactly as for a
+    single location, so a partial listing never unregisters servers from a schema that failed.
     """
+    sources = [s for s in (selector.get("sources") or []) if isinstance(s, str) and s]
+    if sources:
+        return _resolve_managed_mcp_sources(sources, workspace, profile, clients, token=token)
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
-        if token is not None:
-            return _resolve_location_mcp_servers(
-                workspace, profile, clients, location, [], token=token
-            )
-        return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
+        return _discover_managed_location(location, workspace, profile, clients, token=token)
     names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
-    if not names:
-        return []
+    return _named_mcp_server_entries(
+        _drop_malformed_mcp_names(names, "name(s)"), workspace, clients
+    )
+
+
+def _resolve_managed_mcp_sources(
+    sources: list[str],
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    token: str | None = None,
+) -> list[dict]:
+    """Resolve managed ``mcp_servers.sources`` (exact FQNs and ``catalog.schema.*`` patterns)."""
+    locations = sorted({s[: -len(".*")] for s in sources if _is_mcp_schema_pattern(s)})
+    names = [s for s in sources if not _is_mcp_schema_pattern(s)]
+    working: list[dict] = []
+    for location in locations:
+        working.extend(
+            _discover_managed_location(location, workspace, profile, clients, token=token)
+        )
+    working.extend(
+        _named_mcp_server_entries(_drop_malformed_mcp_names(names, "source(s)"), workspace, clients)
+    )
+    # A name can also be covered by a schema pattern; register it once.
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for server in working:
+        name = _server_name(server)
+        if name in seen:
+            continue
+        if name:
+            seen.add(name)
+        deduped.append(server)
+    return deduped
+
+
+def _is_mcp_schema_pattern(source: str) -> bool:
+    """Whether ``source`` is ``<catalog>.<schema>.*`` (every MCP service in that schema)."""
+    parts = source.split(".")
+    return len(parts) == 3 and parts[2] == "*" and all(part.strip() for part in parts[:2])
+
+
+def _discover_managed_location(
+    location: str,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    token: str | None = None,
+) -> list[dict]:
+    """Every MCP service under ``location``, with no ``original_servers`` (managed set is separate)."""
+    if token is not None:
+        return _resolve_location_mcp_servers(workspace, profile, clients, location, [], token=token)
+    return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
+
+
+def _drop_malformed_mcp_names(names: list[str], label: str) -> list[str]:
+    """Drop entries that aren't full ``<catalog>.<schema>.<service>`` names, with one warning."""
     malformed = sorted(
         n for n in names if n.count(".") != 2 or not all(part for part in n.split("."))
     )
     if malformed:
         print_warning(
-            "Skipping managed mcp_servers name(s) that aren't full "
+            f"Skipping managed mcp_servers {label} that aren't full "
             f"`<catalog>.<schema>.<service>` names: {', '.join(malformed)}."
         )
-    names = [n for n in names if n not in set(malformed)]
-    if not names:
-        return []
-    # Explicit FQNs need no runtime discovery: the proxy URL is deterministic from the name, and
-    # access is enforced when a tool is actually called. So build the entries directly and skip the
-    # per-schema ListMcpServices round-trip (and the Atlas load it drives at scale) that narrowing a
-    # discovered list would require. A since-removed name simply fails at call time rather than
-    # slowing every `ug configure`. The `unity_catalog_location` selector above is the one path that
-    # still discovers, since a whole-schema pointer has no explicit set to register.
+    return [n for n in names if n not in set(malformed)]
+
+
+def _named_mcp_server_entries(names: list[str], workspace: str, clients: list[str]) -> list[dict]:
+    """Proxy entries for explicit MCP service FQNs, built without discovery.
+
+    Explicit FQNs need no runtime discovery: the proxy URL is deterministic from the name, and
+    access is enforced when a tool is actually called. So build the entries directly and skip the
+    per-schema ListMcpServices round-trip (and the Atlas load it drives at scale) that narrowing a
+    discovered list would require. A since-removed name simply fails at call time rather than
+    slowing every `ug configure`. Whole-schema selectors (a location or a ``.*`` source) are the one
+    path that still discovers, since they have no explicit set to register.
+    """
     working: list[dict] = []
     seen: set[str] = set()
     for full_name in sorted(set(names)):

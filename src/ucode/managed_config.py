@@ -220,20 +220,30 @@ class AgentConfig:
 
 @dataclass(frozen=True)
 class NamesOrLocation:
-    """Selector for mcp_servers and skills: names list or UC location."""
+    """Selector for mcp_servers and skills: a names list, a UC location, or a sources list.
+
+    ``sources`` (mcp_servers only) mixes exact ``catalog.schema.name`` entries with
+    ``catalog.schema.*`` patterns, so one config can span several schemas; it supersedes the
+    deprecated single ``unity_catalog_location``.
+    """
 
     names: list[str] | None = None
     unity_catalog_location: str | None = None
+    sources: list[str] | None = None
 
     @classmethod
     def from_wire(cls, value: object) -> NamesOrLocation | None:
-        """Parse the wire ``{names, unity_catalog_location}`` selector (exactly one per the API)."""
+        """Parse the wire ``{names, unity_catalog_location, sources}`` selector.
+
+        The API accepts exactly one of the three; keep whatever is present and let the resolver
+        apply the precedence ``sources`` > ``unity_catalog_location`` > ``names``."""
         value_dict = _as_dict(value)
         names = _str_list(value_dict.get("names"))
         location = _str(value_dict.get("unity_catalog_location"))
-        if not names and not location:
+        sources = _str_list(value_dict.get("sources"))
+        if not names and not location and not sources:
             return None
-        return cls(names=names or None, unity_catalog_location=location)
+        return cls(names=names or None, unity_catalog_location=location, sources=sources or None)
 
     def to_internal(self) -> dict:
         """Convert to internal shape."""
@@ -242,6 +252,8 @@ class NamesOrLocation:
             result["names"] = self.names
         if self.unity_catalog_location:
             result["unity_catalog_location"] = self.unity_catalog_location
+        if self.sources:
+            result["sources"] = self.sources
         return result
 
 

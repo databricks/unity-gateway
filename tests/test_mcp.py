@@ -3740,6 +3740,108 @@ class TestResolveManagedMcpServers:
     def test_empty_selector_returns_empty(self):
         assert mcp._resolve_managed_mcp_servers({}, WS, None, ["claude"]) == []
 
+    @staticmethod
+    def _fake_schema_listing(listings: dict[str, list[str]], discovered: list[str]):
+        """A `_resolve_location_mcp_servers` stand-in that serves fixed per-schema listings."""
+
+        def fake_loc(ws, profile, clients, location, original, services=None):
+            assert original == [] and services is None
+            discovered.append(location)
+            return [
+                {"name": n.replace(".", "-"), "url": "u", "auth": "proxy", "clients": clients}
+                for n in listings[location]
+            ]
+
+        return fake_loc
+
+    def test_sources_register_every_listed_schema(self, monkeypatch):
+        # The CUJ case: keep `system.ai` and add a team schema in one managed config.
+        discovered: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            self._fake_schema_listing(
+                {"system.ai": ["system.ai.github"], "main.exa": ["main.exa.search"]}, discovered
+            ),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.ai.*", "main.exa.*"]}, WS, None, ["claude"]
+        )
+        assert sorted(discovered) == ["main.exa", "system.ai"]
+        assert {s["name"] for s in out} == {"system-ai-github", "main-exa-search"}
+
+    def test_sources_mix_a_schema_with_a_single_named_service(self, monkeypatch):
+        # Exact names in `sources` build directly; only the `.*` pattern drives discovery.
+        discovered: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            self._fake_schema_listing({"system.ai": ["system.ai.github"]}, discovered),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.ai.*", "main.tools.foo"]}, WS, None, ["claude", "codex"]
+        )
+        assert discovered == ["system.ai"]
+        by_name = {s["name"]: s for s in out}
+        assert set(by_name) == {"system-ai-github", "main-tools-foo"}
+        assert by_name["main-tools-foo"]["url"] == mcp.build_mcp_service_url(WS, "main.tools.foo")
+        assert by_name["main-tools-foo"]["clients"] == ["claude", "codex"]
+
+    def test_sources_register_a_service_once_when_a_pattern_also_covers_it(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            self._fake_schema_listing({"system.ai": ["system.ai.github"]}, []),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.ai.*", "system.ai.github", "system.ai.*"]}, WS, None, ["claude"]
+        )
+        assert [s["name"] for s in out] == ["system-ai-github"]
+
+    def test_sources_skip_malformed_entries_with_a_warning(self, monkeypatch):
+        warned: list[str] = []
+        monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            lambda *a, **k: pytest.fail("no valid schema pattern to discover"),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["system.*", "a.b.c.d", "*", "system.ai.slack"]}, WS, None, ["claude"]
+        )
+        assert [s["name"] for s in out] == ["system-ai-slack"]
+        assert warned and all(bad in warned[0] for bad in ("system.*", "a.b.c.d"))
+
+    def test_sources_take_precedence_over_a_location(self, monkeypatch):
+        discovered: list[str] = []
+        monkeypatch.setattr(
+            mcp,
+            "_resolve_location_mcp_servers",
+            self._fake_schema_listing({"main.exa": ["main.exa.search"]}, discovered),
+        )
+        out = mcp._resolve_managed_mcp_servers(
+            {"sources": ["main.exa.*"], "unity_catalog_location": "system.ai"},
+            WS,
+            None,
+            ["claude"],
+        )
+        assert discovered == ["main.exa"]
+        assert [s["name"] for s in out] == ["main-exa-search"]
+
+    def test_sources_propagate_a_rate_limited_schema(self, monkeypatch):
+        # A partial result would unregister the rate-limited schema's servers, so the whole resolve
+        # fails the same way a single location does and the caller skips MCP setup this run.
+        def fake_loc(ws, profile, clients, location, original, services=None):
+            if location == "main.exa":
+                raise mcp.McpServiceListingRateLimited(location)
+            return [{"name": "system-ai-github", "url": "u", "auth": "proxy", "clients": clients}]
+
+        monkeypatch.setattr(mcp, "_resolve_location_mcp_servers", fake_loc)
+        with pytest.raises(mcp.McpServiceListingRateLimited):
+            mcp._resolve_managed_mcp_servers(
+                {"sources": ["system.ai.*", "main.exa.*"]}, WS, None, ["claude"]
+            )
+
 
 class TestReconcileManagedMcpServers:
     def _wire(self, monkeypatch, *, state, configured, resolved, applied, saved, setup_calls):

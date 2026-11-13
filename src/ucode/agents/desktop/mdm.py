@@ -233,6 +233,18 @@ def _validate_selector(selector: dict) -> None:
         raise RuntimeError(
             "MDM skill and MCP names must be fully qualified catalog.schema.name values."
         )
+    sources = selector.get("sources", [])
+    if not isinstance(sources, list) or any(
+        not isinstance(source, str)
+        or len(source.split(".")) != 3
+        or any(not part.strip() or part != part.strip() for part in source.split("."))
+        or ("*" in source and not source.endswith(".*"))
+        or "*" in source[:-1]
+        for source in sources
+    ):
+        raise RuntimeError(
+            "MDM MCP sources must be catalog.schema.name or catalog.schema.* values."
+        )
 
 
 def _download_skills(workspace: str, token: str, selector: dict, destination: Path) -> list[dict]:
