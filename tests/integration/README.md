@@ -1875,9 +1875,13 @@ Use `-- -m tui` for the six interactive journeys or
 Isolated integration sessions enable the existing `UCODE_RELAYED_PROXY_DIAGNOSTICS`
 transport logger for every agent. Headless `command-*.json` artifacts retain its
 `[ucode-relay]` events in `stderr`; TUI artifacts retain them in terminal output.
-Request IDs correlate upstream-header timings, status codes, response byte counts,
-disconnects and transport exception classes. The logger excludes request headers,
-bodies and credentials. Antigravity's native stream-json events remain in headless
+Request IDs correlate upstream-attempt starts, header timings, status codes, response byte counts,
+disconnects and transport exception classes. Each event includes a Unix timestamp in milliseconds.
+`elapsed_ms` is cumulative from the incoming request's start. Attempt starts follow token/header
+preparation. Subtract an attempt's start `elapsed_ms` from its header `elapsed_ms` to measure the
+upstream wait. The gap after rejected headers also includes draining the response and refreshing
+credentials. The logger excludes request headers, bodies and credentials.
+Antigravity's native stream-json events remain in headless
 command `stdout`; its raw native logs are not archived. These diagnostics do not
 change agent timeouts, task retries or success assertions.
 
