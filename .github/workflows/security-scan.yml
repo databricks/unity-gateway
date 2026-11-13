@@ -7,23 +7,23 @@ name: Security Scan
 # secrets. The scanner and the trust decision come from `main`, so a PR can't
 # edit them; the PR head is only read, from a separate `pr/` checkout.
 #
+# ci.yml and publish-skills-test.yml call it first and make their test jobs wait
+# on it, so a finding skips every test and fails the required checks. Trusted
+# authors and non-PR events (merge queue, push, schedule) pass in seconds.
+#
 # The org IP allow list blocks GitHub-hosted runners from the GitHub API, so
 # this job makes no API calls: it fetches this public repository anonymously
 # and reads labels from the event payload.
 #
 # Adapted from omnigent-ai/omnigent (Apache-2.0), .github/workflows/security-scan.yml.
 on:
-  pull_request:
-    # labeled/unlabeled so applying or removing the skip-security-scan waiver
-    # re-runs the scan and flips this check.
-    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  group: security-scan-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# No concurrency group: the callers' groups cancel superseded runs, and one here
+# would let two callers on the same PR cancel each other's scan.
 
 jobs:
   scan:
@@ -82,7 +82,8 @@ jobs:
         run: |
           git -C pr fetch -q --no-tags "$GITHUB_SERVER_URL/$REPO.git" "$BASE_SHA"
           # --no-renames lists a moved file's old path too, so moving a workflow away is caught.
-          git -C pr diff --no-renames "$BASE_SHA...HEAD" > pr.diff
+          # --text --no-textconv: the PR's .gitattributes can't mark changes binary or rewrite them.
+          git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff
           git -C pr diff --no-renames --name-only "$BASE_SHA...HEAD" > changed.txt
           echo "Changed files:"; cat changed.txt
 
@@ -151,7 +152,8 @@ jobs:
       - name: Explain the maintainer waiver (on failure)
         if: ${{ failure() }}
         run: |
-          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (this requires Triage permission, so a fork author cannot self-waive). Applying the label re-runs this scan automatically."
+          # A re-run reuses the original event, so it wouldn't see a label added since.
+          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (this requires Triage permission, so a fork author cannot self-waive), then closing and reopening the PR so CI starts again with the label."
           echo "::error::$MSG"
           {
             echo "### Security Scan failed"

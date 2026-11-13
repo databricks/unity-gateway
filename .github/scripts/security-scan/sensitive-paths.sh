@@ -6,7 +6,8 @@
 #
 # Two tiers:
 #   FAIL  -- paths that let a PR escalate privilege or rewrite the trust model:
-#            CI workflows and actions, CI helper scripts, code owners. An untrusted
+#            CI workflows and actions, CI helper scripts, code owners, and
+#            .gitattributes (it can hide changes from the diff). An untrusted
 #            author has no business editing these; a real need is unblocked by
 #            a maintainer reviewing and merging the change anyway.
 #   WARN  -- build/test hooks that execute code at install or collection time
@@ -38,6 +39,10 @@ while IFS= read -r path; do
       ;;
     .github/scripts/*)
       echo "::error file=$path::Untrusted PR edits a CI helper script under .github/scripts. These run in privileged workflows; a maintainer must review."
+      fail=1
+      ;;
+    .gitattributes | */.gitattributes)
+      echo "::error file=$path::Untrusted PR edits .gitattributes, which can mark changes binary or rewrite them so reviewers and scans don't see them; a maintainer must review."
       fail=1
       ;;
     setup.py | */setup.py | pyproject.toml | */pyproject.toml | conftest.py | */conftest.py)

@@ -736,6 +736,41 @@ def test_no_workflow_uses_pull_request_target():
     assert [path.name for path in workflows if "pull_request_target" in path.read_text()] == []
 
 
+def test_security_scan_runs_before_every_job_that_runs_pr_code():
+    # A finding skips every test job, which fails the required test and e2e checks.
+    scan_job = "  security-scan:\n    name: Security Scan\n    uses: ./.github/workflows/security-scan.yml\n"
+    ci = _workflow("ci.yml")
+    publish = _workflow("publish-skills-test.yml")
+    scan = _workflow("security-scan.yml")
+
+    assert scan_job in ci and "\n  lint:\n    name: Lint\n" in ci
+    assert (
+        ci.split("\n  lint:\n", 1)[1].split("\n  test:\n", 1)[0].count("needs: security-scan") == 1
+    )
+    assert scan_job in publish and publish.count("    needs: security-scan\n") == 2
+    assert re.search(r"(?m)^on:\n  workflow_call:\n\n", scan)
+    assert "${{ secrets." not in scan and "concurrency:" not in scan
+    # The PR's .gitattributes must not hide changes from the diff-based scans.
+    assert 'git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff' in scan
+
+
+def test_exfil_scan_recognizes_every_ci_secret():
+    # A secret a workflow injects must be one the exfil scan watches for.
+    root = Path(__file__).parent.parent
+    names = set()
+    for path in (root / ".github/workflows").glob("*.yml"):
+        names.update(
+            re.findall(r"(?m)^\s+([A-Z][A-Z0-9_]*): \$\{\{[^}\n]*secrets\.", path.read_text())
+        )
+    credentials = sorted(
+        name for name in names if not name.endswith(("_WORKSPACE", "_HOST", "_CLIENT_ID"))
+    )
+    scan = runpy.run_path(str(root / ".github/scripts/security-scan/exfil-scan.py"))
+
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in credentials
+    assert [name for name in credentials if not scan["_SECRET"].search(name)] == []
+
+
 def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():
     workflow = _workflow("user-journey-test-required.yml")
     trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]

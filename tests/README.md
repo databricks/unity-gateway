@@ -1358,6 +1358,14 @@ or skipped dependency fails the gate, and a running integration suite keeps it
 pending. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
+CI and the publish-skills workflow start with `Security Scan` (`security-scan.yml`), a static
+scan of PRs from authors GitHub does not report as owners, members, or collaborators. A finding
+skips every test job, so the `test` and `e2e` gates fail; trusted authors and merge-queue runs
+pass in seconds. `test_security_scan_runs_before_every_job_that_runs_pr_code` checks that wiring
+and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
+`test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
+a name the exfil scan watches. The detectors' matching itself has no automated tests.
+
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
 job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
 can request it only on their own PR. `/integration-test <sha>` additionally requires the

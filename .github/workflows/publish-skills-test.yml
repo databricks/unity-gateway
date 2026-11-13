@@ -13,8 +13,12 @@ concurrency:
   group: publish-skills-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  security-scan:
+    name: Security Scan
+    uses: ./.github/workflows/security-scan.yml
   tests:
     name: Publisher tests (Python ${{ matrix.python }})
+    needs: security-scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -38,6 +42,7 @@ jobs:
       - run: python -m pip_audit -r requirements.txt --strict --vulnerability-service osv --timeout 20
   smoke:
     name: Publisher composite action
+    needs: security-scan
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

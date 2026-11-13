@@ -38,20 +38,23 @@ _NETWORK = re.compile(
     r"requests\.(get|post|put|patch|request|Session)"
     r"|urllib\.request|urlopen|httpx\.|aiohttp|http\.client"
     r"|socket\.(socket|create_connection)|telnetlib|smtplib|ftplib"
-    r"|\bcurl\b|\bwget\b|\bnc\b|fetch\(|XMLHttpRequest|axios",
+    r"|\bcurl\b|\bwget\b|\bnc\b",
     re.IGNORECASE,
 )
 
-# Secret-NAMED credential sources (deliberately narrow: generic os.environ /
-# LLM_API_KEY use is normal in tests, so it is INFO-only, not blocking).
+# Browser-style sinks count only in JS/TS files: Python test helpers are often named `fetch`.
+_NETWORK_JS = re.compile(r"\bfetch\(|XMLHttpRequest|axios|\bhttps?\.request\(")
+_JS_FILE = re.compile(r"\.(js|mjs|cjs|jsx|ts|tsx)$")
+
+# Secret-NAMED credential sources: the env var names UG's CI fills from secrets
+# (tests/test_integration_contract.py keeps the list in sync), plus runner tokens and
+# credential files. Case-sensitive whole names, so code like `get_databricks_token`
+# or a test's `_SESSION_SECRET` doesn't count.
 _SECRET = re.compile(
-    r"DATABRICKS_(CLIENT_ID|CLIENT_SECRET|TOKEN|BEARER)"
-    r"|FORK_E2E_APP_PRIVATE_KEY|PRIVATE_KEY|[A-Z0-9]+_SECRET\b"
-    # No bare ACCESS_TOKEN: case-insensitively it matches common `access_token`
-    # OAuth/JSON fields and would block legit PRs. The specific secret names
-    # above stay; generic-token exfil is left to the reviewer + LLM advisory.
-    r"|GITHUB_TOKEN|\bGH_TOKEN\b|\.databrickscfg",
-    re.IGNORECASE,
+    r"\b(?:CLAUDE_CODE_OAUTH_TOKEN|DATABRICKS_(?:SECOND_)?BEARER|DATABRICKS_TOKEN"
+    r"|[A-Z][A-Z0-9_]*_CLIENT_SECRET|SLACK_WEBHOOK|GITHUB_TOKEN|GH_TOKEN"
+    r"|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|PRIVATE_KEY)\b"
+    r"|\.databrickscfg|/proc/self/environ"
 )
 
 # Always-blocking single-line shapes (independent of co-occurrence).
@@ -60,14 +63,15 @@ _STANDALONE = re.compile(
     # Wholesale environ dump only -- a bare `os.environ)` matched benign
     # `helper(os.environ)` and is dropped to avoid false positives.
     r"|(json\.dumps|dict|str|repr)\(\s*os\.environ"  # dump the whole environ
-    r"|\beval\s*\(|\bexec\s*\(|__import__\s*\("  # dynamic exec
+    # Not after `.`: JS `regex.exec(` is a method call, not dynamic exec.
+    r"|(?<![\w.$])(?:eval|exec)\s*\(|__import__\s*\("  # dynamic exec
     r"|pickle\.loads|marshal\.loads"  # deserialization exec
     r"|base64\.(b64decode|decodebytes)|codecs\.decode",  # decode (paired below)
     re.IGNORECASE,
 )
 _DECODE = re.compile(r"base64|b64decode|decodebytes|fromhex|codecs\.decode", re.IGNORECASE)
 _EXEC = re.compile(
-    r"\beval\s*\(|\bexec\s*\(|__import__\s*\(|subprocess|os\.system|popen", re.IGNORECASE
+    r"(?<![\w.$])(?:eval|exec)\s*\(|__import__\s*\(|subprocess|os\.system|popen", re.IGNORECASE
 )
 
 # Files that execute during `uv sync` / pytest collection -- INFO, so the
@@ -114,7 +118,9 @@ def scan_diff(diff: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
 
     for path, added in by_file.items():
         body = "\n".join(added)
-        has_net = bool(_NETWORK.search(body))
+        has_net = bool(_NETWORK.search(body)) or bool(
+            _JS_FILE.search(path) and _NETWORK_JS.search(body)
+        )
         has_secret = bool(_SECRET.search(body))
         if has_net and has_secret:
             blocking.append((path, "exfil shape: secret-named source + network sink in one file"))
