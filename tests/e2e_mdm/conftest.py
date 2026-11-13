@@ -313,7 +313,7 @@ def credential_leaks(machine, roots) -> list[str]:
         merge_stderr=False,
         secret=machine.client_secret,
     )
-    return result.output.splitlines()
+    return [line for line in result.output.splitlines() if line]
 
 
 def snapshot(roots) -> dict:
