@@ -241,6 +241,37 @@ class TestNormalize:
         assert cfg["mcp_servers"] == {"unity_catalog_location": "main.mcp"}
         assert cfg["skills"] == {"unity_catalog_location": "main.skills"}
 
+    def test_mcp_servers_carry_sources_across_several_schemas(self):
+        # `sources` lets one config keep `system.ai` and add a team schema plus a single service.
+        raw = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", " main.tools.foo ", ""]}}
+        cfg = normalize_managed_config(raw)
+        assert cfg["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ("system.ai.*", mc_mod.MCP_SOURCE_SCHEMA),
+            ("main.tools.github", mc_mod.MCP_SOURCE_NAME),
+            ("system.*", None),
+            ("a.b.c.d", None),
+            ("*", None),
+            ("a.b.c*", None),
+            ("a.*.*", None),
+            ("*.a.b", None),
+            ("a..b", None),
+            ("a. b.c", None),
+            ("a.b. *", None),
+        ],
+    )
+    def test_mcp_source_kind(self, source, kind):
+        # The one rule shared by the resolver, MDM, and export validation.
+        assert mc_mod.mcp_source_kind(source) == kind
+
+    def test_skills_ignore_sources(self):
+        # Only mcp_servers has `sources`; a stray skills value must not become a selector.
+        cfg = normalize_managed_config({"skills": {"sources": ["system.ai.*"]}})
+        assert "skills" not in cfg
+
     def test_codex_provider_service(self):
         codex = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["codex"]
         assert codex["model_config"]["model_provider_service"] == "main.default.openai-mps"

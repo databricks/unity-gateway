@@ -164,6 +164,11 @@ class TestRoundTrip:
         }
         assert normalize_managed_config(serialize_managed_config(manifest)) == manifest
 
+    def test_mcp_sources_round_trip(self):
+        # Serializing must keep `sources`, or a publish would clear an admin's multi-schema list.
+        manifest = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}}
+        assert normalize_managed_config(serialize_managed_config(manifest)) == manifest
+
     def test_mcp_and_skills_location_round_trip(self):
         manifest = {
             "mcp_servers": {"unity_catalog_location": "main.mcp"},
@@ -688,6 +693,26 @@ class TestValidate:
             "set either names or unity_catalog_location" in e
             for e in validate_manifest({"skills": {"names": []}})
         )
+
+    def test_mcp_sources_are_accepted(self):
+        manifest = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}}
+        assert validate_manifest(manifest) == []
+
+    # Representative boundaries; the full grammar is covered by test_mcp_source_kind.
+    @pytest.mark.parametrize("bad", ["system.*", "main.tools.c*"])
+    def test_malformed_mcp_source_is_rejected(self, bad):
+        errors = validate_manifest({"mcp_servers": {"sources": ["system.ai.*", bad]}})
+        assert any("mcp_servers.sources must be" in e and bad in e for e in errors)
+
+    def test_mcp_sources_exclude_the_other_selectors(self):
+        errors = validate_manifest(
+            {"mcp_servers": {"sources": ["system.ai.*"], "unity_catalog_location": "a.b"}}
+        )
+        assert any("not more than one" in e for e in errors)
+
+    def test_skills_reject_sources(self):
+        errors = validate_manifest({"skills": {"sources": ["system.ai.*"]}})
+        assert any("skills.sources is not supported" in e for e in errors)
 
     def test_non_fqn_mcp_name_is_rejected(self):
         errors = validate_manifest({"mcp_servers": {"names": ["main.default.ok", "not-an-fqn"]}})
