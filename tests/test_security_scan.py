@@ -62,14 +62,19 @@ def test_security_scan_parsers_survive_diff_and_path_tricks(tmp_path, monkeypatc
     assert secret.returncode == 1 and "AWS access key id" in secret.stdout
     assert "file=données.py,line=1::" in secret.stdout
 
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Security Scan shell steps run on Linux")
+def test_sensitive_path_guard_handles_non_ascii_paths(tmp_path):
     (tmp_path / "changed").write_bytes(".github/workflows/ü.yml\0".encode())
     guard = subprocess.run(
-        ["bash", str(scripts / "sensitive-paths.sh")],
+        ["bash", str(SCRIPTS / "sensitive-paths.sh")],
         env={**os.environ, "CHANGED_FILES": str(tmp_path / "changed")},
         capture_output=True,
         text=True,
+        timeout=10,
     )
     assert guard.returncode == 1
+    assert "::error file=.github/workflows/ü.yml::" in guard.stdout
 
 
 @pytest.mark.parametrize(
@@ -92,6 +97,7 @@ def test_exfil_decoder_does_not_suppress_independent_findings(monkeypatch, line,
 
 
 @pytest.mark.parametrize("path", ["justfile", "Justfile", "sub/justfile"])
+@pytest.mark.skipif(sys.platform == "win32", reason="Security Scan shell steps run on Linux")
 def test_ci_justfile_changes_warn_in_both_scanners(tmp_path, monkeypatch, path):
     monkeypatch.syspath_prepend(str(SCRIPTS))
     scan = runpy.run_path(str(SCRIPTS / "exfil-scan.py"))["scan_diff"]
@@ -133,6 +139,7 @@ def test_ci_justfile_changes_warn_in_both_scanners(tmp_path, monkeypatch, path):
         ({"PR_AUTHOR": "dependabot[bot]", "PR_HEAD_REPO": "databricks/unity-gateway"}, False),
     ],
 )
+@pytest.mark.skipif(sys.platform == "win32", reason="Security Scan shell steps run on Linux")
 def test_scan_waivers_apply_only_to_the_reviewed_head(tmp_path, overrides, waived):
     output = tmp_path / "output"
     result = subprocess.run(
@@ -161,6 +168,7 @@ def test_scan_waivers_apply_only_to_the_reviewed_head(tmp_path, overrides, waive
     assert "HEAD_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).head_sha }}" in trust
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Security Scan shell steps run on Linux")
 def test_semgrep_targets_exclude_symlinks_and_deleted_files(tmp_path):
     (tmp_path / "pr").mkdir()
     (tmp_path / "outside").write_text("not a PR file")

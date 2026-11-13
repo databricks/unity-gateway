@@ -7,7 +7,9 @@ wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemp
 secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
 warnings, symlink handling, and multi-batch Semgrep report parsing. These tests use inert
 fixtures; they do not execute contributed code or validate live GitHub event delivery,
-organization settings, Semgrep rules or advisory-service responses.
+organization settings, Semgrep rules or advisory-service responses. Bash cases run only
+on non-Windows hosts, matching the scanner's Linux runner; Python parser checks also run
+on Windows. Sensitive-path rejection asserts its annotation as well as the exit status.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
