@@ -603,6 +603,7 @@ SKIPPED_ON_FORK_PRS = {
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
+    "mdm-provision",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -639,6 +640,32 @@ def test_integration_jobs_that_run_on_fork_pull_requests_need_no_credentials():
         assert "secrets." not in jobs[name] and "id-token: write" not in jobs[name], (
             f"{name} runs on fork PRs, which get no secrets or OIDC token"
         )
+
+
+def test_cujs_accepts_only_the_mdm_skip_on_pinned_runs():
+    jobs = _integration_jobs()
+    pinned = re.search(
+        r"(?m)^    if: \$\{\{ (.*) && \(github\.event_name != 'pull_request'", jobs["mdm-provision"]
+    ).group(1)
+    assert f"MDM_PINNED: ${{{{ !({pinned}) }}}}" in jobs["cujs"]
+    script = textwrap.dedent(
+        jobs["cujs"].split("python3 - <<'PY'\n", 1)[1].split("\n          PY\n", 1)[0]
+    )
+
+    def gate(mdm_pinned, results):
+        env = {
+            **os.environ,
+            "MDM_PINNED": mdm_pinned,
+            "RESULTS": json.dumps({job: {"result": result} for job, result in results.items()}),
+        }
+        return subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, check=False
+        ).returncode
+
+    assert gate("true", {"smoke": "success", "mdm-provision": "skipped"}) == 0
+    assert gate("false", {"smoke": "success", "mdm-provision": "skipped"}) != 0
+    assert gate("true", {"smoke": "success", "mdm-provision": "failure"}) != 0
+    assert gate("true", {"smoke": "skipped", "mdm-provision": "skipped"}) != 0
 
 
 MEMBER_ONLY = 'contains(fromJSON(\'["MEMBER", "OWNER"]\'), github.event.comment.author_association)'
