@@ -109,7 +109,7 @@ def _write_proxy_log(line: str) -> None:
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
-    payload = {"event": event, **fields}
+    payload = {"event": event, "timestamp_ms": int(time.time() * 1000), **fields}
     _write_proxy_log(
         f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
     )
@@ -348,6 +348,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
             headers = request_headers(token)
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=1,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -379,6 +385,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if self._on_refresh_failure(exc):
                     return
             headers = request_headers(self.cache.token)
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=2,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
