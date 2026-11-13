@@ -280,7 +280,7 @@ def _provider_block(
     # Last, so an admin header can't select another workspace.
     _apply_managed_headers(http_headers, workspace_headers(workspace))
     block = {
-        "name": "Databricks AI Gateway",
+        "name": "Databricks Unity Gateway",
         "base_url": base_url,
         "wire_api": "responses",
         "http_headers": http_headers,

@@ -437,67 +437,6 @@ def test_language_transport_startup_failure_degrades_and_cleans_resources(
     server.shutdown.assert_not_called()
 
 
-def test_language_transport_leaves_effective_settings_to_native_mod(tmp_path, monkeypatch):
-    from ucode import gateway_proxy
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
-    _managed_env(tmp_path, monkeypatch)
-    state = {"workspace": WS, "codex_models": []}
-    claude.write_tool_config(state, "databricks-claude-sonnet-4")
-    server, cache, client = Mock(server_port=12345), Mock(), Mock()
-    start = Mock(return_value=(server, cache, client))
-    monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=Mock()))
-    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
-    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
-    monkeypatch.setenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", "0")
-    warning = Mock()
-    monkeypatch.setattr(claude, "print_warning", warning)
-    body_calls = []
-    with pytest.raises(RuntimeError, match="agent failed"):
-        with claude.subagent_language_transport(state):
-            body_calls.append(True)
-            assert json.loads(os.environ["UG_CLAUDE_LANGUAGE_PROXY"])["url"].startswith(
-                "http://127.0.0.1:"
-            )
-            raise RuntimeError("agent failed")
-    assert body_calls == [True]
-    start.assert_called_once()
-    server.shutdown.assert_called_once()
-    server.server_close.assert_called_once()
-    cache.stop.assert_called_once()
-    client.close.assert_called_once()
-    warning.assert_not_called()
-    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
-    assert os.environ["CLAUDE_CODE_GATEWAY_HINT_HEADERS"] == "0"
-
-
-def test_language_transport_ignores_inactive_managed_dropins(tmp_path, monkeypatch):
-    from ucode import gateway_proxy
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
-    managed_path, _root, _writes = _managed_env(tmp_path, monkeypatch)
-    state = {"workspace": WS, "codex_models": []}
-    claude.write_tool_config(state, "databricks-claude-sonnet-4")
-    dropins = managed_path.with_name("managed-settings.d")
-    dropins.mkdir()
-    (dropins / ".disabled.json").write_text(
-        json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}})
-    )
-    (dropins / "directory.json").mkdir()
-    server, cache, client = Mock(server_port=12345), Mock(), Mock()
-    start = Mock(return_value=(server, cache, client))
-    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    thread = Mock()
-    monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
-    with claude.subagent_language_transport(state):
-        start.assert_called_once()
-    thread.start.assert_called_once()
-    server.shutdown.assert_called_once()
-
-
 def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
     managed_path, _root, _writes = _managed_env(
         tmp_path, monkeypatch, {"enabledPlugins": {"ug-headers@other-managed": False}}

@@ -447,7 +447,7 @@ def provider_service_catalog(
 def gateway_catalog(
     listing: AnthropicModelCatalog, *, fallback_wire: str | None = None
 ) -> list[CopilotModel]:
-    """The models of an AI Gateway Anthropic-route listing Copilot can use, with their limits.
+    """The models of a Unity Gateway Anthropic-route listing Copilot can use, with their limits.
 
     The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
     sends the full name, which the gateway routes directly."""
@@ -480,7 +480,7 @@ def catalog_from_listings(
 ) -> list[CopilotModel] | None:
     """The Copilot catalog from this run's model listings.
 
-    ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
+    ``gateway`` is Unity Gateway's Anthropic-route listing, which also reports the models' limits; it
     wins whenever it lists a Claude or GPT model Copilot can use. Otherwise ``entries`` is the UC
     model-services listing (None when it failed) and ``fallback`` holds the ids the per-family
     gateway listings found instead. Open models come only from ``entries``, which leaves out the
@@ -536,13 +536,15 @@ def _string_list(value: object) -> list[str]:
 def copilot_catalog(state: dict) -> list[CopilotModel]:
     """The models this launch registers: the managed list, else the discovered catalog.
 
-    State saved before the catalog existed falls back to the Claude and GPT discovery lists."""
+    The managed list takes the limits discovery saved for the same models, since nothing else
+    gives GPT models a limit. State saved before the catalog existed falls back to the Claude and
+    GPT discovery lists."""
+    saved = state.get(CATALOG_STATE_KEY)
+    limits = _saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
     static = build_copilot_catalog(_string_list(state.get("copilot_static_models")))
     if static:
-        return static
-    saved = state.get(CATALOG_STATE_KEY)
+        return [replace(model, listed_limits=limits.get(model.id)) for model in static]
     if isinstance(saved, dict):
-        limits = _saved_limits(saved.get("limits"))
         return [
             replace(model, listed_limits=limits.get(model.id))
             for model in build_copilot_catalog(_string_list(saved.get("models")))

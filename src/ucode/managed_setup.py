@@ -240,6 +240,9 @@ def _enabled_agent_payload(tool: str, agent_config: dict) -> dict:
     tracing_enabled = agent_config.get("otel_tracing_enabled")
     if isinstance(tracing_enabled, bool):
         config["tracing"] = {"enabled": tracing_enabled}
+    vscode_enabled = agent_config.get("vscode_integration_enabled")
+    if isinstance(vscode_enabled, bool):
+        config["vscode_integration"] = {"enabled": vscode_enabled}
     settings = agent_config.get("agent_native_settings")
     if isinstance(settings, dict) and settings:
         config["agent_native_settings"] = settings
@@ -564,7 +567,7 @@ def _validate_smart_defaults(smart_defaults: dict, enabled_agents: dict[str, dic
         except ValueError:
             errors.append(
                 f"smart_defaults.budget_id must be a UUID (got '{budget_id}'). Use the "
-                "budget_configuration_id from the workspace's AI Gateway budgets."
+                "budget_configuration_id from the workspace's Unity Gateway budgets."
             )
 
     percentages: list[float] = []

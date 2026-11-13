@@ -951,11 +951,12 @@ class TestClaudeLanguageLoopbackProxy:
         assert "x-ug-language-session" not in captured[-1]["headers"]
         assert "x-ug-response-language" not in captured[-1]["headers"]
 
-    def test_json_recursion_error_passes_through(self, _language_proxy, monkeypatch):
+    def test_json_recursion_error_passes_through(self, _language_proxy):
         proxy_url, captured = _language_proxy
-        body = b'{"messages":[]}'
-        decoder = Mock(side_effect=RecursionError)
-        monkeypatch.setattr(gateway_proxy.json, "loads", decoder)
+        depth = 10_000
+        body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+        with pytest.raises(RecursionError):
+            json.loads(body)
         response = httpx.post(
             proxy_url + "/ai-gateway/anthropic/v1/messages",
             headers=_language_proxy_headers(
@@ -965,7 +966,6 @@ class TestClaudeLanguageLoopbackProxy:
             timeout=5,
         )
         assert response.status_code == 200
-        decoder.assert_called_once_with(body)
         assert captured[-1]["body"] == body
         assert "x-ug-language-session" not in captured[-1]["headers"]
         assert "x-ug-response-language" not in captured[-1]["headers"]

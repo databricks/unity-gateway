@@ -161,7 +161,7 @@ class TestHelp:
             assert command not in output
 
     def test_managed_authoring_commands_are_removed(self):
-        # Authoring moved to the AI Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
+        # Authoring moved to the Unity Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
         assert runner.invoke(app, ["setup"]).exit_code != 0
         assert runner.invoke(app, ["setup", "mcps"]).exit_code != 0
         assert runner.invoke(app, ["publish"]).exit_code != 0
@@ -1427,7 +1427,7 @@ class TestSubcommandRouting:
         catalog = db_mod.AnthropicModelCatalog(
             model_ids=[],
             model_id_to_display_name={},
-            error_msg="AI Gateway returned no Anthropic model ids",
+            error_msg="Unity Gateway returned no Anthropic model ids",
         )
         with _launch_policy_patches(None, picker_catalog=catalog) as calls:
             result = runner.invoke(app, ["claude", option, value])
@@ -1435,7 +1435,7 @@ class TestSubcommandRouting:
         assert result.exit_code == 1
         output = " ".join(_strip_ansi(result.output).split())
         assert f"Could not discover Claude models for {source}" in output
-        assert "AI Gateway returned no Anthropic model ids" in output
+        assert "Unity Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 
@@ -2154,14 +2154,14 @@ class TestManagedClaudeModelDiscovery:
         calls = self._invoke(
             monkeypatch,
             managed,
-            catalog_error="AI Gateway returned no Anthropic model ids",
+            catalog_error="Unity Gateway returned no Anthropic model ids",
         )
 
         assert calls["result"].exit_code == 1
         output = _strip_ansi(calls["result"].output)
         assert "Could not discover Claude models for Model Provider Service" in output
         assert "main.default.anthropic-mps" in output
-        assert "AI Gateway returned no Anthropic model ids" in output
+        assert "Unity Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 
@@ -3129,6 +3129,24 @@ class TestStatus:
         assert "Models (2, managed): system.ai.claude-opus-4-8, system.ai.claude-sonnet-5" in output
         assert "Default model: system.ai.claude-opus-4-8" in output
         assert "Tracing: enabled" in output
+
+    def test_status_shows_copilot_vscode_turned_off_by_managed_config(self, monkeypatch):
+        state = {
+            **MINIMAL_STATE,
+            "available_tools": ["copilot"],
+            "base_urls": {"copilot": "https://example.databricks.com/ai-gateway/copilot"},
+        }
+        for enabled, shown in ((False, True), (True, False)):
+            managed = {"enabled_agents": {"copilot": {"vscode_integration_enabled": enabled}}}
+            with (
+                patch("ucode.cli.load_state", return_value=state),
+                patch("ucode.cli.load_managed_state", return_value=managed),
+            ):
+                result = runner.invoke(app, ["status"])
+
+            output = re.sub(r"\s+", " ", _strip_ansi(result.output))
+            assert result.exit_code == 0, result.output
+            assert ("VS Code: off (workspace-managed)" in output) is shown
 
     def test_status_labels_self_configured_setup(self, monkeypatch):
         with (

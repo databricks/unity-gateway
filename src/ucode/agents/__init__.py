@@ -250,7 +250,7 @@ def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     installed, target = downgrade
     print_warning(
         f"{spec['display']} {installed} is newer than the latest version known to work "
-        f"with the Databricks AI Gateway ({target})."
+        f"with the Databricks Unity Gateway ({target})."
     )
     if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)
@@ -711,7 +711,11 @@ def request_vscode_with_copilot(requested: bool = True) -> None:
 
 
 def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
-    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with, or remove
+    an earlier setup when the workspace's managed config turns VS Code off."""
+    if state.get("copilot_vscode_integration") is False:
+        _remove_vscode_for_managed_config()
+        return
     if not _vscode_with_copilot:
         return
     if is_dry_run():
@@ -720,6 +724,19 @@ def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | 
     from . import vscode
 
     vscode.configure(state, provider=provider, location=parent_schema)
+
+
+def _remove_vscode_for_managed_config() -> None:
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    removed = vscode.revert() == "removed"
+    print_note(
+        "This workspace's managed configuration turns off GitHub Copilot in VS Code, so "
+        + ("the VS Code extension was removed." if removed else "VS Code was skipped.")
+    )
 
 
 def configure_single_tool(

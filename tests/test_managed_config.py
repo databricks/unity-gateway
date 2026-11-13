@@ -156,6 +156,24 @@ class TestNormalize:
         codex = normalize_managed_config(raw)["enabled_agents"]["codex"]
         assert codex["otel_tracing_enabled"] is False
 
+    def test_copilot_vscode_integration_is_carried(self):
+        for enabled in (True, False):
+            raw = {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_GITHUB_COPILOT",
+                        "config": {"vscode_integration": {"enabled": enabled}},
+                    }
+                ]
+            }
+            copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+            assert copilot["vscode_integration_enabled"] is enabled
+
+    def test_unset_vscode_integration_is_omitted(self):
+        raw = {"enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}]}
+        copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+        assert "vscode_integration_enabled" not in copilot
+
     def test_workspace_level_tracing_is_ignored(self):
         assert "otel_tracing_enabled" not in normalize_managed_config(
             {"tracing": {"enabled": True}}

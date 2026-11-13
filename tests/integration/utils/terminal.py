@@ -24,7 +24,16 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
-def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
+def _normalize_smart_router_env_guard(command: str) -> str:
+    return re.sub(
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1"ENV_UNSET"\2',
+        command,
+        count=1,
+    )
+
+
+def codex_command_approval_pending(screen: str, expected_command: str | tuple[str, ...]) -> bool:
     prompt = "Would you like to run the following command?"
     if prompt not in screen:
         return False
@@ -35,10 +44,19 @@ def codex_command_approval_pending(screen: str, expected_command: str) -> bool:
         r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
         dialog,
     )
+    expected_commands = (
+        (expected_command,) if isinstance(expected_command, str) else expected_command
+    )
+    rendered_command = (
+        " ".join(line.strip() for line in command.group(1).splitlines()).strip()
+        if command
+        else None
+    )
     assert (
         re.search(r"(?m)^[ \t]*Environment: local[ \t]*$", dialog) is not None
         and command is not None
-        and command.group(1).strip() == expected_command
+        and _normalize_smart_router_env_guard(rendered_command)
+        in tuple(_normalize_smart_router_env_guard(expected) for expected in expected_commands)
     ), "Codex requested an unexpected command approval:\n" + dialog
     return True
 
@@ -631,7 +649,12 @@ class AgentTerminal(TerminalProcess):
             self.approving = True
         return True
 
-    def wait_for_task(self, task, timeout=180):
+    def wait_for_task(self, task, timeout=180, *, completion=None, description=None):
+        """Wait for task evidence while handling the usual permissions and API errors.
+
+        A caller may supply a different evidence predicate for a specific journey;
+        the default still requires and asserts the parent's completed answer.
+        """
         permission_in_progress = False
 
         def completed(screen):
@@ -660,14 +683,17 @@ class AgentTerminal(TerminalProcess):
             if self.approve_windows_command(screen):
                 return False
             permission_in_progress = False
-            return task.completed(self.session, self.agent)
+            return (
+                completion() if completion is not None else task.completed(self.session, self.agent)
+            )
 
         self.wait_for(
             completed,
-            "a completed assistant answer with the file's value",
+            description or "a completed assistant answer with the file's value",
             timeout=timeout,
         )
-        task.assert_completed(self.session, self.agent)
+        if completion is None:
+            task.assert_completed(self.session, self.agent)
 
     def wait_for_background_tasks(self, timeout=180):
         """Wait in Claude's native task view without stopping or detaching work."""

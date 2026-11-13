@@ -46,7 +46,7 @@ def _credential_state(credential: object) -> str | None:
 
 
 def connection_from_url(url: str) -> str | None:
-    """Return the connection FQN of an AI Gateway MCP service URL, or ``None``.
+    """Return the connection FQN of a Unity Gateway MCP service URL, or ``None``.
 
     ``https://ws/ai-gateway/mcp-services/system.ai.github`` -> ``system.ai.github``.
     A URL that is not an mcp-services endpoint (or names no service) returns

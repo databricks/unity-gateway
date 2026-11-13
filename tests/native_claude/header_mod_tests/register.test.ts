@@ -94,24 +94,34 @@ test('switching providers removes private transport headers before returning', a
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
 });
 
-test('malformed language transport is cleared without breaking injected headers', async ($, on) => {
-  const upstream = 'https://workspace.example/ai-gateway/anthropic';
-  const env = setup(on, {
-    ANTHROPIC_BASE_URL: upstream,
-    ANTHROPIC_CUSTOM_HEADERS:
-      'X-Required: keep\nX-Team: eng\nX-UG-Response-Language: private-language\nX-UG-Language-Session: private-session',
-    UG_HEADERS: 'X-Added: yes',
-    UG_CLAUDE_LANGUAGE_PROXY:
-      '{"url":"http://127.0.0.1:12345/ai-gateway/anthropic","secret":"private-session"',
+for (const [name, raw] of [
+  ['malformed JSON', '{"url":"http://127.0.0.1:12345/ai-gateway/anthropic","secret":"private-session"'],
+  ['non-loopback URL', JSON.stringify({
+    url: 'https://other.example/ai-gateway/anthropic',
+    upstream: 'https://workspace.example/ai-gateway/anthropic', secret: 'private-session',
+  })],
+  ['missing upstream', JSON.stringify({
+    url: 'http://127.0.0.1:12345/ai-gateway/anthropic', secret: 'private-session',
+  })],
+]) {
+  test(`invalid language transport (${name}) is cleared without breaking injected headers`, async ($, on) => {
+    const upstream = 'https://workspace.example/ai-gateway/anthropic';
+    const env = setup(on, {
+      ANTHROPIC_BASE_URL: upstream,
+      ANTHROPIC_CUSTOM_HEADERS:
+        'X-Required: keep\nX-Team: eng\nX-UG-Response-Language: private-language\nX-UG-Language-Session: private-session',
+      UG_HEADERS: 'X-Added: yes',
+      UG_CLAUDE_LANGUAGE_PROXY: raw,
+    });
+    await $.session.start(start);
+    expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+    expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe('');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep\nX-Team: eng\nX-Added: yes');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('private-session');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('private-language');
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('127.0.0.1');
   });
-  await $.session.start(start);
-  expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
-  expect(env.UG_CLAUDE_LANGUAGE_PROXY).toBe('');
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep\nX-Team: eng\nX-Added: yes');
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('private-session');
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('private-language');
-  expect(env.ANTHROPIC_CUSTOM_HEADERS).not.toContain('127.0.0.1');
-});
+}
 
 test('disabled identity headers skip language inheritance and restore the upstream', async ($, on) => {
   const upstream = 'https://workspace.example/ai-gateway/anthropic';

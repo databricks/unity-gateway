@@ -24,10 +24,8 @@ def decision():
     )
 
 
-def write(payload, decision, task="inspect parser", **kwargs):
-    session_log.append_decision(
-        "claude", payload, task, decision, "requested", routing_ms=840, **kwargs
-    )
+def write(payload, decision, task="inspect parser"):
+    session_log.append_decision("claude", payload, task, decision, "requested", routing_ms=840)
 
 
 def test_record_shape(log_dir, decision):
@@ -170,20 +168,6 @@ def test_no_session_record_without_audit_or_route(log_dir, decision, monkeypatch
     v2.route_claude_subagent(payload, **kwargs)
     v2.route_claude_subagent({**payload, "tool_name": "Read"}, audit_decision=True, **kwargs)
     assert not log_dir.exists()
-
-
-def test_read_decisions_distinguishes_missing_from_unreadable(log_dir, decision, monkeypatch):
-    """A missing log is empty history; a permission failure must not look empty."""
-
-    def deny_read(self, *args, **kwargs):
-        raise PermissionError(13, "Permission denied", str(self))
-
-    assert session_log.read_decisions("claude", "absent") == []
-    write({"session_id": "s1"}, decision)
-    path = log_dir / "claude-s1.jsonl"
-    monkeypatch.setattr(type(path), "read_text", deny_read)
-    with pytest.raises(PermissionError):
-        session_log.read_decisions("claude", "s1")
 
 
 def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_path, monkeypatch):

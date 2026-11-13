@@ -77,7 +77,7 @@ def test_restore_workspace_mcp_servers_uses_saved_name_and_destination_url(monke
 # The proxy argv every client registers as a stdio command. The leading element
 # is the resolved `ug` binary path, so tests assert the tail (the stable part).
 GH_URL = f"{WS}/api/2.0/mcp/external/github"
-# A connection-backed AI Gateway MCP service (3-part FQN) — the URL form that
+# A connection-backed Unity Gateway MCP service (3-part FQN) — the URL form that
 # registers as direct HTTP for supported CIMD clients.
 AIGW_MCP_URL = f"{WS}/ai-gateway/mcp-services/system.ai.github"
 PROXY_TAIL = ["mcp-proxy", "--url", GH_URL, "--host", WS, "--profile", "p"]
@@ -1013,6 +1013,25 @@ class TestManagedMcpEntry:
         )
         assert e["type"] == "stdio"
 
+    def test_prefetched_login_result_preserves_native_and_proxy_entries(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp,
+            "mcp_service_needs_connection_login",
+            lambda *a: pytest.fail("configure must reuse the prefetched result"),
+        )
+        for required, expected_type in ((True, "http"), (False, "stdio")):
+            entry = mcp._managed_mcp_entry(
+                "claude",
+                self.MCP_URL,
+                WS,
+                None,
+                use_pat=False,
+                always_load=False,
+                http_client=mcp.CLAUDE_CODE_CIMD_CLIENT_ID,
+                login_required={self.MCP_URL: required},
+            )
+            assert entry["type"] == expected_type
+
     def test_claude_always_load_stdio_entry(self):
         e = mcp._managed_mcp_entry(
             "claude", self.MCP_URL, WS, None, use_pat=False, always_load=True, http_client=None
@@ -1060,6 +1079,54 @@ class TestManagedMcpEntry:
                 self.MCP_URL, mcp.CODEX_CIMD_CLIENT_ID
             )
         }
+
+
+def test_managed_connection_login_lookup_is_bounded_and_deduplicated(monkeypatch):
+    names = [f"system.ai.service{i}" for i in range(17)]
+    urls = [mcp.build_mcp_service_url(WS, name) for name in names]
+    servers = [{"url": url} for url in [*urls, urls[0], f"{WS}/api/2.0/mcp/sql"]]
+    monkeypatch.setattr(mcp, "get_databricks_token", lambda *a: "token")
+    calls: list[str] = []
+    lock = threading.Lock()
+    first_wave = threading.Barrier(4, timeout=5)
+    active = peak = 0
+
+    def lookup(workspace, token, name):
+        nonlocal active, peak
+        with lock:
+            calls.append(name)
+            active += 1
+            peak = max(peak, active)
+            first_four = len(calls) <= 4
+        if first_four:
+            first_wave.wait()
+        with lock:
+            active -= 1
+        return name != names[0]
+
+    monkeypatch.setattr(mcp, "mcp_service_needs_connection_login", lookup)
+    results = mcp._managed_connection_login_requirements(
+        servers, WS, "profile", {"claude": mcp.CLAUDE_CODE_CIMD_CLIENT_ID}
+    )
+    assert set(calls) == set(names)
+    assert len(calls) == 17
+    assert peak == 4
+    assert results == {url: name != names[0] for url, name in zip(urls, names, strict=True)}
+
+
+def test_managed_connection_login_lookup_skips_when_native_oauth_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        mcp, "get_databricks_token", lambda *a: pytest.fail("no token fetch without CIMD")
+    )
+    assert (
+        mcp._managed_connection_login_requirements(
+            [{"url": mcp.build_mcp_service_url(WS, "system.ai.github")}],
+            WS,
+            "profile",
+            {"claude": None},
+        )
+        == {}
+    )
 
 
 class TestApplySkillsMcpChanges:
@@ -3938,11 +4005,18 @@ class TestReconcileManagedMcpServers:
         self._wire_managed_file(
             monkeypatch, claude_eligible=True, codex_eligible=True, captured=captured
         )
+        lookups = []
+        monkeypatch.setattr(
+            mcp,
+            "mcp_service_needs_connection_login",
+            lambda workspace, token, name: lookups.append(name) or True,
+        )
         out = mcp.reconcile_managed_mcp_servers(
             {"mcp_servers": {"names": ["system.ai.github"]}}, {"claude", "codex"}
         )
         assert "system-ai-github" in captured["claude"]
         assert "system-ai-github" in captured["codex"]
+        assert lookups == ["github"]
         assert applied["working"] == []
         assert saved["managed_mcp_servers"] == []
         assert [s["name"] for s in out] == ["system-ai-github"]
@@ -4648,7 +4722,7 @@ class TestConfiguredMcpServersByName:
 
 class TestListMcpCommand:
     def _state(self):
-        # A developer-added AI Gateway service on claude+codex, a workspace-managed one, and a
+        # A developer-added Unity Gateway service on claude+codex, a workspace-managed one, and a
         # skills connection (which must be reported in its own section, never as a plain server).
         return {
             "workspace": WS,
