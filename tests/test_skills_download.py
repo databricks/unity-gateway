@@ -74,6 +74,12 @@ class TestSkillDirRoots:
         roots = skill_dir_roots(None)
         assert roots == [tmp_path / ".claude/skills", tmp_path / ".agents/skills"]
 
+    def test_claude_root_honors_claude_config_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sd.Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "work"))
+        roots = skill_dir_roots(None)
+        assert roots == [tmp_path / "work/skills", tmp_path / ".agents/skills"]
+
     def test_relative_path_rejected(self):
         with pytest.raises(ValueError, match="absolute"):
             skill_dir_roots("relative/dir")
