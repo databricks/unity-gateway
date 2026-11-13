@@ -44,6 +44,7 @@ from ucode.constants import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
+from ucode.string_utils import unqualified_model_name
 from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import (
@@ -3820,9 +3821,10 @@ _BARE_MODEL_NAME_PATTERN = re.compile(
 
 
 def bare_model_name(model: str) -> str:
-    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.`` and
-    ``databricks-`` prefixes, or ``[...]`` hint."""
-    match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
+    """``model`` lowercased, without its catalog/schema, provider service or region prefix,
+    ``anthropic.`` and ``databricks-`` prefixes, or ``[...]`` hint."""
+    name = unqualified_model_name(model.lower().split("[", 1)[0])
+    match = _BARE_MODEL_NAME_PATTERN.match(name)
     return match.group("name") if match else ""
 
 

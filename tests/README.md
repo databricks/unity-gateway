@@ -1567,6 +1567,9 @@ while preserving reviewed inputs and denials.
 `ty` checks the schema catalog callbacks registered in `SCHEMA_MODEL_CATALOGS`.
 Copilot schema wildcards use UC model-service entries and the existing Copilot catalog builder,
 which includes Claude, GPT, and supported open models while filtering incompatible APIs.
-Managed wildcard expansion, launch fallback, workspace-cache isolation, and wildcard configure
-failures lack dedicated component coverage. No installed-agent journey currently covers mixed
-wildcard sources or proves inference with qualified MPS models.
+Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
+and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
+wire APIs and Claude limits. These checks use controlled discovery responses.
+Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
+component coverage. No installed-agent journey currently covers mixed wildcard sources or
+proves inference with qualified MPS models.

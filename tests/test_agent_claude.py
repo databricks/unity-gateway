@@ -664,16 +664,28 @@ class TestRenderOverlay:
         assert "modelPicker" not in overlay
 
     def test_static_models_label_is_prettified(self):
-        # Picker labels drop the ``system.ai.`` prefix and are title-cased with a dotted version.
         static = [
             "system.ai.claude-opus-4-8",
             "system.ai.glm-5-3",
             "system.ai.kimi-k3",
             "databricks-custom-model",
+            "main.default.lilly-personal-anthropic.claude-haiku-5-5",
+            "main.default.lilly-personal-anthropic.claude-opus-5-5",
+            "main.default.lilly-personal-anthropic.claude-sonnet-5-5",
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
-        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+        assert labels == [
+            "Claude Opus 4.8",
+            "GLM 5.3",
+            "Kimi K3",
+            "Databricks Custom Model",
+            "Claude Haiku 5.5",
+            "Claude Opus 5.5",
+            "Claude Sonnet 5.5",
+        ]
+        assert overlay["availableModels"] == static
+        assert [opt["model"] for opt in overlay["modelPicker"]["options"]] == static
 
 
 class TestRenderOverlayOtelTracing:
