@@ -332,6 +332,54 @@ class TestRelayResponseClientDisconnect:
 
 
 class TestProxyDiagnosticFile:
+    @pytest.mark.parametrize("language_warning", [False, True])
+    def test_held_file_lock_preserves_response_and_terminal(
+        self, tmp_path, monkeypatch, capsys, language_warning
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: language_warning)
+        monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path)
+        path = tmp_path / "logs/gateway-proxy.log" if language_warning else tmp_path / "proxy.log"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("held\n")
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, str(path))
+        output = _Collect()
+        proxy, cache, client = gateway_proxy.start_claude_language_proxy(
+            "http://127.0.0.1:1", lambda _force: "test-token", session_secret="test-secret"
+        )
+
+        def write():
+            if language_warning:
+                cache.report_refresh_failure(RuntimeError("synthetic-private-error"))
+            else:
+                _relay_handler(output)._relay_response(_FakeResponse(200, {}, [b"ok"]))
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                with path.open("a") as holder:
+                    gateway_proxy.acquire_exclusive_file_lock(holder, timeout=0)
+                    try:
+                        pool.submit(write).result(timeout=5)
+                    finally:
+                        gateway_proxy.release_file_lock(holder)
+                assert path.read_text() == "held\n"
+        finally:
+            proxy.server_close()
+            cache.stop()
+            client.close()
+
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "synthetic-private-error" not in captured.err
+        if language_warning:
+            assert captured.err == ""
+        else:
+            assert output.data.endswith(b"ok")
+            assert "Could not write proxy diagnostics file; using stderr" in captured.err
+            event = json.loads(captured.err.splitlines()[-1].removeprefix("[ucode-relay] "))
+            assert event["event"] == "response_complete"
+            assert event["status"] == 200
+
     def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
         path = tmp_path / "proxy.log"
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
@@ -430,6 +478,30 @@ class TestTokenCache:
         _ = cache.token
         _ = cache.token
         assert state["forces"] == [False]  # no extra mint while fresh
+
+    def test_seeded_token_survives_failed_renewal_then_refreshes(self):
+        state, provider = _fake_token_provider([5000])
+        initial = _make_jwt(time.time() + 3600)
+        failures = []
+        cache = gateway_proxy.TokenCache(
+            provider,
+            force_refresh_near_expiry=True,
+            initial_token=initial,
+            on_refresh_failure=lambda exc: failures.append(str(exc)),
+        )
+        assert cache.token == initial
+        assert state["forces"] == []
+
+        state["raise"] = True
+        cache._expiry = time.time() - 1
+        assert cache.token == initial
+        assert not cache._fresh_enough(buffer_seconds=0)
+        assert failures == ["mint failed"]
+
+        state["raise"] = False
+        assert cache.token != initial
+        assert state["forces"] == [True]
+        assert cache._fresh_enough()
 
     def test_near_expiry_preserves_default_nonforce_refresh(self):
         state, provider = _fake_token_provider([100, 5000])

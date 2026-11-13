@@ -316,11 +316,12 @@ _LANGUAGE_SESSION_SECRET = "test-language-session"
 
 
 @contextlib.contextmanager
-def _running_language_proxy(gateway: _FakeGateway, token_provider=None):
+def _running_language_proxy(gateway: _FakeGateway, token_provider=None, *, initial_token=None):
     server, cache, client = gateway_proxy.start_claude_language_proxy(
         gateway.base_url,
         token_provider or _counting_token(),
         session_secret=_LANGUAGE_SESSION_SECRET,
+        initial_token=initial_token,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -572,6 +573,7 @@ class TestGatewayAuthProxyEndToEnd:
                 timeout=10,
             )
         assert resp.status_code == 404
+        assert resp.json()["error"]["type"] == "not_found_error"
         assert gw.requests == []
 
     @pytest.mark.parametrize(
@@ -673,9 +675,10 @@ class TestClaudeLanguageProxyEndToEnd:
     ):
         expiry = time.time() + remaining_seconds
         payload = base64.urlsafe_b64encode(json.dumps({"exp": expiry}).encode()).decode()
-        provider = _counting_token(f"e30.{payload.rstrip('=')}.signature")
+        initial_token = f"e30.{payload.rstrip('=')}.signature"
+        provider = _counting_token(initial_token)
         gw = make_gateway()
-        with _running_language_proxy(gw, provider) as proxy_url:
+        with _running_language_proxy(gw, provider, initial_token=initial_token) as proxy_url:
             url = proxy_url + "/ai-gateway/anthropic/_ug_language_health"
             for _ in range(2):
                 response = httpx.get(
@@ -686,14 +689,17 @@ class TestClaudeLanguageProxyEndToEnd:
                 assert response.status_code == expected_status
                 if expected_status == 200:
                     assert response.content == b""
+                else:
+                    assert response.json()["error"]["type"] == "api_error"
             bad_secret = httpx.get(
                 url,
                 headers={"X-UG-Language-Session": "wrong-secret"},
                 timeout=10,
             )
             assert bad_secret.status_code == 401
+            assert bad_secret.json()["error"]["type"] == "authentication_error"
 
-        assert provider.calls == [True]
+        assert provider.calls == []
         assert gw.requests == []
 
     def test_forwards_child_request_with_gateway_auth_and_private_headers_stripped(

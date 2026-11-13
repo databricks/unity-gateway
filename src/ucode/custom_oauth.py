@@ -185,6 +185,7 @@ def get_custom_client_token(
     scopes: Sequence[str],
     profile: str | None = None,
     force_refresh: bool = False,
+    allow_consent: bool = True,
 ) -> str:
     """Fetch a custom-client token through the selected SDK or CLI backend."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
@@ -219,9 +220,13 @@ def get_custom_client_token(
                         )
                     credentials.token()
                 except Exception:
+                    if not allow_consent:
+                        raise
                     print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
                     credentials = None
             if credentials is None:
+                if not allow_consent:
+                    raise RuntimeError("Custom-client OAuth requires sign-in.")
                 client = oauth.OAuthClient(
                     oidc_endpoints=endpoints,
                     client_id=config["client_id"],
@@ -249,7 +254,9 @@ def get_custom_client_token(
         ) from exc
 
 
-def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
+def launch_token(
+    state: dict, workspace: str, *, force_refresh: bool = False, allow_consent: bool = True
+) -> str:
     """The token an agent launch authenticates with: the custom-OAuth client token when
     configured, else the CLI profile's."""
     custom_oauth = state.get("custom_oauth")
@@ -261,5 +268,6 @@ def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) ->
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
             force_refresh=force_refresh,
+            allow_consent=allow_consent,
         )
     return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)

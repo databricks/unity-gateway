@@ -19,6 +19,7 @@ from ucode.custom_oauth import (
     _custom_oauth_lock,
     build_custom_auth_token_argv,
     get_custom_client_token,
+    launch_token,
 )
 
 WS = "https://example.databricks.com"
@@ -160,6 +161,33 @@ class TestCustomClientToken:
         output = capsys.readouterr()
         assert "Sign in again" in output.err
         assert "sensitive server response" not in output.err
+
+    @pytest.mark.parametrize("cached", ["missing", "expired", "fresh"])
+    def test_noninteractive_launch_token_failure_does_not_start_consent(self, capsys, cached):
+        cache_path = Path(self._cache().filename)
+        if cached != "missing":
+            self._cache().save(self._credentials("cached", "revoked-refresh"))
+            if cached == "expired":
+                payload = json.loads(cache_path.read_text())
+                payload["token"]["expiry"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+                cache_path.write_text(json.dumps(payload))
+        original = cache_path.read_bytes() if cache_path.exists() else None
+        self.refresh.side_effect = ValueError("sensitive server response")
+        state = {
+            "custom_oauth": {
+                "client_id": "custom-client",
+                "redirect_url": "http://localhost:8020",
+                "scopes": TEST_SCOPES,
+            }
+        }
+        with pytest.raises(RuntimeError, match="Custom-client OAuth failed") as error:
+            launch_token(state, WS, force_refresh=cached == "fresh", allow_consent=False)
+        self.browser.assert_not_called()
+        assert self.refresh.call_count == (0 if cached == "missing" else 1)
+        assert (cache_path.read_bytes() if cache_path.exists() else None) == original
+        output = capsys.readouterr()
+        assert output.out == output.err == ""
+        assert "sensitive server response" not in str(error.value)
 
     def test_invalid_redirect_fails_before_network(self):
         with pytest.raises(RuntimeError, match="--redirect-url must be"):

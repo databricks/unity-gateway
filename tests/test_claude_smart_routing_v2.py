@@ -443,7 +443,8 @@ class TestV2Launch:
         transport_events = []
 
         @contextmanager
-        def language_transport(_state):
+        def language_transport(_state, *, initial_token):
+            assert initial_token == "token"
             with monkeypatch.context() as transport_env:
                 transport_env.setenv("UG_CLAUDE_LANGUAGE_PROXY", "active-transport")
                 transport_events.append("enter")

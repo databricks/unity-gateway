@@ -2203,7 +2203,7 @@ def header_mod_active(*, require_ug: bool = False) -> bool:
 
 
 @contextmanager
-def subagent_language_transport(state: dict) -> Iterator[None]:
+def subagent_language_transport(state: dict, *, initial_token: str) -> Iterator[None]:
     """Give the managed mod a launch-local transport without changing saved settings."""
     previous = os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
     resources = ExitStack()
@@ -2227,8 +2227,11 @@ def subagent_language_transport(state: dict) -> Iterator[None]:
             secret = secrets.token_urlsafe(32)
             server, cache, client = start_claude_language_proxy(
                 workspace,
-                lambda force: launch_token(state, workspace, force_refresh=force),
+                lambda force: launch_token(
+                    state, workspace, force_refresh=force, allow_consent=False
+                ),
                 session_secret=secret,
+                initial_token=initial_token,
             )
             resources.callback(client.close)
             resources.callback(cache.stop)

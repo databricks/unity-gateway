@@ -332,7 +332,7 @@ def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_
 
 
 def test_language_transport_restores_environment_and_closes_on_failure(tmp_path, monkeypatch):
-    from ucode import gateway_proxy
+    from ucode import custom_oauth, gateway_proxy
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
@@ -343,13 +343,19 @@ def test_language_transport_restores_environment_and_closes_on_failure(tmp_path,
     server, cache, client = Mock(server_port=12345), Mock(), Mock()
     start = Mock(return_value=(server, cache, client))
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
+    renew = Mock(return_value="renewed-token")
+    monkeypatch.setattr(custom_oauth, "launch_token", renew)
     thread = Mock()
     monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
     monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", "previous")
     body_calls = []
     with pytest.raises(RuntimeError, match="agent failed"):
-        with claude.subagent_language_transport(state):
+        with claude.subagent_language_transport(state, initial_token="launch-token"):
             body_calls.append(True)
+            assert start.call_args.kwargs["initial_token"] == "launch-token"
+            renew.assert_not_called()
+            assert start.call_args.args[1](True) == "renewed-token"
+            renew.assert_called_once_with(state, WS, force_refresh=True, allow_consent=False)
             transport = json.loads(os.environ["UG_CLAUDE_LANGUAGE_PROXY"])
             assert transport["url"] == "http://127.0.0.1:12345/ai-gateway/anthropic"
             assert transport["secret"] == start.call_args.kwargs["session_secret"]
@@ -379,7 +385,7 @@ def test_language_transport_inactive_preserves_body_error_and_restores_environme
     body_calls = []
 
     with pytest.raises(RuntimeError, match="agent failed"):
-        with claude.subagent_language_transport({"workspace": WS}):
+        with claude.subagent_language_transport({"workspace": WS}, initial_token="launch-token"):
             body_calls.append(True)
             assert "UG_CLAUDE_LANGUAGE_PROXY" not in os.environ
             raise RuntimeError("agent failed")
@@ -417,7 +423,7 @@ def test_language_transport_startup_failure_degrades_and_cleans_resources(
     monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
     body_calls = []
 
-    with claude.subagent_language_transport(state):
+    with claude.subagent_language_transport(state, initial_token="launch-token"):
         body_calls.append(True)
         assert "UG_CLAUDE_LANGUAGE_PROXY" not in os.environ
 

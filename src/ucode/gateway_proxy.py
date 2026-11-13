@@ -44,6 +44,7 @@ import httpx
 from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
+from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.workspace import workspace_headers
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
@@ -100,7 +101,13 @@ def _write_proxy_log(line: str) -> None:
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as log:
-                log.write(line)
+                # Windows append does not make the seek and write atomic.
+                acquire_exclusive_file_lock(log, timeout=1.0)
+                try:
+                    log.write(line)
+                    log.flush()
+                finally:
+                    release_file_lock(log)
         except OSError:
             pass
         return
@@ -117,7 +124,12 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(fd, "a", encoding="utf-8") as log:
-                log.write(line)
+                acquire_exclusive_file_lock(log, timeout=1.0)
+                try:
+                    log.write(line)
+                    log.flush()
+                finally:
+                    release_file_lock(log)
             return
         except OSError:
             destination = "application log" if sys.stderr.isatty() else "stderr"
@@ -164,6 +176,7 @@ class TokenCache:
         *,
         force_refresh_near_expiry: bool = False,
         on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+        initial_token: str | None = None,
     ) -> None:
         # token_provider(force_refresh) mints a fresh token from the same source the
         # client agent uses, so the proxy authenticates as the same principal (e.g.
@@ -180,7 +193,12 @@ class TokenCache:
         self._generation = 0
         # Preserve the existing non-forced relayed-auth fetch. Gateway discovery
         # opts into a forced fetch so its static client token starts with a full TTL.
-        self._refresh(force=force_refresh_near_expiry)
+        if initial_token:
+            self._token = initial_token
+            self._expiry = _jwt_exp(initial_token) or (time.time() + _DEFAULT_TTL_S)
+            self._generation = 1
+        else:
+            self._refresh(force=force_refresh_near_expiry)
 
     def _refresh(self, *, force: bool) -> None:
         """Mint a token and record its expiry."""
@@ -623,7 +641,9 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         # Shaped like the upstream dialect so the agent shows the message instead of
         # a generic transport failure.
         if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
-            error_type = "authentication_error" if status == 401 else "not_found_error"
+            error_type = {401: "authentication_error", 404: "not_found_error"}.get(
+                status, "api_error"
+            )
             payload = {"type": "error", "error": {"type": error_type, "message": message}}
         else:
             payload = {"error": {"message": message, "type": "invalid_request_error"}}
@@ -698,6 +718,7 @@ def _start_proxy(
     fallback_on_bind_error: bool = True,
     handler_attrs: Mapping[str, object] | None = None,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
+    initial_token: str | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -716,6 +737,7 @@ def _start_proxy(
         token_provider,
         force_refresh_near_expiry=force_refresh_near_expiry,
         on_refresh_failure=on_refresh_failure,
+        initial_token=initial_token,
     )
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
@@ -965,7 +987,11 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
 
 
 def start_claude_language_proxy(
-    workspace: str, token_provider: Callable[[bool], str], *, session_secret: str
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    *,
+    session_secret: str,
+    initial_token: str | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Preserve Claude's configured language in child inference requests."""
     return _start_proxy(
@@ -977,6 +1003,7 @@ def start_claude_language_proxy(
         handler_type=_ClaudeLanguageProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
+        initial_token=initial_token,
         on_refresh_failure=lambda _exc: _write_proxy_log(
             "[ucode] Databricks token refresh failed. "
             "Refresh your workspace sign-in and restart ug claude.\n"
