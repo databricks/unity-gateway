@@ -3,7 +3,8 @@
 The scan producer and the consumer gate must be deployed in order. There is no
 bootstrap pass when the trusted producer is missing.
 
-1. Merge the prerequisite that installs `security-scan.yml`, the reusable
+1. Merge [prerequisite PR #1653](https://github.com/databricks/unity-gateway/pull/1653),
+   which installs `security-scan.yml`, the reusable
    `security-gate.yml`, scanner scripts/rules, and CI's `CI #<PR>` run name.
    Existing CI does not call the new gate in that prerequisite. GitHub only
    starts `workflow_run` workflows after their definitions exist on `main`.
@@ -74,7 +75,8 @@ after an administrator applies them.
   scan for that CI run ID. A same-named `pull_request` check cannot satisfy it.
 - Re-running CI does not emit another `workflow_run: requested` event. It reuses
   the original scan; re-run the trusted scan to rescan. A new commit or reopening
-  the PR creates a new CI request. Labels are read from GitHub by the resolver.
+  the PR creates a new CI request. Labels are read from GitHub by the resolver;
+  after adding a waiver, re-run all scan jobs so the resolver refreshes them.
 - Public consumers poll once per minute, cache the selected CI request and limit
   scan queries to runs created since that request. Public API rate limits still
   block tests, with a message to retry after the reset time.

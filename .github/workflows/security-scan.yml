@@ -214,8 +214,8 @@ jobs:
       - name: Explain the maintainer waiver (on failure)
         if: ${{ failure() }}
         run: |
-          # A re-run reuses the original event, so it wouldn't see a label added since.
-          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (this requires Triage permission, so a fork author cannot self-waive), then closing and reopening the PR so CI starts again with the label."
+          # Re-run all jobs so the resolver reads the updated labels from GitHub.
+          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (requires Triage permission), then re-running all jobs in this Security Scan and re-running failed CI jobs."
           echo "::error::$MSG"
           {
             echo "### Security Scan failed"
