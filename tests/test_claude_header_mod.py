@@ -393,25 +393,29 @@ def test_language_transport_inactive_preserves_body_error_and_restores_environme
 def test_language_transport_startup_failure_degrades_and_cleans_resources(
     tmp_path, monkeypatch, failure
 ):
-    from ucode import gateway_proxy
+    from ucode import gateway_proxy, metrics
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
     _managed_env(tmp_path, monkeypatch)
     state = {"workspace": WS, "codex_models": []}
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
+    recorder = metrics.Recorder("claude", 0)
+    monkeypatch.setattr(metrics, "_runtime", recorder)
     server, cache, client = Mock(server_port=12345), Mock(), Mock()
     start = Mock(return_value=(server, cache, client))
     if failure == "proxy":
-        start.side_effect = OSError("proxy setup failed")
+        start.side_effect = OSError("proxy setup failed: private-sensitive-detail")
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
     if failure == "upstream":
         monkeypatch.setattr(
-            claude, "build_tool_base_url", Mock(side_effect=OSError("upstream unavailable"))
+            claude,
+            "build_tool_base_url",
+            Mock(side_effect=OSError("upstream unavailable: private-sensitive-detail")),
         )
     if failure == "thread":
         thread = Mock()
-        thread.start.side_effect = RuntimeError("thread did not start")
+        thread.start.side_effect = RuntimeError("thread did not start: private-sensitive-detail")
         monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
     warning = Mock()
     monkeypatch.setattr(claude, "print_warning", warning)
@@ -426,6 +430,14 @@ def test_language_transport_startup_failure_degrades_and_cleans_resources(
     assert body_calls == [True]
     assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
     warning.assert_called_once()
+    error_code = "operation_failed" if failure == "thread" else "network_error"
+    assert f"({error_code})" in warning.call_args.args[0]
+    errors = [row[3] for row in recorder.pending if row[1] == "ug_cli_error"]
+    assert len(errors) == 1
+    assert errors[0]["operation"] == "claude_language_transport"
+    assert errors[0]["error_code"] == error_code
+    assert errors[0]["continued_with_fallback"] is True
+    assert "private-sensitive-detail" not in str(errors) + warning.call_args.args[0]
     if failure == "proxy":
         server.server_close.assert_not_called()
         cache.stop.assert_not_called()

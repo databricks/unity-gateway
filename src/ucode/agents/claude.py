@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ucode import managed_resolve
+from ucode import managed_resolve, metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -2246,11 +2246,13 @@ def subagent_language_transport(state: dict) -> Iterator[None]:
             # BaseServer.shutdown blocks until serve_forever runs. Register it only after
             # Thread.start succeeds so setup failures cannot wait on a thread that never ran.
             resources.callback(server.shutdown)
-        except Exception:
+        except Exception as exc:
             os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
             close_resources()
+            metrics.failure("claude_language_transport", exc, continued_with_fallback=True)
             print_warning(
-                "Couldn't start the optional Claude language inheritance transport; "
+                "Couldn't start the optional Claude language inheritance transport "
+                f"({metrics.error_code(exc)}); "
                 "continuing without language inheritance."
             )
 
