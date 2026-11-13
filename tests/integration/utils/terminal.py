@@ -629,7 +629,12 @@ class AgentTerminal(TerminalProcess):
             self.approving = True
         return True
 
-    def wait_for_task(self, task, timeout=180):
+    def wait_for_task(self, task, timeout=180, *, completion=None, description=None):
+        """Wait for task evidence while handling the usual permissions and API errors.
+
+        A caller may supply a different evidence predicate for a specific journey;
+        the default still requires and asserts the parent's completed answer.
+        """
         permission_in_progress = False
 
         def completed(screen):
@@ -658,14 +663,17 @@ class AgentTerminal(TerminalProcess):
             if self.approve_windows_command(screen):
                 return False
             permission_in_progress = False
-            return task.completed(self.session, self.agent)
+            return (
+                completion() if completion is not None else task.completed(self.session, self.agent)
+            )
 
         self.wait_for(
             completed,
-            "a completed assistant answer with the file's value",
+            description or "a completed assistant answer with the file's value",
             timeout=timeout,
         )
-        task.assert_completed(self.session, self.agent)
+        if completion is None:
+            task.assert_completed(self.session, self.agent)
 
     def wait_for_background_tasks(self, timeout=180):
         """Wait in Claude's native task view without stopping or detaching work."""

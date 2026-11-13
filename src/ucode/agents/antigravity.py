@@ -341,11 +341,20 @@ def rewrite_model_path(path: str, catalog: dict[str, str]) -> str:
     return f"{match['prefix']}{model}{path[match.end() :]}"
 
 
-def rewrite_request_body(path: str, body: bytes) -> bytes:
-    """Drop ``includeThoughts`` from a request whose thinking budget is zero.
+def _rejects_thinking_budget(path: str) -> bool:
+    """Gemini 4 and later accept only ``thinkingLevel``: any ``thinkingBudget`` is a 400."""
+    match = _MODEL_PATH.match(path)
+    major = re.search(r"gemini-(\d+)", unquote(match["model"])) if match else None
+    return major is not None and int(major[1]) >= 4
 
-    Antigravity sends ``{"includeThoughts": true, "thinkingBudget": 0}`` for models it treats
-    as non-thinking, which Vertex rejects with a 400."""
+
+def rewrite_request_body(path: str, body: bytes) -> bytes:
+    """Fix the thinking config Antigravity sends where the model rejects it.
+
+    For Gemini 4 and later, drop ``thinkingBudget`` so the model uses its default thinking
+    level. Otherwise drop ``includeThoughts`` when the thinking budget is zero: Antigravity
+    sends ``{"includeThoughts": true, "thinkingBudget": 0}`` for models it treats as
+    non-thinking, which Vertex rejects with a 400."""
     if not path.startswith(GEMINI_GATEWAY_PATH):
         return body
     try:
@@ -354,11 +363,14 @@ def rewrite_request_body(path: str, body: bytes) -> bytes:
         return body
     config = payload.get("generationConfig") if isinstance(payload, dict) else None
     thinking = config.get("thinkingConfig") if isinstance(config, dict) else None
-    if not isinstance(thinking, dict) or thinking.get("thinkingBudget") != 0:
+    if not isinstance(thinking, dict) or "thinkingBudget" not in thinking:
         return body
-    if "includeThoughts" not in thinking:
+    if _rejects_thinking_budget(path):
+        thinking.pop("thinkingBudget")
+    elif thinking["thinkingBudget"] == 0 and "includeThoughts" in thinking:
+        thinking.pop("includeThoughts")
+    else:
         return body
-    thinking.pop("includeThoughts")
     return json.dumps(payload).encode()
 
 
@@ -490,7 +502,6 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     start = _catalog_name(selected, catalog) if selected else None
     if start is None and default:
         start = _catalog_name(_resolve_launch_model(default, catalog), catalog)
-    # Antigravity starts on the first listed model, so a plain launch passes no `--model`.
     models = list(dict.fromkeys([*([start] if start else []), *catalog]))
     binary = resolve_binary() or SPEC["binary"]
 
@@ -515,8 +526,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         port = server.server_address[1]
         proxy_url = f"http://{LOOPBACK_HOST}:{port}{GEMINI_GATEWAY_PATH.rstrip('/')}"
         env = build_runtime_env(proxy_url, session_secret, models)
-        if selected and not _is_subcommand(tool_args):
-            tool_args = _with_model_arg(tool_args, _selection_id(binary, env, selected, catalog))
+        launch_model = selected or start
+        if launch_model and not _is_subcommand(tool_args):
+            tool_args = _with_model_arg(
+                tool_args, _selection_id(binary, env, launch_model, catalog)
+            )
         proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
         returncode = _wait_for_exit(proc)
     finally:

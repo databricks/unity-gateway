@@ -1,3 +1,6 @@
+import base64
+import io
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -18,11 +21,79 @@ def test_secrets_are_redacted_from_build_output():
     )
 
 
+def test_m2m_token_uses_workspace_client_credentials(monkeypatch):
+    def token_response(request, timeout):
+        assert request.full_url == "https://workspace.example/oidc/v1/token"
+        assert request.data == b"grant_type=client_credentials&scope=all-apis"
+        assert request.get_header("Authorization") == (
+            "Basic " + base64.b64encode(b"client:secret").decode()
+        )
+        assert timeout == 30
+        return io.BytesIO(b'{"access_token":"workspace-token"}')
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+
+    assert runner.mint_m2m_token("https://workspace.example/", "client", "secret") == (
+        "workspace-token"
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            '{"error":"invalid_client","error_description":"secret"}',
+            '{"error":"invalid_client","error_description":"<redacted>"}',
+        ),
+        (
+            "<html>IP access denied; secret; Y2xpZW50OnNlY3JldA==</html>",
+            "<html>IP access denied; <redacted>; <redacted></html>",
+        ),
+    ],
+)
+def test_m2m_token_reports_http_error_without_credentials(monkeypatch, body, expected):
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", denied)
+
+    with pytest.raises(RuntimeError, match="HTTP 403") as error:
+        runner.mint_m2m_token("https://workspace.example", "client", "secret")
+
+    assert str(error.value) == (
+        "Service-principal OAuth token request to https://workspace.example/oidc/v1/token "
+        "failed (HTTP 403): " + expected
+    )
+    assert "secret" not in str(error.value)
+    assert "Y2xpZW50OnNlY3JldA==" not in str(error.value)
+
+
+def test_m2m_token_redacts_before_truncating_error_body(monkeypatch):
+    secret = "sensitive-client-secret"
+    body = "x" * 1990 + secret + "x" * 2000
+
+    def denied(request, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {}, io.BytesIO(body.encode())
+        )
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", denied)
+
+    with pytest.raises(RuntimeError) as error:
+        runner.mint_m2m_token("https://workspace.example", "client", secret)
+
+    detail = str(error.value).split("(HTTP 403): ", 1)[1]
+    assert detail == "x" * 1990 + "<redacted>"
+
+
 def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
     assert runner.integration_test_targets(
         tmp_path,
         ["claude", "codex"],
         platform_name="nt",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -36,6 +107,7 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
         tmp_path,
         ["copilot"],
         platform_name="posix",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -50,6 +122,7 @@ def test_antigravity_build_selects_its_headless_node_and_version(tmp_path):
         tmp_path,
         ["antigravity"],
         platform_name="posix",
+        macos_desktop=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -125,8 +198,8 @@ def test_antigravity_install_rejects_a_swapped_archive(tmp_path, monkeypatch):
     # The real pinned digest cannot match this stand-in archive.
     _serve(monkeypatch, _archive(tmp_path))
 
-    with pytest.raises(RuntimeError, match="expected 96a259b7"):
-        runner.install_native_agent("antigravity", "1.4.9-4962164969177088", tmp_path / "bin")
+    with pytest.raises(RuntimeError, match="expected 1431a409"):
+        runner.install_native_agent("antigravity", "1.5.4-5037094733742080", tmp_path / "bin")
 
     assert not (tmp_path / "bin/agy").exists()
 
@@ -184,15 +257,17 @@ def test_copilot_version_output_matches_the_pinned_version():
     assert runner.agent_version_output("codex", "codex-cli 0.154.0") == "codex-cli 0.154.0"
 
 
-def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path):
+def test_live_runs_select_every_module_except_unsupported_and_desktop_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
     (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
+    (tmp_path / "test_ug_codex_desktop_macos.py").write_text("import json\n")
 
     assert runner.integration_test_targets(
         tmp_path,
         ["claude"],
         platform_name="nt",
+        macos_desktop=False,
         installation_only=False,
         headless_only=False,
     ) == [
@@ -204,6 +279,15 @@ def test_windows_live_runs_select_every_module_except_unsupported_ones(tmp_path)
         tmp_path,
         ["claude"],
         platform_name="posix",
+        macos_desktop=False,
+        installation_only=False,
+        headless_only=False,
+    ) == [str(tmp_path), f"--ignore={tmp_path / 'test_ug_codex_desktop_macos.py'}"]
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["codex"],
+        platform_name="posix",
+        macos_desktop=True,
         installation_only=False,
         headless_only=False,
     ) == [str(tmp_path)]
@@ -266,6 +350,7 @@ def test_windows_policy_paths_match_pinned_agent_locations():
     )
 
     assert paths == (
+        Path("C:/ProgramData/UnityGateway/managed-settings.json"),
         Path("C:/ProgramData/OpenAI/Codex/requirements.toml"),
         Path("C:/ProgramData/OpenAI/Codex/config.toml"),
         Path("C:/Program Files/ClaudeCode/managed-settings.json"),

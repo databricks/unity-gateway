@@ -109,6 +109,12 @@ test('routing changes only the matching spawn model and joins its display name t
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
+  const launched = await $.ui.mount(row('call-a'));
+  expect(await launched.find({ type: 'Text', text: 'Launched Model: claude-sonnet-5' })).toBeDefined();
+  await launched.unmount();
+  const denied = await $.ui.mount(row('denied'));
+  expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
+  await denied.unmount();
   expect(writes.length).toBe(2);
   for (const [index, id] of ['call-b', 'call-a'].entries()) {
     expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
@@ -435,4 +441,213 @@ test('a name the call gave is kept as the routed agent name', async ($, on) => {
   on('tool.call', ($, event) => { forwarded.push(event); return { result: 'ok' }; });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'named', ...originalInput, name: 'scout' });
   expect(forwarded[0].name).toBe('scout');
+});
+
+test('parent receives the successful child model without rewriting requested inputs or results', async ($, on) => {
+  const forwarded: any[] = [];
+  const finish = new Map<string, (result: any) => void>();
+  let allStarted: () => void = () => {};
+  const ready = new Promise<void>(resolve => { allStarted = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($, e) => {
+    const { tool_use_id } = JSON.parse(e.init.stdin);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: `selected-${tool_use_id}`, rationale: 'Selected for the task',
+    }) } };
+  });
+  on('agent.spawn', ($, e) => e.tool_use_id === 'denied' ? { deny: 'Permission denied' }
+    : { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'unknown' ? '' : `launched-${e.tool_use_id}` });
+  on('fs.write', () => ({ value: undefined }));
+  on('tool.call', ($, e) => {
+    forwarded.push(e);
+    return new Promise(resolve => {
+      finish.set(e.tool_use_id, resolve);
+      if (finish.size === 6) allStarted();
+    });
+  });
+  const inputs = ['background', 'foreground', 'unknown', 'denied', 'error', 'no-child'].map(id => ({
+    tool: 'Agent' as const, tool_use_id: id, ...originalInput,
+    prompt: 'Use requested-model to compute 1+1', name: 'requested-model',
+    subagent_type: 'ug-smart-router:ucode-route-requested-model-hash',
+    run_in_background: id !== 'foreground',
+  }));
+  const waiting = inputs.map(input => $.tool.call(input));
+  await ready;
+  for (const input of [...inputs].reverse()) {
+    const id = input.tool_use_id;
+    if (id === 'no-child') { finish.get(id)!({ result: 'unchanged', text: 'unchanged' }); continue; }
+    const spawn = await $.agent.spawn({
+      tool_use_id: id, prompt: input.prompt, description: input.description,
+      subagentType: input.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' }, background: input.run_in_background, fork: false,
+      name: input.name, permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+    });
+    finish.get(id)!(spawn.deny ? { deny: spawn.deny }
+      : { result: { agentId: spawn.agentId }, text: 'Original child result',
+        context: ['Existing context'], ...(id === 'error' ? { isError: true } : {}) });
+  }
+  const results = await Promise.all(waiting);
+  for (const [index, input] of inputs.entries()) {
+    expect(forwarded.find(e => e.tool_use_id === input.tool_use_id)).toEqual(input);
+    const result = results[index];
+    const id = input.tool_use_id;
+    if (id === 'denied') { expect(result).toEqual({ deny: 'Permission denied' }); continue; }
+    if (id === 'no-child') { expect(result).toEqual({ result: 'unchanged', text: 'unchanged' }); continue; }
+    expect(result.result).toEqual({ agentId: `child-${id}` });
+    expect(result.text).toBe('Original child result');
+    expect(result.context?.[0]).toBe('Existing context');
+    if (id === 'error') { expect(result.context).toEqual(['Existing context']); continue; }
+    const note = result.context?.[1] ?? '';
+    expect(note).toContain(`"agent_id":"child-${id}"`);
+    expect(note).toContain(`"selected_model":"selected-${id}"`);
+    expect(note).toContain(id === 'unknown' ? '"launched_model":null' : `"launched_model":"launched-${id}"`);
+    expect(note).toContain('Report only that model in ordinary updates and answers');
+    expect(note).toContain('unless the user asks about the difference');
+    expect(note).not.toContain('requested-model');
+    expect(note).not.toContain('1+1');
+  }
+});
+
+async function collectParentTurn($: any, turnId: string, index = 1) {
+  const stream = $.turn.step({
+    turnId, index, model: 'parent-model', messageCount: 3, agentId: undefined,
+  });
+  const chunks: any[] = [];
+  let item = await stream.next();
+  while (!item.done) {
+    chunks.push(item.value);
+    item = await stream.next();
+  }
+  return {
+    chunks,
+    result: item.value,
+    text: chunks.filter((chunk) => chunk.kind === 'text').map((chunk) => chunk.text).join(''),
+  };
+}
+
+test('routed children leave native parent synthesis and stream errors unchanged', async ($, on) => {
+  on('env.get', ($, e) => ({value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined}));
+  const selected: Record<string, string> = { 'call-a': 'claude-sonnet-5', 'call-b': 'claude-opus-4-8' };
+  const launched: Record<string, string> = { 'call-a': 'system.ai.claude-sonnet-5', 'call-b': 'claude-opus-4-8' };
+  const inputs = ['call-a', 'call-b'].map((id) => ({
+    tool: 'Agent' as const, tool_use_id: id, prompt: 'Inspect ' + id,
+    description: 'Inspect ' + id, subagent_type: 'Explore', model: 'sonnet',
+    run_in_background: true,
+  }));
+  const forwardedSpawns: any[] = [];
+  const parentAnswer = 'Child A found two files; Child B found three files.';
+  const thinking = { kind: 'thinking' as const, index: 0, text: 'I compared both findings.' };
+  const firstText = { kind: 'text' as const, index: 1, text: 'Child A found two files; ' };
+  const secondText = { kind: 'text' as const, index: 2, text: 'Child B found three files.' };
+  const stop = { kind: 'stop' as const, stopReason: 'end_turn', usage: null };
+  const nativeError = new Error('synthetic native stream failure');
+  const errorThinking = { kind: 'thinking' as const, index: 0, text: 'Reasoning before failure.' };
+  const errorText = { kind: 'text' as const, index: 1, text: 'Partial native answer.' };
+  let childStepModel = '';
+
+  on('session.id', () => ({ value: 'session-1' }));
+  on('clock.every', () => ({ value: { cancel: () => {} } }));
+  on('process.run', ($, event) => {
+    const id = JSON.parse(event.init.stdin).tool_use_id;
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: selected[id], rationale: 'Selected for the task',
+    }) } };
+  });
+  on('fs.write', () => ({ value: undefined }));
+  on('tool.call', () => ({ result: 'Child launched', text: 'Child launched' }));
+  on('agent.spawn', ($, event) => {
+    forwardedSpawns.push(event);
+    return { agentId: 'child-' + event.tool_use_id, model: launched[event.tool_use_id] };
+  });
+  on('turn.complete', () => ({ text: '' }));
+  on('turn.step', async function* ($, event) {
+    if (event.turnId === 'parent-synthesis') {
+      yield thinking;
+      yield firstText;
+      yield secondText;
+      yield stop;
+      return {
+        turnId: event.turnId, index: event.index, answer: parentAnswer,
+        toolUses: [], stopReason: 'end_turn', usage: null,
+      };
+    }
+    childStepModel = event.model;
+    yield errorThinking;
+    yield errorText;
+    throw nativeError;
+  });
+
+  for (const input of inputs) {
+    await $.tool.call(input);
+    const spawn = {
+      tool_use_id: input.tool_use_id, prompt: input.prompt, description: input.description,
+      subagentType: input.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: 'caller-' + input.tool_use_id, permissionMode: 'default',
+      parentAgentId: undefined, cwd: '/workspace',
+    };
+    const child = await $.agent.spawn(spawn);
+    expect(child).toEqual({ agentId: 'child-' + input.tool_use_id, model: launched[input.tool_use_id] });
+    expect(forwardedSpawns[forwardedSpawns.length - 1]).toEqual({
+      ...spawn, model: selected[input.tool_use_id],
+    });
+    await $.turn.complete({
+      agentId: child.agentId, turnId: 'child-turn-' + input.tool_use_id,
+      answer: 'Answer from ' + input.tool_use_id, reason: 'answer',
+      isAborted: false, durationMs: 1,
+    });
+  }
+
+  const parent = await collectParentTurn($, 'parent-synthesis', 1);
+  expect(parent.chunks).toEqual([thinking, firstText, secondText, stop]);
+  expect(parent.text).toBe(parentAnswer);
+  expect(parent.result).toEqual({
+    turnId: 'parent-synthesis', index: 1, answer: parentAnswer,
+    toolUses: [], stopReason: 'end_turn', usage: null,
+  });
+
+  const stream = $.turn.step({
+    turnId: 'child-stream-error', index: 1, model: 'parent-model',
+    messageCount: 3, agentId: 'child-call-a',
+  });
+  const chunks: any[] = [];
+  let caught: unknown;
+  try {
+    let item = await stream.next();
+    while (!item.done) {
+      chunks.push(item.value);
+      item = await stream.next();
+    }
+  } catch (error) {
+    caught = error;
+  }
+  expect(childStepModel).toBe(launched['call-a']);
+  expect(chunks).toEqual([errorThinking, errorText]);
+  let controlError: unknown;
+  try { await collectParentTurn($, 'unrouted-stream-error', 1); }
+  catch (error) { controlError = error; }
+  expect(String(caught)).toContain('no implementation for turn.step');
+  expect(String(caught)).toBe(String(controlError));
+});
+
+test('a spawn step preserves native text and thinking with reviewed tool inputs', async ($, on) => {
+  on('env.get', ($, e) => ({value: e.name === 'UCODE_SESSION_ENV_FILE' ? '/controls.json' : '0'}));
+  on('fs.read', () => ({value: JSON.stringify({ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1'})}));
+  const claim = 'I am using the requested model.';
+  const tools = [{name: 'Agent', input: originalInput}, {name: 'Read', input: {file_path: 'README.md'}}];
+  on('turn.step', async function* ($, e) {
+    yield {kind: 'thinking', index: 0, text: claim};
+    yield {kind: 'text', index: 1, text: claim};
+    yield {kind: 'tool', index: 2, id: 'spawn', name: 'Agent'};
+    yield {kind: 'input', index: 2, json: JSON.stringify(originalInput)};
+    yield {kind: 'tool', index: 3, id: 'read', name: 'Read'};
+    yield {kind: 'input', index: 3, json: JSON.stringify(tools[1].input)};
+    return {turnId: e.turnId, index: e.index, answer: claim, toolUses: tools, stopReason: 'tool_use', usage: null};
+  });
+  const spawn = await collectParentTurn($, 'before-spawn', 0);
+  expect(spawn.text).toBe(claim);
+  expect(spawn.result.answer).toBe(claim);
+  expect(spawn.result.toolUses).toEqual(tools);
+  expect(spawn.chunks.map(chunk => chunk.kind)).toEqual(['thinking', 'text', 'tool', 'input', 'tool', 'input']);
+  expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
 });
