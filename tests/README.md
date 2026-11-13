@@ -151,6 +151,11 @@ journeys use vendor model IDs.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
+`test_agent_claude.py` covers relayed argv construction and settings merging: credential blanks
+override caller values while preferences survive, normal launches remain unchanged, and managed
+settings conflicts remain rejected. Subscription-status argv uses the fixed credential blanks.
+These component checks do not establish native or live subscription/gateway behavior.
+
 `test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:
 workspace URL/token reuse without account discovery or account CLI authentication,
@@ -271,9 +276,17 @@ inherited model, an executed-model match, or a remote metrics export.
 `test_smart_router_session_log.py` covers per-session records, privacy, retention,
 permissions, failure handling and Claude subagent wiring; these are local component checks,
 not live agent, Windows, or gateway coverage.
+Record-shape assertions live here; missing/unreadable reader behavior is covered through
+the CLI tests below. Filesystem failure cases cover directory creation, opening, and locking.
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
-overview shape/order, malformed/foreign-version/unknown-type line skipping, missing sessions,
-and `--decision` hit/miss; local component checks only, no pane or live-session coverage.
+overview shape/order, malformed/foreign-version/unknown-type line skipping, missing and unreadable sessions,
+and `--decision` hit/miss; local component checks only. Four native logs-pane tests cover
+rendering/background refresh, reader errors and recovery including truncated output, missing
+configuration, and launch gating with a fake logs reader. Exact styling and missing-width
+fallback are not asserted; interactive pane and live-session coverage remain absent.
+The refresh case holds a reader pending while foreground/background spawns complete and
+checks that parallel spawns queue a refresh. Ordinary turns, resumed/denied spawns, and
+closed panes do not trigger reads.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -1372,9 +1385,9 @@ Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
 Open Code Review with the trusted UG rubric and inline findings.
 It reuses the review service principal through the Databricks gateway's Anthropic route.
-Adding either `ug-review` or `code-review` also requests
-review on in-repository PRs. Fork reviews accept a member comment, or the author's comment
-when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered run has no secrets.
+Adding either `ug-review` or `code-review`, or marking a draft ready for review, also
+requests review on in-repository PRs. Fork reviews accept a member comment, or the author's
+comment when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered run has no secrets.
 Label removal and ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers
 gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
@@ -1496,9 +1509,7 @@ the live hook journeys retain their routing assertions and include stderr when n
 decision is returned. This diagnostic coverage does not prove routing service health.
 
 Smart-routing scenarios use checked-in model menus assigned to the explicit CI
-workspace. US `task_v3` uses GPT-6 Sol / Luna; the Canadian managed workspace uses
-GPT-5.6 Sol / Terra / Luna, since it has no GPT-6 services. Unknown Codex workspaces
-fail until a fixture is assigned. Claude uses Opus 4.8 / Sonnet 4.6 / Haiku 4.5.
+workspace. Codex uses one fixture (GPT-6 Sol / Luna) in both CI workspaces. Claude uses DeepSeek V4.1 Flash / Sonnet 5.5 / GLM 5.3 Flash / Sonnet 4.6.
 Direct hook inputs share the US fixture; managed TUI inputs use their workspace's
 fixture. No workspace is auto-selected or modified. All real routing, native notice,
 audit correlation, and child completion assertions remain required.
@@ -1562,3 +1573,18 @@ preservation, reversed parallel completion, missing model information, denied/fa
 spawns, and native role menus. Native auto-mode tests verify both foreground and
 background Agent calls deliver the host-reported model to the parent's next request
 while preserving reviewed inputs and denials.
+
+`ucode.agents.model_sources` owns schema/provider wildcard dispatch and provider-ID qualification.
+`ty` checks the schema catalog callbacks registered in `SCHEMA_MODEL_CATALOGS`.
+Copilot schema wildcards use UC model-service entries and the existing Copilot catalog builder,
+which includes Claude, GPT, and supported open models while filtering incompatible APIs.
+Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
+and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
+wire APIs and Claude limits. These checks use controlled discovery responses.
+Claude picker description checks cover static and discovered gateway aliases with seven- and
+eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
+context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
+is not covered by these component checks.
+Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
+component coverage. No installed-agent journey currently covers mixed wildcard sources or
+proves inference with qualified MPS models.

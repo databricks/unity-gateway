@@ -1,6 +1,6 @@
 """Managed coding-agent config: fetch, normalize, and local persistence (launch/refresh side).
 
-An org admin defines a ``CodingAgentConfig`` on the Databricks AI Gateway; developers read it
+An org admin defines a ``CodingAgentConfig`` on the Databricks Unity Gateway; developers read it
 (non-admin) and ``ucode`` applies it locally. This module owns the fetch/normalize side and the one
 machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644):
 
