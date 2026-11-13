@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import os
-import re
+import select
 import shutil
 import subprocess
 import time
@@ -151,8 +151,9 @@ class VSCode:
         )
         os.close(write)
         with os.fdopen(read) as pipe:
-            number = pipe.readline().strip()
-        assert number.isdigit(), "Xvfb reported no display"
+            ready, _, _ = select.select([pipe], [], [], STEP_TIMEOUT_S)
+            number = pipe.readline().strip() if ready else ""
+        assert number.isdigit(), f"Xvfb reported no display within {STEP_TIMEOUT_S}s"
         return {**self.session.env, "DISPLAY": f":{number}"}
 
     def __exit__(self, kind, value, traceback):
@@ -464,11 +465,10 @@ class VSCode:
         self._act("chat input: Enter", lambda: self.page.keyboard.press("Enter"))
         return before
 
-    def wait_for_answer(self, before: int, *, allow: str | None = None) -> str:
+    def wait_for_answer(self, before: int) -> str:
         """Wait until the turn after ``before`` finishes and return its response text.
 
-        A tool confirmation is allowed only when its text contains ``allow``; any other
-        confirmation, and any dialog, fails the turn."""
+        Any tool confirmation or dialog fails the turn."""
         deadline = time.monotonic() + TURN_TIMEOUT_S
         idle = 0
         while time.monotonic() < deadline:
@@ -478,22 +478,7 @@ class VSCode:
             confirmation = screen["confirmation"]
             if confirmation is not None:
                 self.shot("confirmation")
-                if allow is None or allow not in confirmation.replace(" ", ""):
-                    raise UnknownScreen(f"Unexpected tool confirmation: {confirmation[:500]}")
-                widget = self.page.locator(
-                    ".chat-confirmation-widget-container:visible, .chat-confirmation-widget:visible, "
-                    ".chat-confirmation-widget2:visible"
-                ).last
-                self._click(
-                    f"tool confirmation: Allow ({confirmation[:120]})",
-                    widget.get_by_role("button", name=re.compile(r"^Allow")).first,
-                )
-                self._wait(
-                    lambda answered=confirmation: self.screen()["confirmation"] != answered,
-                    STEP_TIMEOUT_S,
-                    "the confirmation to close",
-                )
-                continue
+                raise UnknownScreen(f"Unexpected tool confirmation: {confirmation[:500]}")
             response = screen["response"]
             if screen["responses"] > before and response and not response["busy"]:
                 # Busy drops only when the whole turn, every tool round included, is over.
