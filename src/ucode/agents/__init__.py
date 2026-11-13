@@ -46,7 +46,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
+from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi, windows_install
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -266,6 +266,8 @@ def install_tool_binary(
     binary = spec["binary"]
     package = spec["package"]
 
+    if not shutil.which(binary):
+        windows_install.add_installed_to_path(tool)
     if shutil.which(binary) or _installed_off_path(tool):
         # A too-new build is a correctness blocker (the tool runs but misbehaves
         # against the gateway), so check it on every launch — not just when
@@ -276,7 +278,7 @@ def install_tool_binary(
         )
         return True
 
-    installer = getattr(_MODULES[tool], "install_binary", None)
+    installer = getattr(_MODULES[tool], "install_binary", None) or windows_install.installer(tool)
     if callable(installer):
         return _run_native_installer(tool, installer, strict=strict)
 
@@ -318,7 +320,9 @@ def install_tool_binary(
 def _off_path_binary(tool: str) -> str | None:
     """The binary an agent with its own installer put where PATH may not reach yet."""
     resolver = getattr(_MODULES[tool], "resolve_binary", None)
-    return resolver() if callable(resolver) else None
+    if callable(resolver):
+        return resolver()
+    return windows_install.installed_binary(tool)
 
 
 def _installed_off_path(tool: str) -> bool:
