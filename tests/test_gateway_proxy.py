@@ -508,10 +508,17 @@ class TestRetryOn401:
                 elapsed[0] += 1.0
                 return super().stream(*args, **kwargs)
 
+        class TimedHeaders(dict):
+            def items(self):
+                elapsed[0] += 0.25
+                return super().items()
+
         client = TimedClient([_FakeResp(401), _FakeResp(200, b"private-response")])
         output = _Collect()
         handler = _handle_handler(client, TimedCache(), output)
-        handler.headers = {"Authorization": "Bearer private-token", "Content-Length": "15"}
+        handler.headers = TimedHeaders(
+            {"Authorization": "Bearer private-token", "Content-Length": "15"}
+        )
         handler.rfile = io.BytesIO(b"private-request")
         started_ms = int(time.time() * 1000)
         handler._handle()
@@ -527,10 +534,10 @@ class TestRetryOn401:
             "response_complete",
         ]
         assert [(event["attempt"], event["elapsed_ms"]) for event in events[1:-1]] == [
-            (1, 1000),
-            (1, 2000),
-            (2, 3000),
-            (2, 4000),
+            (1, 1250),
+            (1, 2250),
+            (2, 3250),
+            (2, 4250),
         ]
         assert len({event["request_id"] for event in events}) == 1
         assert all(
