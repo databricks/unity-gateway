@@ -63,7 +63,7 @@ MANAGED_KEYS: list[str] = [
 
 # Gemini CLI 0.45 introduced a "Gemini 3.5 Flash GA" router that rewrites any
 # forced flash model id (e.g. `databricks-gemini-3-5-flash`) to Google's
-# canonical `gemini-3.5-flash`, which the Databricks AI Gateway rejects as an
+# canonical `gemini-3.5-flash`, which the Databricks Unity Gateway rejects as an
 # invalid Unity Catalog endpoint name. Until that regression is fixed upstream
 # we cap the supported version below 0.45 and steer clients onto the newest
 # release that still passes the configured model through verbatim.

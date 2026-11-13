@@ -1,4 +1,4 @@
-"""Shared AI Gateway routing helpers for coding-agent sessions and subagents.
+"""Shared Unity Gateway routing helpers for coding-agent sessions and subagents.
 
 Both the Codex and Claude Code integrations route through the workspace's
 configured router at ``/ai-gateway/routing/v1/routes:select``. The
@@ -36,7 +36,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
 )
 ROUTING_BOX_WIDTH = 73
-_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{8}-(.+)$")
+_ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
 
 
@@ -91,7 +91,7 @@ def _format_box(lines: list[str]) -> str:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """One model selection returned by the AI Gateway router."""
+    """One model selection returned by the Unity Gateway router."""
 
     model: str
     rationale: str = ""
@@ -299,7 +299,7 @@ def resolve_spawn_route(
     )
     decision, reason = decision_fn(task)
     if decision is None:
-        logging.getLogger(__name__).warning(
+        logging.getLogger(__name__).debug(
             "Smart Router could not route subagent: %s", reason or "no routing decision"
         )
         return None

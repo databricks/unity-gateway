@@ -87,6 +87,12 @@ native parent turn matching that prompt, a nonempty answer, the expected provide
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
 
+CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
+Responses and Chat Completions native APIs; its workspace's Codex default must match.
+CUJ1 and CUJ6 use `system.ai.gpt-6-luna` for the Codex Luna selection. Provision the CUJ1
+and CUJ6 phase A model lists, plus the CUJ6 phase C model list and default, before running
+these cases. Tests only validate the published fixtures; they never update them.
+
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
@@ -149,6 +155,8 @@ before continuing. Later occurrences are handled the same way; any other dialog 
 After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
 until no background work remains, including a child resumed after its initial answer.
 Only then does the test close the task view and submit `/exit`.
+These Claude launches pass `--disallowedTools ScheduleWakeup,CronCreate`: a reminder the model
+schedules to check on its subagent would outlive the finished child and hold `/exit` open.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The Claude and Codex explicit-model precedence cases both run; the routing-disabled case

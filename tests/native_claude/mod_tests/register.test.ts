@@ -246,6 +246,7 @@ test('the band is gone by the second turn after either toggle', { options: ROUTE
 
 const ORCHESTRATED = { ...ROUTED, orchestratorInstructions: 'Delegate under the orchestrator.' };
 const CONTINUE = 'To continue a previously spawned agent, use SendMessage';
+const ROUTING_GUIDANCE = "Smart Router selects the execution model for each task-role subagent. This tool's built-in model choices are not Smart Router's model catalog. Do not infer that a requested model is unavailable because it is absent from this tool's choices. For a requested name outside those choices, launch a general-purpose subagent without the model argument. Do not refuse a requested spawn on that basis. After launch, use the launch receipt to identify the model actually used. In ordinary progress updates and answers, identify only the model actually launched. Do not repeat or contrast the requested model, or discuss model availability or tool limitations, unless the user explicitly asks about that difference.";
 
 // The orchestrator replaces the host's Agent advice but keeps its Usage notes section.
 function agentDescriber($: any, on: On) {
@@ -259,7 +260,7 @@ test('the host Usage notes survive the orchestrator description', { options: ORC
   const describe = agentDescriber($, on);
   const host = 'When in doubt, don\'t spawn.\n## Usage notes\n- Runs in the background.\n- Resume with SendMessage.\n## When to fork\nPolicy.';
   expect(await describe(host))
-    .toBe('Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.');
+    .toBe(`Delegate under the orchestrator.\n\n## Usage notes\n\n- Runs in the background.\n- Resume with SendMessage.\n\n${ROUTING_GUIDANCE}`);
 });
 
 test('a host description without Usage notes keeps the continuation note', { options: ORCHESTRATED }, async ($, on) => {
@@ -281,4 +282,125 @@ test('the continuation note keeps the fork exception when the host offers forks'
   const description = await describe(host);
   expect(description).toContain('starts a fresh agent with no memory of prior runs (except subagent_type: "fork"), so the prompt');
   expect(description).not.toContain('Policy');
+});
+
+
+test('subagent routing guidance preserves the host description and is absent when routing is off', {options: ROUTED}, async ($, on) => {
+  const {env} = setup(on);
+  on('tool.describe', ($, e) => ({description: e.description}));
+  const host = 'Native tool instructions and permissions.';
+  const describe = () => $.tool.describe({tool: 'Agent', description: host});
+  const routed = (await describe()).description;
+  expect(routed).toBe(`${host}\n\n${ROUTING_GUIDANCE}`);
+  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
+  expect((await describe()).description).toBe(host);
+});
+
+const CLI_OFF = ['/ug/python', '-m', 'ucode.cli', 'claude', '--disable-smart-routing'];
+const REASON = 'The routed model was too slow';
+const WITH_ISAAC = { ...ROUTED, isaacExecutable: '/isaac/bin/isaac', isaacFeedbackDirectory: '/isaac/feedback' };
+const FEEDBACK_PANE = {
+  plugin: 'ug-smart-router', surface: 'terminal', component: 'Pane', requestId: 'smart-router-feedback',
+  props: { title: 'Turn Smart Router off', isFocused: true, bodyColumns: 56, placement: 'dock', scroll: { offset: 0, bodyRows: 6 }, view: {} },
+} as const;
+
+// Isaac's feedback rule is on and the engine answers the form's panes, logs, and processes.
+function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode = 0) {
+  const { env } = setup(on);
+  Object.assign(env, {
+    ISAAC_SMART_ROUTER_FEEDBACK: '1',
+    UCODE_SMART_ROUTER_PYTHON: '/ug/python',
+    UCODE_SESSION_ENV_FILE: '/session/env.json',
+    ...extra,
+  });
+  const runs: (readonly string[])[] = [];
+  const logs: string[] = [];
+  const panes: string[] = [];
+  on('process.run', ($, e) => {
+    runs.push(e.argv);
+    const exitCode = e.argv.includes('--disable-smart-routing') ? offExitCode : 0;
+    return { value: { exitCode, stdout: e.argv.includes('--inspect-target') ? '{"message_id":"m1"}' : '', stderr: '' } };
+  });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('fs.exists', () => ({ value: false }));
+  on('ui.log', ($, e) => {
+    logs.push(e.text);
+    return { value: undefined };
+  });
+  on('ui.toast', () => ({ value: undefined }));
+  on('ui.open', ($, e) => {
+    panes.push(e.id);
+    return { value: { isPlaced: true } };
+  });
+  on('ui.close', () => ({ value: undefined }));
+  return { env, runs, logs, panes };
+}
+
+test('an omni launch skips the form only for an off marked --feedback-collected', { options: ROUTED }, async ($, on) => {
+  const { env, runs } = feedbackSession(on);
+  const off = async (args: string) => (await $.command.run({ command: 'smart-router', args })).text;
+
+  // Without Isaac's executable the form cannot open, so a form off keeps routing on.
+  expect(await off('off --feedback-collected')).toContain('Smart Router is still on');
+  env.ISAAC_LAUNCH_MODE = 'omni';
+  expect(await off('off')).toContain('Smart Router is still on');
+  expect(runs).toEqual([]);
+
+  expect(await off('off --feedback-collected')).toBe('Smart Router is off');
+  expect(runs).toEqual([CLI_OFF]);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+});
+
+test('--feedback-collected is accepted only after off', { options: ROUTED }, async ($, on) => {
+  const { env, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
+  for (const args of ['on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected']) {
+    expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs');
+  }
+  expect(runs).toEqual([]);
+
+  // Without Isaac's feedback rule the flag changes nothing.
+  env.ISAAC_SMART_ROUTER_FEEDBACK = '0';
+  env.ISAAC_LAUNCH_MODE = undefined;
+  expect((await $.command.run({ command: 'smart-router', args: ' off  --feedback-collected ' })).text).toBe('Smart Router is off');
+  expect(runs).toEqual([CLI_OFF]);
+});
+
+test('an omni off without the flag asks for the reason and logs the off', { options: WITH_ISAAC }, async ($, on) => {
+  const { env, runs, logs, panes } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
+
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text).toBeUndefined();
+  expect(panes).toEqual(['smart-router-feedback']);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+
+  const form = await $.ui.mount(FEEDBACK_PANE);
+  await form.input({ key: 'reason', text: REASON });
+  expect(runs).toContainEqual([...CLI_OFF, '--smart-router-feedback', REASON]);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+  // The form's off has no command reply, so the log line is its record.
+  expect(logs.at(-1)).toBe('Smart Router is off');
+  await form.unmount();
+});
+
+test('cancelling an omni off form keeps routing on without a reply', { options: WITH_ISAAC }, async ($, on) => {
+  const { env, runs, logs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
+
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text).toBeUndefined();
+  const form = await $.ui.mount(FEEDBACK_PANE);
+  await form.press({ key: 'cancel' });
+  expect(runs.some((argv) => argv.includes('--disable-smart-routing'))).toBe(false);
+  expect(logs).toEqual([]);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  await form.unmount();
+});
+
+test('a failed off from the form logs no off reply', { options: WITH_ISAAC }, async ($, on) => {
+  const { env, logs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' }, 1);
+
+  await $.command.run({ command: 'smart-router', args: 'off' });
+  const form = await $.ui.mount(FEEDBACK_PANE);
+  await form.input({ key: 'reason', text: REASON });
+  expect(logs.at(-1)).toContain('Could not turn Smart Router off');
+  expect(logs).not.toContain('Smart Router is off');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  await form.unmount();
 });
