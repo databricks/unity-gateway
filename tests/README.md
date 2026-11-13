@@ -1147,6 +1147,14 @@ Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
 through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
 They do not launch Pi or Git Bash on Windows.
 
+`TestPersistedDefaultModel` in `test_agent_pi.py` checks that `pi.default_model`
+preserves a self-configured launch's own previous model choice (read from
+`state["agents"]["pi"]["model"]`) across the next launch when it is still among the
+discovered models, falls back to opus→sonnet→haiku discovery once it is gone or absent,
+and still yields to a managed `pi_default_model`/`pi_models` override. These are
+component checks against the pure function; they do not exercise a live `ug pi` launch
+or confirm the written `settings.json`/`state.json` round-trip end to end.
+
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
 they do not establish live agent coverage.

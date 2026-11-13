@@ -277,7 +277,12 @@ def default_model(state: dict) -> str | None:
     """Prefer Claude opus → sonnet → haiku; fall back to codex, gemini.
 
     A managed config's ``pi_default_model`` and ``pi_models`` both win outright: the former is
-    the admin's chosen session start, the latter their allowlist. Workspace-wide discovery falls back.
+    the admin's chosen session start, the latter their allowlist. Without those, a self-configured
+    launch's own previous choice wins next if it is still among the discovered models -- otherwise
+    every launch would silently reset a self-configured user back to the costliest available model,
+    with no way to keep a cheaper default (see the "Fields `ug` manages" table in AGENTS.md, which
+    already treats a self-configured launch model as something to leave alone, not re-pin). Workspace-
+    wide discovery is the last resort, for a true first configure or once the previous choice is gone.
     """
     if isinstance(state.get("pi_default_model"), str):
         return state.get("pi_default_model")
@@ -285,13 +290,22 @@ def default_model(state: dict) -> str | None:
     if isinstance(managed, list) and managed:
         return managed[0]
     claude_models = state.get("claude_models") or {}
+    codex_models = state.get("codex_models") or []
+    gemini_models = state.get("gemini_models") or []
+    agents = state.get("agents")
+    pi_agent = agents.get("pi") if isinstance(agents, dict) else None
+    previous = pi_agent.get("model") if isinstance(pi_agent, dict) else None
+    if isinstance(previous, str) and previous in (
+        *claude_models.values(),
+        *codex_models,
+        *gemini_models,
+    ):
+        return previous
     for family in ("opus", "sonnet", "haiku"):
         if claude_models.get(family):
             return claude_models[family]
-    codex_models = state.get("codex_models") or []
     if codex_models:
         return codex_models[0]
-    gemini_models = state.get("gemini_models") or []
     return gemini_models[0] if gemini_models else next(iter(claude_models.values()), None)
 
 

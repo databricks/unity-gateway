@@ -491,6 +491,62 @@ class TestManagedDefaultModel:
         assert pi.default_model(state) == "system.ai.claude-opus-4-8"
 
 
+class TestPersistedDefaultModel:
+    """A self-configured launch's own previous model choice must survive the next launch instead
+    of being silently reset to the opus→sonnet→haiku discovery default every time."""
+
+    def test_preserves_a_still_valid_previous_choice(self):
+        state = {
+            "claude_models": {"opus": "o5", "sonnet": "s5", "haiku": "h5"},
+            "agents": {"pi": {"model": "h5"}},
+        }
+        assert pi.default_model(state) == "h5"
+
+    def test_falls_back_to_discovery_when_previous_choice_is_gone(self):
+        state = {
+            "claude_models": {"opus": "o5", "sonnet": "s5", "haiku": "h5"},
+            "agents": {"pi": {"model": "deprecated-model"}},
+        }
+        assert pi.default_model(state) == "o5"
+
+    def test_managed_default_still_wins_over_a_previous_choice(self):
+        state = {
+            "pi_default_model": "admin-chosen-default",
+            "claude_models": {"opus": "o5"},
+            "agents": {"pi": {"model": "h5"}},
+        }
+        assert pi.default_model(state) == "admin-chosen-default"
+
+    def test_managed_allowlist_still_wins_over_a_previous_choice(self):
+        state = {
+            "pi_models": ["system.ai.claude-opus-4-8"],
+            "claude_models": {"opus": "o5"},
+            "agents": {"pi": {"model": "h5"}},
+        }
+        assert pi.default_model(state) == "system.ai.claude-opus-4-8"
+
+    def test_previous_choice_can_be_a_codex_or_gemini_model(self):
+        state = {
+            "claude_models": {"opus": "o5"},
+            "codex_models": ["gpt-5"],
+            "gemini_models": ["gemini-2"],
+            "agents": {"pi": {"model": "gemini-2"}},
+        }
+        assert pi.default_model(state) == "gemini-2"
+
+    def test_ignores_a_non_dict_agents_field(self):
+        state = {"claude_models": {"opus": "o5"}, "agents": "not-a-dict"}
+        assert pi.default_model(state) == "o5"
+
+    def test_ignores_a_non_dict_pi_agent_field(self):
+        state = {"claude_models": {"opus": "o5"}, "agents": {"pi": "not-a-dict"}}
+        assert pi.default_model(state) == "o5"
+
+    def test_no_previous_choice_falls_back_to_discovery(self):
+        state = {"claude_models": {"opus": "o5"}, "agents": {"pi": {}}}
+        assert pi.default_model(state) == "o5"
+
+
 class TestBuildPiApiKey:
     """Pi resolves a leading-`!` config value as a command before every provider
     request, so the apiKey is that command rather than a baked bearer."""
