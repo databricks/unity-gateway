@@ -841,7 +841,12 @@ live search, parent/child discovery, or classifier permission behavior.
 `test_databricks.py` also covers process-local CLI token memoization, expiry
 margins on both wall and monotonic clocks (including suspend and clock rollback),
 short-lived failure entries only for confirmed invalid/missing credentials,
-forced refresh, and login invalidation. Unknown CLI failures, network errors,
+forced refresh, and login invalidation. Mocked HTTP component tests cover gzip negotiation and
+JSON and binary skill-file decoding, identity bodies, caller encoding overrides, corrupt gzip,
+an actionable truncated-response network/VPN/proxy reason, connection-reset retries, transient
+preflight classification, and single-attempt 400/404 responses. Foundation-model discovery
+makes one GET attempt. Truncated mutation responses are reported without automatically retrying; these
+checks do not establish live network or agent behavior. Unknown CLI failures, network errors,
 and malformed token responses retry on the next call without a stale-profile hint.
 Concurrent callers share a per-profile fetch, and an in-flight result cannot
 restore a memo invalidated by login.
@@ -868,8 +873,10 @@ These checks do not establish live login or launch-time savings.
 model-service listing starts on a daemon thread before the gateway probe returns, that a
 probe failure raises its own error while the listing is still blocked, that a listing error
 propagates without saving state, that `skip_model_discovery` never starts the listing but
-keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
-caches. The skip-preflight tests also reject starting a background worker. These component
+fetches a missing web-search model, and that the overlap reuses the process-local probe and listing
+caches. Provider-mode components cover reuse of a saved per-workspace search model on launch,
+lookup when missing, workspace switches, and refreshing on explicit configure. The skip-preflight
+tests also reject starting a background worker. These component
 checks control the HTTP boundary with events; they do not establish live gateway timing,
 agent launch, or launch-time savings.
 

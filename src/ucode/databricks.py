@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import configparser
 import functools
+import gzip
 import json
 import logging
 import logging.handlers
@@ -20,13 +21,14 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
-from http.client import HTTPException
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
@@ -295,6 +297,23 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
+def _http_network_failure_reason(
+    exc: OSError | HTTPException | EOFError | zlib.error, *, can_retry: bool
+) -> str:
+    if isinstance(exc, IncompleteRead):
+        recovery = (
+            "Retry the request."
+            if can_retry
+            else "Check whether the operation completed before retrying."
+        )
+        return (
+            f"network error: response was cut off before the full body arrived ({exc}); "
+            "this may be caused by "
+            f"a network, VPN, or proxy interruption. {recovery}"
+        )
+    return f"network error: {exc}"
+
+
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -365,7 +384,7 @@ def _http_get_bytes(
     max_retries: int = 0,
     headers: dict[str, str] | None = None,
 ) -> tuple[bytes | None, str | None]:
-    """GET raw bytes. Returns (body, None) on success, (None, reason) on failure.
+    """GET content-decoded bytes. Returns (body, None) on success, (None, reason) on failure.
 
     ``max_retries`` opts individual callers into bounded retries (with backoff) for
     rate limits (429), transient gateway statuses (499, 502, 503, 504), and network failures.
@@ -378,18 +397,32 @@ def _http_get_bytes(
 
     request_headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
+    if not any(name.lower() == "accept-encoding" for name in request_headers):
+        request_headers["Accept-Encoding"] = "gzip"
     request = urllib_request.Request(url, headers=request_headers)
     for attempt in range(max_retries + 1):
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 body = response.read()
+                response_headers = getattr(response, "headers", None)
                 failure = _workspace_response_failure(url, response)
                 if failure is None:
-                    _capture_org_id(url, getattr(response, "headers", None))
+                    _capture_org_id(url, response_headers)
             if failure is not None:
                 _debug(f"GET {url}", failure)
                 return None, failure
-            _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
+            wire_size = len(body)
+            encoding = response_headers.get("Content-Encoding", "") if response_headers else ""
+            if isinstance(encoding, str) and encoding.strip().lower() == "gzip":
+                if not body:
+                    raise EOFError("empty gzip response")
+                body = gzip.decompress(body)
+                _debug(
+                    f"GET {url}",
+                    f"HTTP 200, gzip: {wire_size} wire bytes, {len(body)} decoded bytes",
+                )
+            else:
+                _debug(f"GET {url}", f"HTTP 200, {wire_size} wire bytes, {len(body)} decoded bytes")
             return body, None
         except urllib_error.HTTPError as exc:
             body = ""
@@ -416,11 +449,10 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
-        except (OSError, HTTPException) as exc:
-            # Read timeouts, malformed headers, and truncated bodies can escape urllib
-            # without a URLError wrapper. Use the caller's existing retry budget.
+        except (OSError, HTTPException, EOFError, zlib.error) as exc:
+            # Read failures and invalid gzip bodies use the caller's existing retry budget.
             _debug(f"GET {url}", f"{type(exc).__name__}: {exc}")
-            reason = f"network error: {exc}"
+            reason = _http_network_failure_reason(exc, can_retry=True)
             if attempt == max_retries:
                 return None, reason
             retry_after = None
@@ -529,11 +561,10 @@ def _http_send_json(
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
         return None, f"network error: {exc.reason}"
-    except OSError as exc:
-        # See `_http_get_json`: a bare socket timeout is an OSError, not a
-        # URLError, and would otherwise escape the caller's error handling.
-        _debug(f"{method} {url}", f"OSError: {exc}")
-        return None, f"network error: {exc}"
+    except (OSError, HTTPException) as exc:
+        # Read timeouts and truncated bodies can escape urllib without a URLError wrapper.
+        _debug(f"{method} {url}", f"{type(exc).__name__}: {exc}")
+        return None, _http_network_failure_reason(exc, can_retry=False)
 
 
 def _http_post_json(
@@ -3863,7 +3894,8 @@ def discover_endpoints_with_api_type(
     """
     hostname = workspace_hostname(workspace)
     payload, reason = _http_get_json(
-        f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
+        f"https://{hostname}/api/2.0/serving-endpoints:foundation-models",
+        token,
     )
     if payload is None:
         return [], reason

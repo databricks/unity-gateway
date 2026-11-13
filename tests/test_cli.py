@@ -7945,12 +7945,101 @@ class TestConfigureSharedStateSkipDiscovery:
             lambda w, t: codex_calls.append((w, t)) or (["databricks-gpt-5"], None),
         )
 
+        saved = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: saved.append(dict(state)))
         state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
 
         assert codex_calls == [(ws, "token")]
         assert state["web_search_model"] == "databricks-gpt-5"
+        assert saved[-1]["web_search_model"] == "databricks-gpt-5"
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
+
+    def test_launch_reuses_saved_web_search_model(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": ws, "web_search_model": "saved"}
+        )
+        calls = []
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *args: calls.append(args))
+        saved = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: saved.append(dict(state)))
+
+        state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+
+        assert calls == []
+        assert state["web_search_model"] == saved[-1]["web_search_model"] == "saved"
+
+    @pytest.mark.parametrize("cached", [True, False])
+    def test_explicit_configure_refreshes_only_existing_cache_with_full_discovery(
+        self, monkeypatch, cached
+    ):
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        old_state = {"workspace": ws, **({"web_search_model": "old"} if cached else {})}
+        monkeypatch.setattr(cli_mod, "load_state", lambda: dict(old_state))
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: ({"sonnet": "claude"}, ["new"], [], [], None),
+        )
+        saved = []
+        monkeypatch.setattr(cli_mod, "save_state", lambda state: saved.append(dict(state)))
+
+        state = cli_mod.configure_shared_state(ws, tools=["claude"], force_login=True)
+
+        assert state["codex_models"] == ["new"]
+        if cached:
+            assert state["web_search_model"] == saved[-1]["web_search_model"] == "new"
+        else:
+            assert "web_search_model" not in state
+            assert "web_search_model" not in saved[-1]
+
+    def test_explicit_configure_refreshes_saved_model_if_discovery_skipped(self, monkeypatch):
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        monkeypatch.setattr(
+            cli_mod, "load_state", lambda: {"workspace": ws, "web_search_model": "old"}
+        )
+        calls = []
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda w, t: calls.append((w, t)) or (["new"], None)
+        )
+        state = cli_mod.configure_shared_state(
+            ws, tools=["claude"], force_login=True, skip_model_discovery=True
+        )
+        assert calls == [(ws, "token")]
+        assert state["web_search_model"] == "new"
+
+    @pytest.mark.parametrize("destination_model", [None, "destination"])
+    def test_workspace_switch_never_reuses_source_model(self, monkeypatch, destination_model):
+        import ucode.cli as cli_mod
+
+        ws = "https://prov.databricks.com"
+        self._stub(monkeypatch)
+        monkeypatch.setattr(
+            cli_mod,
+            "load_state",
+            lambda: {"workspace": "https://other.databricks.com", "web_search_model": "source"},
+        )
+        dest = {"web_search_model": destination_model} if destination_model else {}
+        monkeypatch.setattr(cli_mod, "load_full_state", lambda: {"workspaces": {ws: dest}})
+        calls = []
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_codex_models",
+            lambda w, t: calls.append((w, t)) or (["fetched"], None),
+        )
+        state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+        assert state["web_search_model"] == (destination_model or "fetched")
+        assert calls == ([] if destination_model else [(ws, "token")])
 
 
 class TestConfigureSharedStateCopilotCatalog:
