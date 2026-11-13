@@ -76,10 +76,10 @@ journeys use vendor model IDs.
 | Integration CUJs | `integration/test_*.py` | Public configure, TUI, script, command, protocol, and lifecycle journeys |
 | Installation | `integration/test_installation.py` | Fresh installed package, CLI, and local helpers without credentials on Linux and advisory native Windows |
 
-`test_agent_claude.py` covers relay launch and subscription-status overrides for every cwd and
-config root, while preserving project/preferences settings except credential keys and leaving
-normal launches unchanged. Managed settings conflicts remain rejected. These component checks do
-not establish live subscription or gateway coverage.
+`test_agent_claude.py` covers relayed argv construction and settings merging: credential blanks
+override caller values while preferences survive, normal launches remain unchanged, and managed
+settings conflicts remain rejected. Subscription-status argv uses the fixed credential blanks.
+These component checks do not establish native or live subscription/gateway behavior.
 
 `test_budget.py` covers the workspace-authenticated spend-status client in
 `src/ucode/budget.py`:

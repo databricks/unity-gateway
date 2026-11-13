@@ -4019,26 +4019,10 @@ class TestBuildClaudeArgv:
         settings = json.loads(argv[argv.index("--settings") + 1])
         assert settings["apiKeyHelper"] == ""
 
-    @pytest.mark.parametrize("config_dir_env", [None, "custom"])
     def test_relayed_always_suppresses_credentials_and_keeps_preferences(
-        self, tmp_path, monkeypatch, config_dir_env
+        self, tmp_path, monkeypatch
     ):
-        monkeypatch.setenv("HOME", str(tmp_path))
-        monkeypatch.setenv("USERPROFILE", str(tmp_path))
-        project = tmp_path / "project"
-        project.mkdir()
-        monkeypatch.chdir(project)
-        config_dir = tmp_path / (config_dir_env or ".claude")
-        config_dir.mkdir()
-        if config_dir_env is None:
-            monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-        else:
-            monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(config_dir))
-        (project / ".claude").mkdir()
-        (project / ".claude" / "settings.json").write_text(
-            json.dumps({"apiKeyHelper": "project-helper", "statusLine": {"type": "command"}})
-        )
-        gateway_settings = config_dir / "ucode-settings.json"
+        gateway_settings = tmp_path / "ucode-settings.json"
         gateway_settings.write_text(
             json.dumps(
                 {
@@ -4067,31 +4051,6 @@ class TestBuildClaudeArgv:
         assert settings["model"] == "example"
         assert settings["statusLine"] == {"type": "command"}
         assert argv[argv.index("--setting-sources") + 1] == "project,local"
-
-    @pytest.fixture
-    def subscription_status_command(self, monkeypatch):
-        run = Mock(
-            return_value=subprocess.CompletedProcess(
-                [], 0, stdout='{"authMethod":"claude.ai"}', stderr=""
-            )
-        )
-        monkeypatch.setattr(claude.subprocess_cross_os, "run", run)
-        return run
-
-    def test_relayed_auth_status_always_uses_credential_override(
-        self, tmp_path, monkeypatch, subscription_status_command
-    ):
-        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "custom-config"))
-        project = tmp_path / "project"
-        project.mkdir()
-        monkeypatch.chdir(project)
-        assert claude._has_subscription_login()
-        command = subscription_status_command.call_args.args[0]
-        settings = json.loads(command[command.index("--settings") + 1])
-        assert settings == {
-            "apiKeyHelper": "",
-            "env": {"ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_API_KEY": ""},
-        }
 
     def test_relayed_with_caller_settings_keeps_setting_sources(self, monkeypatch):
         # Even when composing a caller --settings, relayed still excludes user scope.

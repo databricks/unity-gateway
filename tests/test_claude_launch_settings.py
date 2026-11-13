@@ -112,7 +112,16 @@ def test_windows_relayed_settings_and_proxy_are_cleaned_up(
         settings_path = Path(argv[argv.index("--settings") + 1])
         seen.append(settings_path)
         merged = json.loads(settings_path.read_text(encoding="utf-8"))
-        assert merged == {**original, **caller}
+        assert merged == {
+            **original,
+            "apiKeyHelper": "",
+            "env": {
+                **original["env"],
+                "ANTHROPIC_AUTH_TOKEN": "",
+                "ANTHROPIC_API_KEY": "",
+            },
+            **caller,
+        }
         assert argv[1:3] == ["--setting-sources", "project,local"]
         if spawn_failure:
             raise OSError("could not start Claude")
@@ -211,6 +220,26 @@ def test_posix_launch_keeps_inline_settings(large_settings, monkeypatch, platfor
     with claude._claude_launch_argv("claude", ["--settings", "{}", "--print", "hello"]) as argv:
         assert json.loads(argv[argv.index("--settings") + 1]) == original
         assert argv[-2:] == ["--print", "hello"]
+
+
+@pytest.mark.parametrize("platform", [OS.LINUX, OS.MACOS, OS.WINDOWS])
+def test_relayed_inline_settings_are_private_and_cleaned_up(large_settings, monkeypatch, platform):
+    saved_path, _ = large_settings
+    saved_path.write_text(json.dumps({"env": {"UNRELATED_SECRET": "saved-secret"}}))
+    monkeypatch.setattr(claude, "current_os", lambda: platform)
+    caller = {"hooks": {"SessionStart": [{"hooks": [{"type": "command"}]}]}}
+
+    with claude._claude_launch_argv(
+        "claude", ["--settings", json.dumps(caller)], relayed=True
+    ) as argv:
+        settings_path = Path(argv[argv.index("--settings") + 1])
+        assert all("saved-secret" not in argument for argument in argv)
+        assert not argv[argv.index("--settings") + 1].startswith("{")
+        assert settings_path.stat().st_mode & 0o777 == 0o600
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        assert settings["env"]["UNRELATED_SECRET"] == "saved-secret"
+        assert settings["hooks"] == caller["hooks"]
+    assert not settings_path.parent.exists()
 
 
 def test_short_windows_launch_keeps_inline_settings(large_settings):

@@ -89,10 +89,10 @@ Select it through the runner with `--claude-version 2.1.314` and
 Offline evidence checks accept both recipient forms and reject a missing recipient,
 a wrong resumed child, a failed send, or a missing/crossed tool result.
 
-`../test_agent_claude.py` covers universal relay credential overrides for launches and
-subscription-status checks across cwd and config-root combinations, preservation of project and
-caller preferences except credential keys, normal-launch behavior, and managed-setting conflicts.
-This is not live subscription or gateway coverage.
+`../test_agent_claude.py` covers relayed argv construction and settings merging: credential blanks
+override caller values while preferences survive, normal launches remain unchanged, and managed
+settings conflicts remain rejected. Subscription-status argv uses the fixed credential blanks.
+These component checks do not establish native or live subscription/gateway behavior.
 
 `../test_claude_launch_settings.py` covers oversized Windows Claude launch
 settings with controlled process boundaries: UTF-16 command length, merged

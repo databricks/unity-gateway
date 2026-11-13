@@ -2776,15 +2776,20 @@ def _claude_launch_argv(
     settings_override: dict | None = None,
     server_side_web_search: bool = False,
 ) -> Iterator[list[str]]:
-    """Keep oversized Windows settings off the command line for the child's lifetime."""
+    """Keep launch settings containing credentials off the command line."""
     argv = _build_claude_argv(binary, tool_args, relayed, settings_override, server_side_web_search)
     settings_index = argv.index("--settings") + 1
-    if current_os() != OS.WINDOWS or not argv[settings_index].startswith("{"):
+    inline_settings = argv[settings_index].startswith("{")
+    if not inline_settings:
         yield argv
         return
     command_line = subprocess.list2cmdline(argv)
     # CreateProcess includes the terminating NUL in its 32,767 UTF-16 code unit limit.
-    if len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 < 32_767:
+    oversized_windows_command = (
+        current_os() == OS.WINDOWS
+        and len(command_line.encode("utf-16-le", errors="surrogatepass")) // 2 >= 32_767
+    )
+    if not relayed and not oversized_windows_command:
         yield argv
         return
     with TemporaryDirectory(prefix="ug-claude-") as directory:
