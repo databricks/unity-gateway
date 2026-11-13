@@ -383,7 +383,22 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
+      - name: Bound Windows Databricks CLI download retries
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: |
+          $curlHome = Join-Path $env:RUNNER_TEMP "databricks-cli-curl"
+          New-Item -ItemType Directory -Force -Path $curlHome | Out-Null
+          @(
+            "retry = 3"
+            "retry-all-errors"
+            "retry-max-time = 60"
+            "connect-timeout = 20"
+            "max-time = 120"
+          ) | Set-Content -Path (Join-Path $curlHome ".curlrc") -Encoding ascii
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        env:
+          CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
         with:
           version: 1.17.0
       - name: Expose the Databricks CLI on Windows
