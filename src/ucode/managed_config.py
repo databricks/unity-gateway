@@ -30,12 +30,14 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple, cast
 
 import ucode.config_io as config_io
+from ucode.constants import MDM_OS_ENV, MDM_OS_NONE
 from ucode.databricks import (
     fetch_managed_coding_agent_configs,
     fetch_model_recommendation,
@@ -64,6 +66,14 @@ REFRESH_TS_PATH = config_io.APP_DIR / "refresh_ts.json"
 # Shown to a developer when their workspace has no admin-defined managed config yet — the normal
 # case, not an error. Kept here so the CLI (which surfaces it) uses one consistent message.
 NO_MANAGED_CONFIG_MESSAGE = "No coding-agent config has been set up by your workspace admin yet."
+
+# Telemetry: whether this machine was provisioned through MDM, and on which OS. `ug configure --mdm`
+# saves it beside the workspace policy; every run exports it as `MDM_OS`.
+_MDM_OS_NAMES = {OS.MACOS: "Mac", OS.WINDOWS: "Windows", OS.LINUX: "Linux"}
+# None outside `ug configure`; otherwise what this configure saves (`MDM_OS_NONE` clears it).
+_requested_mdm_os: str | None = None
+# `MDM_OS` as this process inherited it, used when nothing is saved.
+_inherited_mdm_os: str | None = None
 
 # CodingAgent proto enum -> ucode tool name. Anything unrecognized (e.g. a newer agent this ucode
 # build doesn't know) is dropped during normalization rather than guessed at. Public because the
@@ -684,7 +694,8 @@ def save_managed_state(
 
     ``sets_machine_workspace`` marks an explicit ``ug configure``, which decides the machine's
     workspace: a workspace that publishes no policy then also removes another workspace's
-    installed policy. A launch never does.
+    installed policy. A launch never does. The saved ``mdm_os`` survives either change;
+    :func:`save_requested_mdm_os` changes it.
     """
     workspace = normalize_workspace_url(workspace)
     existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
@@ -694,28 +705,101 @@ def save_managed_state(
         and bool(existing_workspace.strip())
         and normalize_workspace_url(existing_workspace) == workspace
     )
-    if not config:
-        if matches or (sets_machine_workspace and existing_workspace):
-            _require_policy_write(allow_write)
-            update_workspace_policy(
-                MANAGED_CONFIG_PATH, None, interactive=interactive, allow_sudo=allow_sudo
-            )
-        return
+    current = {key: existing[key] for key in ("workspace", "config", "mdm_os") if key in existing}
     existing_config = existing.get("config")
-    if (
+    if not config:
+        drop = matches or (sets_machine_workspace and existing_workspace)
+        desired = {} if drop else {k: v for k, v in current.items() if k != "mdm_os"}
+    elif (
         matches
         and isinstance(existing_config, dict)
         and _policy_content(existing_config) == _policy_content(config)
     ):
+        desired = {"workspace": existing_workspace, "config": existing_config}
+    else:
+        desired = {"workspace": workspace, "config": config}
+    if "mdm_os" in current:
+        desired["mdm_os"] = current["mdm_os"]
+    if desired == current:
         return
     _require_policy_write(allow_write)
-    payload = {"workspace": workspace, "config": config}
     update_workspace_policy(
         MANAGED_CONFIG_PATH,
-        json.dumps(payload, indent=2) + "\n",
+        json.dumps(desired, indent=2) + "\n" if desired else None,
         interactive=interactive,
         allow_sudo=allow_sudo,
     )
+
+
+def request_mdm_os(enabled: bool | None) -> None:
+    """Record ``ug configure`` with (True) or without (False) ``--mdm``; None ends the request.
+
+    Only the machine-wide managed settings hold ``mdm_os``, so a run that can't install them
+    (``--user``, ``UG_SKIP_OS_SETTINGS``) ignores ``--mdm`` and leaves the saved value alone.
+    """
+    global _requested_mdm_os
+    if enabled is None or not _machine_policy_installable():
+        if enabled:
+            print_warning(
+                "--mdm is ignored: it is saved only in machine-wide managed settings, which "
+                "`--user` and UG_SKIP_OS_SETTINGS don't write."
+            )
+        _requested_mdm_os = None
+    else:
+        _requested_mdm_os = _MDM_OS_NAMES.get(current_os(), MDM_OS_NONE) if enabled else MDM_OS_NONE
+    _apply_mdm_os_env()
+
+
+def saved_mdm_os() -> str | None:
+    """The ``mdm_os`` saved by ``ug configure --mdm`` in machine-wide managed settings, or None."""
+    if not _machine_policy_installable():
+        return None
+    value = config_io.read_json_safe(MANAGED_CONFIG_PATH).get("mdm_os")
+    return value if isinstance(value, str) and value else None
+
+
+def _apply_mdm_os_env() -> None:
+    os.environ[MDM_OS_ENV] = _requested_mdm_os or saved_mdm_os() or _inherited_mdm_os or MDM_OS_NONE
+
+
+def export_mdm_os() -> Callable[[], None]:
+    """Set ``MDM_OS`` for this run and the agents it launches; returns a restore for exit.
+
+    A saved value wins; with none, an inherited ``MDM_OS`` is kept, else ``"None"``.
+    """
+    global _inherited_mdm_os
+    previous = os.environ.get(MDM_OS_ENV)
+    _inherited_mdm_os = previous
+    _apply_mdm_os_env()
+
+    def restore() -> None:
+        if previous is None:
+            os.environ.pop(MDM_OS_ENV, None)
+        else:
+            os.environ[MDM_OS_ENV] = previous
+
+    return restore
+
+
+def save_requested_mdm_os() -> None:
+    """Save ``mdm_os`` for ``--mdm``, or clear it without, in machine-wide managed settings.
+
+    It is telemetry, so a failed write warns and never fails configure.
+    """
+    if _requested_mdm_os is None:
+        return
+    existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
+    desired = {key: value for key, value in existing.items() if key != "mdm_os"}
+    if _requested_mdm_os != MDM_OS_NONE:
+        desired["mdm_os"] = _requested_mdm_os
+    if desired == existing:
+        return
+    text = json.dumps(desired, indent=2) + "\n" if desired else None
+    try:
+        update_workspace_policy(MANAGED_CONFIG_PATH, text, interactive=True, allow_sudo=True)
+    except RuntimeError as exc:
+        action = "save --mdm to" if _requested_mdm_os != MDM_OS_NONE else "clear mdm_os from"
+        print_warning(f"Could not {action} {MANAGED_CONFIG_PATH}: {exc}")
 
 
 def _require_policy_write(allow_write: bool) -> None:
