@@ -80,12 +80,15 @@ After inference, three fresh Cowork tasks run through the same native UI:
 3. The hosted Desktop jobs set `UG_COWORK_MCP`, so the initial `ug configure` also passes
    `--mcp system.ai.web_search` (the service in `task-fixture.json`). The task requires the
    Desktop profile's `web_search` connector to be UG's stdio proxy for that
-   service. Ask Cowork to search for Databricks' official website with that connector. Require a
-   successful `mcp__*__web_search` call with a nonempty query whose result contains a
+   service. Ask Cowork to search for Databricks' official website with that connector's
+   `mcp__web_search__web_search` tool, and not Desktop's native `WebSearch`; on Anthropic-direct
+   sources native search works and the model otherwise prefers it. Require a
+   successful `mcp__web_search__web_search` call with a nonempty query whose result contains a
    `databricks.com` or `www.databricks.com` URL, and a completed answer repeating one of those
    URLs, ignoring Markdown and trailing slashes. Search ranking and wording are not asserted;
-   Desktop's native web search cannot satisfy it. If Desktop asks before the connector's first
-   use, the task approves it and records the label. This runs in the hosted Windows and macOS
+   Desktop's native web search cannot satisfy it. Desktop asks before the connector's first use;
+   the task approves it (**Allow for this task** on Windows 2.42304.2, **Allow once** on macOS
+   4.23118.0) and records the label. This runs in the hosted Windows and macOS
    Desktop jobs, not the staging `anthropic-mps` lane.
    UG writes the connector's absolute command from the `ug` on `PATH`, so both install scripts
    add the test runtime to `PATH`, as an installed `ug` would be.

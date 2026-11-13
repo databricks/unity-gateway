@@ -39,13 +39,12 @@ def databricks_urls(text):
 
 
 def evaluate_mcp(answer, calls, results, task):
-    suffix = f"__{task['mcpTool']}"
+    # Desktop names connector tools mcp__<connector>__<tool>.
+    tool_name = f"mcp__{task['mcpServer']}__{task['mcpTool']}"
     searches = [
         call
         for call in calls
-        if isinstance(call.get("name"), str)
-        and call["name"].startswith("mcp__")
-        and call["name"].endswith(suffix)
+        if call.get("name") == tool_name
         and isinstance(call["input"].get("query"), str)
         and call["input"]["query"].strip()
     ]

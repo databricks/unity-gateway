@@ -302,6 +302,7 @@ def _search_result(records):
     [
         "native_web_search",
         "other_tool",
+        "other_connector",
         "empty_query",
         "tool_error",
         "missing_result",
@@ -318,6 +319,8 @@ def test_mcp_search_rejects_unproven_or_unrelated_answers(mcp_evidence, invalid)
             _search_call(records)["name"] = "WebSearch"
         case "other_tool":
             _search_call(records)["name"] = "mcp__web_search__fetch"
+        case "other_connector":
+            _search_call(records)["name"] = "mcp__other__web_search"
         case "empty_query":
             _search_call(records)["input"] = {"query": " "}
         case "tool_error":
