@@ -26,7 +26,7 @@ SMART_ROUTING_ENV_KEYS = (
 
 MODEL_PROVIDER_SERVICE_HEADER = "Databricks-Model-Provider-Service"
 
-# AI Gateway API types, as a model service lists them in `supported_api_types` and a Model
+# Unity Gateway API types, as a model service lists them in `supported_api_types` and a Model
 # Provider Service target in `native_api_types`.
 API_ANTHROPIC_MESSAGES = "anthropic/v1/messages"
 API_CODEX_RESPONSES = "codex/v1/responses"
@@ -47,7 +47,7 @@ AI_GATEWAY_REQUEST_TAGS_HEADER = "Databricks-Ai-Gateway-Request-Tags"
 AI_GATEWAY_REQUEST_TAGS_ENV_VAR = "AI_GATEWAY_REQUEST_TAGS"
 # Extra Databricks request headers, one `Name: value` per line; `ug --header` adds to it.
 UG_HEADERS_ENV_VAR = "UG_HEADERS"
-# Launch-scoped opt-in to the AI Gateway's server-side Anthropic web search for Claude Code.
+# Launch-scoped opt-in to the Unity Gateway's server-side Anthropic web search for Claude Code.
 UG_CLAUDE_SERVER_SIDE_WEB_SEARCH_ENV_VAR = "UG_CLAUDE_SERVER_SIDE_WEB_SEARCH"
 # Saved by `ug configure --enable-server-side-web-search`; absent means off.
 CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY = "claude_server_side_web_search"

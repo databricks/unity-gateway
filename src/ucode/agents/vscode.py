@@ -1,4 +1,4 @@
-"""VS Code: install ug's model extension so Copilot Chat can use the workspace's AI Gateway models.
+"""VS Code: install ug's model extension so Copilot Chat can use the workspace's Unity Gateway models.
 
 Configure-only, like Cursor (it stays out of `agents.__init__._MODULES`): `ug configure --agents
 vscode` packs the extension that ships with ug into a vsix, together with a `ug-config.json` that

@@ -76,7 +76,7 @@ from ucode.ui import (
 from ucode.ui.interactive_picker import CatalogChoice, picker_details
 from ucode.workspace import state_workspace_key, workspace_headers
 
-# Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
+# Workspace-relative path fragments for the V2 Unity Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
 MCP_EXTERNAL_PATH = "/api/2.0/mcp/external/"
 MCP_GENIE_PATH = "/api/2.0/mcp/genie/"
@@ -2064,7 +2064,7 @@ def _resolve_location_mcp_servers(
 
 
 # The interactive picker searches a single source: MCP services (the `/ai-gateway/mcp-services/`
-# path), the one source a consumer-only identity can reach. The V2 AI Gateway sources — external
+# path), the one source a consumer-only identity can reach. The V2 Unity Gateway sources — external
 # connections, Databricks apps, Genie spaces, Vector Search, and UC functions, all served under
 # `/api/2.0/mcp/*` — aren't offered in the picker because consumer entitlements don't grant access
 # to them; workspace users add one non-interactively with a typed `--names` selector (see
@@ -2072,7 +2072,7 @@ def _resolve_location_mcp_servers(
 # there is no "choose sources" wizard step.
 MCP_SERVICES_SOURCE = "mcp-services"
 
-# Typed `--names` selectors that name a V2 AI Gateway MCP server directly, e.g.
+# Typed `--names` selectors that name a V2 Unity Gateway MCP server directly, e.g.
 # `vector-search:main.docs` or `uc-functions:main.tools`. These bypass the interactive
 # picker (which no longer offers V2 sources) so workspace users can still add them on
 # request; a consumer-only identity is blocked with a clear error before registering.
@@ -2211,12 +2211,12 @@ def _configure_v2_mcp_selectors(
     append: bool,
     agents: set[str] | None,
 ) -> int:
-    """Non-interactive add for V2 AI Gateway MCP servers named by typed `--names`
+    """Non-interactive add for V2 Unity Gateway MCP servers named by typed `--names`
     selectors (`vector-search:`/`uc-functions:`/`external:`/`genie-space:`/`app:`).
 
     The interactive picker no longer offers these sources; this is how a workspace user adds one
     on request. These require workspace access, which consumer-only identities lack — but that's
-    enforced upstream at the AI Gateway (which ucode already hits during model setup), not here:
+    enforced upstream at the Unity Gateway (which ucode already hits during model setup), not here:
     the listing calls this uses don't reliably signal consumer access (see `PermissionDeniedError`).
     Registration mirrors the interactive add path: additive under ``append`` (`ucode mcp add`), an
     exact replacement otherwise (replace mode), always preserving the skills connection."""

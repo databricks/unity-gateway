@@ -1,4 +1,4 @@
-"""Shared AI Gateway routing helpers for coding-agent sessions and subagents.
+"""Shared Unity Gateway routing helpers for coding-agent sessions and subagents.
 
 Both the Codex and Claude Code integrations route through the workspace's
 configured router at ``/ai-gateway/routing/v1/routes:select``. The
@@ -92,7 +92,7 @@ def _format_box(lines: list[str]) -> str:
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """One model selection returned by the AI Gateway router."""
+    """One model selection returned by the Unity Gateway router."""
 
     model: str
     rationale: str = ""

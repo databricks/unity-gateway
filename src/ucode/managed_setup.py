@@ -567,7 +567,7 @@ def _validate_smart_defaults(smart_defaults: dict, enabled_agents: dict[str, dic
         except ValueError:
             errors.append(
                 f"smart_defaults.budget_id must be a UUID (got '{budget_id}'). Use the "
-                "budget_configuration_id from the workspace's AI Gateway budgets."
+                "budget_configuration_id from the workspace's Unity Gateway budgets."
             )
 
     percentages: list[float] = []

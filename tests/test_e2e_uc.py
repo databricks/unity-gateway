@@ -1,7 +1,7 @@
 """End-to-end tests for UC-securables discovery (now always-on).
 
 Verifies that `configure_shared_state` discovers models via UC model-services
-(`system.ai.*`) by default, falls back to the legacy per-family AI Gateway
+(`system.ai.*`) by default, falls back to the legacy per-family Unity Gateway
 listings when UC model-services are absent, and surfaces only `system.ai.*`
 entries from the UC primitives.
 
@@ -110,7 +110,7 @@ class TestConfigureSharedStateE2E:
 
     def test_falls_back_to_legacy_when_no_uc_models(self, monkeypatch, e2e_workspace, e2e_token):
         """A workspace without UC model-services must still configure, via the
-        legacy per-family AI Gateway listings (`databricks-*` ids)."""
+        legacy per-family Unity Gateway listings (`databricks-*` ids)."""
         if _has_uc_models(e2e_workspace, e2e_token):
             pytest.skip("Workspace has system.ai.* model services; fallback not exercised.")
 

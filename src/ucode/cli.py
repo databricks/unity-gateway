@@ -596,7 +596,7 @@ def configure_shared_state(
     clear_custom_oauth: bool = False,
     claude_server_side_web_search: bool | None = None,
 ) -> dict:
-    """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
+    """Log into Databricks, verify Unity Gateway, fetch model lists, persist state.
 
     If tools is provided, only fetch models for those tools. Otherwise fetch all.
     If force_login is True, always run databricks auth login (used by explicit configure).
@@ -609,7 +609,7 @@ def configure_shared_state(
     entries (e.g. DEFAULT and a named profile both pointing at the same host)
     don't error out. If ``None``, we resolve it from the host after login.
     If skip_preflight is True, skip the entire preflight block below — auth
-    validation, the AI Gateway probe, and model discovery — trusting a prior
+    validation, the Unity Gateway probe, and model discovery — trusting a prior
     ``ug configure``. The PAT/bearer is already exported (``apply_pat_environment``
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
@@ -642,7 +642,7 @@ def configure_shared_state(
     # each path below resolves it once, where a host->profile lookup is reliable
     # (the skip branch trusts the prior configure; the preflight resolves after
     # login). --skip-preflight persists exactly this and returns, trusting a prior
-    # `ug configure` — it already validated auth + the AI Gateway and saved the
+    # `ug configure` — it already validated auth + the Unity Gateway and saved the
     # model lists (carried over by load_state, left untouched).
     state = load_state()
     state["workspace"] = workspace
@@ -730,7 +730,7 @@ def configure_shared_state(
 
     login_kwargs = {"workspace_id": workspace_id} if workspace_id else {}
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
-    #    auth + the AI Gateway, then discover the available models. ──
+    #    auth + the Unity Gateway, then discover the available models. ──
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
     elif use_pat:
@@ -762,7 +762,7 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
+    with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
         # The listing is independent of the probe, so overlap the two round trips. The probe still
@@ -829,7 +829,7 @@ def configure_shared_state(
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
         # back empty (workspace without UC model-services, or the listing
-        # failed), fall back to the per-family AI Gateway listing for that
+        # failed), fall back to the per-family Unity Gateway listing for that
         # family only.
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
@@ -1959,9 +1959,9 @@ def status() -> int:
                 "Model provider",
                 provider_service
                 or (
-                    f"Databricks AI Gateway ({location})"
+                    f"Databricks Unity Gateway ({location})"
                     if (location := get_model_location(effective_state, tool))
-                    else "Databricks AI Gateway"
+                    else "Databricks Unity Gateway"
                 ),
             ),
         ]
@@ -2469,7 +2469,7 @@ def mcp_add(
             help="Register this comma-separated subset of MCP services (additively). Full names "
             "like `system.ai.github` work on their own; bare short names like `github` need "
             "--location to locate them. Omit --names to register the whole --location schema; "
-            'an empty `--names ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
+            'an empty `--names ""` adds nothing (no-op). V2 Unity Gateway servers (not in the '
             "interactive picker) are added by naming them here: `vector-search:<catalog>.<schema>`, "
             "`uc-functions:<catalog>.<schema>`, `external:<connection>`, `genie-space:<id>`, or "
             "`app:<name>` (workspace access required).",
@@ -4499,7 +4499,7 @@ SkipPreflightOption = Annotated[
     bool,
     typer.Option(
         "--skip-preflight",
-        help="Skip the per-launch Databricks auth + AI Gateway re-validation (and the "
+        help="Skip the per-launch Databricks auth + Unity Gateway re-validation (and the "
         "Databricks CLI minimum-version check), trusting a prior `ug configure`.",
     ),
 ]
@@ -4577,7 +4577,7 @@ def default(
         ),
     ] = None,
 ) -> None:
-    """Configure and launch coding agents through Databricks AI Gateway."""
+    """Configure and launch coding agents through Databricks Unity Gateway."""
     for number, line in enumerate(header or [], 1):
         if parse_header_line(line) is None:
             # Name only the flag's position: the value may be a token.
@@ -4827,7 +4827,7 @@ def claude_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing and Smart Router "
+            help="Enable or disable Unity Gateway subagent model routing and Smart Router "
             "Orchestrator for this Claude Code launch or session.",
         ),
     ] = None,
@@ -5180,7 +5180,7 @@ def configure(
         bool | None,
         typer.Option(
             "--enable-server-side-web-search/--disable-server-side-web-search",
-            help="Claude Code: use the AI Gateway's server-side web search instead of ug's "
+            help="Claude Code: use the Unity Gateway's server-side web search instead of ug's "
             "`web_search` MCP, saved for later `ug claude` launches. Omit to keep the saved "
             "choice (off by default).",
         ),
@@ -5258,7 +5258,7 @@ def configure(
         ),
     ] = "normal",
 ) -> None:
-    """Configure workspace URL and AI Gateway."""
+    """Configure workspace URL and Unity Gateway."""
     if ctx.invoked_subcommand is not None:
         return
     if verbose not in ("normal", "low"):

@@ -8,7 +8,7 @@ of those exercise is the whole thing wired together over real sockets: the
 real `rfile`, the pooled `httpx` client streaming to a real upstream and back,
 and `_relay_response` writing to a real `wfile`.
 
-These tests stand up a fake AI Gateway upstream, start the *real* relay or OTLP
+These tests stand up a fake Unity Gateway upstream, start the *real* relay or OTLP
 proxy pointed at it, and drive it with a real HTTP client — so a regression
 anywhere in that chain is caught.
 Fully hermetic: no agent binary, no network, no workspace credentials.
@@ -42,7 +42,7 @@ class _CapturedRequest:
 
 
 class _FakeGateway:
-    """Real HTTP server standing in for the workspace AI Gateway upstream.
+    """Real HTTP server standing in for the workspace Unity Gateway upstream.
 
     Records each forwarded request and returns a scripted response: a status code
     plus a list of body byte-chunks (flushed with an optional inter-chunk delay so

@@ -2,8 +2,8 @@
 
 ## Project
 
-Unity Gateway (`ug`) is a Python CLI that configures and launches coding agents through Databricks
-AI Gateway. Its internal Python package remains named `ucode` for backward compatibility.
+Unity Gateway (`ug`) is a Python CLI that configures and launches coding agents through a
+Databricks workspace. Its internal Python package remains named `ucode` for backward compatibility.
 
 The package code lives in `src/ucode/`.
 Tests live in `tests/`.

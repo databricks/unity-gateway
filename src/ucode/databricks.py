@@ -1,5 +1,5 @@
 """Databricks workspace integration: CLI auth, token retrieval, model
-discovery, AI Gateway checks, and URL builders."""
+discovery, Unity Gateway checks, and URL builders."""
 
 from __future__ import annotations
 
@@ -121,7 +121,7 @@ _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
 
 @dataclass(frozen=True)
 class AnthropicModelCatalog:
-    """Models advertised by AI Gateway's Anthropic endpoint."""
+    """Models advertised by Unity Gateway's Anthropic endpoint."""
 
     model_ids: list[str]
     model_id_to_display_name: dict[str, str]
@@ -651,7 +651,7 @@ def _per_user_block_threshold(entry: dict) -> Decimal | None:
 
 
 def list_workspace_budgets(workspace: str, token: str) -> tuple[list[dict], str | None]:
-    """List the AI Gateway budgets that apply to this workspace.
+    """List the Unity Gateway budgets that apply to this workspace.
 
     Returns ``(budgets, reason)`` where each budget is
     ``{"id", "display_name", "has_per_user_block", "per_user_threshold"}``. ``reason`` is None on
@@ -2005,7 +2005,7 @@ class PermissionDeniedError(RuntimeError):
     It deliberately does NOT try to distinguish a consumer-only identity (no `workspace-access`
     entitlement) from a workspace user missing a grant on a specific resource: no service exposes
     a signal that reliably tells them apart. The `workspace-access` entitlement is enforced with a
-    named 403 only on guarded AI Gateway / Model Serving *inference* and model-listing paths (which
+    named 403 only on guarded Unity Gateway / Model Serving *inference* and model-listing paths (which
     ucode already exercises at model setup, so a consumer is gated there) — NOT on the Apps / UC /
     Vector Search listing calls the MCP flow uses, which return an empty list or a generic ACL
     denial for a consumer."""
@@ -2212,7 +2212,7 @@ _OSS_MODEL_FAMILIES = ("kimi-", "glm-", "deepseek-")
 # Claude Code family alias (ANTHROPIC_DEFAULT_<FAMILY>_MODEL). Add an entry to
 # support a new family in both discovery paths (`claude-<family>-*` via the
 # model-services listing and either `databricks-claude-<family>-*` or
-# `system.ai.claude-<family>-*` via the AI Gateway).
+# `system.ai.claude-<family>-*` via the Unity Gateway).
 ANTHROPIC_FAMILIES = ("fable", "opus", "sonnet", "haiku")
 
 
@@ -2589,7 +2589,7 @@ def discover_model_services(
 
 # --- Managed coding-agent config (admin-authored, developer-read) -----------
 
-# The workspace-admin authors a CodingAgentConfig via the AI Gateway; developers read it
+# The workspace-admin authors a CodingAgentConfig via the Unity Gateway; developers read it
 # (non-admin) through the List endpoint and apply it locally.
 _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
@@ -2616,7 +2616,7 @@ def _managed_config_user_agent() -> str:
 
 
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
-    """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
+    """List the workspace's managed CodingAgentConfig(s) via the Unity Gateway."""
     url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}"
     payload, reason = _http_get_json(
         url, token, timeout=30, headers={"User-Agent": _managed_config_user_agent()}
@@ -2635,7 +2635,7 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
 
 
 def fetch_model_recommendation(workspace: str, token: str) -> tuple[dict, str | None]:
-    """Ask the AI Gateway which agent and model the caller's budget tier allows.
+    """Ask the Unity Gateway which agent and model the caller's budget tier allows.
 
     The request takes no parameters: the server matches the caller's live spend against the managed
     config's budget tiers and resolves the agent first, then that agent's model.
@@ -2786,7 +2786,7 @@ def delete_coding_agent_config(workspace: str, token: str, name: str) -> str | N
 # --- MCP services (parallel to model services) -----------------------------
 
 
-# Canonical path segment of an AI Gateway MCP-services endpoint
+# Canonical path segment of a Unity Gateway MCP-services endpoint
 # (``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``). This is
 # the single source of truth: URL building (below), connection-backed detection
 # (`mcp_connection_login.connection_from_url`), and URL-shape classification
@@ -2932,7 +2932,7 @@ def get_mcp_service_user_credential(
 
 
 def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
-    """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
+    """Whether a Unity Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
     needs a one-time connection sign-in before it vends tools.
 
     Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
@@ -3691,7 +3691,7 @@ def _get_anthropic_models_json(
 
 
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:
-    """List every model id advertised by AI Gateway's Anthropic endpoint.
+    """List every model id advertised by Unity Gateway's Anthropic endpoint.
 
     Claude Code's native gateway discovery consumes this same catalog, so callers
     using that mode must not apply ucode's legacy ``databricks-claude-*`` family
@@ -3701,7 +3701,7 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
     return catalog.model_ids, catalog.error_msg
 
 
-_NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
+_NO_ANTHROPIC_MODEL_IDS = "Unity Gateway returned no Anthropic model ids"
 
 
 def _positive_int(value: object) -> TypeGuard[int]:
@@ -3762,7 +3762,7 @@ def list_anthropic_model_catalog(
 
 
 def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], str | None]:
-    """Discover Claude families on this workspace's AI Gateway.
+    """Discover Claude families on this workspace's Unity Gateway.
 
     Returns (models_by_family, reason). reason is None on success; otherwise it
     describes why the dict is empty (HTTP error, network error, or no models
@@ -3790,11 +3790,11 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
     if result:
         return result, None
     if not raw_ids:
-        return {}, "AI Gateway returned no Claude model ids"
+        return {}, "Unity Gateway returned no Claude model ids"
     sample = ", ".join(raw_ids[:5])
     families = ",".join(ANTHROPIC_FAMILIES)
     return {}, (
-        "AI Gateway returned model ids but none matched "
+        "Unity Gateway returned model ids but none matched "
         f"`*-claude-{{{families}}}-*` (got: {sample})"
     )
 
@@ -3989,7 +3989,7 @@ def _raise_unity_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
 def _raise_unity_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
     raise RuntimeError(
         f"The access token for {workspace} is missing an OAuth scope required by the "
-        f"AI Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
+        f"Unity Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
         f"scopes:\n"
         f"  databricks auth login --host {workspace}"
     )
@@ -4073,7 +4073,7 @@ def _looks_like_transient_failure(reason: str) -> bool:
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
-    Matches a 401, an invalid-token 400 (the AI Gateway's `Invalid Token`), or a
+    Matches a 401, an invalid-token 400 (the Unity Gateway's `Invalid Token`), or a
     403 whose body reports an invalid access token (Unity Catalog rejects a stale
     PAT this way, e.g. `HTTP 403 Forbidden: ...Invalid access token...`). A *plain*
     403 with no token-invalid wording is left to the scope and permission routing,
@@ -4112,12 +4112,12 @@ def _parse_decimal(value: object) -> Decimal | None:
 
 
 # ---------------------------------------------------------------------------
-# URL builders (AI Gateway v2 only — no fallback to /serving-endpoints)
+# URL builders (Unity Gateway v2 only — no fallback to /serving-endpoints)
 # ---------------------------------------------------------------------------
 
 
 def build_otel_traces_endpoint(workspace: str) -> str:
-    """Return the AI Gateway OTLP HTTP trace endpoint for ``workspace``."""
+    """Return the Unity Gateway OTLP HTTP trace endpoint for ``workspace``."""
     return f"{workspace.rstrip('/')}/ai-gateway/otel/v1/traces"
 
 

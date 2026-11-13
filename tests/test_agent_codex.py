@@ -801,7 +801,7 @@ class TestCodexRemoveLegacyProfile:
             "[profiles.ucode]\n"
             'model_provider = "ucode-databricks"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n\n'
+            'name = "Databricks Unity Gateway"\n\n'
             "[model_providers.other]\n"
             'name = "keep"\n',
             encoding="utf-8",
@@ -834,7 +834,7 @@ class TestCodexRevertLegacySharedConfig:
             "[profiles.other]\n"
             'model_provider = "keep"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n',
+            'name = "Databricks Unity Gateway"\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
@@ -1082,7 +1082,7 @@ class TestCodexLaunch:
         profile_path.write_text(
             'model_provider = "Databricks"\n\n'
             "[model_providers.Databricks]\n"
-            'name = "Databricks AI Gateway"\n'
+            'name = "Databricks Unity Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
             encoding="utf-8",
@@ -1367,7 +1367,7 @@ class TestCodexLaunch:
             'model_provider = "ucode-databricks"\n'
             'model = "managed-default"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n'
+            'name = "Databricks Unity Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
             encoding="utf-8",
