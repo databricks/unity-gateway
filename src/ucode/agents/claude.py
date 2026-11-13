@@ -1006,13 +1006,13 @@ def user_stdio_mcp_entry(argv: list[str], *, always_load: bool = False) -> dict:
 
 
 def claude_code_config_path() -> Path:
-    """Claude Code's global config file (user-scope ``mcpServers``, feature cache, auth state):
-    ``$CLAUDE_CONFIG_DIR/.claude.json`` when that env var is set (the ``claude`` CLI honors it),
-    else the default ``~/.claude.json``. ug elsewhere shells out to the CLI, which resolves this
-    itself; a direct write must resolve the same path or it silently writes to a file Claude never
-    reads."""
+    """Use an existing ``.config.json`` in Claude's config directory, else its legacy path."""
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    return Path(config_dir) / ".claude.json" if config_dir else CLAUDE_CODE_CONFIG_PATH
+    directory = Path(config_dir) if config_dir else CLAUDE_CONFIG_DIR
+    current = directory / ".config.json"
+    if current.is_file():
+        return current
+    return directory / ".claude.json" if config_dir else CLAUDE_CODE_CONFIG_PATH
 
 
 def _read_claude_config_for_rewrite(path: Path) -> dict | None:
