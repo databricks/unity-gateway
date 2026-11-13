@@ -30,7 +30,7 @@ from ucode import managed_files, ownership
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
 from ucode.config_io import deep_merge_dict
-from ucode.databricks import get_databricks_token
+from ucode.databricks import get_databricks_token, get_model_provider_service
 from ucode.managed_config import (
     _is_feature_disabled,
     _policy_content,
@@ -85,7 +85,14 @@ class ManagedRunError(RuntimeError):
 
 
 class FileChangedDuringWrite(ManagedRunError):
-    """Another writer replaced a file during the run, so the run must not restore over it."""
+    """Another writer replaced ``path`` during the run, so the run must not restore over it."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(
+            EXIT_WRITE,
+            f"{path} changed while it was being written. Run `ug configure --global` again.",
+        )
+        self.path = path
 
 
 @dataclass
@@ -204,13 +211,27 @@ def claude_native_settings(entry: dict) -> dict | None:
 
 
 def build_claude(
-    manifest: dict, workspace: str, mcp_entries: dict[str, dict] | None = None
+    manifest: dict,
+    workspace: str,
+    mcp_entries: dict[str, dict] | None = None,
+    mcp_names: set[str] | None = None,
 ) -> ownership.Composed:
-    entry = _agent_entry(manifest, "claude")
+    """``mcp_names`` are the MCP servers ug registers for Claude anywhere, which an admin's
+    ``allowedMcpServers`` must admit."""
+    native = claude_native_settings(_agent_entry(manifest, "claude"))
+    ug_values = claude_ug_values(manifest, workspace, mcp_entries)
+    allowlist = (native or {}).get(claude_agent.CLAUDE_ALLOWED_MCP_SERVERS_KEY)
+    if isinstance(allowlist, list):
+        # Claude Code blocks a server missing from the allowlist, and admins can't be expected to
+        # know the names ug registers, so ug adds them. Without an admin allowlist, ug adds none.
+        names = {*(mcp_entries or {}), *(mcp_names or ()), claude_agent.WEB_SEARCH_MCP_NAME}
+        ug_values[claude_agent.CLAUDE_ALLOWED_MCP_SERVERS_KEY] = [
+            {"serverName": name} for name in sorted(names)
+        ]
     return ownership.compose(
         ownership.load_table("claude").section("managed_settings"),
-        native=claude_native_settings(entry),
-        ug_values=claude_ug_values(manifest, workspace, mcp_entries),
+        native=native,
+        ug_values=ug_values,
         features=agent_features(manifest, "claude"),
     )
 
@@ -322,6 +343,8 @@ def plan_agents(
     agents: list[str],
     mcp_entries: dict[str, dict[str, dict]],
     previous_state: dict | None,
+    *,
+    claude_mcp_names: set[str] | None = None,
 ) -> list[AgentPlan]:
     previously_written = set(((previous_state or {}).get("agents") or {}).keys())
     enabled = manifest.get("enabled_agents") or {}
@@ -342,7 +365,9 @@ def plan_agents(
                 raise ManagedRunError(
                     EXIT_USAGE, "This platform has no machine-wide Claude Code settings file."
                 )
-            composed = build_claude(manifest, workspace, mcp_entries.get("claude"))
+            composed = build_claude(
+                manifest, workspace, mcp_entries.get("claude"), claude_mcp_names
+            )
             path = agent_paths("claude")[0]
             plan.files[path] = claude_agent._dump_managed_settings(composed.doc)
             plan.reports.append((path, composed))
@@ -481,7 +506,7 @@ def sign_in(host: str, profile: str | None) -> str:
     """A token for ``host`` without signing anyone in. Raises :class:`SignInUnavailable`."""
     try:
         return get_databricks_token(host, profile)
-    except RuntimeError as exc:
+    except (RuntimeError, OSError) as exc:
         raise SignInUnavailable(EXIT_FETCH, f"Could not authenticate to {host}: {exc}") from exc
 
 
@@ -599,10 +624,7 @@ def _write_files(plans: list[AgentPlan]) -> None:
             ) from exc
         for path, text in plan.files.items():
             if read_managed_file(path) != text:
-                raise FileChangedDuringWrite(
-                    EXIT_WRITE,
-                    f"{path} changed while it was being written. Run `ug configure --global` again.",
-                )
+                raise FileChangedDuringWrite(path)
 
 
 def _next_state(workspace: str, plans: list[AgentPlan], previous: dict | None) -> dict:
@@ -661,17 +683,22 @@ def run(
             agents = list(MANAGED_AGENTS)
 
     enabled = manifest.get("enabled_agents") or {}
+    if token is not None:
+        _reject_relayed_services(manifest, [a for a in agents if a in enabled], host, token)
     mcp_entries: dict[str, dict[str, dict]] = {"claude": {}, "codex": {}}
+    claude_mcp_names: set[str] = set()
     if any(agent in enabled for agent in agents):
         try:
-            mcp_entries = mcp.resolve_machine_mcp_entries(
+            mcp_entries, claude_mcp_names = mcp.resolve_machine_mcp_entries(
                 manifest, host, profile=profile, token=token
             )
         except RuntimeError as exc:
             raise ManagedRunError(EXIT_FETCH, f"Could not resolve the MCP servers: {exc}") from exc
 
     try:
-        plans = plan_agents(manifest, host, agents, mcp_entries, previous)
+        plans = plan_agents(
+            manifest, host, agents, mcp_entries, previous, claude_mcp_names=claude_mcp_names
+        )
     except ValueError as exc:
         raise ManagedRunError(EXIT_USAGE, str(exc)) from exc
 
@@ -711,7 +738,9 @@ def run(
                 EXIT_WRITE,
                 f"Could not save the published agent configuration's marker file: {exc}",
             ) from exc
-    except FileChangedDuringWrite:
+    except FileChangedDuringWrite as exc:
+        # Keep the other writer's file; restore the rest so the machine doesn't mix two runs.
+        _restore({path: text for path, text in snapshot.items() if path != exc.path})
         raise
     except ManagedRunError:
         _restore(snapshot)
@@ -724,6 +753,24 @@ def run(
         raise
     print_file_actions(actions, dry_run=False)
     print_report(plans, dry_run=False)
+
+
+def _reject_relayed_services(manifest: dict, agents: list[str], host: str, token: str) -> None:
+    """Refuse a model provider service that relays a subscription: each developer signs in to it
+    through a local proxy, which machine-wide files can't express."""
+    for agent in agents:
+        service_name = managed_provider_service(manifest, agent)
+        if not service_name:
+            continue
+        service, _reason = get_model_provider_service(service_name, host, token)
+        if service is not None and service.get("relayed"):
+            raise ManagedRunError(
+                EXIT_USAGE,
+                f"Model provider service '{service_name}' relays a subscription, which each "
+                "developer signs in to themselves, so `ug configure --global` can't write it "
+                "machine-wide. Use a model provider service with an API key, or have developers "
+                "run `ug configure`.",
+            )
 
 
 def _snapshot(actions: dict[Path, str]) -> dict[Path, str | None]:

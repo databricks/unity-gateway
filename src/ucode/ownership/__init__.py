@@ -219,9 +219,10 @@ def compose(
         if shared is not None and shared.cls == SHARED_TABLE and len(path) > len(shared.path):
             name = path[len(shared.path)]
             if name in ug_table_names.get(shared.path, set()):
-                result.items.append(
-                    ReportItem(SKIPPED, ".".join(path[: len(shared.path) + 1]), shared.note)
-                )
+                entry_path = ".".join(path[: len(shared.path) + 1])
+                # One line per dropped entry, not one per key inside it.
+                if not any(i.outcome == SKIPPED and i.path == entry_path for i in result.items):
+                    result.items.append(ReportItem(SKIPPED, entry_path, shared.note))
                 continue
         default = next((e for e in matches if e.cls == DEFAULT), None)
         if default is not None:

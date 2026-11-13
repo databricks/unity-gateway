@@ -16,7 +16,7 @@
 #
 # After editing, regenerate the admin docs:
 #   uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md
-# CI fails when the docs or the claude.py constants disagree with this file.
+# tests/test_ownership.py fails when the docs or the claude.py constants disagree with this file.
 
 agent = "claude"
 display = "Claude Code"
@@ -227,9 +227,8 @@ note = "Unity Gateway writes the Databricks MCP servers from `mcp_servers` in th
 
 [[managed_settings]]
 path = "allowedMcpServers"
-class = "reserved"
-in_managed_file = false
-note = "To block servers, use `deniedMcpServers`, which you can set."
+class = "shared_list"
+note = "When you set an allowlist, Unity Gateway adds its MCP servers to it."
 
 [[managed_settings]]
 path = "env.ENABLE_PROMPT_CACHING_1H"

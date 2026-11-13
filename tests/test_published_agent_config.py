@@ -56,6 +56,27 @@ def _manifest(raw: dict) -> dict:
 
 
 class TestClaudeFile:
+    @pytest.mark.parametrize("admin", [[{"serverName": "linear"}], []], ids=["list", "empty"])
+    def test_admin_allowlist_admits_ug_servers(self, admin):
+        manifest = _manifest(
+            _raw_config(
+                claude_config={"claude_code": {"managed_settings": {"allowedMcpServers": admin}}}
+            )
+        )
+        doc = machine.build_claude(manifest, WS, {"uc-github": {}}, {"uc-github", "uc-proxy"}).doc
+        assert doc["allowedMcpServers"] == [
+            *admin,
+            {"serverName": "uc-github"},
+            {"serverName": "uc-proxy"},
+            {"serverName": claude.WEB_SEARCH_MCP_NAME},
+        ]
+
+    def test_no_admin_allowlist_means_ug_adds_none(self):
+        doc = machine.build_claude(
+            _manifest(_raw_config(claude_config={})), WS, {"uc-github": {}}
+        ).doc
+        assert "allowedMcpServers" not in doc
+
     def test_gateway_policy_and_native_settings(self):
         manifest = _manifest(
             _raw_config(
@@ -365,16 +386,24 @@ class TestRun:
         claude_path.write_text('{"old": true}\n')
         fake_reconcile = machine.reconcile_privileged_files
 
+        requirements = managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH
+        requirements.parent.mkdir(parents=True)
+        requirements.write_text("old = 1\n")
+
         def fail_on_codex(files, *, display):
-            if display == "Codex":
-                raise managed_files_mod.ManagedFileWriteUnavailable("denied")
             fake_reconcile(files, display=display)
+            if display == "Codex":
+                # Codex's files are already replaced when the write reports its failure.
+                raise managed_files_mod.ManagedFileWriteUnavailable("denied")
 
         monkeypatch.setattr(machine, "reconcile_privileged_files", fail_on_codex)
         with pytest.raises(machine.ManagedRunError) as exc:
             _run(_raw_config(claude_config={}, codex_config={}))
         assert exc.value.code == machine.EXIT_WRITE
         assert claude_path.read_text() == '{"old": true}\n'
+        assert requirements.read_text() == "old = 1\n"
+        assert not managed_files_mod.CODEX_SYSTEM_CONFIG_PATH.exists()
+        assert not managed_files_mod.UNITY_GATEWAY_MANAGED_SETTINGS_PATH.exists()
         assert not managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH.exists()
 
     @pytest.mark.parametrize(
@@ -428,20 +457,26 @@ class TestRun:
         _run(_raw_config(claude_config={}, codex_config={}), agents=["claude"])
         assert managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH not in written
 
-    def test_another_writer_is_not_overwritten(self, monkeypatch, writes):
+    def test_another_writer_keeps_its_file_and_the_rest_are_restored(self, monkeypatch, writes):
+        claude_path = claude.managed_settings_path()
+        claude_path.parent.mkdir(parents=True)
+        claude_path.write_text('{"old": true}\n')
+        requirements = managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH
         fake_reconcile = machine.reconcile_privileged_files
-        restored: list = []
 
         def other_writer(files, *, display):
             fake_reconcile(files, display=display)
-            if display == "Claude Code":
-                claude.managed_settings_path().write_text("{}\n")
+            if display == "Codex":
+                requirements.write_text("# theirs\n")
 
         monkeypatch.setattr(machine, "reconcile_privileged_files", other_writer)
-        monkeypatch.setattr(machine, "_restore", lambda snapshot: restored.append(snapshot))
-        with pytest.raises(machine.FileChangedDuringWrite):
-            _run(_raw_config(claude_config={}), agents=["claude"])
-        assert restored == []
+        with pytest.raises(machine.FileChangedDuringWrite) as exc:
+            _run(_raw_config(claude_config={}, codex_config={}))
+        assert exc.value.path == requirements
+        assert requirements.read_text() == "# theirs\n"
+        assert claude_path.read_text() == '{"old": true}\n'
+        assert not managed_files_mod.CODEX_SYSTEM_CONFIG_PATH.exists()
+        assert not managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH.exists()
 
     def test_dry_run_lists_each_file_action(self, writes, capsys):
         written, _ = writes
@@ -455,6 +490,21 @@ class TestRun:
         assert f"create   {claude.managed_settings_path()}" in out
         assert f"create   {managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH}" in out
         assert f"create   {managed_files_mod.UNITY_GATEWAY_MANAGED_SETTINGS_PATH}" in out
+
+    def test_dry_run_lists_remove_and_unchanged(self, monkeypatch, writes, capsys):
+        raw = _raw_config(claude_config={}, codex_config={})
+        _run(raw)
+        written_marker = json.loads(
+            managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH.read_text()
+        )
+        monkeypatch.setattr(machine, "published_agent_config_marker", lambda: written_marker)
+        capsys.readouterr()
+        # Codex is no longer enabled; Claude's file would come out the same.
+        _run(_raw_config(claude_config={}), dry_run=True)
+        actions = [line.split() for line in capsys.readouterr().out.splitlines()]
+        assert ["unchanged", str(claude.managed_settings_path())] in actions
+        assert ["remove", str(managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH)] in actions
+        assert ["remove", str(managed_files_mod.CODEX_SYSTEM_CONFIG_PATH)] in actions
 
     def test_report_lists_each_admin_key_under_its_file(self, writes, capsys):
         raw = _raw_config(
@@ -519,8 +569,12 @@ def global_cli(monkeypatch, writes):
 
     desktop: list[dict] = []
     monkeypatch.setattr(cli_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
+    monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: None)
     monkeypatch.setattr(
         desktop_setup, "configure_claude_desktop", lambda state, **_k: desktop.append(state)
+    )
+    monkeypatch.setattr(
+        desktop_setup, "revert_claude_desktop_mdm", lambda: desktop.append("removed") or "removed"
     )
     return desktop
 
@@ -581,6 +635,105 @@ class TestGlobalCli:
         result = _configure("--agents", "claude", "--profile", "ADMIN")
         assert result.exit_code == 0, result.output
         assert seen == [("ADMIN", "token")]
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_dropping_claude_removes_desktop_mdm(self, monkeypatch, writes, global_cli, dry_run):
+        raw = _raw_config(codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--agents", "claude", *(["--dry-run"] if dry_run else []))
+        assert result.exit_code == 0, result.output
+        assert global_cli == ([] if dry_run else ["removed"])
+
+    def test_the_databricks_cli_is_installed_before_sign_in(self, monkeypatch, writes, global_cli):
+        order: list[str] = []
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", lambda: order.append("install"))
+
+        def token(host, profile):
+            order.append("sign in")
+            return "token"
+
+        monkeypatch.setattr(machine, "get_databricks_token", token)
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--agents", "claude")
+        assert result.exit_code == 0, result.output
+        assert order[:2] == ["install", "sign in"]
+
+    def test_a_missing_databricks_cli_is_a_sign_in_failure(self, monkeypatch, writes, global_cli):
+        def missing(host, profile):
+            raise FileNotFoundError("databricks")
+
+        monkeypatch.setattr(machine, "get_databricks_token", missing)
+        monkeypatch.setattr(
+            managed_files_mod, "published_agent_config_marker", lambda: {"workspace": WS}
+        )
+        result = _configure("--agents", "claude")
+        assert result.exit_code == machine.EXIT_FETCH, result.output
+
+    def test_a_saved_user_scope_does_not_block_global(self, monkeypatch, writes, global_cli):
+        written, _ = writes
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        managed_files_mod.set_config_scope("user")
+        result = _configure("--agents", "claude")
+        assert result.exit_code == 0, result.output
+        assert claude.managed_settings_path() in written
+        assert managed_files_mod.config_scope() == "global"
+
+    def test_skip_os_settings_is_rejected_before_any_write(self, monkeypatch, writes, global_cli):
+        written, _ = writes
+        monkeypatch.setenv(managed_files_mod.SKIP_OS_SETTINGS_ENV, "1")
+
+        def no_request(*_a):
+            raise AssertionError("the opt-out must be rejected before the configuration is read")
+
+        monkeypatch.setattr(machine, "get_managed_config", no_request)
+        result = _configure("--agents", "claude")
+        assert result.exit_code != 0
+        assert managed_files_mod.SKIP_OS_SETTINGS_ENV in result.output
+        assert written == {}
+
+    @pytest.mark.parametrize("agent", ["claude", "codex"])
+    def test_a_relayed_provider_service_is_rejected_before_any_write(
+        self, monkeypatch, writes, global_cli, agent
+    ):
+        written, _ = writes
+        config = {"models": {"model_provider_service": "main.relay.sub"}}
+        raw = _raw_config(**{f"{agent}_config": config})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(
+            machine,
+            "get_model_provider_service",
+            lambda name, host, token: ({"name": name, "relayed": True}, None),
+        )
+        result = _configure("--agents", agent)
+        assert result.exit_code == machine.EXIT_USAGE, result.output
+        assert "relays a subscription" in " ".join(result.output.split())
+        assert written == {}
+
+    def test_a_failed_read_before_the_first_managed_run_merges(
+        self, monkeypatch, writes, global_cli
+    ):
+        written, _ = writes
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (None, "HTTP 503"))
+        merged: list = []
+        monkeypatch.setattr(
+            cli_mod, "configure_workspace_command", lambda *a, **k: merged.append(k) or 0
+        )
+        result = _configure("--agents", "claude")
+        assert result.exit_code == 0, result.output
+        assert "HTTP 503. Merging into the machine-wide files instead." in " ".join(
+            result.output.split()
+        )
+        assert merged and written == {}
+
+    def test_a_failed_read_after_a_managed_run_is_exit_4(self, monkeypatch, writes, global_cli):
+        monkeypatch.setattr(
+            managed_files_mod, "published_agent_config_marker", lambda: {"workspace": WS}
+        )
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (None, "HTTP 503"))
+        result = _configure("--agents", "claude")
+        assert result.exit_code == machine.EXIT_FETCH
 
     def test_no_config_falls_back_to_the_merge(self, monkeypatch, writes, global_cli):
         written, _ = writes
@@ -671,6 +824,22 @@ class TestAfterPublishedAgentConfig:
         result = managed_config_mod.refresh_managed_config({"workspace": WS}, force_refresh=True)
         assert result.manifest == managed_config_mod.normalize_managed_config(raw)
 
+    def test_another_workspace_warns_that_its_configuration_is_not_applied(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            managed_files_mod, "published_agent_config_marker", lambda: {"workspace": WS}
+        )
+        monkeypatch.setattr(
+            managed_config_mod, "published_agent_config_marker", lambda: {"workspace": WS}
+        )
+        other = "https://other.cloud.databricks.com"
+        result = managed_config_mod.refresh_managed_config({"workspace": other}, force_refresh=True)
+        assert result.manifest is None
+        assert f"{other}'s agent configuration isn't applied" in " ".join(
+            capsys.readouterr().out.split()
+        )
+
     def test_user_scope_refusals_do_not_apply(
         self, published_agent_config_used_fixture, monkeypatch, tmp_path
     ):
@@ -692,10 +861,20 @@ class TestAfterPublishedAgentConfig:
         marker = managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH
         saved = managed_files_mod.UNITY_GATEWAY_MANAGED_SETTINGS_PATH
         claude_path = claude.managed_settings_path()
-        for path in (marker, saved, claude_path):
+        codex_paths = [
+            managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH,
+            managed_files_mod.CODEX_SYSTEM_CONFIG_PATH,
+        ]
+        for path in (marker, saved, claude_path, *codex_paths):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("{}\n")
-        state = {"workspace": WS, "agents": {"claude": {"paths": [str(claude_path)]}}}
+        state = {
+            "workspace": WS,
+            "agents": {
+                "claude": {"paths": [str(claude_path)]},
+                "codex": {"paths": [str(path) for path in codex_paths]},
+            },
+        }
         for module in (managed_files_mod, machine):
             monkeypatch.setattr(
                 module, "published_agent_config_marker", lambda: state if marker.exists() else None
@@ -726,8 +905,8 @@ class TestAfterPublishedAgentConfig:
         result = CliRunner().invoke(cli_mod.app, ["revert"], env={"COLUMNS": "240"})
 
         assert result.exit_code == 0, result.output
-        assert not claude_path.exists() and not saved.exists() and not marker.exists()
-        assert list(written) == [claude_path, saved, marker]
+        assert not any(path.exists() for path in (claude_path, *codex_paths, saved, marker))
+        assert list(written) == [claude_path, *codex_paths, saved, marker]
         assert restores == ["claude", "codex", "policy"]
         assert "no UG backup record" not in result.output
 
@@ -755,9 +934,10 @@ class TestAfterPublishedAgentConfig:
 class TestAuthTokenUsesSavedChoices:
     """The machine-wide helper passes only --host; it must still find the developer's login."""
 
-    def _invoke(self, monkeypatch, state: dict, host: str) -> list:
+    def _invoke(self, monkeypatch, state: dict, host: str, *, marker: bool = True) -> list:
         calls: list = []
         monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(cli_mod, "published_agent_config_used", lambda: marker)
         monkeypatch.setattr(cli_mod, "ensure_pat_bearer", lambda profile: True)
         monkeypatch.setattr(
             cli_mod,
@@ -776,6 +956,11 @@ class TestAuthTokenUsesSavedChoices:
     def test_matching_host_uses_saved_profile(self, monkeypatch):
         calls = self._invoke(monkeypatch, {"workspace": WS, "profile": "mine"}, WS + "/")
         assert calls == [("token", "mine")]
+
+    def test_without_a_managed_run_the_helper_keeps_its_own_choices(self, monkeypatch):
+        # A per-user helper names its choices, so a later configure's saved ones don't apply.
+        calls = self._invoke(monkeypatch, {"workspace": WS, "profile": "mine"}, WS, marker=False)
+        assert calls == [("token", None)]
 
     def test_other_host_does_not(self, monkeypatch):
         calls = self._invoke(

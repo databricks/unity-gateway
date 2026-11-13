@@ -84,9 +84,9 @@ machine-wide files when the workspace publishes no agent configuration.
 | Exit | Meaning | Files |
 | --- | --- | --- |
 | 0 | Written, already current, or removed | Updated |
-| 2 | Usage or setup error, such as a `ug` installation that other users can't run | Unchanged |
+| 2 | Usage or setup error, such as a `ug` installation that other users can't run, or a model provider service that relays a subscription | Unchanged |
 | 3 | Not root, `sudo -n` fails, and no terminal can approve a sudo prompt | Unchanged |
-| 4 | The agent configuration, or its MCP servers couldn't be read | Unchanged |
+| 4 | The agent configuration, or its MCP servers couldn't be read. Before the first managed run, a failed read of the configuration warns and merges instead | Unchanged |
 | 5 | No agent configuration is published, or coding agent configs are off, on a machine with the marker file | Unchanged |
 | 6 | A write failed, or another process changed a file during the write | Each file is replaced atomically. After a failed write, the run restores every file it changed. A file that another process changed is left as that process wrote it |
 
@@ -175,7 +175,7 @@ Check the tables for the `ug` version that your fleet runs.
 | `env.CLAUDE_CODE_PROPAGATE_TRACEPARENT` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |
 | `otelHeadersHelper` | Reserved while a feature is on | `tracing` | Yes |  | Claude Code applies this helper to every OTEL signal, so your exporters would get Unity Gateway's headers. |
 | `managedMcpServers` | Reserved |  | Yes |  | Unity Gateway writes the Databricks MCP servers from `mcp_servers` in the agent configuration. |
-| `allowedMcpServers` | Reserved |  | No |  | To block servers, use `deniedMcpServers`, which you can set. |
+| `allowedMcpServers` | Shared list |  | Yes |  | When you set an allowlist, Unity Gateway adds its MCP servers to it. |
 | `env.ENABLE_PROMPT_CACHING_1H` | Unity Gateway default |  | Yes | `"1"` | 1-hour prompt caching. |
 | `env.ENABLE_TOOL_SEARCH` | Unity Gateway default |  | Yes | `"true"` | Loads MCP tools on demand. |
 | `permissions.deny` | Shared list |  | Yes |  | Unity Gateway adds `WebSearch`, because the gateway rejects Claude's hosted web search. |
