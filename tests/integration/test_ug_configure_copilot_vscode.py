@@ -251,16 +251,16 @@ def test_vscode_copilot_chat_starts_on_the_managed_default_model(live_session, w
 
 
 def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
-    live_session, workspace, claude_provider, claude_provider_model
+    live_session, workspace, codex_provider, codex_provider_model
 ):
     """Scenario: a developer uses Copilot Chat on the Databricks Claude test model, quits VS Code,
-    runs `ug configure --agents copilot --provider` with an Anthropic Model Provider Service, and
+    runs `ug configure --agents copilot --provider` with an OpenAI Model Provider Service, and
     reopens VS Code on the same profile.
 
     Expected: the first turn completes as in the switch CUJ. After the reconfigure, the extension
     lists only the service's models; in the reopened window, searching the model picker finds no
     workspace Claude model, and picking the service's model completes a turn whose requests reach
-    the Anthropic Messages route with the provider service header, for the service's model, with a
+    the OpenAI Responses route with the provider service header, for the service's model, with a
     non-empty HTTP 200. Not covered: what the chat shows for a model that went away, which the
     developer has to replace by picking a new one.
     """
@@ -279,14 +279,14 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
             )
             vscode.quit()
 
-        _configure(session, recorder.url, "--provider", claude_provider)
+        _configure(session, recorder.url, "--provider", codex_provider)
         config = ug_extension_config(session)
         session.record("ug-config.json", config)
         ids = {entry["id"] for entry in config["models"]}
-        assert claude_provider_model in ids and CLAUDE_TEST_MODEL not in ids, ids
+        assert codex_provider_model in ids and CLAUDE_TEST_MODEL not in ids, ids
         with VSCode(session, "reopened") as vscode:
             vscode.assert_not_in_picker(old_label)
-            vscode.pick_model(model_label(config, claude_provider_model))
+            vscode.pick_model(model_label(config, codex_provider_model))
             task = FileTask(session)
             checkpoint = recorder.checkpoint()
             answer = vscode.wait_for_answer(vscode.send(task.prompt))
@@ -296,7 +296,7 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
                 checkpoint,
                 task,
                 answer,
-                claude_provider_model,
-                CLAUDE_ROUTE,
-                {PROVIDER_HEADER: claude_provider},
+                codex_provider_model,
+                PROVIDER_GPT_ROUTE,
+                {PROVIDER_HEADER: codex_provider},
             )
