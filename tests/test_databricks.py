@@ -2005,7 +2005,7 @@ class TestListMcpServices:
         assert lenient == (["main.s.a"], None)
         # A later-page failure is marked incomplete, so it never reads as a missing schema.
         assert strict[0] == ["main.s.a"]
-        assert strict[1] and strict[1].startswith(db_mod.INCOMPLETE_LISTING_PREFIX)
+        assert strict[1] and strict[1].startswith("incomplete listing: ")
 
     def test_strict_reports_the_page_limit(self, monkeypatch):
         tokens = iter(range(10))
@@ -2017,7 +2017,7 @@ class TestListMcpServices:
         _names, reason = db_mod.list_mcp_services(
             WS, "token", parent="main.s", max_pages=3, strict=True
         )
-        assert reason == f"{db_mod.INCOMPLETE_LISTING_PREFIX}MCP listing exceeded 3 pages"
+        assert reason == "incomplete listing: MCP listing exceeded 3 pages"
 
     def test_strict_rejects_a_malformed_first_page(self, monkeypatch):
         monkeypatch.setattr(

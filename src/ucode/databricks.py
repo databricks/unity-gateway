@@ -2860,10 +2860,15 @@ def list_mcp_services(
     page_token: str | None = None
     seen_tokens: set[str] = set()
     for _ in range(max_pages):
+        stopped = None
         if cancel_event is not None and cancel_event.is_set():
-            return sorted(seen_names), "MCP listing cancelled"
-        if deadline is not None and time.monotonic() >= deadline:
-            return sorted(seen_names), "deadline exceeded while listing MCP services"
+            stopped = "MCP listing cancelled"
+        elif deadline is not None and time.monotonic() >= deadline:
+            stopped = "deadline exceeded while listing MCP services"
+        if stopped:
+            if strict and page_token:
+                stopped = f"{INCOMPLETE_LISTING_PREFIX}{stopped}"
+            return sorted(seen_names), stopped
         params: dict[str, str] = {"view": "BASIC"}
         if parent is not None:
             params["parent"] = f"schemas/{parent}"
@@ -2887,13 +2892,15 @@ def list_mcp_services(
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         services = data.get("mcp_services") or []
-        if strict and not isinstance(services, list):
-            failure = "unexpected MCP listing response"
-            return sorted(
-                seen_names
-            ), f"{INCOMPLETE_LISTING_PREFIX}{failure}" if page_token else failure
+        if not isinstance(services, list):
+            if strict:
+                failure = "unexpected MCP listing response"
+                if page_token:
+                    failure = f"{INCOMPLETE_LISTING_PREFIX}{failure}"
+                return sorted(seen_names), failure
+            services = []
         new_names: list[str] = []
-        for service in services if isinstance(services, list) else []:
+        for service in services:
             if not isinstance(service, dict):
                 continue
             full_name = _mcp_service_full_name(service, expected_prefix)

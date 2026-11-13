@@ -1077,7 +1077,8 @@ def _resolve_managed_mcp_sources(
 
     Each ``.*`` pattern discovers its schema; each exact name is built directly. A schema that
     doesn't exist or isn't readable (HTTP 404) is skipped with a warning, so one bad entry doesn't
-    drop the other schemas. Any other discovery failure, including a rate limit or a failed later
+    drop the other schemas; if every schema is missing and no exact name remains, the first
+    :class:`McpLocationNotFound` is raised so reconcile keeps the registered servers. Any other discovery failure, including a rate limit or a failed later
     page, propagates, so a partial listing never unregisters servers from a schema that only
     failed transiently. A persistent non-404 failure on one schema therefore blocks managed MCP
     setup for the run, as it does for a single ``unity_catalog_location``.
