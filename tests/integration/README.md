@@ -606,8 +606,8 @@ sign-in-expired message. It also covers configure/revert, including upgrading fr
 covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`.
 `test_ug_copilot_models.py` covers the per-session model registry: one setup runs a
 Claude task on a model older than its family's newest (only the full catalog registers it)
-and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, another setup runs a
-GLM, a Kimi and a DeepSeek task on `dbx-completions`, an unknown model fails before Copilot
+and then a GPT task chosen with Copilot's `databricks-responses/<model>` form, another setup runs a
+GLM, a Kimi and a DeepSeek task on `databricks-completions`, an unknown model fails before Copilot
 starts,
 and the TUI switches from Claude to GPT with `/model` mid-session. Model evidence comes
 from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copilot.py`).

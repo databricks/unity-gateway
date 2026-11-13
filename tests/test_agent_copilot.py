@@ -19,6 +19,8 @@ WS = "https://example.databricks.com"
 PROXY = "http://127.0.0.1:4321"
 SONNET = "system.ai.claude-sonnet-5-5"
 GPT = "system.ai.gpt-5-4"
+SONNET_REF = "databricks/claude-sonnet-5-5"
+GPT_REF = "databricks-responses/gpt-5-4"
 
 
 def catalog(*ids: str) -> list[copilot.CopilotModel]:
@@ -129,12 +131,12 @@ class TestBuildCopilotCatalog:
             for service, (provider, names) in services.items()
             for model in names
         )
-        assert {entry["id"] for entry in result["models"]} == set(expected)
+        assert {entry["wireModel"] for entry in result["models"]} == set(expected)
         assert copilot.unservable_static_models(state) == []
         for entry in result["models"]:
-            assert entry["wireModel"] == entry["id"]
-            assert entry["provider"] == copilot.PROVIDER_NAMES[expected[entry["id"]]]
-            if expected[entry["id"]] == "anthropic":
+            assert entry["id"] == entry["wireModel"].removeprefix("system.ai.")
+            assert entry["provider"] == copilot.PROVIDER_NAMES[expected[entry["wireModel"]]]
+            if expected[entry["wireModel"]] == "anthropic":
                 assert entry["modelId"].startswith("claude-")
                 assert entry["maxPromptTokens"] == 872_000
 
@@ -187,7 +189,7 @@ class TestBuildCopilotCatalog:
         )
 
         assert models == [copilot.CopilotModel(SONNET, "anthropic")]
-        assert models[0].ref == f"dbx-anthropic/{SONNET}"
+        assert models[0].ref == SONNET_REF
 
 
 class TestCatalogFromListings:
@@ -386,6 +388,7 @@ class TestResolveCopilotModel:
             "claude-sonnet-5-5",
             "CLAUDE-Sonnet-5-5",
             f"{SONNET}[1m]",
+            SONNET_REF,
             f"dbx-anthropic/{SONNET}",
         ],
     )
@@ -407,8 +410,8 @@ class TestResolveCopilotModel:
 
         message = str(error.value)
         assert "Gemini" in message
-        assert f"dbx-anthropic: databricks-claude-opus-4-7, {SONNET}" in message
-        assert f"dbx-responses: {GPT}" in message
+        assert f"databricks: databricks-claude-opus-4-7, {SONNET}" in message
+        assert f"databricks-responses: {GPT}" in message
 
 
 class TestLaunchModel:
@@ -485,7 +488,7 @@ class TestRewriteModelArgs:
 
         assert selected == copilot.CopilotModel(GPT, "responses")
         assert rewritten[:2] == ["-p", "hi"]
-        assert rewritten[-2:] == ["--model", f"dbx-responses/{GPT}"]
+        assert rewritten[-2:] == ["--model", GPT_REF]
 
     def test_leaves_arguments_after_the_separator(self):
         rewritten, selected = copilot.rewrite_model_args(["--", "--model", "x"], self.MODELS)
@@ -904,13 +907,13 @@ class TestRenderProvidersConfig:
 
         assert config["providers"] == [
             {
-                "name": "dbx-anthropic",
+                "name": "databricks",
                 "type": "anthropic",
                 "baseUrl": f"{PROXY}/ai-gateway/anthropic",
                 "bearerToken": "secret",
             },
             {
-                "name": "dbx-responses",
+                "name": "databricks-responses",
                 "type": "openai",
                 "wireApi": "responses",
                 "baseUrl": f"{PROXY}/ai-gateway/mlflow/v1",
@@ -921,7 +924,7 @@ class TestRenderProvidersConfig:
     def test_completions_provider(self):
         config = copilot.render_providers_config(catalog("system.ai.gpt-4-1"), PROXY, "secret")
         assert [(p["name"], p.get("wireApi")) for p in config["providers"]] == [
-            ("dbx-completions", "completions")
+            ("databricks-completions", "completions")
         ]
 
     def test_models_carry_claude_settings_and_limits(self):
@@ -929,15 +932,20 @@ class TestRenderProvidersConfig:
 
         assert config["models"] == [
             {
-                "id": SONNET,
-                "provider": "dbx-anthropic",
+                "id": "claude-sonnet-5-5",
+                "provider": "databricks",
                 "wireModel": SONNET,
-                "name": SONNET,
+                "name": "Claude Sonnet 5.5",
                 "modelId": "claude-sonnet-5.5",
                 "maxPromptTokens": 872_000,
                 "maxOutputTokens": 128_000,
             },
-            {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": GPT},
+            {
+                "id": "gpt-5-4",
+                "provider": "databricks-responses",
+                "wireModel": GPT,
+                "name": "GPT 5.4",
+            },
         ]
 
     def test_open_models_get_limits_and_no_catalog_id(self):
@@ -945,10 +953,10 @@ class TestRenderProvidersConfig:
 
         assert config["models"] == [
             {
-                "id": "system.ai.kimi-k3",
-                "provider": "dbx-completions",
+                "id": "kimi-k3",
+                "provider": "databricks-completions",
                 "wireModel": "system.ai.kimi-k3",
-                "name": "system.ai.kimi-k3",
+                "name": "Kimi K3",
                 "maxPromptTokens": 687_000,
                 "maxOutputTokens": 32_000,
             }
@@ -964,14 +972,14 @@ class TestRenderProvidersConfig:
 
         assert config["providers"] == [
             {
-                "name": "dbx-anthropic",
+                "name": "databricks",
                 "type": "anthropic",
                 "baseUrl": f"{PROXY}/ai-gateway/anthropic",
                 "bearerToken": "secret",
                 "headers": {"Databricks-Model-Provider-Service": MPS},
             },
             {
-                "name": "dbx-responses",
+                "name": "databricks-responses",
                 "type": "openai",
                 "wireApi": "responses",
                 "baseUrl": f"{PROXY}/ai-gateway/openai/v1",
@@ -979,7 +987,7 @@ class TestRenderProvidersConfig:
                 "headers": {"Databricks-Model-Provider-Service": MPS},
             },
             {
-                "name": "dbx-completions",
+                "name": "databricks-completions",
                 "type": "openai",
                 "wireApi": "completions",
                 "baseUrl": f"{PROXY}/ai-gateway/openai/v1",
@@ -996,7 +1004,7 @@ class TestRenderProvidersConfig:
         assert config["models"] == [
             {
                 "id": "claude-sonnet-4-6",
-                "provider": "dbx-anthropic",
+                "provider": "databricks",
                 "wireModel": "claude-sonnet-4-6",
                 "name": "claude-sonnet-4-6",
                 "modelId": "claude-sonnet-4.6",
@@ -1013,13 +1021,27 @@ class TestRenderProvidersConfig:
         assert config["models"][0]["maxPromptTokens"] == 794_000
         assert config["models"][0]["maxOutputTokens"] == 128_000
 
+    def test_ids_and_names_stay_full_where_the_short_ones_collide(self):
+        opus = "system.ai.claude-opus-5-5"
+
+        config = copilot.render_providers_config(
+            catalog(SONNET, "claude-sonnet-5-5", opus), PROXY, "secret"
+        )
+
+        assert {m["wireModel"]: (m["id"], m["name"]) for m in config["models"]} == {
+            SONNET: (SONNET, SONNET),
+            "claude-sonnet-5-5": ("claude-sonnet-5-5", "claude-sonnet-5-5"),
+            opus: ("claude-opus-5-5", "Claude Opus 5.5"),
+        }
+        assert len({f"{m['provider']}/{m['id']}" for m in config["models"]}) == 3
+
 
 class TestBuildRuntimeEnv:
     def test_points_copilot_at_the_registry(self, tmp_path):
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
 
         assert env["COPILOT_PROVIDERS_CONFIG"] == str(tmp_path / "providers.json")
-        assert env["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
+        assert env["COPILOT_MODEL"] == GPT_REF
         assert env["COPILOT_OFFLINE"] == "true"
         assert env["PATH"] == os.environ["PATH"]
 
@@ -1343,7 +1365,7 @@ class TestWriteToolConfig:
         env = copilot.parse_dotenv(env_path)
         assert env == {
             "USER_SETTING": "kept",
-            "COPILOT_MODEL": f"dbx-responses/{GPT}",
+            "COPILOT_MODEL": GPT_REF,
             "COPILOT_OFFLINE": "true",
         }
         assert state["managed_configs"]["copilot"]["keys"] == copilot.MANAGED_KEYS
@@ -1537,9 +1559,100 @@ def _stub_launch(monkeypatch, process=None, token="dbx-token"):
 
 
 STATE = {"workspace": WS, "copilot_catalog": {"models": [SONNET, GPT]}}
+SESSION_ID = "81e98150-1616-41dc-b204-9baef43819da"
+
+
+def _save_session(config_dir: Path, session_id: str, *events: dict, mtime: int = 0) -> None:
+    session = config_dir / "session-state" / session_id
+    session.mkdir(parents=True)
+    path = session / "events.jsonl"
+    path.write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+    if mtime:
+        os.utime(path, (mtime, mtime))
+
+
+def _started(model: str) -> dict:
+    return {"type": "session.start", "data": {"selectedModel": model}}
+
+
+def _changed(model: str) -> dict:
+    return {"type": "session.model_change", "data": {"newModel": model, "previousModel": "x"}}
+
+
+class TestResumedSessionModel:
+    MODELS = catalog(SONNET, GPT)
+
+    @pytest.fixture(autouse=True)
+    def config_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(copilot, "COPILOT_CONFIG_DIR", tmp_path)
+        return tmp_path
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--resume", SESSION_ID],
+            [f"--resume={SESSION_ID}"],
+            ["-r", SESSION_ID[:8]],
+            ["--session-id", SESSION_ID, "-p", "hi"],
+        ],
+    )
+    def test_a_session_saved_under_legacy_names_resumes_on_its_last_model(self, config_dir, args):
+        _save_session(
+            config_dir,
+            SESSION_ID,
+            _started(f"dbx-anthropic/{SONNET}"),
+            _changed(f"dbx-responses/{GPT}"),
+        )
+
+        model = copilot.resumed_session_model(args, self.MODELS)
+
+        assert model is not None and model.ref == GPT_REF
+
+    def test_continue_reads_the_newest_session(self, config_dir):
+        _save_session(config_dir, "older", _started(f"dbx-responses/{GPT}"), mtime=1_000)
+        _save_session(config_dir, SESSION_ID, _started(f"dbx-anthropic/{SONNET}"), mtime=2_000)
+
+        model = copilot.resumed_session_model(["--continue"], self.MODELS)
+
+        assert model is not None and model.ref == SONNET_REF
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--resume", "missing"],
+            ["--resume"],
+            ["--resume", "--allow-all-tools"],
+            ["-p", "hi"],
+            ["--", "--resume", SESSION_ID],
+        ],
+    )
+    def test_other_launches_leave_the_start_model_to_ug(self, config_dir, args):
+        _save_session(config_dir, SESSION_ID, _started(f"dbx-responses/{GPT}"))
+
+        assert copilot.resumed_session_model(args, self.MODELS) is None
+
+    def test_a_session_on_current_names_or_a_gone_model_needs_nothing(self, config_dir):
+        _save_session(config_dir, SESSION_ID, _started(f"dbx-responses/{GPT}"), _changed(GPT_REF))
+        _save_session(config_dir, "gone", _started("dbx-responses/system.ai.gpt-4o"))
+
+        assert copilot.resumed_session_model(["--resume", SESSION_ID], self.MODELS) is None
+        assert copilot.resumed_session_model(["--resume", "gone"], self.MODELS) is None
 
 
 class TestLaunch:
+    def test_resuming_a_session_from_an_earlier_registry_starts_on_its_model(
+        self, tmp_path, monkeypatch
+    ):
+        env_path = isolate_copilot_config_paths(monkeypatch, tmp_path)
+        _save_session(env_path.parent, SESSION_ID, _started(f"dbx-responses/{GPT}"))
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), ["--resume", SESSION_ID], options=copilot.LaunchOptions())
+
+        assert seen["env"]["COPILOT_MODEL"] == GPT_REF
+        assert seen["argv"][-2:] == ["--resume", SESSION_ID]
+
     def test_copilot_gets_the_registry_and_never_the_token(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         seen = _stub_launch(monkeypatch, token="dbx-token")
@@ -1548,10 +1661,10 @@ class TestLaunch:
             copilot.launch(dict(STATE), [], options=copilot.LaunchOptions())
 
         assert exit_info.value.code == 0
-        assert seen["env"]["COPILOT_MODEL"] == f"dbx-anthropic/{SONNET}"
+        assert seen["env"]["COPILOT_MODEL"] == SONNET_REF
         assert "dbx-token" not in seen["env"].values()
         registry = seen["registry"]
-        assert [m["id"] for m in registry["models"]] == [SONNET, GPT]
+        assert [m["wireModel"] for m in registry["models"]] == [SONNET, GPT]
         secret = registry["providers"][0]["bearerToken"]
         assert secret not in ("", "dbx-token")
         assert secret not in seen["env"].values()
@@ -1602,9 +1715,9 @@ class TestLaunch:
             "-p",
             "hi",
             "--model",
-            f"dbx-responses/{GPT}",
+            GPT_REF,
         ]
-        assert seen["env"]["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
+        assert seen["env"]["COPILOT_MODEL"] == GPT_REF
 
     def test_the_proxy_rewords_context_overflows_and_drops_reasoning_effort(
         self, tmp_path, monkeypatch
@@ -1635,7 +1748,7 @@ class TestLaunch:
         with pytest.raises(SystemExit):
             copilot.launch(dict(STATE), [], options=copilot.LaunchOptions(launch_model=GPT))
 
-        assert seen["env"]["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
+        assert seen["env"]["COPILOT_MODEL"] == GPT_REF
 
     def test_a_wire_model_override_applies_to_the_start_model(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -1646,8 +1759,8 @@ class TestLaunch:
             copilot.launch(dict(STATE), [], options=copilot.LaunchOptions(launch_model=GPT))
 
         wire_models = {m["id"]: m["wireModel"] for m in seen["registry"]["models"]}
-        assert wire_models[GPT] == "main.models.my-gpt"
-        assert wire_models[SONNET] == SONNET
+        assert wire_models["gpt-5-4"] == "main.models.my-gpt"
+        assert wire_models["claude-sonnet-5-5"] == SONNET
         assert "COPILOT_PROVIDER_WIRE_MODEL" not in seen["env"]
 
     def test_unknown_model_fails_before_starting_copilot(self, tmp_path, monkeypatch):
@@ -1728,7 +1841,7 @@ class TestLaunch:
         registry = seen["registry"]
         assert [m["id"] for m in registry["models"]] == ["claude-opus-5", "claude-sonnet-5"]
         assert registry["providers"][0]["headers"] == {"Databricks-Model-Provider-Service": MPS}
-        assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/claude-sonnet-5"
+        assert seen["env"]["COPILOT_MODEL"] == "databricks/claude-sonnet-5"
         assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
 
     def test_model_location_launch_registers_the_schemas_services(self, tmp_path, monkeypatch):
@@ -1748,7 +1861,7 @@ class TestLaunch:
         ]
         assert "headers" not in registry["providers"][0]
         assert registry["models"][0]["maxPromptTokens"] == 872_000
-        assert seen["env"]["COPILOT_MODEL"] == "dbx-anthropic/main.ucode.claude-sonnet-4-6"
+        assert seen["env"]["COPILOT_MODEL"] == "databricks/main.ucode.claude-sonnet-4-6"
         assert copilot.LAUNCH_MODEL_LOCATION_KEY not in state
 
     def test_provider_service_launch_rejects_a_model_it_does_not_serve(self, tmp_path, monkeypatch):
