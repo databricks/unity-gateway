@@ -203,10 +203,31 @@ async function load($: any, options: PluginOptions): Promise<void> {
   $.ui.invalidate('ui.render');
 }
 
+// Refresh an open pane's rows after a spawn, before the turn finishes. A pane that is
+// no longer placed is marked closed so neither refresh path keeps reading for it.
+async function refreshOpenPane($: any, options: PluginOptions): Promise<void> {
+  const open = await $.ui.panes();
+  if (!Array.isArray(open) || !open.some((pane) => pane?.id === ROUTING_LOGS_PANE)) {
+    paneOpen = false;
+    return;
+  }
+  await load($, options);
+}
+
 export function registerRoutingLogs(on: On, options: PluginOptions, launchedEnabled: boolean): void {
   // The open decision and its request token: a newer open or a logs rerun retires a load.
   let detail: Detail | null = null;
   let detailRequest = 0;
+
+  // Match both launch modes to coexist with the routing module's unmatched spawn hook.
+  on('agent.spawn', { background: [true, false] }, async ($, e, next) => {
+    const result = await next(e);
+    if (paneOpen && !e.resume && result.agentId && !result.deny) {
+      // Refresh routing logs async to not delay subagent startup.
+      void refreshOpenPane($, options).catch(() => {});
+    }
+    return result;
+  });
 
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
     if (e.args.trim() !== 'logs') return next(e);

@@ -447,7 +447,7 @@ def provider_service_catalog(
 def gateway_catalog(
     listing: AnthropicModelCatalog, *, fallback_wire: str | None = None
 ) -> list[CopilotModel]:
-    """The models of an AI Gateway Anthropic-route listing Copilot can use, with their limits.
+    """The models of a Unity Gateway Anthropic-route listing Copilot can use, with their limits.
 
     The listing names some services by gateway alias (``anthropic-aigw-<hash>-<name>``); Copilot
     sends the full name, which the gateway routes directly."""
@@ -480,7 +480,7 @@ def catalog_from_listings(
 ) -> list[CopilotModel] | None:
     """The Copilot catalog from this run's model listings.
 
-    ``gateway`` is AI Gateway's Anthropic-route listing, which also reports the models' limits; it
+    ``gateway`` is Unity Gateway's Anthropic-route listing, which also reports the models' limits; it
     wins whenever it lists a Claude or GPT model Copilot can use. Otherwise ``entries`` is the UC
     model-services listing (None when it failed) and ``fallback`` holds the ids the per-family
     gateway listings found instead. Open models come only from ``entries``, which leaves out the
@@ -536,13 +536,15 @@ def _string_list(value: object) -> list[str]:
 def copilot_catalog(state: dict) -> list[CopilotModel]:
     """The models this launch registers: the managed list, else the discovered catalog.
 
-    State saved before the catalog existed falls back to the Claude and GPT discovery lists."""
+    The managed list takes the limits discovery saved for the same models, since nothing else
+    gives GPT models a limit. State saved before the catalog existed falls back to the Claude and
+    GPT discovery lists."""
+    saved = state.get(CATALOG_STATE_KEY)
+    limits = _saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
     static = build_copilot_catalog(_string_list(state.get("copilot_static_models")))
     if static:
-        return static
-    saved = state.get(CATALOG_STATE_KEY)
+        return [replace(model, listed_limits=limits.get(model.id)) for model in static]
     if isinstance(saved, dict):
-        limits = _saved_limits(saved.get("limits"))
         return [
             replace(model, listed_limits=limits.get(model.id))
             for model in build_copilot_catalog(_string_list(saved.get("models")))
@@ -743,18 +745,48 @@ def render_providers_config(
     return {"providers": providers, "models": models}
 
 
-def build_runtime_env(registry_path: Path, model: CopilotModel) -> dict[str, str]:
-    """Copilot's launch environment: the session registry and the model to start on.
+# Where Copilot's OTLP exporter posts on the session proxy, which forwards only traces.
+OTEL_PATH = "/ai-gateway/otel"
+OTEL_TRACES_PATH = f"{OTEL_PATH}/v1/traces"
+# Copilot always exports metrics, which the gateway doesn't take; the proxy drops them.
+OTEL_METRICS_PATH = f"{OTEL_PATH}/v1/metrics"
+_INHERITED_OTEL_PREFIXES = ("OTEL_EXPORTER_OTLP_", "COPILOT_OTEL_")
+
+
+def otel_env(proxy_base_url: str, session_secret: str) -> dict[str, str]:
+    """Copilot's OTLP export to the session proxy, as protobuf, which the gateway requires."""
+    return {
+        "COPILOT_OTEL_ENABLED": "true",
+        "COPILOT_OTEL_EXPORTER_TYPE": "otlp-http",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": f"{proxy_base_url}{OTEL_PATH}",
+        "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+        "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
+        # The proxy takes the session secret as an API key, which needs no encoding here.
+        "OTEL_EXPORTER_OTLP_HEADERS": f"x-api-key={session_secret}",
+    }
+
+
+def build_runtime_env(
+    registry_path: Path, model: CopilotModel, *, otel: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Copilot's launch environment: the session registry, the model to start on and, when the
+    workspace traces Copilot, its OTLP export.
 
     Inherited ``COPILOT_PROVIDER*`` settings are dropped so a user's own BYOK setup can't take
-    over a ug session."""
+    over a ug session; with ``otel``, so are inherited exporter settings, so traces go only to the
+    workspace."""
     env = {
-        key: value for key, value in os.environ.items() if not key.startswith("COPILOT_PROVIDER")
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("COPILOT_PROVIDER")
+        and not (otel and key.startswith(_INHERITED_OTEL_PREFIXES))
     }
     env["COPILOT_PROVIDERS_CONFIG"] = str(registry_path)
     env["COPILOT_MODEL"] = model.ref
     # Fail closed without the registry instead of falling back to GitHub sign-in.
     env["COPILOT_OFFLINE"] = "true"
+    env.update(otel or {})
     return env
 
 
@@ -1128,6 +1160,8 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
 
     workspace = state["workspace"]
     session_secret = secrets.token_urlsafe(32)
+    tracing = bool(state.get("copilot_otel_tracing"))
+    otel_paths = (OTEL_TRACES_PATH, OTEL_METRICS_PATH) if tracing else ()
     server, cache, client = gateway_proxy.start_gateway_auth_proxy(
         workspace,
         _token_provider(state),
@@ -1140,6 +1174,8 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         # than without it.
         dropped_chat_completions_fields=("reasoning_effort",),
         bad_request_rewriter=recognizable_context_overflow,
+        allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, *otel_paths),
+        discarded_paths=(OTEL_METRICS_PATH,) if tracing else (),
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
@@ -1156,7 +1192,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
                 if entry["id"] == start_model.id:
                     entry["wireModel"] = wire_override
         with session_registry(config) as registry_path:
-            env = build_runtime_env(registry_path, start_model)
+            env = build_runtime_env(
+                registry_path,
+                start_model,
+                otel=otel_env(proxy_base_url, session_secret) if tracing else None,
+            )
             proc = subprocess_cross_os.popen(
                 [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
             )

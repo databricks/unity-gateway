@@ -24,10 +24,8 @@ def decision(model="selected"):
     return routing.RoutingDecision(model, "reason", ((model, "claude"), ("other", None)), "stable")
 
 
-def write(payload, task="inspect parser", **kwargs):
-    session_log.append_decision(
-        "claude", payload, task, decision(), "requested", routing_ms=840, **kwargs
-    )
+def write(payload, task="inspect parser"):
+    session_log.append_decision("claude", payload, task, decision(), "requested", routing_ms=840)
 
 
 def payload(session_id="s1", **extra):

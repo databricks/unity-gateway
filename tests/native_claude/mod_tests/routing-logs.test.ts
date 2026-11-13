@@ -310,9 +310,10 @@ test('missing command fails safely and unrouted launches stay inert', { options:
 
 test('a failed read surfaces the CLI error envelope', { options }, async ($, on) => {
   let stdout: string = JSON.stringify({ v: 1, error: 'cannot read session log at /tmp/missing.jsonl' });
+  let truncated = false;
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('process.run', () => ({ value: { exitCode: 1, stderr: '', stdout } }));
+  on('process.run', () => ({ value: { exitCode: 1, stderr: '', stdout, isStdoutTruncated: truncated } }));
   await $.command.run(command);
   const ui = await $.ui.mount(pane);
   const tree = JSON.stringify(await ui.drawn());
@@ -327,28 +328,53 @@ test('a failed read surfaces the CLI error envelope', { options }, async ($, on)
   expect(bare).toContain('Could not read Smart Router logs.');
   expect(bare).not.toContain('cannot read session log');
   await generic.unmount();
+  // A truncated successful response is a failure too, and carries no envelope hint.
+  stdout = JSON.stringify({ v: 1, decisions: records });
+  truncated = true;
+  await $.command.run(command);
+  const truncatedPane = await $.ui.mount(pane);
+  const truncatedTree = JSON.stringify(await truncatedPane.drawn());
+  expect(truncatedTree).toContain('Could not read Smart Router logs.');
+  expect(truncatedTree).not.toContain('older task');
+  await truncatedPane.unmount();
 });
 
-test('the open pane refreshes on turn completion and a closed one stops', { options }, async ($, on) => {
+test('the open pane refreshes on turn completions and new spawns, a closed one stops', { options }, async ($, on) => {
+  const spawn = {
+    tool_use_id: 'call', prompt: 'Inspect parser', description: 'Inspect parser',
+    subagentType: 'general-purpose', parentModel: 'claude-sonnet-5',
+    provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+    permissionMode: 'default', parentAgentId: 'parent', cwd: '/workspace',
+  };
   let reads = 0;
   let decisions: unknown[] = records;
   let open: unknown[] = [{ id: 'smart-router-logs' }];
+  let pause = false;
+  let resume: () => void = () => {};
+  const reader = new Promise<void>((resolve) => { resume = resolve; });
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.panes', () => ({ value: open }));
+  on('agent.spawn', ($, e) => e.name === 'denied' ? { deny: 'Permission denied' } : { agentId: 'child', model: 'claude-sonnet-5' });
   on('turn.complete', () => ({ text: '' }));
-  on('process.run', () => {
+  on('process.run', async () => {
     reads++;
+    if (pause) await reader;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
   });
   // No reader runs while the pane has never been opened.
   await $.turn.complete({ answer: '' });
+  await $.agent.spawn(spawn);
   expect(reads).toBe(0);
   await $.command.run(command);
   expect(reads).toBe(1);
   const ui = await $.ui.mount(pane);
   expect(JSON.stringify(await ui.drawn())).toContain('older task');
   await ui.unmount();
+  // Resumed and denied spawns never refresh.
+  await $.agent.spawn({ ...spawn, resume: { agentId: 'child' } });
+  await $.agent.spawn({ ...spawn, name: 'denied' });
+  expect(reads).toBe(1);
   // A decision recorded after the pane opened shows up on the next turn completion.
   decisions = [records[1]];
   await $.turn.complete({ answer: '' });
@@ -358,12 +384,26 @@ test('the open pane refreshes on turn completion and a closed one stops', { opti
   expect(tree).toContain('1 routed prompt this session');
   expect(tree).not.toContain('older task');
   await refreshed.unmount();
-  // Once the user closes the pane, later turns spawn no reader.
+  // A pending read makes parallel spawns queue exactly one rerun.
+  decisions = [];
+  pause = true;
+  await $.agent.spawn(spawn);
+  await $.agent.spawn({ ...spawn, tool_use_id: 'parallel', background: false });
+  expect(reads).toBe(3);
+  pause = false;
+  resume();
+  // Wait for the paused read and its queued rerun to finish before drawing.
+  while (reads < 4) await new Promise((resolve) => setTimeout(resolve, 1));
+  const queued = await $.ui.mount(pane);
+  expect(JSON.stringify(await queued.drawn())).toContain('No routed subagents in this session yet.');
+  await queued.unmount();
+  // Once the user closes the pane, later turns and spawns run no reader.
   open = [];
   decisions = records;
+  await $.agent.spawn(spawn);
   await $.turn.complete({ answer: '' });
   await $.turn.complete({ answer: '' });
-  expect(reads).toBe(2);
+  expect(reads).toBe(4);
 });
 
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
