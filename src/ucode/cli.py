@@ -4606,6 +4606,14 @@ def default(
     ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks Unity Gateway."""
+    command = ctx.invoked_subcommand or "launch"
+    metrics.set_command(command)
+    if ctx.invoked_subcommand is None:
+        metrics.start_agent("unknown")
+    elif command in TOOL_ALIASES:
+        metrics.start_agent(TOOL_ALIASES[command])
+    elif command == "cursor":
+        metrics.start_agent("cursor")
     for number, line in enumerate(header or [], 1):
         if parse_header_line(line) is None:
             # Name only the flag's position: the value may be a token.

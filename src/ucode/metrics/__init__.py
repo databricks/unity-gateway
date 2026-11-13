@@ -88,6 +88,20 @@ INT_LABELS = frozenset({"http_status_code", "attempt", "process_exit_code"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9_.+\-]{1,128}\Z")
 _scope: ContextVar[dict[str, Any] | None] = ContextVar("ug_metric_scope", default=None)
 _runtime: Recorder | None = None
+_AGENT_SESSION_COMMANDS = frozenset(
+    {
+        "auth-token",
+        "otel-proxy",
+        "otel-headers",
+        "mcp-proxy",
+        "claude-router-hook",
+        "codex-router-hook",
+        "cowork-hook",
+        "claude-desktop-auth",
+        "smart-router-describe",
+        "smart-router-logs",
+    }
+)
 
 
 def _best_effort(fn: Callable[..., None]) -> Callable[..., None]:
@@ -117,6 +131,7 @@ class Recorder:
         self.common = _labels({"command": command})
         self.started = started
         self.startup = False
+        self.agent_handed_off = False
         self.startup_labels: dict[str, Any] = {
             "interactive_login": False,
             "first_time_setup": False,
@@ -238,17 +253,27 @@ def begin(command: str, started: float | None = None) -> None:
     if not env_bool("UG_ENABLE_METRICS_EXPORT"):
         return
     runtime = Recorder(command, time.perf_counter() if started is None else started)
-    if command in {
-        "auth-token",
-        "otel-proxy",
-        "otel-headers",
-        "mcp-proxy",
-        "claude-router-hook",
-        "codex-router-hook",
-    }:
+    if command in _AGENT_SESSION_COMMANDS:
         runtime.phase = "agent_session"
     runtime.start_periodic()
     _runtime = runtime
+
+
+@_best_effort
+def set_command(command: str) -> None:
+    runtime = _runtime
+    if runtime is None:
+        return
+    runtime.common.update(_labels({"command": command}))
+    runtime.phase = "agent_session" if command in _AGENT_SESSION_COMMANDS else "command"
+    # CLI import is measured before Typer resolves global options and subcommands.
+    if not runtime.lock.acquire(blocking=False):
+        return
+    try:
+        for _, _, _, labels in runtime.pending:
+            labels["command"] = runtime.common["command"]
+    finally:
+        runtime.lock.release()
 
 
 @_best_effort
@@ -311,6 +336,16 @@ def failure(
         return
     # Error classification must not replace an operation's result or original exception.
     with suppress(Exception):
+        if isinstance(error, BaseException) and _is_cancellation(error):
+            return
+        if isinstance(error, SystemExit):
+            if error.code in (None, 0):
+                return
+            # Child exit codes are propagated after handoff; spawn/UG errors still arrive as exceptions.
+            if operation == COMMAND_OPERATION and runtime.agent_handed_off:
+                return
+        if operation == COMMAND_OPERATION:
+            operation = str(runtime.common.get("command", COMMAND_OPERATION))
         current = _scope.get()
         if isinstance(error, str) and current is not None:
             code = error_code(error)
@@ -477,6 +512,7 @@ def agent_handoff() -> None:
             **runtime.startup_labels,
         )
         runtime.startup = False
+        runtime.agent_handed_off = True
         runtime.phase = "agent_session"
         flush()
         start_periodic()
@@ -550,6 +586,21 @@ def destination(workspace: str) -> str:
 
     host, selected = split_workspace_key(workspace)
     return workspace_key(host, selected or workspace_headers(host).get("X-Databricks-Workspace-Id"))
+
+
+def _is_cancellation(error: BaseException | None) -> bool:
+    # Click can wrap KeyboardInterrupt in Abort and then SystemExit(1).
+    seen = set()
+    while error is not None and id(error) not in seen:
+        seen.add(id(error))
+        if (
+            isinstance(error, KeyboardInterrupt)
+            or getattr(error, "exit_code", None) == 130
+            or (isinstance(error, SystemExit) and error.code == 130)
+        ):
+            return True
+        error = error.__cause__ or error.__context__
+    return False
 
 
 def already_reported(error: BaseException | None) -> bool:

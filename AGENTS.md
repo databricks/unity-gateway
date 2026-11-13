@@ -45,7 +45,8 @@ OTel SDK and uploads OTLP to `/api/2.0/ai-gateway/ug-cli/otel/v1/metrics` in a d
 Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
 
 - Keep `begin`/`finish` at the CLI lifecycle boundary and `start_agent`/`agent_handoff`
-  around agent startup. Individual operations must not create or replace the recorder.
+  around agent startup. The Typer callback uses `set_command()` to attribute observations
+  to the parsed command. Individual operations must not create or replace the recorder.
 - Call `metrics.bind(workspace, token)` where an operation obtains, reuses, or refreshes
   its workspace token. Reuse those credentials; never authenticate solely for telemetry.
   Use the selected workspace key, including its workspace selector. Observations recorded
@@ -86,9 +87,9 @@ Startup instrumentation uses these constants (all in `metrics`):
 | `DEPENDENCY_INSTALL_DURATION_MS` | `timed()` around one dependency installer, or `measure()` around an install/update/downgrade subprocess with `dependency` and `action`. |
 | `DEPENDENCY_INSTALL_OPERATION` | The matching error operation for a dependency-install `measure()` block; the duration constant is derived from it. |
 | `AGENT_CONFIGURATION_DURATION_MS` | `timed()` around `configure_tool()`, with the selected `agent` and `config_scope`. |
-| `SKILLS_REFRESH_DURATION_MS` | `timed()` around the launch-time downloaded-skills refresh helper; annotate `deadline_reached` after the bounded refresh. |
+| `SKILLS_REFRESH_DURATION_MS` | `measure()` around checks and updates for existing downloaded skills, after no-work returns; annotate `deadline_reached` after the bounded refresh. |
 | `SKILLS_REFRESH_OPERATION` | `failure()` for a handled refresh error that lets launch continue; the duration constant is derived from it. |
-| `COMMAND_OPERATION` | `failure()` in CLI command exception handlers for errors without a more specific operation. |
+| `COMMAND_OPERATION` | `failure()` in CLI exception handlers resolves this to the parsed command name and ignores cancellation and propagated agent exit codes. |
 | `UG_CLI_ERROR` | Emitted by `failure()` with phase and sanitized error labels; call that helper rather than incrementing the counter directly. |
 
 ## Smart-routing configuration

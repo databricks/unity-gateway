@@ -605,8 +605,6 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
     derive_managed_model_inputs: bool = False,
 ) -> dict:
-    from ucode.managed_files import config_scope
-
     metrics.annotate(config_scope=config_scope())
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
