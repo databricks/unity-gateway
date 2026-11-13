@@ -733,6 +733,16 @@ def _walk_stub(schemas, reason=None):
 
 
 class TestListAllSkills:
+    """The schema-walk fallback, against a server that rejects the metastore listing."""
+
+    @pytest.fixture(autouse=True)
+    def _metastore_listing_unsupported(self, monkeypatch):
+        monkeypatch.setattr(
+            sa,
+            "list_metastore_skills",
+            lambda *a, **k: ([], "HTTP 400 Bad Request: parent is required"),
+        )
+
     def test_flattens_and_streams_across_schemas(self, monkeypatch):
         monkeypatch.setattr(
             sa, "walk_catalog_schemas", _walk_stub([("main", "default"), ("ml", "prod")])
@@ -812,3 +822,191 @@ class TestListAllSkills:
         )
 
         assert sa.list_all_skills(WS, "token") == ([], sa._SKILLS_WALK_TIMEOUT_REASON)
+
+
+def _skill_json(fqn: str) -> dict:
+    return {
+        "name": f"skills/{fqn}",
+        "bundle_name": fqn.rsplit(".", 1)[-1],
+        "finalize_time": "2026-06-26T05:58:25Z",
+    }
+
+
+def _paged_http(pages: dict[str | None, tuple[dict | None, str | None]], calls: list[str]):
+    """An ``_http_get_json`` stub serving metastore pages keyed by their ``page_token``."""
+
+    def get(url, token, timeout=30, **kwargs):
+        calls.append(url)
+        assert "parent=" not in url
+        token_param = url.split("page_token=", 1)[1] if "page_token=" in url else None
+        return pages[token_param]
+
+    return get
+
+
+class TestListMetastoreSkills:
+    def test_pages_until_no_token_and_streams_each_page(self, monkeypatch):
+        calls: list[str] = []
+        pages = {
+            None: (
+                {
+                    "skills": [_skill_json("main.default.triage"), _skill_json("ml.prod.scoring")],
+                    "next_page_token": "p2",
+                },
+                None,
+            ),
+            "p2": ({"skills": [_skill_json("main.default.pii")]}, None),
+        }
+        monkeypatch.setattr(sa, "_http_get_json", _paged_http(pages, calls))
+        streamed: list[list[str]] = []
+
+        refs, reason = sa.list_metastore_skills(
+            WS,
+            "token",
+            deadline=time.monotonic() + 30,
+            on_skills=lambda batch: streamed.append([r.fqn for r in batch]),
+        )
+
+        assert reason is None
+        assert [r.fqn for r in refs] == [
+            "main.default.pii",
+            "main.default.triage",
+            "ml.prod.scoring",
+        ]
+        assert streamed == [["main.default.triage", "ml.prod.scoring"], ["main.default.pii"]]
+        assert all("page_size=200" in url for url in calls)
+        assert len(calls) == 2
+
+    def test_skips_nested_schema_skills_without_warning(self, monkeypatch):
+        payload = {
+            "skills": [
+                _skill_json("main.default.triage"),
+                _skill_json("databricks.home.ws1.alice.notes"),
+            ]
+        }
+        monkeypatch.setattr(sa, "_http_get_json", lambda url, token, timeout=30: (payload, None))
+        warnings: list[str] = []
+        monkeypatch.setattr(sa, "print_warning", warnings.append)
+
+        refs, reason = sa.list_metastore_skills(WS, "token", deadline=time.monotonic() + 30)
+
+        assert reason is None
+        assert [r.fqn for r in refs] == ["main.default.triage"]
+        assert warnings == []
+
+    def test_mid_listing_failure_keeps_earlier_pages(self, monkeypatch):
+        pages = {
+            None: ({"skills": [_skill_json("main.default.triage")], "next_page_token": "p2"}, None),
+            "p2": (None, "HTTP 503 Service Unavailable"),
+        }
+        monkeypatch.setattr(sa, "_http_get_json", _paged_http(pages, []))
+
+        refs, reason = sa.list_metastore_skills(WS, "token", deadline=time.monotonic() + 30)
+
+        assert [r.fqn for r in refs] == ["main.default.triage"]
+        assert reason == "HTTP 503 Service Unavailable"
+
+    def test_repeated_page_token_stops_as_incomplete(self, monkeypatch):
+        pages = {
+            None: ({"skills": [_skill_json("main.default.a")], "next_page_token": "p2"}, None),
+            "p2": ({"skills": [_skill_json("main.default.b")], "next_page_token": "p2"}, None),
+        }
+        monkeypatch.setattr(sa, "_http_get_json", _paged_http(pages, []))
+
+        refs, reason = sa.list_metastore_skills(WS, "token", deadline=time.monotonic() + 30)
+
+        assert [r.fqn for r in refs] == ["main.default.a", "main.default.b"]
+        assert reason == "skills listing repeated a page token"
+
+    def test_expired_deadline_returns_timeout_reason_without_a_request(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(sa, "_http_get_json", _paged_http({}, calls))
+
+        refs, reason = sa.list_metastore_skills(WS, "token", deadline=time.monotonic() - 1)
+
+        assert (refs, reason) == ([], sa._SKILLS_WALK_TIMEOUT_REASON)
+        assert calls == []
+
+    def test_cancel_stops_before_next_page(self, monkeypatch):
+        cancel = threading.Event()
+        calls: list[str] = []
+
+        def get(url, token, timeout=30, **kwargs):
+            calls.append(url)
+            cancel.set()
+            return {"skills": [_skill_json("main.default.a")], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(sa, "_http_get_json", get)
+
+        refs, reason = sa.list_metastore_skills(
+            WS, "token", deadline=time.monotonic() + 30, cancel_event=cancel
+        )
+
+        assert [r.fqn for r in refs] == ["main.default.a"]
+        assert reason == "skills listing cancelled"
+        assert len(calls) == 1
+
+
+class TestListAllSkillsMetastoreFirst:
+    def _fail_walk(self, monkeypatch):
+        def walk(*args, **kwargs):
+            raise AssertionError("schema walk should not run")
+
+        monkeypatch.setattr(sa, "walk_catalog_schemas", walk)
+
+    def test_uses_metastore_listing_when_supported(self, monkeypatch):
+        self._fail_walk(monkeypatch)
+        monkeypatch.setattr(sa, "list_metastore_skills", lambda *a, **k: ([ref("triage")], None))
+
+        assert sa.list_all_skills(WS, "token") == ([ref("triage")], None)
+
+    def test_empty_metastore_listing_reports_no_skills(self, monkeypatch):
+        self._fail_walk(monkeypatch)
+        monkeypatch.setattr(sa, "list_metastore_skills", lambda *a, **k: ([], None))
+
+        assert sa.list_all_skills(WS, "token") == ([], "no skills found")
+
+    def test_partial_metastore_listing_is_returned_without_walking(self, monkeypatch):
+        self._fail_walk(monkeypatch)
+        monkeypatch.setattr(
+            sa,
+            "list_metastore_skills",
+            lambda *a, **k: ([ref("triage")], sa._SKILLS_WALK_TIMEOUT_REASON),
+        )
+
+        assert sa.list_all_skills(WS, "token") == ([ref("triage")], sa._SKILLS_WALK_TIMEOUT_REASON)
+
+    def test_invalid_token_does_not_fall_back(self, monkeypatch):
+        self._fail_walk(monkeypatch)
+        monkeypatch.setattr(
+            sa, "list_metastore_skills", lambda *a, **k: ([], "HTTP 401 Unauthorized")
+        )
+
+        assert sa.list_all_skills(WS, "token") == ([], "HTTP 401 Unauthorized")
+
+    def test_rejected_first_page_falls_back_to_schema_walk(self, monkeypatch):
+        monkeypatch.setattr(
+            sa,
+            "list_metastore_skills",
+            lambda *a, **k: ([], "HTTP 400 Bad Request: parent is required"),
+        )
+        monkeypatch.setattr(sa, "walk_catalog_schemas", _walk_stub([("main", "default")]))
+        monkeypatch.setattr(sa, "list_schema_skills", lambda ws, tok, c, s: ([ref("triage")], None))
+
+        assert sa.list_all_skills(WS, "token") == ([ref("triage")], None)
+
+    def test_progress_callback_keeps_schema_walk(self, monkeypatch):
+        def metastore(*args, **kwargs):
+            raise AssertionError("metastore listing should not run")
+
+        monkeypatch.setattr(sa, "list_metastore_skills", metastore)
+        monkeypatch.setattr(sa, "walk_catalog_schemas", _walk_stub([("main", "default")]))
+        monkeypatch.setattr(sa, "list_schema_skills", lambda ws, tok, c, s: ([ref("triage")], None))
+        progress = []
+
+        refs, reason = sa.list_all_skills(
+            WS, "token", on_progress=lambda *counts: progress.append(counts)
+        )
+
+        assert (refs, reason) == ([ref("triage")], None)
+        assert progress == [(1, 1, 1)]

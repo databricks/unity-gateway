@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from ucode.databricks import (
     _http_get_bytes,
     _http_get_json,
+    _looks_like_definitive_auth_failure,
     walk_catalog_schemas,
     workspace_hostname,
 )
@@ -35,6 +36,11 @@ _files_api_pool = ThreadPoolExecutor(
 # to partial results instead of hanging the picker.
 _SKILLS_WALK_DEADLINE_SECONDS = 30.0
 _SKILLS_WALK_TIMEOUT_REASON = "deadline exceeded while listing skills"
+
+# The server's ListSkills page-size cap. 50 pages covers the 10,000-skill
+# per-metastore quota.
+_METASTORE_SKILLS_PAGE_SIZE = 200
+_METASTORE_SKILLS_MAX_PAGES = 50
 
 
 @dataclass(frozen=True)
@@ -175,6 +181,73 @@ def get_skill(workspace: str, token: str, fqn: str) -> SkillRef | None:
     return _skill_ref(payload) if isinstance(payload, dict) else None
 
 
+def _in_catalog_schema(skill: dict) -> bool:
+    """Whether ``skill`` lives directly in a ``<catalog>.<schema>``, as the schema walk finds them.
+
+    The metastore listing can also return skills in nested schemas, which the
+    download flow cannot address; skip those quietly instead of warning per skill.
+    """
+    name = skill.get("name")
+    return isinstance(name, str) and len(name.split("/", 1)[-1].split(".")) == 3
+
+
+def list_metastore_skills(
+    workspace: str,
+    token: str,
+    *,
+    deadline: float,
+    on_skills: Callable[[list[SkillRef]], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> tuple[list[SkillRef], str | None]:
+    """List finalized skills across the metastore with ``ListSkills`` and no ``parent``.
+
+    Pages through ``next_page_token`` until ``deadline`` (a ``time.monotonic()``
+    value). ``on_skills`` receives each page's newly found refs. A non-None reason
+    means the listing is incomplete; servers without the metastore scope reject
+    the first page.
+    """
+    base_url = f"https://{workspace_hostname(workspace)}/api/2.1/unity-catalog/skills"
+    by_fqn: dict[str, SkillRef] = {}
+    page_token: str | None = None
+    seen_tokens: set[str] = set()
+
+    def found() -> list[SkillRef]:
+        return sorted(by_fqn.values(), key=lambda ref: ref.fqn)
+
+    for _ in range(_METASTORE_SKILLS_MAX_PAGES):
+        if cancel_event is not None and cancel_event.is_set():
+            return found(), "skills listing cancelled"
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return found(), _SKILLS_WALK_TIMEOUT_REASON
+        query = {"page_size": str(_METASTORE_SKILLS_PAGE_SIZE)}
+        if page_token:
+            query["page_token"] = page_token
+        payload, reason = _http_get_json(
+            f"{base_url}?{urlencode(query)}", token, timeout=max(1.0, min(10.0, remaining))
+        )
+        if payload is None:
+            return found(), reason
+        data = payload if isinstance(payload, dict) else {}
+        new: list[SkillRef] = []
+        for skill in data.get("skills") or []:
+            if not isinstance(skill, dict) or not _in_catalog_schema(skill):
+                continue
+            skill_ref = _skill_ref(skill)
+            if skill_ref and skill_ref.fqn not in by_fqn:
+                by_fqn[skill_ref.fqn] = skill_ref
+                new.append(skill_ref)
+        if on_skills is not None and new:
+            on_skills(sorted(new, key=lambda ref: ref.fqn))
+        page_token = data.get("next_page_token") or None
+        if not page_token:
+            return found(), None
+        if page_token in seen_tokens:
+            return found(), "skills listing repeated a page token"
+        seen_tokens.add(page_token)
+    return found(), f"skills listing exceeded {_METASTORE_SKILLS_MAX_PAGES} pages"
+
+
 def list_all_skills(
     workspace: str,
     token: str,
@@ -186,15 +259,30 @@ def list_all_skills(
 ) -> tuple[list[SkillRef], str | None]:
     """Return every finalized skill across all ``<catalog>.<schema>`` in the workspace, by FQN.
 
-    The skills API is one-schema-per-call, so this walks catalogs -> schemas ->
-    skills in parallel under a wall-clock budget, returning partial results once
-    ``deadline_seconds`` is exceeded. ``on_progress`` is called as each schema
-    completes with ``(schemas_done, schemas_total, skills_found)``, and
-    ``on_skills`` with each schema's newly-found refs (deduped by FQN against
-    everything emitted so far) so a picker can stream them in as the walk runs.
-    The workspace-wide counterpart to ``list_schema_skills``.
+    Tries the paginated metastore listing first. If the server rejects or fails
+    its first page, falls back to walking catalogs -> schemas -> skills in
+    parallel. Both paths share one wall-clock budget and return partial results
+    once ``deadline_seconds`` is exceeded. ``on_skills`` receives newly-found refs
+    (deduped by FQN against everything emitted so far) per page or per schema so a
+    picker can stream them in. ``on_progress`` is called as each schema completes
+    with ``(schemas_done, schemas_total, skills_found)``; because it counts
+    schemas, passing it selects the schema walk. The workspace-wide counterpart to
+    ``list_schema_skills``.
     """
     deadline = time.monotonic() + deadline_seconds
+    if on_progress is None:
+        refs, reason = list_metastore_skills(
+            workspace, token, deadline=deadline, on_skills=on_skills, cancel_event=cancel_event
+        )
+        if reason is None:
+            return refs, None if refs else "no skills found"
+        if (
+            refs
+            or time.monotonic() >= deadline
+            or (cancel_event is not None and cancel_event.is_set())
+            or _looks_like_definitive_auth_failure(reason)
+        ):
+            return refs, reason
     by_fqn: dict[str, SkillRef] = {}
 
     def probe(catalog: str, schema: str) -> tuple[list[SkillRef], str | None]:
