@@ -36,6 +36,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Wait for the shared Security Scan
+        # Queue runs rely on PR admission checks and invalidation after head updates.
+        # Live verification blocks rollout; see tests/README.md#security-scan-rollout.
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'issue_comment' }}
         env:
           GH_TOKEN: ${{ github.event_name == 'issue_comment' && github.token || '' }}

@@ -1424,8 +1424,9 @@ establish live event delivery, organization runner restrictions or ruleset enfor
 Organization rules must require `security-gate.yml` from protected main and restrict runner
 access; PR workflow definitions alone cannot enforce those controls.
 `test_security_gate_supports_required_workflow_events` checks its direct PR/merge-queue
-triggers alongside workflow reuse. Push, schedule, dispatch and merge-queue events retain
-the existing bypass policy.
+triggers alongside workflow reuse. Push, schedule and dispatch skip the gate. Merge queues
+rely on native PR enforcement; live verification remains a
+[rollout blocker](#security-scan-rollout).
 
 `test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
@@ -1655,3 +1656,43 @@ is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. No installed-agent journey currently covers mixed wildcard sources or
 proves inference with qualified MPS models.
+
+
+## Security scan rollout
+
+1. Merge producer PR [#1653](https://github.com/databricks/unity-gateway/pull/1653)
+   first. Update a PR to obtain the `CI #<PR>` run name and verify a real
+   `workflow_run` scan using that CI request ID, its PR head SHA and policy from main.
+   GitHub cannot start this producer until it exists on the default branch.
+2. Land the consumers in [#1629](https://github.com/databricks/unity-gateway/pull/1629).
+   An org administrator must require `.github/workflows/security-gate.yml` from
+   `databricks/unity-gateway` at protected `refs/heads/main` using a **required-workflow
+   ruleset**, not just a required check name. Keep the existing `test`/`e2e` checks.
+3. Restrict protected runner access to approved workflow definitions at trusted refs.
+   The new direct definitions are
+   `databricks/unity-gateway/.github/workflows/security-scan.yml@refs/heads/main` and
+   `databricks/unity-gateway/.github/workflows/security-gate.yml@refs/heads/main`;
+   authorized comments also need `fork-integration.yml@refs/heads/main` in that repo.
+   Audit and migrate protected jobs in `integration.yml`, `user-journey-test-required.yml`,
+   `ug-review.yml` and `polly-review.yml` before restricting a shared runner group:
+   PR-ref jobs would be denied by a main-only allowlist.
+4. **Merge-queue validation blocks enforcement rollout.** On an admin-controlled
+   validation branch with the intended rules, verify that a missing/failed PR scan
+   prevents queue entry, and that updating an already queued PR invalidates its old
+   entry and requires the new head's scan. Record the settings and run links before
+   activating the required-workflow rule on main. Retain the `ALLGREEN` queue policy.
+   Update or reopen existing PRs after activating the rule.
+
+The gate currently skips scan polling on `merge_group`; it relies on GitHub's PR-level
+queue admission and head-update invalidation. GitHub [documents admission after required
+checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue),
+but head-update invalidation and this required-workflow setup have **not been validated
+live**. The SHA suffix in an observed queue ref was the base commit, not the PR head;
+do not use it as scan evidence. Runner policy also remains unverified: the current
+credentials received HTTP 403 from the org runner-groups API. These are open rollout
+requirements, not guarantees supplied by the YAML or component tests.
+
+Re-running CI reuses its original scan. After a maintainer applies `skip-security-scan`,
+re-run all scan jobs to refresh labels, then the failed CI jobs. Public API limits still
+fail closed; retry after the reported quota reset. A static scan does not replace human
+authorization for credentialed integration.
