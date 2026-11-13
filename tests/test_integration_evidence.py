@@ -40,11 +40,14 @@ from tests.integration.utils.terminal import codex_command_approval_pending
         "no-choice",
     ],
 )
-def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+@pytest.mark.parametrize("command_gap", ["\n", "\n\n\n"])
+def test_codex_approval_requires_the_exact_local_command(
+    command, environment, missing, expected, command_gap
+):
     prompt = "Would you like to run the following command?"
     footer = "Press enter to confirm or esc to cancel"
     choice = "› 1. Yes, proceed (y)"
-    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}{command_gap}{choice}\n{footer}"
     if missing == "prompt":
         screen = screen.replace(prompt, "")
     elif missing == "footer":
@@ -61,6 +64,54 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         assert (
             codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
         )
+
+
+@pytest.mark.parametrize(
+    "missing_message",
+    ['"SMART_ROUTER_ENV_UNSET"', "'MISSING_SMART_ROUTER_ENV'", '"$(Remove-Item important.txt)"'],
+)
+@pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
+@pytest.mark.parametrize("guard_style", ["exit", "else"])
+def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
+    extra_command, missing_message, guard_style
+):
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
+    suffix = "" if guard_style == "exit" else " }"
+    guard = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        f"{{ Write-Output {missing_message}{branch}"
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    expected_guard = guard.replace(missing_message, '"SMART_ROUTER_ENV_UNSET"')
+    expected = (command, f"{expected_guard} {command[2:]}{suffix}")
+    if extra_command or "$" in missing_message:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, expected)
+    else:
+        assert codex_command_approval_pending(screen, expected)
+
+
+@pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])
+def test_codex_posix_toggle_approval_accepts_only_the_known_guard(extra_command):
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    guarded = (
+        'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && ' + command
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guarded}{extra_command}\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    if extra_command:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, (command, guarded))
+    else:
+        assert codex_command_approval_pending(screen, (command, guarded))
 
 
 class _Session:

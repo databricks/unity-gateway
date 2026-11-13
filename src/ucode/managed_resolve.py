@@ -1,6 +1,6 @@
 """Resolve the effective agent settings from the managed config plus local ucode state.
 
-The managed config (``/etc/unitygateway/managed-settings.json``, published through the AI Gateway
+The managed config (``/etc/unitygateway/managed-settings.json``, published through the Unity Gateway
 and refreshed from the workspace at launch through :mod:`ucode.managed_config`) and the developer's own
 ucode state (``~/.ucode/state.json``) stay separate files — they are never merged on disk. Instead
 this module resolves them *per key* at config-write time: whatever the manifest specifies wins, and
@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from ucode.agents.model_sources import SCHEMA_MODEL_CATALOGS
 from ucode.databricks import ANTHROPIC_FAMILIES, classify_model_family
 from ucode.state import MANAGED_OVERLAY_KEY
 
@@ -99,7 +100,7 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
                 overrides["opencode_models"] = buckets
         else:
             overrides[f"{tool}_models"] = models
-    if tool in ("claude", "codex", "copilot"):
+    if tool in SCHEMA_MODEL_CATALOGS:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
@@ -232,18 +233,24 @@ def managed_static_models(managed: dict, tool: str) -> list[str] | None:
     return static_model_list(_agent_model_config(managed, tool)) or None
 
 
+def _static_model_list_key(model_config: dict) -> str:
+    """Prefer ``sources`` to the legacy ``model_services`` oneof."""
+    return "sources" if "sources" in model_config else "model_services"
+
+
 def static_model_list(model_config: dict) -> list[str]:
     """The static model list from one agent's ``model_config``: ``sources`` or the legacy
     ``model_services`` (a oneof). Empty and non-string entries are dropped; empty when unset."""
-    if "sources" in model_config:
-        models = model_config["sources"]
-    elif "model_services" in model_config:
-        models = model_config["model_services"]
-    else:
-        models = None
+    models = model_config.get(_static_model_list_key(model_config))
     if not isinstance(models, list):
         return []
     return [model for model in (_str(item) for item in models) if model]
+
+
+def set_static_model_list(model_config: dict, models: list[str]) -> None:
+    """Write the static model list to the key it was read from (``sources`` over the legacy
+    ``model_services``), so a reader of :func:`static_model_list` sees the written list."""
+    model_config[_static_model_list_key(model_config)] = models
 
 
 def managed_default_model(managed: dict, tool: str) -> str | None:

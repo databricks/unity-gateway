@@ -127,6 +127,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
+    monkeypatch.setattr(managed_config_mod, "_requested_mdm_os", None)
+    monkeypatch.setattr(managed_config_mod, "_inherited_mdm_os", None)
+    # Set first so the undo also removes a value a test sets (delenv of an unset key records none).
+    monkeypatch.setenv("MDM_OS", "None")
+    monkeypatch.delenv("MDM_OS")
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
@@ -256,3 +261,21 @@ def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
     return dict(e2e_state_for(e2e_workspace))
+
+
+@pytest.fixture
+def metrics_recorder(monkeypatch):
+    from unittest.mock import Mock
+
+    from ucode import metrics
+    from ucode.metrics import exporter
+
+    # Tests exercise collection and real SDK aggregation without sending developer telemetry.
+    runtime = metrics.Recorder("claude", metrics.time.perf_counter())
+    monkeypatch.setattr(metrics, "_runtime", runtime)
+    monkeypatch.setattr(exporter, "send_in_background", Mock(return_value=None))
+    yield runtime
+    runtime.stop.set()
+    runtime.wake.set()
+    if runtime.thread:
+        runtime.thread.join(timeout=2)

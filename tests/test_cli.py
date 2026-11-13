@@ -161,7 +161,7 @@ class TestHelp:
             assert command not in output
 
     def test_managed_authoring_commands_are_removed(self):
-        # Authoring moved to the AI Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
+        # Authoring moved to the Unity Gateway API/UI, so `ug setup` and `ug publish` no longer exist.
         assert runner.invoke(app, ["setup"]).exit_code != 0
         assert runner.invoke(app, ["setup", "mcps"]).exit_code != 0
         assert runner.invoke(app, ["publish"]).exit_code != 0
@@ -239,6 +239,26 @@ class TestHelp:
         assert result.exit_code == 0, result.output
         toggle.assert_called_once_with(True, None)
         launch.assert_not_called()
+
+    @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])
+    def test_configure_forwards_mdm_flag(self, monkeypatch, args, expected):
+        requests = []
+        monkeypatch.setattr(cli_mod, "request_mdm_os", requests.append)
+
+        def stop():
+            raise RuntimeError("stop")
+
+        monkeypatch.setattr(cli_mod, "install_databricks_cli", stop)
+        runner.invoke(app, ["configure", *args])
+        assert requests == [expected, None]
+
+    def test_configure_restores_an_inherited_mdm_os(self, monkeypatch):
+        monkeypatch.setenv("MDM_OS", "Mac")
+        monkeypatch.setattr(
+            cli_mod, "install_databricks_cli", lambda: (_ for _ in ()).throw(RuntimeError("stop"))
+        )
+        runner.invoke(app, ["configure", "--mdm"])
+        assert os.environ["MDM_OS"] == "Mac"
 
     def test_configure_help_lists_agents_flag(self):
         result = runner.invoke(app, ["configure", "--help"])
@@ -1427,7 +1447,7 @@ class TestSubcommandRouting:
         catalog = db_mod.AnthropicModelCatalog(
             model_ids=[],
             model_id_to_display_name={},
-            error_msg="AI Gateway returned no Anthropic model ids",
+            error_msg="Unity Gateway returned no Anthropic model ids",
         )
         with _launch_policy_patches(None, picker_catalog=catalog) as calls:
             result = runner.invoke(app, ["claude", option, value])
@@ -1435,7 +1455,7 @@ class TestSubcommandRouting:
         assert result.exit_code == 1
         output = " ".join(_strip_ansi(result.output).split())
         assert f"Could not discover Claude models for {source}" in output
-        assert "AI Gateway returned no Anthropic model ids" in output
+        assert "Unity Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 
@@ -2154,14 +2174,14 @@ class TestManagedClaudeModelDiscovery:
         calls = self._invoke(
             monkeypatch,
             managed,
-            catalog_error="AI Gateway returned no Anthropic model ids",
+            catalog_error="Unity Gateway returned no Anthropic model ids",
         )
 
         assert calls["result"].exit_code == 1
         output = _strip_ansi(calls["result"].output)
         assert "Could not discover Claude models for Model Provider Service" in output
         assert "main.default.anthropic-mps" in output
-        assert "AI Gateway returned no Anthropic model ids" in output
+        assert "Unity Gateway returned no Anthropic model ids" in output
         calls["configure"].assert_not_called()
         calls["launch"].assert_not_called()
 

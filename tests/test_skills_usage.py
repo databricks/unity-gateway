@@ -1,4 +1,4 @@
-"""Tests for skills_usage.py, which reports downloaded skills to AI Gateway from a detached
+"""Tests for skills_usage.py, which reports downloaded skills to Unity Gateway from a detached
 reporter process."""
 
 from __future__ import annotations

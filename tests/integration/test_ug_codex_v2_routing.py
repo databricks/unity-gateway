@@ -77,7 +77,8 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     Expected: the native child and actual hook input contain the exact assignment,
     matched by the router decision's digest. One native child completes on the selected model; the parent stays on
     its original model. Requests use the configured Databricks provider directly and
-    preserve the user's config, without user-supplied feature flags.
+    preserve the user's config, without user-supplied feature flags. The observer sees
+    the original task name; the spawned child carries the enabled attribution suffix.
     """
     session = live_session
     task = FileTask(session)
@@ -145,7 +146,7 @@ def test_ug_codex_native_v2_plain_assignment_routing(live_session, workspace):
     assert hook["tool_input"]["message"] == assignment
     assert hook["tool_input"]["task_name"] == task_name
     child_path = child_meta["source"]["subagent"]["thread_spawn"]["agent_path"]
-    assert child_path == f"/root/{task_name}"
+    assert child_path == f"/root/{task_name}__sr_on"
     assert any(
         content.get("text", "").endswith(assignment)
         for row in child

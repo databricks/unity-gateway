@@ -82,7 +82,7 @@ describe("streamEvents", () => {
     requests = stubFetch(tooBig, tooBig);
     await rejectsWith(
       collect(streamEvents("https://ws", "/m", { max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      "AI Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
+      "Unity Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
     );
     assert.equal(requests.length, 2);
   });
@@ -91,7 +91,7 @@ describe("streamEvents", () => {
     stubFetch([200, "<!doctype html><title>Databricks - Sign In</title>", "text/html; charset=utf-8"]);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      "AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
+      "Unity Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
     );
   });
 
@@ -99,7 +99,7 @@ describe("streamEvents", () => {
     stubFetch([400, '{"message":"bad tools"}']);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      'AI Gateway returned 400: {"message":"bad tools"}',
+      'Unity Gateway returned 400: {"message":"bad tools"}',
     );
   });
 });

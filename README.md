@@ -1,6 +1,6 @@
 # Unity Gateway (`ug`)
 
-Unity Gateway runs coding agents through Databricks AI Gateway. It configures
+Unity Gateway runs coding agents through your Databricks workspace. It configures
 Codex, Claude Code, Gemini CLI, OpenCode, Kilo, GitHub Copilot CLI, Pi, and Google
 Antigravity CLI, and can
 register Databricks MCP servers for Cursor Agent.
@@ -258,7 +258,7 @@ registered through `ug mcp-proxy`, never as the agent's own OAuth connection.
 ### Server-side web search for Claude Code
 
 ug denies Claude Code's native `WebSearch` and registers its own `web_search` MCP. For one launch,
-`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the AI Gateway's server-side search,
+`UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1 ug claude` instead uses the Unity Gateway's server-side search,
 writing no file. If the OS-managed settings, their `managed-settings.d`
 drop-ins, or the user settings deny `WebSearch`, ug warns and keeps its MCP for that launch.
 To make it the default, run `ug configure --enable-server-side-web-search` (`--disable-...` undoes it;
@@ -355,7 +355,7 @@ ug mcp list
 ug mcp list --agents claude,codex
 ```
 
-Connection-backed AI Gateway MCP services use native HTTP OAuth in Claude Code,
+Connection-backed Unity Gateway MCP services use native HTTP OAuth in Claude Code,
 Codex, and Cursor when the workspace publishes a compatible client. Claude Code
 uses its URL-based client ID metadata document; if it is unavailable, `ug` uses
 the local `ug mcp-proxy` stdio server with the Databricks CLI's OAuth client.
@@ -366,7 +366,7 @@ the original request. Use the same Databricks account in the browser and CLI pro
 If no browser opens, use the URL in the MCP server log; click Login if the provider
 popup is blocked. This flow requires the workspace's MCP service login page and user-credential API;
 it does not require CLI `auth login --resource` or a CLI upgrade.
-V2 AI Gateway servers can be added with typed selectors such as
+V2 Unity Gateway servers can be added with typed selectors such as
 `vector-search:main.docs`, `uc-functions:main.tools`, `external:<name>`,
 `genie-space:<space-id>`, or `app:<name>`.
 
@@ -577,8 +577,28 @@ For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
 Custom values for these fields do not apply during that session. The saved config
 files are unchanged, as are native delegation-mode controls. Requests use the
-configured Databricks provider directly. Subagent-only routing launches the native
-TUI directly; first-prompt routing uses the existing app-server interposer.
+configured Databricks provider directly. All routed Codex launches use the app-server
+interposer, including subagent-only presets. First-prompt model selection still follows
+the selected preset.
+
+Smart Router toggles keep every conversation loaded and do not interrupt any turn.
+The toggle turn finishes normally with its original routing attribution; the next
+main turn receives the new state. UG adds no user prompt or automatic continuation.
+Existing subagents keep running with their original attribution; new children,
+including descendants spawned by an old child, get the latest state through the
+spawn hook. Repeating the current state leaves session controls unchanged.
+
+Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
+`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`).
+The hook stamps child task names with `__sr_on` or `__sr_off`, which Codex places in
+`agent_name`. Parse only the final path segment: `/root/old__sr_on/new__sr_off`
+means off for that grandchild. A child's marker takes precedence over main state.
+Off is recorded as `DISABLED`; on uses the recipe name. Older clients can fall back
+to `Databricks-Smart-Router-Recipe`. These values describe client-requested routing,
+not proof that the router selected a different model. Native internal agents that
+bypass `spawn_agent` have no guaranteed marker. Reserve `smart_router_state` for
+per-turn metadata; a static Codex `responses_api_metadata` entry with that name
+would override dynamic values.
 
 ### Smart Router Orchestrator
 
@@ -763,10 +783,10 @@ auth helper retains its existing shared deadline.
 
 ## Documentation
 
-- [Databricks AI Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
-- [Databricks AI Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
+- [Databricks Unity Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
+- [Databricks Unity Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
 - [Databricks CLI authentication](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)
-- [Monitor AI Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
+- [Monitor Unity Gateway usage](https://docs.databricks.com/aws/en/ai-gateway/configure-ai-gateway-endpoints#track-usage-of-an-endpoint)
 
 ## Security
 
