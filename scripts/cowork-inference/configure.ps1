@@ -41,7 +41,8 @@ $report | ConvertTo-Json |
 $providerArgs = if ($provider) { @('--provider', $provider) } else { @() }
 $mcpService = (Get-Content -Raw -LiteralPath "$PSScriptRoot/task-fixture.json" | ConvertFrom-Json).mcpService
 $mcpArgs = if ($env:UG_COWORK_MCP -eq 'true') { @('--mcp', $mcpService) } else { @() }
-$patArgs = if ($usePat) { @('--use-pat') } else { @() }
+# @(...) keeps a one-item list an array, so splatting passes the flag, not its characters.
+$patArgs = @(if ($usePat) { '--use-pat' })
 & $env:UG_COWORK_TEST_BINARY configure --profile desktop-ci `
     --agents claude --user --disable-databricks-ai-tools --skip-validate --skip-upgrade @providerArgs @mcpArgs @patArgs
 if ($LASTEXITCODE -ne 0) { throw 'UG configure failed' }
