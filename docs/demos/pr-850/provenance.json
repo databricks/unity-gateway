@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "pr": "https://github.com/databricks/unity-gateway/pull/850",
+  "source_commit": "1721714aa99d86659735bd729830d5e5b97279c0",
+  "source_tree": "e0311bd5bdddd1bf8958a09c08f92088338cf0c0",
+  "runtime": {
+    "name": "Claude Code",
+    "version": "2.1.322",
+    "sha256": "bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478"
+  },
+  "offline_fixture": true,
+  "preset": "subagent_orch_savings_v0",
+  "method": "Real native interactive PTY output rendered to MP4 at its original timing. Onboarding is trimmed; terminal text is unchanged and rendered in a monochrome palette. An introductory 1.5-second hold and final 2-second hold aid viewing.",
+  "network": "Network namespace with loopback only. Prepared Messages, routing and endpoint-rate responses. External download attempts were rejected locally.",
+  "live_model_calls": 0,
+  "native_exit_code": 0,
+  "source_unchanged": true,
+  "route_count": 1,
+  "rates_count": 1,
+  "request_models": [
+    "system.ai.claude-opus-4-8",
+    "system.ai.claude-opus-4-8",
+    "system.ai.claude-sonnet-4-6",
+    "system.ai.claude-sonnet-4-6",
+    "system.ai.claude-opus-4-8"
+  ],
+  "actual_native_result": {
+    "invoice_net_usd": 42,
+    "estimate_usd": "0.23",
+    "estimate_percent": 57,
+    "off_hides_estimate": true,
+    "on_restores_estimate": true
+  },
+  "rate_fixture_usd_per_million": {
+    "opus_4_8": {
+      "input": 15,
+      "output": 75
+    },
+    "sonnet_4_6": {
+      "input": 3,
+      "output": 15
+    },
+    "haiku_4_5": {
+      "input": 1,
+      "output": 5
+    }
+  },
+  "usage_fixture": {
+    "main": [
+      {
+        "input_tokens": 2000,
+        "output_tokens": 100
+      },
+      {
+        "input_tokens": 2000,
+        "output_tokens": 40
+      },
+      {
+        "input_tokens": 2500,
+        "output_tokens": 150
+      }
+    ],
+    "child": [
+      {
+        "input_tokens": 8000,
+        "output_tokens": 80
+      },
+      {
+        "input_tokens": 10000,
+        "output_tokens": 200
+      }
+    ]
+  },
+  "billing": "Prepared fixture values; not actual billing or live-gateway savings.",
+  "raw_capture_sha256": "c54127e492bba68b7a06f84a123da33a3d2659ad20690c1806a009dd5a0615e3",
+  "raw_capture_private": true,
+  "rendered_frames_sha256": "f6902ceb3e945f9c209714150e0bdeda31a3ef3ba8bd4322896f087c55ef1eee",
+  "trim_seconds": {
+    "start": 7.988,
+    "end": 26.015
+  },
+  "markers_seconds": {
+    "routing-on-before-work": 0.0,
+    "task-typed": 0.346,
+    "completed-task-and-estimate": 7.119,
+    "estimate-visible": 10.12,
+    "routing-off-estimate-hidden": 10.573,
+    "off-visible": 13.574,
+    "routing-on-estimate-restored": 14.026,
+    "on-visible": 18.027
+  },
+  "audited_distinct_terminal_screens": 78,
+  "frame_count": 86,
+  "preview_capture": "T3 preview navigation reported no connected automation host; preserved failure receipt. Video rendered from the verified native capture using installed ffmpeg/libass.",
+  "media": {
+    "sha256": "d566167d8921e5993ad26b2f436b5d24c4d3d4a0a30f02d961ef1a1e9c2f1a42",
+    "bytes": 241039,
+    "duration_seconds": 21.55,
+    "codec": "h264",
+    "width": 1280,
+    "height": 800,
+    "full_decode_passed": true
+  },
+  "media_markers_seconds": {
+    "routing-on-before-work": 1.5,
+    "task-typed": 1.846,
+    "completed-task-and-estimate": 8.619,
+    "estimate-visible": 11.62,
+    "routing-off-estimate-hidden": 12.073,
+    "off-visible": 15.074,
+    "routing-on-estimate-restored": 15.526,
+    "on-visible": 19.527
+  },
+  "video_render": {
+    "ffmpeg_sha256": "ed16af623947494a72e284b6eb8ff225f2da22b38b5d5069c2fd4b4ba3384e41",
+    "font_sha256": "c805f9436dbc268644c1d9584f01a601a653e028e08fd74b9b949f6cf8304d88",
+    "rendered_screen_count": 86
+  },
+  "verified_at": "2026-11-13T20:42:53.863557+00:00"
+}
