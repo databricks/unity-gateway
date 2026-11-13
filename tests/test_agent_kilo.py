@@ -199,10 +199,11 @@ class TestRenderOverlay:
     def test_request_tags_header_added_per_model_when_env_set(self, monkeypatch):
         tags = '{"team":"infra","env":"prod"}'
         monkeypatch.setenv("AI_GATEWAY_REQUEST_TAGS", tags)
-        models = {"anthropic": ["claude-sonnet"], "oss": ["gpt-oss"]}
+        models = {"anthropic": ["claude-sonnet"], "gemini": ["gemini-2"], "oss": ["gpt-oss"]}
         overlay, _ = kilo.render_overlay("claude-sonnet", "tok", _base_urls(), models)
         for provider, model in (
             ("databricks-anthropic", "claude-sonnet"),
+            ("databricks-google", "gemini-2"),
             ("databricks-oss", "gpt-oss"),
         ):
             model_headers = overlay["provider"][provider]["models"][model]["headers"]
