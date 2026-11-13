@@ -3497,12 +3497,16 @@ def _skill_schema_background_loader(
         )
         if cancel_event.is_set() or reason in (None, "no skills found"):
             return None
+        if reason == _SKILLS_WALK_TIMEOUT_REASON:
+            detail = f"Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s"
+        elif not found:
+            return (
+                "⚠️ Couldn't list skill schemas. Use "
+                "`ug skills add --via mcp --location <catalog.schema>` to add a known schema."
+            )
+        else:
+            detail = "Discovery stopped before the full list loaded"
         schemas = len({(ref.catalog, ref.schema) for ref in found})
-        detail = (
-            f"Timed out after {int(_SKILLS_WALK_DEADLINE_SECONDS)}s"
-            if reason == _SKILLS_WALK_TIMEOUT_REASON
-            else "Discovery stopped before the full list loaded"
-        )
         return f"⚠️ {detail}, found {schemas} skill schemas"
 
     return loader

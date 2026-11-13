@@ -16,10 +16,10 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 from ucode.databricks import (
-    _UC_FUNCTIONS_SKIP_CATALOGS,
     _http_get_bytes,
     _http_get_json,
     _looks_like_definitive_auth_failure,
+    is_walked_schema,
     walk_catalog_schemas,
     workspace_hostname,
 )
@@ -195,9 +195,7 @@ def _outside_schema_walk(skill: dict) -> bool:
     parts = name.split("/", 1)[-1].split(".")
     if len(parts) > 3:
         return True
-    return len(parts) == 3 and (
-        parts[0] in _UC_FUNCTIONS_SKIP_CATALOGS or parts[1] == "information_schema"
-    )
+    return len(parts) == 3 and not is_walked_schema(parts[0], parts[1])
 
 
 def list_metastore_skills(
@@ -257,6 +255,26 @@ def list_metastore_skills(
     return found(), f"skills listing exceeded {_METASTORE_SKILLS_MAX_PAGES} pages"
 
 
+def _metastore_result_is_final(
+    refs: list[SkillRef],
+    reason: str | None,
+    deadline: float,
+    cancel_event: threading.Event | None,
+) -> bool:
+    """Whether to return the metastore listing's result instead of falling back to the walk.
+
+    Only an empty, failed listing with time left falls back; a rejected token would fail the
+    walk too.
+    """
+    return (
+        reason is None
+        or bool(refs)
+        or time.monotonic() >= deadline
+        or (cancel_event is not None and cancel_event.is_set())
+        or _looks_like_definitive_auth_failure(reason)
+    )
+
+
 def list_all_skills(
     workspace: str,
     token: str,
@@ -290,12 +308,7 @@ def list_all_skills(
             on_skills=None if batch_by_schema else on_skills,
             cancel_event=cancel_event,
         )
-        if reason is None or (
-            refs
-            or time.monotonic() >= deadline
-            or (cancel_event is not None and cancel_event.is_set())
-            or _looks_like_definitive_auth_failure(reason)
-        ):
+        if _metastore_result_is_final(refs, reason, deadline, cancel_event):
             if batch_by_schema and on_skills is not None:
                 by_schema: dict[tuple[str, str], list[SkillRef]] = {}
                 for ref in refs:

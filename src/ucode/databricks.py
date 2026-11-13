@@ -3429,6 +3429,14 @@ _MCP_SERVICES_WALK_TIMEOUT_REASON = "deadline exceeded while listing MCP service
 _UC_FUNCTIONS_SKIP_CATALOGS = frozenset(
     {"__databricks_internal", "hive_metastore", "samples", "system"}
 )
+_WALK_SKIPPED_SCHEMA = "information_schema"
+
+
+def is_walked_schema(catalog: str, schema: str) -> bool:
+    """Whether `walk_catalog_schemas` with its default skip list probes `<catalog>.<schema>`.
+
+    Lets a metastore-wide listing return the same set as the walk it replaces."""
+    return catalog not in _UC_FUNCTIONS_SKIP_CATALOGS and schema != _WALK_SKIPPED_SCHEMA
 
 
 def _paginated_json_items(
@@ -3585,7 +3593,7 @@ def walk_catalog_schemas[T](
                     schemas, _ = value
                     for schema in schemas:
                         name = schema.get("name")
-                        if isinstance(name, str) and name and name != "information_schema":
+                        if isinstance(name, str) and name and name != _WALK_SKIPPED_SCHEMA:
                             schemas_total += 1
                             probe_jobs.put((catalog, name))
             else:

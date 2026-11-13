@@ -2979,6 +2979,19 @@ class TestSkillSchemaPicker:
 
         assert message == "⚠️ Discovery stopped before the full list loaded, found 1 skill schemas"
 
+    def test_background_loader_reports_hard_failure_with_workaround(self, monkeypatch):
+        monkeypatch.setattr(
+            mcp, "list_all_skills", lambda *a, **k: ([], "HTTP 403 Forbidden: no access")
+        )
+
+        message = mcp._skill_schema_background_loader(WS, "token", set())(
+            lambda choices: None, threading.Event()
+        )
+
+        assert message is not None
+        assert message.startswith("⚠️ Couldn't list skill schemas.")
+        assert "--via mcp --location" in message
+
     def test_prompt_returns_selected_locations(self, monkeypatch):
         loader = lambda append: None  # noqa: E731
         captured = {}
