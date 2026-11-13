@@ -84,8 +84,9 @@ jobs:
           # --no-renames lists a moved file's old path too, so moving a workflow away is caught.
           # --text --no-textconv: the PR's .gitattributes can't mark changes binary or rewrite them.
           git -C pr diff --no-renames --text --no-textconv "$BASE_SHA...HEAD" > pr.diff
-          git -C pr diff --no-renames --name-only "$BASE_SHA...HEAD" > changed.txt
-          echo "Changed files:"; cat changed.txt
+          # -z: unquoted, NUL-separated paths, so an unusual name can't dodge the path checks.
+          git -C pr diff --no-renames --name-only -z "$BASE_SHA...HEAD" > changed.txt
+          echo "Changed files:"; tr '\0' '\n' < changed.txt
 
       - name: Secret scan (added lines)
         if: ${{ steps.gate.outputs.scan == 'true' }}
@@ -136,18 +137,28 @@ jobs:
           # Only PR-changed files still in the head tree, so a contributor is
           # never failed for pre-existing findings.
           : > targets.txt
-          while IFS= read -r f; do
-            [ -n "$f" ] && [ -f "pr/$f" ] && printf 'pr/%s\n' "$f" >> targets.txt
+          while IFS= read -r -d '' f; do
+            [ -f "pr/$f" ] && printf 'pr/%s\0' "$f" >> targets.txt
           done < changed.txt
           if [ ! -s targets.txt ]; then
             echo "No changed files to semgrep."; exit 0
           fi
-          echo "Semgrep targets:"; cat targets.txt
+          echo "Semgrep targets:"; tr '\0' '\n' < targets.txt
+          # --disable-nosem: the PR's own `# nosemgrep` comments can't waive a rule.
           # Warnings are informational; ERROR-severity rules fail the scan.
-          xargs -d '\n' uvx --no-config semgrep==1.150.0 scan --config "$RULES" --severity=WARNING \
-            --metrics=off --quiet < targets.txt || true
-          xargs -d '\n' uvx --no-config semgrep==1.150.0 scan --config "$RULES" --severity=ERROR --error \
-            --metrics=off --quiet < targets.txt
+          xargs -0 uvx --no-config semgrep==1.150.0 scan --config "$RULES" --severity=WARNING \
+            --disable-nosem --metrics=off --quiet < targets.txt || true
+          # semgrep still exits 0 for a finding on a nosem line, so fail on the JSON results.
+          xargs -0 uvx --no-config semgrep==1.150.0 scan --config "$RULES" --severity=ERROR \
+            --disable-nosem --metrics=off --quiet --json < targets.txt > semgrep.json
+          python3 - semgrep.json <<'EOF'
+          import json, sys
+          results = json.load(open(sys.argv[1]))["results"]
+          for r in results:
+              message = " ".join(r["extra"]["message"].split())
+              print(f"::error file={r['path'].removeprefix('pr/')},line={r['start']['line']}::{message}")
+          sys.exit(1 if results else 0)
+          EOF
 
       - name: Explain the maintainer waiver (on failure)
         if: ${{ failure() }}

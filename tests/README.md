@@ -1364,7 +1364,10 @@ skips every test job, so the `test` and `e2e` gates fail; trusted authors and me
 pass in seconds. `test_security_scan_runs_before_every_job_that_runs_pr_code` checks that wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
 `test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
-a name the exfil scan watches. The detectors' matching itself has no automated tests.
+a name the exfil scan watches. `test_security_scan_parsers_survive_diff_and_path_tricks` checks
+that added lines posing as diff headers and quoted or non-ASCII file names still reach the exfil,
+secret and sensitive-path checks. The detectors' patterns and semgrep's `nosem` handling have
+no automated tests.
 
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
 job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s

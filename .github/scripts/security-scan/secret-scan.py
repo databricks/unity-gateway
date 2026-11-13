@@ -84,18 +84,27 @@ def main() -> int:
     findings: list[str] = []
     cur_file = "?"
     new_lineno = 0
+    in_hunk = False
 
-    with open(diff_path, encoding="utf-8", errors="replace") as fh:
+    # Lines end only at "\n", and `+++` is a header only before a file's first hunk, so an
+    # added line starting with "++" (or holding a \r) is still scanned.
+    with open(diff_path, encoding="utf-8", errors="replace", newline="\n") as fh:
         for raw in fh:
             line = raw.rstrip("\n")
-            if line.startswith("+++ "):
+            if line.startswith("diff --git "):
+                in_hunk = False
+                continue
+            if not in_hunk and line.startswith("+++ "):
                 cur_file = line[6:] if line.startswith("+++ b/") else line[4:]
                 continue
             if line.startswith("@@"):
+                in_hunk = True
                 m = re.search(r"\+(\d+)", line)
                 new_lineno = int(m.group(1)) if m else 0
                 continue
-            if line.startswith("+") and not line.startswith("+++"):
+            if not in_hunk:
+                continue
+            if line.startswith("+"):
                 added = line[1:]
                 for label, rx in HIGH_CONFIDENCE:
                     if rx.search(added):

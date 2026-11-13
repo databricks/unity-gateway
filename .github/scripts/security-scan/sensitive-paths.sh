@@ -16,7 +16,8 @@
 #            so a reviewer looks closely. semgrep + the secret scan still run on
 #            their contents.
 #
-# Env in:  CHANGED_FILES (path to a file with one changed path per line).
+# Env in:  CHANGED_FILES (path to a NUL-separated list from `git diff --name-only -z`,
+#          so paths are never quoted).
 # Exit:    non-zero if any FAIL-tier path changed; 0 otherwise.
 
 set -euo pipefail
@@ -26,7 +27,7 @@ CHANGED="${CHANGED_FILES:?CHANGED_FILES not set}"
 
 fail=0
 
-while IFS= read -r path; do
+while IFS= read -r -d '' path; do
   [[ -z "$path" ]] && continue
   case "$path" in
     .github/workflows/* | .github/actions/* | actions/*)

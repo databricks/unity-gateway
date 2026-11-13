@@ -29,6 +29,7 @@ Exit:    non-zero if any BLOCKING finding; 0 otherwise.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sys
@@ -93,15 +94,30 @@ def _changed_files_and_added(diff: str) -> dict[str, list[str]]:
     """
     by_file: dict[str, list[str]] = {}
     current: str | None = None
-    for line in diff.splitlines():
-        if line.startswith("+++ b/"):
-            current = line[6:]
+    in_hunk = False
+    # Split on "\n" only, and read paths only from file headers, so added content (a line
+    # starting with "++", a \r or \f) can't pose as diff structure and end the file early.
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            current, in_hunk = None, False
+        elif not in_hunk and line.startswith("+++ "):
+            current = _diff_path(line[4:])
             by_file.setdefault(current, [])
-        elif line.startswith(("+++ ", "diff --git")):
-            current = None
-        elif current is not None and line.startswith("+") and not line.startswith("+++"):
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk and current is not None and line.startswith("+"):
             by_file[current].append(line[1:])
     return by_file
+
+
+def _diff_path(header: str) -> str:
+    """Return the path in a ``+++`` header, decoding git's quoting (``"b/donn\\303\\251es.py"``)."""
+    if header.startswith('"'):
+        try:
+            header = ast.literal_eval("b" + header).decode("utf-8", "replace")
+        except (SyntaxError, ValueError):
+            pass
+    return header.removeprefix("b/")
 
 
 def scan_diff(diff: str) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -151,7 +167,7 @@ def main() -> int:
         print(f"::error::diff file {diff_path!r} missing")
         return 1
 
-    with open(diff_path, encoding="utf-8", errors="replace") as fh:
+    with open(diff_path, encoding="utf-8", errors="replace", newline="\n") as fh:
         diff = fh.read()
     blocking, info = scan_diff(diff)
 
