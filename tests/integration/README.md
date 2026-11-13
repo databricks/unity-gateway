@@ -2,7 +2,9 @@
 
 ## Routing diagnostics
 
-Router calls emit versioned `[ug-routing]` JSON records on stderr. `request_start`
+Router calls emit versioned `[ug-routing]` JSON records when stderr is captured or
+redirected. They stay off terminal stderr so first-prompt routing does not disrupt
+the agent's TUI. `request_start`
 and `request_finish` share a UUID sent as `X-Client-Request-Id`. Look up that client
 ID in backend telemetry when supported, or use the response's `server_request_id`
 when present. Missing response IDs do not prove that the server never received a request.
@@ -15,7 +17,8 @@ The socket timeout is not a total request deadline. Subagent `hook_start` and
 `hook_finish` records join the request by `hook_id` and report whether a routing
 decision was resolved, not whether a child launched.
 
-The integration TUI harness enables native Claude debug logging with `--debug-file`
+The integration TUI harness enables native debug logging for explicit `ug claude`
+launches with `--debug-file`
 inside the isolated test home. The Claude mod forwards bounded, allowlisted request
 diagnostics from its captured child stderr into native debug logs. Its separate
 `command_start` and `command_finish`

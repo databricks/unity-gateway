@@ -236,7 +236,7 @@ class UserSession:
                         continue
                     try:
                         record = json.JSONDecoder().raw_decode(payload)[0]
-                    except ValueError:
+                    except (ValueError, RecursionError):
                         continue
                     if not isinstance(record, dict) or record.get("v") != 1:
                         continue
@@ -251,6 +251,7 @@ class UserSession:
                             "server_request_id",
                             "hook_id",
                             "tool_use_id",
+                            "router_name",
                         }:
                             if isinstance(value, str) and re.fullmatch(
                                 r"[A-Za-z0-9_.:-]{1,128}", value
@@ -265,6 +266,7 @@ class UserSession:
                             "open_response_ms",
                             "read_body_ms",
                             "decode_response_ms",
+                            "validate_selection_ms",
                             "route_option_count",
                         }:
                             if isinstance(value, (int, float)) and 0 <= value < float("inf"):

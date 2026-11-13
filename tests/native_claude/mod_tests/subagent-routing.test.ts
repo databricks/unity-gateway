@@ -664,6 +664,7 @@ test('captured routing diagnostics retain timings and IDs without raw stderr or 
     v: 1, event: 'request_finish', client_request_id: clientRequestId,
     phase: 'open_response', outcome: 'timeout', elapsed_ms: 20001, timeout_s: 20,
     prompt: 'private-task', error: 'private-error', authorization: 'private-bearer',
+    router_name: 'private-router name',
   });
   on('session.id', () => ({ value: 'session-1' }));
   on('ui.log', ($, e) => {
@@ -697,4 +698,53 @@ test('captured routing diagnostics retain timings and IDs without raw stderr or 
   expect(records.filter((record) => record.event === 'command_start').map((record) => record.tool_use_id))
     .toEqual(calls);
   expect(logs.join('\n')).not.toMatch(/private-/);
+});
+
+test('routing diagnostics retain the last eight records before a trailing traceback in the debug log', async ($, on) => {
+  const logs: { text: string; to?: string }[] = [];
+  const toolUseId = 'call.router:1';
+  const routerName = 'router.default:v1';
+  const diagnostics = Array.from({ length: 10 }, (_, index) => ({
+    v: 1, event: 'hook_start', hook_id: `hook-${index}`,
+  }));
+  const finish = {
+    v: 1, event: 'request_finish', phase: 'validate_selection', outcome: 'resolved',
+    validate_selection_ms: 7, elapsed_ms: 42, router_name: routerName, tool_use_id: toolUseId,
+  };
+  on('session.id', () => ({ value: 'session-1' }));
+  on('ui.log', ($, e) => { logs.push(e); return { value: undefined }; });
+  // The native host controls the external router process; exercise the mod's real stderr handling.
+  on('process.run', ($, e) => {
+    expect(JSON.parse(e.init.stdin).tool_use_id).toBe(toolUseId);
+    expect(e.init.timeoutMs).toBe(35000);
+    return { value: {
+      exitCode: 0,
+      stdout: JSON.stringify({ model: 'claude-sonnet-5', rationale: 'Selected' }),
+      stderr: [
+        '[ug-routing] ' + JSON.stringify({ v: 1, event: 'hook_start', hook_id: 'outside-bound' }),
+        'x'.repeat(32768),
+        ...[...diagnostics, finish].map(record => '[ug-routing] ' + JSON.stringify(record)),
+        'Traceback (most recent call last):',
+        ...Array.from({ length: 12 }, (_, index) => `private-traceback-${index}`),
+      ].join('\n'),
+    } };
+  });
+  on('tool.call', ($, e) => {
+    expect(e).toEqual({ tool: 'Agent', tool_use_id: toolUseId, ...originalInput });
+    return { result: 'unchanged' };
+  });
+  expect(await $.tool.call({ tool: 'Agent', tool_use_id: toolUseId, ...originalInput }))
+    .toEqual({ result: 'unchanged' });
+  expect(logs.length).toBe(10);
+  for (const log of logs) expect(log.to).toBe('debug');
+  const records = logs.map(log => JSON.parse(log.text.slice('[ug-routing] '.length)));
+  expect(records.slice(1, -1)).toEqual([...diagnostics.slice(-7), finish]);
+  expect(records[0]).toEqual({
+    v: 1, event: 'command_start', tool_use_id: toolUseId, timeout_ms: 35000,
+  });
+  expect(records[records.length - 1].event).toBe('command_finish');
+  expect(records[records.length - 1].outcome).toBe('resolved');
+  expect(records[records.length - 1].tool_use_id).toBe(toolUseId);
+  expect(records[records.length - 1].timeout_ms).toBe(35000);
+  expect(logs.map(log => log.text).join('\n')).not.toMatch(/private-|outside-bound/);
 });

@@ -1,5 +1,7 @@
 import type { On, PluginOptions } from 'claude-code'
 
+const ROUTER_TIMEOUT_MS = 35000
+
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
@@ -7,8 +9,9 @@ type RoutingRecord = {
 
 const routingDiagnostics = (stderr: string): string[] => {
   const records: string[] = []
-  for (const line of stderr.slice(-32768).split('\n').slice(-8)) {
-    if (!line.startsWith('[ug-routing] ') || line.length > 4096) continue
+  for (const line of stderr.slice(-32768).split('\n')
+    .filter(line => line.startsWith('[ug-routing] ')).slice(-8)) {
+    if (line.length > 4096) continue
     try {
       const record: unknown = JSON.parse(line.slice('[ug-routing] '.length))
       if (!record || typeof record !== 'object' || !('v' in record) || record.v !== 1
@@ -18,10 +21,10 @@ const routingDiagnostics = (stderr: string): string[] => {
       for (const [key, value] of Object.entries(record)) {
         if (['phase', 'outcome', 'error_type'].includes(key)
             && typeof value === 'string' && /^[A-Za-z_]{1,64}$/.test(value)) safe[key] = value
-        if (['client_request_id', 'server_request_id', 'hook_id', 'tool_use_id'].includes(key)
+        if (['client_request_id', 'server_request_id', 'hook_id', 'tool_use_id', 'router_name'].includes(key)
             && typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(value)) safe[key] = value
         if (['at', 'elapsed_ms', 'timeout_s', 'http_status', 'open_response_ms',
-          'read_body_ms', 'decode_response_ms', 'route_option_count'].includes(key)
+          'read_body_ms', 'decode_response_ms', 'validate_selection_ms', 'route_option_count'].includes(key)
             && typeof value === 'number' && Number.isFinite(value) && value >= 0) safe[key] = value
       }
       records.push('[ug-routing] ' + JSON.stringify(safe))
@@ -191,19 +194,19 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }
     const hookStarted = await now($)
     let hookOutcome = 'process_error'
-    const diagnosticToolId = typeof tool_use_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(tool_use_id)
+    const diagnosticToolId = typeof tool_use_id === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(tool_use_id)
       ? tool_use_id : undefined
     const logDiagnostic = (text: string) => {
       try { $.ui.log(text, { to: 'debug' }) } catch {}
     }
     logDiagnostic('[ug-routing] ' + JSON.stringify({
-      v: 1, event: 'command_start', tool_use_id: diagnosticToolId, timeout_ms: 35000,
+      v: 1, event: 'command_start', tool_use_id: diagnosticToolId, timeout_ms: ROUTER_TIMEOUT_MS,
     }))
     try {
       const session_id = await $.session.id()
       const result = await $.process.run(command, {
         stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
-        timeoutMs: 35000,
+        timeoutMs: ROUTER_TIMEOUT_MS,
       })
       for (const diagnostic of routingDiagnostics(result.stderr)) logDiagnostic(diagnostic)
       hookOutcome = 'nonzero_exit'
@@ -222,12 +225,12 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       $.ui.log('Smart Router could not route this subagent; using its original settings.')
     } finally {
       spinner?.cancel()
-      const seconds = await secondsSince($, hookStarted)
+      const hookSeconds = await secondsSince($, hookStarted)
       logDiagnostic('[ug-routing] ' + JSON.stringify({
         v: 1, event: 'command_finish', outcome: hookOutcome,
         tool_use_id: diagnosticToolId,
-        elapsed_ms: seconds === undefined ? undefined : Math.round(seconds * 1000),
-        timeout_ms: 35000,
+        elapsed_ms: hookSeconds === undefined ? undefined : Math.round(hookSeconds * 1000),
+        timeout_ms: ROUTER_TIMEOUT_MS,
       }))
     }
     const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined

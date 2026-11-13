@@ -147,7 +147,6 @@ def session(request, installed_binary):
         try:
             yield user
         finally:
-            user.collect_routing_diagnostics()
             try:
                 # Restore machine-level settings through the same public CLI that
                 # created them. A later fresh-home test must not inherit this setup.
@@ -171,10 +170,15 @@ def session(request, installed_binary):
             finally:
                 # Backstop: `ug revert` removes the workspace policy, but it can fail or be
                 # skipped, and a later fresh-home case or the next run's preflight must start clean.
-                policy = Path("/etc/unitygateway/managed-settings.json")
-                sudo = shutil.which("sudo")
-                if os.name == "posix" and policy.exists() and sudo:
-                    user.run("-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False)
+                try:
+                    policy = Path("/etc/unitygateway/managed-settings.json")
+                    sudo = shutil.which("sudo")
+                    if os.name == "posix" and policy.exists() and sudo:
+                        user.run(
+                            "-n", "rm", "-f", str(policy), binary=Path(sudo), timeout=30, ok=False
+                        )
+                finally:
+                    user.collect_routing_diagnostics()
 
 
 @pytest.fixture

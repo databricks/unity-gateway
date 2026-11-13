@@ -210,7 +210,9 @@ def test_broken_stderr_preserves_results_and_exceptions(transport, monkeypatch, 
     def broken(*args):
         raise OSError("private-stderr")
 
-    stderr = SimpleNamespace(write=lambda value: len(value), flush=lambda: None)
+    stderr = SimpleNamespace(
+        write=lambda value: len(value), flush=lambda: None, isatty=lambda: False
+    )
     setattr(stderr, failure, broken)
     monkeypatch.setattr(routing.sys, "stderr", stderr)
     transport(Response())
@@ -220,6 +222,25 @@ def test_broken_stderr_preserves_results_and_exceptions(transport, monkeypatch, 
     transport(RuntimeError("private-unexpected"))
     with pytest.raises(RuntimeError, match="private-unexpected"):
         select()
+
+
+@pytest.mark.parametrize("attached", [False, True])
+def test_missing_or_interactive_stderr_preserves_routing_without_json(
+    transport, monkeypatch, attached
+):
+    stderr = io.StringIO() if attached else None
+    if attached:
+        stderr.isatty = lambda: True
+    monkeypatch.setattr(routing.sys, "stderr", stderr)
+    transport(Response())
+    assert select()[1] is None
+    transport(TimeoutError("private-timeout"))
+    assert select() == (None, "router request failed: private-timeout")
+    transport(RuntimeError("private-unexpected"))
+    with pytest.raises(RuntimeError, match="private-unexpected"):
+        select()
+    if stderr is not None:
+        assert stderr.getvalue() == ""
 
 
 @pytest.mark.parametrize(

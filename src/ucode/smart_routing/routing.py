@@ -53,13 +53,16 @@ def _diagnostic_identifier(value: Any) -> str | None:
 
 def _emit_routing_diagnostic(event: str, **fields: Any) -> None:
     try:
+        stderr = sys.stderr
+        if stderr is None or stderr.isatty():
+            return
         hook_id, tool_use_id = _ROUTING_HOOK.get() or (None, None)
         record = dict(
             v=1, event=event, at=time.time(), hook_id=hook_id, tool_use_id=tool_use_id, **fields
         )
-        sys.stderr.write("[ug-routing] " + json.dumps(record, allow_nan=False) + "\n")
-        sys.stderr.flush()
-    except (OSError, ValueError):
+        stderr.write("[ug-routing] " + json.dumps(record, allow_nan=False) + "\n")
+        stderr.flush()
+    except (AttributeError, OSError, ValueError):
         # Diagnostics must not change the routing result, even with a broken stderr.
         pass
 

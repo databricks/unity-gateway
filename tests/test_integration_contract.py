@@ -12,11 +12,47 @@ import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tests.integration.utils import terminal
 from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
+
+
+@pytest.mark.parametrize(
+    ("kind", "agent", "args", "debug"),
+    [
+        (terminal.AgentTerminal, "claude", ["claude"], True),
+        (terminal.AgentTerminal, "claude", ["claude", "--", "--model", "sonnet"], True),
+        (terminal.AgentTerminal, "claude", [], False),
+        (terminal.ConfigureTerminal, "claude", ["configure"], False),
+        (terminal.AgentTerminal, "codex", ["codex"], False),
+    ],
+)
+def test_debug_args_only_reach_explicit_claude_launch(
+    tmp_path, monkeypatch, kind, agent, args, debug
+):
+    # Capture only the PTY boundary; command construction stays real and needs no agent binary.
+    launched = []
+
+    def spawn(command, cwd, env, dimensions):
+        launched.extend(command)
+        return SimpleNamespace(send=lambda data: None)
+
+    monkeypatch.setattr(terminal, "spawn_pty", spawn)
+    session = UserSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
+    command = [str(session.binary), *args]
+    kind(session, agent, command, "launch")
+    assert command == [str(session.binary), *args]
+    if debug:
+        assert launched[-2] == "--debug-file"
+        assert Path(launched[-1]).is_relative_to(session.home / ".claude/debug")
+        assert launched.count("--") == 1
+        assert launched[: len(command)] == command
+    else:
+        assert launched == command
 
 
 def _markers(nodes):
@@ -100,9 +136,14 @@ def test_native_routing_artifact_excludes_other_debug_content(tmp_path):
         "outcome": "timeout",
         "client_request_id": "attempt-1",
         "elapsed_ms": 20001,
+        "validate_selection_ms": 0.25,
+        "router_name": "stable",
     }
     (debug / "session.txt").write_text(
-        "private-debug-line\n[ug-routing] invalid-json\n"
+        "private-debug-line\n[ug-routing] invalid-json\n[ug-routing] "
+        + "[" * 1200
+        + "]" * 1200
+        + "\n"
         + "2026-11-13 [DEBUG] [ug-routing] "
         + json.dumps({**record, "prompt": "private-task", "authorization": "private-token"})
         + "\n[ug-routing] "
