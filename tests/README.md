@@ -17,7 +17,7 @@ These cases control filesystem and transport boundaries, not native Windows cont
 `test_codex_interaction_evidence.py` requires native delivery receipts matching the
 child path and thread ID, including code-mode calls, and successful command receipts
 matching the requested toggle. `test_integration_evidence.py` checks wrapped/blank-line
-approval dialogs and known PowerShell guards, rejecting interpolation, extra commands,
+approval dialogs and known POSIX/PowerShell guards, rejecting interpolation, extra commands,
 non-local execution, and incomplete dialogs. Launcher cases share POSIX/Windows setup
 across first-prompt and subagent-only modes, preserving provider arguments, controls,
 recipe metadata, saved configuration, and process cleanup.

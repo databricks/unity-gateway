@@ -91,6 +91,24 @@ def test_codex_windows_toggle_approval_accepts_only_the_known_guard(extra_comman
         assert codex_command_approval_pending(screen, expected)
 
 
+@pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])
+def test_codex_posix_toggle_approval_accepts_only_the_known_guard(extra_command):
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    guarded = (
+        'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && ' + command
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guarded}{extra_command}\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    if extra_command:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, (command, guarded))
+    else:
+        assert codex_command_approval_pending(screen, (command, guarded))
+
+
 class _Session:
     def __init__(self, home):
         self.home = home

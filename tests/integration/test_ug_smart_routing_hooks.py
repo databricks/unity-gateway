@@ -275,6 +275,11 @@ def _toggle_with_skill(
             "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
             '{ Write-Output "SMART_ROUTER_ENV_UNSET"; exit 2 }; ' + command,
         )
+    else:
+        commands += (
+            'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && '
+            + command,
+        )
 
     def toggled(screen):
         nonlocal approval_sent
