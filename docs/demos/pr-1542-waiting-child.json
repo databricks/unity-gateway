@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "pr": "https://github.com/databricks/unity-gateway/pull/1542",
+  "recorded_at": "2026-11-13T20:27:39Z",
+  "source_commit": "6ecb6f2b142ec0c52c93ee3910b0910800a860e2",
+  "source_tree": "388c5bb3b86bde7611eb2a344daf062ca6a2d28b",
+  "native_runtime": "2.1.316 (Claude Code)",
+  "native_runtime_sha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "media": {
+    "file": "pr-1542-waiting-child.mp4",
+    "sha256": "39475e9268dddd05706f3189af1733d02415afb11c8fe1ebcdef6e44f54dc98e",
+    "bytes": 109533,
+    "duration_seconds": 18.5,
+    "width": 1440,
+    "height": 960,
+    "frames_per_second": 10
+  },
+  "input": "Monitor the local deployment in a background Haiku agent.",
+  "controlled_inputs": "All model and Auto Mode reviewer responses came from recorded local fixtures. The native session had loopback networking only.",
+  "observed": {
+    "same_direct_child_verified": true,
+    "waiting_origin": "task-notification",
+    "waiting_state": "waiting",
+    "empty_waiting_payload_verified": true,
+    "parent_requests_before_report": 2,
+    "parent_requests_total": 3,
+    "child_requests_total": 5,
+    "background_commands": 2,
+    "final_report": "WATCHER_FINISHED_SUCCESSFULLY"
+  },
+  "native_warning": "Prompt dropped by a hook: Watch local deployment is still running in the background.",
+  "validation": "The unchanged retained native reproduction also passed its control, suppression-success and suppression-error scenarios on this source and runtime.",
+  "limits": "This demonstrates native notification suppression, background continuation and final-report delivery with controlled responses. It does not establish live instruction following, billing or provider compatibility."
+}
