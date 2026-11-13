@@ -397,7 +397,7 @@ jobs:
             "connect-timeout = 20"
             "max-time = 120"
           ) | Set-Content -Path (Join-Path $curlHome ".curlrc") -Encoding ascii
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
         env:
           CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
         with:
@@ -554,7 +554,7 @@ jobs:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
       - *windows-cli-download-retries
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
         env:
           CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
         with:
@@ -751,7 +751,7 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
         with:
           version: 1.17.0
       - name: Run the self-managed OpenCode journey against the managed workspace
@@ -815,7 +815,7 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
         with:
           version: 1.17.0
       - name: Run the managed cases against the managed e2e workspace
@@ -911,7 +911,7 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
         with:
           version: 1.17.0
       - name: Install ug and agent CLIs
@@ -980,7 +980,7 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
-      - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+      - uses: databricks/setup-cli@9625fdde9ba2607df0087e0d3ec7449198bf2180  # v1.23.0
         with:
           version: 1.17.0
       - name: Install the pinned ChatGPT desktop app
