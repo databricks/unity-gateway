@@ -79,6 +79,41 @@ def test_header_flag_appends_to_ug_headers(monkeypatch):
     assert os.environ["UG_HEADERS"] == "X-Env: 1\nX-Flag: 2"
 
 
+def test_agent_launch_drops_an_inherited_coding_agent(monkeypatch):
+    monkeypatch.setenv(
+        "UG_HEADERS",
+        "x-databricks-traffic-id: abc\ndatabricks-custom-coding-agent: claude-code\nX-Env: 1",
+    )
+    # `--help` still runs ug's own callback, the code under test, without launching the agent.
+    result = CliRunner().invoke(app, ["copilot", "--help"])
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "x-databricks-traffic-id: abc\nX-Env: 1"
+
+
+def test_agent_launch_keeps_its_own_coding_agent_header(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: codex")
+    result = CliRunner().invoke(
+        app, ["--header", "Databricks-Custom-Coding-Agent: claude-code", "claude", "--help"]
+    )
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "Databricks-Custom-Coding-Agent: claude-code"
+
+
+def test_helper_subcommand_keeps_the_inherited_coding_agent(monkeypatch):
+    # `ug mcp-proxy` runs under the agent its parent ug launched, so the value it inherits is right.
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: claude-code")
+    result = CliRunner().invoke(app, ["mcp-proxy", "--help"])
+    assert result.exit_code == 0, result.output
+    assert os.environ["UG_HEADERS"] == "Databricks-Custom-Coding-Agent: claude-code"
+
+
+def test_agent_launch_clears_ug_headers_left_with_only_a_coding_agent(monkeypatch):
+    monkeypatch.setenv("UG_HEADERS", "Databricks-Custom-Coding-Agent: claude-code")
+    result = CliRunner().invoke(app, ["codex", "--help"])
+    assert result.exit_code == 0, result.output
+    assert "UG_HEADERS" not in os.environ
+
+
 def test_bad_inherited_line_never_blocks_a_command(monkeypatch):
     monkeypatch.setenv("UG_HEADERS", "Authorization Bearer secret-tok\nX-Ok: 1")
     result = CliRunner().invoke(app, ["revert", "--help"])
