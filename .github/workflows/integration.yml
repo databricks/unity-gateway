@@ -383,7 +383,8 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
-      - name: Bound Windows Databricks CLI download retries
+      - &windows-cli-download-retries
+        name: Bound Windows Databricks CLI download retries
         if: ${{ runner.os == 'Windows' }}
         shell: pwsh
         run: |
@@ -552,7 +553,10 @@ jobs:
         with:
           version: 0.13.5
           enable-cache: ${{ inputs.ref == '' }}
+      - *windows-cli-download-retries
       - uses: databricks/setup-cli@bdb89f81c11a5bd647fd55b585b7c396ec68a25a  # v1.0.0
+        env:
+          CURL_HOME: ${{ runner.temp }}/databricks-cli-curl
         with:
           version: 1.17.0
       - name: Expose the Databricks CLI to native PowerShell
