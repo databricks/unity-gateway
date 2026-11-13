@@ -1440,7 +1440,9 @@ secret and sensitive-path checks. These shared scanner tests live in `test_secur
 alongside coverage for commit-scoped waivers, trusted-author exemptions, decoder detection,
 justfile warnings, symlink handling and multi-batch Semgrep report parsing. They use inert
 fixtures and never execute contributed code. Semgrep rules, `nosem` behavior and live
-advisory-service responses have no automated coverage.
+advisory-service responses have no automated coverage. Bash cases run only on non-Windows
+hosts, matching the Linux scanner; Python parser checks also run on Windows. Sensitive-path
+rejection checks the annotation as well as the exit status.
 
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
 job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
