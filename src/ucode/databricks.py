@@ -7,7 +7,6 @@ import configparser
 import functools
 import json
 import logging
-import logging.handlers
 import os
 import platform
 import queue
@@ -33,7 +32,6 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
     API_ANTHROPIC_MESSAGES,
@@ -162,10 +160,12 @@ def _get_debug_logger() -> logging.Logger | None:
     if _DEBUG_LOGGER is not None or not _debug_enabled():
         return _DEBUG_LOGGER
 
+    from logging.handlers import RotatingFileHandler
+
     log_path = APP_DIR / "debug.log"
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        handler = logging.handlers.RotatingFileHandler(
+        handler = RotatingFileHandler(
             log_path,
             maxBytes=1_000_000,
             backupCount=3,
@@ -4188,6 +4188,8 @@ def list_provider_service_models(
         return [], None
     except RuntimeError as exc:
         return [], str(exc)
+    from ucode.codex_config import catalog_slugs
+
     return catalog_slugs(catalog), None
 
 
