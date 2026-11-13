@@ -307,7 +307,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         """The body to forward; ``body`` unchanged unless a subclass rewrites it."""
         return body
 
-    def _added_headers(self) -> dict[str, str]:
+    def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        """Headers to send with this request; they replace the client's of the same name."""
         return {}
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
@@ -322,6 +323,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         body = self._request_body(self.rfile.read(length) if length else None)
         url = self.path.lstrip("/")
         token_header, extra_strip, route_label = self._forward_target(body)
+        added = self._added_headers(body)
+        added_names = {name.lower() for name in added}
         log_proxy_diagnostic(
             "request_start",
             request_id=diagnostic_id,
@@ -331,8 +334,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         )
 
         def request_headers(token: str) -> dict[str, str]:
-            headers = forwarded_request_headers(self, token, token_header, extra_strip=extra_strip)
-            headers.update(self._added_headers())
+            headers = forwarded_request_headers(
+                self, token, token_header, extra_strip=extra_strip | added_names
+            )
+            headers.update(added)
             if self.workspace_selector:
                 selector_names = {name.lower() for name in self.workspace_selector}
                 headers = {
@@ -549,7 +554,6 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
     request_headers_adder: Callable[[Message, bytes | None], Mapping[str, str]] | None = None
     discarded_paths: frozenset[str] = frozenset()
-    _request_added: dict[str, str] = {}
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -658,9 +662,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        self._request_added = {**self.added_headers, **self._request_headers(body)}
-        added = frozenset(name.lower() for name in self._request_added)
-        return self.token_header, _SESSION_CREDENTIAL_HEADERS | added, "gateway"
+        return self.token_header, _SESSION_CREDENTIAL_HEADERS, "gateway"
 
     def _request_headers(self, body: bytes | None) -> Mapping[str, str]:
         if self.request_headers_adder is None:
@@ -672,8 +674,17 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             log_proxy_diagnostic("request_headers_failed", error=type(exc).__name__)
             return {}
 
-    def _added_headers(self) -> dict[str, str]:
-        return dict(self._request_added)
+    def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        per_request = self._request_headers(body)
+        overridden = {name.lower() for name in per_request}
+        return {
+            **{
+                name: value
+                for name, value in self.added_headers.items()
+                if name.lower() not in overridden
+            },
+            **per_request,
+        }
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
