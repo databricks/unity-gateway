@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -3272,12 +3273,14 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
-    ):
+    try:
+        environment = effective_environment(agent=AGENT_CODEX, strict=True)
+    except (OSError, UnicodeError, ValueError):
         return
+    enabled = smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CODEX)
 
     from ucode.smart_routing.codex_routing import (
+        is_spawn_agent_tool,
         record_session_start,
         record_subagent_start,
         route_pre_tool_use,
@@ -3288,6 +3291,8 @@ def codex_router_hook_cmd(
     except ValueError:
         return
     if not isinstance(payload, dict):
+        return
+    if not enabled and event != "route-subagent":
         return
     if event == "session-start":
         record_session_start(payload)
@@ -3305,30 +3310,34 @@ def codex_router_hook_cmd(
                 )
             )
         elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Codex started "
-                        f"{record.get('model')}."
-                    }
-                )
+            logging.getLogger(__name__).debug(
+                "Smart Routing mismatch: router requested %s, but Codex started %s",
+                record.get("requested_model"),
+                record.get("model"),
             )
         # When matched is None the harness didn't report the subagent model —
         # the PreToolUse hook already injected the routed model, so emit nothing.
         return
-    if event != "route-subagent" or not host:
+    if event != "route-subagent":
         return
-    token = _router_hook_token(host, profile, use_pat)
-    if not token:
+    from ucode.smart_routing.codex_metadata import stamp_spawn
+
+    if not is_spawn_agent_tool(payload.get("tool_name")):
         return
-    output = route_pre_tool_use(
-        payload,
-        workspace=host,
-        token=token,
-        available_models=model or [],
-        audit_decision=True,
-    )
+    output = None
+    if enabled:
+        if not host:
+            return
+        token = _router_hook_token(host, profile, use_pat)
+        if token:
+            output = route_pre_tool_use(
+                payload,
+                workspace=host,
+                token=token,
+                available_models=model or [],
+                audit_decision=True,
+            )
+    output = stamp_spawn(payload, enabled=enabled, output=output)
     if output is not None:
         sys.stdout.write(json.dumps(output))
 
@@ -3443,14 +3452,10 @@ def claude_router_hook_cmd(
                 )
             )
         elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Claude Code started "
-                        f"{record.get('model')}."
-                    }
-                )
+            logging.getLogger(__name__).debug(
+                "Smart Routing mismatch: router requested %s, but Claude Code started %s",
+                record.get("requested_model"),
+                record.get("model"),
             )
         # When matched is None the harness didn't report the subagent model —
         # routing already injected the selected model, so emit nothing.
@@ -3536,9 +3541,18 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if enabled is None:
         return False
     try:
-        session_env_path()
+        controls = session_env_path()
     except RuntimeError:
         return False
+    from ucode.smart_routing.session_env import session_routing_enabled
+
+    try:
+        unchanged = session_routing_enabled(controls) == enabled
+    except (OSError, UnicodeError, ValueError):
+        unchanged = False
+    if unchanged:
+        print_success(f"Smart Router is already {'on' if enabled else 'off'} for this session")
+        return True
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)

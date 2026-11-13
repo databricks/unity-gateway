@@ -300,7 +300,7 @@ def resolve_spawn_route(
     )
     decision, reason = decision_fn(task)
     if decision is None:
-        logging.getLogger(__name__).warning(
+        logging.getLogger(__name__).debug(
             "Smart Router could not route subagent: %s", reason or "no routing decision"
         )
         return None

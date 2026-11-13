@@ -1,5 +1,31 @@
 # Integration tests
 
+`test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
+empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
+off toggle. Native transcripts and exclusive file receipts verify old-child identity
+and process continuity, new sibling/grandchild off markers, cross-branch delivery, and
+follow-up to the original child. Each transition requires exactly one successful CLI
+execution, all turns must finish without interruption, and root history must contain
+only submitted user prompts. Main metadata stays unchanged during the toggle turn
+and changes on the next user turn. Timing assertions require a single persisted
+root and match its thread ID, excluding native temporary threads used for titles.
+Windows uses UG's installed Python and native
+approval dialogs, preserving the sandbox.
+Toggle approvals accept only the requested command or its exact environment-variable guard
+on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
+remain rejected.
+The busy child's full assignment is an ordinary input file so the parent only passes
+its absolute path. Gate and value paths are absolute too, preserving access if a child
+changes directories. The follow-up asks for a new receipt and identifies the old answer.
+Assertions still require every native child, message delivery, and completed answer.
+
+Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
+`--smart-router-name` input records and forwards the recipe.
+These journeys do not intercept inference or establish exact HTTP metadata/usage-table
+ingestion. Silent controls-read failure, bounded retry, later-turn recovery, and
+evidence-parser boundaries have separate
+[component coverage](../README.md); live journeys do not induce file-access failures.
+
 Subagent calculation journeys use short native task names. Offline evidence checks
 still reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
@@ -1065,8 +1091,8 @@ the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
 for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
 is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
-a new CLI confirmation in native tool-result records, and a new assistant answer after each
-skill invocation.
+a new CLI confirmation in native tool-result records, and a completed answer to the
+following calculation. Skill toggles finish normally without interrupting the main turn.
 If Codex requests permission to read the controls, the driver approves only the exact
 public toggle command through the native dialog, leaving the sandbox intact.
 Offline cases in `../test_integration_evidence.py` cover wrong commands, non-local
@@ -1076,6 +1102,10 @@ failures leave controls unchanged. Permission failures request native approval;
 full-disk errors retain their own diagnostic. These checks do not simulate a native approval.
 Collapsed terminal output is allowed; the answer need not repeat the CLI's exact wording.
 Each following child still verifies whether a routing decision occurred.
+Codex launch routing is covered by the initial phase of
+`test_smart_router_skill_turns_codex_subagent_routing_back_on`, using the same legacy
+and preset cases as the former launch-only test. The separate off-before-first-child
+journey remains because it covers disabling before any child has been spawned.
 With orchestration enabled through legacy flags or a preset, both routed Codex children must show
 `[orchestrator on]` in their own subagent banner. Codex's managed default is opted out
 (`subagent_orch_v0_claude_only`) and has no skill-toggle case. Claude shows the selected
@@ -1322,6 +1352,7 @@ The native v2 assignment journey requires Codex 0.164.0 or newer. It uses a bund
 v2 catalog and a user-owned observer hook, without test-supplied native feature flags.
 It checks the exact multiline assignment at PreToolUse and the actual native recipient,
 and matches the router decision's SHA-256 digest and character count to that assignment.
+The observer retains the caller's task name; the child path includes `__sr_on` for attribution.
 The launch/off/on journeys match audit digests against native assignment text;
 CUJ4 matches them against the recorded real router requests. Full native plaintext,
 completed parent and child models, and preserved settings remain required. Select it with
