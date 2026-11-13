@@ -1421,9 +1421,11 @@ pagination and scan provenance; the request and comment tests cover mismatched i
 The workflow-expression tests verify runner/token selection. These component tests do not
 establish live event delivery, organization runner restrictions or ruleset enforcement.
 
-Organization rules must require the verifier from protected main and restrict runner access;
-PR workflow definitions alone cannot enforce those controls. Push, schedule, dispatch and
-merge-queue events retain the existing bypass policy.
+Organization rules must require `security-gate.yml` from protected main and restrict runner
+access; PR workflow definitions alone cannot enforce those controls.
+`test_security_gate_supports_required_workflow_events` checks its direct PR/merge-queue
+triggers alongside workflow reuse. Push, schedule, dispatch and merge-queue events retain
+the existing bypass policy.
 
 `test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
 and the diff flags that keep a PR's `.gitattributes` from hiding changes, and

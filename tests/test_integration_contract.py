@@ -1009,10 +1009,11 @@ def test_security_gate_explains_rate_limits(monkeypatch, status, authenticated):
     assert "1794602022" in str(result.value)
 
 
-def test_required_security_verifier_uses_main_policy():
-    workflow = _workflow("required-security.yml")
-    assert "  pull_request:" in workflow and "  merge_group:" in workflow
-    assert "uses: databricks/unity-gateway/.github/workflows/security-gate.yml@main" in workflow
+def test_security_gate_supports_required_workflow_events():
+    workflow = _workflow("security-gate.yml")
+    trigger = workflow.split("\non:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    assert "  workflow_call:\n" in trigger
+    assert "  pull_request:\n  merge_group:\n" in trigger
     assert "secrets:" not in workflow and "cancel-in-progress:" not in workflow
 
 
