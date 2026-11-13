@@ -366,7 +366,9 @@ def _validate_uc_names_or_location(
     set_count = sum((has_names, has_location, has_sources))
     if set_count > 1:
         errors.append(
-            f"{field}: set either {choices}, not " + ("several." if allow_sources else "both.")
+            f"{field}: set either names or unity_catalog_location (or sources), not more than one."
+            if allow_sources
+            else f"{field}: set either names or unity_catalog_location, not both."
         )
     elif set_count == 0 and not errors:
         errors.append(f"{field}: set either {choices}.")

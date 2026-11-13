@@ -3761,7 +3761,7 @@ class TestResolveManagedMcpServers:
         return fake_loc
 
     def test_sources_register_every_listed_schema(self, monkeypatch):
-        # The CUJ case: keep `system.ai` and add a team schema in one managed config.
+        # The common case: keep `system.ai` and add a team schema in one managed config.
         discovered: list[str] = []
         monkeypatch.setattr(
             mcp,
@@ -3822,8 +3822,8 @@ class TestResolveManagedMcpServers:
         assert len(warned) == 1 and all(entry in warned[0] for entry in bad)
 
     def test_sources_skip_a_schema_the_listing_api_reports_missing(self, monkeypatch):
-        # Drives the real discovery path: the listing API's HTTP 404 for one schema must be skipped
-        # while the other schema and the exact name register, and the token is used as given.
+        # Goes through the real location resolver: the listing API's HTTP 404 for one schema must be
+        # skipped while the other schema and the exact name register, and the token is used as given.
         warned: list[str] = []
         listed: list[tuple[str, str]] = []
         monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
@@ -3891,6 +3891,42 @@ class TestResolveManagedMcpServers:
                 {"sources": ["system.ai.*"]}, WS, None, ["claude"], token="tok"
             )
         assert not isinstance(excinfo.value, mcp.McpLocationNotFound)
+
+    def test_sources_fail_when_every_schema_is_missing(self, monkeypatch):
+        # With nothing left to register, a missing schema fails like a missing single location, so
+        # reconcile keeps the servers already registered instead of removing them all.
+        monkeypatch.setattr(mcp, "print_warning", lambda msg: None)
+        monkeypatch.setattr(
+            mcp, "list_mcp_services", lambda *a, **k: ([], "HTTP 404 Not Found: NOT_FOUND")
+        )
+        with pytest.raises(mcp.McpLocationNotFound):
+            mcp._resolve_managed_mcp_servers(
+                {"sources": ["main.typo.*", "main.gone.*"]}, WS, None, ["claude"], token="tok"
+            )
+
+    def test_sources_treat_a_later_page_rate_limit_as_rate_limited(self, monkeypatch):
+        # A later-page 429 keeps the rate-limit handling (skip this run quietly), not a generic error.
+        import ucode.databricks as db_mod
+
+        def fake_get(url, token, timeout=30, **kwargs):
+            if "page_token" in url:
+                return None, "HTTP 429 Too Many Requests"
+            return {"mcp_services": [{"name": "system.ai.github"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        with pytest.raises(mcp.McpServiceListingRateLimited):
+            mcp._resolve_managed_mcp_servers(
+                {"sources": ["system.ai.*"]}, WS, None, ["claude"], token="tok"
+            )
+
+    def test_names_warn_when_two_services_share_an_entry_name(self, monkeypatch):
+        warned: list[str] = []
+        monkeypatch.setattr(mcp, "print_warning", lambda msg: warned.append(msg))
+        out = mcp._resolve_managed_mcp_servers(
+            {"names": ["main.a-b.c", "main.a.b-c"]}, WS, None, ["claude"]
+        )
+        assert [s["url"] for s in out] == [mcp.build_mcp_service_url(WS, "main.a-b.c")]
+        assert len(warned) == 1 and "main.a.b-c" in warned[0]
 
     def test_sources_warn_when_two_services_share_an_entry_name(self, monkeypatch):
         warned: list[str] = []

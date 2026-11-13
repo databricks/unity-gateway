@@ -24,6 +24,7 @@ from ucode.databricks import (
     _MCP_SERVICES_WALK_DEADLINE_SECONDS,
     _MCP_SERVICES_WALK_TIMEOUT_REASON,
     AIGW_MCP_SERVICES_SEGMENT,
+    INCOMPLETE_LISTING_PREFIX,
     AuthTokenError,
     PermissionDeniedError,
     apply_pat_environment,
@@ -1061,9 +1062,7 @@ def _resolve_managed_mcp_servers(
     if isinstance(location, str) and location:
         return _discover_managed_location(location, workspace, profile, clients, token=token)
     names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
-    return _named_mcp_server_entries(
-        _drop_malformed_mcp_names(names, "name(s)"), workspace, clients
-    )
+    return _named_mcp_server_entries(_drop_malformed_mcp_names(names), workspace, clients)
 
 
 def _resolve_managed_mcp_sources(
@@ -1097,6 +1096,7 @@ def _resolve_managed_mcp_sources(
     if locations and token is None:
         token = get_databricks_token(workspace, profile)
     working: list[dict] = []
+    missing: list[McpLocationNotFound] = []
     for location in locations:
         try:
             working.extend(
@@ -1105,11 +1105,15 @@ def _resolve_managed_mcp_sources(
                 )
             )
         except McpLocationNotFound as exc:
+            missing.append(exc)
             print_warning(f"Skipping managed mcp_servers source `{location}.*`: {exc}")
+    # When nothing is left, treat it like a missing single location: fail, so reconcile keeps the
+    # registered servers rather than unregistering all of them.
+    if missing and len(missing) == len(locations) and not names:
+        raise missing[0]
     working.extend(_named_mcp_server_entries(names, workspace, clients))
     # A name can also be covered by a schema pattern; register it once. Entry names replace dots
-    # with dashes, so two different services (`main.a-b.c`, `main.a.b-c`) can map to one name;
-    # keep the first and say so rather than dropping the second silently.
+    # with dashes, so two different services (`main.a-b.c`, `main.a.b-c`) can map to one name.
     deduped: list[dict] = []
     url_by_name: dict[str, object] = {}
     for server in working:
@@ -1148,14 +1152,14 @@ def _discover_managed_location(
     return _resolve_location_mcp_servers(workspace, profile, clients, location, [], **kwargs)
 
 
-def _drop_malformed_mcp_names(names: list[str], label: str) -> list[str]:
+def _drop_malformed_mcp_names(names: list[str]) -> list[str]:
     """Drop entries that aren't full ``<catalog>.<schema>.<service>`` names, with one warning."""
     malformed = sorted(
         n for n in names if n.count(".") != 2 or not all(part for part in n.split("."))
     )
     if malformed:
         print_warning(
-            f"Skipping managed mcp_servers {label} that aren't full "
+            "Skipping managed mcp_servers name(s) that aren't full "
             f"`<catalog>.<schema>.<service>` names: {', '.join(malformed)}."
         )
     return [n for n in names if n not in set(malformed)]
@@ -2106,6 +2110,9 @@ def _resolve_location_mcp_servers(
     skip gracefully, :class:`McpLocationNotFound` (a ``RuntimeError``) for an invalid location
     (HTTP 404 from the listing API), and plain ``RuntimeError`` for any other listing failure.
 
+    ``strict_listing`` fails on any incomplete listing (see ``list_mcp_services(strict=True)``)
+    instead of returning the pages that succeeded.
+
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name
     like ``github``); names not found at ``location`` are skipped with a
@@ -2128,7 +2135,7 @@ def _resolve_location_mcp_servers(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )
-    if reason and reason.startswith("HTTP 429"):
+    if reason and reason.removeprefix(INCOMPLETE_LISTING_PREFIX).startswith("HTTP 429"):
         # A transient rate-limit must not break `ug configure` or unregister already-configured
         # servers. Raise a distinct type so the managed path skips MCP setup this run with an info
         # note (leaving existing servers untouched) and retries on the next configure.

@@ -2811,6 +2811,11 @@ def _mcp_service_full_name(service: dict, required_prefix: str | None) -> str | 
     return name
 
 
+# Prefixes the reason for a strict MCP listing that failed after its first page, so callers never
+# mistake a later page's HTTP 404 for a missing schema.
+INCOMPLETE_LISTING_PREFIX = "incomplete listing: "
+
+
 def list_mcp_services(
     workspace: str,
     token: str,
@@ -2872,7 +2877,7 @@ def list_mcp_services(
         if strict and not isinstance(payload, dict):
             failure = reason or "unexpected MCP listing response"
             if page_token:
-                return sorted(seen_names), f"incomplete listing: {failure}"
+                return sorted(seen_names), f"{INCOMPLETE_LISTING_PREFIX}{failure}"
             return sorted(seen_names), failure
         if payload is None:
             # An interrupted metastore listing is incomplete, even if earlier pages
@@ -2881,8 +2886,14 @@ def list_mcp_services(
                 return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
+        services = data.get("mcp_services") or []
+        if strict and not isinstance(services, list):
+            failure = "unexpected MCP listing response"
+            return sorted(
+                seen_names
+            ), f"{INCOMPLETE_LISTING_PREFIX}{failure}" if page_token else failure
         new_names: list[str] = []
-        for service in data.get("mcp_services") or []:
+        for service in services if isinstance(services, list) else []:
             if not isinstance(service, dict):
                 continue
             full_name = _mcp_service_full_name(service, expected_prefix)
@@ -2901,12 +2912,20 @@ def list_mcp_services(
         if not page_token:
             break
         if page_token in seen_tokens:
-            if parent is None or strict:
+            if strict:
+                return sorted(
+                    seen_names
+                ), f"{INCOMPLETE_LISTING_PREFIX}MCP listing repeated a page token"
+            if parent is None:
                 return sorted(seen_names), "MCP listing repeated a page token"
             break
         seen_tokens.add(page_token)
     else:
-        if parent is None or strict:
+        if strict:
+            return sorted(
+                seen_names
+            ), f"{INCOMPLETE_LISTING_PREFIX}MCP listing exceeded {max_pages} pages"
+        if parent is None:
             return sorted(seen_names), f"MCP listing exceeded {max_pages} pages"
     return sorted(seen_names), None
 

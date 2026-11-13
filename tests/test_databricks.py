@@ -1993,6 +1993,7 @@ class TestListMcpServices:
             (None, "HTTP 500 Internal Server Error"),
             (None, None),
             (["not", "a", "dict"], None),
+            ({"mcp_services": {"name": "main.s.b"}}, None),
             # The same token again: the listing would loop rather than finish.
             ({"mcp_services": [], "next_page_token": "p2"}, None),
         ],
@@ -2002,9 +2003,9 @@ class TestListMcpServices:
         lenient = db_mod.list_mcp_services(WS, "token", parent="main.s")
         strict = db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True)
         assert lenient == (["main.s.a"], None)
-        assert strict[0] == ["main.s.a"] and strict[1]
-        # A later-page failure must never read as a missing schema.
-        assert not strict[1].startswith("HTTP 404")
+        # A later-page failure is marked incomplete, so it never reads as a missing schema.
+        assert strict[0] == ["main.s.a"]
+        assert strict[1] and strict[1].startswith(db_mod.INCOMPLETE_LISTING_PREFIX)
 
     def test_strict_reports_the_page_limit(self, monkeypatch):
         tokens = iter(range(10))
@@ -2016,7 +2017,18 @@ class TestListMcpServices:
         _names, reason = db_mod.list_mcp_services(
             WS, "token", parent="main.s", max_pages=3, strict=True
         )
-        assert reason == "MCP listing exceeded 3 pages"
+        assert reason == f"{db_mod.INCOMPLETE_LISTING_PREFIX}MCP listing exceeded 3 pages"
+
+    def test_strict_rejects_a_malformed_first_page(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: ({"mcp_services": "main.s.a"}, None),
+        )
+        assert db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True) == (
+            [],
+            "unexpected MCP listing response",
+        )
 
     def test_http_404_reason_surfaces_for_invalid_parent(self, monkeypatch):
         monkeypatch.setattr(

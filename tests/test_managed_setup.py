@@ -708,7 +708,7 @@ class TestValidate:
         errors = validate_manifest(
             {"mcp_servers": {"sources": ["system.ai.*"], "unity_catalog_location": "a.b"}}
         )
-        assert any("not several" in e for e in errors)
+        assert any("not more than one" in e for e in errors)
 
     def test_skills_reject_sources(self):
         errors = validate_manifest({"skills": {"sources": ["system.ai.*"]}})
