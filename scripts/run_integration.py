@@ -525,6 +525,11 @@ def arguments(
         help="Existing OpenAI MPS selected in the configure CUJ.",
     )
     parser.add_argument(
+        "--codex-relayed-provider",
+        default="main.ucode.ci_e2e_openai_relay_mps",
+        help="Existing relayed (ChatGPT-subscription relay) OpenAI MPS for the Codex relay CUJs.",
+    )
+    parser.add_argument(
         "--codex-custom-provider",
         default="main.ucode.ci_custom_azure_openai_mps",
         help="Existing custom MPS serving Azure OpenAI Responses for the Codex file task.",
@@ -758,6 +763,7 @@ def main() -> int:
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     second_bearer = os.environ.get("DATABRICKS_SECOND_BEARER", "").strip()
     oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+    codex_access_token = os.environ.get("CODEX_ACCESS_TOKEN", "").strip()
     client_secrets = (os.environ.get("DATABRICKS_CLIENT_SECRET", ""),)
 
     def redact(value: str) -> str:
@@ -767,6 +773,7 @@ def main() -> int:
                 bearer,
                 second_bearer,
                 oauth_token,
+                codex_access_token,
                 *client_secrets,
             ),
         )
@@ -832,6 +839,7 @@ def main() -> int:
             "antigravity_provider": args.antigravity_provider,
             "antigravity_provider_models": args.antigravity_provider_models,
             "codex_provider": args.codex_provider,
+            "codex_relayed_provider": args.codex_relayed_provider,
             "codex_custom_provider": args.codex_custom_provider,
             "codex_provider_model": args.codex_provider_model,
             "codex_custom_provider_model": args.codex_custom_provider_model,
@@ -1160,6 +1168,8 @@ def main() -> int:
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER": args.antigravity_provider,
                 "UG_INTEGRATION_ANTIGRAVITY_PROVIDER_MODELS": args.antigravity_provider_models,
                 "UG_INTEGRATION_CODEX_PROVIDER": args.codex_provider,
+                "UG_INTEGRATION_CODEX_RELAYED_PROVIDER": args.codex_relayed_provider,
+                "UG_INTEGRATION_CODEX_ACCESS_TOKEN": codex_access_token,
                 "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER": args.codex_custom_provider,
                 "UG_INTEGRATION_CODEX_PROVIDER_MODEL": args.codex_provider_model,
                 "UG_INTEGRATION_CODEX_CUSTOM_PROVIDER_MODEL": args.codex_custom_provider_model,
