@@ -1608,6 +1608,19 @@ class TestResumedSessionModel:
 
         assert model is not None and model.ref == GPT_REF
 
+    def test_a_session_that_shut_down_resumes_on_its_last_ref(self, config_dir):
+        _save_session(
+            config_dir,
+            SESSION_ID,
+            _started(f"dbx-anthropic/{SONNET}"),
+            _changed(f"dbx-responses/{GPT}"),
+            {"type": "session.shutdown", "data": {"modelMetrics": {}, "currentModel": GPT}},
+        )
+
+        model = copilot.resumed_session_model(["--continue"], self.MODELS)
+
+        assert model is not None and model.ref == GPT_REF
+
     def test_continue_reads_the_newest_session(self, config_dir):
         _save_session(config_dir, "older", _started(f"dbx-responses/{GPT}"), mtime=1_000)
         _save_session(config_dir, SESSION_ID, _started(f"dbx-anthropic/{SONNET}"), mtime=2_000)

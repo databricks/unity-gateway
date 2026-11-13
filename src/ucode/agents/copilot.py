@@ -1175,6 +1175,7 @@ def _session_catalog(
 
 _RESUME_FLAGS = ("--resume", "-r", "--session-id")
 _SESSION_MODEL_KEYS = ("selectedModel", "newModel", "currentModel")
+_REGISTRY_PROVIDERS = frozenset((*PROVIDER_NAMES.values(), *LEGACY_PROVIDER_NAMES))
 
 
 def _resumed_session_dir(tool_args: list[str]) -> Path | None:
@@ -1231,8 +1232,10 @@ def resumed_session_model(tool_args: list[str], catalog: list[CopilotModel]) -> 
                 if not isinstance(data, dict):
                     continue
                 for key in _SESSION_MODEL_KEYS:
-                    if isinstance(data.get(key), str):
-                        last = data[key]
+                    value = data.get(key)
+                    # `session.shutdown` records a bare id; only a registry ref says which names.
+                    if isinstance(value, str) and value.partition("/")[0] in _REGISTRY_PROVIDERS:
+                        last = value
     except OSError:
         return None
     if not last or last.partition("/")[0] not in LEGACY_PROVIDER_NAMES:
