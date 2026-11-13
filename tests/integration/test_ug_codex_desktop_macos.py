@@ -54,6 +54,18 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
             assert time.monotonic() < deadline, "The app never recorded the completed turn"
             time.sleep(1)
 
+        sessions = agent_sessions(session, "codex").values()
+        origins = [
+            (record["payload"]["originator"], record["payload"]["model_provider"])
+            for records in sessions
+            for record in records
+            if record.get("type") == "session_meta"
+        ]
+        assert origins == [("Codex Desktop", "Databricks")], origins
+        answers = [answer for records in sessions for answer in assistant_answers("codex", records)]
+        assert [answer.strip() for answer in answers] == [marker], answers
+        assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)
+
         missing_click = session.run(
             "click",
             str(app.proc.pid),
@@ -79,15 +91,3 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         assert tree_rows, lines
         assert all(len(row.split("\t")) == 4 for row in tree_rows), tree_rows
         assert any(row.split("\t")[0].startswith("AX") for row in tree_rows), tree_rows
-
-    sessions = agent_sessions(session, "codex").values()
-    origins = [
-        (record["payload"]["originator"], record["payload"]["model_provider"])
-        for records in sessions
-        for record in records
-        if record.get("type") == "session_meta"
-    ]
-    assert origins == [("Codex Desktop", "Databricks")], origins
-    answers = [answer for records in sessions for answer in assistant_answers("codex", records)]
-    assert [answer.strip() for answer in answers] == [marker], answers
-    assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)

@@ -6,7 +6,7 @@ func attribute(_ element: AXUIElement, _ name: String) -> String {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success, let value else { return "" }
     let text = (value as? String) ?? String(describing: value)
-    return text.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+    return text.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
 }
 
 func elements(_ element: AXUIElement, depth: Int = 0) -> [AXUIElement] {
