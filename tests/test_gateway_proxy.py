@@ -977,6 +977,20 @@ class TestClaudeLanguageRequestBody:
         )
         assert forwarded == body
 
+    def test_json_recursion_error_passes_through_byte_for_byte(self):
+        depth = 500_000
+        body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
+        with pytest.raises(RecursionError):
+            json.loads(body)
+        forwarded = _language_request_body(
+            "/ai-gateway/anthropic/v1/messages",
+            body,
+            _language_request_headers(
+                language="English", agent_id="child", request_class="subagent"
+            ),
+        )
+        assert forwarded == body
+
     @pytest.mark.parametrize(
         "headers",
         [

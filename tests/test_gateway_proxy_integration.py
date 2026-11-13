@@ -716,30 +716,3 @@ class TestClaudeLanguageProxyEndToEnd:
         assert bad_secret.status_code == 401
         assert bad_path.status_code == 404
         assert gw.requests == []
-
-    def test_json_recursion_error_passes_through_byte_for_byte(self, make_gateway):
-        depth = 500_000
-        body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
-        with pytest.raises(RecursionError):
-            json.loads(body)
-        path = "/ai-gateway/anthropic/v1/messages"
-        headers = {
-            "Authorization": "Bearer caller-token",
-            "X-UG-Language-Session": _LANGUAGE_SESSION_SECRET,
-            "X-UG-Response-Language": "English",
-            "X-Claude-Code-Agent-Id": "child",
-            "X-Claude-Code-Request-Class": "subagent",
-        }
-        gw = make_gateway()
-        with _running_language_proxy(gw, _counting_token("gateway-token")) as proxy_url:
-            response = httpx.post(proxy_url + path, headers=headers, content=body, timeout=10)
-
-        assert response.status_code == 200
-        assert response.content == b'{"ok":true}'
-        assert len(gw.requests) == 1
-        forwarded = gw.requests[0]
-        assert forwarded.path == path
-        assert forwarded.body == body
-        assert forwarded.header("Authorization") == "Bearer gateway-token"
-        assert forwarded.header("X-UG-Language-Session") is None
-        assert forwarded.header("X-UG-Response-Language") is None

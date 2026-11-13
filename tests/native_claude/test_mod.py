@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
@@ -85,6 +87,7 @@ export function register(on) {
     return next(e);
   });
   on('command.run', {command: 'language-probe'}, async ($) => ({text: JSON.stringify({
+    language: (await $.settings.read()).language,
     hints: await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS'),
     base: await $.env.get('ANTHROPIC_BASE_URL'),
     headers: await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
@@ -97,9 +100,12 @@ export function register(on) {
     (config_dir / "settings.json").write_text(
         json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}})
     )
+    project_settings = tmp_path / ".claude/settings.json"
+    project_settings.parent.mkdir()
+    project_settings.write_text(json.dumps({"language": "English"}))
     upstream = "http://127.0.0.1:1"
     proxy = "http://127.0.0.1:9/ai-gateway/anthropic"
-    result = subprocess.run(
+    proc = subprocess.Popen(
         [
             native_binary,
             "-p",
@@ -112,8 +118,6 @@ export function register(on) {
             str(tmp_path / "debug.log"),
             "--setting-sources",
             sources,
-            "--settings",
-            '{"language":"English"}',
             "--plugin-dir",
             str(plugin),
         ],
@@ -136,31 +140,69 @@ export function register(on) {
                 {"url": proxy, "upstream": upstream, "secret": "fixture-session"}
             ),
         },
-        input=json.dumps(
-            {"type": "user", "message": {"role": "user", "content": "/language-probe"}}
-        )
-        + "\n",
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=30,
     )
-    assert result.returncode == 0, result.stdout + result.stderr
-    event = next(
-        event
-        for line in result.stdout.splitlines()
-        if (event := json.loads(line)).get("type") == "result"
-    )
-    assert event["num_turns"] == 0 and event["usage"]["output_tokens"] == 0
-    observed = json.loads(event["result"].partition(": ")[2])
-    if sources == "user":
-        assert observed["hints"] == "0"
-        assert observed["base"] == upstream
-        assert "x-ug-" not in observed["headers"].lower()
-    else:
-        assert observed["hints"] == "1"
-        assert observed["base"] == proxy
-        assert "X-UG-Response-Language: English" in observed["headers"]
-        assert "X-UG-Language-Session: fixture-session" in observed["headers"]
+    lines = queue.Queue()
+    reader = threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout], daemon=True)
+    reader.start()
+
+    def send(prompt, *, expect_error=False):
+        proc.stdin.write(
+            json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n"
+        )
+        proc.stdin.flush()
+        deadline = time.monotonic() + 10
+        while True:
+            event = json.loads(lines.get(timeout=max(0, deadline - time.monotonic())))
+            if event.get("type") == "result":
+                assert bool(event.get("is_error")) == expect_error, event
+                return event
+
+    def probe():
+        event = send("/language-probe")
+        assert event["num_turns"] == 0 and event["usage"]["output_tokens"] == 0
+        return json.loads(event["result"].partition(": ")[2])
+
+    try:
+        observed = probe()
+        if sources == "user":
+            assert observed["hints"] == "0"
+            assert observed["base"] == upstream
+            assert "x-ug-" not in observed["headers"].lower()
+        else:
+            assert observed["hints"] == "1"
+            assert observed["base"] == proxy
+            assert "X-UG-Response-Language: English" in observed["headers"]
+            assert "X-UG-Language-Session: fixture-session" in observed["headers"]
+            for language in ("French", None):
+                project_settings.write_text(json.dumps({"language": language} if language else {}))
+                deadline = time.monotonic() + 5
+                while probe().get("language") != language:
+                    assert time.monotonic() < deadline, "Native settings reload did not apply"
+                    time.sleep(0.05)
+                # A real model turn runs turn.step; the isolated endpoint intentionally refuses it.
+                send("Reply with OK.", expect_error=True)
+                observed = probe()
+                assert observed["base"] == proxy
+                assert "X-UG-Language-Session: fixture-session" in observed["headers"]
+                if language:
+                    assert "X-UG-Response-Language: French" in observed["headers"]
+                    assert "X-UG-Response-Language: English" not in observed["headers"]
+                else:
+                    assert "X-UG-Response-Language:" not in observed["headers"]
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        reader.join(timeout=5)
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            stream.close()
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):
@@ -343,7 +385,6 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
     Expected: approval preserves the reviewed input and uses the distinct routed child model
     without fallback classification; a flagged call is denied before a child starts.
     """
-    tool_use_id = "toolu_auto_mode_probe"
     original = {
         "description": "Compute arithmetic",
         "prompt": "Return 10. Use no tools.",
@@ -371,6 +412,7 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             self.server.requests.append(request)
+            request_class = self.headers.get("X-Claude-Code-Request-Class")
             if "count_tokens" in self.path:
                 self.send_json({"input_tokens": 100})
                 return
@@ -392,19 +434,28 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
 
             count = self.server.message_count
             self.server.message_count += 1
-            tool_call = count == 0
+            tool_name = (
+                "Agent"
+                if count == 0
+                else "SubagentHandback"
+                if request_class == "subagent"
+                else None
+            )
+            tool_input = original if tool_name == "Agent" else {"message": "Probe finished."}
+            tool_use_id = f"toolu_fixture_{count}"
+            tool_call = tool_name is not None
             answer = "Probe finished."
             if request["model"] == "claude-sonnet-4-6":
                 answer = false_claim
                 if not tool_call:
                     self.server.parent_answers += 1
             block = (
-                {"type": "tool_use", "id": tool_use_id, "name": "Agent", "input": {}}
+                {"type": "tool_use", "id": tool_use_id, "name": tool_name, "input": {}}
                 if tool_call
                 else {"type": "text", "text": ""}
             )
             delta = (
-                {"type": "input_json_delta", "partial_json": json.dumps(original)}
+                {"type": "input_json_delta", "partial_json": json.dumps(tool_input)}
                 if tool_call
                 else {
                     "type": "text_delta",
@@ -460,7 +511,7 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
                 ),
                 ("message_stop", {"type": "message_stop"}),
             ]
-            if tool_call:
+            if tool_name == "Agent":
                 for _, event in events:
                     if event["type"].startswith("content_block_"):
                         event["index"] = 1
@@ -516,6 +567,15 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root.mkdir()
             plugin = root / "plugin"
             _write_routed_claude_plugin(plugin)
+            header_root = root / "header-mod"
+            for path, content in _header_mod_files(header_root).items():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "settings.json").write_text(
+                json.dumps({"language": "English"}), encoding="utf-8"
+            )
             options = _claude_mod_launch_options({})
             options["routeCommand"] = [
                 sys.executable,
@@ -545,6 +605,8 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     json.dumps(settings),
                     "--plugin-dir",
                     str(plugin),
+                    "--plugin-dir",
+                    str(header_root / "ug-headers"),
                     "--tools",
                     "Agent",
                     "--max-turns",
@@ -560,12 +622,15 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 env={
                     "PATH": os.environ["PATH"],
                     "HOME": str(root),
-                    "CLAUDE_CONFIG_DIR": str(root / "config"),
-                    "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{proxy.server_port}/ai-gateway/anthropic",
-                    "ANTHROPIC_CUSTOM_HEADERS": (
-                        "X-UG-Language-Session: language-session\nX-UG-Response-Language: English"
+                    "CLAUDE_CONFIG_DIR": str(config_dir),
+                    "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{server.server_port}",
+                    "UG_CLAUDE_LANGUAGE_PROXY": json.dumps(
+                        {
+                            "url": f"http://127.0.0.1:{proxy.server_port}/ai-gateway/anthropic",
+                            "upstream": f"http://127.0.0.1:{server.server_port}",
+                            "secret": "language-session",
+                        }
                     ),
-                    "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
                     "ANTHROPIC_API_KEY": "fixture-only",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                     "DISABLE_AUTOUPDATER": "1",

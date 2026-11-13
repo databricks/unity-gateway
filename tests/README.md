@@ -336,14 +336,20 @@ checked by hand on Claude 2.1.304. The header-mod tests also cover configured la
 changes and clearing the setting, per-turn settings reloads, provider switches, disabled
 identity headers, unrelated headers, and launch-local transport cleanup. The mod uses
 Claude's effective environment; the launcher does not scan settings excluded by native
-source selection or apply its own precedence rules.
+source selection or apply its own precedence rules. The native settings-source test edits
+an active session's project settings, waits for the native reader to observe the change,
+and checks the next turn updates or clears the language header. Auto-mode request captures
+load the installed header mod rather than supplying private headers directly. Full-summary
+request bodies are covered by the proxy matrix; the headless native fixture does not emit
+the terminal's auxiliary progress-summary requests.
 Malformed optional transport settings and startup failures preserve the normal launch;
 setup and agent-exit failures restore the environment and release acquired resources.
 `test_gateway_proxy.py` checks child and progress-summary language propagation,
 task-language fallback without a setting, translation guidance, malformed-input and
-token-count passthrough, and unchanged parent and classifier payloads. The socket tests in
-`test_gateway_proxy_integration.py` retain session authentication, private-header stripping,
-and exact-byte forwarding after decoder recursion errors.
+token-count passthrough, exact-byte preservation after decoder recursion errors, and
+unchanged parent and classifier payloads. The socket tests in
+`test_gateway_proxy_integration.py` retain forwarding, session authentication, and
+private-header stripping.
 Interactive proxy diagnostics and the language proxy's refresh failures go to
 `~/.ucode/logs/gateway-proxy.log` without writing into the agent's terminal.
 Language-proxy refresh errors retain the sign-in hint but omit exception contents from
