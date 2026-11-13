@@ -3026,8 +3026,9 @@ class TestGetDatabricksToken:
             'print(json.dumps({"access_token": token, "token_type": "Bearer"}))',
         )
         monkeypatch.setattr("os.environ", env)
-        token = get_databricks_token(WS)
+        token = get_databricks_token(WS, "explicit-profile")
         assert token == "refreshed-token"
+        assert call_count.read_text() == "3"
 
     @pytest.mark.parametrize(
         "auth_error",
@@ -3130,6 +3131,182 @@ class TestGetDatabricksToken:
         token = get_databricks_token(WS)
         assert token == "won-the-lock"
 
+    @pytest.mark.parametrize("stream", ["stdout", "stderr"])
+    @pytest.mark.parametrize("diagnostic", ["invalid_grant", "refresh token is invalid"])
+    def test_rotation_error_recovers_without_login(self, monkeypatch, stream, diagnostic):
+        calls = []
+        sleeps = []
+
+        def fake_run(command, **_kwargs):
+            assert command[1:3] == ["auth", "token"]
+            calls.append(command)
+            if len(calls) == 1:
+                output = {"stdout": "", "stderr": "", stream: diagnostic}
+                return subprocess.CompletedProcess(command, 1, **output)
+            return subprocess.CompletedProcess(command, 0, '{"access_token": "recovered"}', "")
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, _high: low)
+
+        assert get_databricks_token(WS, "p") == "recovered"
+        assert len(calls) == 2
+        assert calls[0] == calls[1]
+        assert sleeps == [db_mod._TOKEN_ROTATION_RACE_RETRY_DELAYS_S[0]]
+
+    def test_rotation_and_lock_retries_share_the_attempt_cap(self, monkeypatch):
+        calls = []
+        delays = []
+        errors = iter(["cache update", "invalid_grant", "invalid_grant", "cache update"])
+
+        def fake_run(command, **_kwargs):
+            if command[-1] == "--help":
+                return subprocess.CompletedProcess(command, 0, "--timeout", "")
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 1, "", next(errors))
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod.time, "sleep", delays.append)
+        monkeypatch.setattr(db_mod.random, "uniform", lambda low, _high: low)
+
+        with pytest.raises(RuntimeError, match="Retry the request") as error:
+            get_databricks_token(WS, "p")
+        assert "stale or invalid" not in str(error.value)
+        assert len(calls) == db_mod._TOKEN_FETCH_MAX_ATTEMPTS == 4
+        assert delays == [0.05, 0.2, 0.4]
+
+    def test_rotation_error_followed_by_timeout_is_not_memoized(self, monkeypatch):
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            if command[-1] == "--help":
+                return subprocess.CompletedProcess(command, 0, "--timeout", "")
+            assert command[1:3] == ["auth", "token"]
+            calls.append(command)
+            if len(calls) == 1:
+                return subprocess.CompletedProcess(command, 1, "", "invalid_grant")
+            if len(calls) == 2:
+                raise subprocess.TimeoutExpired(command, 15)
+            return subprocess.CompletedProcess(command, 0, '{"access_token": "recovered"}', "")
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod.time, "sleep", lambda _s: None)
+
+        with pytest.raises(RuntimeError, match="Retry the request") as error:
+            get_databricks_token(WS, "p")
+        assert "stale or invalid" not in str(error.value)
+        assert get_databricks_token(WS, "p") == "recovered"
+        assert len(calls) == 3
+
+    def test_force_refresh_does_not_fall_back_to_a_rejected_cached_token(self, monkeypatch):
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            if "--force-refresh" in command:
+                return subprocess.CompletedProcess(command, 1, "", "invalid_grant")
+            if command[-1] == "--help":
+                return subprocess.CompletedProcess(command, 0, "--timeout", "")
+            return subprocess.CompletedProcess(
+                command, 0, '{"access_token": "cached", "expires_in": 3600}', ""
+            )
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "run", fake_run)
+
+        assert get_databricks_token(WS, "p") == "cached"
+        with pytest.raises(RuntimeError, match="stale or invalid"):
+            get_databricks_token(WS, "p", force_refresh=True)
+        assert sum("--force-refresh" in call for call in calls) == 1
+        assert sum(call[1:3] == ["auth", "token"] for call in calls) == 2
+        assert get_databricks_token(WS, "p") == "cached"
+
+    @pytest.mark.parametrize("winner_role", ["helper", "hook"])
+    def test_concurrent_hook_and_helper_recover_after_rotating_token(self, tmp_path, winner_role):
+        """Two processes may read the same old refresh token before either writes the winner."""
+        cache = tmp_path / "generation"
+        cache.write_text("0")
+        winner = tmp_path / "winner"
+        _write_fake_executable(
+            tmp_path,
+            "databricks",
+            "import time\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            "    print('Databricks CLI v99.0.0'); sys.exit(0)\n"
+            "if sys.argv[1:] == ['auth', 'login', '--help']:\n"
+            "    print('--timeout'); sys.exit(0)\n"
+            "if sys.argv[1:3] != ['auth', 'token']:\n"
+            "    sys.exit(2)\n"
+            f"root = Path({str(tmp_path)!r})\n"
+            f"generation = Path({str(cache)!r})\n"
+            "(root / f'call-{os.getpid()}').write_text(json.dumps(sys.argv[1:]))\n"
+            "if generation.read_text() == '0':\n"
+            "    (root / f'arrived-{os.getpid()}').touch()\n"
+            "    deadline = time.monotonic() + 10\n"
+            "    while len(list(root.glob('arrived-*'))) < 2:\n"
+            "        if time.monotonic() >= deadline: sys.exit(3)\n"
+            "        time.sleep(0.01)\n"
+            f"    if os.environ['REPRO_ROLE'] != {winner_role!r}:\n"
+            "        print('invalid_grant: refresh token is invalid', file=sys.stderr)\n"
+            "        sys.exit(1)\n"
+            f"    Path({str(winner)!r}).open('x').close()\n"
+            "    time.sleep(0.25)\n"
+            "    generation.write_text('1')\n"
+            "print(json.dumps({'access_token': 'synthetic', 'expires_in': 3600}))\n",
+        )
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(("DATABRICKS_", "UCODE_", "UG_"))
+            and key not in {"ENABLE_CUSTOM_OAUTH_FROM_CLI", "SMART_ROUTER_CONFIG_VERSION"}
+        }
+        env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path), PATH=str(tmp_path))
+        env.setdefault("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        env["OAUTH_TOKEN"] = "synthetic-opaque"
+        helper = [sys.executable, "-m", "ucode.cli", "auth-token", "--host", WS, "--profile", "p"]
+        hook = [
+            sys.executable,
+            "-c",
+            "import sys; from ucode.cli import _router_hook_token; "
+            f"token = _router_hook_token({WS!r}, 'p', False); "
+            "sys.stdout.write(token or ''); sys.exit(0 if token else 1)",
+        ]
+        processes = []
+        try:
+            for role, cmd in (("helper", helper), ("hook", hook)):
+                processes.append(
+                    subprocess.Popen(
+                        cmd,
+                        env={**env, "REPRO_ROLE": role},
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                )
+            results = [proc.communicate(timeout=25) for proc in processes]
+        finally:
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                proc.communicate()
+        assert [proc.returncode for proc in processes] == [0, 0]
+        assert all(stdout.strip() == b"synthetic" for stdout, _ in results)
+        calls = [json.loads(path.read_text()) for path in tmp_path.glob("call-*")]
+        assert len(calls) >= 3
+        assert not any("--force-refresh" in call for call in calls)
+        assert cache.read_text() == "1"
+
     def test_raises_when_reauth_also_fails(self, tmp_path, monkeypatch):
         env = self._fake_databricks(
             tmp_path,
@@ -3183,7 +3360,7 @@ class TestGetDatabricksToken:
         assert "databricks auth logout --profile example-profile" in message
         assert f"databricks auth login --host {WS} --profile example-profile" in message
 
-    def test_stale_profile_is_tried_once_and_hint_survives_memoized_failure(
+    def test_stale_profile_is_retried_and_hint_survives_memoized_failure(
         self, tmp_path, monkeypatch
     ):
         env, log = self._logging_fake(
@@ -3199,7 +3376,7 @@ class TestGetDatabricksToken:
             messages.append(str(exc_info.value))
 
         calls = log.read_text().splitlines()
-        assert sum("auth token" in call for call in calls) == 1
+        assert sum("auth token" in call for call in calls) == 3
         assert calls.count("auth login --help") == 1
         assert not any("--no-browser" in call for call in calls)
         for message in messages:
@@ -3209,16 +3386,18 @@ class TestGetDatabricksToken:
 
     @pytest.mark.parametrize("stream", ["stdout", "stderr"])
     @pytest.mark.parametrize(
-        "diagnostic",
+        ("diagnostic", "attempts"),
         [
-            "Error: INVALID_GRANT",
-            "invalid refresh token",
-            '{"error_code": "UNAUTHENTICATED", "message": "the refresh token is invalid"}',
-            "no cached token for this host",
-            "no cached credentials for this host",
+            ("Error: INVALID_GRANT", 3),
+            ("invalid refresh token", 3),
+            ('{"error_code": "UNAUTHENTICATED", "message": "the refresh token is invalid"}', 3),
+            ("no cached token for this host", 1),
+            ("no cached credentials for this host", 1),
         ],
     )
-    def test_only_confirmed_credential_errors_are_memoized(self, monkeypatch, stream, diagnostic):
+    def test_only_confirmed_credential_errors_are_memoized(
+        self, monkeypatch, stream, diagnostic, attempts
+    ):
         calls = []
 
         def fake_run(command, **kwargs):
@@ -3237,7 +3416,7 @@ class TestGetDatabricksToken:
             with pytest.raises(RuntimeError, match="stale or invalid"):
                 get_databricks_token(WS, "p")
 
-        assert sum(command[1:3] == ["auth", "token"] for command in calls) == 1
+        assert sum(command[1:3] == ["auth", "token"] for command in calls) == attempts
         assert sum(command[-1] == "--help" for command in calls) == 1
 
     @pytest.mark.parametrize(
@@ -3333,7 +3512,7 @@ class TestGetDatabricksToken:
             get_databricks_token(WS, "failed-reauth")
 
         calls = log.read_text().splitlines()
-        assert sum("auth token" in call for call in calls) == 1
+        assert sum("auth token" in call for call in calls) == 3
         assert calls.count("auth login --help") == 1
         assert sum("--no-browser" in call for call in calls) == 1
 
@@ -3673,7 +3852,7 @@ class TestGetDatabricksToken:
         with pytest.raises(RuntimeError):
             get_databricks_token(WS, "p")
         assert get_databricks_token(WS, "p", force_refresh=True) == "fresh"
-        assert sum("auth token" in call for call in log.read_text().splitlines()) == 2
+        assert sum("auth token" in call for call in log.read_text().splitlines()) == 4
 
     def test_forced_near_expiry_token_evicts_an_older_memo(self, tmp_path, monkeypatch):
         counter = tmp_path / "count"
@@ -3811,11 +3990,11 @@ class TestGetDatabricksToken:
         for _ in range(2):
             with pytest.raises(RuntimeError):
                 get_databricks_token(WS, "p")
-        assert sum("auth token" in call for call in log.read_text().splitlines()) == 1
+        assert sum("auth token" in call for call in log.read_text().splitlines()) == 3
         now[expired_clock] += db_mod._TOKEN_MEMO_FAILURE_TTL_S
         with pytest.raises(RuntimeError):
             get_databricks_token(WS, "p")
-        assert sum("auth token" in call for call in log.read_text().splitlines()) == 2
+        assert sum("auth token" in call for call in log.read_text().splitlines()) == 6
 
     def test_has_valid_auth_shares_the_memo_but_not_its_failures(self, tmp_path, monkeypatch):
         flag = tmp_path / "logged-in"
@@ -3838,7 +4017,7 @@ class TestGetDatabricksToken:
         assert db_mod.has_valid_databricks_auth(WS, "p")
         assert get_databricks_token(WS, "p") == "ok"
         assert db_mod.has_valid_databricks_auth(WS, "p")
-        assert sum("auth token" in call for call in log.read_text().splitlines()) == 2
+        assert sum("auth token" in call for call in log.read_text().splitlines()) == 4
 
     def test_interactive_login_clears_memoized_failure(self, tmp_path, monkeypatch):
         flag = tmp_path / "logged-in"

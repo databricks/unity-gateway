@@ -84,6 +84,14 @@ TOKEN_REFRESH_INTERVAL_SECONDS = 1800
 # we retry rather than treat them as an expired session.
 _TOKEN_CACHE_LOCK_MARKERS = ("cache update", "exit status 45")
 _TOKEN_FETCH_MAX_ATTEMPTS = 4
+# A refresh can race another CLI process using a single-use refresh token.
+# Re-read the CLI cache after the winner has time to save it.
+_TOKEN_ROTATION_RACE_MARKERS = (
+    "invalid_grant",
+    "invalid refresh token",
+    "refresh token is invalid",
+)
+_TOKEN_ROTATION_RACE_RETRY_DELAYS_S = (0.2, 0.4)
 # Only explicit credential refusals justify a negative memo; unknown CLI errors
 # can be network, VPN, or service failures that the next call should retry.
 _TOKEN_CREDENTIAL_FAILURE_MARKERS = (
@@ -1865,24 +1873,35 @@ def _fetch_databricks_token_for_profile(
             return "", None, str(exc)
 
     def _fetch_with_lock_retry() -> tuple[str, float | None]:
-        """Mint a token, retrying transient token-cache lock contention.
-
-        Concurrent `databricks auth token` calls racing on the shared cache fail
-        fast with a lock error (see ``_TOKEN_CACHE_LOCK_MARKERS``). The lock is
-        held only for the brief cache write, so a short jittered backoff almost
-        always wins the next attempt. A non-lock failure returns '' immediately
-        so the caller can fall through to the re-auth path."""
+        """Retry cache-lock contention and possible refresh-token rotation races."""
         nonlocal transient_failure
+        rotation_failures = 0
         for attempt in range(_TOKEN_FETCH_MAX_ATTEMPTS):
             token, lifetime_s, diagnostics = _fetch()
             if token:
                 return token, lifetime_s
-            if not any(marker in diagnostics.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
-                return "", None
-            _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
-            transient_failure = True
-            if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
-                time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
+            if any(marker in diagnostics.lower() for marker in _TOKEN_CACHE_LOCK_MARKERS):
+                _debug("auth token", f"cache-lock contention (attempt {attempt + 1}); retrying")
+                transient_failure = True
+                if attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1:
+                    time.sleep(random.uniform(0.05, 0.1 * (2**attempt)))
+                continue
+            if not force_refresh and any(
+                marker in diagnostics.lower() for marker in _TOKEN_ROTATION_RACE_MARKERS
+            ):
+                if (
+                    rotation_failures < len(_TOKEN_ROTATION_RACE_RETRY_DELAYS_S)
+                    and attempt < _TOKEN_FETCH_MAX_ATTEMPTS - 1
+                ):
+                    delay = _TOKEN_ROTATION_RACE_RETRY_DELAYS_S[rotation_failures]
+                    rotation_failures += 1
+                    _debug(
+                        "auth token",
+                        f"possible refresh-token rotation race (attempt {attempt + 1}); retrying",
+                    )
+                    time.sleep(random.uniform(delay, delay * 2))
+                    continue
+            return "", None
         return "", None
 
     token, lifetime_s = _fetch_with_lock_retry()
