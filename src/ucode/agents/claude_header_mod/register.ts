@@ -43,56 +43,74 @@ async function apply($: EngineInterface, warn = false): Promise<void> {
 }
 
 async function applyLanguageTransport($: EngineInterface, warn: boolean): Promise<void> {
-  const raw = await $.env.get('UG_CLAUDE_LANGUAGE_PROXY');
-  if (!raw) return;
-  let parsed: unknown;
+  let upstream: string | undefined;
+  let url: string | undefined;
+  let cleanHeaders: string | undefined;
   try {
-    parsed = JSON.parse(raw);
+    const raw = await $.env.get('UG_CLAUDE_LANGUAGE_PROXY');
+    if (!raw) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = undefined;
+    }
+    const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
+      .split(/\r?\n/).filter(line => !/^\s*x-ug-(response-language|language-session)\s*:/i.test(line));
+    cleanHeaders = headers.filter(Boolean).join('\n');
+    const clearInvalidTransport = async () => {
+      await $.env.set('UG_CLAUDE_LANGUAGE_PROXY', '');
+      await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+    };
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      await clearInvalidTransport();
+      return;
+    }
+    const transport = parsed as { url?: unknown; upstream?: unknown; secret?: unknown };
+    if (
+      typeof transport.url !== 'string' ||
+      !/^http:\/\/127\.0\.0\.1:\d+\/ai-gateway\/anthropic$/.test(transport.url) ||
+      typeof transport.upstream !== 'string' ||
+      typeof transport.secret !== 'string' || !transport.secret
+    ) {
+      await clearInvalidTransport();
+      return;
+    }
+    upstream = transport.upstream;
+    url = transport.url;
+    const base = await $.env.get('ANTHROPIC_BASE_URL');
+    if (base !== transport.upstream && base !== transport.url) {
+      await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+      return;
+    }
+    const hints = await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS');
+    if (hints !== undefined && hints !== '1') {
+      if (warn) $.ui.log('Skipping optional language inheritance because gateway identity headers are disabled.');
+      if (base === transport.url) await $.env.set('ANTHROPIC_BASE_URL', transport.upstream);
+      await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+      return;
+    }
+    const { language } = await $.settings.read();
+    const configured = typeof language === 'string' && language.trim() !== '';
+    if (configured) {
+      headers.push(`X-UG-Response-Language: ${encodeURIComponent(language.trim())}`);
+    }
+    headers.push(`X-UG-Language-Session: ${transport.secret}`);
+    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
+    await $.env.set('ANTHROPIC_BASE_URL', transport.url);
+    if (hints === undefined) {
+      await $.env.set('CLAUDE_CODE_GATEWAY_HINT_HEADERS', '1');
+    }
   } catch {
-    parsed = undefined;
-  }
-  const headers = (await $.env.get('ANTHROPIC_CUSTOM_HEADERS') ?? '')
-    .split(/\r?\n/).filter(line => !/^\s*x-ug-(response-language|language-session)\s*:/i.test(line));
-  const clearInvalidTransport = async () => {
-    await $.env.set('UG_CLAUDE_LANGUAGE_PROXY', '');
-    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
-  };
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    await clearInvalidTransport();
-    return;
-  }
-  const transport = parsed as { url?: unknown; upstream?: unknown; secret?: unknown };
-  if (
-    typeof transport.url !== 'string' ||
-    !/^http:\/\/127\.0\.0\.1:\d+\/ai-gateway\/anthropic$/.test(transport.url) ||
-    typeof transport.upstream !== 'string' ||
-    typeof transport.secret !== 'string' || !transport.secret
-  ) {
-    await clearInvalidTransport();
-    return;
-  }
-  const base = await $.env.get('ANTHROPIC_BASE_URL');
-  if (base !== transport.upstream && base !== transport.url) {
-    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
-    return;
-  }
-  const hints = await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS');
-  if (hints !== undefined && hints !== '1') {
-    if (warn) $.ui.log('Skipping optional language inheritance because gateway identity headers are disabled.');
-    if (base === transport.url) await $.env.set('ANTHROPIC_BASE_URL', transport.upstream);
-    await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
-    return;
-  }
-  const { language } = await $.settings.read();
-  const configured = typeof language === 'string' && language.trim() !== '';
-  if (configured) {
-    headers.push(`X-UG-Response-Language: ${encodeURIComponent(language.trim())}`);
-  }
-  headers.push(`X-UG-Language-Session: ${transport.secret}`);
-  await $.env.set('ANTHROPIC_CUSTOM_HEADERS', headers.filter(Boolean).join('\n'));
-  await $.env.set('ANTHROPIC_BASE_URL', transport.url);
-  if (hints === undefined) {
-    await $.env.set('CLAUDE_CODE_GATEWAY_HINT_HEADERS', '1');
+    // Optional inheritance must not reject a turn when native APIs are unavailable.
+    try {
+      if (upstream && url && await $.env.get('ANTHROPIC_BASE_URL') === url) {
+        await $.env.set('ANTHROPIC_BASE_URL', upstream);
+      }
+    } catch {}
+    try {
+      if (cleanHeaders !== undefined) await $.env.set('ANTHROPIC_CUSTOM_HEADERS', cleanHeaders);
+    } catch {}
   }
 }
 

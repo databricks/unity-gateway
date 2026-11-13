@@ -226,8 +226,9 @@ setup and agent-exit failures restore the environment and release acquired resou
 task-language fallback without a setting, translation guidance, malformed-input and
 token-count passthrough, unchanged parent and classifier payloads, session authentication
 and private-header stripping. Decoder recursion errors retain the original request.
-Interactive proxy diagnostics and refresh failures go to `~/.ucode/logs/gateway-proxy.log`
-without writing into the agent's terminal; redirected stderr retains its existing output.
+Interactive proxy diagnostics and the language proxy's refresh failures go to
+`~/.ucode/logs/gateway-proxy.log` without writing into the agent's terminal.
+Other proxies retain their default stderr sign-in hint; redirected stderr is unchanged.
 These component checks establish request construction, not model language compliance.
 
 The required Isaac feedback form and background delivery notifications need manual

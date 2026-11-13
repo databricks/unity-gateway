@@ -180,3 +180,45 @@ test('language transport does not replace another provider endpoint', async ($, 
   expect(env.ANTHROPIC_BASE_URL).toBe('https://other.example');
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Team: eng');
 });
+
+for (const failure of ['settings', 'env-get', 'env-set'] as const) {
+  test(`optional ${failure} failure restores the upstream and lets the turn proceed`, async ($, on) => {
+    const upstream = 'https://workspace.example/ai-gateway/anthropic';
+    const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
+    const env: Record<string, string | undefined> = {
+      ANTHROPIC_BASE_URL: url,
+      ANTHROPIC_CUSTOM_HEADERS: 'X-Required: keep\nX-UG-Language-Session: stale',
+      UG_HEADERS: 'X-Added: yes',
+      UG_CLAUDE_LANGUAGE_PROXY: JSON.stringify({ url, upstream, secret: 'session-secret' }),
+    };
+    on('session.start', ($, e) => ({ cwd: e.cwd }));
+    on('settings.read', () => {
+      if (failure === 'settings') throw new Error('settings unavailable');
+      return { value: { language: 'English' } };
+    });
+    on('env.get', ($, e) => {
+      if (failure === 'env-get' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
+        throw new Error('environment read unavailable');
+      }
+      return { value: env[e.name] };
+    });
+    on('env.set', ($, e) => {
+      if (failure === 'env-set' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
+        throw new Error('environment write unavailable');
+      }
+      env[e.name] = e.value;
+      return { value: undefined };
+    });
+    let turns = 0;
+    on('turn.step', async function* ($, e) {
+      turns++;
+      return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
+    });
+    await $.session.start(start);
+    const stream = $.turn.step({turnId: 'turn', index: 1, model: 'parent-model', messageCount: 1, agentId: undefined});
+    while (!(await stream.next()).done) { /* Drain the native turn. */ }
+    expect(turns).toBe(1);
+    expect(env.ANTHROPIC_BASE_URL).toBe(upstream);
+    expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe('X-Required: keep\nX-Added: yes');
+  });
+}

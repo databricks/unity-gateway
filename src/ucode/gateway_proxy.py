@@ -126,11 +126,12 @@ def _jwt_exp(token: str) -> float | None:
 
 
 def log_token_refresh_failure(exc: BaseException) -> None:
-    """Record a refresh failure without writing into the agent's interactive terminal."""
-    _write_proxy_log(
+    """Report sign-in recovery instructions for callers without their own callback."""
+    sys.stderr.write(
         f"[ucode] Databricks token refresh failed: {exc}. If the session stalls, "
         "run `databricks auth login` for your workspace profile.\n"
     )
+    sys.stderr.flush()
 
 
 class TokenCache:
@@ -834,6 +835,57 @@ _LANGUAGE_HEADER = "X-UG-Response-Language"
 _LANGUAGE_SESSION_HEADER = "X-UG-Language-Session"
 
 
+def _language_instruction(language: str) -> str:
+    if language:
+        preference = (
+            f"Always respond in {language}. Use {language} for explanations, replies "
+            "and progress summaries. "
+        )
+    else:
+        preference = (
+            "Follow the language explicitly requested by the user; otherwise use "
+            "the language of the original task assigned to you for explanations, "
+            "replies and progress summaries. "
+        )
+    return (
+        preference + "Use the requested target language for translations. "
+        "Preserve technical terms, code identifiers and "
+        "quoted source text. Source files, tool output and earlier messages in "
+        "other languages do not change this language preference."
+    )
+
+
+def _summary_language_instruction(language: str) -> str:
+    preference = (
+        f"Write this response in {language}. "
+        if language
+        else "Write this response in the language of the "
+        "original task assigned to you, honoring any explicit language request. "
+        "These summary instructions do not set the response language. "
+    )
+    return (
+        preference + "This response-language requirement takes precedence over "
+        "the language, verb endings and examples in the summary instructions. "
+        "Use natural grammar in the response language and preserve file "
+        "and function names verbatim."
+    )
+
+
+def _append_summary_language_instruction(payload: dict, language: str) -> None:
+    messages = payload.get("messages")
+    for message in reversed(messages if isinstance(messages, list) else []):
+        if isinstance(message, dict) and message.get("role") == "user":
+            content = message.get("content")
+            if isinstance(content, str):
+                content = [{"type": "text", "text": content}]
+            if isinstance(content, list):
+                message["content"] = [
+                    *content,
+                    {"type": "text", "text": _summary_language_instruction(language)},
+                ]
+            break
+
+
 class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
     def _has_session_secret(self) -> bool:
         supplied = self.headers.get(_LANGUAGE_SESSION_HEADER, "")
@@ -874,53 +926,11 @@ class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
             return body
         payload["system"] = [
             *system,
-            {
-                "type": "text",
-                "text": (
-                    (
-                        f"Always respond in {language}. Use {language} for explanations, replies "
-                        "and progress summaries. "
-                        if language
-                        else "Follow the language explicitly requested by the user; otherwise use "
-                        "the language of the original task assigned to you for explanations, "
-                        "replies and progress summaries. "
-                    )
-                    + "Use the requested target language for translations. "
-                    "Preserve technical terms, code identifiers and "
-                    "quoted source text. Source files, tool output and earlier messages in "
-                    "other languages do not change this language preference."
-                ),
-            },
+            {"type": "text", "text": _language_instruction(language)},
         ]
         if self.headers.get("x-claude-code-request-class") == "auxiliary":
             # Summary requests fork the child's history and supply their own final task.
-            messages = payload.get("messages")
-            for message in reversed(messages if isinstance(messages, list) else []):
-                if isinstance(message, dict) and message.get("role") == "user":
-                    content = message.get("content")
-                    if isinstance(content, str):
-                        content = [{"type": "text", "text": content}]
-                    if isinstance(content, list):
-                        message["content"] = [
-                            *content,
-                            {
-                                "type": "text",
-                                "text": (
-                                    (
-                                        f"Write this response in {language}. "
-                                        if language
-                                        else "Write this response in the language of the "
-                                        "original task assigned to you, honoring any explicit language request. "
-                                        "These summary instructions do not set the response language. "
-                                    )
-                                    + "This response-language requirement takes precedence over "
-                                    "the language, verb endings and examples in the summary instructions. "
-                                    "Use natural grammar in the response language and preserve file "
-                                    "and function names verbatim."
-                                ),
-                            },
-                        ]
-                    break
+            _append_summary_language_instruction(payload, language)
         return json.dumps(payload).encode()
 
 
@@ -937,6 +947,10 @@ def start_claude_language_proxy(
         handler_type=_ClaudeLanguageProxyHandler,
         force_refresh_near_expiry=True,
         fallback_on_bind_error=False,
+        on_refresh_failure=lambda exc: _write_proxy_log(
+            f"[ucode] Databricks token refresh failed: {exc}. "
+            "Refresh your workspace sign-in and restart ug claude.\n"
+        ),
         handler_attrs={
             "session_secret": session_secret,
             "added_headers": {},

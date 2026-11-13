@@ -296,7 +296,15 @@ class TestRelayResponseClientDisconnect:
         handler._relay_response(
             _FakeResponse(200, {}, [b"ok"]), diagnostic_id="local-id", started=time.monotonic()
         )
-        gateway_proxy.log_token_refresh_failure(RuntimeError("refresh unavailable"))
+        proxy, cache, client = gateway_proxy.start_claude_language_proxy(
+            "http://127.0.0.1:1", lambda _force: "test-token", session_secret="test-secret"
+        )
+        try:
+            cache.report_refresh_failure(RuntimeError("refresh unavailable"))
+        finally:
+            proxy.server_close()
+            cache.stop()
+            client.close()
 
         assert capsys.readouterr() == ("", "")
         if log_directory_available:
@@ -306,6 +314,14 @@ class TestRelayResponseClientDisconnect:
             assert event["request_id"] == "local-id"
             assert event["bytes"] == 2
             assert "token refresh failed: refresh unavailable" in lines[1]
+
+    def test_default_refresh_failure_keeps_interactive_sign_in_hint(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
+        gateway_proxy.log_token_refresh_failure(RuntimeError("refresh unavailable"))
+        output = capsys.readouterr()
+        assert output.out == ""
+        assert "token refresh failed: refresh unavailable" in output.err
+        assert "databricks auth login" in output.err
 
 
 class TestJwtExp:

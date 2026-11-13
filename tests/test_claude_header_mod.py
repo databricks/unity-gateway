@@ -437,8 +437,7 @@ def test_language_transport_startup_failure_degrades_and_cleans_resources(
     server.shutdown.assert_not_called()
 
 
-@pytest.mark.parametrize("scope", ["environment", "managed", "drop-in", "user", "project"])
-def test_language_transport_leaves_effective_settings_to_native_mod(tmp_path, monkeypatch, scope):
+def test_language_transport_leaves_effective_settings_to_native_mod(tmp_path, monkeypatch):
     from ucode import gateway_proxy
 
     monkeypatch.chdir(tmp_path)
@@ -450,23 +449,9 @@ def test_language_transport_leaves_effective_settings_to_native_mod(tmp_path, mo
     start = Mock(return_value=(server, cache, client))
     monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=Mock()))
     monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    override = {"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}}
     previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
     monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
-    if scope == "environment":
-        monkeypatch.setenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", "0")
-    else:
-        path = {
-            "managed": claude._managed_settings_path(),
-            "drop-in": claude._managed_settings_path().with_name("managed-settings.d")
-            / "policy.json",
-            "user": claude.CLAUDE_USER_SETTINGS_PATH,
-            "project": tmp_path / ".claude/settings.local.json",
-        }[scope]
-        path.parent.mkdir(parents=True, exist_ok=True)
-        config = json.loads(path.read_text()) if path.exists() else {}
-        config.setdefault("env", {}).update(override["env"])
-        path.write_text(json.dumps(config))
+    monkeypatch.setenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", "0")
     warning = Mock()
     monkeypatch.setattr(claude, "print_warning", warning)
     body_calls = []
@@ -485,8 +470,7 @@ def test_language_transport_leaves_effective_settings_to_native_mod(tmp_path, mo
     client.close.assert_called_once()
     warning.assert_not_called()
     assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
-    if scope == "environment":
-        assert os.environ["CLAUDE_CODE_GATEWAY_HINT_HEADERS"] == "0"
+    assert os.environ["CLAUDE_CODE_GATEWAY_HINT_HEADERS"] == "0"
 
 
 def test_language_transport_ignores_inactive_managed_dropins(tmp_path, monkeypatch):
