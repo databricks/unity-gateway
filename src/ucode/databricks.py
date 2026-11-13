@@ -2818,6 +2818,11 @@ def _mcp_service_full_name(service: dict, required_prefix: str | None) -> str | 
     return name
 
 
+# Prefixes the reason for a strict MCP listing that failed after its first page, so callers never
+# mistake a later page's HTTP 404 for a missing schema.
+INCOMPLETE_LISTING_PREFIX = "incomplete listing: "
+
+
 def list_mcp_services(
     workspace: str,
     token: str,
@@ -2828,6 +2833,7 @@ def list_mcp_services(
     on_services: Callable[[list[str]], None] | None = None,
     deadline: float | None = None,
     cancel_event: threading.Event | None = None,
+    strict: bool = False,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
 
@@ -2849,6 +2855,11 @@ def list_mcp_services(
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
+    A scoped listing whose later page fails returns the services it already has with no error,
+    unless ``strict`` is set. Strict mode reports every incomplete listing (a failed later page, a
+    repeated page token, the page limit, or a malformed body) so a caller that removes servers
+    missing from the listing never acts on a partial one. A later-page failure is prefixed with
+    ``incomplete listing:`` so it never reads as a missing schema (``HTTP 404``).
     """
     hostname = workspace_hostname(workspace)
     expected_prefix = parent + "." if parent is not None else None
@@ -2856,10 +2867,15 @@ def list_mcp_services(
     page_token: str | None = None
     seen_tokens: set[str] = set()
     for _ in range(max_pages):
+        stopped = None
         if cancel_event is not None and cancel_event.is_set():
-            return sorted(seen_names), "MCP listing cancelled"
-        if deadline is not None and time.monotonic() >= deadline:
-            return sorted(seen_names), "deadline exceeded while listing MCP services"
+            stopped = "MCP listing cancelled"
+        elif deadline is not None and time.monotonic() >= deadline:
+            stopped = "deadline exceeded while listing MCP services"
+        if stopped:
+            if strict and page_token:
+                stopped = f"{INCOMPLETE_LISTING_PREFIX}{stopped}"
+            return sorted(seen_names), stopped
         params: dict[str, str] = {"view": "BASIC"}
         if parent is not None:
             params["parent"] = f"schemas/{parent}"
@@ -2870,6 +2886,11 @@ def list_mcp_services(
         url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
         timeout = max(1, min(10, int(deadline - time.monotonic() + 1))) if deadline else 30
         payload, reason = _http_get_json(url, token, timeout=timeout)
+        if strict and not isinstance(payload, dict):
+            failure = reason or "unexpected MCP listing response"
+            if page_token:
+                return sorted(seen_names), f"{INCOMPLETE_LISTING_PREFIX}{failure}"
+            return sorted(seen_names), failure
         if payload is None:
             # An interrupted metastore listing is incomplete, even if earlier pages
             # returned services. Keep the scoped caller's existing behavior.
@@ -2877,8 +2898,16 @@ def list_mcp_services(
                 return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
+        services = data.get("mcp_services") or []
+        if not isinstance(services, list):
+            if strict:
+                failure = "unexpected MCP listing response"
+                if page_token:
+                    failure = f"{INCOMPLETE_LISTING_PREFIX}{failure}"
+                return sorted(seen_names), failure
+            services = []
         new_names: list[str] = []
-        for service in data.get("mcp_services") or []:
+        for service in services:
             if not isinstance(service, dict):
                 continue
             full_name = _mcp_service_full_name(service, expected_prefix)
@@ -2897,11 +2926,19 @@ def list_mcp_services(
         if not page_token:
             break
         if page_token in seen_tokens:
+            if strict:
+                return sorted(
+                    seen_names
+                ), f"{INCOMPLETE_LISTING_PREFIX}MCP listing repeated a page token"
             if parent is None:
                 return sorted(seen_names), "MCP listing repeated a page token"
             break
         seen_tokens.add(page_token)
     else:
+        if strict:
+            return sorted(
+                seen_names
+            ), f"{INCOMPLETE_LISTING_PREFIX}MCP listing exceeded {max_pages} pages"
         if parent is None:
             return sorted(seen_names), f"MCP listing exceeded {max_pages} pages"
     return sorted(seen_names), None

@@ -85,6 +85,7 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
+_DIAGNOSTICS_FILE_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE"
 
 
 def _diagnostics_enabled() -> bool:
@@ -111,9 +112,19 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
     payload = {"event": event, "timestamp_ms": int(time.time() * 1000), **fields}
-    _write_proxy_log(
-        f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
-    )
+    line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
+    if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as log:
+                log.write(line)
+            return
+        except OSError:
+            destination = "application log" if sys.stderr.isatty() else "stderr"
+            _write_proxy_log(
+                f"[ucode-relay] Could not write proxy diagnostics file; using {destination}.\n"
+            )
+    _write_proxy_log(line)
 
 
 def _jwt_exp(token: str) -> float | None:

@@ -745,7 +745,7 @@ export UCODE_TEST_WORKSPACE=https://your-existing-e2e-workspace
 python3.12 scripts/run_integration.py \
   --ug-version checkout \
   --claude-version 2.1.268 \
-  --codex-version 0.154.0 \
+  --codex-version 0.156.0 \
   --profile YOUR_PROFILE
 ```
 
@@ -783,7 +783,7 @@ including when the caller supplied `1`; this component check does not run the na
 ```bash
 # Constrain the suspected dependency while keeping the real CLI and gateway.
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.156.0 \
   --claude-model YOUR_CLAUDE_MODEL --codex-model YOUR_CODEX_MODEL \
   --opencode-version 1.18.31 --opencode-model YOUR_OPENCODE_MODEL \
   --profile YOUR_PROFILE --dependency tomlkit==0.14.0 \
@@ -817,7 +817,7 @@ journeys, managed settings, and signal behavior remain outside this subset.
 python scripts/run_integration.py --ug-version checkout --claude-version 2.1.268 --headless-only
 ```
 
-Use `--codex-version 0.154.0` instead of or alongside the Claude version to test
+Use `--codex-version 0.156.0` instead of or alongside the Claude version to test
 Codex. Headless selection uses exact test node IDs, so unrelated POSIX-only
 modules are not collected. Missing prerequisites and failed tasks still fail.
 
@@ -1373,7 +1373,7 @@ completed parent and child models, and preserved settings remain required. Selec
 `--codex-version 0.165.0 -- -k test_ug_codex_native_v2_plain_assignment_routing`.
 The `codex_smart_routing` marker also selects the native launch/off/on journeys,
 managed routing banner, and catalog-fallback routing-on case. To reproduce the
-baseline lane, use `--codex-version 0.154.0 -- -m 'live and not codex_smart_routing'`.
+baseline lane, use `--codex-version 0.156.0 -- -m 'live and not codex_smart_routing'`.
 
 ```bash
 # Append one of these selections to the runner command:
@@ -1421,7 +1421,7 @@ enables both. Supply the second workspace and its bearer explicitly:
 ```bash
 # DATABRICKS_SECOND_BEARER must already contain a token for SECOND_WORKSPACE_URL.
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.156.0 \
   --workspace FIRST_WORKSPACE_URL --profile FIRST_WORKSPACE_PROFILE \
   --second-workspace SECOND_WORKSPACE_URL -- -m workspace_switch
 ```
@@ -1574,7 +1574,7 @@ Every same-repository PR and push to `main` runs **Smoke journeys**, followed by
 **Full journeys** even if smoke fails. Smoke runs the Hosted configure/TUI,
 headless argument, and custom OAuth CLI TUI journeys for each agent (six cases,
 two agent jobs per OS). Full excludes the smoke cases, which smoke already ran
-on the same OS. Codex 0.154.0 remains the default for installation, smoke, general
+on the same OS. Codex 0.156.0 remains the default for installation, smoke, general
 full/managed journeys, and dedicated CUJs. Routing cases run in separate required
 matrix rows with Codex 0.165.0; only the dedicated CUJ4 runner uses that newer pin.
 The full selections are disjoint within each agent and OS:
@@ -1582,12 +1582,12 @@ The full selections are disjoint within each agent and OS:
 | Agent lane | Marker |
 | --- | --- |
 | Claude | `live and claude and not soft_fail and not smoke and not codex_smart_routing` |
-| Codex 0.154.0 | `live and codex and not soft_fail and not smoke and not codex_smart_routing` |
+| Codex 0.156.0 | `live and codex and not soft_fail and not smoke and not codex_smart_routing` |
 | Codex 0.165.0 | `live and codex and not soft_fail and not smoke and codex_smart_routing` |
 
 Managed Codex uses the same marker split on its managed workspace, retaining both-agent
 installation in each row. The catalog-fallback routing-off parameter, direct router-hook
-contracts, and command/protocol paths that bypass routing retain 0.154.0 coverage.
+contracts, and command/protocol paths that bypass routing retain 0.156.0 coverage.
 The existing Windows exclusions for native skill-toggle journeys still apply.
 
 A non-blocking **OpenCode** job (`live and opencode`, one case) runs alongside them with
@@ -1772,7 +1772,7 @@ To run only the two Claude defaults cases locally, select them by name with the 
 
 ```bash
 python3.12 scripts/run_integration.py \
-  --ug-version checkout --claude-version 2.1.268 --codex-version 0.154.0 \
+  --ug-version checkout --claude-version 2.1.268 --codex-version 0.156.0 \
   -- -k 'test_managed_claude_mps_defaults_accompany_discovery or test_managed_claude_parent_schema_defaults_accompany_discovery'
 ```
 
@@ -1819,7 +1819,7 @@ From the CLI:
 ```bash
 gh workflow run integration.yml -R databricks/unity-gateway --ref YOUR_BRANCH \
   -f ug_version=checkout \
-  -f claude_version=2.1.268 -f codex_version=0.154.0
+  -f claude_version=2.1.268 -f codex_version=0.156.0
 gh run list -R databricks/unity-gateway --workflow integration.yml
 gh run watch RUN_ID -R databricks/unity-gateway --exit-status
 ```
@@ -1888,7 +1888,13 @@ Use `-- -m tui` for the six interactive journeys or
 
 Isolated integration sessions enable the existing `UCODE_RELAYED_PROXY_DIAGNOSTICS`
 transport logger for every agent. Headless `command-*.json` artifacts retain its
-`[ucode-relay]` events in `stderr`; TUI artifacts retain them in terminal output.
+`[ucode-relay]` events in `stderr`. Interactive runs set
+`UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE` to a separate file in the disposable home,
+so background diagnostics cannot overwrite the agent's prompt or footer. On exit,
+including test failure, the terminal artifact retains the redacted log in
+`proxy_diagnostics` alongside the screen and transcript. Other stderr output stays
+visible in the terminal. The optional file destination appends events; an unavailable
+destination reports a warning and falls back to stderr.
 Request IDs correlate upstream-attempt starts, header timings, status codes, response byte counts,
 disconnects and transport exception classes. Each event includes a Unix timestamp in milliseconds.
 `elapsed_ms` is cumulative from the incoming request's start. Attempt starts follow token/header
@@ -1935,7 +1941,7 @@ docker run --rm --init \
   -v ug-integration-results:/results \
   ug-integration \
   --ug-version YOUR_RELEASE_VERSION \
-  --claude-version 2.1.268 --codex-version 0.154.0 \
+  --claude-version 2.1.268 --codex-version 0.156.0 \
   --installation-only
 ```
 
@@ -1995,7 +2001,7 @@ DATABRICKS_BEARER=$(databricks auth token --host "$integration_workspace" \
 uv run --no-project --python 3.12 python scripts/run_integration.py \
   --python 3.12 --ug-version checkout --workspace "$integration_workspace" \
   --default-index "$integration_index" --npm-registry "$integration_registry" \
-  --claude-version 2.1.268 --codex-version 0.154.0 -- -m 'live and not anthropic_mps'
+  --claude-version 2.1.268 --codex-version 0.156.0 -- -m 'live and not anthropic_mps'
 unset DATABRICKS_BEARER
 ```
 

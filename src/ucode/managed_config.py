@@ -228,22 +228,57 @@ class AgentConfig:
         return result
 
 
+MCP_SOURCE_SCHEMA = "schema"
+MCP_SOURCE_NAME = "name"
+
+
+def mcp_source_kind(source: str) -> str | None:
+    """Classify one ``mcp_servers.sources`` entry, matching the server's rule.
+
+    Returns :data:`MCP_SOURCE_SCHEMA` for ``<catalog>.<schema>.*`` (every MCP service in that
+    schema), :data:`MCP_SOURCE_NAME` for an exact ``<catalog>.<schema>.<service>``, and ``None`` for
+    anything else: a different depth, an empty or whitespace-bearing part, or a ``*`` anywhere but
+    as the entire last part.
+    """
+    parts = source.split(".")
+    if len(parts) != 3 or any(not part or any(c.isspace() for c in part) for part in parts):
+        return None
+    catalog, schema, last = parts
+    if "*" in catalog or "*" in schema:
+        return None
+    if last == "*":
+        return MCP_SOURCE_SCHEMA
+    return None if "*" in last else MCP_SOURCE_NAME
+
+
 @dataclass(frozen=True)
 class NamesOrLocation:
-    """Selector for mcp_servers and skills: names list or UC location."""
+    """Selector for mcp_servers and skills: a names list, a UC location, or a sources list.
+
+    ``sources`` (mcp_servers only) mixes exact ``catalog.schema.name`` entries with
+    ``catalog.schema.*`` patterns, so one config can span several schemas; it supersedes the
+    deprecated single ``unity_catalog_location``.
+    """
 
     names: list[str] | None = None
     unity_catalog_location: str | None = None
+    sources: list[str] | None = None
 
     @classmethod
-    def from_wire(cls, value: object) -> NamesOrLocation | None:
-        """Parse the wire ``{names, unity_catalog_location}`` selector (exactly one per the API)."""
+    def from_wire(cls, value: object, *, allow_sources: bool = False) -> NamesOrLocation | None:
+        """Parse the wire ``{names, unity_catalog_location, sources}`` selector.
+
+        The API accepts exactly one of the three; keep whatever is present and let the resolver
+        apply the precedence ``sources`` > ``unity_catalog_location`` > ``names``. Only
+        ``mcp_servers`` has ``sources`` (``allow_sources``); a skills selector ignores it.
+        """
         value_dict = _as_dict(value)
         names = _str_list(value_dict.get("names"))
         location = _str(value_dict.get("unity_catalog_location"))
-        if not names and not location:
+        sources = _str_list(value_dict.get("sources")) if allow_sources else []
+        if not names and not location and not sources:
             return None
-        return cls(names=names or None, unity_catalog_location=location)
+        return cls(names=names or None, unity_catalog_location=location, sources=sources or None)
 
     def to_internal(self) -> dict:
         """Convert to internal shape."""
@@ -252,6 +287,8 @@ class NamesOrLocation:
             result["names"] = self.names
         if self.unity_catalog_location:
             result["unity_catalog_location"] = self.unity_catalog_location
+        if self.sources:
+            result["sources"] = self.sources
         return result
 
 
@@ -354,7 +391,7 @@ class CodingAgentConfig:
                 if tool is not None:
                     enabled_agents_dict[tool] = AgentConfig.from_wire(entry_dict.get("config"))
 
-        mcp_servers = NamesOrLocation.from_wire(raw_dict.get("mcp_servers"))
+        mcp_servers = NamesOrLocation.from_wire(raw_dict.get("mcp_servers"), allow_sources=True)
         skills = NamesOrLocation.from_wire(raw_dict.get("skills"))
 
         # ``smart_defaults`` is the current wire key. A config read or cached by an older ug may

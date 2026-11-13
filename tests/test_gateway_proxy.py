@@ -339,6 +339,63 @@ class TestRelayResponseClientDisconnect:
         assert "databricks auth login" in output.err
 
 
+class TestProxyDiagnosticFile:
+    def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / "proxy.log"
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(path))
+        gateway_proxy.log_proxy_diagnostic("request_start", request_id="first")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(
+                pool.map(
+                    lambda i: gateway_proxy.log_proxy_diagnostic("response_complete", request_id=i),
+                    range(20),
+                )
+            )
+
+        events = [
+            json.loads(line.removeprefix("[ucode-relay] "))
+            for line in path.read_text().splitlines()
+        ]
+        assert isinstance(events[0].pop("timestamp_ms"), int)
+        assert events[0] == {"event": "request_start", "request_id": "first"}
+        assert len(events) == 21
+        assert {event["request_id"] for event in events[1:]} == set(range(20))
+        assert capsys.readouterr().err == ""
+
+    def test_file_destination_does_not_enable_diagnostics(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / "proxy.log"
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "0")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(path))
+        gateway_proxy.log_proxy_diagnostic("request_start")
+        assert not path.exists()
+        assert capsys.readouterr().err == ""
+
+    @pytest.mark.parametrize("interactive", [False, True])
+    def test_unwritable_file_preserves_response_and_diagnostic_evidence(
+        self, tmp_path, monkeypatch, capsys, interactive
+    ):
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: interactive)
+        monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path / "app")
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(tmp_path))
+        output = _Collect()
+        _relay_handler(output)._relay_response(_FakeResponse(200, {}, [b"ok"]))
+        assert output.data.endswith(b"ok")
+        stderr = capsys.readouterr().err
+        if interactive:
+            assert stderr == ""
+            diagnostic = (tmp_path / "app/logs/gateway-proxy.log").read_text()
+            destination = "application log"
+        else:
+            diagnostic = stderr
+            destination = "stderr"
+        assert f"Could not write proxy diagnostics file; using {destination}" in diagnostic
+        event = json.loads(diagnostic.splitlines()[-1].removeprefix("[ucode-relay] "))
+        assert event["event"] == "response_complete"
+        assert event["status"] == 200
+
+
 class TestJwtExp:
     def test_extracts_exp(self):
         assert gateway_proxy._jwt_exp(_make_jwt(1234567890.0)) == 1234567890.0
