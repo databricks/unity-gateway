@@ -143,12 +143,146 @@ def test_busy_reporter_keeps_queue_bounded_without_more_children(metrics_recorde
     assert len(metrics_recorder.pending) == 1000
 
 
+@pytest.mark.parametrize("busy", ["reporter", "export_lock"])
+def test_shutdown_drops_tail_without_waiting_for_busy_export(metrics_recorder, busy):
+    metrics.record("ug_usage_duration_ms", 12)
+    if busy == "reporter":
+        metrics_recorder.reporter = Mock()
+        metrics_recorder.reporter.poll.return_value = None
+    else:
+        metrics_recorder.export_lock.acquire()
+    finished = threading.Event()
+
+    def shutdown():
+        metrics.finish()
+        finished.set()
+
+    worker = threading.Thread(target=shutdown, daemon=True)
+    worker.start()
+    try:
+        assert finished.wait(2), "shutdown waited for the busy exporter"
+        assert metrics._runtime is None
+        assert metrics_recorder.stop.is_set()
+        metrics_export.send_in_background.assert_not_called()
+        if busy == "reporter":
+            metrics_recorder.reporter.wait.assert_not_called()
+    finally:
+        if busy == "export_lock":
+            metrics_recorder.export_lock.release()
+        worker.join(timeout=2)
+
+
+def test_shutdown_failure_preserves_command_exception(metrics_recorder, monkeypatch):
+    metrics.start_agent("codex")
+    original = RuntimeError("command failed")
+    # Fault the clock and upload boundaries, not the cleanup method under test.
+    monkeypatch.setattr(metrics.time, "perf_counter", Mock(side_effect=OSError("clock failed")))
+    monkeypatch.setattr(
+        metrics_export, "send_in_background", Mock(side_effect=OSError("spawn failed"))
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        try:
+            raise original
+        finally:
+            metrics.finish()
+
+    assert raised.value is original
+    assert metrics._runtime is None
+    assert metrics_recorder.stop.is_set()
+
+
 def test_export_failure_does_not_change_command_result(metrics_recorder, monkeypatch):
     metrics.bind(HOST, "not-a-real-token")
     metrics.record("ug_usage_duration_ms", 10)
     monkeypatch.setattr(metrics_export, "send_in_background", Mock(side_effect=OSError("full")))
     metrics.flush()
     assert not metrics_recorder.pending
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (OSError("connection reset at /oauth/token"), "network_error"),
+        ("network unavailable during login", "network_error"),
+        (TimeoutError("/oauth/token timed out"), "timeout"),
+        (PermissionError("token file"), "permission_denied"),
+        (RuntimeError("HTTP 401 while fetching token"), "http_401"),
+        (RuntimeError("HTTP 503 during login"), "http_503"),
+        (RuntimeError("invalid token"), "authentication_failed"),
+    ],
+)
+def test_error_classification_preserves_failure_cause(metrics_recorder, error, expected):
+    metrics.failure("databricks_token_fetch", error)
+    assert observations(metrics_recorder, "ug_cli_error")[0][1]["error_code"] == expected
+
+
+def test_error_reporting_failure_preserves_original_exception(metrics_recorder):
+    class UnprintableError(RuntimeError):
+        def __str__(self):
+            raise ValueError("error formatting failed")
+
+    original = UnprintableError()
+    calls = []
+
+    @metrics.timed("ug_usage_duration_ms")
+    def command():
+        calls.append("called")
+        raise original
+
+    with pytest.raises(UnprintableError) as raised:
+        command()
+    assert raised.value is original
+    assert calls == ["called"]
+
+
+def test_error_reporting_failure_preserves_returned_result(metrics_recorder):
+    class UnprintableReason(str):
+        def __str__(self):
+            raise ValueError("error formatting failed")
+
+    result = ([], UnprintableReason("fetch failed"))
+    calls = []
+
+    @metrics.timed("coding_agent_config_fetch_duration_ms", reason_result=True)
+    def fetch():
+        calls.append("called")
+        return result
+
+    assert fetch() is result
+    assert calls == ["called"]
+
+
+def test_error_reporting_survives_concurrent_shutdown(metrics_recorder):
+    entered = threading.Event()
+    resume = threading.Event()
+    failures = []
+
+    class PausedReason(str):
+        def __str__(self):
+            entered.set()
+            assert resume.wait(2), "shutdown did not release error reporting"
+            return super().__str__()
+
+    def report():
+        try:
+            with metrics.measure("ug_usage_duration_ms"):
+                metrics.failure("ug_usage", PausedReason("fetch failed"))
+        except Exception as error:
+            failures.append(error)
+
+    worker = threading.Thread(target=report, daemon=True)
+    worker.start()
+    try:
+        assert entered.wait(2)
+        metrics.finish()
+    finally:
+        resume.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert not failures
+    assert metrics._runtime is None
 
 
 def test_final_error_is_not_duplicated_when_wrapped(metrics_recorder):

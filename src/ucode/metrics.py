@@ -9,7 +9,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from functools import wraps
 from typing import Any
@@ -233,10 +233,10 @@ def error_code(error: BaseException | str) -> str:
         return "timeout"
     if "permission" in text or isinstance(error, PermissionError):
         return "permission_denied"
-    if "token" in text or "auth" in text or "login" in text or "oauth" in text:
-        return "authentication_failed"
     if isinstance(error, OSError) or "network" in text:
         return "network_error"
+    if "token" in text or "auth" in text or "login" in text or "oauth" in text:
+        return "authentication_failed"
     if getattr(error, "returncode", None) is not None:
         return "process_failed"
     return "operation_failed"
@@ -249,31 +249,34 @@ def failure(
     continued_with_fallback: bool = False,
     **labels: Any,
 ) -> None:
-    if _runtime is None:
+    runtime = _runtime
+    if runtime is None:
         return
-    current = _scope.get()
-    if isinstance(error, str) and current is not None:
-        code = error_code(error)
-        if current.get("recorded_error") == code:
-            return
-        current["recorded_error"] = code
-    if isinstance(error, BaseException):
-        if already_reported(error):
-            return
-        # Tag the exception instead of retaining tracebacks (and their request bodies).
-        vars(error)["_ug_metric_reported"] = True
-        code = getattr(error, "returncode", None)
-        if type(code) is int:
-            labels["process_exit_code"] = code
-    record(
-        "ug_cli_error",
-        1,
-        phase=labels.pop("phase", _runtime.phase),
-        operation=operation,
-        error_code=error_code(error),
-        continued_with_fallback=continued_with_fallback,
-        **labels,
-    )
+    # Error classification must not replace an operation's result or original exception.
+    with suppress(Exception):
+        current = _scope.get()
+        if isinstance(error, str) and current is not None:
+            code = error_code(error)
+            if current.get("recorded_error") == code:
+                return
+            current["recorded_error"] = code
+        if isinstance(error, BaseException):
+            if already_reported(error):
+                return
+            # Tag the exception instead of retaining tracebacks (and their request bodies).
+            vars(error)["_ug_metric_reported"] = True
+            code = getattr(error, "returncode", None)
+            if type(code) is int:
+                labels["process_exit_code"] = code
+        record(
+            "ug_cli_error",
+            1,
+            phase=labels.pop("phase", runtime.phase),
+            operation=operation,
+            error_code=error_code(error),
+            continued_with_fallback=continued_with_fallback,
+            **labels,
+        )
 
 
 @contextmanager
@@ -408,16 +411,22 @@ def flush() -> None:
 
 def finish() -> None:
     global _runtime
-    if _runtime is not None:
-        if _runtime.startup:
-            record(
+    runtime = _runtime
+    _runtime = None
+    if runtime is None:
+        return
+    runtime.stop.set()
+    with suppress(Exception):
+        if runtime.startup:
+            runtime.record(
                 "ug_startup_duration_ms",
-                (time.perf_counter() - _runtime.started) * 1000,
-                **_runtime.startup_labels,
+                (time.perf_counter() - runtime.started) * 1000,
+                None,
+                runtime.startup_labels,
             )
-        _runtime.stop.set()
-        flush()
-        _runtime = None
+    # Drop the final batch rather than wait for an existing exporter at command exit.
+    with suppress(Exception):
+        runtime.flush()
 
 
 def api_operation(url: str) -> str:
