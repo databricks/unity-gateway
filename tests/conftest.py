@@ -11,9 +11,7 @@ import pytest
 
 from ucode.databricks import (
     build_shared_base_urls,
-    fetch_ai_gateway_claude_models,
-    fetch_codex_models,
-    fetch_gemini_models,
+    discover_model_services,
     get_databricks_token,
 )
 from ucode.ui import normalize_workspace_url
@@ -71,6 +69,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)
     monkeypatch.setattr(
         vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"
+    )
+    # Revert edits the user settings.json there.
+    monkeypatch.setattr(
+        vscode_mod,
+        "user_dir",
+        lambda insiders: tmp_path / "vscode-user" / ("Code - Insiders" if insiders else "Code"),
     )
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
@@ -227,9 +231,8 @@ def e2e_state_for(workspace: str) -> dict:
     command mints a fresh token per call, so a token key would miss and fetch a second snapshot.
     A failed fetch raises and is not cached."""
     token = get_databricks_token(workspace)
-    claude_models = fetch_ai_gateway_claude_models(workspace, token)
-    gemini_models = fetch_gemini_models(workspace, token)
-    codex_models = fetch_codex_models(workspace, token)
+    # UC model services, like `ug configure`: new models answer only to their `system.ai.*` names.
+    claude_models, codex_models, gemini_models, _, _ = discover_model_services(workspace, token)
 
     opencode_models: dict = {}
     if claude_models:

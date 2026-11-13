@@ -82,7 +82,7 @@ describe("streamEvents", () => {
     requests = stubFetch(tooBig, tooBig);
     await rejectsWith(
       collect(streamEvents("https://ws", "/m", { max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      "AI Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
+      "Unity Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
     );
     assert.equal(requests.length, 2);
   });
@@ -91,7 +91,7 @@ describe("streamEvents", () => {
     stubFetch([200, "<!doctype html><title>Databricks - Sign In</title>", "text/html; charset=utf-8"]);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      "AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
+      "Unity Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
     );
   });
 
@@ -99,7 +99,7 @@ describe("streamEvents", () => {
     stubFetch([400, '{"message":"bad tools"}']);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      'AI Gateway returned 400: {"message":"bad tools"}',
+      'Unity Gateway returned 400: {"message":"bad tools"}',
     );
   });
 });
@@ -175,6 +175,22 @@ describe("readConfig", () => {
       headers: { "X-Team": "ml" },
     });
     assert.equal(readConfig(JSON.stringify({ ...config, headers: ["X-Team"] })).headers, undefined);
+  });
+
+  it("keeps a well-formed trace receiver setting only", () => {
+    const base = { workspace: "https://ws", authCommand: "ug auth-token", models: [] };
+    assert.deepEqual(readConfig(JSON.stringify({ ...base, otel: { port: 4555, secret: "s3_c-r" } })).otel, { port: 4555, secret: "s3_c-r" });
+    for (const otel of [{ port: 0, secret: "s" }, { port: 70_000, secret: "s" }, { port: 4555, secret: "a/b" }, { port: "4555", secret: "s" }, "x"]) {
+      assert.equal(readConfig(JSON.stringify({ ...base, otel })).otel, undefined, JSON.stringify(otel));
+    }
+  });
+
+  it("keeps a default model only when it is one of the models", () => {
+    const base = { workspace: "https://ws", authCommand: "ug auth-token", models: [{ id: "system.ai.opus", api: "completions" }, { id: "system.ai.sonnet", api: "unknown" }] };
+    assert.equal(readConfig(JSON.stringify({ ...base, defaultModel: "system.ai.opus" })).defaultModel, "system.ai.opus");
+    for (const defaultModel of ["system.ai.sonnet", "", 3, null]) {
+      assert.equal(readConfig(JSON.stringify({ ...base, defaultModel })).defaultModel, undefined, JSON.stringify(defaultModel));
+    }
   });
 
   it("gives no models for a missing or malformed file", () => {

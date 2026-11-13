@@ -58,7 +58,7 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing
+from ucode.smart_routing import claude_routing, orchestrator, routing, session_log
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
@@ -93,6 +93,7 @@ HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
+# Omnigent matches the "ug-smart-router" plugin name exactly; update Omnigent if it changes.
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
 CLAUDE_ROUTED_AGENT_PROMPT = (
     "Complete the delegated task exactly as requested. Follow the parent agent's instructions and "
@@ -359,6 +360,7 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         "unset": [key for key in SMART_ROUTING_ENV_KEYS if key not in source],
         "recipe": source.get(routing.ROUTER_NAME_ENV_VAR, "").strip() or routing.ROUTER_NAME,
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": (
             orchestrator.CLAUDE_AGENT_DESCRIPTION
             if orchestrator.enabled(source, agent=AGENT_CLAUDE)
@@ -374,8 +376,8 @@ def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
-    """Write exact-model agents for launch-scoped loading through --plugin-dir."""
+def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = None) -> None:
+    """Write the native routing mod and roles; model IDs support legacy hook agents."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {
@@ -409,6 +411,13 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
                     "title": "Subagent router",
                     "description": "CLI argument list for a subagent routing decision",
                 },
+                "logsCommand": {
+                    "type": "string",
+                    "multiple": True,
+                    "default": [],
+                    "title": "Smart Router logs reader",
+                    "description": "CLI argument list for reading session routing logs",
+                },
                 **{
                     key: {"type": "string", "title": key, "description": "Original routing flag"}
                     for key in SMART_ROUTING_ENV_KEYS
@@ -429,7 +438,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
             },
         },
     )
-    for name, definition in _routed_claude_agent_definitions(model_ids).items():
+    for name, definition in _routed_claude_agent_definitions(model_ids or []).items():
         slug = name.partition(":")[2]
         write_text_file(
             plugin_dir / "agents" / f"{slug}.md",
@@ -455,6 +464,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str]) -> None:
         "extra-body.ts",
         "isaac-feedback.ts",
         "routing-state.ts",
+        "routing-logs.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
@@ -547,6 +557,7 @@ def route_claude_subagent(
     ``hook_output`` returns the legacy PreToolUse hook response instead, with its plain-text
     notice, for hooks that earlier UG versions persisted in settings files.
     """
+    started = time.monotonic()
     route = routing.resolve_spawn_route(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
@@ -556,6 +567,7 @@ def route_claude_subagent(
         default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
     )
+    routing_ms = round((time.monotonic() - started) * 1000)
     if route is None:
         return None
     if audit_decision:
@@ -565,6 +577,14 @@ def route_claude_subagent(
             route.task,
             route.decision,
             route.routed_model,
+        )
+        session_log.append_decision(
+            AGENT_CLAUDE,
+            payload,
+            route.task,
+            route.decision,
+            route.routed_model,
+            routing_ms=routing_ms,
         )
     if hook_output:
         updated_input = {
@@ -773,16 +793,18 @@ def launch_claude(
             session_path = _prepare_smart_router_session("claude")
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
+            route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
             mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
-                "routeCommand": routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT),
+                "routeCommand": route_command,
+                "logsCommand": [route_command[0], "smart-router-logs"],
             }
             settings.setdefault("pluginConfigs", {}).setdefault(CLAUDE_ROUTING_PLUGIN_NAME, {})[
                 "options"
             ] = mod_options
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir, model_ids)
+                _write_routed_claude_plugin(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             model_args = launch_model_args(remaining, routed_model or launch_model)

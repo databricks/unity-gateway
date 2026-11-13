@@ -1,6 +1,7 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import re
 
 import pytest
 
@@ -150,20 +151,50 @@ def test_claude_send_requires_matching_native_result():
 
 def test_claude_follow_ups_tolerate_queued_and_rejected_alongside_a_resume():
     calls = [_call(1), _call(2), _call(3)]
-    claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED), "child-id")
+    resumed = claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED))
+    assert resumed == "child-id"
 
 
 @pytest.mark.parametrize("results", [(_QUEUED,), (_REJECTED,), (_QUEUED, _REJECTED)])
 def test_claude_follow_ups_require_a_real_resume(results):
     calls = [_call(i) for i in range(1, len(results) + 1)]
-    with pytest.raises(AssertionError, match="No SendMessage resumed child-id"):
-        claude.assert_follow_ups_resumed(calls, _records(*results), "child-id")
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
 
 
 def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
     calls = [_call(1), _call(2, to="other-child")]
     with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
-        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
+        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED))
+
+
+def test_claude_follow_ups_resolve_the_single_resumed_child():
+    calls = [_call(1), _call(2), _call(3)]
+    assert (
+        claude.assert_follow_ups_resumed(calls, _records(_QUEUED, _RESUMED, _REJECTED))
+        == "child-id"
+    )
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        (
+            {"success": True, "resumedAgentId": "child-id"},
+            {"success": True, "resumedAgentId": "other-child"},
+        ),
+        ({"success": True},),
+    ],
+)
+def test_claude_follow_ups_require_exactly_one_resumed_child(results):
+    calls = [_call(i) for i in range(1, len(results) + 1)]
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
+
+
+def test_claude_follow_ups_require_a_native_result():
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
+        claude.assert_follow_ups_resumed([_call()], [])
 
 
 def _transcript_session(home, agent, transcripts):
@@ -173,6 +204,94 @@ def _transcript_session(home, agent, transcripts):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(record) + "\n" for record in records))
     return _Session(home)
+
+
+def _claude_peer_delivery(child_id, value):
+    body = "[Subagent hand-back] The report follows:\n  " + value
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": f'Another Claude session sent a message:\n<agent-message from="{child_id}">\n'
+            f"{body}\n</agent-message>",
+        },
+        "origin": {"kind": "peer", "from": child_id, "senderTaskId": child_id, "body": body},
+    }
+
+
+def _claude_child_handback(value):
+    return {
+        "type": "assistant",
+        "isSidechain": True,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "SubagentHandback",
+                    "id": "handback-1",
+                    "input": {"message": value},
+                }
+            ],
+        },
+    }
+
+
+def _claude_parent_text(value):
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": value}]},
+    }
+
+
+def test_claude_child_answer_requires_delivery_even_when_parent_hallucinates():
+    value = "3d3faaf02749"
+    fabricated = _claude_parent_text(
+        'Waiting for the subagent... <task-notification>"a fabricated quote"</task-notification>'
+    )
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-ae73fb7e161b59bbb.jsonl"
+    sessions = {parent: [fabricated], child: [_claude_child_handback(value)]}
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("ae73fb7e161b59bbb", value))
+    assert claude.claude_delivered_child_answers(sessions, value) == {"ae73fb7e161b59bbb"}
+
+
+def test_claude_child_delivery_ignores_prompt_and_tool_input_echoes():
+    value = "3d3faaf02749"
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-child-id.jsonl"
+    sessions = {
+        parent: [
+            {"type": "user", "message": {"role": "user", "content": value}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Agent", "input": {"prompt": value}}],
+                },
+            },
+        ],
+        child: [_claude_child_handback(value)],
+    }
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("other-child", value))
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_parent_text(value))
+    assert claude.claude_delivered_child_answers(sessions, value) == {"child-id"}
+    sessions[child] = [{"type": "user", "message": {"role": "user", "content": value}}]
+    assert not claude.claude_delivered_child_answers(sessions, value)
+
+
+def test_claude_child_delivery_must_belong_to_same_parent_session():
+    value = "3d3faaf02749"
+    sessions = {
+        "project/other.jsonl": [_claude_peer_delivery("child-id", value)],
+        "project/session.jsonl": [],
+        "project/session/subagents/agent-child-id.jsonl": [_claude_child_handback(value)],
+    }
+    assert not claude.claude_delivered_child_answers(sessions, value)
 
 
 def _write_answer(home, agent, *, child, value):
@@ -258,6 +377,161 @@ def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
     assert not antigravity.resource_exhausted(stdout)
 
 
+def _antigravity_web_search_events():
+    return [
+        {
+            "event": "step_update",
+            "step_update": {
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "call_mcp_tool",
+                "tool_info": {
+                    "name": "call_mcp_tool",
+                    "parameters": {
+                        "ServerName": "system-ai-web_search",
+                        "ToolName": "web_search",
+                        "Arguments": {"query": "Databricks official website"},
+                    },
+                    "output": "Official site: https://www.databricks.com/",
+                },
+            },
+        },
+        {
+            "event": "result",
+            "result": {"status": "SUCCESS", "response": "https://www.databricks.com/"},
+        },
+    ]
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_antigravity_web_search_requires_native_result_and_matching_answer(encoded):
+    events = _antigravity_web_search_events()
+    if encoded:
+        call = events[0]["step_update"]["tool_info"]
+        call["output"] = json.dumps(
+            {"isError": False, "content": [{"type": "text", "text": call["output"]}]}
+        )
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        (
+            "Databricks' official website is: **https://www.databricks.com/** "
+            "([databricks.com](https://www.databricks.com//?utm_source=openai))",
+            "https://www.databricks.com/",
+        ),
+        ("*https://www.databricks.com/*", "https://www.databricks.com/"),
+        ("`https://www.databricks.com/`", "https://www.databricks.com/"),
+        ("https://www.databricks.com/", "**https://www.databricks.com/**"),
+        ("https://www.databricks.com/", "`https://www.databricks.com/`"),
+        ("[Databricks](https://www.databricks.com/)", "<https://www.databricks.com/>"),
+        ("**https://www.databricks.com/**.", "https://www.databricks.com/"),
+        ("*https://www.databricks.com/*,", "https://www.databricks.com/"),
+        ("`https://www.databricks.com/`.", "https://www.databricks.com/"),
+    ],
+)
+def test_antigravity_web_search_matches_urls_inside_markdown(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        ("https://www.databricks.com//?utm_source=openai", "https://www.databricks.com/\n"),
+        (
+            "[Databricks](https://www.databricks.com//?utm_source=openai)",
+            "https://www.databricks.com/",
+        ),
+        ("https://www.databricks.com/", "https://www.databricks.com/?utm_source=openai"),
+        (
+            "https://www.databricks.com/?utm_source=openai&q=a#top",
+            "https://www.databricks.com/?q=a#top",
+        ),
+    ],
+)
+def test_antigravity_web_search_matches_homepage_tracking_urls(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        ("**https://www.databricks.com/a**", "https://www.databricks.com/b"),
+        ("**https://www.databricks.com/?q=a**", "https://www.databricks.com/?q=b"),
+        ("**https://www.databricks.com/#a**", "https://www.databricks.com/#b"),
+        ("https://www.databricks.com/?q=*", "https://www.databricks.com/?q="),
+        ("**https://www.databricks.com/?q=*.**", "https://www.databricks.com/?q=*"),
+        ("https://www.databricks.com/?q=.", "https://www.databricks.com/?q="),
+        ("https://www.databricks.com//?utm_source=openai", "https://www.databricks.com/a"),
+        ("https://www.databricks.com/?utm_source=openai&q=a", "https://www.databricks.com/?q=b"),
+        ("https://www.databricks.com/?utm_source=openai#top", "https://www.databricks.com/"),
+        ("https://www.databricks.com/", "http://www.databricks.com/"),
+        ("https://www.databricks.com/", "https://databricks.com/"),
+        ("https://www.databricks.com/", "https://www.databricks.com.example.org/"),
+    ],
+)
+def test_antigravity_web_search_preserves_url_path_query_and_fragment(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    with pytest.raises(AssertionError):
+        antigravity.assert_mcp_web_search_answer(
+            events, server="system-ai-web_search", query="Databricks official website"
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ((0, "step_update", "state"), "ACTIVE"),
+        ((0, "step_update", "state"), "ERROR"),
+        ((0, "step_update", "tool_name"), "search_web"),
+        ((0, "step_update", "tool_info", "parameters", "ServerName"), "another-server"),
+        ((0, "step_update", "tool_info", "parameters", "ToolName"), "execute_sql"),
+        ((0, "step_update", "tool_info", "parameters", "Arguments", "query"), "another query"),
+        ((0, "step_update", "tool_info", "error"), {"type": "TOOL_ERROR"}),
+        ((0, "step_update", "tool_info", "output"), ""),
+        ((0, "step_update", "tool_info", "output"), "https://www.databricks.com.example.org/"),
+        (
+            (0, "step_update", "tool_info", "output"),
+            '{"isError": true, "content": [{"type": "text", "text": "https://www.databricks.com/"}]}',
+        ),
+        ((1, "result", "status"), "ERROR"),
+        ((1, "result", "response"), ""),
+        ((1, "result", "response"), "https://www.databricks.com/not-returned-by-search"),
+        ((1, "result", "denied_actions"), [{"action": "command", "display_name": "RunCommand"}]),
+    ],
+)
+def test_antigravity_web_search_rejects_incomplete_or_unrelated_evidence(path, value):
+    events = _antigravity_web_search_events()
+    target = events
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(AssertionError):
+        antigravity.assert_mcp_web_search_answer(
+            events, server="system-ai-web_search", query="Databricks official website"
+        )
+
+
 def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(monkeypatch):
     monkeypatch.setattr(antigravity.random, "uniform", lambda _start, _end: 0)
 
@@ -268,6 +542,24 @@ def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(mon
         20,
         20,
     ]
+
+
+def test_tagged_calculation_uses_a_short_native_task_name():
+    task = SubagentCalculation("1+2", "3")
+
+    assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("child", [False, True])
+def test_tagged_calculation_rejects_mistyped_marker_and_wrong_result(tmp_path, agent, child):
+    session = _Session(tmp_path)
+    task = SubagentCalculation("1+2", "3")
+
+    for answer in (task.marker[:-1] + "=3", task.marker + "=4"):
+        _write_answer(tmp_path, agent, child=child, value=answer)
+
+        assert not task.completed(session, agent, child=child)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -624,3 +916,64 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
         "ug_subagent_ab12",
         orchestrator_on=True,
     )
+
+
+def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():
+    calls = [_call(1), _call(2)]
+    assert claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _RESUMED)) == "child-id"
+
+
+_PARENT = "/home/.claude/projects/p/parent.jsonl"
+
+
+def _spawn(call_id, prompt="read input.txt"):
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": call_id, "name": "Agent", "input": {"prompt": prompt}}
+            ]
+        },
+    }
+
+
+def _child(name):
+    return {f"/home/.claude/projects/p/parent/subagents/agent-{name}.jsonl": [{"type": "user"}]}
+
+
+def test_claude_one_delegated_task_tolerates_identical_duplicate_spawns():
+    sessions = {_PARENT: [_spawn("a"), _spawn("b")], **_child("one"), **_child("two")}
+    claude.assert_one_delegated_task(sessions)
+
+
+@pytest.mark.parametrize(
+    "sessions",
+    [
+        {_PARENT: [_spawn("a"), _spawn("b", "read other.txt")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a")]},
+    ],
+    ids=["differently-tasked-spawn", "no-child"],
+)
+def test_claude_one_delegated_task_rejects_other_shapes(sessions):
+    with pytest.raises(AssertionError):
+        claude.assert_one_delegated_task(sessions)
+
+
+def test_claude_follow_up_spawned_nothing_accepts_unchanged_children_and_spawns():
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    after = {_PARENT: [_spawn("a"), {"type": "user"}], **_child("one")}
+    claude.assert_follow_up_spawned_nothing(before, after)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {_PARENT: [_spawn("a")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a"), _spawn("b")], **_child("one")},
+    ],
+    ids=["new-child", "new-spawn"],
+)
+def test_claude_follow_up_spawned_nothing_rejects_new_children_or_spawns(after):
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    with pytest.raises(AssertionError):
+        claude.assert_follow_up_spawned_nothing(before, after)

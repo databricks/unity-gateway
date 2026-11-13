@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 from ucode.config_io import APP_DIR
-from ucode.smart_routing import routing
+from ucode.smart_routing import routing, session_log
 
 # Claude Code's subagent-spawn tool (renamed Task -> Agent); match both.
 SPAWN_AGENT_TOOL_NAMES = ("agent", "task")
@@ -82,5 +82,6 @@ def record_subagent_start(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def clear_routing_artifacts() -> None:
-    """Remove ucode-owned routing canary and audit files."""
+    """Remove ucode-owned routing canary, audit, decision, and session log files."""
     routing.clear_artifacts((CANARY_PATH, AUDIT_PATH, DECISIONS_PATH))
+    session_log.clear_logs()
