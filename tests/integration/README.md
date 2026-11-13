@@ -12,7 +12,8 @@ root and match its thread ID, excluding native temporary threads used for titles
 Windows uses UG's installed Python and native
 approval dialogs, preserving the sandbox.
 Toggle approvals accept only the requested command or its exact environment-variable guard
-on POSIX and PowerShell; extra commands and non-local execution remain rejected.
+on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
+remain rejected.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
