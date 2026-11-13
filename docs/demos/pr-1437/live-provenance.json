@@ -1,0 +1,82 @@
+{
+  "recorded_at_utc": "2026-11-13T21:14:50Z",
+  "source_head": "ea7141fc5b83473d37d5e1a09cce34202cceb663",
+  "product_source_head": "ab985f45bb371eceeb12bc035708e561bdb9d3cf",
+  "source_tree": "af669a230ff93510018f3d6cfc742e2f4a7fbad3",
+  "native_client": "Claude Code 2.1.314",
+  "native_binary_sha256": "4487042b4c4f5d88d4568f68ae98aae0b1ffae58864cf57fb868641bc5f84594",
+  "unity_gateway_version": "0.0.0+1.gea7141f",
+  "python_version": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "lock_sha256": "fa3f5ea6c1e1462bd69e3ae8f8d0c0ea2ea61f849467a87b94f077fe3e7cc9b2",
+  "models": {
+    "parent": "system.ai.claude-sonnet-5-5",
+    "child": "system.ai.claude-haiku-5-5"
+  },
+  "live_native_response_counts": {
+    "system.ai.claude-sonnet-5-5": 10,
+    "system.ai.claude-haiku-5-5": 3
+  },
+  "live_routing_decisions": 1,
+  "model_response_fixtures": false,
+  "first_disable_reused_supplied_reason": true,
+  "disable_reason": "I want to choose the model for this check.",
+  "sample": {
+    "name": "sample.txt",
+    "text": "Unity Gateway PR 1437 live demo.\nVerify these file bytes in one native child.\n",
+    "bytes": 78,
+    "sha256": "fbf2b0e1740c6a18d30262701bc2d293fbf844290e68cf0252577bd90c6155ca"
+  },
+  "native_child_command": "sha256sum sample.txt && wc -c < sample.txt",
+  "returned_evidence": {
+    "file": "sample.txt",
+    "sha256": "fbf2b0e1740c6a18d30262701bc2d293fbf844290e68cf0252577bd90c6155ca",
+    "byte_count": 78
+  },
+  "native_log_preview": {
+    "assignment_characters": 638,
+    "prefix_characters": 160,
+    "ellipsis": true,
+    "codex_legacy_notice_exercised": false
+  },
+  "limitations": [
+    "Feedback submission unavailable: unknown isaac-feedback skill.",
+    "Assignment explanation came after spawning.",
+    "Parent returned a file path; clickable evidence link was not observed.",
+    "Codex legacy notice and encrypted omission unobserved live.",
+    "No claim of general instruction-following, billing behavior or other-provider compatibility."
+  ],
+  "configuration": {
+    "existing_authentication": true,
+    "normal_profiles_unchanged": true,
+    "corporate_policy_retained": true,
+    "private_picker": "Four already-discovered family defaults; no forced route or response."
+  },
+  "recording": {
+    "file": "live-recording.mp4",
+    "bytes": 1182452,
+    "sha256": "12e34e657b2f1b08045560ad6d17df77fae1ba986769e9a640a7ad178e7f1f5c",
+    "duration_seconds": 44.2,
+    "fps": 10,
+    "resolution": [
+      1440,
+      900
+    ],
+    "method": "Observed native PTY cells at original timestamps; onboarding/exit trimmed. A native log-reader CLI clip follows. Home path and session ID masked."
+  },
+  "preview": {
+    "file": "live-preview.png",
+    "bytes": 406256,
+    "sha256": "06276e3dcf3f5d26216b98c933c72ddc57aeb02d69ca9a832bcecd3433488e4f"
+  },
+  "private_evidence_archive_sha256": "878fa3d2c78ba9a6b17f6630dd806f6823a8cf465bf52f7c83acd02a18f1fc4d",
+  "validation": {
+    "full_video_decode": true,
+    "keyframes_visually_checked": true,
+    "actual_child_file_hash_verified": true
+  },
+  "historical_fixture_recording": {
+    "file": "recording.mp4",
+    "sha256": "d8aba9ac5b235768ec7ed7f995708bbf08328f8a224aa507198385c7e3c7fe48",
+    "satisfies_live_requirement": false
+  }
+}
