@@ -1,5 +1,12 @@
 # Test suites and user journeys
 
+Codex ChatGPT relay journeys in `integration/test_ug_codex_relayed.py` check a real
+`gpt-6-luna` file task through the relay and configure/revert preservation of user settings,
+including a preselected Windows sandbox.
+CI maps the `CODEX_OAUTH_TOKEN` secret to Codex's `CODEX_ACCESS_TOKEN`; the session
+redaction check in `test_cuj_session.py` keeps that credential out of evidence.
+Desktop inference and browser sign-in remain outside these journeys.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
