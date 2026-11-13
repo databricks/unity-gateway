@@ -105,6 +105,7 @@ jobs:
         id: gate
         env:
           EVENT_NAME: pull_request
+          HEAD_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).head_sha }}
           AUTHOR_ASSOCIATION: ${{ fromJSON(needs.resolve.outputs.metadata).author_association }}
           PR_AUTHOR: ${{ fromJSON(needs.resolve.outputs.metadata).author }}
           PR_AUTHOR_TYPE: ${{ fromJSON(needs.resolve.outputs.metadata).author_type }}
@@ -187,7 +188,7 @@ jobs:
           # never failed for pre-existing findings.
           : > targets.txt
           while IFS= read -r -d '' f; do
-            [ -f "pr/$f" ] && printf 'pr/%s\0' "$f" >> targets.txt
+            [ -f "pr/$f" ] && [ ! -L "pr/$f" ] && printf 'pr/%s\0' "$f" >> targets.txt
           done < changed.txt
           if [ ! -s targets.txt ]; then
             echo "No changed files to semgrep."; exit 0
@@ -202,7 +203,14 @@ jobs:
             --disable-nosem --metrics=off --quiet --json < targets.txt > semgrep.json
           python3 - semgrep.json <<'EOF'
           import json, sys
-          results = json.load(open(sys.argv[1]))["results"]
+          pending = open(sys.argv[1]).read().strip()
+          results = []
+          while True:
+              report, end = json.JSONDecoder().raw_decode(pending)
+              results.extend(report["results"])
+              pending = pending[end:].lstrip()
+              if not pending:
+                  break
           for r in results:
               message = " ".join(r["extra"]["message"].split())
               print(f"::error file={r['path'].removeprefix('pr/')},line={r['start']['line']}::{message}")
@@ -211,9 +219,11 @@ jobs:
 
       - name: Explain the maintainer waiver (on failure)
         if: ${{ failure() }}
+        env:
+          HEAD_SHA: ${{ fromJSON(needs.resolve.outputs.metadata).head_sha }}
         run: |
           # Re-run all jobs so the resolver reads the updated labels from GitHub.
-          MSG="A maintainer can skip the Security Scan by applying the 'skip-security-scan' label (requires Triage permission), then re-running all jobs in this Security Scan and re-running failed CI jobs."
+          MSG="A maintainer can skip the Security Scan by applying the 'skip-scan:$HEAD_SHA' label for this commit (requires Triage permission), then re-running all jobs in this Security Scan and re-running failed CI jobs."
           echo "::error::$MSG"
           {
             echo "### Security Scan failed"

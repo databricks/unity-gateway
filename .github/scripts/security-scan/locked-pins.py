@@ -12,7 +12,10 @@ import sys
 import tomllib
 from pathlib import Path
 
-text = Path(sys.argv[1]).read_text() if Path(sys.argv[1]).is_file() else ""
+path = Path(sys.argv[1])
+if path.is_symlink():
+    sys.exit("::error::uv.lock must be a regular file, not a symbolic link.")
+text = path.read_text() if path.is_file() else ""
 for package in tomllib.loads(text).get("package", []):
     if "registry" in package.get("source", {}):
         print(f"{package['name']}=={package['version']}")

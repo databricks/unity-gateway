@@ -1414,10 +1414,12 @@ CI and publisher tests wait through `Security Gate`. The gate finds the PR's CI 
 requires a successful `workflow_run` scan for that run ID. A same-named PR-authored scan cannot
 satisfy it. All ordinary PR gates use hosted runners and the public API. Authorized comment
 runs use main's gate on the allowlisted pool. Queries are scoped to the selected CI request,
-with one-minute polling and an explicit retry message when public API quotas are exhausted.
-`test_security_gate_waits_for_the_current_scan` covers authenticated and anonymous requests, failure/timeout,
-pagination and scan provenance; the request and comment tests cover mismatched identities.
-`test_security_gate_explains_rate_limits` checks 403/429 retry messages.
+with two-minute polling for up to 20 minutes and explicit retry messages for API errors.
+The job budget is 25 minutes to allow for request latency.
+`test_security_gate_waits_for_the_current_scan` covers failure/timeout, pagination and scan
+provenance; separate cases cover authentication and mismatched request/comment identities.
+`test_security_gate_explains_rate_limits` checks 403/429 retry messages; the API-error cases
+cover access errors, server failures and network timeouts.
 The workflow-expression tests verify runner/token selection. These component tests do not
 establish live event delivery, organization runner restrictions or ruleset enforcement.
 
@@ -1428,13 +1430,17 @@ triggers alongside workflow reuse. Push, schedule and dispatch skip the gate. Me
 rely on native PR enforcement; live verification remains a
 [rollout blocker](#security-scan-rollout).
 
-`test_security_scan_runs_before_every_job_that_runs_pr_code` checks the wiring
-and the diff flags that keep a PR's `.gitattributes` from hiding changes, and
+`test_security_scan_runs_before_every_job_that_runs_pr_code` checks every CI/publisher job
+has a dependency path through the gate and checks the diff flags that keep a PR's
+`.gitattributes` from hiding changes. The shared scanner test
 `test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
 a name the exfil scan watches. `test_security_scan_parsers_survive_diff_and_path_tricks` checks
 that added lines posing as diff headers and quoted or non-ASCII file names still reach the exfil,
-secret and sensitive-path checks. The detectors' patterns and semgrep's `nosem` handling have
-no automated tests.
+secret and sensitive-path checks. These shared scanner tests live in `test_security_scan.py`,
+alongside coverage for commit-scoped waivers, trusted-author exemptions, decoder detection,
+justfile warnings, symlink handling and multi-batch Semgrep report parsing. They use inert
+fixtures and never execute contributed code. Semgrep rules, `nosem` behavior and live
+advisory-service responses have no automated coverage.
 
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
 job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
@@ -1668,6 +1674,12 @@ proves inference with qualified MPS models.
    An org administrator must require `.github/workflows/security-gate.yml` from
    `databricks/unity-gateway` at protected `refs/heads/main` using a **required-workflow
    ruleset**, not just a required check name. Keep the existing `test`/`e2e` checks.
+   In organization **Settings → Rules → Rulesets**, target this repository and `main`,
+   select **Require workflows to pass before merging**, and choose that repository,
+   workflow path and ref. Limit bypass actors. Validate on a temporary branch first
+   as described below, then activate on main and verify the effective branch rules
+   include a `workflows` rule. A required workflow blocks merging; runner restrictions
+   separately control which definitions can execute on the protected pool.
 3. Restrict protected runner access to approved workflow definitions at trusted refs.
    The new direct definitions are
    `databricks/unity-gateway/.github/workflows/security-scan.yml@refs/heads/main` and
@@ -1692,7 +1704,10 @@ do not use it as scan evidence. Runner policy also remains unverified: the curre
 credentials received HTTP 403 from the org runner-groups API. These are open rollout
 requirements, not guarantees supplied by the YAML or component tests.
 
-Re-running CI reuses its original scan. After a maintainer applies `skip-security-scan`,
-re-run all scan jobs to refresh labels, then the failed CI jobs. Public API limits still
+Re-running CI reuses its original scan. A maintainer can apply
+`skip-scan:<full 40-character head SHA>` for a reviewed commit, then re-run all scan jobs
+to refresh labels and the failed CI jobs. Later pushes need a new waiver; the old generic
+`skip-security-scan` label has no effect. Gates poll every two minutes for up to 20 minutes
+(with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.

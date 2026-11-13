@@ -11,16 +11,16 @@
 # for this one. author_association and the PR author login are set by GitHub,
 # not by PR contents.
 #
-# Waiver: the `skip-security-scan` label. Applying a label needs Triage
-# permission, which a fork author never has, so the label is the maintainer gate.
+# Waiver: `skip-scan:<full head SHA>` applies only to the reviewed commit.
+# Applying labels requires Triage permission.
 #
 # Env in:  EVENT_NAME, AUTHOR_ASSOCIATION, PR_AUTHOR, PR_AUTHOR_TYPE,
-#          PR_HEAD_REPO, REPO, PR_LABELS
+#          PR_HEAD_REPO, REPO, PR_LABELS, HEAD_SHA
 # Out:     `scan=true|false` and `reason` on $GITHUB_OUTPUT.
 
 set -euo pipefail
 
-SKIP_LABEL="skip-security-scan"
+SKIP_LABEL="skip-scan:${HEAD_SHA:-}"
 
 emit() {
   echo "scan=$1" >> "$GITHUB_OUTPUT"
@@ -31,7 +31,8 @@ emit() {
 # PR_LABELS comes from the trusted resolver's GitHub API response. The scan
 # runner itself needs no API access.
 has_skip_label() {
-  [[ "${PR_LABELS:-[]}" == *"\"$SKIP_LABEL\""* ]]
+  [[ "${HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] &&
+    [[ "${PR_LABELS:-[]}" == *"\"$SKIP_LABEL\""* ]]
 }
 
 case "${EVENT_NAME:-}" in

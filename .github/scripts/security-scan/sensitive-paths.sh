@@ -46,7 +46,7 @@ while IFS= read -r -d '' path; do
       echo "::error file=$path::Untrusted PR edits .gitattributes, which can mark changes binary or rewrite them so reviewers and scans don't see them; a maintainer must review."
       fail=1
       ;;
-    setup.py | */setup.py | pyproject.toml | */pyproject.toml | conftest.py | */conftest.py)
+    setup.py | */setup.py | pyproject.toml | */pyproject.toml | conftest.py | */conftest.py | [Jj]ustfile | */[Jj]ustfile)
       echo "::warning file=$path::PR edits a build/test hook that runs code at install or collection time. Review for code execution side effects."
       ;;
     uv.lock | */uv.lock | package-lock.json | */package-lock.json | yarn.lock | */yarn.lock)

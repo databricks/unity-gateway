@@ -76,6 +76,8 @@ def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
         ("request", ("event",), "push"),
         ("request", ("path",), ".github/workflows/other.yml"),
         ("request", ("display_title",), "Unrecognized request"),
+        ("request", ("display_title",), "CI #7 extra"),
+        ("request", ("display_title",), "CI #07"),
         ("pr", ("number",), 8),
         ("pr", ("state",), "closed"),
         ("pr", ("head", "sha"), "c" * 40),
