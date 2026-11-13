@@ -1,6 +1,7 @@
 name: Fork integration
 
-# Org members can run any PR; prior contributors can run their own PR with CI secrets.
+# Only org members can run it, on any PR, because it runs the PR's code with CI secrets;
+# outside contributors ask a member, who reviews the changes first.
 # `/integration-test [sha]` pins the current head, or requires the named reviewed commit.
 # Workflow definitions always come from the default branch.
 on:
@@ -18,9 +19,7 @@ jobs:
         github.event.issue.pull_request &&
         (github.event.comment.body == '/integration-test' ||
           startsWith(github.event.comment.body, '/integration-test ')) &&
-        (contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) ||
-          (github.event.comment.author_association == 'CONTRIBUTOR' &&
-            github.event.comment.user.id == github.event.issue.user.id))
+        contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
     runs-on:
       group: databricks-protected-runner-group
@@ -72,9 +71,7 @@ jobs:
         github.event.issue.pull_request &&
         (github.event.comment.body == '/integration-test' ||
           startsWith(github.event.comment.body, '/integration-test ')) &&
-        !(contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association) ||
-          (github.event.comment.author_association == 'CONTRIBUTOR' &&
-            github.event.comment.user.id == github.event.issue.user.id))
+        !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
       }}
     runs-on:
       group: databricks-protected-runner-group
@@ -90,7 +87,7 @@ jobs:
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
-            "Sorry @$COMMENTER, only Databricks org members can run integration tests on any PR. Prior contributors can run integration tests on their own PR. A maintainer can run \`/integration-test\` after reviewing the changes."
+            "Sorry @$COMMENTER, only Databricks org members can run integration tests, because they run the PR's code with CI secrets. A maintainer can run \`/integration-test\` after reviewing the changes."
 
   integration:
     name: Integration
