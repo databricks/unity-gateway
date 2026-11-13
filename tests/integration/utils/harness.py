@@ -150,6 +150,8 @@ class UserSession:
         strip_ansi: bool = True,
     ):
         command = [str(binary or self.binary), *args]
+        started_at = time.time()
+        started = time.monotonic()
         proc = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -183,6 +185,9 @@ class UserSession:
                 "argv": command,
                 "returncode": result.returncode,
                 "timed_out": timed_out,
+                "started_at": started_at,
+                "elapsed_ms": round((time.monotonic() - started) * 1000),
+                "timeout_s": timeout,
                 "stdin": input_text,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
@@ -213,6 +218,72 @@ class UserSession:
 
     def record(self, name: str, value: object) -> None:
         (self.artifacts / name).write_text(self.redact(json.dumps(value, indent=2)))
+
+    def collect_routing_diagnostics(self) -> None:
+        records = []
+        try:
+            paths = sorted(
+                (path for path in (self.home / ".claude/debug").glob("*.txt") if path.is_file()),
+                key=lambda path: path.stat().st_mtime,
+            )[-16:]
+            for path in paths:
+                with path.open("rb") as log:
+                    log.seek(max(0, path.stat().st_size - 262144))
+                    lines = log.read(262144).decode("utf-8", errors="replace").splitlines()
+                for line in lines:
+                    _, prefix, payload = line.partition("[ug-routing] ")
+                    if not prefix or len(payload) > 4096:
+                        continue
+                    try:
+                        record = json.JSONDecoder().raw_decode(payload)[0]
+                    except (ValueError, RecursionError):
+                        continue
+                    if not isinstance(record, dict) or record.get("v") != 1:
+                        continue
+                    safe = {"v": 1}
+                    for key, value in record.items():
+                        if key in {
+                            "event",
+                            "phase",
+                            "outcome",
+                            "error_type",
+                            "client_request_id",
+                            "server_request_id",
+                            "hook_id",
+                            "tool_use_id",
+                            "router_name",
+                        }:
+                            if isinstance(value, str) and re.fullmatch(
+                                r"[A-Za-z0-9_.:-]{1,128}", value
+                            ):
+                                safe[key] = value
+                        elif key in {
+                            "at",
+                            "elapsed_ms",
+                            "timeout_s",
+                            "timeout_ms",
+                            "http_status",
+                            "open_response_ms",
+                            "read_body_ms",
+                            "decode_response_ms",
+                            "validate_selection_ms",
+                            "route_option_count",
+                        }:
+                            if isinstance(value, (int, float)) and 0 <= value < float("inf"):
+                                safe[key] = value
+                    if safe.get("event") in {
+                        "request_start",
+                        "request_finish",
+                        "hook_start",
+                        "hook_finish",
+                        "command_start",
+                        "command_finish",
+                    }:
+                        records.append(safe)
+            if records:
+                self.record("routing-diagnostics.json", records)
+        except OSError:
+            pass
 
     def state(self) -> dict:
         return json.loads((self.home / ".ucode/state.json").read_text())

@@ -14,13 +14,15 @@ import json
 import logging
 import os
 import re
+import sys
 import textwrap
 import time
 import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,80 @@ SUBAGENT_ROUTING_DISCLAIMER = (
 ROUTING_BOX_WIDTH = 73
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
+
+_DIAGNOSTIC_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+_ROUTING_HOOK: ContextVar[tuple[str, str | None] | None] = ContextVar(
+    "ug_routing_hook", default=None
+)
+
+
+def _diagnostic_identifier(value: Any) -> str | None:
+    return value if isinstance(value, str) and _DIAGNOSTIC_IDENTIFIER_RE.fullmatch(value) else None
+
+
+def _emit_routing_diagnostic(event: str, **fields: Any) -> None:
+    try:
+        stderr = sys.stderr
+        if stderr is None or stderr.isatty():
+            return
+        hook_id, tool_use_id = _ROUTING_HOOK.get() or (None, None)
+        record = dict(
+            v=1, event=event, at=time.time(), hook_id=hook_id, tool_use_id=tool_use_id, **fields
+        )
+        stderr.write("[ug-routing] " + json.dumps(record, allow_nan=False) + "\n")
+        stderr.flush()
+    except (AttributeError, OSError, ValueError):
+        # Diagnostics must not change the routing result, even with a broken stderr.
+        pass
+
+
+@dataclass
+class _RoutingAttempt:
+    client_request_id: str
+    router_name: str | None
+    route_option_count: int
+    timeout_s: float
+    started: float
+    phase: str = "open_response"
+    phase_started: float = 0.0
+    outcome: str = "unexpected_error"
+    error_type: str | None = None
+    http_status: int | None = None
+    server_request_id: str | None = None
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def advance(self, phase: str) -> None:
+        now = time.monotonic()
+        self.timings[self.phase + "_ms"] = round((now - self.phase_started) * 1000, 3)
+        self.phase, self.phase_started = phase, now
+
+    def response(self, response: Any) -> None:
+        status = getattr(response, "status", None)
+        self.http_status = status if isinstance(status, int) and 100 <= status <= 599 else None
+        headers = getattr(response, "headers", None)
+        if headers is not None:
+            self.server_request_id = _diagnostic_identifier(headers.get("x-request-id")) or (
+                _diagnostic_identifier(headers.get("x-databricks-request-id"))
+            )
+
+    def emit(self, event: str) -> None:
+        finishing = event == "request_finish"
+        if finishing:
+            self.advance(self.phase)
+        _emit_routing_diagnostic(
+            event,
+            client_request_id=self.client_request_id,
+            router_name=self.router_name,
+            route_option_count=self.route_option_count,
+            timeout_s=self.timeout_s,
+            elapsed_ms=round((time.monotonic() - self.started) * 1000, 3) if finishing else 0,
+            phase=self.phase,
+            outcome=self.outcome if finishing else "started",
+            error_type=self.error_type,
+            http_status=self.http_status,
+            server_request_id=self.server_request_id,
+            **self.timings,
+        )
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -225,6 +301,7 @@ def select_route(
         "task": {"prompt": task},
         "route_selector": {"router_name": router_name},
     }
+    client_request_id = str(uuid.uuid4())
     request = urllib.request.Request(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
@@ -233,43 +310,82 @@ def select_route(
             **workspace_headers(workspace),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
+            "X-Client-Request-Id": client_request_id,
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read().decode("utf-8", errors="replace").strip()
-        except OSError:
-            pass
-        reason = f"router returned HTTP {exc.code}"
-        if detail:
-            reason = f"{reason}: {detail[:300]}"
-        return None, reason
-    except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
-        return None, f"router request failed: {exc}"
-
-    model = _selected_model(payload)
-    if model is None:
-        return None, "router returned no model selection"
-    if model not in {offered for offered, _ in offered_routes}:
-        return None, f"router selected a model it was not offered: {model!r}"
-    raw_rationale = payload.get("rationale")
-    raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
-    rationale = format_rationale(payload["route_selection"][0], raw_rationale)
-    return (
-        RoutingDecision(
-            model=model,
-            rationale=rationale,
-            route_options=offered_routes,
-            router_name=router_name,
-            raw_rationale=raw_rationale if rationale != raw_rationale else None,
-        ),
-        None,
+    attempt = _RoutingAttempt(
+        client_request_id,
+        _diagnostic_identifier(router_name),
+        len(offered_routes),
+        timeout,
+        time.monotonic(),
     )
+    attempt.phase_started = attempt.started
+    attempt.emit("request_start")
+    try:
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                attempt.response(response)
+                attempt.advance("read_body")
+                raw_body = response.read()
+                attempt.advance("decode_response")
+                payload = json.loads(raw_body.decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            attempt.response(exc)
+            attempt.http_status = exc.code
+            attempt.outcome = "http_error"
+            attempt.error_type = _diagnostic_identifier(type(exc).__name__)
+            attempt.advance("read_body")
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            reason = f"router returned HTTP {exc.code}"
+            if detail:
+                reason = f"{reason}: {detail[:300]}"
+            return None, reason
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
+            cause = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+            attempt.error_type = _diagnostic_identifier(
+                type(cause if isinstance(cause, BaseException) else exc).__name__
+            )
+            if isinstance(cause, TimeoutError):
+                attempt.outcome = "timeout"
+            elif isinstance(exc, ValueError):
+                attempt.outcome = "invalid_json"
+            else:
+                attempt.outcome = "transport_error"
+            return None, f"router request failed: {exc}"
+
+        attempt.advance("validate_selection")
+        model = _selected_model(payload)
+        if model is None:
+            attempt.outcome = "no_selection"
+            return None, "router returned no model selection"
+        if model not in {offered for offered, _ in offered_routes}:
+            attempt.outcome = "unoffered_model"
+            return None, f"router selected a model it was not offered: {model!r}"
+        raw_rationale = payload.get("rationale")
+        raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
+        rationale = format_rationale(payload["route_selection"][0], raw_rationale)
+        attempt.outcome = "selected"
+        return (
+            RoutingDecision(
+                model=model,
+                rationale=rationale,
+                route_options=offered_routes,
+                router_name=router_name,
+                raw_rationale=raw_rationale if rationale != raw_rationale else None,
+            ),
+            None,
+        )
+    except Exception as exc:
+        attempt.error_type = _diagnostic_identifier(type(exc).__name__)
+        raise
+    finally:
+        attempt.emit("request_finish")
 
 
 def resolve_spawn_route(
@@ -298,14 +414,30 @@ def resolve_spawn_route(
         ),
         default_task_label,
     )
-    decision, reason = decision_fn(task)
-    if decision is None:
-        logging.getLogger(__name__).warning(
-            "Smart Router could not route subagent: %s", reason or "no routing decision"
+    token = _ROUTING_HOOK.set(
+        (str(uuid.uuid4()), _diagnostic_identifier(payload.get("tool_use_id")))
+    )
+    started = time.monotonic()
+    outcome = "unexpected_error"
+    _emit_routing_diagnostic("hook_start", elapsed_ms=0, outcome="started")
+    try:
+        decision, reason = decision_fn(task)
+        if decision is None:
+            outcome = "no_decision"
+            logging.getLogger(__name__).warning(
+                "Smart Router could not route subagent: %s", reason or "no routing decision"
+            )
+            return None
+        routed_model = model_id_mapper(decision.model)
+        outcome = "resolved"
+        return SpawnRoute(tool_input, task, decision, routed_model)
+    finally:
+        _emit_routing_diagnostic(
+            "hook_finish",
+            elapsed_ms=round((time.monotonic() - started) * 1000, 3),
+            outcome=outcome,
         )
-        return None
-    routed_model = model_id_mapper(decision.model)
-    return SpawnRoute(tool_input, task, decision, routed_model)
+        _ROUTING_HOOK.reset(token)
 
 
 def route_spawn_tool(

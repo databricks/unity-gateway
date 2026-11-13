@@ -12,11 +12,47 @@ import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from tests.integration.utils import terminal
 from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
+
+
+@pytest.mark.parametrize(
+    ("kind", "agent", "args", "debug"),
+    [
+        (terminal.AgentTerminal, "claude", ["claude"], True),
+        (terminal.AgentTerminal, "claude", ["claude", "--", "--model", "sonnet"], True),
+        (terminal.AgentTerminal, "claude", [], False),
+        (terminal.ConfigureTerminal, "claude", ["configure"], False),
+        (terminal.AgentTerminal, "codex", ["codex"], False),
+    ],
+)
+def test_debug_args_only_reach_explicit_claude_launch(
+    tmp_path, monkeypatch, kind, agent, args, debug
+):
+    # Capture only the PTY boundary; command construction stays real and needs no agent binary.
+    launched = []
+
+    def spawn(command, cwd, env, dimensions):
+        launched.extend(command)
+        return SimpleNamespace(send=lambda data: None)
+
+    monkeypatch.setattr(terminal, "spawn_pty", spawn)
+    session = UserSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
+    command = [str(session.binary), *args]
+    kind(session, agent, command, "launch")
+    assert command == [str(session.binary), *args]
+    if debug:
+        assert launched[-2] == "--debug-file"
+        assert Path(launched[-1]).is_relative_to(session.home / ".claude/debug")
+        assert launched.count("--") == 1
+        assert launched[: len(command)] == command
+    else:
+        assert launched == command
 
 
 def _markers(nodes):
@@ -56,6 +92,92 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     assert json.loads(payload) == {"event": "request_start", "request_id": "diagnostic-check"}
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["stderr"] == result.stderr
+
+
+def test_failed_routing_diagnostics_survive_command_artifact_capture(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+
+    result = session.run(
+        "-c",
+        "import json; from ucode.smart_routing.routing import select_route; "
+        "decision, error = select_route('http://127.0.0.1:1', 'private-bearer', "
+        "'private-task', [('model', 'claude')], router_name='stable', timeout=0.1); "
+        "print(json.dumps({'decision': decision, 'failed': error is not None}))",
+        timeout=10,
+    )
+
+    assert json.loads(result.stdout) == {"decision": None, "failed": True}
+    records = [
+        json.loads(line.removeprefix("[ug-routing] "))
+        for line in result.stderr.splitlines()
+        if line.startswith("[ug-routing] ")
+    ]
+    assert [record["event"] for record in records] == ["request_start", "request_finish"]
+    assert records[-1]["outcome"] == "transport_error"
+    assert records[0]["client_request_id"] == records[1]["client_request_id"]
+    recorded = json.loads((session.artifacts / "command-1.json").read_text())
+    assert recorded["stderr"] == result.stderr
+    assert recorded["timeout_s"] == 10
+    assert recorded["elapsed_ms"] >= 0
+    assert recorded["started_at"] > 0
+    assert "private-" not in result.stderr
+
+
+def test_native_routing_artifact_excludes_other_debug_content(tmp_path):
+    session = UserSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
+    debug = session.home / ".claude/debug"
+    debug.mkdir(parents=True)
+    record = {
+        "v": 1,
+        "event": "request_finish",
+        "outcome": "timeout",
+        "client_request_id": "attempt-1",
+        "elapsed_ms": 20001,
+        "validate_selection_ms": 0.25,
+        "router_name": "stable",
+    }
+    (debug / "session.txt").write_text(
+        "private-debug-line\n[ug-routing] invalid-json\n[ug-routing] "
+        + "[" * 1200
+        + "]" * 1200
+        + "\n"
+        + "2026-11-13 [DEBUG] [ug-routing] "
+        + json.dumps({**record, "prompt": "private-task", "authorization": "private-token"})
+        + "\n[ug-routing] "
+        + json.dumps({"v": 2, "event": "request_finish"}),
+    )
+
+    session.collect_routing_diagnostics()
+
+    assert json.loads((session.artifacts / "routing-diagnostics.json").read_text()) == [record]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFOs are unavailable on this platform")
+def test_native_routing_collection_skips_fifo_without_blocking(tmp_path):
+    script = """
+import json, os, sys
+from pathlib import Path
+from tests.integration.utils.harness import UserSession
+root = Path(sys.argv[1])
+session = UserSession(root, root, Path(sys.executable), root / 'artifacts')
+debug = session.home / '.claude/debug'
+debug.mkdir(parents=True)
+os.mkfifo(debug / 'unopened.txt')
+record = {'v': 1, 'event': 'command_finish', 'outcome': 'resolved'}
+(debug / 'regular.txt').write_text('[ug-routing] ' + json.dumps(record))
+session.collect_routing_diagnostics()
+assert json.loads((session.artifacts / 'routing-diagnostics.json').read_text()) == [record]
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent(script), str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():

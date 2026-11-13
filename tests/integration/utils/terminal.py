@@ -388,6 +388,16 @@ class ConfigureTerminal(TerminalProcess):
 
 
 class AgentTerminal(TerminalProcess):
+    def __init__(self, session, agent, command, name):
+        command = list(command)
+        if agent == "claude" and command[1:2] == ["claude"]:
+            debug = session.home / ".claude/debug" / f"routing-{fresh_id()}.txt"
+            debug.parent.mkdir(parents=True, exist_ok=True)
+            if "--" not in command:
+                command.append("--")
+            command.extend(["--debug-file", str(debug)])
+        super().__init__(session, agent, command, name)
+
     def boot(self, timeout=120):
         """Handle only recognized visible onboarding; unknown screens fail."""
         handled = set()
