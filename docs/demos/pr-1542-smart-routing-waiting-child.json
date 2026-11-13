@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "pr": "https://github.com/databricks/unity-gateway/pull/1542",
+  "recorded_at": "2026-11-13T21:41:35.185Z",
+  "source_commit": "1e081287018b02d20a2c1041182c742b32e8a824",
+  "product_source_unchanged_from": "6ecb6f2b142ec0c52c93ee3910b0910800a860e2",
+  "source_tree": "36ef84cbd2e990d1c4f78bb489a2e2eb739f49fb",
+  "native_runtime": "2.1.316 (Claude Code)",
+  "native_runtime_sha256": "fd13c70000fec3f2116dfbcbb6121210b4a29328bf0e46210a59dd594a67d824",
+  "media": {
+    "file": "pr-1542-smart-routing-waiting-child.mp4",
+    "sha256": "60142479f7e6aa1b97b7994c7c2657d8885a451aa2bfcdaacf2391c50cb03a6e",
+    "bytes": 627901,
+    "duration_seconds": 62.0,
+    "width": 1600,
+    "height": 1080,
+    "frames_per_second": 10
+  },
+  "models": {
+    "parent": "system.ai.claude-sonnet-4-6",
+    "router_selected_child": "system.ai.claude-haiku-5-5",
+    "actual_child": "system.ai.claude-haiku-5-5"
+  },
+  "routing": {
+    "router": "stable",
+    "candidate_count": 4,
+    "configuration": "Task-private native modelPicker with four discovered family defaults; normal UG-generated routing command.",
+    "manual_child_model": false,
+    "actual_selection_joined_to_native_launch_and_child_responses": true,
+    "default_catalog_status": "An earlier native launch supplied 31 candidates and received HTTP 400: Provide at most 20 distinct model services. This task-private four-family picker does not fix or validate the default catalog.",
+    "execution_model_evidence": "Actual native launch resolvedModel and child response model fields corroborate the router selection. The raw native audit model and matches_router_decision remain null and were not rewritten."
+  },
+  "inputs": {
+    "csv": "region,succeeded,failed\nwest,18,2\neast,12,1\ncentral,9,0\n",
+    "disclosed_collection_delay_seconds": 30,
+    "task": "Delegate collection of a regional jobs report to one background agent and return the finished totals."
+  },
+  "live_execution": "The native parent and child used real model requests and responses through existing Databricks gateway authentication. The router selected the child model. No model responses or native notifications were injected.",
+  "capture": "Real-time rendering of the native PTY screen, with a static header disclosing the source/runtime and controlled CSV/delay. A passive observer saved the native waiting notification and unchanged product-filter result.",
+  "observed": {
+    "same_direct_child_verified": true,
+    "waiting_origin": "task-notification",
+    "waiting_state": "waiting",
+    "exact_empty_waiting_payload_verified": true,
+    "production_filter_drop": true,
+    "parent_responses_total": 3,
+    "child_responses_total": 5,
+    "parent_api_dispatches_during_waiting_interval": 0,
+    "background_report_commands": 1,
+    "final_report": {
+      "regions": 3,
+      "jobs": 42,
+      "succeeded": 39,
+      "failed": 3,
+      "success_rate_percent": 92.86
+    },
+    "same_child_substantive_handback_delivered": true
+  },
+  "native_warning": "Prompt dropped by a hook: Run regional jobs report script in background is still running in the background.",
+  "validation": "Matched the real router decision, native launch receipt and child response model. Verified direct-child identity, native origin/state and exact waiting payload; the same child handed back the computed report. Original profiles and managed policies match their baseline. Loaded production hook bytes match the recorded source. Full video decode and phase-frame inspection passed.",
+  "limits": "This journey covers Claude 2.1.316 and the named models. It does not establish routing quality, billing accuracy, earlier-runtime compatibility or error-path behavior. The displayed router rationale was retained as returned and was not evaluated for quality. The controlled delay is not a production latency or cost measurement."
+}
