@@ -282,6 +282,27 @@ class TestRelayResponseClientDisconnect:
 
 
 class TestProxyDiagnosticFile:
+    def test_contended_file_falls_back_and_can_be_reused(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / "proxy.log"
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(path))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with path.open("a") as holder:
+                gateway_proxy.acquire_exclusive_file_lock(holder)
+                try:
+                    pool.submit(gateway_proxy.log_proxy_diagnostic, "contended").result(timeout=5)
+                finally:
+                    gateway_proxy.release_file_lock(holder)
+
+        stderr = capsys.readouterr().err
+        assert "Could not write proxy diagnostics file; using stderr" in stderr
+        event = json.loads(stderr.splitlines()[-1].removeprefix("[ucode-relay] "))
+        assert event["event"] == "contended"
+        assert path.read_text() == ""
+        gateway_proxy.log_proxy_diagnostic("recovered")
+        assert json.loads(path.read_text().removeprefix("[ucode-relay] "))["event"] == "recovered"
+        assert capsys.readouterr().err == ""
+
     def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
         path = tmp_path / "proxy.log"
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")

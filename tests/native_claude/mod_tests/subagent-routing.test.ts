@@ -621,7 +621,8 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
         ...details, session_id: request.session_id, tool_use_id: request.tool_use_id,
         ...(modelCount === 20 ? { formula: 'quality - cost' } : {}),
         models: [...details.models, ...Array.from({ length: modelCount - 2 }, (_, i) => ({
-          id: `alternative-${i}`, name: `Alternative ${i}`, selected: false, considered: true, reason: 'Lower expected fit.',
+          id: `alternative-${i}`, name: `Alternative ${i}`, selected: false, considered: i !== 16,
+          reason: i === 16 ? 'Unavailable for this request.' : 'Lower expected fit.',
         }))],
       }, session_id: request.session_id, tool_use_id: request.tool_use_id,
     }) } };
@@ -667,6 +668,10 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
     const formulaOnly = JSON.stringify(await pane.drawn());
     expect(formulaOnly).toContain('Scoring formula: quality - cost');
     expect(formulaOnly).not.toContain('Est. cost:');
+    await pane.select({ key: 'compare-model', value: 'alternative-16' });
+    const excluded = JSON.stringify(await pane.drawn());
+    expect(excluded).toContain('Alternative 16 — not considered');
+    expect(excluded).toContain('Unavailable for this request.');
     expect(routeCalls).toBe(routeCallsBeforeCompare);
   } else if (canonicalJourney) {
     const tree = JSON.stringify(await pane.drawn());
@@ -783,6 +788,10 @@ for (const [name, details, diagnostic] of [
   })) }, true],
   ['wrong session identity', { ...explanation, session_id: 'another-session' }, true],
   ['wrong tool identity', { ...explanation, tool_use_id: 'another-tool' }, true],
+  ['nested session conflict', { ...explanation, session_id: 'session-1', tool_use_id: 'nested session conflict',
+    evidence: { session_id: 'another-session' } }, true],
+  ['nested tool conflict', { ...explanation, session_id: 'session-1', tool_use_id: 'nested tool conflict',
+    evidence: { tool_use_id: 'another-tool' } }, true],
 ] as const) {
   test(`${name} explanation shows no details while preserving the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
     const logs: string[] = [];
@@ -1090,6 +1099,46 @@ test(`the Why button reports ${failure} failure and clears its pane record`, { o
   expect(rendered).not.toContain('Selected route:');
   await stalePane.unmount();
   await shown.unmount();
+});
+}
+
+for (const delayedFailure of ['ui.open', 'ui.panes'] as const) {
+test(`a late ${delayedFailure} failure preserves a newer open of the same decision`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+  let failFirst!: () => void;
+  let startedFirst!: () => void;
+  const started = new Promise<void>((resolve) => { startedFirst = resolve; });
+  const ready = new Promise<void>((resolve) => { failFirst = resolve; });
+  let calls = 0;
+  let closes = 0;
+  const panes = [{ id: 'smart-router-explanation', title: 'Why this model?',
+    isPlaced: true, isShown: true, isFocused: true }];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
+    '{"model":"model-b","rationale":"Selected for the task"}',
+  } }));
+  on('tool.call', () => ({ result: 'ok' }));
+  const delay = async (event: typeof delayedFailure) => {
+    if (event === delayedFailure && calls++ === 0) {
+      startedFirst();
+      await ready;
+      throw new Error('Earlier opening failed');
+    }
+  };
+  on('ui.open', async () => { await delay('ui.open'); return { value: undefined }; });
+  on('ui.panes', async () => { await delay('ui.panes'); return { value: panes }; });
+  on('ui.close', () => { closes++; return { value: undefined }; });
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'overlapping-open', ...originalInput });
+  const first = $.command.run({ command: 'smart-router', args: 'explain latest' });
+  await started;
+  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
+    .toBe('Showing the latest routing explanation.');
+  failFirst();
+  await first;
+  const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+  expect(JSON.stringify(await pane.drawn())).toContain('Selected for the task');
+  expect(closes).toBe(0);
+  await pane.unmount();
 });
 }
 

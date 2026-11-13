@@ -15,7 +15,7 @@ type RoutingRecord = {
   generation: number; toolUseId: string; name: string; task: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }; explanation?: RoutingExplanation
 }
-type ExplanationState = { generation: number; enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
+type ExplanationState = { generation: number; openAttempt: number; enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
 const EXPLANATION_PANE = 'smart-router-explanation'
 const EXPLANATION_OPEN_FAILURE = 'Could not open the native routing explanation pane.'
@@ -171,6 +171,7 @@ const shortModel = (model: string): string => {
 }
 
 async function openExplanation($: any, state: ExplanationState, record: RoutingRecord): Promise<boolean> {
+  const attempt = ++state.openAttempt
   state.showNumbers = false
   state.paneRecord = record
   state.modelId = record.explanation?.selectedModel
@@ -179,10 +180,13 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
     await $.ui.open({
       id: EXPLANATION_PANE, title: 'Why this model?', focus: true, closeOnEscape: true, rows: 18, columns: 72,
     })
+    if (state.openAttempt !== attempt) return true
     const panes = await $.ui.panes()
+    if (state.openAttempt !== attempt) return true
     if (state.paneRecord && panes.some((pane) => pane.id === EXPLANATION_PANE && pane.isPlaced)) return true
     await $.ui.close({ id: EXPLANATION_PANE })
   } catch {}
+  if (state.openAttempt !== attempt) return true
   if (state.paneRecord === record) {
     state.paneRecord = undefined
     state.modelId = undefined
@@ -284,7 +288,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const anchors = new Map<string, string[]>()
   // Replies already drawn before a batch was routed are never its anchor.
   const seen = new Set<string>()
-  const explanationState: ExplanationState = { generation: 0, enabled: false }
+  const explanationState: ExplanationState = { generation: 0, openAttempt: 0, enabled: false }
 
   on('command.run', { command: 'smart-router' }, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args)
