@@ -268,7 +268,13 @@ class TerminalProcess:
         self.agent = agent
         self.name = name
         self.command = command
-        env = {**session.env, "TERM": "xterm-256color"}
+        self.proxy_diagnostics = session.home / f"proxy-{fresh_id()}.log"
+        # Background proxy output can overwrite the native agent's prompt and footer.
+        env = {
+            **session.env,
+            "TERM": "xterm-256color",
+            "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE": str(self.proxy_diagnostics),
+        }
         if agent == "codex":
             # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
             session.choose_codex_windows_sandbox()
@@ -306,6 +312,9 @@ class TerminalProcess:
                 "signalstatus": self.child.signalstatus,
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
+                "proxy_diagnostics": self.proxy_diagnostics.read_text(encoding="utf-8")
+                if self.proxy_diagnostics.is_file()
+                else None,
                 "agent_sessions": agent_sessions(self.session, self.agent)
                 if self.agent in ("claude", "codex", "copilot")
                 else {},

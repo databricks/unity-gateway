@@ -1874,7 +1874,13 @@ Use `-- -m tui` for the six interactive journeys or
 
 Isolated integration sessions enable the existing `UCODE_RELAYED_PROXY_DIAGNOSTICS`
 transport logger for every agent. Headless `command-*.json` artifacts retain its
-`[ucode-relay]` events in `stderr`; TUI artifacts retain them in terminal output.
+`[ucode-relay]` events in `stderr`. Interactive runs set
+`UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE` to a separate file in the disposable home,
+so background diagnostics cannot overwrite the agent's prompt or footer. On exit,
+including test failure, the terminal artifact retains the redacted log in
+`proxy_diagnostics` alongside the screen and transcript. Other stderr output stays
+visible in the terminal. The optional file destination appends events; an unavailable
+destination reports a warning and falls back to stderr.
 Request IDs correlate upstream-header timings, status codes, response byte counts,
 disconnects and transport exception classes. The logger excludes request headers,
 bodies and credentials. Antigravity's native stream-json events remain in headless
