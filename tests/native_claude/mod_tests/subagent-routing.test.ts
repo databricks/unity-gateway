@@ -275,6 +275,70 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   await prompt.unmount();
 });
 
+test('parallel cards open each call’s own routing explanation', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+  const releases = new Map<string, () => void>();
+  let started: () => void = () => {};
+  const bothStarted = new Promise<void>((resolve) => { started = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', async ($, e) => {
+    const request = JSON.parse(e.init.stdin);
+    const { tool_use_id } = request;
+    await new Promise<void>((resolve) => {
+      releases.set(tool_use_id, resolve);
+      if (releases.size === 2) started();
+    });
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'system.ai.model-b',
+      rationale: `Selected for ${request.tool_input.description}`,
+      explanation: { ...explanation, summary: `Explanation for ${tool_use_id}`,
+        session_id: request.session_id, tool_use_id },
+      session_id: request.session_id,
+      tool_use_id,
+    }) } };
+  });
+  on('tool.call', () => ({ result: 'ok' }));
+  let panePlaced = false;
+  on('ui.open', () => { panePlaced = true; return { value: undefined }; });
+  on('ui.panes', () => ({ value: panePlaced ? [{ id: 'smart-router-explanation', isPlaced: true }] : [] }));
+  on('ui.close', () => { panePlaced = false; return { value: undefined }; });
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
+  await $.command.run({ command: 'smart-router', args: 'explain on' });
+
+  const input = { ...originalInput, run_in_background: true };
+  const callA = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...input, description: 'Compute 1+1 (agent A)' });
+  const callB = $.tool.call({ tool: 'Task', tool_use_id: 'call-b', ...input, description: 'Compute 1+1 (agent B)' });
+  await bothStarted;
+
+  releases.get('call-b')!();
+  await callB;
+  const cardB = await $.ui.mount(reply('reply-after-call-b'));
+  const cardBTree = JSON.stringify(await cardB.drawn());
+  expect(cardBTree).toContain('Compute 1+1 (agent B)');
+  expect(cardBTree).not.toContain('Compute 1+1 (agent A)');
+  await cardB.press({ key: 'why-this-model' });
+  const explanationB = await $.ui.mount({
+    ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation',
+  });
+  expect(JSON.stringify(await explanationB.drawn())).toContain('Explanation for call-b');
+  await explanationB.press({ key: 'close' });
+  await explanationB.unmount();
+  await cardB.unmount();
+
+  releases.get('call-a')!();
+  await callA;
+  const cardA = await $.ui.mount(reply('reply-after-call-a'));
+  const cardATree = JSON.stringify(await cardA.drawn());
+  expect(cardATree).toContain('Compute 1+1 (agent A)');
+  expect(cardATree).not.toContain('Compute 1+1 (agent B)');
+  await cardA.press({ key: 'why-this-model' });
+  const explanationA = await $.ui.mount({
+    ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation',
+  });
+  expect(JSON.stringify(await explanationA.drawn())).toContain('Explanation for call-a');
+  await explanationA.unmount();
+  await cardA.unmount();
+});
+
 test('an aborted turn leaves no card for the next turn, but a finished one keeps them for the reply', async ($, on) => {
   const gates = new Map<string, () => void>();
   let started: () => void = () => {};
@@ -519,41 +583,54 @@ test(`explanations for ${modelCount} models with custom names ${customNames} pre
     isPlaced: true, isShown: true, isFocused: true }] }));
   on('ui.close', () => ({ value: undefined }));
 
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'off-by-default', ...originalInput });
-  const hidden = await $.ui.mount(row('off-by-default'));
-  expect(JSON.stringify(await hidden.drawn())).not.toContain('Why this model?');
-  await hidden.unmount();
+  if (modelCount !== 20) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: 'off-by-default', ...originalInput });
+    const hidden = await $.ui.mount(row('off-by-default'));
+    expect(JSON.stringify(await hidden.drawn())).not.toContain('Why this model?');
+    await hidden.unmount();
+  }
 
   await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'shown', ...originalInput });
   const shown = await $.ui.mount(row('shown'));
-  expect(JSON.stringify(await shown.drawn())).toContain('Why this model?');
+  if (modelCount !== 20) expect(JSON.stringify(await shown.drawn())).toContain('Why this model?');
   await shown.press({ key: 'why-this-model' });
   await shown.unmount();
 
   await $.command.run({ command: 'smart-router', args: 'explain latest' });
   const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-  const tree = JSON.stringify(await pane.drawn());
-  for (const text of ['best expected quality', 'Model A', 'Model B', 'Chosen for its expected quality', 'Show numbers']) {
-    expect(tree).toContain(text);
+  if (modelCount === 20) {
+    const routeCallsBeforeCompare = routeCalls;
+    await pane.select({ key: 'compare-model', value: 'alternative-17' });
+    const lastAlternative = JSON.stringify(await pane.drawn());
+    expect(lastAlternative).toContain('Alternative 17 — considered');
+    expect(lastAlternative).toContain('Lower expected fit.');
+    expect(routeCalls).toBe(routeCallsBeforeCompare);
+  } else {
+    const tree = JSON.stringify(await pane.drawn());
+    for (const text of ['best expected quality', 'Model A', 'Model B', 'Chosen for its expected quality', 'Show numbers']) {
+      expect(tree).toContain(text);
+    }
+    for (const text of ['hidden-request', 'hidden-source', 'session-1', 'shown']) {
+      expect(tree).not.toContain(text);
+    }
+    expect(tree).not.toContain('Est. cost');
+    await pane.select({ key: 'compare-model', value: customNames ? 'custom.catalog.code[1m]' : 'model-a' });
+    expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
+    await pane.press({ key: 'numbers' });
+    expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.000400 USD');
   }
-  for (const text of ['hidden-request', 'hidden-source', 'session-1', 'shown']) {
-    expect(tree).not.toContain(text);
-  }
-  expect(tree).not.toContain('Est. cost');
-  await pane.select({ key: 'compare-model', value: customNames ? 'custom.catalog.code[1m]' : 'model-a' });
-  expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
-  await pane.press({ key: 'numbers' });
-  expect(JSON.stringify(await pane.drawn())).toContain('Est. cost: 0.000400 USD');
   await pane.unmount();
 
   await $.agent.spawn({ tool_use_id: 'shown', name: 'caller', prompt: 'inspect' });
   expect(spawns[0].model).toBe(routedModel);
-  expect(routeCalls).toBe(2);
-  await $.command.run({ command: 'smart-router', args: 'explain off' });
-  const off = await $.ui.mount(row('shown'));
-  expect(JSON.stringify(await off.drawn())).not.toContain('Why this model?');
-  await off.unmount();
+  expect(routeCalls).toBe(modelCount === 20 ? 1 : 2);
+  if (modelCount !== 20) {
+    await $.command.run({ command: 'smart-router', args: 'explain off' });
+    const off = await $.ui.mount(row('shown'));
+    expect(JSON.stringify(await off.drawn())).not.toContain('Why this model?');
+    await off.unmount();
+  }
 });
 
 }
@@ -674,6 +751,7 @@ for (const reason of ['clear', 'resume'] as const) {
 test(`session ${reason} clears the latest explanation and closes its pane without disabling explanations`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   on('session.end', () => ({ sessionId: 'session-1' }));
   let closes = 0;
+  let panePlaced = false;
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', ($, e) => {
     const request = JSON.parse(e.init.stdin);
@@ -687,17 +765,20 @@ test(`session ${reason} clears the latest explanation and closes its pane withou
   });
   on('tool.call', () => ({ result: 'ok' }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  on('ui.open', () => ({ value: undefined }));
-  on('ui.panes', () => ({ value: [] }));
-  on('ui.close', () => { closes++; return { value: undefined }; });
+  on('ui.open', () => { panePlaced = true; return { value: undefined }; });
+  on('ui.panes', () => ({ value: panePlaced ? [{ id: 'smart-router-explanation', isPlaced: true }] : [] }));
+  on('ui.close', () => { closes++; panePlaced = false; return { value: undefined }; });
 
   await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'before-clear', ...originalInput });
-  await $.command.run({ command: 'smart-router', args: 'explain latest' });
+  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
+    .toBe('Showing the latest routing explanation.');
+  expect(panePlaced).toBe(true);
   const closesBeforeEnd = closes;
   await $.session.end({ reason });
 
   expect(closes).toBe(closesBeforeEnd + 1);
+  expect(panePlaced).toBe(false);
   expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
     .toBe('No completed routing decision is available in this session.');
   await $.tool.call({ tool: 'Agent', tool_use_id: 'after-clear', ...originalInput });

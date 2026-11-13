@@ -55,18 +55,72 @@ _EXPLANATION = {
         (_EXPLANATION, True),
         (json.dumps(_EXPLANATION), True),
         ({**_EXPLANATION, "models": _EXPLANATION["models"][:1]}, False),
-        ({**_EXPLANATION, "models": [{"id": "unoffered"}, {"id": "alternative"}]}, False),
-        ({**_EXPLANATION, "models": [{"id": "alternative"}] * 2}, False),
-        ({**_EXPLANATION, "models": [*_EXPLANATION["models"], {"id": "unoffered"}]}, False),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "unoffered"},
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    _EXPLANATION["models"][0],
+                    {**_EXPLANATION["models"][1], "id": "model-b", "considered": True},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            False,
+        ),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    *_EXPLANATION["models"],
+                    {
+                        "id": "unoffered",
+                        "name": "Unoffered model",
+                        "selected": False,
+                        "considered": True,
+                        "reason": "Outside the offered menu.",
+                    },
+                ],
+            },
+            False,
+        ),
         (None, False),
         ("invalid", False),
         ("[]", False),
         ("null", False),
-        ('{"score": NaN}', False),
-        ('{"summary": "' + "x" * 65536 + '"}', False),
+        (
+            json.dumps(
+                {
+                    **_EXPLANATION,
+                    "models": [
+                        {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                        _EXPLANATION["models"][1],
+                    ],
+                }
+            ),
+            False,
+        ),
+        (json.dumps({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}), False),
         ("[" * 2000 + "0" + "]" * 2000, False),
-        ({"summary": "x" * 65536}, False),
-        ({"score": float("nan")}, False),
+        ({**_EXPLANATION, "evidence": {"audit": "x" * 65536}}, False),
+        (
+            {
+                **_EXPLANATION,
+                "models": [
+                    {**_EXPLANATION["models"][0], "estimated_cost_usd": float("nan")},
+                    _EXPLANATION["models"][1],
+                ],
+            },
+            False,
+        ),
         ({key: value for key, value in _EXPLANATION.items() if key != "task_understanding"}, False),
         ({**_EXPLANATION, "task_understanding": [""]}, False),
         (
@@ -100,7 +154,7 @@ _EXPLANATION = {
                 **_EXPLANATION,
                 "models": [
                     _EXPLANATION["models"][0],
-                    {**_EXPLANATION["models"][1], "selected": True},
+                    {**_EXPLANATION["models"][1], "selected": True, "considered": True},
                 ],
             },
             False,
