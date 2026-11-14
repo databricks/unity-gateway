@@ -3527,7 +3527,9 @@ CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
 
 
 @contextmanager
-def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool]:
+def _smart_routing_v2_flag(
+    enabled: bool | None, *, agent: str, allow_external_models: bool = False
+) -> Iterator[bool]:
     """Apply an explicit routing choice without leaking into an embedding process.
 
     Yields whether the flag or a known version already chose this launch's routing.
@@ -3538,6 +3540,10 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
         if enabled is None
         else smart_routing_v2.override_smart_routing(enabled, agent=agent)
     )
+    if allow_external_models:
+        key = ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR
+        previous[key] = os.environ.get(key)
+        os.environ[key] = "1"
     try:
         yield routing_chosen
     finally:
@@ -4771,7 +4777,9 @@ def codex_cmd(
         and not smart_routing_config.enabled_version_routes(agent=AGENT_CODEX)
     )
     with _smart_routing_v2_flag(
-        enable_smart_routing_flag, agent=AGENT_CODEX
+        enable_smart_routing_flag,
+        agent=AGENT_CODEX,
+        allow_external_models=enable_smart_routing_flag is True,
     ) as routing_already_chosen:
         with _disable_smart_routing_for_subcommand("codex", ctx):
             _launch_tool(
@@ -4868,7 +4876,9 @@ def claude_cmd(
         print_err(str(exc))
         raise typer.Exit(1) from exc
     with _smart_routing_v2_flag(
-        enable_smart_routing_flag, agent=AGENT_CLAUDE
+        enable_smart_routing_flag,
+        agent=AGENT_CLAUDE,
+        allow_external_models=enable_smart_routing_flag is True,
     ) as routing_already_chosen:
         with _disable_smart_routing_for_subcommand("claude", ctx):
             _launch_tool(

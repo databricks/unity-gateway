@@ -1,5 +1,13 @@
 # Test suites and user journeys
 
+CLI component tests cover explicit smart-routing launches with a Model Provider Service
+and no managed config for Claude and Codex, including saved providers, absent/disabled
+external-models gates, and environment restoration after success or failure. Implicit and
+managed-enabled launches retain their existing gate. These tests control network and
+agent-launch boundaries. CUJ7 separately tests an explicit Claude provider launch with no
+external-models gate or managed config, requiring routed parent and child file tasks,
+provider headers, and successful route-selection and inference responses.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
@@ -1194,6 +1202,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_custom_oauth_cli_boots`, `test_ug_codex_custom_oauth_cli_boots` | Launch with `ENABLE_CUSTOM_OAUTH_FROM_CLI=1`, `--workspace`, and `--client-id databricks-cli` | Real TUI reaches a usable prompt, accepts keyboard input, exits normally, and saves `client_id = databricks-cli` in its generated CLI profile; Claude also reads the OS-managed settings and requires a profile-only `apiKeyHelper` |
 | `test_case_07_configured_claude_discovers_system_models` (CUJ7), `test_case_09_fresh_claude_discovers_system_models` (integration) | Launch configured/fresh Claude with no discovery flag or source override | Claude caches `system.ai` models (including recognized Anthropic gateway aliases), includes ug's discovered family defaults, and shows a discovered picker entry; case 07 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
 | `test_case_08_configured_codex_uses_default_models` (CUJ7), `test_case_10_fresh_codex_uses_default_models` (integration) | Launch configured/fresh Codex with no source override | ug discovers `system.ai` models but leaves model/reasoning preferences unset; app-server exposes native GPT entries without a generated scoped catalog; case 08 lives in `e2e_cuj/test_cuj7_model_discovery.py` |
+| `test_ug_claude_mps_smart_routing_without_managed_config` (CUJ7) | Launch Claude with `--provider` and `--enable-smart-routing`, with no managed config or external-models gate | First-prompt and native subagent route selections carry the provider header and return HTTP 200; recorded inference and completed native parent/child file tasks verify the chosen model |
 | `test_case_11_*` | Launch configured and fresh Claude with an explicit provider and no managed config | The provider catalog replaces built-in picker rows; the cache contains exactly the provider model, and the picker shows both its row and Default resolving to it; fresh launch also writes the selected provider's routing header |
 | `test_case_12_*` | Launch configured and fresh Codex with a provider | App-server models exactly match the independently fetched provider catalog, which must include the selected provider-task model |
 | `test_case_13_*` | Launch configured and fresh Claude with a model location and no managed config | The explicit parent's catalog replaces built-in picker rows and appears in the real picker; Default resolves to the model in the scoped fixture catalog |
@@ -1337,16 +1346,18 @@ serial inside each VM. Codex smoke and general full/managed coverage retain
 0.156.0. The catalog-fallback routing-off case stays on the baseline version.
 The existing workflow contract tests collect both selections and require disjoint
 case sets whose union preserves coverage. Windows' existing native-toggle exclusions remain.
-CUJ7's five journeys collect eight cases in the required
+CUJ7's six journeys collect nine cases in the required
 `E2E CUJs · CUJ 7 · Unmanaged model discovery` shard: configured Claude picker and
-Codex app-server discovery, fresh Claude/Codex model-location file tasks, and Claude
-managed-family-default preservation on launch. Task journeys cover model selection before
-and after ug's separator. Each case reverts its local setup. The class
-pins `WORKSPACE_URL` to `https://dbc-14e376e8-6541.cloud.databricks.com` rather than using
+Codex app-server discovery, fresh Claude/Codex model-location file tasks, Claude
+managed-family-default preservation on launch, and an explicitly enabled MPS routing journey.
+The MPS case checks first-prompt and native subagent routing without the external-models gate.
+Task journeys cover model selection before and after ug's separator. Each case reverts its local setup.
+The class pins `WORKSPACE_URL` to `https://dbc-14e376e8-6541.cloud.databricks.com` rather than using
 a workspace secret. The workspace must publish no `CodingAgentConfig`, expose discoverable
 `system.ai` models, and retain the existing models `ug_e2e.models.claude_haiku`,
 `ug_e2e.models.claude_sonnet`, and `ug_e2e.models.gpt_luna`; the shared service principal
-needs read/use privileges on all three.
+needs read/use privileges on all three and read/execute access to
+`ug_e2e.providers.anthropic` for the MPS routing journey.
 CI starts integration alongside unit tests and the existing e2e shards. Integration
 does not wait for agent e2e or get skipped when an agent shard fails. These suites
 share workspace capacity; overlapping their requests can still encounter rate limits.

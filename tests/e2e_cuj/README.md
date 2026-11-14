@@ -176,3 +176,13 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
   -k test_smart_router_preset -v
 ```
+
+## Unmanaged provider smart routing
+
+CUJ7 includes `test_ug_claude_mps_smart_routing_without_managed_config` in its genuinely
+unmanaged workspace. It launches `ug claude --provider ug_e2e.providers.anthropic --enable-smart-routing`
+with the first-prompt/subagent preset and no
+`ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS`. A file task must complete through a native
+child and its parent. Recorded route selections and inference must carry the provider
+header and return HTTP 200, and native records must match the provider model. The shared
+CUJ service principal needs read/execute access to `ug_e2e.providers.anthropic`.

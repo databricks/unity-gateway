@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError, NotFound
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, assert_subagent_routed
 from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
@@ -23,14 +23,18 @@ from .helpers.constants import (
     CLAUDE_SONNET_MODEL_SERVICE,
     CODEX,
     CODEX_LUNA_MODEL_SERVICE,
+    INFERENCE_PATHS,
     MANAGED_PATHS,
+    MODEL_PROVIDER_SERVICE_FIXTURES,
     MODEL_SERVICE_SCHEMA,
+    PROVIDER_HEADER,
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
+    assert_served,
     claude_file_task,
 )
 from .helpers.session import (
@@ -188,6 +192,81 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
         assert_codex_default_models(session, models)
+
+    @pytest.mark.claude
+    @pytest.mark.tui
+    def test_ug_claude_mps_smart_routing_without_managed_config(
+        self, live_session, request_recorder
+    ):
+        """Scenario: explicitly enable Claude routing with a provider in an unmanaged workspace.
+
+        Expected: without the external-models gate, the first prompt and a native child
+        route through the selected MPS and complete a file task with HTTP 200 responses.
+        """
+        session = live_session
+        provider, model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        assert "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS" not in session.env
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = "first_prompt_and_subagent_no_orch_v0"
+        request_recorder.configure_session(
+            session,
+            [
+                "configure",
+                "--agents",
+                CLAUDE,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ],
+        )
+        task = FileTask(session)
+        task.prompt = task.delegate_prompt
+        evidence = SessionEvidence(session.home, CLAUDE)
+        checkpoint = request_recorder.checkpoint()
+        with Terminal(
+            session,
+            "unmanaged-claude-provider-routing",
+            [
+                CLAUDE,
+                "--provider",
+                provider,
+                "--enable-smart-routing",
+                "--",
+                "--disallowedTools",
+                "ScheduleWakeup,CronCreate",
+            ],
+        ) as tui:
+            tui.boot(timeout=150)
+            tui.submit(task.prompt)
+            tui.wait_until(
+                lambda: evidence.completed(task) and task.completed(session, CLAUDE, child=True),
+                "completed routed parent and native child file task",
+            )
+            requests = request_recorder.requests_after(checkpoint)
+            routes = [
+                request
+                for request in requests
+                if request.method == "POST"
+                and request.path == "/ai-gateway/routing/v1/routes:select"
+                and task.filename in request.payload["task"]["prompt"]
+            ]
+            assert any(route.payload["task"]["prompt"] == task.prompt for route in routes)
+            assert any(route.payload["task"]["prompt"] != task.prompt for route in routes)
+            for route in routes:
+                assert route.headers[PROVIDER_HEADER] == provider
+                assert request_recorder.response_for(route).status_code == 200
+            inference = [
+                request
+                for request in requests
+                if request.method == "POST" and request.path == INFERENCE_PATHS[CLAUDE]
+            ]
+            assert inference, "No provider inference request was recorded"
+            for request in inference:
+                assert request.headers[PROVIDER_HEADER] == provider
+                assert_served(request_recorder, request, model)
+            evidence.assert_models(task, model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, model)
+            assert_subagent_routed(session, CLAUDE, task)
+            tui.wait_for_background_tasks()
+            tui.exit_normally()
 
     @pytest.mark.claude
     @pytest.mark.parametrize("model_owner", ["ug", "claude"])

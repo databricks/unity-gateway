@@ -544,6 +544,13 @@ An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, 
 subagent routing when first-prompt routing is off; the main session stays on that model.
 With first-prompt routing on, an explicit model still skips routing.
 
+Without a managed config, `ug claude --provider <catalog>.<schema>.<name>
+--enable-smart-routing` enables routing through that Model Provider Service for this launch.
+The flag also works with a saved provider and opts Claude and Codex into external-model
+routing without setting `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` separately. Codex still
+requires a preset that routes Codex. Without the explicit flag, provider routing retains
+the external-models gate, including when a managed config enables routing.
+
 When a model response launches a subagent, UG buffers that step and removes
 premature model claims before displaying or storing them. After launch, UG renders
 the parent's report directly from that request's child records: animal name,

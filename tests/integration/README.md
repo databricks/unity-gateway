@@ -1,5 +1,9 @@
 # Integration tests
 
+Explicit smart-routing launches through a Model Provider Service without a managed config
+have [CLI component coverage](../README.md), including saved providers and scoped gate
+restoration. This suite does not yet cover that launch combination against a live provider.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
@@ -1509,18 +1513,20 @@ Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workf
 uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
 cannot receive those secrets.
 
-CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
+CUJ7's six journeys collect nine cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
 Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
-tasks, and Claude managed-family-default preservation on launch. The class pins `WORKSPACE_URL` to
+tasks, Claude managed-family-default preservation on launch, and an explicitly enabled
+Claude MPS routing journey without the external-models gate. The class pins `WORKSPACE_URL` to
 `https://dbc-14e376e8-6541.cloud.databricks.com`; the required
 `E2E CUJs · CUJ 7 · Unmanaged model discovery` shard uses
 the shared `UG_CUJ_SP_CLIENT_ID` / `UG_CUJ_SP_CLIENT_SECRET` credentials, not a workspace
 secret. The workspace must publish no `CodingAgentConfig`, expose discoverable `system.ai`
 models, and retain the existing models `ug_e2e.models.claude_haiku`,
 `ug_e2e.models.claude_sonnet`, and `ug_e2e.models.gpt_luna`; the shared service principal
-needs read/use privileges on all three.
+needs read/use privileges on all three and read/execute access to
+`ug_e2e.providers.anthropic`.
 The task journeys exercise model selection before and after ug's separator, including
-Claude's UG-owned `--model` and its native option. All eight cases reuse the CUJ
+Claude's UG-owned `--model` and its native option. All nine cases reuse the CUJ
 session/terminal helpers and check that the workspace remains unmanaged; they never
 change remote configuration. Function-scoped sessions keep every launch fresh, mint
 a bearer per case, and use shared `revert_machine_wide` cleanup.
@@ -1533,6 +1539,10 @@ clean-runner preflight, verifies Sonnet inference and unchanged defaults, then r
 and removes that input. Recording stops before guarded revert; fixture teardown keeps
 cleanup failures separate from task failures. An accidental Opus fallback cannot satisfy
 the Sonnet assertion.
+The MPS routing case requires a completed parent and native child file task, the provider
+header and paired HTTP 200 on first-prompt and subagent route selections, and matching
+provider headers, matching models, and successful inference. It never sets
+`ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS`.
 
 CUJ8's one journey (`tests/e2e_cuj/test_cuj8_second_managed_settings_writer.py`, shard
 `E2E CUJs · CUJ 8 · Second managed-settings writer`) reproduces a launcher's workflow so ug
