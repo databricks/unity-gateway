@@ -146,9 +146,27 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
     assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
     assert "shasum -a 256 -c" in job
-    assert "--macos-desktop" in job
+    assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
         "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
+def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
+    jobs = _integration_jobs()
+    job = jobs["codex-desktop-windows"]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-desktop-windows" in {name.strip() for name in needs.group(1).split(",")}
+    assert "runs-on: windows-latest" in job
+    assert "continue-on-error:" not in job
+    assert re.search(r"(?m)^      CHATGPT_APP_VERSION: \d+\.\d+\.\d+\.\d+$", job)
+    assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
+    assert "codex-app-prod/releases/$env:CHATGPT_APP_VERSION/ChatGPT-x64.msix" in job
+    assert "-ne $env:CHATGPT_APP_SHA256" in job
+    assert "--desktop-app" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn"
     }
 
 
@@ -167,7 +185,7 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert "spctl --assess --type execute /Applications/ChatGPT.app" in workflow
     assert re.search(r"(?m)^          OPENAI_TEAM_ID: [A-Z0-9]{10}$", workflow)
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
-    assert "${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }}" in workflow
+    assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
         "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
     }
@@ -607,6 +625,7 @@ SKIPPED_ON_FORK_PRS = {
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
+    "codex-desktop-windows",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -842,6 +861,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "antigravity",
         "managed",
         "codex-desktop-macos",
+        "codex-desktop-windows",
         "dedicated-cuj-plan",
         "dedicated-cuj",
     ],
@@ -866,6 +886,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "antigravity",
             "managed",
             "codex-desktop-macos",
+            "codex-desktop-windows",
             "dedicated-cuj-plan",
             "dedicated-cuj",
         )

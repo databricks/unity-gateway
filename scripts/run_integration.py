@@ -74,8 +74,8 @@ WINDOWS_UNSUPPORTED_MODULES = {
     # Uses sudo and the Linux/macOS OS-managed settings paths.
     "test_ug_configure_scope.py",
 }
-# Drive the installed ChatGPT desktop app, so they run only with --macos-desktop (the macOS CI job).
-MACOS_ONLY_MODULES = {"test_ug_codex_desktop_macos.py"}
+# Drive the installed ChatGPT desktop app, so they run only with --desktop-app (the desktop CI jobs).
+DESKTOP_APP_MODULES = {"test_ug_codex_desktop_macos.py", "test_ug_codex_desktop_windows.py"}
 WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
@@ -176,7 +176,7 @@ def integration_test_targets(
     agents: Iterable[str],
     *,
     platform_name: str,
-    macos_desktop: bool,
+    desktop_app: bool,
     installation_only: bool,
     headless_only: bool,
 ) -> list[str]:
@@ -189,16 +189,15 @@ def integration_test_targets(
     if platform_name == "nt" and installation_only:
         return [str(suite / "test_installation.py")]
     if platform_name == "nt":
+        excluded = WINDOWS_UNSUPPORTED_MODULES | (set() if desktop_app else DESKTOP_APP_MODULES)
         modules = [
-            str(module)
-            for module in sorted(suite.glob("test_*.py"))
-            if module.name not in WINDOWS_UNSUPPORTED_MODULES | MACOS_ONLY_MODULES
+            str(module) for module in sorted(suite.glob("test_*.py")) if module.name not in excluded
         ]
         # pytest matches --deselect against node IDs relative to the suite's pytest.ini.
         deselected = [f"--deselect={node}" for node in sorted(WINDOWS_UNSUPPORTED_NODES)]
         return [*modules, *deselected]
-    if not macos_desktop:
-        return [str(suite), *(f"--ignore={suite / name}" for name in sorted(MACOS_ONLY_MODULES))]
+    if not desktop_app:
+        return [str(suite), *(f"--ignore={suite / name}" for name in sorted(DESKTOP_APP_MODULES))]
     return [str(suite)]
 
 
@@ -606,6 +605,8 @@ def arguments(
         help="Run one real noninteractive prompt journey for each selected agent.",
     )
     mode.add_argument(
+        "--desktop-app",
+        # /integration-test runs the default branch's workflow, which may still pass the old name.
         "--macos-desktop",
         action="store_true",
         help="Also collect the journeys that drive the installed ChatGPT desktop app.",
@@ -1197,7 +1198,7 @@ def main() -> int:
             suite,
             agents,
             platform_name=os.name,
-            macos_desktop=args.macos_desktop,
+            desktop_app=args.desktop_app,
             installation_only=args.installation_only,
             headless_only=args.headless_only,
         )

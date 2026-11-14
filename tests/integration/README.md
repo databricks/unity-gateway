@@ -302,8 +302,12 @@ service needs a user session), the GUI, or inference.
 configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
 Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
 app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model.
-`scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
-macOS desktop CI job does, so a local run never drives a developer's installed app.
+`test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
+Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
+a screenshot of the app window as evidence. It also requires the app's model picker to list only
+the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+`scripts/run_integration.py` ignores both modules unless `--desktop-app` is passed, which only the
+desktop CI jobs do, so a local run never drives a developer's installed app.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -1024,6 +1028,7 @@ test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credent
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_codex_desktop_macos.py          # ChatGPT desktop app on macOS: GUI prompt, exact answer, model, completed turn
+test_ug_codex_desktop_windows.py        # the same journey on Windows through UI Automation
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
@@ -1496,6 +1501,13 @@ Accessibility to the runner's shell, so no permission prompt is needed. It uploa
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journey against the newest appcast build, so it shows
 when a bump is due.
+The required **Codex desktop inference · Windows** job installs the ChatGPT MSIX that OpenAI keeps
+at `codex-app-prod/releases/<version>/ChatGPT-x64.msix`, pinned by version and SHA256 in
+`integration.yml`, and runs the `windows_desktop` marker against the managed e2e workspace. It
+uploads `integration-codex-desktop-windows` evidence. To update the app, take `packageVersion`
+from `https://persistent.oaistatic.com/codex-app-prod/windows-release.json` and the MSIX's SHA256.
+OpenAI has re-uploaded some builds a few days after release, so pin one whose `Last-Modified`
+matches its `x-ms-creation-time`.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. The dedicated direct-Anthropic lanes

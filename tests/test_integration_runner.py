@@ -93,7 +93,7 @@ def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
         tmp_path,
         ["claude", "codex"],
         platform_name="nt",
-        macos_desktop=False,
+        desktop_app=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -107,7 +107,7 @@ def test_copilot_headless_target_and_exact_version(tmp_path):
         tmp_path,
         ["copilot"],
         platform_name="posix",
-        macos_desktop=False,
+        desktop_app=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -122,7 +122,7 @@ def test_antigravity_build_selects_its_headless_node_and_version(tmp_path):
         tmp_path,
         ["antigravity"],
         platform_name="posix",
-        macos_desktop=False,
+        desktop_app=False,
         installation_only=False,
         headless_only=True,
     ) == [
@@ -257,17 +257,25 @@ def test_copilot_version_output_matches_the_pinned_version():
     assert runner.agent_version_output("codex", "codex-cli 0.154.0") == "codex-cli 0.154.0"
 
 
+def test_desktop_app_flag_keeps_its_old_macos_name():
+    # /integration-test runs the default branch's workflow, which may still pass the old name.
+    for flag in ("--desktop-app", "--macos-desktop"):
+        argv = ["--codex-version", "0.154.0", flag, "--workspace", "https://example.test"]
+        assert runner.arguments(argv, environment=windows_live_environment()).desktop_app
+
+
 def test_live_runs_select_every_module_except_unsupported_and_desktop_ones(tmp_path):
     (tmp_path / "test_headless.py").write_text("import json\n")
     (tmp_path / "test_tui.py").write_text("from utils.terminal import AgentTerminal\n")
     (tmp_path / "test_ug_claude_tracing.py").write_text("import json\n")
     (tmp_path / "test_ug_codex_desktop_macos.py").write_text("import json\n")
+    (tmp_path / "test_ug_codex_desktop_windows.py").write_text("import json\n")
 
     assert runner.integration_test_targets(
         tmp_path,
         ["claude"],
         platform_name="nt",
-        macos_desktop=False,
+        desktop_app=False,
         installation_only=False,
         headless_only=False,
     ) == [
@@ -279,18 +287,37 @@ def test_live_runs_select_every_module_except_unsupported_and_desktop_ones(tmp_p
         tmp_path,
         ["claude"],
         platform_name="posix",
-        macos_desktop=False,
+        desktop_app=False,
         installation_only=False,
         headless_only=False,
-    ) == [str(tmp_path), f"--ignore={tmp_path / 'test_ug_codex_desktop_macos.py'}"]
+    ) == [
+        str(tmp_path),
+        f"--ignore={tmp_path / 'test_ug_codex_desktop_macos.py'}",
+        f"--ignore={tmp_path / 'test_ug_codex_desktop_windows.py'}",
+    ]
     assert runner.integration_test_targets(
         tmp_path,
         ["codex"],
         platform_name="posix",
-        macos_desktop=True,
+        desktop_app=True,
         installation_only=False,
         headless_only=False,
     ) == [str(tmp_path)]
+    # The desktop job's marker then picks this platform's journey.
+    assert runner.integration_test_targets(
+        tmp_path,
+        ["codex"],
+        platform_name="nt",
+        desktop_app=True,
+        installation_only=False,
+        headless_only=False,
+    ) == [
+        str(tmp_path / "test_headless.py"),
+        str(tmp_path / "test_tui.py"),
+        str(tmp_path / "test_ug_codex_desktop_macos.py"),
+        str(tmp_path / "test_ug_codex_desktop_windows.py"),
+        *(f"--deselect={node}" for node in sorted(runner.WINDOWS_UNSUPPORTED_NODES)),
+    ]
 
 
 def test_headless_only_is_mutually_exclusive_with_installation_only():
