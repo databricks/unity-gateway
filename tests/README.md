@@ -26,6 +26,8 @@ transport/backend validation limits.
 
 The busy-child journey passes its full assignment through an ordinary input file and
 uses absolute input paths so a child changing directories can still run its gate command.
+The exact gate command is fenced separately from prose to keep instruction words out
+of the copied shell command.
 It distinguishes the follow-up receipt from the original answer. Continuity assertions
 remain the same; model task omission or a stale answer still fails the journey.
 

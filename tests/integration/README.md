@@ -17,6 +17,8 @@ remain rejected.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
+The gate command is a fenced PowerShell or POSIX shell snippet, separate from prose,
+and the child must wait for its successful completion before proceeding.
 Assertions still require every native child, message delivery, and completed answer.
 
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
