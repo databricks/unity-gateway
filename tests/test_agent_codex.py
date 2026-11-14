@@ -1892,7 +1892,8 @@ class TestCodexLaunch:
         codex.CODEX_CONFIG_PATH.write_text(profile, encoding="utf-8")
         relay = Mock()
         monkeypatch.setattr(gateway_proxy, "start_relay_proxy", relay)
-        monkeypatch.setattr(codex, "_ensure_chatgpt_login", Mock())
+        login = Mock()
+        monkeypatch.setattr(codex, "_ensure_chatgpt_login", login)
 
         with pytest.raises(RuntimeError, match="ug configure --agents codex"):
             codex.launch(
@@ -1901,6 +1902,7 @@ class TestCodexLaunch:
 
         assert launches == []
         relay.assert_not_called()
+        login.assert_not_called()
 
     @pytest.mark.parametrize("tool_args", [[], ["update"]])
     def test_relayed_launch_keeps_user_provider_auth_with_native_parser(
