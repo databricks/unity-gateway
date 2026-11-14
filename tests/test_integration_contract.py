@@ -79,14 +79,14 @@ def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
         "import sys,time; "
         "print('ordinary stderr', file=sys.stderr, flush=True); "
         f"print({diagnostic!r}, file=sys.stderr, flush=True); "
-        f"time.sleep({10 if timeout else 0})"
+        f"time.sleep({60 if timeout else 0})"
     )
     with (
         pytest.raises(AssertionError, match="Command exceeded")
         if timeout
         else contextlib.nullcontext()
     ):
-        session.run("-c", program, timeout=1 if timeout else 10)
+        session.run("-c", program, timeout=5 if timeout else 30)
 
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["timed_out"] is timeout
@@ -98,6 +98,37 @@ def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
             "http.response.status_code": "429",
             "auth.request_id": "request-123",
         }
+    ]
+    assert "private response" not in json.dumps(
+        {key: value for key, value in recorded.items() if key != "argv"}
+    )
+
+
+def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    diagnostic = (
+        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+        'event.name="codex.api_request" auth.request_id="request-123" '
+        'error.message="private response"'
+    )
+    program = (
+        "import sys,json; "
+        "print('ordinary stderr', file=sys.stderr, flush=True); "
+        f"print({diagnostic!r}, file=sys.stderr, flush=True); "
+        "request=json.loads(sys.stdin.readline()); "
+        "print(json.dumps({'id':request['id'],'result':{'userAgent':'contract-check'}}), "
+        "flush=True); sys.stdin.readline()"
+    )
+
+    session.app_server_handshake(["-c", program], binary=Path(sys.executable), timeout=30)
+
+    recorded = json.loads((session.artifacts / "app-server.json").read_text())
+    assert recorded["stderr"] == ["ordinary stderr\n"]
+    assert recorded["codex_diagnostics"] == [
+        {"event.name": "codex.api_request", "auth.request_id": "request-123"}
     ]
     assert "private response" not in json.dumps(
         {key: value for key, value in recorded.items() if key != "argv"}

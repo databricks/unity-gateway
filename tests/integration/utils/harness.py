@@ -328,6 +328,7 @@ class UserSession:
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
+        codex_diagnostics: list[dict[str, str]] = []
         proc = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -353,7 +354,10 @@ class UserSession:
 
         def read_diagnostics():
             for line in proc.stderr:
-                diagnostics.append(self.redact(line))
+                if f" {DIAGNOSTIC_TARGET}:" in line:
+                    codex_diagnostics.extend(diagnostic_events(line))
+                else:
+                    diagnostics.append(self.redact(line))
 
         reader = threading.Thread(target=read_output, daemon=True)
         stderr_reader = threading.Thread(target=read_diagnostics, daemon=True)
@@ -409,7 +413,13 @@ class UserSession:
             proc.stdout.close()
             proc.stderr.close()
             self.record(
-                f"{name}.json", {"argv": command, "stdout": transcript, "stderr": diagnostics}
+                f"{name}.json",
+                {
+                    "argv": command,
+                    "stdout": transcript,
+                    "stderr": diagnostics,
+                    "codex_diagnostics": codex_diagnostics,
+                },
             )
 
     def codex_model_ids(

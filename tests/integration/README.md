@@ -3,7 +3,7 @@
 Codex command evidence includes native API request timestamps, durations, retry attempts,
 HTTP status codes and request IDs when the client emits them. Headless runs enable the
 native `codex_otel.trace_safe` target and keep only these allowlisted fields in
-`command-*.json` under `codex_diagnostics`. Ordinary stderr remains unchanged.
+`command-*.json` and app-server artifacts under `codex_diagnostics`. Ordinary stderr remains unchanged.
 Before cleanup, `codex-native-diagnostics.json` snapshots the latest 2,000 native
 API/client SQLite log rows per database, including timestamps, levels, targets and thread IDs.
 It excludes raw messages, headers, URLs and bodies. Missing logs produce an empty
