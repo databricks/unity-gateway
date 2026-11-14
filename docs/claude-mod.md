@@ -96,6 +96,15 @@ native advice. The activation context
 puts the skill location and loading instruction before the delegation guidance so
 Claude can recover the full workflow when its hook output is truncated.
 
+While orchestration is active, `prompt.submit` drops the native empty waiting
+placeholder only for a direct child that `agent.list` confirms is still waiting.
+This avoids a parent-model request; the child continues and delivers its final report.
+The recorded Claude 2.1.316 format is recognized. Claude 2.1.290 uses an
+`Agent "..." finished` summary, which retains normal delivery and can still wake the parent.
+Actual reports, errors, attachments, unknown formats and missing task state retain
+normal delivery. Existing routing and orchestration controls apply. Claude may
+still display its local `Prompt dropped by a hook` status.
+
 The old routing PreToolUse hook is no longer written, so a call is not routed twice. A
 `route-subagent` hook that an earlier UG version persisted still gets its PreToolUse
 response and plain-text notice.

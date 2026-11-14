@@ -29,6 +29,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
+        "waiting-notifications.ts",
     )
     for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()

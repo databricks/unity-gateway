@@ -468,6 +468,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
+        "waiting-notifications.ts",
     ):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
