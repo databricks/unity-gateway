@@ -283,6 +283,7 @@ time.sleep(30)
     [
         "empty",
         "completed",
+        "completed_empty_history",
         "detail",
         "routed_detail",
         "resumed",
@@ -291,8 +292,11 @@ time.sleep(30)
         "routed_detail_running",
         "detail_transcript",
         "mixed",
+        "mixed_empty_history",
         "scheduled",
         "partial",
+        "partial_empty_history",
+        "nonempty_history",
         "transcript",
     ],
 )
@@ -344,8 +348,22 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
             "agent ›", "ug-smart-router:ucode-route-claude-haiku-4-5-83f7d1b2 ›"
         )
     views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
+    for name in ("completed", "mixed", "partial"):
+        views[f"{name}_empty_history"] = views[name].replace(
+            "↑/↓ to select", "  Earlier in this session (0)\n\n↑/↓ to select"
+        )
+    views["nonempty_history"] = views["completed_empty_history"].replace(
+        "Earlier in this session (0)", "Earlier in this session (1)"
+    )
     views["resumed"] = views["mixed"]
-    complete = view in ("empty", "completed", "detail", "routed_detail", "resumed")
+    complete = view in (
+        "empty",
+        "completed",
+        "completed_empty_history",
+        "detail",
+        "routed_detail",
+        "resumed",
+    )
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}
