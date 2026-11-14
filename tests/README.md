@@ -913,7 +913,9 @@ preserve the selected workspace's saved family catalogs, including OSS and Copil
 open models; confirmed empty results clear stale inventories. Token changes and
 same-host workspace selections fetch separate model and provider-service catalogs;
 provider-service parent scopes also remain separate. Workspace switches never
-reuse the source workspace's saved models. Provider mode skips the UC listing and
+reuse the source workspace's saved models. Failed UC listings show OAuth-scope,
+grant, or workspace-availability guidance even without a saved catalog.
+Provider mode skips the UC listing and
 retains Claude's web-search lookup; skip-preflight
 skips authentication and discovery. Probe-only pagination, cache, and overlap tests
 were removed with the redundant gateway probe. These controlled HTTP checks do not

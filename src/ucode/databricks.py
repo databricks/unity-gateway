@@ -2378,21 +2378,6 @@ def clear_model_services_cache() -> None:
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
 
 
-def has_cached_model_provider_services(
-    workspace: str, token: str, parent: str | None = None
-) -> bool:
-    """True when :func:`list_model_provider_services` will answer from cache.
-
-    Lets a caller skip a progress spinner it doesn't need: the cold listing takes over a second, so
-    it deserves one, but repeating it per agent on an instant cache hit is just noise. Takes
-    ``parent`` for the same reason the cache is keyed on it — a scoped listing is a separate entry.
-    """
-    return (
-        *_model_listing_cache_key(workspace, token),
-        parent or "",
-    ) in _MODEL_PROVIDER_SERVICES_CACHE
-
-
 def list_model_services(
     workspace: str,
     token: str,

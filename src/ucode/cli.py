@@ -784,6 +784,11 @@ def configure_shared_state(
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
 
+    def raise_for_discovery_reason(reason: str | None) -> None:
+        if isinstance(reason, WorkspaceSelectionReason):
+            raise RuntimeError(reason)
+        raise_for_invalid_access_token(workspace, reason)
+
     def preserve_on_failure[T](models: T, reason: str | None, field: str) -> T:
         if isinstance(reason, ModelDiscoveryFailureReason) and saved_models.get(field):
             print_warning(
@@ -824,9 +829,29 @@ def configure_shared_state(
             ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
                 workspace, token
             )
-            if isinstance(ms_reason, WorkspaceSelectionReason):
-                raise RuntimeError(ms_reason)
-            raise_for_invalid_access_token(workspace, ms_reason)
+            raise_for_discovery_reason(ms_reason)
+            if isinstance(ms_reason, ModelDiscoveryFailureReason):
+                lowered = ms_reason.lower()
+                guidance = ""
+                if "http 403" in lowered:
+                    if "oauth token" in lowered and "required scopes" in lowered:
+                        guidance = (
+                            "Re-authenticate with the required OAuth scopes using "
+                            f"databricks auth login --host {workspace}."
+                        )
+                    else:
+                        guidance = (
+                            "Listing requires USE CATALOG on `system`, "
+                            "and USE SCHEMA and EXECUTE on `system.ai`."
+                        )
+                elif "http 404" in lowered:
+                    guidance = (
+                        "Unity Catalog model services are unavailable; "
+                        "check workspace support and access with your administrator."
+                    )
+                print_warning(
+                    f"Could not list Unity Catalog model services ({ms_reason}). {guidance}".rstrip()
+                )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
@@ -842,18 +867,14 @@ def configure_shared_state(
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
             for reason in (claude_reason, gemini_reason, codex_reason):
-                if isinstance(reason, WorkspaceSelectionReason):
-                    raise RuntimeError(reason)
-                raise_for_invalid_access_token(workspace, reason)
+                raise_for_discovery_reason(reason)
             claude_models = preserve_on_failure(claude_models, claude_reason, "claude_models")
             gemini_models = preserve_on_failure(gemini_models, gemini_reason, "gemini_models")
             codex_models = preserve_on_failure(codex_models, codex_reason, "codex_models")
             oss_models = preserve_on_failure(oss_models, oss_reason, "oss_models")
             if want_copilot:
                 catalog = list_anthropic_model_catalog(workspace, token)
-                if isinstance(catalog.error_msg, WorkspaceSelectionReason):
-                    raise RuntimeError(catalog.error_msg)
-                raise_for_invalid_access_token(workspace, catalog.error_msg)
+                raise_for_discovery_reason(catalog.error_msg)
                 copilot_models = copilot_agent.catalog_from_listings(
                     cached_model_service_entries(workspace, token),
                     [*claude_models.values(), *codex_models],
@@ -873,9 +894,7 @@ def configure_shared_state(
             opencode_models["oss"] = oss_models
 
     for reason in (claude_reason, gemini_reason, codex_reason, copilot_reason):
-        if isinstance(reason, WorkspaceSelectionReason):
-            raise RuntimeError(reason)
-        raise_for_invalid_access_token(workspace, reason)
+        raise_for_discovery_reason(reason)
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider

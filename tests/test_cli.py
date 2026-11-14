@@ -7626,6 +7626,29 @@ class TestConfigureSharedStateDiscoveryFailures:
         assert state["oss_models"] == []
         assert state["opencode_models"] == {}
 
+    @pytest.mark.parametrize(
+        ("reason", "guidance"),
+        [
+            ("HTTP 403 Forbidden: Missing Unity Catalog grants", "USE CATALOG"),
+            (
+                "HTTP 403 Forbidden: OAuth token does not have required scopes",
+                "databricks auth login --host https://example.databricks.com",
+            ),
+            ("HTTP 404 Not Found", "model services are unavailable"),
+        ],
+    )
+    def test_failed_uc_listing_warns_without_saved_models(self, monkeypatch, reason, guidance):
+        cli, _ = self._setup(monkeypatch)
+        warnings = []
+        monkeypatch.setattr(cli, "load_state", lambda: {"workspace": self.WS})
+        monkeypatch.setattr(cli, "print_warning", warnings.append)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, reason))
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["opencode_models"] == {}
+        assert any(reason in warning and guidance in warning for warning in warnings)
+
     @pytest.mark.parametrize("destination_exists", [False, True])
     def test_workspace_switch_preserves_only_the_destination_models(
         self, monkeypatch, destination_exists

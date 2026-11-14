@@ -590,6 +590,8 @@ models on failure, and isolate cached catalogs by credential and workspace selec
 Copilot retains its saved open models when UC refresh fails. The redundant
 gateway probe and its overlap/cache tests were removed. These checks do not establish
 live request counts or launch-time savings.
+Component tests also check failed UC listing guidance for missing grants, OAuth scopes,
+and unavailable model services without a saved catalog.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned
