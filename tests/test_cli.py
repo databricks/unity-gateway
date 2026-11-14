@@ -1365,6 +1365,76 @@ class TestSubcommandRouting:
         calls["resolve_model"].assert_not_called()
         calls["launch"].assert_called_once()
 
+    @pytest.mark.parametrize("external_gate", [None, "0", "1"])
+    @pytest.mark.parametrize("saved_provider", [False, True])
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_explicit_smart_routing_enables_unmanaged_provider(
+        self, monkeypatch, external_gate, saved_provider, tool
+    ):
+        gate = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
+        if external_gate is None:
+            monkeypatch.delenv(gate, raising=False)
+        else:
+            monkeypatch.setenv(gate, external_gate)
+        if tool == "codex":
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
+        provider = "main.default.anthropic"
+        provider_args = [] if saved_provider else ["--provider", provider]
+        with _launch_policy_patches(
+            None, persisted_provider=provider if saved_provider else None
+        ) as calls:
+            result = runner.invoke(app, [tool, *provider_args, "--enable-smart-routing"])
+
+        assert result.exit_code == 0, result.output
+        options = calls["launch"].call_args.kwargs["options"]
+        assert options.launch_smart_routing is True
+        assert calls["launch"].call_args.args[1][f"_{tool}_launch_provider"] == provider
+        if tool == "claude":
+            assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+                "main.default.claude-sonnet-5"
+            ]
+        assert os.environ.get(gate) == external_gate
+
+    @pytest.mark.parametrize("managed_routing", [False, True])
+    def test_implicit_provider_routing_still_requires_external_gate(
+        self, monkeypatch, managed_routing
+    ):
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        provider = "main.default.anthropic"
+        managed = (
+            {
+                "enabled_agents": {
+                    "claude": {
+                        "smart_routing_enabled": True,
+                        "model_config": {"model_provider_service": provider},
+                    }
+                }
+            }
+            if managed_routing
+            else None
+        )
+        with _launch_policy_patches(managed, persisted_provider=provider) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be enabled with" in _strip_ansi(result.output)
+        calls["launch"].assert_not_called()
+        assert "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS" not in os.environ
+
+    def test_explicit_provider_routing_restores_external_gate_after_error(self, monkeypatch):
+        gate = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
+        monkeypatch.setenv(gate, "0")
+        with _launch_policy_patches(None) as calls:
+            calls["configure"].side_effect = RuntimeError("configuration failed")
+            result = runner.invoke(
+                app, ["claude", "--provider", "main.default.anthropic", "--enable-smart-routing"]
+            )
+
+        assert result.exit_code == 1
+        assert "configuration failed" in _strip_ansi(result.output)
+        assert os.environ[gate] == "0"
+
     def test_unmanaged_claude_launch_lists_gateway_catalog(self):
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(app, ["claude"])
