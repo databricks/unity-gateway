@@ -278,7 +278,7 @@ _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
     "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
-    "oss": ("opencode", "kilo"),
+    "oss": ("opencode", "kilo", "pi"),
 }
 
 
@@ -803,8 +803,10 @@ def configure_shared_state(
         fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
-    # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
+    # configure must persist that discovered family too. Pi serves them on its MLflow provider.
+    want_oss = (
+        fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools or "pi" in tools
+    )
     want_copilot = fetch_all or "copilot" in tools
 
     claude_reason: str | None = None
@@ -1800,6 +1802,7 @@ def _status_models(tool: str, state: dict) -> list[str]:
             _model_values(state.get("claude_models"))
             + _model_values(state.get("codex_models"))
             + _model_values(state.get("gemini_models"))
+            + _model_values(state.get("oss_models"))
         )
     else:
         models = []

@@ -340,8 +340,18 @@ class TestCheckGatewayEndpoint:
     def test_pi_available_with_gemini(self):
         assert check_gateway_endpoint({"gemini_models": ["gemini-2"]}, "pi") is True
 
+    def test_pi_available_with_only_oss_models(self):
+        # Pi serves discovered OSS models on its MLflow provider.
+        assert check_gateway_endpoint({"oss_models": ["system.ai.glm-5-3"]}, "pi") is True
+
     def test_pi_unavailable_when_no_models(self):
         assert check_gateway_endpoint({}, "pi") is False
+
+    def test_pi_availability_failure_names_oss_discovery(self):
+        from ucode.agents import _availability_failure_detail
+
+        detail = _availability_failure_detail("pi", {"_discovery_reasons": {"oss": "HTTP 403"}})
+        assert "oss discovery: HTTP 403" in detail
 
 
 class TestDefaultModelForTool:
