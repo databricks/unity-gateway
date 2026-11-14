@@ -11,9 +11,7 @@ import pytest
 
 from ucode.databricks import (
     build_shared_base_urls,
-    fetch_ai_gateway_claude_models,
-    fetch_codex_models,
-    fetch_gemini_models,
+    discover_model_services,
     get_databricks_token,
 )
 from ucode.ui import normalize_workspace_url
@@ -72,6 +70,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         vscode_mod, "extensions_dir", lambda folder: tmp_path / folder / "extensions"
     )
+    # Revert edits the user settings.json there.
+    monkeypatch.setattr(
+        vscode_mod,
+        "user_dir",
+        lambda insiders: tmp_path / "vscode-user" / ("Code - Insiders" if insiders else "Code"),
+    )
     monkeypatch.setattr(desktop_auth_mod, "_AUTH_LOCK_PATH", state_dir / "claude-desktop-auth.lock")
     # Antigravity's customization root is shared with the developer's Antigravity app and CLI.
     agy_dir = tmp_path / ".gemini" / "config"
@@ -123,6 +127,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
+    monkeypatch.setattr(managed_config_mod, "_requested_mdm_os", None)
+    monkeypatch.setattr(managed_config_mod, "_inherited_mdm_os", None)
+    # Set first so the undo also removes a value a test sets (delenv of an unset key records none).
+    monkeypatch.setenv("MDM_OS", "None")
+    monkeypatch.delenv("MDM_OS")
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
@@ -227,9 +236,8 @@ def e2e_state_for(workspace: str) -> dict:
     command mints a fresh token per call, so a token key would miss and fetch a second snapshot.
     A failed fetch raises and is not cached."""
     token = get_databricks_token(workspace)
-    claude_models = fetch_ai_gateway_claude_models(workspace, token)
-    gemini_models = fetch_gemini_models(workspace, token)
-    codex_models = fetch_codex_models(workspace, token)
+    # UC model services, like `ug configure`: new models answer only to their `system.ai.*` names.
+    claude_models, codex_models, gemini_models, _, _ = discover_model_services(workspace, token)
 
     opencode_models: dict = {}
     if claude_models:
@@ -253,3 +261,21 @@ def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
     return dict(e2e_state_for(e2e_workspace))
+
+
+@pytest.fixture
+def metrics_recorder(monkeypatch):
+    from unittest.mock import Mock
+
+    from ucode import metrics
+    from ucode.metrics import exporter
+
+    # Tests exercise collection and real SDK aggregation without sending developer telemetry.
+    runtime = metrics.Recorder("claude", metrics.time.perf_counter())
+    monkeypatch.setattr(metrics, "_runtime", runtime)
+    monkeypatch.setattr(exporter, "send_in_background", Mock(return_value=None))
+    yield runtime
+    runtime.stop.set()
+    runtime.wake.set()
+    if runtime.thread:
+        runtime.thread.join(timeout=2)

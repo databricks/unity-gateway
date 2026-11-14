@@ -76,7 +76,7 @@ class TestOtelTracing:
         assert managed_otel_tracing_enabled({"otel_tracing_enabled": True}, "claude") is False
 
     def test_state_overrides_enable_supported_agents(self):
-        for tool in ("claude", "codex"):
+        for tool in ("claude", "codex", "copilot"):
             managed = {"enabled_agents": {tool: {"otel_tracing_enabled": True}}}
             assert managed_state_overrides(managed, tool)[f"{tool}_otel_tracing"] is True
 
@@ -91,6 +91,22 @@ class TestOtelTracing:
     def test_resolve_state_layers_tracing_flag(self):
         managed = {"enabled_agents": {"codex": {"otel_tracing_enabled": True}}}
         assert resolve_state(managed, _state(), "codex")["codex_otel_tracing"] is True
+
+
+class TestVsCodeIntegration:
+    def test_disabled_vscode_overrides_copilot_state(self):
+        managed = {"enabled_agents": {"copilot": {"vscode_integration_enabled": False}}}
+        assert managed_state_overrides(managed, "copilot")["copilot_vscode_integration"] is False
+        assert resolve_state(managed, _state(), "copilot")["copilot_vscode_integration"] is False
+
+    def test_enabled_or_unset_vscode_adds_no_override(self):
+        for entry in ({"vscode_integration_enabled": True}, {}):
+            managed = {"enabled_agents": {"copilot": entry}}
+            assert "copilot_vscode_integration" not in managed_state_overrides(managed, "copilot")
+
+    def test_vscode_switch_is_copilot_only(self):
+        managed = {"enabled_agents": {"claude": {"vscode_integration_enabled": False}}}
+        assert "copilot_vscode_integration" not in managed_state_overrides(managed, "claude")
 
 
 class TestHttpHeaders:
@@ -508,6 +524,28 @@ class TestManagedSuppliesModels:
     def test_true_for_a_flat_model_list(self):
         managed = {"enabled_agents": {"opencode": {"model_config": {"models": ["a", "b"]}}}}
         assert managed_supplies_models(managed, "opencode") is True
+
+    def test_false_for_a_static_list_alone(self):
+        # Without a default_model, discovery still has to fill Claude's family defaults.
+        managed = {
+            "enabled_agents": {
+                "claude": {"model_config": {"sources": ["main.anthropic.byok.claude-sonnet-5-5"]}}
+            }
+        }
+        assert managed_supplies_models(managed, "claude") is False
+
+    def test_true_for_a_static_list_with_a_default(self):
+        managed = {
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "main.anthropic.byok.claude-sonnet-5-5",
+                        "sources": ["main.anthropic.byok.claude-sonnet-5-5"],
+                    }
+                }
+            }
+        }
+        assert managed_supplies_models(managed, "claude") is True
 
     def test_false_when_the_config_names_no_models(self):
         # Discovery still has to run, or the launch has nothing to pin.

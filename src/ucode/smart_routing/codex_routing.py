@@ -1,4 +1,4 @@
-"""Databricks AI Gateway routing helpers for Codex sessions and subagents.
+"""Databricks Unity Gateway routing helpers for Codex sessions and subagents.
 
 Codex-specific configuration on top of the shared :mod:`ucode.smart_routing.routing`
 core: the workspace-backed route options, the ``spawn_agent`` tool
@@ -141,7 +141,7 @@ def codex_model_id(model: str) -> str:
     """Map a UC GPT service ID to Codex's bundled catalog slug.
 
     Codex's bundled GPT catalog owns the model metadata for these aliases,
-    while the AI Gateway resolves them back to the matching ``system.ai`` service.
+    while the Unity Gateway resolves them back to the matching ``system.ai`` service.
     Leave non-GPT models unchanged because their metadata comes from the gateway catalog.
     """
     tail = model.rsplit("/", 1)[-1]

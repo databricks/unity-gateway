@@ -5,13 +5,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import uuid
 from pathlib import Path
 
 import httpx
 import pytest
 
 from ucode import custom_oauth
-from ucode.agents import copilot
+from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.telemetry import client_platform
 
@@ -99,6 +100,45 @@ class TestClassifyCopilotModel:
 
 
 class TestBuildCopilotCatalog:
+    def test_provider_wildcards_reach_the_registry_with_qualified_ids(self, monkeypatch):
+        services = {
+            "main.default.lilly-personal-anthropic": (
+                "anthropic",
+                ["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+            ),
+            "main.default.lill-oai": ("openai", ["gpt-6.1-sol", "gpt-6.1-terra"]),
+        }
+        monkeypatch.setattr(
+            model_sources,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"provider_type": services[name][0]}, None),
+        )
+        monkeypatch.setattr(
+            model_sources,
+            "list_provider_service_models",
+            lambda workspace, token, name, provider: (services[name][1], None),
+        )
+        models, _ = model_sources.resolve_model_sources(
+            [SONNET, *(f"{service}.*" for service in services)], "copilot", WS, "token"
+        )
+        state = {"copilot_static_models": models}
+        result = copilot.render_providers_config(copilot.copilot_catalog(state), PROXY, "secret")
+
+        expected = {SONNET: "anthropic"}
+        expected.update(
+            (f"{service}.{model}", "anthropic" if provider == "anthropic" else "responses")
+            for service, (provider, names) in services.items()
+            for model in names
+        )
+        assert {entry["id"] for entry in result["models"]} == set(expected)
+        assert copilot.unservable_static_models(state) == []
+        for entry in result["models"]:
+            assert entry["wireModel"] == entry["id"]
+            assert entry["provider"] == copilot.PROVIDER_NAMES[expected[entry["id"]]]
+            if expected[entry["id"]] == "anthropic":
+                assert entry["modelId"].startswith("claude-")
+                assert entry["maxPromptTokens"] == 872_000
+
     def test_orders_claude_by_family_newest_first_then_gpt(self):
         models = catalog(
             "system.ai.gpt-5-4",
@@ -264,6 +304,31 @@ class TestCopilotCatalog:
                 copilot.copilot_exclusion_reason("system.ai.gemini-3-flash"),
             )
         ]
+
+    def test_managed_list_takes_the_limits_discovery_saved(self):
+        discovered = [
+            copilot.CopilotModel(SONNET, "anthropic"),
+            copilot.CopilotModel(GPT, "responses", (922_000, 128_000)),
+        ]
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(discovered),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert model.listed_limits == (922_000, 128_000)
+        assert copilot.catalog_model_limits(model) == (794_000, 128_000)
+
+    def test_managed_model_without_saved_limits_keeps_copilots_default(self):
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(catalog(SONNET)),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert copilot.catalog_model_limits(model) is None
 
     def test_an_unusable_managed_list_falls_back_to_discovery(self):
         state = {
@@ -737,7 +802,7 @@ class TestLocationCatalog:
         assert seen["parent_schema"] == "main.ucode"
 
     def test_an_empty_schema_says_so(self, monkeypatch):
-        _stub_location(monkeypatch, [], error="AI Gateway returned no Anthropic model ids")
+        _stub_location(monkeypatch, [], error="Unity Gateway returned no Anthropic model ids")
 
         with pytest.raises(RuntimeError, match="no model services to use in main.ucode"):
             copilot.location_catalog({"workspace": WS}, "main.ucode")
@@ -973,6 +1038,31 @@ class TestBuildRuntimeEnv:
         monkeypatch.setenv(key, "user-value")
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
         assert env.get(key) != "user-value"
+
+    def test_tracing_replaces_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/t")
+        monkeypatch.setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", "/tmp/spans")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ml")
+        otel = copilot.otel_env(PROXY, "secret")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0], otel=otel)
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"{PROXY}/ai-gateway/otel"
+        assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+        assert env["OTEL_EXPORTER_OTLP_HEADERS"] == "x-api-key=secret"
+        assert env["COPILOT_OTEL_ENABLED"] == "true"
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in env
+        assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
+
+    def test_without_tracing_keeps_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+        assert "COPILOT_OTEL_ENABLED" not in env
 
 
 class TestSessionRegistry:
@@ -1433,6 +1523,14 @@ def _stub_launch(monkeypatch, process=None, token="dbx-token"):
             content=b"{}",
             timeout=5,
         ).status_code
+        if endpoint := env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+            api_key = env["OTEL_EXPORTER_OTLP_HEADERS"].removeprefix("x-api-key=")
+            seen["metrics_status"] = httpx.post(
+                f"{endpoint}/v1/metrics", headers={"x-api-key": api_key}, content=b"", timeout=5
+            ).status_code
+            seen["unsigned_traces_status"] = httpx.post(
+                f"{endpoint}/v1/traces", content=b"", timeout=5
+            ).status_code
         return process or _ExitedProcess()
 
     monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
@@ -1463,6 +1561,31 @@ class TestLaunch:
         assert seen["wrong_secret_status"] == 401
         assert not os.path.exists(seen["registry_path"])
 
+    def test_tracing_exports_to_the_session_proxy(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                {**STATE, "copilot_otel_tracing": True}, [], options=copilot.LaunchOptions()
+            )
+
+        secret = seen["registry"]["providers"][0]["bearerToken"]
+        assert seen["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == f"x-api-key={secret}"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"].startswith("http://127.0.0.1:")
+        assert seen["metrics_status"] == 200
+        assert seen["unsigned_traces_status"] == 401
+
+    def test_without_tracing_the_proxy_serves_no_otel_path(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), [], options=copilot.LaunchOptions())
+
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in seen["env"]
+        assert "COPILOT_OTEL_ENABLED" not in seen["env"]
+
     def test_explicit_model_is_rewritten_to_the_registry_ref(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         seen = _stub_launch(monkeypatch)
@@ -1477,6 +1600,8 @@ class TestLaunch:
         assert seen["argv"] == [
             "copilot",
             "--allow-all-mcp-server-instructions",
+            "--session-id",
+            seen["argv"][3],
             "-p",
             "hi",
             "--model",
@@ -1505,6 +1630,32 @@ class TestLaunch:
 
         assert seen["bad_request_rewriter"] is copilot.recognizable_context_overflow
         assert tuple(seen["dropped_chat_completions_fields"]) == ("reasoning_effort",)
+
+    def test_the_proxy_sends_the_session_id_and_marks_subagents(self, tmp_path, monkeypatch):
+        from ucode import gateway_proxy
+
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        start = gateway_proxy.start_gateway_auth_proxy
+        proxy = {}
+
+        def start_proxy(*args, **kwargs):
+            proxy.update(kwargs)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(gateway_proxy, "start_gateway_auth_proxy", start_proxy)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), ["-p", "hi"], options=copilot.LaunchOptions())
+
+        session_id = seen["argv"][seen["argv"].index("--session-id") + 1]
+        assert str(uuid.UUID(session_id)) == session_id
+        assert proxy["added_headers"]["session-id"] == session_id
+        subagent = {"x-interaction-type": "conversation-subagent"}
+        body = json.dumps({"messages": [{"role": "user", "content": "find the tests"}]}).encode()
+        assert proxy["request_headers_adder"](subagent, body)["thread-id"].startswith(
+            f"{session_id}-"
+        )
 
     def test_starts_on_the_requested_launch_model(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -1708,3 +1859,135 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcpServers"]
         assert doc["mcpServers"]["mine"] == {"type": "local"}
         assert doc["mcpServers"]["svc"]["command"] == "ug"
+
+
+SESSION = "0b6f3a52-2c5e-4d1e-9a51-1f2b8e4c7d90"
+
+
+class TestSessionArgs:
+    def test_a_new_session_gets_a_new_id_that_copilot_uses_too(self):
+        args, session_id = copilot.session_args(["-p", "hi"])
+
+        assert args == ["--session-id", session_id, "-p", "hi"]
+        assert str(uuid.UUID(session_id)) == session_id
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--session-id", SESSION],
+            [f"--session-id={SESSION}"],
+            ["--resume", SESSION.upper()],
+            ["-r", SESSION, "-p", "hi"],
+            [f"--resume={SESSION}"],
+        ],
+    )
+    def test_a_session_named_by_uuid_keeps_its_id(self, args):
+        assert copilot.session_args(args) == (args, SESSION)
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--continue"], ["--resume"], ["-r", "-p", "hi"], ["--resume=my-session"], ["sessions"]],
+    )
+    def test_a_session_picked_otherwise_gets_an_id_of_this_launch(self, args):
+        new_args, session_id = copilot.session_args(args)
+
+        assert new_args == args
+        assert str(uuid.UUID(session_id)) == session_id
+        assert copilot.session_args(args)[1] != session_id
+
+
+class TestSubagentHeaders:
+    SUBAGENT = {"x-interaction-type": "conversation-subagent"}
+
+    def setup_method(self):
+        self.adder = copilot.subagent_headers(SESSION)
+
+    def _id(self, body, headers=SUBAGENT):
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+        return self.adder(headers, raw).get("thread-id")
+
+    def test_each_subagent_keeps_one_id_over_its_turns(self):
+        first = {
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "find tests"}]}]
+        }
+        later = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "find tests",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t"}]},
+            ]
+        }
+        other = {"messages": [{"role": "user", "content": "read the docs"}]}
+
+        assert self._id(first) == self._id(later)
+        assert self._id(first).startswith(f"{SESSION}-")
+        assert self._id(other) != self._id(first)
+
+    def test_reads_the_first_user_message_of_each_api(self):
+        prompt = "find tests"
+        anthropic = {"system": "s", "messages": [{"role": "user", "content": prompt}]}
+        completions = {
+            "messages": [
+                {"role": "system", "content": "the same for every subagent"},
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            ]
+        }
+        responses = {
+            "instructions": "s",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
+        }
+
+        assert self._id(anthropic) == self._id(completions) == self._id(responses)
+        assert self._id({"input": prompt}) == self._id(anthropic)
+
+    @pytest.mark.parametrize(
+        ("headers", "body"),
+        [
+            (
+                {"x-interaction-type": "conversation-user"},
+                {"messages": [{"role": "user", "content": "hi"}]},
+            ),
+            ({}, {"messages": [{"role": "user", "content": "hi"}]}),
+            (SUBAGENT, b"not json"),
+            (SUBAGENT, {"messages": [{"role": "assistant", "content": "hi"}]}),
+            (SUBAGENT, ["not", "an", "object"]),
+        ],
+    )
+    def test_no_id_for_the_main_agent_or_a_body_it_cannot_read(self, headers, body):
+        assert self._id(body, headers) is None
+
+    def test_a_lone_surrogate_still_gets_an_id(self):
+        body = b'{"messages": [{"role": "user", "content": "cut \\ud83d"}]}'
+
+        assert self._id(body).startswith(f"{SESSION}-")
+
+    def test_the_id_is_keyed_for_the_launch(self):
+        body = json.dumps({"messages": [{"role": "user", "content": "find tests"}]}).encode()
+        one, other = copilot.subagent_headers(SESSION), copilot.subagent_headers(SESSION)
+
+        assert one(self.SUBAGENT, body) == one(self.SUBAGENT, body)
+        assert one(self.SUBAGENT, body) != other(self.SUBAGENT, body)
+
+
+class TestWithSessionId:
+    def test_adds_the_session_id_unless_an_admin_header_sets_it(self):
+        assert copilot.with_session_id({"User-Agent": "u"}, SESSION) == {
+            "session-id": SESSION,
+            "User-Agent": "u",
+        }
+        assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}

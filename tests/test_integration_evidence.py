@@ -1,6 +1,8 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import re
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -13,7 +15,11 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.terminal import (
+    codex_command_approval_pending,
+    codex_session_footer_shown,
+    codex_trust_dialog_shown,
+)
 
 
 @pytest.mark.parametrize(
@@ -39,11 +45,14 @@ from tests.integration.utils.terminal import codex_command_approval_pending
         "no-choice",
     ],
 )
-def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+@pytest.mark.parametrize("command_gap", ["\n", "\n\n\n"])
+def test_codex_approval_requires_the_exact_local_command(
+    command, environment, missing, expected, command_gap
+):
     prompt = "Would you like to run the following command?"
     footer = "Press enter to confirm or esc to cancel"
     choice = "› 1. Yes, proceed (y)"
-    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}{command_gap}{choice}\n{footer}"
     if missing == "prompt":
         screen = screen.replace(prompt, "")
     elif missing == "footer":
@@ -60,6 +69,129 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         assert (
             codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
         )
+
+
+# Codex 0.156.0 folder-trust screens captured in CI run 42283317759. Windows ConPTY rendered the
+# selection marker and the footer separator as U+FFFD.
+_TRUST_TEXT = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your permission "
+    "settings. Folder settings can run code\n"
+    "  automatically, even without a model request. Continue only if you trust these files. "
+    "Your trust decision will be saved.\n"
+)
+_LINUX_CWD = PurePosixPath("/tmp/ug-integration-project-pf6kf82t/project with spaces")
+_LINUX_TRUST = (
+    f"  Folder access\n  {_LINUX_CWD}\n\n{_TRUST_TEXT}\n"
+    "› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit"
+)
+_WINDOWS_CWD = PureWindowsPath(
+    r"D:\a\_temp\ug-integration\ug-integration-project-da67c71c70c8\project with spaces"
+)
+_WINDOWS_TRUST = (
+    f"  Folder access\n  {_WINDOWS_CWD}\n{_TRUST_TEXT}"
+    "\ufffd 1. Trust and continue\n  2. Quit\n  enter continue \ufffd esc quit"
+)
+
+
+@pytest.mark.parametrize(
+    ("screen", "cwd", "change", "shown"),
+    [
+        (_LINUX_TRUST, _LINUX_CWD, None, True),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, None, True),
+        (_LINUX_TRUST, _LINUX_CWD, ("project with spaces", "other project"), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("project with spaces", "other project"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("› 1.", "  1."), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("\ufffd 1.", "  1."), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Folder access", "Folder"), False),
+    ],
+)
+def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown):
+    if change:
+        screen = screen.replace(*change)
+    assert codex_trust_dialog_shown(screen, cwd) is shown
+
+
+# Codex 0.156.0's ready screen captured in CI run 42294239789; its footer ends in a warning badge.
+_FOOTER_CWD = PurePosixPath("/tmp/ug-integration-project-jhrdmhry/project with spaces")
+_CODEX_0_156_READY = (
+    "╭───────────────────────────────────────────╮\n"
+    "│ >_ OpenAI Codex (v0.156.0)                │\n"
+    "│                                           │\n"
+    "│ model:     GPT-5.6-Sol   /model to change │\n"
+    "│ directory: /tmp/…/project with spaces     │\n"
+    "╰───────────────────────────────────────────╯\n"
+    "\n"
+    "  Tip: Use /feedback to send logs to the maintainers when something looks off.\n"
+    "\n"
+    "\n"
+    "› Ask Codex to do anything\n"
+    "\n"
+    "  GPT-5.6-Sol default · /tmp/ug-integration-project-jhrdmhry/project with spaces                                   ⚠ 1 warning · f2 to view"
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "shown"),
+    [
+        (None, True),
+        (("                                   ⚠ 1 warning · f2 to view", ""), True),
+        (("⚠ 1 warning", "⚠ 2 warnings"), True),
+        (("⚠ 1 warning · f2 to view", "something else"), False),
+        (("project with spaces    ", "other project    "), False),
+        (("GPT-5.6-Sol default · ", ""), False),
+    ],
+)
+def test_codex_session_footer_accepts_the_warning_badge(change, shown):
+    screen = _CODEX_0_156_READY.replace(*change) if change else _CODEX_0_156_READY
+    assert codex_session_footer_shown(screen, _FOOTER_CWD) is shown
+
+
+@pytest.mark.parametrize(
+    "missing_message",
+    ['"SMART_ROUTER_ENV_UNSET"', "'MISSING_SMART_ROUTER_ENV'", '"$(Remove-Item important.txt)"'],
+)
+@pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
+@pytest.mark.parametrize("guard_style", ["exit", "else"])
+def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
+    extra_command, missing_message, guard_style
+):
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
+    suffix = "" if guard_style == "exit" else " }"
+    guard = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        f"{{ Write-Output {missing_message}{branch}"
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    expected_guard = guard.replace(missing_message, '"SMART_ROUTER_ENV_UNSET"')
+    expected = (command, f"{expected_guard} {command[2:]}{suffix}")
+    if extra_command or "$" in missing_message:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, expected)
+    else:
+        assert codex_command_approval_pending(screen, expected)
+
+
+@pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])
+def test_codex_posix_toggle_approval_accepts_only_the_known_guard(extra_command):
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    guarded = (
+        'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && ' + command
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guarded}{extra_command}\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    if extra_command:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, (command, guarded))
+    else:
+        assert codex_command_approval_pending(screen, (command, guarded))
 
 
 class _Session:
@@ -150,20 +282,50 @@ def test_claude_send_requires_matching_native_result():
 
 def test_claude_follow_ups_tolerate_queued_and_rejected_alongside_a_resume():
     calls = [_call(1), _call(2), _call(3)]
-    claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED), "child-id")
+    resumed = claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _QUEUED, _REJECTED))
+    assert resumed == "child-id"
 
 
 @pytest.mark.parametrize("results", [(_QUEUED,), (_REJECTED,), (_QUEUED, _REJECTED)])
 def test_claude_follow_ups_require_a_real_resume(results):
     calls = [_call(i) for i in range(1, len(results) + 1)]
-    with pytest.raises(AssertionError, match="No SendMessage resumed child-id"):
-        claude.assert_follow_ups_resumed(calls, _records(*results), "child-id")
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
 
 
 def test_claude_follow_ups_fail_when_any_send_targets_another_agent():
     calls = [_call(1), _call(2, to="other-child")]
     with pytest.raises(AssertionError, match="neither resumed nor was queued or rejected"):
-        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED), "child-id")
+        claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _REJECTED))
+
+
+def test_claude_follow_ups_resolve_the_single_resumed_child():
+    calls = [_call(1), _call(2), _call(3)]
+    assert (
+        claude.assert_follow_ups_resumed(calls, _records(_QUEUED, _RESUMED, _REJECTED))
+        == "child-id"
+    )
+
+
+@pytest.mark.parametrize(
+    "results",
+    [
+        (
+            {"success": True, "resumedAgentId": "child-id"},
+            {"success": True, "resumedAgentId": "other-child"},
+        ),
+        ({"success": True},),
+    ],
+)
+def test_claude_follow_ups_require_exactly_one_resumed_child(results):
+    calls = [_call(i) for i in range(1, len(results) + 1)]
+    with pytest.raises(AssertionError, match="resume exactly one child"):
+        claude.assert_follow_ups_resumed(calls, _records(*results))
+
+
+def test_claude_follow_ups_require_a_native_result():
+    with pytest.raises(AssertionError, match="No native tool result for SendMessage send-1"):
+        claude.assert_follow_ups_resumed([_call()], [])
 
 
 def _transcript_session(home, agent, transcripts):
@@ -173,6 +335,94 @@ def _transcript_session(home, agent, transcripts):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(json.dumps(record) + "\n" for record in records))
     return _Session(home)
+
+
+def _claude_peer_delivery(child_id, value):
+    body = "[Subagent hand-back] The report follows:\n  " + value
+    return {
+        "type": "user",
+        "isMeta": True,
+        "message": {
+            "role": "user",
+            "content": f'Another Claude session sent a message:\n<agent-message from="{child_id}">\n'
+            f"{body}\n</agent-message>",
+        },
+        "origin": {"kind": "peer", "from": child_id, "senderTaskId": child_id, "body": body},
+    }
+
+
+def _claude_child_handback(value):
+    return {
+        "type": "assistant",
+        "isSidechain": True,
+        "message": {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "SubagentHandback",
+                    "id": "handback-1",
+                    "input": {"message": value},
+                }
+            ],
+        },
+    }
+
+
+def _claude_parent_text(value):
+    return {
+        "type": "assistant",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": value}]},
+    }
+
+
+def test_claude_child_answer_requires_delivery_even_when_parent_hallucinates():
+    value = "3d3faaf02749"
+    fabricated = _claude_parent_text(
+        'Waiting for the subagent... <task-notification>"a fabricated quote"</task-notification>'
+    )
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-ae73fb7e161b59bbb.jsonl"
+    sessions = {parent: [fabricated], child: [_claude_child_handback(value)]}
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("ae73fb7e161b59bbb", value))
+    assert claude.claude_delivered_child_answers(sessions, value) == {"ae73fb7e161b59bbb"}
+
+
+def test_claude_child_delivery_ignores_prompt_and_tool_input_echoes():
+    value = "3d3faaf02749"
+    parent = "project/session.jsonl"
+    child = "project/session/subagents/agent-child-id.jsonl"
+    sessions = {
+        parent: [
+            {"type": "user", "message": {"role": "user", "content": value}},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "name": "Agent", "input": {"prompt": value}}],
+                },
+            },
+        ],
+        child: [_claude_child_handback(value)],
+    }
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_peer_delivery("other-child", value))
+    assert not claude.claude_delivered_child_answers(sessions, value)
+    sessions[parent].append(_claude_parent_text(value))
+    assert claude.claude_delivered_child_answers(sessions, value) == {"child-id"}
+    sessions[child] = [{"type": "user", "message": {"role": "user", "content": value}}]
+    assert not claude.claude_delivered_child_answers(sessions, value)
+
+
+def test_claude_child_delivery_must_belong_to_same_parent_session():
+    value = "3d3faaf02749"
+    sessions = {
+        "project/other.jsonl": [_claude_peer_delivery("child-id", value)],
+        "project/session.jsonl": [],
+        "project/session/subagents/agent-child-id.jsonl": [_claude_child_handback(value)],
+    }
+    assert not claude.claude_delivered_child_answers(sessions, value)
 
 
 def _write_answer(home, agent, *, child, value):
@@ -258,6 +508,161 @@ def test_antigravity_resource_exhausted_rejects_non_retryable_results(result):
     assert not antigravity.resource_exhausted(stdout)
 
 
+def _antigravity_web_search_events():
+    return [
+        {
+            "event": "step_update",
+            "step_update": {
+                "state": "DONE",
+                "step_type": "tool",
+                "tool_name": "call_mcp_tool",
+                "tool_info": {
+                    "name": "call_mcp_tool",
+                    "parameters": {
+                        "ServerName": "system-ai-web_search",
+                        "ToolName": "web_search",
+                        "Arguments": {"query": "Databricks official website"},
+                    },
+                    "output": "Official site: https://www.databricks.com/",
+                },
+            },
+        },
+        {
+            "event": "result",
+            "result": {"status": "SUCCESS", "response": "https://www.databricks.com/"},
+        },
+    ]
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_antigravity_web_search_requires_native_result_and_matching_answer(encoded):
+    events = _antigravity_web_search_events()
+    if encoded:
+        call = events[0]["step_update"]["tool_info"]
+        call["output"] = json.dumps(
+            {"isError": False, "content": [{"type": "text", "text": call["output"]}]}
+        )
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        (
+            "Databricks' official website is: **https://www.databricks.com/** "
+            "([databricks.com](https://www.databricks.com//?utm_source=openai))",
+            "https://www.databricks.com/",
+        ),
+        ("*https://www.databricks.com/*", "https://www.databricks.com/"),
+        ("`https://www.databricks.com/`", "https://www.databricks.com/"),
+        ("https://www.databricks.com/", "**https://www.databricks.com/**"),
+        ("https://www.databricks.com/", "`https://www.databricks.com/`"),
+        ("[Databricks](https://www.databricks.com/)", "<https://www.databricks.com/>"),
+        ("**https://www.databricks.com/**.", "https://www.databricks.com/"),
+        ("*https://www.databricks.com/*,", "https://www.databricks.com/"),
+        ("`https://www.databricks.com/`.", "https://www.databricks.com/"),
+    ],
+)
+def test_antigravity_web_search_matches_urls_inside_markdown(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        ("https://www.databricks.com//?utm_source=openai", "https://www.databricks.com/\n"),
+        (
+            "[Databricks](https://www.databricks.com//?utm_source=openai)",
+            "https://www.databricks.com/",
+        ),
+        ("https://www.databricks.com/", "https://www.databricks.com/?utm_source=openai"),
+        (
+            "https://www.databricks.com/?utm_source=openai&q=a#top",
+            "https://www.databricks.com/?q=a#top",
+        ),
+    ],
+)
+def test_antigravity_web_search_matches_homepage_tracking_urls(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    antigravity.assert_mcp_web_search_answer(
+        events, server="system-ai-web_search", query="Databricks official website"
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "answer"),
+    [
+        ("**https://www.databricks.com/a**", "https://www.databricks.com/b"),
+        ("**https://www.databricks.com/?q=a**", "https://www.databricks.com/?q=b"),
+        ("**https://www.databricks.com/#a**", "https://www.databricks.com/#b"),
+        ("https://www.databricks.com/?q=*", "https://www.databricks.com/?q="),
+        ("**https://www.databricks.com/?q=*.**", "https://www.databricks.com/?q=*"),
+        ("https://www.databricks.com/?q=.", "https://www.databricks.com/?q="),
+        ("https://www.databricks.com//?utm_source=openai", "https://www.databricks.com/a"),
+        ("https://www.databricks.com/?utm_source=openai&q=a", "https://www.databricks.com/?q=b"),
+        ("https://www.databricks.com/?utm_source=openai#top", "https://www.databricks.com/"),
+        ("https://www.databricks.com/", "http://www.databricks.com/"),
+        ("https://www.databricks.com/", "https://databricks.com/"),
+        ("https://www.databricks.com/", "https://www.databricks.com.example.org/"),
+    ],
+)
+def test_antigravity_web_search_preserves_url_path_query_and_fragment(output, answer):
+    events = _antigravity_web_search_events()
+    events[0]["step_update"]["tool_info"]["output"] = output
+    events[1]["result"]["response"] = answer
+
+    with pytest.raises(AssertionError):
+        antigravity.assert_mcp_web_search_answer(
+            events, server="system-ai-web_search", query="Databricks official website"
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        ((0, "step_update", "state"), "ACTIVE"),
+        ((0, "step_update", "state"), "ERROR"),
+        ((0, "step_update", "tool_name"), "search_web"),
+        ((0, "step_update", "tool_info", "parameters", "ServerName"), "another-server"),
+        ((0, "step_update", "tool_info", "parameters", "ToolName"), "execute_sql"),
+        ((0, "step_update", "tool_info", "parameters", "Arguments", "query"), "another query"),
+        ((0, "step_update", "tool_info", "error"), {"type": "TOOL_ERROR"}),
+        ((0, "step_update", "tool_info", "output"), ""),
+        ((0, "step_update", "tool_info", "output"), "https://www.databricks.com.example.org/"),
+        (
+            (0, "step_update", "tool_info", "output"),
+            '{"isError": true, "content": [{"type": "text", "text": "https://www.databricks.com/"}]}',
+        ),
+        ((1, "result", "status"), "ERROR"),
+        ((1, "result", "response"), ""),
+        ((1, "result", "response"), "https://www.databricks.com/not-returned-by-search"),
+        ((1, "result", "denied_actions"), [{"action": "command", "display_name": "RunCommand"}]),
+    ],
+)
+def test_antigravity_web_search_rejects_incomplete_or_unrelated_evidence(path, value):
+    events = _antigravity_web_search_events()
+    target = events
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = value
+
+    with pytest.raises(AssertionError):
+        antigravity.assert_mcp_web_search_answer(
+            events, server="system-ai-web_search", query="Databricks official website"
+        )
+
+
 def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(monkeypatch):
     monkeypatch.setattr(antigravity.random, "uniform", lambda _start, _end: 0)
 
@@ -268,6 +673,24 @@ def test_antigravity_resource_exhausted_retry_delay_is_truncated_exponential(mon
         20,
         20,
     ]
+
+
+def test_tagged_calculation_uses_a_short_native_task_name():
+    task = SubagentCalculation("1+2", "3")
+
+    assert re.fullmatch(r"[a-z][a-z0-9_]{0,11}", task.marker)
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("child", [False, True])
+def test_tagged_calculation_rejects_mistyped_marker_and_wrong_result(tmp_path, agent, child):
+    session = _Session(tmp_path)
+    task = SubagentCalculation("1+2", "3")
+
+    for answer in (task.marker[:-1] + "=3", task.marker + "=4"):
+        _write_answer(tmp_path, agent, child=child, value=answer)
+
+        assert not task.completed(session, agent, child=child)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -624,3 +1047,64 @@ def test_codex_compacted_prompt_uses_adjacent_native_spawn():
         "ug_subagent_ab12",
         orchestrator_on=True,
     )
+
+
+def test_claude_follow_ups_accept_repeated_resumes_of_the_same_child():
+    calls = [_call(1), _call(2)]
+    assert claude.assert_follow_ups_resumed(calls, _records(_RESUMED, _RESUMED)) == "child-id"
+
+
+_PARENT = "/home/.claude/projects/p/parent.jsonl"
+
+
+def _spawn(call_id, prompt="read input.txt"):
+    return {
+        "type": "assistant",
+        "message": {
+            "content": [
+                {"type": "tool_use", "id": call_id, "name": "Agent", "input": {"prompt": prompt}}
+            ]
+        },
+    }
+
+
+def _child(name):
+    return {f"/home/.claude/projects/p/parent/subagents/agent-{name}.jsonl": [{"type": "user"}]}
+
+
+def test_claude_one_delegated_task_tolerates_identical_duplicate_spawns():
+    sessions = {_PARENT: [_spawn("a"), _spawn("b")], **_child("one"), **_child("two")}
+    claude.assert_one_delegated_task(sessions)
+
+
+@pytest.mark.parametrize(
+    "sessions",
+    [
+        {_PARENT: [_spawn("a"), _spawn("b", "read other.txt")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a")]},
+    ],
+    ids=["differently-tasked-spawn", "no-child"],
+)
+def test_claude_one_delegated_task_rejects_other_shapes(sessions):
+    with pytest.raises(AssertionError):
+        claude.assert_one_delegated_task(sessions)
+
+
+def test_claude_follow_up_spawned_nothing_accepts_unchanged_children_and_spawns():
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    after = {_PARENT: [_spawn("a"), {"type": "user"}], **_child("one")}
+    claude.assert_follow_up_spawned_nothing(before, after)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {_PARENT: [_spawn("a")], **_child("one"), **_child("two")},
+        {_PARENT: [_spawn("a"), _spawn("b")], **_child("one")},
+    ],
+    ids=["new-child", "new-spawn"],
+)
+def test_claude_follow_up_spawned_nothing_rejects_new_children_or_spawns(after):
+    before = {_PARENT: [_spawn("a")], **_child("one")}
+    with pytest.raises(AssertionError):
+        claude.assert_follow_up_spawned_nothing(before, after)

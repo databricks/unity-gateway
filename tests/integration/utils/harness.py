@@ -76,6 +76,7 @@ def clean_environment(home: Path) -> dict[str, str]:
             "DISABLE_AUTOUPDATER": "1",
             # agy requires the literal "true"; "1" leaves background updates enabled.
             "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
+            "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
@@ -122,6 +123,9 @@ class UserSession:
         self.cwd.mkdir()
         self.binary = binary
         self.env = clean_environment(self.home)
+        router_name = os.environ.get("UG_INTEGRATION_SMART_ROUTER_NAME", "").strip()
+        if router_name:
+            self.env["SMART_ROUTER_NAME"] = router_name
         self.artifacts = artifacts
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.commands = 0

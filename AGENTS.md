@@ -2,8 +2,8 @@
 
 ## Project
 
-Unity Gateway (`ug`) is a Python CLI that configures and launches coding agents through Databricks
-AI Gateway. Its internal Python package remains named `ucode` for backward compatibility.
+Unity Gateway (`ug`) is a Python CLI that configures and launches coding agents through a
+Databricks workspace. Its internal Python package remains named `ucode` for backward compatibility.
 
 The package code lives in `src/ucode/`.
 Tests live in `tests/`.
@@ -36,6 +36,41 @@ Tests live in `tests/`.
 - Add or update focused tests for behavior changes.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
+
+## CLI performance metrics
+
+Use `from ucode import metrics` for instrumentation. The recorder and helpers live in
+`src/ucode/metrics/__init__.py`; `metrics/exporter.py` aggregates observations with the
+OTel SDK and uploads OTLP to `/api/2.0/ai-gateway/ug-cli/otel/v1/metrics` in a detached process.
+Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
+
+- Keep `begin`/`finish` at the CLI lifecycle boundary and `start_agent`/`agent_handoff`
+  around agent startup. Individual operations must not create or replace the recorder.
+- Call `metrics.bind(workspace, token)` where an operation obtains, reuses, or refreshes
+  its workspace token. Reuse those credentials; never authenticate solely for telemetry.
+  Use the selected workspace key, including its workspace selector. Observations recorded
+  before the first binding belong to that first workspace; pass `workspace=` explicitly
+  when an operation targets a different workspace.
+- Use `@metrics.timed("<operation>_duration_ms")` for a whole synchronous operation,
+  including its retries. It binds existing `workspace`/`token` arguments and records raised
+  errors. Use `metrics.measure(..., operation="<operation>")` for a smaller code block;
+  `metrics.annotate(...)` adds labels discovered during that measurement. Use
+  `metrics.record(...)` for counters, byte sizes, or durations measured across callbacks.
+- Report handled errors with `metrics.failure(operation, error, ...)`; set
+  `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
+  (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
+  result or exception; telemetry must never rerun an operation or change its exit status.
+- Register new names in `DURATION_METRICS` or `COUNTER_METRICS`, and labels in the typed
+  label allowlists. String values must be bounded identifiers; never record tokens, URLs,
+  prompts, response bodies, or raw exception messages. A new non-duration histogram also
+  needs an entry in `METRICS` and its unit and bucket configuration in `exporter.py`.
+- Keep OTel SDK imports and uploads in the exporter. Recording must not wait for locks,
+  process startup, pipe writes, or networking. The daemon worker drains at most 1,000 queued
+  observations every 60 seconds or on a flush signal, with one uploader at a time. Never
+  join it on the command path; losing telemetry, including the final batch, is acceptable.
+- Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
+  tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
+  recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.
 
 ## Smart-routing configuration
 
@@ -263,5 +298,19 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
+| Smart Router native metadata | Launch-only (-c), never written | Launch-only (-c), never written | `responses_api_metadata.smart_router_recipe_name` records the configured recipe. The app-server interposer updates `smart_router_state` per main turn; spawn hooks stamp child task names. Reserve the state key for the interposer; a static config value would override turn updates |
+
+</details>
+
+<details>
+<summary>GitHub Copilot in VS Code</summary>
+
+Fields live in the VS Code user `settings.json`. `ug`'s extension writes them when it starts, from the `ug-config.json` that `ug configure` packed into it, and records what it wrote: once a configure no longer asks for a field, the extension removes the value it wrote, and a value the developer changed since stays. `ug revert` removes them before it uninstalls the extension, from the user `settings.json` and each profile's, except a value the developer changed; for an OTel agent, a changed `otlpEndpoint` keeps its whole group. A `settings.json` with comments is left alone, and revert names the fields to remove.
+
+| Field | Without managed config | With managed config | Notes |
+|-------|------------------------|---------------------|-------|
+| `github.copilot.chat.otel.enabled`, `.exporterType`, `.protocol`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the local agent exports protobuf to the extension's loopback receiver, which forwards traces to the gateway |
+| `chat.agentHost.otel.enabled`, `.exporterType`, `.otlpEndpoint` | Ignore | Create/replace | When the config enables tracing for Copilot: the Copilot CLI agent exports to the same receiver |
+| `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on |
 
 </details>
