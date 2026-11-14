@@ -1,23 +1,7 @@
 # Integration tests
 
-Claude Auto is opt-in. Existing config versions keep the old picker.
-[Component and native tests](../README.md) cover managed defaults, model policy,
-context and effort, confirmations, save/cancel transactions, and feedback.
-Auto confirmations omit the native default-for-new-sessions claim while preserving
-effort details, managed-model notices, and ordinary-model confirmations.
-Those local checks do not establish live inference or warm-cache behavior.
-
-`integration/test_ug_claude_auto.py` opts into `subagent_auto_v0_claude_only` explicitly and
-requires completed parent/child answers with a correlated routing decision only
-in Auto mode. It also verifies the old picker after switching back to an existing
-config version. Both journeys explicitly use the checked-in `claude_auto` managed fixture.
-CUJ 4 adds a UI-only Auto-version journey for startup with the managed default,
-manual routing-off selection, and return through `/model auto`, with no inference
-requests. Native `/status` and headers for non-Claude models still display the internal
-alias on Claude 2.1.290.
-The integration journey retains actual child-routing checks and verifies fresh
-restarts return to Auto while resume keeps native precedence. Component checks
-alone do not establish live workspace coverage.
+Auto picker coverage lives in the read-only workspace CUJ 4. See the
+[coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
@@ -37,12 +21,6 @@ The busy child's full assignment is an ordinary input file so the parent only pa
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
 Assertions still require every native child, message delivery, and completed answer.
-
-The Auto journeys use the explicit checked-in `claude_auto` managed fixture and
-`subagent_auto_v0_claude_only` version. The caller must select a compatible workspace
-and credentials; hostnames do not select fixtures. Dedicated CUJs read the published
-workspace configuration without stubbing it. Native effort, profile, and feedback
-coverage and remaining display gaps are detailed in the [suite guide](../README.md).
 
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
 `--smart-router-name` input records and forwards the recipe.

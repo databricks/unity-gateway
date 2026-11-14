@@ -1,30 +1,17 @@
 # Test suites and user journeys
 
-Claude Auto component coverage checks immutable model aliases, configured defaults,
-admin policy and malformed settings, opt-in config precedence and restoration,
-main-model selection/cancellation, and routing on Auto versus ordinary models.
-Existing versions explicitly disable the Auto flag. Native profile checks drive
-two real terminals and preserve each session’s context window and model choice.
-Inline effort reads Claude’s own `/effort status` and saves through `/effort`.
-Native `/model` effort behavior remains unchanged.
-Auto entry keeps the current permitted main model. Native profile tests check
-Opus/Sonnet 5.5 bare Auto targets against native `[1m]` picker variants at 1M context.
-Component tests preserve policy confirmations and defer preference/effort writes
-until native acceptance, including same-model cancellation and stale callbacks.
-A native policy-denial test verifies pointer restoration and a successful retry.
-These metadata/component checks do not establish warm-cache or live inference behavior.
-
-`integration/test_ug_claude_auto.py` opts into `subagent_auto_v0_claude_only` explicitly and
-requires completed parent/child answers with a correlated routing decision only
-in Auto mode. It also verifies the old picker after switching back to an existing
-config version. Both journeys explicitly use the checked-in `claude_auto` managed fixture.
-CUJ 4 adds a UI-only Auto-version journey for startup with the managed default,
-manual routing-off selection, and return through `/model auto`, with no inference
-requests. Native `/status` and headers for non-Claude models still display the internal
-alias on Claude 2.1.290.
-The integration journey retains actual child-routing checks and verifies fresh
-restarts return to Auto while resume keeps native precedence. Component checks
-alone do not establish live workspace coverage.
+Claude Auto coverage is centered on
+`e2e_cuj/test_cuj4_smart_routing.py::TestCujSmartRouting::test_auto_preset_starts_on_managed_default_and_toggles_routing`.
+It uses the live workspace with `subagent_auto_v0_claude_only`, checks startup with
+the managed main model, switches routing off with a regular model, and returns to
+Auto with a different main model. It checks both routing indicators without sending
+inference requests. Existing CUJ 4 journeys independently verify applied routing.
+Small existing tests retain packaging and rollout checks. Separate Auto component,
+native profile/effort, and managed-fixture integration suites were removed in favor
+of this CUJ. Auto-specific live child routing, restart/resume, rollback to the old picker,
+policy, cancellation, feedback, effort, and context-window edge cases no longer
+have dedicated automated coverage. Existing routing CUJs do not prove those
+Auto-specific behaviors.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
@@ -39,41 +26,6 @@ an unreadable off state never becomes an on stamp through inherited launch flags
 Shared controls, routing fallback, and subagent model-mismatch diagnostics use debug logs
 instead of terminal warnings or hook messages. Audit records remain available.
 These cases control filesystem and transport boundaries, not native Windows contention.
-
-`native_claude/test_auto_effort.py` exercises Auto's model selection on the existing
-Claude 2.1.290 pin, with inline h/l effort controls. UG reads the selected model's
-native `/effort status` and commits via `/effort`; it no longer copies model-generation
-capability/default tables. Unvisited models retain native auto effort until queried;
-Claude validates their supported choices on save. Typed settings still apply caps.
-The shared `native_claude/auto_session.py` harness also supports the context/profile journey.
-The feedback profile regression uses the real Claude 2.1.290 form at 110 columns.
-It checks repeated Escape preserves the exact Auto model and routing ON, then
-reopens the ordinary Auto selector. Only the external Isaac target-inspection
-collector is substituted. It does not submit feedback or run inference.
-At 60 columns and 22 rows, Up/Down selects and reveals model rows, Enter commits,
-and Escape preserves the previous selection. Component checks preserve wheel/page
-scrolling, native effort details and warnings, and regular-model confirmations.
-Auto confirmations omit the native claim that the choice is a default for new
-sessions; managed-model notices remain visible.
-Native tests require “Set to Auto mode with main model …” to name the selected
-main model after both picker and main-model selection.
-The native mod cases share immutable Auto catalog data; model/picker cases and
-save/feedback transaction cases retain separate engine harnesses.
-The native profile journey also checks that model-command echoes, confirmations,
-and picker rows use friendly Auto names after selection and cancellation. Native
-`/status` and headers for non-Claude models remain display gaps.
-
-Auto review regressions cover malformed optional settings, admin custom options and
-replacement pickers, configured defaults, empty picker fallback with policy retained,
-and missing aliases. Personal configure performs no extra Auto discovery and creates
-no machine-wide picker. Auto activation requires the explicit rollout flag and an
-available Auto option. Routing-control failure warns once per failed model instead of aborting main turns; rejected model saves show a retry
-message. Manual mode retains the running-agent count. Live gateway inference is not
-covered by these component/native checks.
-
-The managed integration journey uses the explicit `claude_auto` fixture and
-`subagent_auto_v0_claude_only` config version. No hostname changes the fixture; the caller must
-select a compatible workspace and credentials.
 
 `test_codex_interaction_evidence.py` requires native delivery receipts matching the
 child path and thread ID, including code-mode calls, and successful command receipts

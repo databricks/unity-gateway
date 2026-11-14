@@ -272,7 +272,7 @@ def spawn_pty(command, cwd, env, dimensions):
 
 
 class TerminalProcess:
-    def __init__(self, session, agent, command, name, *, dimensions=(60, 140)):
+    def __init__(self, session, agent, command, name):
         self.session = session
         self.agent = agent
         self.name = name
@@ -287,9 +287,8 @@ class TerminalProcess:
         if agent == "codex":
             # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
             session.choose_codex_windows_sandbox()
-        self.dimensions = dimensions
-        self.child = spawn_pty(self.command, str(session.cwd), env, dimensions)
-        self.screen = TerminalScreen(dimensions[1], dimensions[0], self.child.send)
+        self.child = spawn_pty(self.command, str(session.cwd), env, (60, 140))
+        self.screen = TerminalScreen(140, 60, self.child.send)
         self.stream = pyte.Stream(self.screen)
         self.output = []
         self.actions = []
@@ -314,11 +313,7 @@ class TerminalProcess:
             f"{self.name}.json",
             {
                 "argv": self.command,
-                "terminal": {
-                    "rows": self.dimensions[0],
-                    "columns": self.dimensions[1],
-                    "term": "xterm-256color",
-                },
+                "terminal": {"rows": 60, "columns": 140, "term": "xterm-256color"},
                 "actions": self.actions,
                 "transcript": "".join(self.output),
                 "screen": self.visible,
