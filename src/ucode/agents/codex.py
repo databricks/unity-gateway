@@ -119,6 +119,7 @@ CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
 CODEX_APP_RELAY_PROVIDER_NAME = "DatabricksRelay"
+CODEX_CLI_RELAY_PROVIDER_NAME = "DatabricksCliRelay"
 # ug owns the provider http_headers table and its auth/requires_openai_auth mode, so they are
 # pruned before each merge and rewritten from render_overlay — dropping stale routing and admin
 # headers or a previous relayed/non-relayed mode that deep_merge cannot delete.
@@ -1118,15 +1119,19 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
             "contact your administrator."
         ) from exc
     conflicts = ["model_provider"] if "model_provider" in doc else []
-    provider = (doc.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}
-    if provider and path.name == CODEX_REQUIREMENTS_FILE:
-        # requirements.toml replaces the whole provider entry, dropping the relay's `-c` keys.
-        return [*conflicts, f"model_providers.{CODEX_MODEL_PROVIDER_NAME}"]
-    return conflicts + [
-        f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
-        for key in ("base_url", "auth")
-        if key in provider
-    ]
+    for name in (
+        CODEX_APP_RELAY_PROVIDER_NAME,
+        CODEX_CLI_RELAY_PROVIDER_NAME,
+    ):
+        provider = (doc.get("model_providers") or {}).get(name) or {}
+        if provider and path.name == CODEX_REQUIREMENTS_FILE:
+            # requirements.toml replaces the whole entry, dropping the relay's `-c` keys.
+            conflicts.append(f"model_providers.{name}")
+        else:
+            conflicts.extend(
+                f"model_providers.{name}.{key}" for key in ("base_url", "auth") if key in provider
+            )
+    return conflicts
 
 
 def _reconcile_managed_config(
@@ -1915,6 +1920,15 @@ def launch(
             f"Cannot launch Codex with the ucode profile because {CODEX_CONFIG_PATH} "
             "is missing or empty. Run `ug configure --agents codex` first."
         )
+    provider_blocks = profile_doc.get("model_providers")
+    if relayed and (
+        not isinstance(provider_blocks, dict)
+        or not isinstance(provider_blocks.get(CODEX_MODEL_PROVIDER_NAME), dict)
+    ):
+        raise RuntimeError(
+            f"Cannot launch Codex because {CODEX_CONFIG_PATH} is missing the Databricks provider. "
+            "Run `ug configure --agents codex` first."
+        )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
     _export_launch_routing_headers(profile_doc)
@@ -1981,6 +1995,12 @@ def launch(
         profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["base_url"] = (
             f"http://{LOOPBACK_HOST}:{port}/v1"
         )
+    if relayed:
+        # Keep base user-provider auth out of the ChatGPT relay's merged config.
+        profile_doc["model_providers"][CODEX_CLI_RELAY_PROVIDER_NAME] = profile_doc[
+            "model_providers"
+        ].pop(CODEX_MODEL_PROVIDER_NAME)
+        profile_doc["model_provider"] = CODEX_CLI_RELAY_PROVIDER_NAME
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],
