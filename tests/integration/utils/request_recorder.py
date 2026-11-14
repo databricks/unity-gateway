@@ -78,6 +78,7 @@ class TuiRequestRecorder:
         self._condition = threading.Condition()
         self._requests: list[RecordedRequest] = []
         self._responses: dict[int, RecordedResponse] = {}
+        self._progress: dict[int, dict[str, int | str | bool | None]] = {}
         self._in_flight = 0
         self._client: httpx.Client | None = None
         self._server: _Server | None = None
@@ -151,6 +152,15 @@ class TuiRequestRecorder:
         with self._condition:
             return tuple(request for request in self._requests if request.sequence > checkpoint)
 
+    def request_lifecycle_after(self, checkpoint: int) -> list[dict[str, int | str | bool | None]]:
+        """Snapshot forward progress without waiting or exposing request/response contents."""
+        with self._condition:
+            return [
+                progress.copy()
+                for sequence, progress in self._progress.items()
+                if sequence > checkpoint
+            ]
+
     def expect_request(
         self,
         *,
@@ -204,6 +214,16 @@ class TuiRequestRecorder:
                 body=body,
             )
             self._requests.append(request)
+            progress = {
+                "sequence": request.sequence,
+                "started_at_ms": time.time_ns() // 1_000_000,
+                "status_code": None,
+                "response_bytes": 0,
+                "complete": False,
+                "completed_at_ms": None,
+                "error_type": None,
+            }
+            self._progress[request.sequence] = progress
             self._condition.notify_all()
 
         forwarded_headers = {
@@ -218,6 +238,8 @@ class TuiRequestRecorder:
                 headers=forwarded_headers,
                 content=body,
             ) as response:
+                with self._condition:
+                    progress["status_code"] = response.status_code
                 handler.send_response(response.status_code)
                 for name, value in response.headers.items():
                     if name.lower() not in _STRIPPED_HEADERS:
@@ -227,6 +249,8 @@ class TuiRequestRecorder:
                 connected = True
                 for chunk in response.iter_raw():
                     response_body.extend(chunk)
+                    with self._condition:
+                        progress["response_bytes"] = len(response_body)
                     if connected:
                         try:
                             handler.wfile.write(chunk)
@@ -249,6 +273,7 @@ class TuiRequestRecorder:
             # Record the transport failure so a waiter sees the 502 the agent saw
             # instead of timing out for a response that can never arrive.
             with self._condition:
+                progress["error_type"] = type(error).__name__
                 self._responses.setdefault(
                     request.sequence,
                     RecordedResponse(
@@ -259,6 +284,10 @@ class TuiRequestRecorder:
                 )
                 self._condition.notify_all()
             handler.send_error(502, "upstream request failed")
+        finally:
+            with self._condition:
+                progress["complete"] = True
+                progress["completed_at_ms"] = time.time_ns() // 1_000_000
 
 
 def assert_served(recorder, request, model):

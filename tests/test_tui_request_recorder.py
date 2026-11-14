@@ -1,6 +1,7 @@
 import json
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -188,6 +189,9 @@ def held_upstream():
             pass
 
         def do_GET(self):
+            if self.path == "/disconnect":
+                self.close_connection = True
+                return
             self.send_response(200)
             self.send_header("Content-Length", "4")
             self.end_headers()
@@ -243,3 +247,71 @@ def test_teardown_leaves_client_open_for_forward_that_outlives_drain(held_upstre
     release.set()
     thread.join(5)
     assert bodies == [b"held"]
+
+
+def test_lifecycle_snapshot_reports_partial_stream_without_contents(held_upstream):
+    endpoint, release = held_upstream
+    with TuiRequestRecorder(endpoint) as recorder:
+        checkpoint = recorder.checkpoint()
+        bodies = []
+        thread = threading.Thread(
+            target=lambda: bodies.append(
+                httpx.get(
+                    f"{recorder.url}/held?prompt=private-prompt",
+                    headers={"Authorization": "Bearer private-token"},
+                    timeout=10,
+                ).content
+            )
+        )
+        thread.start()
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                progress = recorder.request_lifecycle_after(checkpoint)
+                if progress and progress[0]["response_bytes"] == 2:
+                    break
+                time.sleep(0.01)
+            assert thread.is_alive(), "The response must still be streaming during the snapshot"
+            assert len(progress) == 1
+            row = progress[0]
+            assert row == {
+                "sequence": checkpoint + 1,
+                "started_at_ms": row["started_at_ms"],
+                "status_code": 200,
+                "response_bytes": 2,
+                "complete": False,
+                "completed_at_ms": None,
+                "error_type": None,
+            }
+            assert isinstance(row["started_at_ms"], int)
+            assert not any(
+                value in json.dumps(progress) for value in ("private-", "/held", "Bearer", "held")
+            )
+            row["response_bytes"] = -1
+            assert recorder.request_lifecycle_after(checkpoint)[0]["response_bytes"] == 2
+            assert recorder.request_lifecycle_after(checkpoint + 1) == []
+        finally:
+            release.set()
+            thread.join(5)
+        assert bodies == [b"held"]
+    final = recorder.request_lifecycle_after(checkpoint)[0]
+    assert final["response_bytes"] == 4
+    assert final["complete"] is True
+    assert final["completed_at_ms"] >= final["started_at_ms"]
+    assert final["error_type"] is None
+
+
+def test_lifecycle_snapshot_reports_transport_error_without_exception_text(held_upstream):
+    endpoint, _ = held_upstream
+    with TuiRequestRecorder(endpoint) as recorder:
+        response = httpx.get(f"{recorder.url}/disconnect", timeout=5)
+        assert response.status_code == 502
+    progress = recorder.request_lifecycle_after(0)
+    assert len(progress) == 1
+    row = progress[0]
+    assert row["status_code"] is None
+    assert row["response_bytes"] == 0
+    assert row["complete"] is True
+    assert row["error_type"] == "RemoteProtocolError"
+    assert row["completed_at_ms"] >= row["started_at_ms"]
+    assert endpoint not in json.dumps(progress)
