@@ -56,7 +56,7 @@ def localhost_certificate(tmp_path):
     return path
 
 
-@pytest.mark.parametrize("handoff", [False, True], ids=["command-exit", "agent-exec"])
+@pytest.mark.parametrize("handoff", [False, True], ids=["command-exit", "agent-launch"])
 def test_short_command_delivers_final_metric_after_parent_exits(
     tmp_path, handoff, localhost_certificate
 ):
@@ -88,11 +88,11 @@ def test_short_command_delivers_final_metric_after_parent_exits(
         server_thread.start()
         host = f"https://localhost:{server.server_port}"
         code = r"""
-import os, sys, time
-from ucode import metrics
+import sys, time
+from ucode import launcher, metrics
 metrics.begin('command')
 runtime = metrics._runtime
-# Wait for OS process creation only in the test, then exercise an immediate exit/exec.
+# Wait for OS process creation only in the test, then exercise an immediate exit or agent launch.
 # The old implementation never starts an uploader here, so this is also a regression gate.
 deadline = time.monotonic() + 3
 while runtime.reporter is None and time.monotonic() < deadline:
@@ -103,10 +103,9 @@ with runtime.lock:
 metrics.record('cli_import_duration_ms', 5)
 metrics.set_command('configure')
 metrics.bind(sys.argv[1], 'test-workspace-token')
-if sys.argv[2] == 'exec':
+if sys.argv[2] == 'launch':
     metrics.start_agent('claude')
-    metrics.agent_handoff()
-    os.execv(sys.executable, [sys.executable, '-c', "print('agent completed')"])
+    launcher.exec_or_spawn([sys.executable, '-c', "print('agent completed')"])
 metrics.record('agent_configuration_duration_ms', 17, agent='claude')
 metrics.finish()
 print('command completed')
@@ -121,7 +120,7 @@ print('command completed')
         env.pop("OTEL_SDK_DISABLED", None)
         try:
             result = subprocess.run(
-                [sys.executable, "-c", code, host, "exec" if handoff else "exit"],
+                [sys.executable, "-c", code, host, "launch" if handoff else "exit"],
                 env=env,
                 cwd=tmp_path,
                 stdin=subprocess.DEVNULL,
