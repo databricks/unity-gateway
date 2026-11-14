@@ -6,6 +6,7 @@ native `codex_otel.trace_safe` target and keep only these allowlisted fields in
 `command-*.json` and app-server artifacts under `codex_diagnostics`. A free-form native error tail and ambiguous continuation lines are excluded; other stderr remains unchanged.
 Before cleanup, `codex-native-diagnostics.json` snapshots the latest 2,000 native
 API/client SQLite log rows per database, including timestamps, levels, targets and thread IDs.
+It inspects up to 4,096 characters per message and retains one metadata record per native log row.
 It excludes raw messages, headers, URLs and bodies. Missing logs produce an empty
 snapshot; unreadable databases record only the exception class. These artifacts help
 distinguish a request waiting for headers from client retries or stalled streaming;

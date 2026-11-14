@@ -94,14 +94,52 @@ def test_codex_native_diagnostics_exclude_multiline_payload_fields():
     assert codex.diagnostic_events(text) == [
         {"attempt": "1", "status_code": "429"},
         {"attempt": "2", "status_code": "200"},
+        {"attempt": "3"},
     ]
 
 
-def test_codex_native_diagnostics_exclude_display_error_tail():
+@pytest.mark.parametrize("error", ["private response", "can't connect"])
+def test_codex_native_diagnostics_exclude_display_error_tail(error):
     assert codex.diagnostic_events(
-        'event.name="codex.sse_event" duration_ms=500 error.message=private response '
+        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+        'event.name="codex.sse_event" duration_ms=500 attempt=2 status_code=429 '
+        f'request_id="request-123" error.message={error} '
         "status=private-key\nrequest_id=private-id"
-    ) == [{"event.name": "codex.sse_event", "duration_ms": "500"}]
+    ) == [
+        {
+            "event.timestamp": "2026-11-14T00:00:00Z",
+            "event.name": "codex.sse_event",
+            "duration_ms": "500",
+            "attempt": "2",
+            "status_code": "429",
+            "request_id": "request-123",
+        }
+    ]
+
+
+@pytest.mark.parametrize("padding", ["x", "界"])
+def test_codex_native_diagnostics_bound_message_characters(tmp_path, padding):
+    directory = tmp_path / ".codex"
+    directory.mkdir()
+    with sqlite3.connect(directory / "logs_2.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, level TEXT, target TEXT, "
+            "thread_id TEXT, feedback_log_body TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO logs VALUES (1, 100, 'DEBUG', 'codex_http_client::transport', NULL, ?)",
+            ('status_code=200 body="' + padding * 5000 + '" request_id="outside-budget"',),
+        )
+        connection.execute(
+            "INSERT INTO logs VALUES (2, 101, 'DEBUG', 'codex_http_client::transport', NULL, ?)",
+            ("status_code=200\nstatus=private-key",),
+        )
+
+    events = codex.native_diagnostics(tmp_path)["logs_2.sqlite"]["events"]
+    assert [event["fields"] for event in events] == [
+        [{"status_code": "200"}],
+        [{"status_code": "200"}],
+    ]
 
 
 def test_codex_native_diagnostics_report_unreadable_database(tmp_path):

@@ -26,6 +26,7 @@ _NATIVE_LOG_HEADER = re.compile(
     r"\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+"
 )
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_DIAGNOSTIC_MESSAGE_CHARACTERS = 4096
 _DIAGNOSTIC_FIELDS = frozenset(
     {
         "event.name",
@@ -71,6 +72,8 @@ def diagnostic_events(text: str) -> list[dict[str, str]]:
             if name in _DIAGNOSTIC_FIELDS and re.fullmatch(pattern, value):
                 fields[name] = value
     except ValueError:
+        if fields:
+            events.append(fields)
         return events
     if fields:
         events.append(fields)
@@ -108,19 +111,21 @@ def native_diagnostics(home: Path) -> dict:
                 sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
             ) as connection:
                 rows = connection.execute(
-                    "SELECT ts, level, target, thread_id, feedback_log_body FROM logs "
+                    "SELECT ts, level, target, thread_id, substr(feedback_log_body, 1, ?) FROM logs "
                     "WHERE target LIKE 'codex_api%' OR target LIKE 'codex_http_client%' "
-                    "OR target LIKE 'codex_core::client%' ORDER BY id DESC LIMIT 2000"
+                    "OR target LIKE 'codex_core::client%' ORDER BY id DESC LIMIT 2000",
+                    (_DIAGNOSTIC_MESSAGE_CHARACTERS,),
                 ).fetchall()
             databases[path.name] = {
                 "latest_rows_limit": 2000,
+                "message_character_limit": _DIAGNOSTIC_MESSAGE_CHARACTERS,
                 "events": [
                     {
                         "timestamp": ts,
                         "level": level,
                         "target": target,
                         "thread_id": thread_id,
-                        "fields": diagnostic_events(body or ""),
+                        "fields": diagnostic_events(body or "")[:1],
                     }
                     for ts, level, target, thread_id, body in reversed(rows)
                 ],
