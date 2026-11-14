@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+Profile discovery component checks in `test_databricks.py::TestGetDatabricksProfiles`
+require local metadata listing without validating unrelated workspaces, preserve PAT
+filtering (including implicit PATs without DEFAULT inheritance), tolerate unreadable
+local classification hints, and verify that the selected workspace still gets an
+authentication check. They do not establish live login or end-to-end startup latency.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.

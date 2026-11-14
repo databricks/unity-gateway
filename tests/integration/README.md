@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
+discovery, implicit PAT classification, and the separate selected-workspace authentication check at controlled
+subprocess boundaries. Unrelated-profile network isolation and startup latency are
+not currently measured by a live integration journey.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
