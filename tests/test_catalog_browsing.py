@@ -86,6 +86,7 @@ def test_streamed_mcp_metadata_is_ready_before_rows_are_emitted(monkeypatch):
         "token",
         metadata=metadata,
         on_services=on_services,
+        on_progress=lambda *_: None,
     )
     assert reason is None
     assert names == ["cat.one.tool", "cat.two.tool"]

@@ -335,6 +335,9 @@ class TestV2Launch:
         command = captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
             "routeCommand"
         ]
+        assert captured["settings"]["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"][
+            "logsCommand"
+        ] == ["/bin/ug", "smart-router-logs"]
         assert command == [
             "/bin/ug",
             "claude-router-hook",
@@ -512,6 +515,7 @@ class TestV2Launch:
         assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
+                "logsCommand": ["/bin/ug", "smart-router-logs"],
                 "routeCommand": [
                     "/bin/ug",
                     "claude-router-hook",
@@ -1219,7 +1223,9 @@ class TestV2HeadlessClaude:
         assert prompts == []
         assert launched["argv"].count("--model") == 1
 
-    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch):
+    def test_router_failure_launches_on_claude_default(self, tmp_path, monkeypatch, capsys, caplog):
+        caplog.set_level("DEBUG", logger="ucode.smart_routing.v2")
+
         def fail():
             raise RuntimeError("router timed out")
 
@@ -1229,6 +1235,9 @@ class TestV2HeadlessClaude:
 
         assert prompts == ["fix the parser"]
         assert "--model" not in launched["argv"]
+        output = capsys.readouterr()
+        assert "router timed out" not in output.out + output.err
+        assert "router timed out" in caplog.text
 
 
 def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):

@@ -24,10 +24,8 @@ def decision():
     )
 
 
-def write(payload, decision, task="inspect parser", **kwargs):
-    session_log.append_decision(
-        "claude", payload, task, decision, "requested", routing_ms=840, **kwargs
-    )
+def write(payload, decision, task="inspect parser"):
+    session_log.append_decision("claude", payload, task, decision, "requested", routing_ms=840)
 
 
 def test_record_shape(log_dir, decision):

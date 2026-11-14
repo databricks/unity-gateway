@@ -185,7 +185,7 @@ class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
     def __init__(self, session):
-        self.value = fresh_id()
+        self.value = fresh_id()[:6]
         self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
         # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.
@@ -292,8 +292,8 @@ class SubagentCalculation:
 
     def __init__(self, expression: str, expected: str):
         # Codex exposes task_name, rather than the child message, to its routing hook.
-        # Keep the correlation marker valid as a native task name for both agents.
-        self.marker = "ug_subagent_" + fresh_id()
+        # Keep copied task names short for both the child and parent answers.
+        self.marker = "ug_" + fresh_id()[:6]
         self.value = f"{self.marker}={expected}"
         self.prompt = (
             f'Please spawn exactly one subagent with task name "{self.marker}" '

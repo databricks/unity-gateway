@@ -19,30 +19,21 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
     # The entry point imports these, so they ship beside it unmodified.
-    for name in (
+    filenames = (
         "auto-effort.ts",
         "register.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
+        "routing-logs.ts",
         "routing-state.ts",
         "smart-routing-status.ts",
         "subagent-routing.ts",
         "subagent-statusline.py",
-    ):
+    )
+    for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
-    assert sorted(path.name for path in (tmp_path / "hooks").iterdir()) == [
-        "auto-effort.ts",
-        "constants.ts",
-        "extra-body.ts",
-        "hooks.json",
-        "isaac-feedback.ts",
-        "register.ts",
-        "routing-state.ts",
-        "smart-routing-status.ts",
-        "subagent-routing.ts",
-        "subagent-statusline.py",
-    ]
+    assert {path.name for path in (tmp_path / "hooks").iterdir()} == {*filenames, "hooks.json"}
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings == {
         "subagentStatusLine": {
@@ -137,6 +128,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "unset": [],
         "recipe": "custom_recipe",
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
@@ -154,6 +146,7 @@ def test_launch_options_preserve_empty_and_absent_values():
         "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
         "recipe": "stable",
         "routeCommand": [],
+        "logsCommand": [],
         "orchestratorInstructions": "",
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),

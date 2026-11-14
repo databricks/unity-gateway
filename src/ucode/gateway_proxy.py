@@ -84,6 +84,7 @@ _DEFAULT_TTL_S = 3600
 # contain locally-generated request ids, timings, status codes, byte counts,
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
+_DIAGNOSTICS_FILE_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE"
 
 
 def _diagnostics_enabled() -> bool:
@@ -93,10 +94,19 @@ def _diagnostics_enabled() -> bool:
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
-    payload = {"event": event, **fields}
-    sys.stderr.write(
-        f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
-    )
+    payload = {"event": event, "timestamp_ms": int(time.time() * 1000), **fields}
+    line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
+    if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
+        try:
+            with open(path, "a", encoding="utf-8") as log:
+                log.write(line)
+            return
+        except OSError:
+            # Keep diagnostic evidence if the destination becomes unavailable.
+            sys.stderr.write(
+                "[ucode-relay] Could not write proxy diagnostics file; using stderr.\n"
+            )
+    sys.stderr.write(line)
     sys.stderr.flush()
 
 
@@ -333,6 +343,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
             headers = request_headers(token)
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=1,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -364,6 +380,12 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if self._on_refresh_failure(exc):
                     return
             headers = request_headers(self.cache.token)
+            log_proxy_diagnostic(
+                "upstream_request_start",
+                request_id=diagnostic_id,
+                attempt=2,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
@@ -521,6 +543,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     path_rewriter: Callable[[str], str] | None = None
     body_rewriter: Callable[[str, bytes], bytes] | None = None
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    discarded_paths: frozenset[str] = frozenset()
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -604,6 +627,9 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
             return
+        if self.path.split("?", 1)[0] in self.discarded_paths:
+            self._discard()
+            return
         if self.path_rewriter is not None:
             rewritten = self.path_rewriter(self.path)
             # A rewrite must stay on a path the session may reach.
@@ -612,6 +638,18 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                 return
             self.path = rewritten
         super()._handle()
+
+    def _discard(self) -> None:
+        """Accept and drop a request the gateway has no route for, with an empty success."""
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length:
+            self.rfile.read(length)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError:
+            pass
 
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         added = frozenset(name.lower() for name in self.added_headers)
@@ -760,6 +798,7 @@ def start_gateway_auth_proxy(
     path_rewriter: Callable[[str], str] | None = None,
     body_rewriter: Callable[[str, bytes], bytes] | None = None,
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None,
+    discarded_paths: Iterable[str] = (),
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start a per-session proxy for agents that only hold a static credential.
 
@@ -769,8 +808,8 @@ def start_gateway_auth_proxy(
     Completions request bodies. ``path_rewriter`` maps an accepted request path to the
     gateway path it is forwarded to, and ``body_rewriter(path, body)`` adjusts a request
     body for the gateway. ``bad_request_rewriter(body)`` may replace the body of a gateway 400
-    (returning None relays it as it is). Binds an OS-assigned port, read from
-    ``server.server_address[1]``.
+    (returning None relays it as it is). ``discarded_paths`` are answered with an empty 200 and
+    never forwarded. Binds an OS-assigned port, read from ``server.server_address[1]``.
     """
     return _start_proxy(
         workspace,
@@ -793,6 +832,7 @@ def start_gateway_auth_proxy(
             "bad_request_rewriter": (
                 staticmethod(bad_request_rewriter) if bad_request_rewriter else None
             ),
+            "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -12,6 +13,7 @@ import pytest
 import ucode.config_io as config_io_mod
 import ucode.databricks as db_mod
 import ucode.managed_config as mc_mod
+import ucode.managed_files as mf_mod
 from ucode.managed_config import (
     get_managed_config,
     load_managed_configuration,
@@ -23,6 +25,7 @@ from ucode.managed_config import (
     refresh_managed_config,
     save_managed_state,
 )
+from ucode.managed_resolve import managed_static_models
 from ucode.managed_setup import serialize_managed_config
 from ucode.telemetry import client_platform
 
@@ -153,6 +156,24 @@ class TestNormalize:
         codex = normalize_managed_config(raw)["enabled_agents"]["codex"]
         assert codex["otel_tracing_enabled"] is False
 
+    def test_copilot_vscode_integration_is_carried(self):
+        for enabled in (True, False):
+            raw = {
+                "enabled_agents": [
+                    {
+                        "agent": "CODING_AGENT_GITHUB_COPILOT",
+                        "config": {"vscode_integration": {"enabled": enabled}},
+                    }
+                ]
+            }
+            copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+            assert copilot["vscode_integration_enabled"] is enabled
+
+    def test_unset_vscode_integration_is_omitted(self):
+        raw = {"enabled_agents": [{"agent": "CODING_AGENT_GITHUB_COPILOT", "config": {}}]}
+        copilot = normalize_managed_config(raw)["enabled_agents"]["copilot"]
+        assert "vscode_integration_enabled" not in copilot
+
     def test_workspace_level_tracing_is_ignored(self):
         assert "otel_tracing_enabled" not in normalize_managed_config(
             {"tracing": {"enabled": True}}
@@ -165,6 +186,33 @@ class TestNormalize:
             "system.ai.claude-sonnet-4-6",
             "system.ai.claude-haiku-4-5",
         ]
+
+    def test_sources_are_carried_as_their_own_field(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {
+                        "models": {
+                            "sources": [
+                                "main.anthropic.byok.claude-opus-5-5",
+                                "system.ai.kimi-k3",
+                            ],
+                        }
+                    },
+                }
+            ]
+        }
+        managed = normalize_managed_config(raw)
+        model_config = managed["enabled_agents"]["claude"]["model_config"]
+        assert model_config["sources"] == [
+            "main.anthropic.byok.claude-opus-5-5",
+            "system.ai.kimi-k3",
+        ]
+        assert "model_services" not in model_config
+        assert managed_static_models(managed, "claude") == model_config["sources"]
+        wire_models = serialize_managed_config(managed)["enabled_agents"][0]["config"]["models"]
+        assert wire_models == {"sources": model_config["sources"]}
 
     def test_unity_catalog_location_is_carried(self):
         raw = {
@@ -192,6 +240,37 @@ class TestNormalize:
         cfg = normalize_managed_config(raw)
         assert cfg["mcp_servers"] == {"unity_catalog_location": "main.mcp"}
         assert cfg["skills"] == {"unity_catalog_location": "main.skills"}
+
+    def test_mcp_servers_carry_sources_across_several_schemas(self):
+        # `sources` lets one config keep `system.ai` and add a team schema plus a single service.
+        raw = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", " main.tools.foo ", ""]}}
+        cfg = normalize_managed_config(raw)
+        assert cfg["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ("system.ai.*", mc_mod.MCP_SOURCE_SCHEMA),
+            ("main.tools.github", mc_mod.MCP_SOURCE_NAME),
+            ("system.*", None),
+            ("a.b.c.d", None),
+            ("*", None),
+            ("a.b.c*", None),
+            ("a.*.*", None),
+            ("*.a.b", None),
+            ("a..b", None),
+            ("a. b.c", None),
+            ("a.b. *", None),
+        ],
+    )
+    def test_mcp_source_kind(self, source, kind):
+        # The one rule shared by the resolver, MDM, and export validation.
+        assert mc_mod.mcp_source_kind(source) == kind
+
+    def test_skills_ignore_sources(self):
+        # Only mcp_servers has `sources`; a stray skills value must not become a selector.
+        cfg = normalize_managed_config({"skills": {"sources": ["system.ai.*"]}})
+        assert "skills" not in cfg
 
     def test_codex_provider_service(self):
         codex = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["codex"]
@@ -1397,19 +1476,164 @@ class TestMachinePolicyRefresh:
         assert mc_mod.REFRESH_TS_PATH.read_bytes() == original
 
 
+_REAL_UPDATE_WORKSPACE_POLICY = mf_mod.update_workspace_policy
+_REAL_WINDOWS_REPLACE = mf_mod._windows_replace
+
+
+class TestWindowsInstalledPolicy:
+    """Windows holds the installed policy under ProgramData and follows the Linux/macOS rules."""
+
+    @pytest.fixture(autouse=True)
+    def windows(self, tmp_path, monkeypatch):
+        path = tmp_path / "ProgramData" / "UnityGateway" / "managed-settings.json"
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
+        for module in (mc_mod, mf_mod):
+            monkeypatch.setattr(module, "current_os", lambda: mf_mod.OS.WINDOWS)
+        monkeypatch.setattr(mc_mod, "MANAGED_CONFIG_PATH", path)
+        monkeypatch.setattr(mf_mod, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", path)
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", _REAL_UPDATE_WORKSPACE_POLICY)
+        monkeypatch.setattr(mf_mod, "_windows_replace", _REAL_WINDOWS_REPLACE)
+        # Never run the real icacls; record the folder changes instead.
+        self.icacls = []
+
+        def run(args, **kwargs):
+            self.icacls.append(args)
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        monkeypatch.setattr(mf_mod.subprocess_cross_os, "run", run)
+        self.path = path
+        self.set_admin(monkeypatch, True)
+
+    def set_admin(self, monkeypatch, admin):
+        monkeypatch.setattr(mf_mod.system_cross_os, "is_admin", lambda: admin)
+
+    def test_policy_path_is_under_program_data(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ProgramData", str(tmp_path / "PD"))
+        monkeypatch.setattr(mf_mod, "current_os", lambda: mf_mod.OS.WINDOWS)
+
+        assert mf_mod.unity_gateway_managed_settings_path() == (
+            tmp_path / "PD" / "UnityGateway" / "managed-settings.json"
+        )
+
+    def test_elevated_configure_installs_replaces_and_removes(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        assert json.loads(self.path.read_text(encoding="utf-8"))["workspace"] == WORKSPACE
+        assert [entry.name for entry in self.path.parent.iterdir()] == [self.path.name]
+        assert self.icacls
+
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+        refresh_managed_config(_state(), force_refresh=True)
+        assert load_managed_configuration(WORKSPACE) == changed
+
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, None))
+        refresh_managed_config(_state(), force_refresh=True)
+        assert not self.path.exists()
+
+    def test_non_elevated_configure_requires_an_administrator(self, monkeypatch):
+        self.set_admin(monkeypatch, False)
+
+        with pytest.raises(mc_mod.ManagedPolicyInstallDenied, match="elevated terminal"):
+            refresh_managed_config(_state(), force_refresh=True)
+
+        assert not self.path.exists()
+        assert not self.icacls
+
+    def test_non_admin_launch_with_nothing_installed_applies_fetched_policy(self, monkeypatch):
+        self.set_admin(monkeypatch, False)
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert not self.path.exists()
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert not self.icacls
+
+    def test_non_admin_launch_never_replaces_the_installed_policy(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        original = self.path.read_bytes()
+        self.icacls.clear()
+        self.set_admin(monkeypatch, False)
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (changed, None))
+
+        result = refresh_managed_config(_state())
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert self.path.read_bytes() == original
+        assert not self.icacls
+
+    def test_unchanged_launch_does_not_write(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        self.icacls.clear()
+        original = self.path.stat().st_mtime_ns
+
+        refresh_managed_config(_state())
+
+        assert self.path.stat().st_mtime_ns == original
+        assert not self.icacls
+
+    def test_foreign_workspace_is_refused(self):
+        refresh_managed_config(_state(), force_refresh=True)
+        foreign = _state(workspace="https://other.example.com")
+
+        with pytest.raises(RuntimeError, match="the launch was refused"):
+            refresh_managed_config(foreign)
+
+    def test_only_the_program_data_file_is_read(self, tmp_path):
+        # A POSIX-style path under a drive root is never consulted on Windows.
+        planted = tmp_path / "etc" / "unitygateway" / "managed-settings.json"
+        planted.parent.mkdir(parents=True)
+        planted.write_text(
+            json.dumps({"workspace": "https://planted.example.com", "config": RAW_MANIFEST}),
+            encoding="utf-8",
+        )
+
+        assert mc_mod.managed_state_workspace() is None
+        assert load_managed_configuration("https://planted.example.com") is None
+        refresh_managed_config(_state(), force_refresh=True)
+        assert mc_mod.managed_state_workspace() == WORKSPACE
+
+    def test_skip_mode_uses_the_per_user_cache(self, monkeypatch):
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+
+        result = refresh_managed_config(_state(), force_refresh=True)
+
+        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
+        assert mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert not self.path.exists()
+
+    def test_elevated_revert_removes_the_policy(self):
+        refresh_managed_config(_state(), force_refresh=True)
+
+        assert mc_mod.revert_machine_policy() == "removed"
+        assert not self.path.exists()
+
+    def test_non_elevated_revert_warns_and_keeps_the_policy(self, monkeypatch):
+        refresh_managed_config(_state(), force_refresh=True)
+        self.set_admin(monkeypatch, False)
+        warnings = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+
+        assert mc_mod.revert_machine_policy() == "failed"
+        assert self.path.exists()
+        assert "elevated terminal" in warnings[0]
+
+
 class TestPolicyWithoutInstallation:
-    """Windows and UG_SKIP_OS_SETTINGS can't hold an installed policy."""
+    """UG_SKIP_OS_SETTINGS can't hold an installed policy."""
 
     @pytest.fixture(autouse=True)
     def _stub_fetch(self, monkeypatch):
         monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
         monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (RAW_MANIFEST, None))
 
-    @pytest.fixture(params=["skip_os_settings", "windows"])
+    @pytest.fixture(params=["linux", "windows"])
     def not_installable(self, request, monkeypatch):
-        if request.param == "skip_os_settings":
-            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-        else:
+        # The opt-out applies on every OS, Windows included.
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        if request.param == "windows":
             monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
         monkeypatch.setattr(
             mc_mod,
@@ -1520,17 +1744,6 @@ class TestPolicyWithoutInstallation:
         refresh_managed_config(_state())
 
         assert stat.S_IMODE(mc_mod.USER_MANAGED_CONFIG_PATH.stat().st_mode) == 0o600
-
-    def test_windows_ignores_a_planted_posix_policy_file(self, monkeypatch):
-        """On Windows the POSIX path sits under a drive root a standard user may create."""
-        save_managed_state("https://planted.example.com", {"default_agent": "CODING_AGENT_CODEX"})
-        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
-
-        result = refresh_managed_config(_state())
-
-        assert result.manifest == normalize_managed_config(RAW_MANIFEST)
-        assert mc_mod.managed_state_workspace() is None
-        assert load_managed_configuration("https://planted.example.com") is None
 
     def test_export_finds_the_per_user_cache_without_a_saved_workspace(self, not_installable):
         refresh_managed_config(_state())
@@ -1800,14 +2013,10 @@ class TestRevertMachinePolicy:
 
         assert mc_mod.revert_machine_policy() == "unchanged"
 
-    @pytest.mark.parametrize("mode", ["skip_os_settings", "windows"])
-    def test_revert_leaves_the_policy_where_ug_does_not_manage_it(self, monkeypatch, mode):
+    def test_revert_leaves_the_policy_where_ug_does_not_manage_it(self, monkeypatch):
         mc_mod.MANAGED_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         mc_mod.MANAGED_CONFIG_PATH.write_text("{}", encoding="utf-8")
-        if mode == "skip_os_settings":
-            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
-        else:
-            monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
 
         assert mc_mod.revert_machine_policy() == "unchanged"
         assert mc_mod.MANAGED_CONFIG_PATH.exists()
@@ -1826,3 +2035,146 @@ class TestRevertMachinePolicy:
         assert mc_mod.revert_machine_policy() == "failed"
         assert mc_mod.MANAGED_CONFIG_PATH.exists()
         assert "ug revert" in warnings[0]
+
+
+class TestMdmOs:
+    """`ug configure --mdm` saves `mdm_os` beside the policy; every run exports it as `MDM_OS`."""
+
+    def _saved(self, path=None) -> dict:
+        return json.loads((path or mc_mod.MANAGED_CONFIG_PATH).read_text())
+
+    def _save(self, enabled: bool) -> None:
+        mc_mod.request_mdm_os(enabled)
+        mc_mod.save_requested_mdm_os()
+        mc_mod.request_mdm_os(None)
+
+    @pytest.mark.parametrize(
+        ("host_os", "expected"),
+        [("MACOS", "Mac"), ("LINUX", "Linux"), ("WINDOWS", "Windows"), ("OTHER", "None")],
+    )
+    def test_request_resolves_the_host_os(self, monkeypatch, host_os, expected):
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS[host_os])
+        mc_mod.request_mdm_os(True)
+        assert os.environ["MDM_OS"] == expected
+
+    def test_saved_beside_the_policy_and_exported(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+        os.environ.pop("MDM_OS")
+
+        assert self._saved() == {"workspace": WORKSPACE, "config": RAW_MANIFEST, "mdm_os": "Linux"}
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Linux"
+
+    def test_unset_exports_none(self):
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_inherited_value_is_kept_until_one_is_saved(self, monkeypatch):
+        monkeypatch.setenv("MDM_OS", "Mac")
+        restore = mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Mac"
+        self._save(True)
+        assert os.environ["MDM_OS"] == "Linux"
+        restore()
+        assert os.environ["MDM_OS"] == "Mac"
+
+    def test_kept_when_the_policy_changes_or_is_removed(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        save_managed_state(WORKSPACE, changed)
+        assert self._saved()["mdm_os"] == "Linux"
+        save_managed_state(WORKSPACE, {}, sets_machine_workspace=True)
+        assert self._saved() == {"mdm_os": "Linux"}
+        assert mc_mod.load_managed_configuration(WORKSPACE) is None
+        assert mc_mod.managed_state_workspace() is None
+
+    def test_policy_write_never_applies_the_request(self):
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        assert "mdm_os" not in self._saved()
+
+    def test_saved_without_a_policy(self):
+        self._save(True)
+        assert self._saved() == {"mdm_os": "Linux"}
+
+    def test_configure_without_mdm_clears_it(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+        self._save(False)
+        assert self._saved() == {"workspace": WORKSPACE, "config": RAW_MANIFEST}
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_configure_without_mdm_removes_a_file_holding_only_it(self):
+        self._save(True)
+        self._save(False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    def test_failed_write_warns_and_keeps_the_run_value(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        before = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+
+        def deny(*_a, **_k):
+            raise RuntimeError("needs sudo")
+
+        warnings: list[str] = []
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", deny)
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        mc_mod.request_mdm_os(True)
+        mc_mod.save_requested_mdm_os()
+
+        assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
+        assert os.environ["MDM_OS"] == "Linux"
+        assert len(warnings) == 1 and "save --mdm" in warnings[0]
+
+    def test_saved_after_a_failed_policy_read(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, "HTTP 503"))
+        mc_mod.request_mdm_os(True)
+        refresh_managed_config(_state(), force_refresh=True)
+        mc_mod.save_requested_mdm_os()
+        assert self._saved() == {"mdm_os": "Linux"}
+
+    @pytest.mark.parametrize("mode", ["user_scope", "skip_os_settings"])
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_without_machine_settings_mdm_is_a_no_op(self, monkeypatch, mode, enabled):
+        import ucode.managed_files as mf_mod
+
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+        before = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+        if mode == "user_scope":
+            monkeypatch.setattr(mf_mod, "_config_scope", "user")
+        else:
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        warnings: list[str] = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        self._save(enabled)
+
+        assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert os.environ["MDM_OS"] == "None"
+        assert len(warnings) == (1 if enabled else 0)
+
+    def test_scope_change_reads_the_selected_scope(self, monkeypatch):
+        import ucode.managed_files as mf_mod
+
+        self._save(True)
+        monkeypatch.delenv("MDM_OS")
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Linux"
+        monkeypatch.setattr(mf_mod, "_config_scope", "user")
+        mc_mod.request_mdm_os(None)
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_windows_saves_machine_wide(self, monkeypatch):
+        """An elevated MDM run (e.g. as SYSTEM) saves beside the ProgramData policy every user reads."""
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+        self._save(True)
+
+        assert self._saved() == {"mdm_os": "Windows"}
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert mc_mod.saved_mdm_os() == "Windows"

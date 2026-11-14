@@ -8,11 +8,14 @@ import {
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
   RECIPE_FIELD,
+  SMART_ROUTER_OFF_REPLY,
+  SMART_ROUTER_ON_REPLY,
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
-import { createIsaacFeedbackState, registerIsaacFeedback } from './isaac-feedback.ts';
+import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
 import { isRoutingEnabled } from './routing-state.ts';
+import { registerRoutingLogs } from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
 type AutoPicker = {
@@ -407,12 +410,14 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   // The installed smart-router skill already supplies the slash command.
+  registerRoutingLogs(on, options, launchedEnabled);
+  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /auto to customize the main agent model.' };
-    const action = e.args.trim();
-    if (action !== 'on' && action !== 'off') return {text: 'Usage: /smart-router on|off'};
+    const command = parseSmartRouterCommand(e.args);
+    if (!command) return {text: 'Usage: /smart-router on|off|logs'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
-    if (action === 'off') {
+    if (command.action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
@@ -424,8 +429,9 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
+  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
-    const action = e.args.trim();
+    const action = parseSmartRouterCommand(e.args)?.action;
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();
@@ -433,7 +439,7 @@ export function register(on: On, options: PluginOptions): void {
     } catch {
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
-    return {text: `Smart Router is ${action}`};
+    return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
   registerStatusBand(on, auto);
   registerSubagentRouting(on, options);

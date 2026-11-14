@@ -11,7 +11,7 @@ import httpx
 import pytest
 
 from ucode import custom_oauth
-from ucode.agents import copilot
+from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.telemetry import client_platform
 
@@ -99,6 +99,45 @@ class TestClassifyCopilotModel:
 
 
 class TestBuildCopilotCatalog:
+    def test_provider_wildcards_reach_the_registry_with_qualified_ids(self, monkeypatch):
+        services = {
+            "main.default.lilly-personal-anthropic": (
+                "anthropic",
+                ["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+            ),
+            "main.default.lill-oai": ("openai", ["gpt-6.1-sol", "gpt-6.1-terra"]),
+        }
+        monkeypatch.setattr(
+            model_sources,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"provider_type": services[name][0]}, None),
+        )
+        monkeypatch.setattr(
+            model_sources,
+            "list_provider_service_models",
+            lambda workspace, token, name, provider: (services[name][1], None),
+        )
+        models, _ = model_sources.resolve_model_sources(
+            [SONNET, *(f"{service}.*" for service in services)], "copilot", WS, "token"
+        )
+        state = {"copilot_static_models": models}
+        result = copilot.render_providers_config(copilot.copilot_catalog(state), PROXY, "secret")
+
+        expected = {SONNET: "anthropic"}
+        expected.update(
+            (f"{service}.{model}", "anthropic" if provider == "anthropic" else "responses")
+            for service, (provider, names) in services.items()
+            for model in names
+        )
+        assert {entry["id"] for entry in result["models"]} == set(expected)
+        assert copilot.unservable_static_models(state) == []
+        for entry in result["models"]:
+            assert entry["wireModel"] == entry["id"]
+            assert entry["provider"] == copilot.PROVIDER_NAMES[expected[entry["id"]]]
+            if expected[entry["id"]] == "anthropic":
+                assert entry["modelId"].startswith("claude-")
+                assert entry["maxPromptTokens"] == 872_000
+
     def test_orders_claude_by_family_newest_first_then_gpt(self):
         models = catalog(
             "system.ai.gpt-5-4",
@@ -264,6 +303,31 @@ class TestCopilotCatalog:
                 copilot.copilot_exclusion_reason("system.ai.gemini-3-flash"),
             )
         ]
+
+    def test_managed_list_takes_the_limits_discovery_saved(self):
+        discovered = [
+            copilot.CopilotModel(SONNET, "anthropic"),
+            copilot.CopilotModel(GPT, "responses", (922_000, 128_000)),
+        ]
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(discovered),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert model.listed_limits == (922_000, 128_000)
+        assert copilot.catalog_model_limits(model) == (794_000, 128_000)
+
+    def test_managed_model_without_saved_limits_keeps_copilots_default(self):
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(catalog(SONNET)),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert copilot.catalog_model_limits(model) is None
 
     def test_an_unusable_managed_list_falls_back_to_discovery(self):
         state = {
@@ -737,7 +801,7 @@ class TestLocationCatalog:
         assert seen["parent_schema"] == "main.ucode"
 
     def test_an_empty_schema_says_so(self, monkeypatch):
-        _stub_location(monkeypatch, [], error="AI Gateway returned no Anthropic model ids")
+        _stub_location(monkeypatch, [], error="Unity Gateway returned no Anthropic model ids")
 
         with pytest.raises(RuntimeError, match="no model services to use in main.ucode"):
             copilot.location_catalog({"workspace": WS}, "main.ucode")
@@ -973,6 +1037,31 @@ class TestBuildRuntimeEnv:
         monkeypatch.setenv(key, "user-value")
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
         assert env.get(key) != "user-value"
+
+    def test_tracing_replaces_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/t")
+        monkeypatch.setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", "/tmp/spans")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ml")
+        otel = copilot.otel_env(PROXY, "secret")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0], otel=otel)
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"{PROXY}/ai-gateway/otel"
+        assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+        assert env["OTEL_EXPORTER_OTLP_HEADERS"] == "x-api-key=secret"
+        assert env["COPILOT_OTEL_ENABLED"] == "true"
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in env
+        assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
+
+    def test_without_tracing_keeps_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+        assert "COPILOT_OTEL_ENABLED" not in env
 
 
 class TestSessionRegistry:
@@ -1433,6 +1522,14 @@ def _stub_launch(monkeypatch, process=None, token="dbx-token"):
             content=b"{}",
             timeout=5,
         ).status_code
+        if endpoint := env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+            api_key = env["OTEL_EXPORTER_OTLP_HEADERS"].removeprefix("x-api-key=")
+            seen["metrics_status"] = httpx.post(
+                f"{endpoint}/v1/metrics", headers={"x-api-key": api_key}, content=b"", timeout=5
+            ).status_code
+            seen["unsigned_traces_status"] = httpx.post(
+                f"{endpoint}/v1/traces", content=b"", timeout=5
+            ).status_code
         return process or _ExitedProcess()
 
     monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
@@ -1462,6 +1559,31 @@ class TestLaunch:
         # The proxy is live while Copilot runs and refuses other credentials.
         assert seen["wrong_secret_status"] == 401
         assert not os.path.exists(seen["registry_path"])
+
+    def test_tracing_exports_to_the_session_proxy(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                {**STATE, "copilot_otel_tracing": True}, [], options=copilot.LaunchOptions()
+            )
+
+        secret = seen["registry"]["providers"][0]["bearerToken"]
+        assert seen["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == f"x-api-key={secret}"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"].startswith("http://127.0.0.1:")
+        assert seen["metrics_status"] == 200
+        assert seen["unsigned_traces_status"] == 401
+
+    def test_without_tracing_the_proxy_serves_no_otel_path(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), [], options=copilot.LaunchOptions())
+
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in seen["env"]
+        assert "COPILOT_OTEL_ENABLED" not in seen["env"]
 
     def test_explicit_model_is_rewritten_to_the_registry_ref(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
