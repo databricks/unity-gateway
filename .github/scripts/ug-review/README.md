@@ -46,6 +46,35 @@ diff through Git and never installs dependencies or executes PR code.
 
 ## Verification
 
+### Human review themes
+
+The shared rubric includes feedback from the 121 open PRs created in the 14 days
+ending November 14, 2026 at 03:25:55 UTC, plus the explicitly requested closed PR 1630.
+Issue comments, review bodies, and inline
+threads, including resolved threads, were inspected with `github-actions[bot]`
+excluded. Command comments and author replies describing bot fixes were not used
+as new review policy. Non-bot accounts can also post automated reviews; the source
+account alone does not establish manual authorship.
+
+| Feedback | Rubric check | Source |
+| --- | --- | --- |
+| Prefer native mechanisms to another language proxy | Compare startup/debugging costs and concrete alternatives | [1589](https://github.com/databricks/unity-gateway/pull/1589) |
+| Document metrics binding and reuse metric/operation constants | Metrics package, registries, and `AGENTS.md` guidance | [1630](https://github.com/databricks/unity-gateway/pull/1630), [1631](https://github.com/databricks/unity-gateway/pull/1631#discussion_r4559219089), [1632](https://github.com/databricks/unity-gateway/pull/1632), [1633](https://github.com/databricks/unity-gateway/pull/1633), [1634](https://github.com/databricks/unity-gateway/pull/1634) |
+| Prove telemetry delivery and downstream attribution | Real recorder request/response and explicit usage-data limits | [1631](https://github.com/databricks/unity-gateway/pull/1631#discussion_r4559234355), [1626](https://github.com/databricks/unity-gateway/pull/1626) |
+| Verify native UI behavior | Readable model-selector entries and a completed response with the expected result | [1592](https://github.com/databricks/unity-gateway/pull/1592) |
+| Reuse managed headers and server naming rules | Existing header/config paths and compatible server canonical names | [1406](https://github.com/databricks/unity-gateway/pull/1406#discussion_r4543353954), [1396](https://github.com/databricks/unity-gateway/pull/1396#discussion_r4447592947), [1525](https://github.com/databricks/unity-gateway/pull/1525) |
+| Keep one source for ownership policy and shared pins | Reuse authoritative definitions without broad incidental refactors | [1552](https://github.com/databricks/unity-gateway/pull/1552) |
+| Consider latency and confusing hook UI | Before/after evidence for material waits and visible tradeoffs | [1629](https://github.com/databricks/unity-gateway/pull/1629), [1542](https://github.com/databricks/unity-gateway/pull/1542#issuecomment-6788468371) |
+| Use approved registries, narrow scopes, and trusted CI policy | Supply-chain and workflow trust boundaries | [1586](https://github.com/databricks/unity-gateway/pull/1586#discussion_r4540831674), [1412](https://github.com/databricks/unity-gateway/pull/1412#discussion_r4519453184), [1629](https://github.com/databricks/unity-gateway/pull/1629) |
+
+Both review workflows consume the same trusted default-branch rubric. Polly also
+applies it to its Approach and Tests sections. Prompt changes take effect after
+merge; a review of this PR still uses the current default-branch policy.
+These are review priorities with concrete finding requirements, not a guarantee
+that a model catches every future issue.
+
+### Component and live checks
+
 `uv run pytest tests/test_ug_review_bot.py` covers the token exchange and workflow
 contract. These component checks do not establish gateway inference, CLI
 installation through the proxy, or live comment posting.
