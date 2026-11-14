@@ -133,7 +133,7 @@ atomically; the mod itself still writes no file.
    off overrides. Keep routing activation limited to the V2 and subagent-only flags:
    orchestration alone must not enable routing. Add regression tests for the new parameter's
    controls. Session overrides must apply after version resolution.
-   Update the native Claude mod's literal setters and registry coverage test in the same change.
+   Update the native Claude mod's literal setters and validate its capabilities in the same change.
 
 `_validate_versions` runs at module import and rejects missing keys, unknown keys, and
 invalid values. Do not weaken the complete-key check or infer required keys from `_VERSIONS`.

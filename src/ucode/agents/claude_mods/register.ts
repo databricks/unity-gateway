@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand, startStatusBandTurn } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -33,6 +33,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
+    ENABLE_SMART_ROUTING_SAVINGS: await readSavingsFlag($),
     CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
 }
@@ -47,6 +48,7 @@ async function readSessionEnvironment($: EngineInterface): Promise<Environment> 
         'ENABLE_SMART_ROUTING_V2',
         'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
         'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+        'ENABLE_SMART_ROUTING_SAVINGS',
       ]) {
         if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
       }
@@ -68,6 +70,7 @@ async function writeEnvironment($: EngineInterface, env: Environment): Promise<v
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
   await $.env.set('ENABLE_SMART_ROUTING_SUBAGENT_ONLY', env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY);
   await $.env.set('ENABLE_SMART_ROUTER_ORCHESTRATOR', env.ENABLE_SMART_ROUTER_ORCHESTRATOR);
+  await $.env.set('ENABLE_SMART_ROUTING_SAVINGS', env.ENABLE_SMART_ROUTING_SAVINGS);
   await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
 }
 
@@ -110,6 +113,7 @@ async function setRouting(
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
+    ENABLE_SMART_ROUTING_SAVINGS: enabled ? original('ENABLE_SMART_ROUTING_SAVINGS') : '0',
     CLAUDE_CODE_EXTRA_BODY: mergeExtraBody(previous.CLAUDE_CODE_EXTRA_BODY, {
       [RECIPE_FIELD]: recipe,
     }),
@@ -130,6 +134,7 @@ async function setRouting(
 }
 
 export function register(on: On, options: PluginOptions): void {
+  registerSavings(on, options);
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
@@ -139,11 +144,58 @@ export function register(on: On, options: PluginOptions): void {
       const current = await readEnvironment($);
       await setRouting($, options, isRoutingEnabled(current), false);
     }
+    await savingsSessionStart($);
     return next(e);
   });
 
-  on('turn.step', async function* ($, e, next) {
-    const active = await readOrchestratorState($, options);
+  on('prompt.submit', async ($, e, next) => {
+    startStatusBandTurn();
+    await savingsPromptSubmit($, e);
+    return next(e);
+  });
+
+  // Claude permits one unmatched turn.step handler, so orchestration and savings share it.
+  on('turn.step', async function* ($, e, forward) {
+    let current: Environment = {};
+    if (options.orchestratorInstructions || enabled) {
+      try { current = await readSessionEnvironment($); } catch {}
+    }
+    async function* next(request: typeof e) {
+      const agent = str(request.agentId);
+      let trackSavings = false;
+      let baseline: string | null = null;
+      try {
+        trackSavings = await ready($, current);
+        // Keep selection history while accounting is off. A request may override its
+        // model without changing the user's selection for later main/child work.
+        if (enabled) {
+          const selected = await mainModel($);
+          if (agent === null && selected) {
+            lastMainModel = selected;
+            firstMainModel ??= lastMainModel;
+            firstPromptSeen = true;
+            userSwitched ||= lastMainModel !== firstMainModel;
+            dirty = true;
+          } else baseline = selected ?? lastMainModel;
+        }
+      } catch {
+        trackSavings = false;
+      }
+      const beforeUserSwitch = !userSwitched;
+      const result = yield* forward(request);
+      try {
+        const usage = (result as any)?.usage;
+        const served = str(request.model) ?? str(usage?.model);
+        const base = agent === null ? served : baseline;
+        if (trackSavings && await ready($) && usage && served && base) {
+          accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage);
+          dirty = true;
+        }
+      } catch {}
+      return result;
+    }
+    const active = Boolean(options.orchestratorInstructions) && isRoutingEnabled(current)
+      && current.ENABLE_SMART_ROUTER_ORCHESTRATOR === '1';
     if (active !== orchestratorActive) {
       orchestratorActive = active;
       // A CLI/skill toggle changes the session file without notifying this process.
@@ -200,7 +252,7 @@ export function register(on: On, options: PluginOptions): void {
     }
     return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
-  registerStatusBand(on);
+  registerStatusBand(on, () => savingsShown);
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {
@@ -208,4 +260,307 @@ export function register(on: On, options: PluginOptions): void {
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     return next(e);
   });
+}
+
+// Price turn-step usage by the requested model ID; gateway response IDs can drift.
+// Subagents use the current main model as their baseline. First-prompt routing uses
+// the user's pre-routing model until a later manual switch. See docs/claude-mod.md.
+
+const USAGE_VERSION = 1;
+const PRICER_TIMEOUT_MS = 20_000;
+const TOKEN_KEYS = [
+  'input_tokens',
+  'output_tokens',
+  'cache_creation_input_tokens',
+  'cache_read_input_tokens',
+] as const;
+const CACHE_SPLIT_KEYS = ['ephemeral_5m_input_tokens', 'ephemeral_1h_input_tokens'] as const;
+
+type Totals = Record<(typeof TOKEN_KEYS)[number], number> & {
+  cache_creation?: Partial<Record<(typeof CACHE_SPLIT_KEYS)[number], number>>;
+};
+type Entry = {
+  agent: string;
+  baseline: string;
+  served: string;
+  before_user_switch: boolean;
+  usage: Totals;
+};
+// The pricer's segment: a saving, or a cost increase when routing chose pricier models.
+type Estimate = { saved: boolean; amount: string; percent: string };
+
+const num = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : 0;
+
+const str = (value: unknown): string | null => (typeof value === 'string' && value ? value : null);
+
+// Set from the launch's plugin options by register.
+let pricer: string[] = [];
+let usagePath: string | null = null;
+let enabled = false;
+let version: string | null = null;
+
+const entries = new Map<string, Entry>();
+// The model selected before first-prompt routing. Seeded at launch, then captured
+// when the user submits the first prompt so a preceding /model choice is honored.
+let startModel: string | null = null;
+let firstPromptSeen = false;
+// The selected main model, used as the subagent request's baseline.
+let lastMainModel: string | null = null;
+// The selected model at the first main request (first-prompt routing's pick).
+let firstMainModel: string | null = null;
+// Whether the selected main model has changed since the first request.
+let userSwitched = false;
+let seeding: Promise<void> | undefined;
+let estimate: Estimate | null = null;
+// Whether the current render draws the row, which hides the status band.
+let savingsShown = false;
+let dirty = false;
+let running = false;
+let rerun = false;
+
+async function mainModel($: any): Promise<string | null> {
+  try {
+    return str(await $.session.model());
+  } catch {
+    return null;
+  }
+}
+
+function accumulate(
+  agent: string,
+  baseline: string,
+  served: string,
+  beforeUserSwitch: boolean,
+  usage: any,
+): void {
+  const key = JSON.stringify([agent, baseline, served, beforeUserSwitch]);
+  let entry = entries.get(key);
+  if (!entry) {
+    entry = {
+      agent,
+      baseline,
+      served,
+      before_user_switch: beforeUserSwitch,
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    };
+    entries.set(key, entry);
+  }
+  for (const k of TOKEN_KEYS) entry.usage[k] += num(usage[k]);
+  // The 5m/1h cache-write split is only summed where the API reported it.
+  const split = usage.cache_creation;
+  if (split && typeof split === 'object') {
+    const sums = entry.usage.cache_creation ?? {};
+    for (const k of CACHE_SPLIT_KEYS) if (k in split) sums[k] = (sums[k] ?? 0) + num(split[k]);
+    entry.usage.cache_creation = sums;
+  }
+}
+
+// A mod reload resets module state while the session carries on, so the first
+// hook of a fresh module instance picks up where the last one left off from the
+// file it wrote. A missing or malformed file just means starting empty.
+async function loadUsage($: any): Promise<void> {
+  try {
+    const saved = JSON.parse(await $.fs.read(usagePath));
+    if (!saved || saved.version !== USAGE_VERSION || !Array.isArray(saved.entries)) return;
+    for (const item of saved.entries) {
+      const agent = str(item?.agent);
+      const baseline = str(item?.baseline);
+      const served = str(item?.served);
+      if (agent && baseline && served && item.usage && typeof item.usage === 'object') {
+        accumulate(agent, baseline, served, item.before_user_switch === true, item.usage);
+        dirty = true;
+      }
+    }
+    startModel ??= str(saved.start_model);
+    lastMainModel ??= str(saved.main_model);
+    firstMainModel ??= str(saved.first_main_model);
+    firstPromptSeen ||= saved.first_prompt_seen === true || firstMainModel !== null;
+    userSwitched ||= saved.user_switched === true;
+  } catch {}
+}
+
+async function readSavingsFlag($: EngineInterface): Promise<string | undefined> {
+  try {
+    return await $.env.get('ENABLE_SMART_ROUTING_SAVINGS');
+  } catch {
+    return undefined;
+  }
+}
+
+async function readSavingsState($: EngineInterface, snapshot?: Environment): Promise<boolean> {
+  if (!enabled) return false;
+  try {
+    const current = snapshot ?? await readSessionEnvironment($);
+    return current.ENABLE_SMART_ROUTING_SAVINGS === '1';
+  } catch {
+    return false;
+  }
+}
+
+// State is seeded once per module instance, by whichever hook runs first;
+// concurrent hooks wait on the same load.
+async function ready($: any, snapshot?: Environment): Promise<boolean> {
+  try {
+    if (!enabled) return false;
+    seeding ??= loadUsage($);
+    await seeding;
+    return await readSavingsState($, snapshot);
+  } catch {
+    return false;
+  }
+}
+
+async function savingsPromptSubmit($: EngineInterface, e: any): Promise<void> {
+  try {
+    if (e.isMeta || e.command || !e.text.trim() || e.text.trimStart().startsWith('/')) return;
+    if (!await ready($) || firstPromptSeen) return;
+    // This runs before UserPromptSubmit blocks the prompt for the PTY router.
+    startModel = await mainModel($);
+    firstPromptSeen = true;
+    dirty = true;
+    void flush($);
+  } catch {}
+}
+
+function estimateOf(value: any): Estimate | null {
+  if (!value || typeof value !== 'object' || typeof value.saved !== 'boolean') return null;
+  const amount = str(value.amount);
+  const percent = str(value.percent);
+  return amount && percent ? { saved: value.saved, amount, percent } : null;
+}
+
+async function writeAndPrice($: any): Promise<void> {
+  dirty = false;
+  try {
+    const run = await $.process.run([...pricer, '--usage', usagePath, '--write-usage'], {
+      timeoutMs: PRICER_TIMEOUT_MS,
+      stdin: JSON.stringify({
+        version: USAGE_VERSION,
+        start_model: startModel,
+        main_model: lastMainModel,
+        first_main_model: firstMainModel,
+        first_prompt_seen: firstPromptSeen,
+        user_switched: userSwitched,
+        entries: Array.from(entries.values()),
+      }),
+    });
+    if (run?.exitCode !== 0) throw new Error('Could not persist savings usage.');
+    const out = JSON.parse(String(run.stdout ?? '').trim().split('\n').pop() ?? '');
+    setEstimate($, estimateOf(out?.savings));
+  } catch (error) {
+    // Retry at the next turn.complete rather than pricing a file that is not there.
+    dirty = true;
+    setEstimate($, null);
+    throw error;
+  }
+}
+
+function setEstimate($: EngineInterface, next: Estimate | null): void {
+  if (JSON.stringify(next) !== JSON.stringify(estimate)) {
+    estimate = next;
+    // Claude Code only redraws the band when its props change, not when module state does.
+    $.ui.invalidate('ui.render');
+  }
+}
+
+// One pricer run at a time; a request that arrives mid-run just asks for another.
+async function flush($: any): Promise<void> {
+  if (!await ready($)) return;
+  if (running) {
+    rerun = true;
+    return;
+  }
+  running = true;
+  try {
+    do {
+      rerun = false;
+      await writeAndPrice($);
+    } while (rerun);
+  } catch {
+  } finally {
+    running = false;
+  }
+}
+
+// Styled like the status band: a bold label, the amount in a pill, a dim italic trailer.
+// Nothing until there is an estimate: the band and prompt hint already show routing state.
+function savingsRow({ Box, Text }: any): unknown {
+  if (!estimate) return null;
+  const color = estimate.saved ? 'green' : 'yellow';
+  const children: unknown[] = [
+    Text({
+      bold: true,
+      children: [estimate.saved ? '💰 Est. saved with smart routing' : 'Smart routing cost'],
+    }),
+    Text({ bold: true, color: 'black', backgroundColor: color, children: [` ${estimate.amount} `] }),
+    Text({ color, children: [`${estimate.saved ? '' : 'more '}(${estimate.percent})`] }),
+  ];
+  if (version) {
+    children.push(
+      Text({ dimColor: true, italic: true, children: [`— Unity Gateway Smart Router v${version}`] }),
+    );
+  }
+  return Box({ flexDirection: 'row', columnGap: 1, children });
+}
+
+function registerSavings(on: On, options: PluginOptions): void {
+  if (options.ENABLE_SMART_ROUTING_SAVINGS !== '1') return;
+  const raw = options as Record<string, unknown>;
+  pricer =
+    Array.isArray(raw.savings_pricer) && raw.savings_pricer.every(arg => typeof arg === 'string')
+      ? (raw.savings_pricer as string[])
+      : [];
+  usagePath = str(raw.savings_usage);
+  enabled = pricer.length > 0 && usagePath !== null;
+  version = str(raw.orchestrator_version);
+  let savingsActive = false;
+  let refresh: { cancel: () => void } | undefined;
+
+  // Price at the end of each turn, off the turn's critical path. The status band holds the
+  // event's one unmatched hook, so this one matches every turn instead.
+  on('turn.complete', { isAborted: [false, true] }, async ($, e, next) => {
+    const result = await next(e);
+    if ((await ready($)) && dirty) void flush($);
+    return result;
+  });
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    savingsActive = await readSavingsState($);
+    // CLI toggles change the file without updating Claude's cached render props.
+    if (enabled && !refresh) {
+      try {
+        refresh = $.clock.every(1000, async () => {
+          try {
+            const active = await readSavingsState($);
+            if (active !== savingsActive) {
+              savingsActive = active;
+              $.ui.invalidate('ui.render');
+            }
+          } catch {}
+        });
+      } catch {}
+    }
+    // Decided before the inner handlers run, so the status band sees it whichever
+    // handler Claude Code runs first.
+    savingsShown = savingsActive && estimate !== null;
+    const theirs = await next(e);
+    if (!savingsShown) return theirs;
+    const ui = $.ui.resolve(e);
+    const row = savingsRow(ui);
+    if (row === null) return theirs;
+    return theirs ? ui.Box({ flexDirection: 'column', children: [theirs, row] }) : row;
+  });
+}
+
+async function savingsSessionStart($: EngineInterface): Promise<void> {
+  if (await ready($)) {
+    startModel ??= await mainModel($);
+    void flush($);
+  }
 }

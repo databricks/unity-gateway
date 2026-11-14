@@ -49,6 +49,9 @@ Continue in the root unless the user explicitly requests a subagent. Honor that 
 native tools and normal harness model selection, without Smart Router Orchestrator; keep routing off.
 Existing children can finish. When turned on, apply the `smart-router-orchestrator`
 skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
-Do not change the orchestration feature flag. Return the command's result briefly, then stop.
+For launches with `ENABLE_SMART_ROUTING_SAVINGS=1`, off/on also disables/restores
+savings tracking and its display row. All earlier versioned presets disable savings;
+`subagent_orch_savings_v0` enables it with subagent routing and orchestration.
+Do not change the orchestration or savings launch baseline. Return the command's result briefly, then stop.
 In Codex, the current main turn keeps its original routing attribution; the next user turn
 gets the new state. Do not interrupt, restart, or reload any conversation.

@@ -29,6 +29,8 @@ _ALLOWED_KEYS = frozenset(SMART_ROUTING_ENV_KEYS)
 
 def start_session(env: MutableMapping[str, str] | None = None) -> Path:
     """Create an empty override file and expose it to the launched harness."""
+    from ucode.config_io import atomic_write_json
+
     target = os.environ if env is None else env
     path = Path(tempfile.mkdtemp(prefix="ug-session-env-")) / "env.json"
     atomic_write_json(path, {})
