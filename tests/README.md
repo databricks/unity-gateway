@@ -908,7 +908,13 @@ These checks do not establish live login or launch-time savings.
 `TestConfigureSharedStateDiscovery` in `test_cli.py` checks one scoped model-service
 request with preserved OpenCode, Kilo, and Pi model catalogs, reuse of its process cache,
 token and workspace-selection errors without saving state, and per-family fallbacks
-for empty, unavailable, denied, and transient UC results. Provider mode skips the UC listing and retains Claude's web-search lookup; skip-preflight
+for empty, unavailable, denied, and transient UC results. Discovery request failures
+preserve the selected workspace's saved family catalogs, including OSS and Copilot's
+open models; confirmed empty results clear stale inventories. Token changes and
+same-host workspace selections fetch separate model and provider-service catalogs;
+provider-service parent scopes also remain separate. Workspace switches never
+reuse the source workspace's saved models. Provider mode skips the UC listing and
+retains Claude's web-search lookup; skip-preflight
 skips authentication and discovery. Probe-only pagination, cache, and overlap tests
 were removed with the redundant gateway probe. These controlled HTTP checks do not
 establish live gateway timing, agent launch, or launch-time savings.

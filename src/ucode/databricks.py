@@ -60,6 +60,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 from ucode.workspace import (
+    WorkspaceSelectionReason,
     response_workspace_mismatch,
     signin_redirect_reason,
     workspace_failure_reason,
@@ -2331,24 +2332,43 @@ def _get_model_services_page(
     return payload, reason
 
 
-# Successful model-service listings for this process, keyed by workspace. The listing is a paginated
-# walk of the whole metastore catalog, and several callers want different views of the same result
+# Successful model-service listings for this process, keyed by workspace, selection, and token.
+# Several callers want different views of the same paginated catalog
 # (`discover_model_services` buckets it per family, `discover_claude_models_unbucketed` keeps the raw
 # Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+_MODEL_SERVICES_CACHE: dict[
+    tuple[str, tuple[tuple[str, str], ...], str], list[ModelServiceEntry]
+] = {}
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
-# agent. Keyed by ``(workspace, parent)`` — a schema-scoped listing is a different result set than
-# the metastore-wide one, so they must not share an entry.
-_MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
+# agent. The parent schema also separates scoped listings from the metastore-wide result.
+_MODEL_PROVIDER_SERVICES_CACHE: dict[
+    tuple[str, tuple[tuple[str, str], ...], str, str], list[dict]
+] = {}
 
 
-def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
-    """The model services this process already listed for ``workspace``, without a request."""
-    cached = _MODEL_SERVICES_CACHE.get(workspace)
+class ModelDiscoveryFailureReason(str):
+    """A failed request, rather than a successful discovery with no compatible models."""
+
+
+def _model_discovery_failure(reason: str | None) -> str:
+    if isinstance(reason, WorkspaceSelectionReason):
+        return reason
+    return ModelDiscoveryFailureReason(reason or "Model discovery request failed")
+
+
+def _model_listing_cache_key(
+    workspace: str, token: str
+) -> tuple[str, tuple[tuple[str, str], ...], str]:
+    return workspace_origin(workspace), tuple(sorted(workspace_headers(workspace).items())), token
+
+
+def cached_model_service_entries(workspace: str, token: str) -> list[ModelServiceEntry] | None:
+    """The model services already listed with these credentials and workspace selection."""
+    cached = _MODEL_SERVICES_CACHE.get(_model_listing_cache_key(workspace, token))
     return list(cached) if cached is not None else None
 
 
@@ -2358,14 +2378,19 @@ def clear_model_services_cache() -> None:
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
 
 
-def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
+def has_cached_model_provider_services(
+    workspace: str, token: str, parent: str | None = None
+) -> bool:
     """True when :func:`list_model_provider_services` will answer from cache.
 
     Lets a caller skip a progress spinner it doesn't need: the cold listing takes over a second, so
     it deserves one, but repeating it per agent on an instant cache hit is just noise. Takes
     ``parent`` for the same reason the cache is keyed on it — a scoped listing is a separate entry.
     """
-    return (workspace, parent or "") in _MODEL_PROVIDER_SERVICES_CACHE
+    return (
+        *_model_listing_cache_key(workspace, token),
+        parent or "",
+    ) in _MODEL_PROVIDER_SERVICES_CACHE
 
 
 def list_model_services(
@@ -2404,15 +2429,16 @@ def list_model_service_entries(
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     requested schema's subset.
 
-    Successful default-schema results are memoized per workspace for the life of the process;
+    Successful default-schema results are memoized per workspace, selection, and token;
     pass ``use_cache=False`` to force a fresh walk. Other schemas bypass that cache.
     """
     parent = (
         f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
     )
     use_cache = use_cache and parent == _MODEL_SERVICE_PARENT_SCHEMA
+    cache_key = _model_listing_cache_key(workspace, token)
     if use_cache:
-        cached = _MODEL_SERVICES_CACHE.get(workspace)
+        cached = _MODEL_SERVICES_CACHE.get(cache_key)
         if cached is not None:
             return list(cached), None
 
@@ -2433,7 +2459,7 @@ def list_model_service_entries(
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination
             # blip still returns whatever we collected.
-            last_reason = reason
+            last_reason = _model_discovery_failure(reason)
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
@@ -2454,7 +2480,7 @@ def list_model_service_entries(
     listed = [entries[model_id] for model_id in sorted(entries)]
     if listed:
         if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(listed)
+            _MODEL_SERVICES_CACHE[cache_key] = list(listed)
         return listed, None
     return [], last_reason or "model-services listing returned no models"
 
@@ -3077,16 +3103,12 @@ def list_model_provider_services(
     the listing to one ``catalog.schema`` — the metastore-wide default is documented as an internal,
     likely-to-be-deprecated scope, so prefer passing it when the schema is known.
 
-    A successful result is memoized per workspace for the life of the process, like the
+    A successful result is memoized per workspace, selection, token, and parent, like the
     model-services listing: the listing is workspace-wide (filtered per agent afterwards by
     :func:`service_usable_for_tool`), so without the memo `ucode setup` re-lists it once per
     MPS-capable agent. Pass ``use_cache=False`` to force a fresh call.
     """
-    # Keyed by workspace *and* parent: a `parent`-scoped listing holds only that schema's services,
-    # so caching it under the workspace alone would serve a partial list to an unscoped caller (and
-    # vice versa) — a service that plainly exists would look absent, the same failure pagination was
-    # added to fix.
-    cache_key = (workspace, parent or "")
+    cache_key = (*_model_listing_cache_key(workspace, token), parent or "")
     if use_cache:
         cached = _MODEL_PROVIDER_SERVICES_CACHE.get(cache_key)
         if cached is not None:
@@ -3812,7 +3834,7 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
     """
     payload, reason = _get_anthropic_models_json(workspace, token)
     if payload is None:
-        return {}, reason
+        return {}, _model_discovery_failure(reason)
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
     raw_ids = [
@@ -3915,7 +3937,7 @@ def discover_endpoints_with_api_type(
         f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
     )
     if payload is None:
-        return [], reason
+        return [], _model_discovery_failure(reason)
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
     endpoints = data.get("endpoints", [])

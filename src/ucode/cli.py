@@ -85,6 +85,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    ModelDiscoveryFailureReason,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -615,6 +616,9 @@ def configure_shared_state(
             workspace_id = split_workspace_key(aliased_workspace_key(workspace) or workspace)[1]
     key = workspace_key(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
+    saved_models = (
+        prior_state if previous_key == key else load_full_state().get("workspaces", {}).get(key, {})
+    )
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_key == key
     if databricks_ai_tools_enabled is None:
@@ -648,6 +652,12 @@ def configure_shared_state(
         for field in (
             "mcp_servers",
             "mcp_clients",
+            "claude_models",
+            "codex_models",
+            "gemini_models",
+            "oss_models",
+            "opencode_models",
+            "web_search_model",
             CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
             MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
         ):
@@ -774,6 +784,14 @@ def configure_shared_state(
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
 
+    def preserve_on_failure[T](models: T, reason: str | None, field: str) -> T:
+        if isinstance(reason, ModelDiscoveryFailureReason) and saved_models.get(field):
+            print_warning(
+                f"Could not refresh {field.replace('_', ' ')} ({reason}); using saved models."
+            )
+            return saved_models[field]
+        return models
+
     claude_reason: str | None = None
     gemini_reason: str | None = None
     codex_reason: str | None = None
@@ -823,14 +841,30 @@ def configure_shared_state(
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
+            for reason in (claude_reason, gemini_reason, codex_reason):
+                if isinstance(reason, WorkspaceSelectionReason):
+                    raise RuntimeError(reason)
+                raise_for_invalid_access_token(workspace, reason)
+            claude_models = preserve_on_failure(claude_models, claude_reason, "claude_models")
+            gemini_models = preserve_on_failure(gemini_models, gemini_reason, "gemini_models")
+            codex_models = preserve_on_failure(codex_models, codex_reason, "codex_models")
+            oss_models = preserve_on_failure(oss_models, oss_reason, "oss_models")
             if want_copilot:
                 catalog = list_anthropic_model_catalog(workspace, token)
+                if isinstance(catalog.error_msg, WorkspaceSelectionReason):
+                    raise RuntimeError(catalog.error_msg)
+                raise_for_invalid_access_token(workspace, catalog.error_msg)
                 copilot_models = copilot_agent.catalog_from_listings(
-                    cached_model_service_entries(workspace),
+                    cached_model_service_entries(workspace, token),
                     [*claude_models.values(), *codex_models],
                     catalog,
                 )
                 copilot_reason = catalog.error_msg or ms_reason or claude_reason or codex_reason
+                if isinstance(ms_reason, ModelDiscoveryFailureReason) and saved_models.get(
+                    copilot_agent.CATALOG_STATE_KEY
+                ):
+                    copilot_models = None
+                    copilot_reason = ms_reason
         if claude_models:
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
@@ -1845,7 +1879,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(
-            cached_model_service_entries(workspace),
+            cached_model_service_entries(workspace, token),
             [*claude_models.values(), *codex_models],
             gateway_listing,
         )

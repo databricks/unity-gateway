@@ -7534,6 +7534,183 @@ class TestConfigureSharedStateDiscovery:
         assert saved == []
 
 
+class TestConfigureSharedStateDiscoveryFailures:
+    WS = "https://example.databricks.com"
+    SAVED_MODELS = {
+        "claude_models": {"opus": "system.ai.claude-opus-4-7"},
+        "codex_models": ["system.ai.gpt-5"],
+        "gemini_models": ["system.ai.gemini-3-pro"],
+        "oss_models": ["system.ai.glm-5-2"],
+        "opencode_models": {
+            "anthropic": ["system.ai.claude-opus-4-7"],
+            "gemini": ["system.ai.gemini-3-pro"],
+            "oss": ["system.ai.glm-5-2"],
+        },
+    }
+
+    def _setup(self, monkeypatch, *, previous_workspace=None):
+        cli, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch,
+            pat_token=None,
+            existing_state={"workspace": previous_workspace or self.WS, **self.SAVED_MODELS},
+        )
+        for name in (
+            "discover_model_services",
+            "discover_claude_models",
+            "discover_codex_models",
+            "discover_gemini_models",
+        ):
+            monkeypatch.setattr(cli, name, getattr(db_mod, name))
+        return cli, saved
+
+    @pytest.mark.parametrize("tool", ["opencode", "kilo", "pi", "codex"])
+    @pytest.mark.parametrize(
+        "reason",
+        ["HTTP 503 Service Unavailable", "network error: timed out", "response was not valid JSON"],
+    )
+    def test_failed_refresh_preserves_saved_models(self, monkeypatch, tool, reason):
+        cli, saved = self._setup(monkeypatch)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, reason))
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=[tool])
+
+        for field in ("claude_models", "codex_models", "gemini_models", "oss_models"):
+            assert state[field] == self.SAVED_MODELS[field]
+        assert saved[-1]["opencode_models"] == self.SAVED_MODELS["opencode_models"]
+        assert cli.check_gateway_endpoint(state, tool)
+
+    def test_healthy_family_fallbacks_keep_oss_when_uc_fails(self, monkeypatch):
+        cli, _ = self._setup(monkeypatch)
+
+        def get_models(url, token, **kwargs):
+            if "model-services" in url:
+                return None, "HTTP 403 Forbidden: Missing Unity Catalog grants"
+            if "anthropic" in url:
+                return {"data": [{"id": "databricks-claude-opus-4-8"}]}, None
+            return {
+                "endpoints": [
+                    {
+                        "name": "databricks-gemini-3-pro",
+                        "config": {
+                            "served_entities": [
+                                {
+                                    "foundation_model": {
+                                        "ai_gateway_v2_supported": True,
+                                        "api_types": [db_mod.API_GEMINI_GENERATE_CONTENT],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["opencode_models"] == {
+            "anthropic": ["databricks-claude-opus-4-8"],
+            "gemini": ["databricks-gemini-3-pro"],
+            "oss": ["system.ai.glm-5-2"],
+        }
+
+    def test_successful_empty_refresh_removes_stale_models(self, monkeypatch):
+        cli, _ = self._setup(monkeypatch)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: ({}, None))
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT")
+
+        assert state["claude_models"] == {}
+        assert state["codex_models"] == []
+        assert state["gemini_models"] == []
+        assert state["oss_models"] == []
+        assert state["opencode_models"] == {}
+
+    @pytest.mark.parametrize("destination_exists", [False, True])
+    def test_workspace_switch_preserves_only_the_destination_models(
+        self, monkeypatch, destination_exists
+    ):
+        cli, _ = self._setup(monkeypatch, previous_workspace="https://other.databricks.com")
+        destination = {"claude_models": {"sonnet": "system.ai.claude-sonnet-4-6"}}
+        monkeypatch.setattr(
+            cli,
+            "load_full_state",
+            lambda: {"workspaces": {self.WS: destination} if destination_exists else {}},
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, "HTTP 503"))
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["claude_models"] == (
+            destination["claude_models"] if destination_exists else {}
+        )
+        assert state["gemini_models"] == []
+        assert state["oss_models"] == []
+        assert "codex_models" not in state
+        assert state["opencode_models"] == (
+            {"anthropic": ["system.ai.claude-sonnet-4-6"]} if destination_exists else {}
+        )
+
+    def test_changed_token_does_not_reuse_successful_discovery(self, monkeypatch):
+        cli, saved = self._setup(monkeypatch)
+        tokens = []
+
+        def get_models(url, token, **kwargs):
+            tokens.append(token)
+            if token == "invalid-token":
+                return None, "HTTP 401 Unauthorized"
+            return {
+                "model_services": [
+                    {"name": "system.ai.claude-opus-4-8"},
+                    {"name": "system.ai.gpt-5"},
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        monkeypatch.setattr(cli, "get_databricks_token", lambda *a: "invalid-token")
+
+        with pytest.raises(RuntimeError, match="expired or invalid"):
+            cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        assert len(saved) == 1
+        assert "invalid-token" in tokens
+
+    def test_failed_uc_refresh_preserves_copilot_open_models(self, monkeypatch):
+        cli, _ = self._setup(monkeypatch)
+        catalog = {"models": ["system.ai.claude-opus-4-7", "system.ai.glm-5-2"], "limits": {}}
+        prior = {"workspace": self.WS, **self.SAVED_MODELS, "copilot_catalog": catalog}
+        monkeypatch.setattr(cli, "load_state", lambda: dict(prior))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, "HTTP 503"))
+        monkeypatch.setattr(
+            cli,
+            "list_anthropic_model_catalog",
+            lambda *a: db_mod.AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["copilot"])
+
+        assert state["copilot_catalog"] == catalog
+
+    def test_saved_copilot_catalog_does_not_hide_supplemental_auth_failure(self, monkeypatch):
+        cli, saved = self._setup(monkeypatch)
+        prior = {"workspace": self.WS, "copilot_catalog": {"models": ["system.ai.glm-5-2"]}}
+        monkeypatch.setattr(cli, "load_state", lambda: dict(prior))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, "HTTP 503"))
+        monkeypatch.setattr(
+            cli,
+            "list_anthropic_model_catalog",
+            lambda *a: db_mod.AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 401 Unauthorized"
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="expired or invalid"):
+            cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["copilot"])
+        assert saved == []
+
+
 class TestConfigureNoLongerValidates:
     @pytest.fixture(autouse=True)
     def _no_managed_config(self, monkeypatch):
@@ -7886,7 +8063,9 @@ class TestConfigureSharedStateCopilotCatalog:
             cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
         )
         if listed is not None:
-            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
+            db_mod._MODEL_SERVICES_CACHE[db_mod._model_listing_cache_key(self.WS, "token")] = [
+                db_mod.ModelServiceEntry(m) for m in listed
+            ]
         reason = None if listed else "HTTP 503"
         sonnet = "system.ai.claude-sonnet-4-6"
         monkeypatch.setattr(

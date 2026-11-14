@@ -757,7 +757,7 @@ class TestDiscoverModelServices:
         assert entries == [
             db_mod.ModelServiceEntry("system.ai.gte-large-en", ("mlflow/v1/embeddings",))
         ]
-        assert db_mod.cached_model_service_entries(WS) == entries
+        assert db_mod.cached_model_service_entries(WS, "token") == entries
 
     def test_failed_listing_is_not_cached(self, monkeypatch):
         monkeypatch.setattr(
@@ -765,7 +765,7 @@ class TestDiscoverModelServices:
         )
 
         assert db_mod.list_model_service_entries(WS, "token") == ([], "HTTP 503")
-        assert db_mod.cached_model_service_entries(WS) is None
+        assert db_mod.cached_model_service_entries(WS, "token") is None
 
 
 class TestModelServiceExists:
@@ -5311,6 +5311,46 @@ class TestModelServicesCache:
         db_mod.list_model_services("https://other.databricks.com", "tok")
         assert calls["n"] == 2
 
+    def test_changed_token_gets_its_own_catalog(self, monkeypatch):
+        def get_models(url, token):
+            return {"model_services": [_model_service(f"system.ai.{token}")]}, None
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", get_models)
+        first, _ = db_mod.list_model_services(WS, "gpt-5")
+        second, _ = db_mod.list_model_services(WS, "gpt-6")
+
+        assert first == ["system.ai.gpt-5"]
+        assert second == ["system.ai.gpt-6"]
+        assert db_mod.cached_model_service_entries(WS, "gpt-5") == [
+            db_mod.ModelServiceEntry(first[0])
+        ]
+        assert db_mod.cached_model_service_entries(WS, "gpt-6") == [
+            db_mod.ModelServiceEntry(second[0])
+        ]
+
+    def test_changed_workspace_selector_gets_its_own_catalog(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        calls = []
+
+        def get_models(url, token):
+            selected = workspace_mod.active_workspace_id()
+            calls.append(selected)
+            return {"model_services": [_model_service(f"system.ai.gpt-{selected}")]}, None
+
+        monkeypatch.setattr(db_mod, "_get_model_services_page", get_models)
+        workspace_mod.activate(WS, "111")
+        first, _ = db_mod.list_model_services(WS, "token")
+        workspace_mod.activate(WS, "222")
+        assert db_mod.cached_model_service_entries(WS, "token") is None
+        second, _ = db_mod.list_model_services(WS, "token")
+        workspace_mod.activate(WS, "111")
+        assert db_mod.list_model_services(WS, "token")[0] == first
+
+        assert first == ["system.ai.gpt-111"]
+        assert second == ["system.ai.gpt-222"]
+        assert calls == ["111", "222"]
+
     def test_failures_are_not_cached(self, monkeypatch):
         # A transient error must not poison the rest of the process into believing there are no
         # models on the workspace.
@@ -5393,6 +5433,83 @@ class TestModelProviderServicesCache:
         db_mod.list_model_provider_services(WS, "tok")
         db_mod.list_model_provider_services("https://other.databricks.com", "tok")
         assert calls["n"] == 2
+
+    def test_changed_token_does_not_reuse_authorized_services(self, monkeypatch):
+        allowed = self._counting_listing({})
+
+        def get_models(url, token, **kwargs):
+            if token == "invalid":
+                return None, "HTTP 401 Unauthorized"
+            return allowed(url, token, **kwargs)
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        services, reason = db_mod.list_model_provider_services(WS, "valid")
+        assert reason is None and services
+        assert db_mod.has_cached_model_provider_services(WS, "valid")
+        assert not db_mod.has_cached_model_provider_services(WS, "invalid")
+
+        assert db_mod.list_model_provider_services(WS, "invalid") == (
+            [],
+            "HTTP 401 Unauthorized",
+        )
+        assert not db_mod.has_cached_model_provider_services(WS, "invalid")
+        assert db_mod.list_model_provider_services(WS, "valid") == (services, None)
+
+    def test_changed_workspace_selector_gets_its_own_services(self, monkeypatch):
+        import ucode.workspace as workspace_mod
+
+        calls = []
+
+        def get_models(url, token, **kwargs):
+            selected = workspace_mod.active_workspace_id()
+            calls.append(selected)
+            return {
+                "model_provider_services": [
+                    {
+                        "name": f"main.ai.workspace_{selected}",
+                        "config": {"provider_type": "OPENAI"},
+                    }
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        workspace_mod.activate(WS, "111")
+        first, _ = db_mod.list_model_provider_services(WS, "token")
+        workspace_mod.activate(WS, "222")
+        assert not db_mod.has_cached_model_provider_services(WS, "token")
+        second, _ = db_mod.list_model_provider_services(WS, "token")
+        workspace_mod.activate(WS, "111")
+        assert db_mod.has_cached_model_provider_services(WS, "token")
+        assert db_mod.list_model_provider_services(WS, "token")[0] == first
+
+        assert [entry["name"] for entry in first] == ["main.ai.workspace_111"]
+        assert [entry["name"] for entry in second] == ["main.ai.workspace_222"]
+        assert calls == ["111", "222"]
+
+    def test_parent_scopes_have_independent_cached_services(self, monkeypatch):
+        def get_models(url, token, **kwargs):
+            parent = parse_qs(url.split("?", 1)[1]).get("parent", ["schemas/main.all"])[0]
+            return {
+                "model_provider_services": [
+                    {
+                        "name": parent.removeprefix("schemas/") + ".provider",
+                        "config": {"provider_type": "OPENAI"},
+                    }
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        scoped, _ = db_mod.list_model_provider_services(WS, "token", parent="main.scoped")
+        assert db_mod.has_cached_model_provider_services(WS, "token", "main.scoped")
+        assert not db_mod.has_cached_model_provider_services(WS, "token")
+        unscoped, _ = db_mod.list_model_provider_services(WS, "token")
+
+        assert [entry["name"] for entry in scoped] == ["main.scoped.provider"]
+        assert [entry["name"] for entry in unscoped] == ["main.all.provider"]
+        assert db_mod.list_model_provider_services(WS, "token", parent="main.scoped") == (
+            scoped,
+            None,
+        )
 
     def test_failures_are_not_cached(self, monkeypatch):
         calls: dict = {}

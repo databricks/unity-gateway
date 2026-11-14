@@ -583,7 +583,11 @@ savings; credential/profile routing is unchanged.
 
 Startup model discovery is covered by component tests in `../test_cli.py`: one
 scoped UC request with preserved OpenCode, Kilo, and Pi catalogs, process-cache reuse,
-token and workspace-selection error handling, missing-family fallbacks, and the `skip_model_discovery` and `skip_preflight` paths. The redundant
+token and workspace-selection error handling, missing-family fallbacks, and the
+`skip_model_discovery` and `skip_preflight` paths. Component regressions distinguish
+failed discovery from confirmed empty lists, preserve the selected workspace's saved
+models on failure, and isolate cached catalogs by credential and workspace selection.
+Copilot retains its saved open models when UC refresh fails. The redundant
 gateway probe and its overlap/cache tests were removed. These checks do not establish
 live request counts or launch-time savings.
 
