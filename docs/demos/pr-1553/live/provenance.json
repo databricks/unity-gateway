@@ -1,0 +1,54 @@
+{
+  "source_commit": "febf9868d485e4a6a41692f763d4eac847d5ef9e",
+  "product_source_commit": "3c080f7db0e7beb0d3285b57ed52360d018724d9",
+  "recorded_at": "2026-11-13T21:06:24.254864+00:00",
+  "runtime": {
+    "name": "Claude Code",
+    "version": "2.1.322",
+    "sha256": "bfb3703ad5380242328459bc62ada4bde8ae7ba57c6e1eeadb9c00e08874c478",
+    "python": "3.12"
+  },
+  "capture": "Actual interactive native PTY output rendered in real time at 10 fps; sidebar reflects the same session records.",
+  "duration_seconds": 16.1,
+  "video": {
+    "file": "native-background-task.mp4",
+    "bytes": 349986,
+    "sha256": "7ef1403dbcbb6e24f0df5ff83b253183233f5764b6841e61fce052a24596d594"
+  },
+  "poster": {
+    "file": "poster.png",
+    "bytes": 311330,
+    "sha256": "d93257d3173361b0509045f402ea8cb885372489a9040fcc75c61c9190c52b69"
+  },
+  "input": {
+    "prompt": "Start one background agent to read docs/claude-mod.md and return a two-sentence summary of how background rate-limit failures affect new subagent routing. Do not modify files, run tests, use network tools, or spawn additional agents. Wait for its result. If it reports an actual rate-limit failure, start one replacement background agent for the same task, then stop. Otherwise report its result and stop.",
+    "parent_model": "system.ai.claude-sonnet-5-5[1m]",
+    "smart_routing": "Subagent-only routing enabled",
+    "native_retries": "Unchanged defaults"
+  },
+  "response_source": "Live Databricks gateway with the existing authenticated profile; no response fixtures or injected failures.",
+  "observed": {
+    "native_model_requests": 5,
+    "response_models": [
+      "system.ai.claude-sonnet-5-5"
+    ],
+    "background_children": 1,
+    "background_child_completed": true,
+    "parent_received_completion": true,
+    "router_command_bound_to_source": true,
+    "router_command_exit_code": 0,
+    "router_command_output_bytes": 0,
+    "router_selection_recorded": false,
+    "http_429_observed": false,
+    "cooldown_recovery_observed": false
+  },
+  "verification": {
+    "full_video_decode_errors": 0,
+    "generated_plugin_matches_source": true,
+    "normal_profiles_unchanged": true,
+    "product_source_unchanged": true
+  },
+  "acceptance": "Partial live evidence. This records an ordinary parent/background-child journey. No real background rate-limit failure, cooldown exclusion or replacement selection occurred; live cooldown acceptance remains pending.",
+  "routing_limitation": "The correct checkout routing command returned no selection output. The native child used the same model as its parent. The saved diagnostics do not identify the cause of the empty routing result.",
+  "historical_evidence": "The earlier fixture recording is retained under the parent directory and does not satisfy live E2E acceptance."
+}

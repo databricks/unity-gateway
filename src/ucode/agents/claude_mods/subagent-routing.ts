@@ -21,11 +21,13 @@ const unwrapGatewayModel = (model: string): string =>
 
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
-  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
-  return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+    .replace(/^databricks-claude-/, 'system.ai.claude-')
+  const canonical = original.startsWith('system.ai.') ? original.slice('system.ai.'.length) : original
+  return canonical.replace(/\[1m\]$/, '')
 }
 
 const children = new Map<string, RoutingRecord>()
+const rateLimitedUntil = new Map<string, number>()
 export const routedModels = {
   started(record: RoutingRecord) { children.set(record.spawned!.agentId, record) },
   model(agentId?: string) {
@@ -34,7 +36,7 @@ export const routedModels = {
     return child && resolved && canonicalModel(resolved) === canonicalModel(child.model)
       ? resolved : child?.model
   },
-  reset() { children.clear() },
+  reset() { children.clear(); rateLimitedUntil.clear() },
 }
 
 const ANIMALS = [
@@ -57,6 +59,8 @@ const shortModel = (model: string): string => {
     : parts.length === 3 ? parts[2] : unwrapped
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }
+// Native terminal notices omit Retry-After, so expire this local hint after one minute.
+const RATE_LIMIT_COOLDOWN_MS = 60_000
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -118,6 +122,17 @@ const card = ($: any, e: any, record: RoutingRecord) => {
 // register module's one turn.complete handler can drop them.
 const cards = { unplaced: [] as string[] }
 
+// Background API errors arrive as native task notifications, after the client's retries.
+// Keep the cooldown local to this launch's workspace and confirm the failed child's model.
+export function recordSubagentRateLimit(text: string, timestamp: number): void {
+  const task = text.match(/^<task-notification>\s*<task-id>([^<\s]+)<\/task-id>/)
+  const failure = text.match(/<status>failed<\/status>\s*<summary>[^<]*\(error type rate_limit, HTTP 429,(?: request id [^,\s<>]+,)? model sent to the API: ([^\s()<]+)\)<\/summary>/)
+  const model = task ? routedModels.model(task[1]) : undefined
+  if (model && failure && canonicalModel(model) === canonicalModel(failure[1])) {
+    rateLimitedUntil.set(canonicalModel(model), timestamp + RATE_LIMIT_COOLDOWN_MS)
+  }
+}
+
 // An aborted turn draws no reply, so its calls must not reach a later turn. A turn that
 // merely ends, as when the reply waits on a background agent, keeps them.
 export function endSubagentRoutingTurn(aborted: boolean): void {
@@ -145,6 +160,13 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
+    let denial: string | undefined
+    let routingDisabled = false
+    let routingFailed = false
+    const timestamp = await now($)
+    const excluded_models = [...rateLimitedUntil]
+      .filter(([, until]) => timestamp !== undefined && until > timestamp)
+      .map(([model]) => model)
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
       if (!names.has(tool_use_id)) {
@@ -176,12 +198,17 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     try {
       const session_id = await $.session.id()
       const result = await $.process.run(command, {
-        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
+        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input,
+          ...(excluded_models.length ? { excluded_models } : {}) }),
         timeoutMs: 35000,
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')
-      // An empty response means routing is disabled or no model could be selected.
-      route = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+      const response = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
+      if (typeof response?.deny === 'string' && response.deny) denial = response.deny
+      else {
+        routingDisabled = response?.disabled === true
+        if (!routingDisabled) route = response
+      }
       if (route !== undefined && (
           typeof route?.model !== 'string' || !route.model ||
           typeof route.rationale !== 'string')) {
@@ -189,7 +216,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
     } catch {
       route = undefined
-      $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      routingFailed = true
     } finally {
       spinner?.cancel()
     }
@@ -207,6 +234,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       $.ui.invalidate('ui.render')
     }
+    if (!route && !denial && !routingDisabled) {
+      const current = await now($)
+      if (excluded_models.length || [...rateLimitedUntil.values()].some(until => current !== undefined && until > current)) {
+        denial = 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
+      } else if (routingFailed) {
+        $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      }
+    }
+    if (denial) return { deny: denial }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
     const result = await next(e)
     const record = tool_use_id ? records.get(tool_use_id) : undefined
@@ -224,6 +260,13 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
+    const timestamp = route ? await now($) : undefined
+    if (route && timestamp !== undefined && (rateLimitedUntil.get(canonicalModel(route.model)) ?? 0) > timestamp) {
+      // A failure notice may arrive while the routing request is in flight.
+      records.delete(e.tool_use_id)
+      $.ui.invalidate('ui.render')
+      return { deny: 'The selected model is now rate-limited. Retry to select another available model.' }
+    }
     const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
     if (route && result.agentId && !result.deny) {
@@ -293,7 +336,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const ids = anchors.get(e.requestId)
     if (!ids) return original
     const { Box } = $.ui.resolve(e)
-    return Box({ flexDirection: 'column', children: [...ids.map((id) => card($, e, records.get(id)!)), original] })
+    return Box({ flexDirection: 'column', children: [...ids.filter((id) => records.has(id)).map((id) => card($, e, records.get(id)!)), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     routedModels.reset()

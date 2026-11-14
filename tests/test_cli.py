@@ -1847,7 +1847,7 @@ class TestSubcommandRouting:
                 hook_output=False,
             )
         else:
-            assert result.output == ""
+            assert json.loads(result.output) == {"disabled": True}
             route.assert_not_called()
 
     def test_claude_mod_route_refreshes_through_custom_oauth_client(self, monkeypatch):
