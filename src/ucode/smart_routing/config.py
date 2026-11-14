@@ -34,7 +34,7 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
-SUBAGENT_AUTO_V0 = "subagent_auto_v0"
+SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
 
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
@@ -106,7 +106,7 @@ _VERSIONS = {
             ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         },
     },
-    SUBAGENT_AUTO_V0: {
+    SUBAGENT_AUTO_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: {
             **_BASE_VERSIONS[SUBAGENT_ORCH_V0],
             ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",

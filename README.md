@@ -527,8 +527,8 @@ so these logs may still contain sensitive details. Claude's audit format is unch
 Auto is opt-in. Enable the new config version for configure and launch:
 
 ```bash
-SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0 ug configure --agent claude
-SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0 ug claude
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent claude
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
 ```
 
 All existing versions, including `subagent_orch_v0_claude_only`, keep the old
@@ -673,7 +673,7 @@ use identical mappings for both agents. The Claude-only version disables routing
 | `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
-| `subagent_auto_v0` | Claude | On | Off | On | On |
+| `subagent_auto_v0_claude_only` | Claude | On | Off | On | On |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and

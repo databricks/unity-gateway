@@ -98,7 +98,7 @@ may delegate the session-control write to UG's CLI, which validates and replaces
 atomically; the mod itself still writes no file.
 
 Claude Auto is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
-`subagent_auto_v0` config version. Existing versions set the flag to `"0"`.
+`subagent_auto_v0_claude_only` config version. Existing versions set the flag to `"0"`.
 Configure modifies only UG-owned pickers, preserving foreign admin picker/custom
 option settings. Native `/effort` owns effort capabilities and selection.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and

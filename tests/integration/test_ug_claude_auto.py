@@ -36,7 +36,7 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
     choices; resume matches Claude's native model/settings precedence.
     """
     session = live_session
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0"
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0_claude_only"
     fixture = "claude_auto"
     path = use_managed_config_fixture(session, fixture)
     config = json.loads(path.read_text())["enabled_agents"][0]["config"]
@@ -212,7 +212,7 @@ def test_ug_claude_old_config_hides_auto_after_opt_in_configure(live_session, wo
     Smart Router controls remain visible despite installed Auto aliases.
     """
     session = live_session
-    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0"
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0_claude_only"
     use_managed_config_fixture(session, "claude_auto")
     session.run(
         "configure",

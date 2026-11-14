@@ -8,7 +8,7 @@ two real terminals and preserve each session’s context window and model choice
 Effort uses Claude’s own `/effort`; the duplicate custom effort implementation and
 its dedicated tests were removed. Native `/model` effort behavior remains unchanged.
 
-`integration/test_ug_claude_auto.py` opts into `subagent_auto_v0` explicitly and
+`integration/test_ug_claude_auto.py` opts into `subagent_auto_v0_claude_only` explicitly and
 requires completed parent/child answers with a correlated routing decision only
 in Auto mode. It also verifies the old picker after switching back to an existing
 config version. Both journeys explicitly use the checked-in `claude_auto` managed fixture.
