@@ -1,28 +1,46 @@
 ---
 name: pr-demo
-description: Record BEFORE (merge-base with origin/main) and AFTER (PR head) terminal recordings of the Unity Gateway CLI with a lightweight built-in recorder, publish the gifs to the current pull request description, and add the pr-demo-recorded label.
+description: Record and publish BEFORE/AFTER Unity Gateway PR demos using actual PR code in a native environment connected to an authenticated live workspace.
 ---
 
 # pr-demo: before/after terminal recordings for a pull request
 
 Record the same `ug` commands against the merge-base with `origin/main` (BEFORE)
 and the PR head (AFTER), show both gifs in the PR description, and label the PR
-`pr-demo-recorded`. The recorder is built in: commands run under a real pty
-(macOS/Linux; Windows falls back to a non-pty pipe capture with `FORCE_COLOR=1`,
-so interactive flows are macOS/Linux only), the output is replayed through
-`pyte`, and frames are rendered to an animated GIF with Pillow. Recordings run
-in disposable virtualenvs built from the two commits, inside a sandboxed HOME,
-so nothing touches the developer's real configuration. Images are public release
-assets in `databricks/unity-gateway` and are linked from the PR body. Cleanup
-deletes them after the PR closes, so image links in closed PRs stop loading;
-the text diff stays in the PR body.
+`pr-demo-recorded`. The built-in recorder uses a pty, pyte, and Pillow, with
+per-commit virtualenvs and a sandboxed HOME. Images are public release assets in
+`databricks/unity-gateway`. Cleanup deletes them after the PR closes; the text
+diff stays in the PR body.
+
+## Live demo requirement
+
+- ALWAYS run the actual reviewed code, checked out and built at each revision,
+  through the native CLI or app against an authenticated live workspace.
+  NEVER use fixtures, mocks, stubs, replayed responses, or fake APIs/proxies,
+  including localhost substitutes, as demo proof. Isolated HOME or tmpfs policy
+  paths are allowed only with real code, auth, config, native runtime, and live
+  service requests. Native proxies must forward to the real service.
+- Show setup and launch commands, workspace selection, effective config version
+  (or explicitly unset), and relevant flags. Show a real operation and its
+  outcome through the changed path. Help/version output, offline errors, and
+  unit tests are insufficient. Hidden preconfiguration is not proof.
+- Preserve actual elapsed timing, including startup, waits, inactivity, and
+  shutdown. Never accelerate playback, trim idle time, or splice sessions into
+  an apparent continuous success.
+- Keep secrets out of public artifacts and never bypass scanning. Show a public
+  workspace URL only when explicitly permitted and allowed by the scan;
+  otherwise use a verified workspace/profile alias or supported host redaction.
+- If live access, authentication, native execution, or faithful recording is
+  unavailable, report the limitation and stop without publishing or adding
+  `pr-demo-recorded`. Do not ask for access, fabricate success, or mark the demo
+  unnecessary because validation was blocked.
 
 ## Prerequisites
 
-- `uv` (the repo's normal toolchain) — the two recorder-only dependencies
-  (`pyte`, `Pillow`) are pulled in per command with `--with`; they are NOT
-  project dependencies and never touch the lock file.
-- `gh` (GitHub CLI) authenticated against `databricks/unity-gateway`.
+- `uv`; recorder-only dependencies `pyte` and `Pillow` use `--with` and do not
+  change project dependencies or the lock file.
+- `gh` authenticated against `databricks/unity-gateway`.
+- An available authenticated live workspace and the required native runtime.
 
 Tested with Claude Code and Codex 0.167+.
 
@@ -40,128 +58,97 @@ ROOT=$(git rev-parse --show-toplevel)
    uv run python "$ROOT/scripts/pr_demo/publish.py" --check-skip
    ```
 
-   A nonempty committed diff from the merge-base with `origin/main` that contains
-   only files under `tests/`, files named `test_*.py`, `*_test.py`, or
-   `conftest.py`, and `.yml`/`.yaml` files needs no demo. This includes YAML
-   anywhere, even under `src/`. Renames and deletions are included; uncommitted
-   changes are not. If it prints `skip`, obtain the PR number with
-   `gh pr view --json number`, then run:
+   A nonempty committed diff containing only files under `tests/`, files named
+   `test_*.py`, `*_test.py`, or `conftest.py`, and `.yml`/`.yaml` files needs no
+   demo. Renames and deletions count; uncommitted changes do not. If it prints
+   `skip`, get the PR number with `gh pr view --json number`, then run:
 
    ```bash
    uv run python "$ROOT/scripts/pr_demo/publish.py" --mark-no-demo-needed --pr <number>
    ```
 
-   This records the skip in the PR body as a single plain
-   `NO_PR_DEMO_NEEDED_RATIONALE=only test files and .yml/.yaml files changed (<n> files)`
-   line at column 0 (an existing line is replaced in place; running it twice is
-   idempotent and the rest of the body is preserved) and adds the
-   `no-pr-demo-needed` label. Report the result and stop. On a body or label
-   failure, report the warning and stop. An empty or mixed diff prints `record`.
-2. **Verify the branch is pushed and has an open PR.** Run
-   `gh pr view --json number,headRefOid` and check that the PR head matches the
-   branch. If no PR exists, report that and stop.
-3. **Select commands: use supplied ones, or trace the diff.** If the invocation
-   that started this skill includes `ug ...` commands (for example
-   `/pr-demo ug configure --foo`, or several separated by `;` or newlines), use
-   them as given and skip the discovery below. The identical-output check in the
-   recording step still applies; if a supplied command shows no change, report
-   that instead of silently substituting other commands.
-
-   Otherwise run `git diff "$(git merge-base origin/main HEAD)"..HEAD` and trace
-   each changed function or string under `src/ucode/` to a command:
-
-   - Grep for its callers up to the Typer command in `src/ucode/cli.py` (the
-     `@app.command` / `app.add_typer` registration) that reaches it.
-   - Prefer arguments that reach the changed line without a workspace:
-     validation errors, flag conflicts, `--help` text, or early returns.
-   - Verify each candidate locally, offline, in a throwaway home:
-
-     ```bash
-     HOME=$(mktemp -d) UG_SKIP_OS_SETTINGS=1 uv run ug <args>
-     ```
-
-     It must exit within a few seconds with no prompt. Use `--workspace` only
-     if no offline path reaches the change. Keep 2–4 verified commands.
-
-   Worked example: a changed `RuntimeError` message in configure's flag
-   validation is reached with
-   `ug configure --model-location main.default --provider main.default.anthropic`
-   (it prints `ERROR --model-location and --provider cannot be combined.` and
-   exits in a few seconds, offline).
-4. **Record.** For example:
+   This writes `NO_PR_DEMO_NEEDED_RATIONALE=only test files and .yml/.yaml files changed (<n> files)`
+   at column 0 in the PR body and adds `no-pr-demo-needed`, preserving the rest
+   of the body. Report the result or failure and stop. Empty or mixed diffs record.
+2. **Verify the revisions.** Run `gh pr view --json number,headRefOid` and check
+   that the open PR head matches HEAD. Verify the recorder builds BEFORE from
+   the merge-base and AFTER from that exact head, including the changed files.
+   Stop if uncommitted or unpushed changes would be omitted. Bind launches to
+   those builds rather than an unrelated installed `ug`.
+3. **Select live commands.** Use supplied commands if they meet the live demo
+   requirement; otherwise explain why they cannot validate the change and stop.
+   Do not silently substitute commands. Without supplied commands, inspect
+   `git diff "$(git merge-base origin/main HEAD)"..HEAD` and trace changed code
+   to its CLI entry point in `src/ucode/cli.py`. Verify commands that reach the
+   change with a real workspace operation. For agent changes, launch the actual
+   agent and complete a real request. Keep inputs and config comparable across
+   revisions except for the intended change.
+4. **Record.** Workspace mode is mandatory in this skill. Put the verified
+   visible setup and launch commands in a file, one command per line, then run:
 
    ```bash
    uv run --with pyte --with pillow python "$ROOT/scripts/pr_demo/record.py" \
-     --command "ug --help" \
-     --command "ug doctor --help"
+     --workspace --profile <existing-live-profile> --commands-file <file>
    ```
 
-   Useful flags:
-   - `--commands-file <file>` (one command per line) instead of repeated
-     `--command`.
-   - `--base <sha>` / `--head <sha>` to override the merge-base/HEAD defaults.
-   - `--workspace --profile <name>` opts in to workspace mode when offline
-     commands cannot show the change. The recorder runs a hidden
-     `ug configure --profile <name> --use-pat` setup inside the sandbox per
-     version, using the developer's real `~/.databrickscfg`. `--redact-host`
-     redacts text only, not images; a host in the recording blocks the run.
-   - `--rows` / `--cols` to resize the terminal (default 30x100).
+   Repeated `--command` flags are also supported. Check these recorder limits
+   before proceeding:
 
-   Set `OUT` to the printed `Output directory:` path for publishing. Each run
-   creates a new temporary directory outside the checkout, which the OS may
-   clean up; pass `--out <directory>` to choose another location. Frames retain
-   the terminal width and share a cropped height across both recordings.
+   - Workspace mode runs hidden `ug configure --profile <name> --use-pat` setup.
+     Do not let it mask the behavior under review or replace visible setup.
+   - The sandbox isolates HOME, sets `UG_SKIP_OS_SETTINGS=1`, and drops inherited
+     variables. Apply required config/version settings explicitly to the launch.
+     Stop if the changed behavior needs native capabilities the sandbox disables.
+   - Commands are captured separately; the Windows pipe fallback is noninteractive.
+     Verify playback against actual elapsed time, including silence before and
+     after output. Stop if the recorder cannot preserve the required evidence.
 
-   Pass working-tree and unpushed-HEAD warnings on to the developer. Per-commit
-   virtualenvs are cached under `~/.cache/ug-pr-demo/<sha>`.
+   `--base` / `--head` override revisions; `--rows` / `--cols` resize the terminal.
+   `--redact-host` redacts text only, not images; a host in an image blocks the
+   run. Set `OUT` to the printed `Output directory:` path. Output defaults to a
+   fresh temporary directory outside the checkout; `--out` overrides it.
 
-   If record.py exits with code 3 (`BEFORE and AFTER output are identical`),
-   the picked commands show no change: choose different commands and retry,
-   at most 3 recording attempts in total. Never pass `--allow-identical` to
-   bypass this check. If every attempt is identical, go to step 6 instead of
-   publishing an unchanged demo.
-5. **Publish.** Run:
+   Exit code 3 means all BEFORE/AFTER output is identical. Retry with commands
+   that show the change, at most 3 valid live attempts total. For supplied
+   commands, report identical output instead of substituting others. Never use
+   `--allow-identical`. If there is no visible change, go to step 6.
+5. **Review and publish.** Watch both recordings and inspect their transcripts
+   and `manifest.json`. Confirm `mode` is `workspace`, the SHAs match step 2,
+   and the evidence meets the live demo requirement. Preview, then publish:
 
    ```bash
+   uv run python "$ROOT/scripts/pr_demo/publish.py" --out "$OUT" --dry-run
    uv run python "$ROOT/scripts/pr_demo/publish.py" --out "$OUT"
    ```
 
-   Use `--dry-run` to preview without a network write. A secret scan hit blocks
-   recording or publishing; change the offending command and retry, or report the
-   failure and stop. Never bypass the scan. The scanner is pattern-based, not a
-   guarantee that arbitrary sensitive data is absent. The publisher uploads the
-   gifs and PNGs to the `pr-demo-assets` prerelease as
-   `pr<pr>-<short-sha>-{before,after}.{gif,png}` and deletes older assets for that PR,
-   replaces the PR body block between `<!-- pr-demo:start ... -->` and
-   `<!-- pr-demo:end -->`, removes any stale `NO_PR_DEMO_NEEDED_RATIONALE=` line
-   and the `no-pr-demo-needed` label (the PR now has a demo), and adds
-   `pr-demo-recorded`.
-6. **No visible change: skip with a reason.** If the change has no user-visible
-   CLI output (for example an internal refactor), or three recording attempts
-   all produced identical output, mark the PR with an agent-judged reason:
+   A secret scan hit blocks recording or publishing. Change the offending command
+   and retry, or report the failure and stop. The pattern-based scanner cannot
+   guarantee arbitrary sensitive data is absent; inspect the artifacts too.
+   The publisher uploads GIFs/PNGs to the `pr-demo-assets` prerelease, replaces
+   only the `<!-- pr-demo:start ... -->` / `<!-- pr-demo:end -->` body block,
+   removes stale skip rationale and `no-pr-demo-needed`, and adds `pr-demo-recorded`.
+6. **No visible change: skip with a reason.** Use this for a change with no
+   user-visible CLI output or three identical valid live attempts:
 
    ```bash
    uv run python "$ROOT/scripts/pr_demo/publish.py" --mark-no-demo-needed \
-     --pr <number> \
-     --reason "<why no demo can show this change>" \
+     --pr <number> --reason "<why no demo can show this change>" \
      --tried "<command tried>" --tried "<another command>"
    ```
 
-   `--reason` writes a short block between the usual `<!-- pr-demo:start ... -->`
-   and `<!-- pr-demo:end -->` markers (replacing any existing block idempotently)
-   plus the same `NO_PR_DEMO_NEEDED_RATIONALE=<reason>` line outside the block,
-   then adds `no-pr-demo-needed`. List the commands you attempted with the
-   repeatable `--tried`. The reason and tried commands go through the secret
-   scan; a hit blocks the update. Without `--reason`, the classifier must say
-   `skip` (step 1) or the command refuses.
-7. **Report the result** (image links and PR link, or the skip rationale).
+   This writes the reason and tried commands inside the usual body markers,
+   plus a top-level `NO_PR_DEMO_NEEDED_RATIONALE=<reason>` line, and adds
+   `no-pr-demo-needed`. The reason and commands pass through the secret scan.
+   Without `--reason`, the classifier must say `skip` or the command refuses.
+7. **Report the result.** Include image links and the PR link, or the skip
+   rationale. If blocked, state what could not be validated and that no demo
+   was published.
 
 ## Failure handling
 
-- If uploading to the `pr-demo-assets` release fails (fork without release access), publish.py
-  prints manual upload instructions and still updates the PR body and label; pass
-  the instructions on to the developer.
-- If adding the label fails, a maintainer should run
-  `gh label create pr-demo-recorded` once; tell the developer.
-- The label is informational and is never removed on new pushes; re-running
-  publish.py after new commits replaces the PR body block and uploads new gifs.
+- If release upload fails, publish.py prints manual upload instructions and still
+  updates the PR body and label; pass those instructions on to the developer.
+- If adding the label fails, tell the developer a maintainer should run
+  `gh label create pr-demo-recorded` once.
+- The label is informational and is not removed on new pushes. Re-running
+  publish.py replaces the demo block and uploads new images.

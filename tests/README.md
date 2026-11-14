@@ -1162,7 +1162,8 @@ they do not establish live agent coverage.
 with controlled git, GitHub, install, and command boundaries. It checks output location and
 warnings, sandbox isolation, shared frame cropping (including transient content),
 the identical-output gate (record exits with code 3 and publishing refuses an
-all-identical manifest), renderer fairness, ANSI/GIF/PNG/text output, secret
+all-identical manifest), workspace-mode comparison excluding hidden setup while
+retaining it in recordings/transcripts, renderer fairness, ANSI/GIF/PNG/text output, secret
 gates for recordings, publishing, and skip reasons, the test/YAML-only skip
 classifier, release asset naming, creation races, upload fallback, and stale/closed
 PR cleanup decisions and failure handling, PR body block and

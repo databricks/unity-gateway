@@ -190,6 +190,68 @@ def test_all_identical_captures_exit_with_distinct_code(
     assert not list(out.glob("*"))  # nothing rendered, captured, or written
 
 
+@pytest.mark.parametrize("after_output, expected_exit", [("changed result", 0), ("same result", 3)])
+def test_workspace_compares_commands_without_hidden_setup(
+    recorder: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: Any,
+    after_output: str,
+    expected_exit: int,
+) -> None:
+    pytest.importorskip("pyte")
+    Image = pytest.importorskip("PIL.Image")
+    config = tmp_path / "databrickscfg"
+    config.write_text("")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+    # Control workspace setup and command execution; retain real scanning and rendering.
+    captures = iter(
+        [
+            [(0.0, b"setup before\r\n")],
+            [(0.0, b"same result\r\n")],
+            [(0.0, b"setup after\r\n")],
+            [(0.0, f"{after_output}\r\n".encode())],
+        ]
+    )
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(next(captures)))
+    out = tmp_path / "out"
+    assert (
+        recorder.main(
+            [
+                "--workspace",
+                "--profile",
+                "unit-test",
+                "--command",
+                "ug doctor",
+                "--venv-cache",
+                str(tmp_path / "cache"),
+                "--sleep",
+                "0",
+                "--out",
+                str(out),
+            ]
+        )
+        == expected_exit
+    )
+    if expected_exit == 3:
+        assert "identical" in capsys.readouterr().err
+        assert list(out.iterdir()) == []
+    else:
+        manifest = json.loads((out / "manifest.json").read_text())
+        assert manifest["mode"] == "workspace"
+        assert manifest["base_sha"] == "base" and manifest["head_sha"] == "head"
+        assert manifest["commands"] == ["ug doctor"]
+        for side, setup, result in (
+            ("before", "setup before", "same result"),
+            ("after", "setup after", after_output),
+        ):
+            transcript = (out / f"{side}.txt").read_text()
+            assert setup in transcript and result in transcript
+            for extension in ("gif", "png"):
+                with Image.open(out / f"{side}.{extension}") as image:
+                    image.verify()
+
+
 FAKE_PAT = "dapi" + "0123456789abcdef" * 2
 
 

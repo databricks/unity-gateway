@@ -816,13 +816,14 @@ def main(argv: list[str] | None = None) -> int:
         check_recording_for_secrets(chunks, rows=args.rows, cols=args.cols)
 
     if not args.allow_identical:
+        command_offset = 1 if setup else 0
         before_texts = [
             final_display(segment, rows=args.rows, cols=args.cols)
-            for segment in recordings["before"][2]
+            for segment in recordings["before"][2][command_offset:]
         ]
         after_texts = [
             final_display(segment, rows=args.rows, cols=args.cols)
-            for segment in recordings["after"][2]
+            for segment in recordings["after"][2][command_offset:]
         ]
         identical = compare_sides(commands, before_texts, after_texts)
         if len(identical) == len(commands):
