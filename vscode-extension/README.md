@@ -8,7 +8,17 @@ for GPT-5 and later, and Chat Completions for older GPT models.
 the models (id, picker name, family, the wire to call it on - `anthropic`, `responses` or
 `completions` - and token limits), a command that prints a Databricks access token (`ug auth-token --host ...`)
 and any `headers` to send with every request, then installs it. To change the models, the headers or the
-workspace, run `ug configure --agents copilot` again and restart VS Code.
+workspace, run `ug configure --agents copilot` again and quit VS Code fully (on macOS, Cmd+Q, even with no
+window open): a running VS Code keeps the build it loaded, even in a new window. A first install shows its models
+in a window that is already open.
+
+The models need Copilot Chat, which VS Code turns off in a profile that never finished its chat setup. The
+extension then offers, once per profile, to turn it on (what + in the model picker does), and lists the models as
+soon as Copilot Chat starts, with no restart.
+
+Once per configure, once its models are listed, the extension also opens the chat on the workspace's default model
+(else the first model), in Local and Copilot sessions alike. Without that, VS Code applies the default model only to
+an empty chat whose model you didn't pick and Copilot didn't set. Your own `chat.defaultModel` wins.
 
 The models are the ones the Copilot CLI gets: the workspace's managed model list when its managed
 config has one, else the models `ug configure` discovered. With `--provider <catalog.schema.name>`
