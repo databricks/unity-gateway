@@ -34,7 +34,7 @@ AGENT_PACKAGES = {
     "copilot": "@github/copilot",
 }
 # Agents not published on npm: installed from a pinned native build (see install_native_agent).
-NATIVE_AGENT_BINARIES = {"antigravity": "agy"}
+NATIVE_AGENT_BINARIES = {"antigravity": "agy", "vscode": "code"}
 # Antigravity CLI release archives, keyed by (sys.platform, machine); `{build}` is
 # `<version>-<build id>`, e.g. 1.5.4-5037094733742080 (the path in Google's release manifest).
 ANTIGRAVITY_RELEASE_URL = (
@@ -65,6 +65,19 @@ ANTIGRAVITY_SHA512 = {
         "1.4.9-4962164969177088",
         "darwin-x64/cli_mac_x64.tar.gz",
     ): "cd4df27844a6585da9af155fef02b344deb18213910cff27ddb7ea54411358318a50901a3d348997f67744c31e64fdda7ead3ab48e2c66fc10510b4d8ae9843f",
+}
+# VS Code archives from its update service, keyed by (sys.platform, machine). The archive bundles
+# Copilot Chat, so pinning VS Code also pins Copilot Chat.
+VSCODE_RELEASE_URL = "https://update.code.visualstudio.com/{version}/{platform}/stable"
+VSCODE_ARCHIVES = {("linux", "x86_64"): "linux-x64", ("win32", "amd64"): "win32-x64-archive"}
+# Expected SHA-256 of each pinned archive: `sha256hash` from the update service's
+# `/api/versions/<version>/<platform>/stable`. A version without an entry needs --vscode-sha256.
+VSCODE_SHA256 = {
+    ("1.144.0", "linux-x64"): "17b72a7e6f40a5b5dce9850f10eea13ce734a63052b67fa021cc01e715ad4cf1",
+    (
+        "1.144.0",
+        "win32-x64-archive",
+    ): "055722269e3c9531af0c50a8b757c14e8062a0d02fc973b038863d9732c567ea",
 }
 ALL_AGENTS = (*AGENT_PACKAGES, *NATIVE_AGENT_BINARIES)
 WINDOWS_PATHEXT = ".COM;.EXE;.BAT;.CMD"
@@ -97,6 +110,9 @@ def agent_version_output(agent: str, output: str) -> str:
     if agent == "copilot":
         # "GitHub Copilot CLI 1.0.91." plus an update hint on later lines.
         return output.splitlines()[0].removesuffix(".") if output else output
+    if agent == "vscode":
+        # "1.144.0", then the commit and the architecture on later lines.
+        return output.splitlines()[0] if output else output
     return output
 
 
@@ -339,6 +355,105 @@ def antigravity_expected_sha512(
     return expected
 
 
+def exact_vscode_version(value: str) -> str:
+    if not re.fullmatch(r"\d+\.\d+\.\d+", value):
+        raise argparse.ArgumentTypeError("Use an exact VS Code version, for example 1.144.0.")
+    return value
+
+
+def sha256_digest(value: str) -> str:
+    if not re.fullmatch(r"[0-9a-fA-F]{64}", value):
+        raise argparse.ArgumentTypeError("Use a 64-character hex SHA-256 digest.")
+    return value.lower()
+
+
+def vscode_archive_platform(system: str, machine: str) -> str:
+    name = VSCODE_ARCHIVES.get((system, machine.lower()))
+    if name is None:
+        raise RuntimeError(f"No pinned VS Code archive for {system}/{machine}.")
+    return name
+
+
+def vscode_archive_url(version: str, system: str, machine: str) -> str:
+    return VSCODE_RELEASE_URL.format(
+        version=version, platform=vscode_archive_platform(system, machine)
+    )
+
+
+def vscode_expected_sha256(
+    version: str, system: str, machine: str, override: str | None = None
+) -> str:
+    """The digest the downloaded archive must have: ``override``, else the pinned table entry."""
+    if override:
+        return override.lower()
+    expected = VSCODE_SHA256.get((version, vscode_archive_platform(system, machine)))
+    if expected is None:
+        raise RuntimeError(
+            f"No pinned SHA-256 for VS Code {version} on {system}/{machine}. Add it to "
+            "VSCODE_SHA256 from the update service, or pass --vscode-sha256."
+        )
+    return expected
+
+
+def install_vscode(version: str, destination: Path, *, sha256: str | None = None) -> dict:
+    """Download a pinned VS Code archive and extract it whole into ``destination``.
+
+    The archive's SHA-256 is checked before anything is extracted. Returns the `code` command and
+    the version of the Copilot Chat extension the archive bundles."""
+    import tarfile
+    import zipfile
+
+    system, machine = sys.platform, platform.machine()
+    url = vscode_archive_url(version, system, machine)
+    expected = vscode_expected_sha256(version, system, machine, sha256)
+    destination.mkdir(parents=True, exist_ok=True)
+    windows = vscode_archive_platform(system, machine).startswith("win32")
+    archive = destination / ("vscode.zip" if windows else "vscode.tar.gz")
+    digest = hashlib.sha256()
+    with (
+        urllib.request.urlopen(url, timeout=300) as response,  # noqa: S310 (pinned https URL)
+        archive.open("wb") as file,
+    ):
+        while chunk := response.read(1 << 20):
+            digest.update(chunk)
+            file.write(chunk)
+    if digest.hexdigest() != expected:
+        archive.unlink()
+        raise RuntimeError(f"{url} has SHA-256 {digest.hexdigest()}, expected {expected}.")
+    if windows:
+        # The Windows archive has no top-level folder.
+        root = destination / "VSCode-win32-x64"
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(root)
+        command = root / "bin" / f"{NATIVE_AGENT_BINARIES['vscode']}.cmd"
+    else:
+        root = destination / "VSCode-linux-x64"
+        with tarfile.open(archive) as bundle:
+            bundle.extractall(destination, filter="data")
+        command = root / "bin" / NATIVE_AGENT_BINARIES["vscode"]
+    archive.unlink()
+    if not command.is_file():
+        raise RuntimeError(f"{url} has no {command.relative_to(root)}.")
+    # Windows keeps the app under a folder named for the build's commit.
+    copilot_chat = next(
+        iter(
+            (
+                *root.glob("resources/app/extensions/copilot/package.json"),
+                *root.glob("*/resources/app/extensions/copilot/package.json"),
+            )
+        ),
+        None,
+    )
+    if copilot_chat is None:
+        raise RuntimeError(f"{url} bundles no Copilot Chat extension.")
+    return {
+        "url": url,
+        "sha256": digest.hexdigest(),
+        "path": str(command),
+        "copilot_chat": json.loads(copilot_chat.read_text(encoding="utf-8"))["version"],
+    }
+
+
 def install_native_agent(
     agent: str, build: str, destination: Path, *, sha512: str | None = None
 ) -> dict:
@@ -352,7 +467,7 @@ def install_native_agent(
     url = antigravity_archive_url(build, system, machine)
     expected = antigravity_expected_sha512(build, system, machine, sha512)
     archive = destination / "agy.tar.gz"
-    destination.mkdir(parents=True)
+    destination.mkdir(parents=True, exist_ok=True)
     with urllib.request.urlopen(url, timeout=300) as response:  # noqa: S310 (pinned https URL)
         archive.write_bytes(response.read())
     digest = hashlib.sha512(archive.read_bytes()).hexdigest()
@@ -412,6 +527,19 @@ def arguments(
         type=sha512_digest,
         help="Expected SHA-512 of the --antigravity-build archive, for a build not pinned in "
         "ANTIGRAVITY_SHA512 (copy it from the release manifest).",
+    )
+    parser.add_argument(
+        "--vscode-version",
+        type=exact_vscode_version,
+        help="Exact VS Code version to download (Linux and Windows x64), e.g. 1.144.0. Needs "
+        "--copilot-version: "
+        "ug sets up VS Code as part of the Copilot setup.",
+    )
+    parser.add_argument(
+        "--vscode-sha256",
+        type=sha256_digest,
+        help="Expected SHA-256 of the --vscode-version archive, for a version not pinned in "
+        "VSCODE_SHA256 (copy `sha256hash` from the update service).",
     )
     parser.add_argument("--claude-model", default=environment.get("UG_INTEGRATION_CLAUDE_MODEL"))
     parser.add_argument("--codex-model", default=environment.get("UG_INTEGRATION_CODEX_MODEL"))
@@ -632,6 +760,11 @@ def arguments(
             args.pytest_args.extend([flag, str(value)])
     if selected.x:
         args.pytest_args.append("-x")
+    if args.vscode_version and not args.copilot_version:
+        # Without a pinned Copilot CLI, `ug configure --agents copilot` installs the latest one.
+        parser.error("--vscode-version requires --copilot-version.")
+    if args.vscode_version and args.headless_only:
+        parser.error("VS Code has no headless journey; drop --headless-only.")
     if not (
         args.claude_version
         or args.codex_version
@@ -806,6 +939,7 @@ def main() -> int:
             "opencode": args.opencode_version,
             "copilot": args.copilot_version,
             "antigravity": args.antigravity_build,
+            "vscode": args.vscode_version,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
             "smart_router_name": args.smart_router_name,
@@ -1013,16 +1147,18 @@ def main() -> int:
             )["dependencies"]
         agent_bin = npm_prefix / "node_modules/.bin"
         native_bin = output / "native-agents"
-        report["native_agents"] = {
-            agent: install_native_agent(
-                agent, args.antigravity_build, native_bin, sha512=args.antigravity_sha512
+        report["native_agents"] = {}
+        if "antigravity" in agents:
+            report["native_agents"]["antigravity"] = install_native_agent(
+                "antigravity", args.antigravity_build, native_bin, sha512=args.antigravity_sha512
             )
-            for agent in agents
-            if agent in NATIVE_AGENT_BINARIES
-        }
+        if "vscode" in agents:
+            report["native_agents"]["vscode"] = install_vscode(
+                args.vscode_version, native_bin / "vscode", sha256=args.vscode_sha256
+            )
         agent_commands = {
             agent: (
-                native_bin / NATIVE_AGENT_BINARIES[agent]
+                Path(report["native_agents"][agent]["path"])
                 if agent in NATIVE_AGENT_BINARIES
                 else npm_executable(agent_bin, agent)
             )
@@ -1048,6 +1184,9 @@ def main() -> int:
                     (tool_bin / name).symlink_to(source)
         runtime_env = dict(base_env)
         runtime_paths = [runtime_bin, agent_bin, native_bin, tool_bin]
+        if "vscode" in agents:
+            # ug finds VS Code through its `code` command on PATH, as for a user.
+            runtime_paths.append(agent_commands["vscode"].parent)
         if os.name == "nt":
             system_root = Path(base_env["SYSTEMROOT"])
             # Copilot's shell tool tries pwsh first; Windows PowerShell alone can miss its 40s
@@ -1118,6 +1257,9 @@ def main() -> int:
 
         test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2", "mcp==2.1.1"]
         test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
+        if "vscode" in agents:
+            # Drives VS Code over its DevTools port; needs no Playwright browser download.
+            test_dependencies.append("playwright==1.64.1")
         run(
             [
                 uv,
@@ -1181,8 +1323,9 @@ def main() -> int:
             }
         )
         for agent in agents:
+            # VS Code takes no model override: its CUJs pick the pinned test models in the picker.
             runtime_env[f"UG_INTEGRATION_{agent.upper()}_MODEL"] = (
-                getattr(args, f"{agent}_model") or ""
+                getattr(args, f"{agent}_model", None) or ""
             )
         suite = ROOT / "tests/integration"
         suite_hash = hashlib.sha256()

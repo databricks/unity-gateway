@@ -24,6 +24,9 @@ jobs:
     outputs:
       claude: ${{ steps.versions.outputs.claude }}
       codex: ${{ steps.versions.outputs.codex }}
+      copilot: ${{ steps.versions.outputs.copilot }}
+      vscode: ${{ steps.versions.outputs.vscode }}
+      vscode_sha256: ${{ steps.versions.outputs.vscode_sha256 }}
     steps:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
@@ -36,6 +39,12 @@ jobs:
           echo "claude=$latest_claude" >> "$GITHUB_OUTPUT"
           latest_codex=$(npm view @openai/codex@latest version)
           echo "codex=$latest_codex" >> "$GITHUB_OUTPUT"
+          latest_copilot=$(npm view @github/copilot@latest version)
+          echo "copilot=$latest_copilot" >> "$GITHUB_OUTPUT"
+          # The update service names the latest stable build and its archive's SHA-256.
+          curl -fsSL --retry 3 https://update.code.visualstudio.com/api/update/linux-x64/stable/latest |
+            python3 -c 'import json, sys; d = json.load(sys.stdin); print("vscode=" + d["productVersion"]); print("vscode_sha256=" + d["sha256hash"])' \
+            >> "$GITHUB_OUTPUT"
 
   # The latest-agent harness currently covers smart routing only.
   harness-latest:
@@ -56,6 +65,10 @@ jobs:
             runner: ubuntu-22.04
             managed: true
             marker: harness_latest and managed_fixture
+          # The newest VS Code and its bundled Copilot Chat, ahead of the pin in integration.yml.
+          - suite: vscode
+            runner: ubuntu-22.04
+            marker: harness_latest and vscode
           # The newest ChatGPT desktop build from OpenAI's appcast, ahead of the pin in integration.yml.
           - suite: desktop
             runner: macos-latest
@@ -64,6 +77,9 @@ jobs:
     env:
       CLAUDE_VERSION: ${{ needs.resolve-versions.outputs.claude }}
       CODEX_VERSION: ${{ needs.resolve-versions.outputs.codex }}
+      COPILOT_VERSION: ${{ needs.resolve-versions.outputs.copilot }}
+      VSCODE_VERSION: ${{ needs.resolve-versions.outputs.vscode }}
+      VSCODE_SHA256: ${{ needs.resolve-versions.outputs.vscode_sha256 }}
       UV_INDEX_URL: https://pypi.org/simple
       UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}
       UG_CUJ_SP_CLIENT_ID: ${{ secrets.UG_CUJ_SP_CLIENT_ID }}
@@ -91,7 +107,8 @@ jobs:
       - name: Record the latest agent versions
         shell: bash
         run: |
-          printf 'claude=%s\ncodex=%s\n' "$CLAUDE_VERSION" "$CODEX_VERSION" \
+          printf 'claude=%s\ncodex=%s\ncopilot=%s\nvscode=%s\n' \
+            "$CLAUDE_VERSION" "$CODEX_VERSION" "$COPILOT_VERSION" "$VSCODE_VERSION" \
             | tee "$RUNNER_TEMP/harness-latest-versions.txt"
       - name: Install ug and latest agent CLIs for opted-in CUJs
         if: ${{ matrix.suite == 'cujs' }}
@@ -121,14 +138,23 @@ jobs:
           codesign --verify --deep --strict /Applications/ChatGPT.app
           spctl --assess --type execute /Applications/ChatGPT.app
           codesign -dv /Applications/ChatGPT.app 2>&1 | grep -qx "TeamIdentifier=$OPENAI_TEAM_ID"
+      - name: Install a virtual display for VS Code
+        if: ${{ matrix.suite == 'vscode' }}
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
       - name: Run opted-in integration tests against the latest agents
         if: ${{ matrix.suite != 'cujs' }}
         shell: bash
         run: |
+          if [[ "${{ matrix.suite }}" == vscode ]]; then
+            args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION"
+              --vscode-sha256 "$VSCODE_SHA256")
+          else
+            args=(--claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION")
+          fi
           uv run --no-project --python 3.12 python scripts/run_integration.py \
             --python 3.12 --ug-version "$UG_VERSION" --entry-point "$ENTRY_POINT" \
             --default-index "$PACKAGE_INDEX" --output "$RUNNER_TEMP/ug-integration" \
-            --claude-version "$CLAUDE_VERSION" --codex-version "$CODEX_VERSION" \
+            "${args[@]}" \
             ${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }} -- -m "$TEST_MARKER"
       - name: Upload latest harness evidence
         if: ${{ !cancelled() }}

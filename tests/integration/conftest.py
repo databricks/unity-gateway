@@ -19,7 +19,7 @@ from utils.evidence import fresh_id
 from utils.harness import UserSession
 from utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 
-AGENT_BINARIES = {"antigravity": "agy"}
+AGENT_BINARIES = {"antigravity": "agy", "vscode": "code"}
 
 
 def pytest_collection_modifyitems(config, items):
@@ -31,7 +31,7 @@ def pytest_collection_modifyitems(config, items):
             raise pytest.UsageError("Use the integration runner; unit fixtures were inherited.")
         if any(
             item.get_closest_marker(a) and a not in agents
-            for a in ("claude", "codex", "opencode", "copilot", "antigravity")
+            for a in ("claude", "codex", "opencode", "copilot", "antigravity", "vscode")
         ):
             deselected.append(item)
         else:
