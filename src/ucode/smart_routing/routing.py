@@ -346,12 +346,11 @@ def _parse_routing_explanation(
         "task_understanding": normalized_task_understanding,
         "models": normalized_models,
     }
-    for field, limit in (("recipe", 240), ("formula", 500)):
-        if field in value:
-            text = _safe_explanation_text(value[field], limit)
-            if not text:
-                return None
-            normalized[field] = text
+    if "formula" in value:
+        formula = _safe_explanation_text(value["formula"], 500)
+        if not formula:
+            return None
+        normalized["formula"] = formula
 
     identity_fields = ("session_id", "tool_use_id")
     evidence = value.get("evidence")

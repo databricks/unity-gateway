@@ -1607,9 +1607,10 @@ tool search, reduced context usage, or native connector consent.
 
 ### Routing explanation coverage
 
-The Claude session log and decision audit apply the same task-text privacy setting:
-disabled logging omits the prompt preview and explanation while retaining the task digest
-and length, and it never changes the selected model. The existing `/smart-router logs`
+The shared session-log and decision-audit writers omit prompt previews and explanations
+when task-text logging is disabled, retaining the task digest and length. Codex passes
+that privacy setting; Claude retains its existing logging behavior. These choices never
+change the selected model. The existing `/smart-router logs`
 detail validates session and tool-call identity, the routed model, and the exact offered
 catalog before displaying comparisons. Native tests cover malformed and oversized
 metadata, dotted and gateway-wrapped model IDs, per-model selection, optional numeric

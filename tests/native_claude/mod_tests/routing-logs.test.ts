@@ -42,7 +42,6 @@ const explanation = {
       estimated_cost_usd: 0.002, routing_score: 0.71,
       components: { quality: 0.78 }, difference_from_winner: { quality: -0.13 } },
   ],
-  recipe: 'Task-specific quality and cost estimates',
   formula: 'quality - cost penalty',
 };
 
@@ -130,15 +129,24 @@ test('pressing a row fetches the decision and Back returns to the list', { optio
 });
 
 test('the decision detail compares only validated candidates and reveals estimates on request', { options }, async ($, on) => {
+  const runs: (readonly string[])[] = [];
   const explained = { ...decision, decision: { ...decision.decision, explanation } };
   on('session.id', () => ({ value: 'session-one' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
-  on('process.run', ($, e) => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify(
-    e.argv.includes('--decision') ? explained : { v: 1, decisions: records },
-  ) } }));
+  on('process.run', ($, e) => {
+    expect(e.argv).toEqual(runs.length === 0
+      ? ['/bin/ug', 'smart-router-logs', '--session', 'session-one']
+      : ['/bin/ug', 'smart-router-logs', '--session', 'session-one', '--decision', 'd1']);
+    runs.push(e.argv);
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify(
+      runs.length === 1 ? { v: 1, decisions: records } : explained,
+    ) } };
+  });
   await $.command.run(command);
+  expect(runs.length).toBe(1);
   const ui = await $.ui.mount(pane);
   await ui.press({ key: 'd1' });
+  expect(runs.length).toBe(2);
 
   let tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('Routing explanation');
@@ -149,22 +157,28 @@ test('the decision detail compares only validated candidates and reveals estimat
   expect(tree).not.toContain('Scoring formula:');
 
   await ui.select({ key: 'compare-model', value: 'glm-5' });
+  expect(runs.length).toBe(2);
   tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('GLM 5 — considered');
   expect(tree).toContain('Lower expected quality for this task.');
   expect(tree).not.toContain('Est. cost:');
 
   await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
   tree = JSON.stringify(await ui.drawn());
   expect(tree).toContain('Quality estimate: 0.780');
   expect(tree).toContain('Est. cost: 0.002 USD');
   expect(tree).toContain('Scoring formula: quality - cost penalty');
   await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
   expect(JSON.stringify(await ui.drawn())).not.toContain('Scoring formula:');
   await ui.select({ key: 'compare-model', value: 'claude-sonnet' });
+  expect(runs.length).toBe(2);
   await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
   expect(JSON.stringify(await ui.drawn())).toContain('Est. cost: <0.000001 USD');
   await ui.press({ key: 'numbers' });
+  expect(runs.length).toBe(2);
   await ui.unmount();
 });
 
@@ -237,6 +251,7 @@ test('invalid explanation identity, selected model, catalog, or numbers keep the
     { ...explanation, session_id: 'another-session' },
     { ...explanation, tool_use_id: 'another-call' },
     { ...explanation, evidence: { tool_use_id: 'another-call' } },
+    { ...explanation, summary: '界'.repeat(22000) },
     { ...explanation, selected_model: 'claude-opus' },
     { ...explanation, models: [...explanation.models, extraModel] },
     { ...explanation, models: [explanation.models[0]] },

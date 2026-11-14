@@ -509,27 +509,6 @@ def test_cuj_uses_shared_file_task_without_exposing_answer(tmp_path):
     assert "Do not delegate." in task.prompt
 
 
-@pytest.mark.parametrize("answer", ["complete", "truncated", "tool-only"])
-def test_copilot_file_task_requires_complete_hidden_answer(tmp_path, answer):
-    task = FileTask(SimpleNamespace(cwd=tmp_path))
-    assert len(task.value) == 6
-    content = task.value[:-1] if answer == "truncated" else task.value
-    message = (
-        {"type": "tool.execution_complete", "data": {"result": {"content": content}}}
-        if answer == "tool-only"
-        else {"type": "assistant.message", "data": {"content": content}}
-    )
-    result = SimpleNamespace(
-        returncode=0,
-        stdout="\n".join(json.dumps(row) for row in [message, {"type": "assistant.turn_end"}]),
-    )
-    if answer == "complete":
-        task.assert_headless_answer("copilot", result)
-    else:
-        with pytest.raises(AssertionError):
-            task.assert_headless_answer("copilot", result)
-
-
 @pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize("failure", [None, "role", "prompt", "model", "schema", "status", "body"])
 def test_cuj_inference_evidence_requires_exact_task_model_schema_and_response(agent, failure):

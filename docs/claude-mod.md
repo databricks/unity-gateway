@@ -19,7 +19,7 @@ The same entry point routes Agent/Task calls in a native `tool.call` hook. It pi
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
 `agent.spawn` hook applies only the selected model, preserving the agent's type, prompt,
-name and permissions. The routing response contains `model`, `rationale`, and optional explanation details;
+name and permissions. The routing response contains only `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
@@ -97,8 +97,8 @@ the client also removes that prefix and a trailing `[1m]` context hint. Other ID
 at least three dot-separated parts retain their full offered name, including `[1m]` when
 present; shorter IDs drop that suffix. The client requires one explanation row per distinct
 offered model and rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
-and `difference_from_winner` supply the numeric view. Optional `recipe` and `formula`
-identify the scoring policy. Any supplied `session_id` or `tool_use_id`, including
+and `difference_from_winner` supply the numeric view. An optional `formula`
+explains the scoring policy. Any supplied `session_id` or `tool_use_id`, including
 inside `evidence`, must match the recorded call. When task-text logging is disabled,
 the session log omits the prompt preview and explanation while retaining the same
 task digest and length used by the decision audit. The service must describe the same

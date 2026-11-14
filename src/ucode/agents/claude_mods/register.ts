@@ -226,10 +226,8 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
-  on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    const command = parseSmartRouterCommand(e.args);
-    if (!command) return next(e);
-    const action = command.action;
+  on('command.run', {command: 'smart-router'}, async ($, e) => {
+    const action = parseSmartRouterCommand(e.args)?.action;
     try {
       await setRouting($, options, action === 'on', true);
       showStatusBand();

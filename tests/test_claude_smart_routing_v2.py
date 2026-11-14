@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
@@ -25,6 +24,11 @@ if sys.platform != "win32":
 requires_pty = pytest.mark.skipif(
     sys.platform == "win32", reason="Claude PTY routing is POSIX-only"
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_session_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
 
 
 _EXPLANATION = {
@@ -88,9 +92,8 @@ _EXPLANATION = {
         "invalid",
     ],
 )
-@pytest.mark.parametrize("include_task_text", [True, False])
 def test_explanation_roundtrip_does_not_change_subagent_selection(
-    tmp_path, monkeypatch, caplog, explanation, retained, include_task_text
+    tmp_path, monkeypatch, caplog, explanation, retained
 ):
     caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
     selected = "system.ai.model-b"
@@ -128,10 +131,8 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
         token="token",
         available_models=[selected, "system.ai.alternative"],
         audit_decision=True,
-        include_task_text=include_task_text,
     )
-    assert result["model"] == selected
-    assert result["rationale"] == "Selected by router."
+    assert result == {"model": selected, "rationale": "Selected by router."}
     assert payload["tool_input"] == original
     assert len(calls) == 1
     assert calls[0]["task"] == {"prompt": "inspect parser"}
@@ -143,20 +144,9 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
     assert record["rationale"] == "Selected by router."
     if retained:
         expected = json.loads(explanation) if isinstance(explanation, str) else explanation
-        assert result["explanation"] == expected
-        assert ("explanation" in record) is include_task_text
-        assert ("explanation" in session_record) is include_task_text
-        if include_task_text:
-            assert record["explanation"] == session_record["explanation"] == expected
-            assert session_record["prompt"]["preview"] == "inspect parser"
-        else:
-            assert session_record["prompt"]["preview"] is None
-            assert (
-                session_record["prompt"]["sha256"] == hashlib.sha256(b"inspect parser").hexdigest()
-            )
-            assert session_record["prompt"]["length"] == len("inspect parser")
+        assert record["explanation"] == session_record["explanation"] == expected
+        assert session_record["prompt"]["preview"] == "inspect parser"
     else:
-        assert result == {"model": selected, "rationale": "Selected by router."}
         assert "explanation" not in record
         assert "explanation" not in session_record
     assert ("Discarded routing explanation" in caplog.text) == (
@@ -459,7 +449,7 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
         **_EXPLANATION,
         "summary": "\x1b[31mSummary\x1b[0m\x01more\n" + "x" * 2050,
         "task_understanding": ["\x1b[32mStep\x1b[0m\x00 two"],
-        "recipe": "\x1b[36mrecipe\x1b[0m",
+        "recipe": {"malformed": "unused optional metadata"},
         "formula": "formula\x7f text",
         "session_id": "s1",
         "tool_use_id": "t1",
@@ -483,7 +473,7 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
     summary_prefix = "Summary more "
     assert normalized["summary"] == summary_prefix + "x" * (2000 - len(summary_prefix))
     assert normalized["task_understanding"] == ["Step two"]
-    assert normalized["recipe"] == "recipe"
+    assert "recipe" not in normalized
     assert normalized["formula"] == "formula text"
     assert normalized["models"] == [
         {
@@ -517,7 +507,6 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
         "summary",
         "task_understanding",
         "models",
-        "recipe",
         "formula",
         "session_id",
         "tool_use_id",
@@ -624,9 +613,7 @@ def test_gateway_wrappers_and_context_hint_preserve_valid_explanation(
         available_models=[selected, "system.ai.alternative"],
     )
 
-    assert result["model"] == execution_model
-    assert result["selected_model"] == selected
-    assert result["explanation"] == explanation
+    assert result == {"model": execution_model, "rationale": "Selected by router."}
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
@@ -695,20 +682,19 @@ def test_custom_twenty_model_menu_keeps_preselector_filtered_rows(tmp_path, monk
         audit_decision=True,
     )
 
-    assert result["model"] == selected_model
-    assert result["explanation"] == explanation
+    assert result == {"model": selected_model, "rationale": "Selected from the custom catalog."}
     assert len(calls) == 1
     assert calls[0]["route_options"] == [
         {"model": model_id, "harness": "claude"} for model_id in offered_models
     ]
-    rows = result["explanation"]["models"]
+    record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    rows = record["explanation"]["models"]
     assert len(rows) == 20
     assert [row["id"] for row in rows] == model_ids
     assert all(row["considered"] for row in rows[:18])
     assert all(not row["considered"] for row in rows[-2:])
     assert [row["reason"] for row in rows[-2:]] == ["Not available for comparison."] * 2
 
-    record = json.loads((tmp_path / "decisions.jsonl").read_text())
     assert record["explanation"] == explanation
 
 
