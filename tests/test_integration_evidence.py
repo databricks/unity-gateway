@@ -57,11 +57,20 @@ def test_codex_native_diagnostics_keep_metadata_without_payloads(tmp_path):
 
     result = codex.native_diagnostics(tmp_path)["logs_2.sqlite"]
     assert result["latest_rows_limit"] == 2000
-    assert [event["timestamp"] for event in result["events"]] == [100, 102]
-    assert result["events"][0]["fields"] == [
-        {"status_code": "429", "request_id": "request-123", "duration_ms": "500"}
+    assert result["events"] == [
+        {
+            "timestamp": 100,
+            "level": "DEBUG",
+            "target": "codex_http_client::transport",
+            "thread_id": "thread-id",
+        },
+        {
+            "timestamp": 102,
+            "level": "WARN",
+            "target": "codex_core::client",
+            "thread_id": "thread-id",
+        },
     ]
-    assert result["events"][1]["fields"] == [{"attempt": "2"}]
     assert "private" not in json.dumps(result)
 
 
@@ -84,18 +93,35 @@ def test_codex_native_request_timestamp_survives_filtering(timestamp):
     ]
 
 
-def test_codex_native_diagnostics_exclude_multiline_payload_fields():
-    text = (
-        'attempt=1 body="private response\nstatus=private-key\n'
-        'request_id=private-id\nend" status_code=429\n'
-        "attempt=2 status_code=200\n"
-        'attempt=3 body="unfinished private response\nstatus=private-key'
-    )
-    assert codex.diagnostic_events(text) == [
-        {"attempt": "1", "status_code": "429"},
-        {"attempt": "2", "status_code": "200"},
-        {"attempt": "3"},
-    ]
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            'attempt=1 body="private response\nstatus=private-key\n'
+            'request_id=private-id\nend" status_code=429\nattempt=2 status=private-key',
+            [{"attempt": "1", "status_code": "429"}],
+        ),
+        (
+            'attempt=3 body="unfinished private response\nstatus=private-key',
+            [{"attempt": "3"}],
+        ),
+        (
+            "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+            'event.name="codex.api_request" duration_ms=7\n'
+            "status=private-key\nrequest_id=private-id",
+            [
+                {
+                    "event.timestamp": "2026-11-14T00:00:00Z",
+                    "event.name": "codex.api_request",
+                    "duration_ms": "7",
+                }
+            ],
+        ),
+        ("plain text\nstatus=private-key", []),
+    ],
+)
+def test_codex_native_diagnostics_exclude_multiline_payload_fields(text, expected):
+    assert codex.diagnostic_events(text) == expected
 
 
 @pytest.mark.parametrize("error", ["private response", "can't connect"])
@@ -118,7 +144,7 @@ def test_codex_native_diagnostics_exclude_display_error_tail(error):
 
 
 @pytest.mark.parametrize("padding", ["x", "界"])
-def test_codex_native_diagnostics_bound_message_characters(tmp_path, padding):
+def test_codex_native_diagnostics_ignore_arbitrary_messages(tmp_path, padding):
     directory = tmp_path / ".codex"
     directory.mkdir()
     with sqlite3.connect(directory / "logs_2.sqlite") as connection:
@@ -136,10 +162,64 @@ def test_codex_native_diagnostics_bound_message_characters(tmp_path, padding):
         )
 
     events = codex.native_diagnostics(tmp_path)["logs_2.sqlite"]["events"]
-    assert [event["fields"] for event in events] == [
-        [{"status_code": "200"}],
-        [{"status_code": "200"}],
+    assert events == [
+        {
+            "timestamp": timestamp,
+            "level": "DEBUG",
+            "target": "codex_http_client::transport",
+            "thread_id": None,
+        }
+        for timestamp in (100, 101)
     ]
+
+
+@pytest.mark.parametrize(
+    ("relay", "expected"),
+    [
+        (
+            '{"event":"request_start","timestamp_ms":100,"request_id":"request-1",'
+            '"body":"private-key","status":{"private":"key"}}',
+            '{"event":"request_start","request_id":"request-1","timestamp_ms":100}',
+        ),
+        (
+            "Could not write proxy diagnostics file; using stderr.",
+            "Could not write proxy diagnostics file; using stderr.",
+        ),
+        ('{"event":"private text","timestamp_ms":100}', None),
+        ('{"event":"request_start","timestamp_ms":100', None),
+    ],
+)
+def test_codex_diagnostics_preserve_only_framed_relay_metadata(relay, expected):
+    ordinary, events = codex.split_diagnostic_output(
+        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: duration_ms=7\n"
+        f"[ucode-relay] {relay}\n"
+        "status=private-key\nrequest_id=private-id\n"
+        "2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail\n"
+    )
+    assert ordinary == (
+        (f"[ucode-relay] {expected}\n" if expected else "")
+        + "2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail\n"
+    )
+    assert events == [{"event.timestamp": "2026-11-14T00:00:00Z", "duration_ms": "7"}]
+    assert "private" not in json.dumps([ordinary, events])
+
+
+def test_codex_native_diagnostics_bound_recent_rows(tmp_path):
+    directory = tmp_path / ".codex"
+    directory.mkdir()
+    with sqlite3.connect(directory / "logs_2.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, level TEXT, target TEXT, "
+            "thread_id TEXT, feedback_log_body TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO logs VALUES (?, ?, 'DEBUG', 'codex_http_client::transport', NULL, ?)",
+            [(index, index, "status_code=200") for index in range(2001)],
+        )
+
+    events = codex.native_diagnostics(tmp_path)["logs_2.sqlite"]["events"]
+    assert len(events) == 2000
+    assert [events[0]["timestamp"], events[-1]["timestamp"]] == [1, 2000]
 
 
 def test_codex_native_diagnostics_report_unreadable_database(tmp_path):

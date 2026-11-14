@@ -1,5 +1,6 @@
 """Codex-specific integration evidence and model discovery helpers."""
 
+import json
 import re
 import shlex
 import sqlite3
@@ -26,7 +27,6 @@ _NATIVE_LOG_HEADER = re.compile(
     r"\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+"
 )
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
-_DIAGNOSTIC_MESSAGE_CHARACTERS = 4096
 _DIAGNOSTIC_FIELDS = frozenset(
     {
         "event.name",
@@ -45,7 +45,6 @@ _DIAGNOSTIC_FIELDS = frozenset(
 
 
 def diagnostic_events(text: str) -> list[dict[str, str]]:
-    events = []
     header = _NATIVE_LOG_HEADER.match(text)
     fields = {"event.timestamp": header["timestamp"]} if header else {}
     lexer = shlex.shlex(text, posix=True, punctuation_chars="\n")
@@ -55,15 +54,10 @@ def diagnostic_events(text: str) -> list[dict[str, str]]:
     try:
         for token in lexer:
             if not token.strip("\n"):
-                if fields:
-                    events.append(fields)
-                fields = {}
-                continue
+                break
             name, _, value = token.partition("=")
             if name == "error.message":
-                if fields:
-                    events.append(fields)
-                return events
+                break
             pattern = (
                 r"[a-zA-Z0-9_.:/+-]{1,128}"
                 if name == "event.timestamp"
@@ -72,12 +66,8 @@ def diagnostic_events(text: str) -> list[dict[str, str]]:
             if name in _DIAGNOSTIC_FIELDS and re.fullmatch(pattern, value):
                 fields[name] = value
     except ValueError:
-        if fields:
-            events.append(fields)
-        return events
-    if fields:
-        events.append(fields)
-    return events
+        pass
+    return [fields] if fields else []
 
 
 def split_diagnostic_output(text: str) -> tuple[str, list[dict[str, str]]]:
@@ -89,6 +79,9 @@ def split_diagnostic_output(text: str) -> tuple[str, list[dict[str, str]]]:
         clean = _ANSI_ESCAPE.sub("", line)
         header = _NATIVE_LOG_HEADER.match(clean)
         native = bool(header and f" {DIAGNOSTIC_TARGET}:" in clean)
+        if capture and clean.startswith("[ucode-relay] "):
+            ordinary.append(_relay_diagnostic_line(clean))
+            continue
         if header:
             if record:
                 events.extend(diagnostic_events("".join(record)))
@@ -103,6 +96,37 @@ def split_diagnostic_output(text: str) -> tuple[str, list[dict[str, str]]]:
     return "".join(ordinary), events
 
 
+def _relay_diagnostic_line(line: str) -> str:
+    prefix = "[ucode-relay] "
+    if line.rstrip("\r\n") == prefix + "Could not write proxy diagnostics file; using stderr.":
+        return line
+    try:
+        payload = json.loads(line[len(prefix) :])
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    strings = {"event", "request_id", "method", "path", "route", "phase", "error_type"}
+    integers = {
+        "timestamp_ms",
+        "attempt",
+        "elapsed_ms",
+        "status",
+        "chunks",
+        "bytes",
+        "first_byte_ms",
+    }
+    fields = {
+        name: value
+        for name, value in payload.items()
+        if (name in strings and isinstance(value, str) and re.fullmatch(r"[\w./:-]{1,256}", value))
+        or (name in integers and (type(value) is int or value is None))
+    }
+    if "event" not in fields or type(fields.get("timestamp_ms")) is not int:
+        return ""
+    return prefix + json.dumps(fields, sort_keys=True, separators=(",", ":")) + "\n"
+
+
 def native_diagnostics(home: Path) -> dict:
     databases = {}
     for path in (home / ".codex").glob("logs_*.sqlite"):
@@ -111,23 +135,20 @@ def native_diagnostics(home: Path) -> dict:
                 sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
             ) as connection:
                 rows = connection.execute(
-                    "SELECT ts, level, target, thread_id, substr(feedback_log_body, 1, ?) FROM logs "
+                    "SELECT ts, level, target, thread_id FROM logs "
                     "WHERE target LIKE 'codex_api%' OR target LIKE 'codex_http_client%' "
-                    "OR target LIKE 'codex_core::client%' ORDER BY id DESC LIMIT 2000",
-                    (_DIAGNOSTIC_MESSAGE_CHARACTERS,),
+                    "OR target LIKE 'codex_core::client%' ORDER BY id DESC LIMIT 2000"
                 ).fetchall()
             databases[path.name] = {
                 "latest_rows_limit": 2000,
-                "message_character_limit": _DIAGNOSTIC_MESSAGE_CHARACTERS,
                 "events": [
                     {
                         "timestamp": ts,
                         "level": level,
                         "target": target,
                         "thread_id": thread_id,
-                        "fields": diagnostic_events(body or "")[:1],
                     }
-                    for ts, level, target, thread_id, body in reversed(rows)
+                    for ts, level, target, thread_id in reversed(rows)
                 ],
             }
         except sqlite3.DatabaseError as error:

@@ -40,19 +40,24 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
 
 
-def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
+@pytest.mark.parametrize("native_before_relay", [False, True])
+def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch, native_before_relay):
     monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "0")
     root, project = tmp_path / "session", tmp_path / "project"
     root.mkdir()
     project.mkdir()
     session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
 
-    started_ms = int(time.time() * 1000)
-    result = session.run(
-        "-c",
-        "from ucode.gateway_proxy import log_proxy_diagnostic; "
-        "log_proxy_diagnostic('request_start', request_id='diagnostic-check')",
+    native = (
+        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+        'event.name="codex.api_request" duration_ms=7'
     )
+    program = "from ucode.gateway_proxy import log_proxy_diagnostic; import sys; "
+    if native_before_relay:
+        program += f"print({native!r}, file=sys.stderr, flush=True); "
+    program += "log_proxy_diagnostic('request_start', request_id='diagnostic-check')"
+    started_ms = int(time.time() * 1000)
+    result = session.run("-c", program)
 
     prefix, payload = result.stderr.strip().split(" ", 1)
     assert prefix == "[ucode-relay]"
@@ -61,6 +66,7 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     assert event == {"event": "request_start", "request_id": "diagnostic-check"}
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["stderr"] == result.stderr
+    assert bool(recorded["codex_diagnostics"]) is native_before_relay
 
 
 @pytest.mark.parametrize("timeout", [False, True])
@@ -113,7 +119,8 @@ def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
     )
 
 
-def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path):
+@pytest.mark.parametrize("timeout", [False, True])
+def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path, timeout):
     root, project = tmp_path / "session", tmp_path / "project"
     root.mkdir()
     project.mkdir()
@@ -127,18 +134,26 @@ def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path):
         "        payload codex_otel.trace_safe: status=private-key"
     )
     program = (
-        "import sys,json; "
+        "import sys,json,time; "
         "print('ordinary stderr', file=sys.stderr, flush=True); "
         f"print({diagnostic!r}, file=sys.stderr, flush=True); "
         "print('ambiguous private continuation', file=sys.stderr, flush=True); "
         "print('2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail', "
         "file=sys.stderr, flush=True); "
+        f"time.sleep({60 if timeout else 0}); "
         "request=json.loads(sys.stdin.readline()); "
         "print(json.dumps({'id':request['id'],'result':{'userAgent':'contract-check'}}), "
         "flush=True); sys.stdin.readline()"
     )
 
-    session.app_server_handshake(["-c", program], binary=Path(sys.executable), timeout=30)
+    with (
+        pytest.raises(AssertionError, match="No app-server initialize response")
+        if timeout
+        else contextlib.nullcontext()
+    ):
+        session.app_server_handshake(
+            ["-c", program], binary=Path(sys.executable), timeout=5 if timeout else 30
+        )
 
     recorded = json.loads((session.artifacts / "app-server.json").read_text())
     assert recorded["stderr"] == [
