@@ -29,6 +29,7 @@ from .helpers.constants import (
     MODEL_PROVIDER_SERVICE_FIXTURES,
     MODEL_SERVICE_SCHEMA,
     PROVIDER_HEADER,
+    ROUTING_PATH,
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.evidence import (
@@ -241,7 +242,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             tui.submit(greeting.prompt)
             tui.wait_until(lambda: evidence.completed(greeting), "completed routed greeting")
             first_route = request_recorder.expect_request(
-                method="POST", path="/ai-gateway/routing/v1/routes:select", after=checkpoint
+                method="POST", path=ROUTING_PATH, after=checkpoint
             )
             assert first_route.payload["task"]["prompt"] == greeting.prompt
             assert first_route.headers[PROVIDER_HEADER] == provider
@@ -263,7 +264,7 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 request
                 for request in request_recorder.requests_after(child_checkpoint)
                 if request.method == "POST"
-                and request.path == "/ai-gateway/routing/v1/routes:select"
+                and request.path == ROUTING_PATH
                 and task.filename in request.payload["task"]["prompt"]
             ]
             assert routes, "No route request matched the delegated file task"
@@ -280,7 +281,6 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 assert request.headers[PROVIDER_HEADER] == provider
                 assert_served(request_recorder, request, model)
             assert_subagent_routed(session, CLAUDE, task)
-            tui.wait_for_background_tasks()
             tui.exit_normally()
 
     @pytest.mark.claude

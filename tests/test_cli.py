@@ -905,26 +905,19 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
-    def test_external_models_gate_allows_provider_routing(self, tool):
-        key = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
-        previous = os.environ.get(key)
-        try:
-            os.environ[key] = "1"
-            options = cli_mod._launch_options(
-                tool,
-                [],
-                smart_routing_enabled=True,
-                explicit_prompt=False,
-                user_pinned_model=None,
-                provider="catalog.schema.service",
-            )
-            assert options.launch_smart_routing
-        finally:
-            if previous is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = previous
+    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
+    def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+        options = cli_mod._launch_options(
+            tool,
+            [],
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider="catalog.schema.service",
+        )
+
+        assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(
         ("tool", "tool_args", "model"),
@@ -1367,32 +1360,33 @@ class TestSubcommandRouting:
 
     @pytest.mark.parametrize("external_gate", [None, "0", "1"])
     @pytest.mark.parametrize("saved_provider", [False, True])
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
     def test_explicit_smart_routing_enables_unmanaged_provider(
-        self, monkeypatch, external_gate, saved_provider, tool
+        self, monkeypatch, external_gate, saved_provider
     ):
         gate = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
         if external_gate is None:
             monkeypatch.delenv(gate, raising=False)
         else:
             monkeypatch.setenv(gate, external_gate)
-        if tool == "codex":
-            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_orch_v0")
         provider = "main.default.anthropic"
         provider_args = [] if saved_provider else ["--provider", provider]
+
+        def launch_with_inherited_gate(*args, **kwargs):
+            assert os.environ.get(gate) == external_gate
+
         with _launch_policy_patches(
             None, persisted_provider=provider if saved_provider else None
         ) as calls:
-            result = runner.invoke(app, [tool, *provider_args, "--enable-smart-routing"])
+            calls["launch"].side_effect = launch_with_inherited_gate
+            result = runner.invoke(app, ["claude", *provider_args, "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
         options = calls["launch"].call_args.kwargs["options"]
         assert options.launch_smart_routing is True
-        assert calls["launch"].call_args.args[1][f"_{tool}_launch_provider"] == provider
-        if tool == "claude":
-            assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
-                "main.default.claude-sonnet-5"
-            ]
+        assert calls["launch"].call_args.args[1]["_claude_launch_provider"] == provider
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+            "main.default.claude-sonnet-5"
+        ]
         assert os.environ.get(gate) == external_gate
 
     @pytest.mark.parametrize("managed_routing", [False, True])
@@ -1422,11 +1416,16 @@ class TestSubcommandRouting:
         calls["launch"].assert_not_called()
         assert "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS" not in os.environ
 
-    def test_explicit_provider_routing_restores_external_gate_after_error(self, monkeypatch):
+    def test_explicit_provider_routing_preserves_external_gate_after_error(self, monkeypatch):
         gate = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
         monkeypatch.setenv(gate, "0")
+
+        def fail_configuration(*args, **kwargs):
+            assert os.environ[gate] == "0"
+            raise RuntimeError("configuration failed")
+
         with _launch_policy_patches(None) as calls:
-            calls["configure"].side_effect = RuntimeError("configuration failed")
+            calls["configure"].side_effect = fail_configuration
             result = runner.invoke(
                 app, ["claude", "--provider", "main.default.anthropic", "--enable-smart-routing"]
             )

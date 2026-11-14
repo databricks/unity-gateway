@@ -46,7 +46,6 @@ def request_routing_decision(
     task: str,
     available_models: list[str],
     *,
-    provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
     log: Callable[[str], None] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
@@ -71,7 +70,6 @@ def request_routing_decision(
         task,
         route_options,
         router_name=router_name,
-        **({"provider": provider} if provider else {}),
         timeout=timeout,
     )
 
@@ -82,7 +80,6 @@ def route_pre_tool_use(
     workspace: str,
     token: str,
     available_models: list[str],
-    provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
     audit_decision: bool = False,
 ) -> dict[str, Any] | None:
@@ -108,12 +105,7 @@ def route_pre_tool_use(
         payload,
         is_spawn_agent=is_spawn_agent_tool,
         decision_fn=lambda task: request_routing_decision(
-            workspace,
-            token,
-            task,
-            available_models,
-            **({"provider": provider} if provider else {}),
-            timeout=timeout,
+            workspace, token, task, available_models, timeout=timeout
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,

@@ -1,6 +1,5 @@
 """CUJ authentication and cleanup on the existing integration session."""
 
-import os
 import re
 from dataclasses import dataclass
 
@@ -47,8 +46,6 @@ class UserSession(IntegrationSession):
         self.home.chmod(0o700)
         self.env.update(TERM="xterm-256color")
         self.env.pop("NO_COLOR", None)
-        if headers := os.environ.get("UG_HEADERS"):
-            self.env["UG_HEADERS"] = headers
         self._installed_bearers = set()
         self.install_bearer(bearer)
         self._class_bearer = bearer

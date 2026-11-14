@@ -1999,32 +1999,8 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
     ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
 
     configured_model = _smart_routing_config_model(state)
-    provider = state.get("_codex_launch_provider")
-    catalog_path = None
-    provider_models = None
-    token = None
-    provider_overlay = None
-    if provider:
-        workspace = state.get("workspace")
-        if not workspace:
-            raise RuntimeError(
-                "Smart routing needs a configured workspace; run `ug configure` first."
-            )
-        _reject_managed_model_catalog()
-        token = _launch_token(state, workspace)
-        catalog = _fetch_codex_model_catalog(
-            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=provider
-        )
-        validate_codex_catalog(binary, catalog)
-        models = catalog_slugs(catalog)
-        if not models:
-            raise RuntimeError(f"Model Provider Service {provider} returned no Codex model slugs.")
-        catalog_path = _model_catalog_path(workspace, f"provider:{provider}")
-        _write_model_catalog(catalog_path, catalog)
-        provider_models = models
-        provider_overlay = _bedrock_runtime_web_search_overlay(state, workspace, token, provider)
-    else:
-        models = custom_catalog_models() or routing_models(state)
+    # Prefer the custom catalog if it exists.
+    models = custom_catalog_models() or routing_models(state)
     start_model = (
         configured_model
         or (codex_model_id(models[0]) if models else None)
@@ -2036,16 +2012,6 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
-        **(
-            {
-                "provider_catalog_path": catalog_path,
-                "provider_models": provider_models,
-                "provider_token": token,
-                "provider_overlay": provider_overlay,
-            }
-            if provider
-            else {}
-        ),
     )
 
 

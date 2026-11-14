@@ -38,7 +38,6 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
-    UG_HEADERS_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -885,10 +884,6 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
-    provider_catalog_path: Path | None = None,
-    provider_models: list[str] | None = None,
-    provider_token: str | None = None,
-    provider_overlay: dict | None = None,
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -900,12 +895,9 @@ def launch_codex(
             "Smart routing could not determine a starting Codex model for this workspace."
         )
 
-    os.environ[OAUTH_TOKEN_ENV_VAR] = provider_token or launch_token(state, workspace)
-    provider = state.get("_codex_launch_provider")
-    catalog_models = provider_models if provider else custom_catalog_models()
-    available_models = (
-        (catalog_models or []) if provider else catalog_models or _cached_routing_models(state)
-    )
+    os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
+    catalog_models = custom_catalog_models()
+    available_models = catalog_models or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
@@ -917,13 +909,10 @@ def launch_codex(
         start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
-        **({"provider": provider} if provider else {}),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
     )
-    if provider_overlay:
-        overlay.update(provider_overlay)
-    catalog_path = provider_catalog_path if provider else custom_catalog_path()
+    catalog_path = custom_catalog_path()
     if catalog_path is not None:
         overlay["model_catalog_json"] = str(catalog_path)
     overlay["hooks"] = _v2_hooks(state, available_models)
@@ -945,8 +934,6 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
-    if headers := os.environ.get(UG_HEADERS_ENV_VAR):
-        overlay[f"shell_environment_policy.set.{UG_HEADERS_ENV_VAR}"] = headers
     config_args = codex_config_args(overlay)
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
@@ -976,7 +963,6 @@ def launch_codex(
             available_models=available_models,
             workspace=workspace if first_prompt else None,
             token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
-            **({"provider": provider} if provider else {}),
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,

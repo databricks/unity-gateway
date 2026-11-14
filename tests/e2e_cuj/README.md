@@ -87,13 +87,6 @@ native parent turn matching that prompt, a nonempty answer, the expected provide
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
 
-Separate CUJ2 Claude and Codex TUI cases enable the external-models routing gate and the
-first-prompt/subagent routing preset. They check the managed MPS header and paired HTTP 200 on
-both route-selection requests, plus completed parent and child turns. The CUJ session optionally
-passes the caller's `UG_HEADERS` to ug; when it contains `x-databricks-traffic-id`, the tests also
-check that value on the routing and parent inference requests. Recorded request headers may appear
-in artifacts, so do not put secrets in that selector.
-
 CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
 Responses and Chat Completions native APIs; its workspace's Codex default must match.
 CUJ1 and CUJ6 use `system.ai.gpt-6-luna` for the Codex Luna selection. Provision the CUJ1
