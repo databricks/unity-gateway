@@ -87,11 +87,17 @@ It replaces the obsolete stdio-only expectation; this checks configuration, not 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
-parallel calls as cards above the parent's next reply in call order, calls
+and parallel calls as cards above the parent's next reply in call order.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
-provider latency or token renewal behavior.
+provider latency or token renewal behavior. The existing organization mod's shared-context coverage reads
+Claude's effective language and adds context only in routed sessions, without a language proxy. It checks
+English, Chinese, unset and excluded user settings while retaining Auto Mode approvals,
+denials and the routed model. Generated-language compliance remains a live-model check:
+inspect child replies and native progress summaries with foreign-language source files
+and explicit translation requests. A native same-session settings reload check separately
+verifies that parent requests receive the changed preference without repeated instructions.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
