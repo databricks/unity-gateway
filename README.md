@@ -549,7 +549,8 @@ Claude's standard model display is retained.
 A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosing
 a main model through `/auto` switches the underlying native Auto variant and its
 native context profile immediately, keeping the checkmark on Auto.
-Use Claude’s native `/effort` command to change effort; UG does not maintain a model capability table. If a regular
+Use h/l in `/auto` to adjust effort inline. UG reads Claude’s native effort status
+and saves through `/effort`; it does not maintain a model capability table. If a regular
 model is selected, `/auto` only saves the next-Auto preference and does not enable
 routing. Escape preserves the current selection. Each running session keeps its
 own selected profile, even when another session saves a different preference.

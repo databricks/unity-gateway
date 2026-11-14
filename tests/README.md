@@ -5,8 +5,8 @@ admin policy and malformed settings, opt-in config precedence and restoration,
 main-model selection/cancellation, and routing on Auto versus ordinary models.
 Existing versions explicitly disable the Auto flag. Native profile checks drive
 two real terminals and preserve each session’s context window and model choice.
-Effort uses Claude’s own `/effort`; the duplicate custom effort implementation and
-its dedicated tests were removed. Native `/model` effort behavior remains unchanged.
+Inline effort reads Claude’s own `/effort status` and saves through `/effort`.
+Native `/model` effort behavior remains unchanged.
 
 `integration/test_ug_claude_auto.py` opts into `subagent_auto_v0_claude_only` explicitly and
 requires completed parent/child answers with a correlated routing decision only
@@ -31,6 +31,29 @@ an unreadable off state never becomes an on stamp through inherited launch flags
 Shared controls, routing fallback, and subagent model-mismatch diagnostics use debug logs
 instead of terminal warnings or hook messages. Audit records remain available.
 These cases control filesystem and transport boundaries, not native Windows contention.
+
+`native_claude/test_auto_effort.py` exercises Auto's model selection on the existing
+Claude 2.1.290 pin, with inline h/l effort controls. UG reads the selected model's
+native `/effort status` and commits via `/effort`; it no longer copies model-generation
+capability/default tables. Unvisited models retain native auto effort until queried;
+Claude validates their supported choices on save. Typed settings still apply caps.
+The shared `native_claude/auto_session.py` harness also supports the context/profile journey.
+At 60 columns and 22 rows, Up/Down selects and reveals model rows, Enter commits,
+and Escape preserves the previous selection. Component checks preserve wheel/page
+scrolling, native save details and warnings, and regular-model confirmations.
+Native tests require “Set model to Auto” for both picker and main-model selection.
+
+Auto review regressions cover malformed optional settings, admin custom options and
+replacement pickers, configured defaults, empty picker fallback with policy retained,
+and missing aliases. Personal configure performs no extra Auto discovery and creates
+no machine-wide picker. Auto activation requires the explicit rollout flag and an
+available Auto option. Routing-control failure warns once per failed model instead of aborting main turns; rejected model saves show a retry
+message. Manual mode retains the running-agent count. Live gateway inference is not
+covered by these component/native checks.
+
+The managed integration journey uses the explicit `claude_auto` fixture and
+`subagent_auto_v0_claude_only` config version. No hostname changes the fixture; the caller must
+select a compatible workspace and credentials.
 
 `test_codex_interaction_evidence.py` requires native delivery receipts matching the
 child path and thread ID, including code-mode calls, and successful command receipts

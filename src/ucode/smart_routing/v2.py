@@ -165,25 +165,21 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
         model_ids: list[str] = []
         labels: dict[str, str] = {}
         seen: set[str] = set()
-        has_targets = False
+        policy_filtered = False
         for row in picker:
             if not isinstance(row, dict) or not isinstance(row.get("model"), str):
                 continue
             model_id = row["model"].strip()
-            if model_id and not is_auto_model(model_id):
-                has_targets = True
-            if (
-                not model_id
-                or is_auto_model(model_id)
-                or model_id in seen
-                or not model_available(model_id, policy)
-            ):
+            if not model_id or is_auto_model(model_id) or model_id in seen:
+                continue
+            if not model_available(model_id, policy):
+                policy_filtered = True
                 continue
             seen.add(model_id)
             model_ids.append(model_id)
             if isinstance(row.get("label"), str):
                 labels[model_id] = row["label"]
-        if not has_targets:
+        if not model_ids and not policy_filtered:
             continue
         # An authoritative picker with no permitted targets must fail closed,
         # not fall through to a lower-priority list or gateway discovery.
@@ -496,6 +492,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     # These are imported by the entry point, so they ship beside it rather than as modules.
     for name in (
         "register.ts",
+        "auto-effort.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
@@ -803,7 +800,10 @@ def launch_claude(
                     managed_auto if "modelPicker" in managed_auto else settings,
                     default_model=launch_model
                     or default_model
-                    or managed_auto.get("env", {}).get("ANTHROPIC_MODEL"),
+                    or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
+                    or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
+                    or os.environ.get("ANTHROPIC_MODEL")
+                    or state.get("claude_models", {}).get("opus"),
                 )
             )
         except ValueError as exc:
