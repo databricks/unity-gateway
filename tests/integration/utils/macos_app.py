@@ -95,7 +95,7 @@ class MacApp:
             try:
                 self.session.record(f"{self.name}-click-failure.json", evidence)
             except Exception as record_error:
-                raise click_error from record_error
+                click_error.add_note(f"click evidence not recorded: {type(record_error).__name__}")
             raise
 
     def type_line(self, text: str) -> None:

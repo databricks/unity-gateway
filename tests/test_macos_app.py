@@ -1,4 +1,5 @@
 import json
+import os
 import plistlib
 import subprocess
 import sys
@@ -30,6 +31,8 @@ def test_failed_click_preserves_error_and_redacted_accessibility_evidence(
     app = macos_app.MacApp(session, bundle, "chatgpt")
     app.proc = SimpleNamespace(pid=42, poll=lambda: None)
     original = AssertionError("No AXRadioButton labelled Engineering")
+    original_cause = RuntimeError("native click failed")
+    original.__cause__ = original_cause
     snapshots = iter(
         ["AXRadioButton\tEngineering\tprivate-token\t1\n", "AXButton\tContinue\tprivate-token\t\n"]
     )
@@ -56,9 +59,11 @@ def test_failed_click_preserves_error_and_redacted_accessibility_evidence(
         app.click("AXRadioButton", "Engineering")
 
     assert caught.value is original
+    assert caught.value.__cause__ is original_cause
     assert len(click_calls) == 1
     if record_failure:
-        assert isinstance(caught.value.__cause__, OSError)
+        error_type = "PermissionError" if os.name == "nt" else "IsADirectoryError"
+        assert caught.value.__notes__ == [f"click evidence not recorded: {error_type}"]
         return
     evidence = json.loads(artifact.read_text())
     assert evidence["target"] == ["AXRadioButton", "Engineering"]
