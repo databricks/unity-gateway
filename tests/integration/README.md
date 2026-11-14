@@ -26,8 +26,11 @@ ingestion. Silent controls-read failure, bounded retry, later-turn recovery, and
 evidence-parser boundaries have separate
 [component coverage](../README.md); live journeys do not induce file-access failures.
 
-Subagent calculation journeys use short native task names. Offline evidence checks
-still reject mistyped markers and wrong results in either the parent or child answer.
+Subagent calculation journeys use short native task names. Claude calculations request
+fresh `general-purpose` agents because native forks inherit their model and bypass routing.
+The existing UI, live routing decision, selected model, and parent/child answer assertions
+still require real routed work. Offline evidence checks
+reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
 
 File-read tasks use six-character hidden values. Offline Copilot evidence checks
