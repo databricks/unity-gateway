@@ -117,9 +117,7 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
 
 
 @contextmanager
-def _custom_oauth_lock(
-    cache_dir: Path, redirect_url: str, *, timeout: float | None = None
-) -> Iterator[None]:
+def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
     """Serialize helpers sharing a callback port with an OS file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
@@ -128,7 +126,7 @@ def _custom_oauth_lock(
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        acquire_exclusive_file_lock(lock_file, timeout=timeout)
+        acquire_exclusive_file_lock(lock_file)
         try:
             yield
         finally:
@@ -187,7 +185,6 @@ def get_custom_client_token(
     scopes: Sequence[str],
     profile: str | None = None,
     force_refresh: bool = False,
-    allow_consent: bool = True,
 ) -> str:
     """Fetch a custom-client token through the selected SDK or CLI backend."""
     config = create_custom_oauth_config(client_id, scopes, redirect_url)
@@ -207,11 +204,7 @@ def get_custom_client_token(
             redirect_url=config["redirect_url"],
             scopes=config["scopes"],
         )
-        with _custom_oauth_lock(
-            Path(cache.filename).parent,
-            config["redirect_url"],
-            timeout=None if allow_consent else 5,
-        ):
+        with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
             # Read only after acquiring the lock: another helper may have just
             # completed login or rotated the refresh token while we waited.
             credentials = cache.load()
@@ -226,13 +219,9 @@ def get_custom_client_token(
                         )
                     credentials.token()
                 except Exception:
-                    if not allow_consent:
-                        raise
                     print_warning_err("Cached OAuth token could not be refreshed. Sign in again.")
                     credentials = None
             if credentials is None:
-                if not allow_consent:
-                    raise RuntimeError("Custom-client OAuth requires sign-in.")
                 client = oauth.OAuthClient(
                     oidc_endpoints=endpoints,
                     client_id=config["client_id"],
@@ -253,22 +242,14 @@ def get_custom_client_token(
             metrics.bind(workspace, token)
             return token
     except Exception as exc:
-        if not allow_consent and isinstance(exc, TimeoutError):
-            raise RuntimeError("Custom-client OAuth timed out. Retry shortly.") from exc
         raise RuntimeError(
-            "Custom-client OAuth failed. Rerun ug interactively to sign in again."
-            if not allow_consent
-            else (
-                "Custom-client OAuth failed. Check the workspace, client ID, and registered "
-                f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
-                "the SDK token cache is writable, then retry."
-            )
+            "Custom-client OAuth failed. Check the workspace, client ID, and registered "
+            f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
+            "the SDK token cache is writable, then retry."
         ) from exc
 
 
-def launch_token(
-    state: dict, workspace: str, *, force_refresh: bool = False, allow_consent: bool = True
-) -> str:
+def launch_token(state: dict, workspace: str, *, force_refresh: bool = False) -> str:
     """The token an agent launch authenticates with: the custom-OAuth client token when
     configured, else the CLI profile's."""
     custom_oauth = state.get("custom_oauth")
@@ -280,6 +261,5 @@ def launch_token(
             scopes=custom_oauth["scopes"],
             profile=custom_oauth.get("profile"),
             force_refresh=force_refresh,
-            allow_consent=allow_consent,
         )
     return get_databricks_token(workspace, state.get("profile"), force_refresh=force_refresh)

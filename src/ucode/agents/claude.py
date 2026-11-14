@@ -7,7 +7,6 @@ import functools
 import json
 import os
 import re
-import secrets
 import shutil
 import signal
 import socket
@@ -16,12 +15,12 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ucode import managed_resolve, metrics
+from ucode import managed_resolve
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -2172,7 +2171,7 @@ def _remove_header_mod() -> None:
         print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
 
 
-def header_mod_active(*, require_ug: bool = False) -> bool:
+def header_mod_active() -> bool:
     """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own mod, or another installer's copy enabled in the managed settings.
@@ -2187,7 +2186,7 @@ def header_mod_active(*, require_ug: bool = False) -> bool:
         if not isinstance(plugins, dict):
             return False
         # TODO: remove once other installers use ug to update managed settings.
-        if not require_ug and any(
+        if any(
             key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
             for key, value in plugins.items()
         ):
@@ -2200,74 +2199,6 @@ def header_mod_active(*, require_ug: bool = False) -> bool:
     except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
     return True
-
-
-@contextmanager
-def subagent_language_transport(state: dict, *, initial_token: str) -> Iterator[None]:
-    """Give the managed mod a launch-local transport without changing saved settings."""
-    previous = os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
-    resources = ExitStack()
-
-    def close_resources() -> None:
-        try:
-            resources.close()
-        except Exception:
-            print_warning("Couldn't fully clean up the Claude language inheritance transport.")
-
-    try:
-        if not header_mod_active(require_ug=True):
-            yield
-            return
-
-        try:
-            from ucode.custom_oauth import launch_token
-            from ucode.gateway_proxy import start_claude_language_proxy
-
-            workspace = state["workspace"]
-            secret = secrets.token_urlsafe(32)
-            server, cache, client = start_claude_language_proxy(
-                workspace,
-                lambda force: launch_token(
-                    state, workspace, force_refresh=force, allow_consent=False
-                ),
-                session_secret=secret,
-                initial_token=initial_token,
-            )
-            resources.callback(client.close)
-            resources.callback(cache.stop)
-            resources.callback(server.server_close)
-            upstream = build_tool_base_url("claude", workspace)
-            os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = json.dumps(
-                {
-                    "url": f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic",
-                    "upstream": upstream,
-                    "secret": secret,
-                }
-            )
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            # BaseServer.shutdown blocks until serve_forever runs. Register it only after
-            # Thread.start succeeds so setup failures cannot wait on a thread that never ran.
-            resources.callback(server.shutdown)
-        except Exception as exc:
-            os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
-            close_resources()
-            metrics.failure("claude_language_transport", exc, continued_with_fallback=True)
-            print_warning(
-                "Couldn't start the optional Claude language inheritance transport "
-                f"({metrics.error_code(exc)}); "
-                "continuing without language inheritance."
-            )
-
-        try:
-            yield
-        finally:
-            close_resources()
-    finally:
-        if previous is None:
-            os.environ.pop("UG_CLAUDE_LANGUAGE_PROXY", None)
-        else:
-            os.environ["UG_CLAUDE_LANGUAGE_PROXY"] = previous
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:

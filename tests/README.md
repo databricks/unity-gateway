@@ -339,31 +339,15 @@ needing every file, an unreadable mod folder, and non-UTF-8 managed settings. It
 headless configure (installing beside an existing managed file, skipping without one, and a
 terminal hint when sudo needs a password), and the Windows install and removal under Program Files. `native_claude/test_mod.py` validates the mod and runs its merge tests
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
-checked by hand on Claude 2.1.304. The header-mod tests also cover configured language
-changes and clearing the setting, per-turn settings reloads, provider switches, disabled
-identity headers, unrelated headers, and launch-local transport cleanup. The mod uses
-Claude's effective environment; the launcher does not scan settings excluded by native
-source selection or apply its own precedence rules. The native settings-source test edits
-an active session's project settings, waits for the native reader to observe the change,
-and checks the next turn updates or clears the language header. Auto-mode request captures
-load the installed header mod rather than supplying private headers directly. Full-summary
-request bodies are covered by the proxy matrix; the headless native fixture does not emit
-the terminal's auxiliary progress-summary requests.
-Malformed optional transport settings and startup failures preserve the normal launch;
-setup and agent-exit failures restore the environment and release acquired resources.
-`test_gateway_proxy.py` checks child and progress-summary language propagation,
-task-language fallback without a setting, translation guidance, malformed-input and
-token-count passthrough, exact-byte preservation after decoder recursion errors, and
-unchanged parent and classifier payloads. The socket tests in
-`test_gateway_proxy_integration.py` retain forwarding, session authentication, and
-private-header stripping.
-Only language-proxy refresh warnings go to `~/.ucode/logs/gateway-proxy.log`
-when stderr is interactive. Explicit proxy diagnostics retain stderr unless a
-diagnostics file is configured; an unwritable diagnostics file falls back to stderr.
-Language-proxy refresh errors retain the sign-in hint but omit exception contents from
-both destinations; newly created log files are private. Other proxies retain their default
-stderr sign-in hint.
-These component checks establish request construction, not model language compliance.
+checked by hand on Claude 2.1.304. Native shared-context coverage reads the effective language
+and adds response-language context without rewriting the Agent call or changing the HTTP transport.
+It preserves other context blocks, translation targets, quotations and code identifiers,
+and follows the assigned task when the language setting is absent. Each submitted prompt refreshes cached context and carries the current preference to the parent. The native Auto Mode cases cover foreground/background
+approved and denied calls, English, Chinese, an unset language, and excluded user settings.
+They require the selected child model, unchanged reviewed inputs and no fallback classifier.
+These controlled-provider checks establish instruction delivery, not generated-language compliance.
+Concurrent diagnostic-file writes use the existing cross-platform lock; the held-lock
+case requires the response and stderr diagnostic fallback to survive.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check

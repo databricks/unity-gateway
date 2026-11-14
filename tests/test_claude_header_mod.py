@@ -2,11 +2,9 @@
 
 import copy
 import json
-import os
 import shutil
 import subprocess
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
@@ -50,7 +48,6 @@ def _managed_env(tmp_path, monkeypatch, managed_doc=None):
     monkeypatch.setattr(claude, "ug_version", lambda: "1.0")
     monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.0")
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
-    monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "user-settings.json")
     monkeypatch.setattr(
         claude, "refresh_managed_config", lambda *a, **kw: SimpleNamespace(manifest={"claude": {}})
     )
@@ -328,125 +325,6 @@ def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_
     )
     assert not root.exists()
     assert claude.header_mod_active()
-    assert not claude.header_mod_active(require_ug=True)
-
-
-def test_language_transport_restores_environment_and_closes_on_failure(tmp_path, monkeypatch):
-    from ucode import custom_oauth, gateway_proxy
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
-    _managed_env(tmp_path, monkeypatch)
-    state = {"workspace": WS, "codex_models": []}
-    claude.write_tool_config(state, "databricks-claude-sonnet-4")
-    assert claude.header_mod_active(require_ug=True)
-    server, cache, client = Mock(server_port=12345), Mock(), Mock()
-    start = Mock(return_value=(server, cache, client))
-    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    renew = Mock(return_value="renewed-token")
-    monkeypatch.setattr(custom_oauth, "launch_token", renew)
-    thread = Mock()
-    monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
-    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", "previous")
-    body_calls = []
-    with pytest.raises(RuntimeError, match="agent failed"):
-        with claude.subagent_language_transport(state, initial_token="launch-token"):
-            body_calls.append(True)
-            assert start.call_args.kwargs["initial_token"] == "launch-token"
-            renew.assert_not_called()
-            assert start.call_args.args[1](True) == "renewed-token"
-            renew.assert_called_once_with(state, WS, force_refresh=True, allow_consent=False)
-            transport = json.loads(os.environ["UG_CLAUDE_LANGUAGE_PROXY"])
-            assert transport["url"] == "http://127.0.0.1:12345/ai-gateway/anthropic"
-            assert transport["secret"] == start.call_args.kwargs["session_secret"]
-            assert transport["upstream"] == f"{WS}/ai-gateway/anthropic"
-            raise RuntimeError("agent failed")
-    assert body_calls == [True]
-    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == "previous"
-    thread.start.assert_called_once()
-    server.shutdown.assert_called_once()
-    server.server_close.assert_called_once()
-    cache.stop.assert_called_once()
-    client.close.assert_called_once()
-
-
-def test_language_transport_inactive_preserves_body_error_and_restores_environment(
-    tmp_path, monkeypatch
-):
-    from ucode import gateway_proxy
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
-    monkeypatch.setattr(claude, "header_mod_active", Mock(return_value=False))
-    start = Mock()
-    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
-    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
-    body_calls = []
-
-    with pytest.raises(RuntimeError, match="agent failed"):
-        with claude.subagent_language_transport({"workspace": WS}, initial_token="launch-token"):
-            body_calls.append(True)
-            assert "UG_CLAUDE_LANGUAGE_PROXY" not in os.environ
-            raise RuntimeError("agent failed")
-
-    assert body_calls == [True]
-    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
-    start.assert_not_called()
-
-
-@pytest.mark.parametrize("failure", ["proxy", "thread"])
-def test_language_transport_startup_failure_degrades_and_cleans_resources(
-    tmp_path, monkeypatch, failure
-):
-    from ucode import gateway_proxy, metrics
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("CLAUDE_CODE_GATEWAY_HINT_HEADERS", raising=False)
-    _managed_env(tmp_path, monkeypatch)
-    state = {"workspace": WS, "codex_models": []}
-    claude.write_tool_config(state, "databricks-claude-sonnet-4")
-    recorder = metrics.Recorder("claude", 0)
-    monkeypatch.setattr(metrics, "_runtime", recorder)
-    server, cache, client = Mock(server_port=12345), Mock(), Mock()
-    start = Mock(return_value=(server, cache, client))
-    if failure == "proxy":
-        start.side_effect = OSError("proxy setup failed: private-sensitive-detail")
-    monkeypatch.setattr(gateway_proxy, "start_claude_language_proxy", start)
-    if failure == "thread":
-        thread = Mock()
-        thread.start.side_effect = RuntimeError("thread did not start: private-sensitive-detail")
-        monkeypatch.setattr(claude.threading, "Thread", Mock(return_value=thread))
-    warning = Mock()
-    monkeypatch.setattr(claude, "print_warning", warning)
-    previous = json.dumps({"url": "http://127.0.0.1:12345/private", "secret": "parent-key"})
-    monkeypatch.setenv("UG_CLAUDE_LANGUAGE_PROXY", previous)
-    body_calls = []
-
-    with claude.subagent_language_transport(state, initial_token="launch-token"):
-        body_calls.append(True)
-        assert "UG_CLAUDE_LANGUAGE_PROXY" not in os.environ
-
-    assert body_calls == [True]
-    assert os.environ["UG_CLAUDE_LANGUAGE_PROXY"] == previous
-    warning.assert_called_once()
-    error_code = "operation_failed" if failure == "thread" else "network_error"
-    assert f"({error_code})" in warning.call_args.args[0]
-    errors = [row[3] for row in recorder.pending if row[1] == "ug_cli_error"]
-    assert len(errors) == 1
-    assert errors[0]["operation"] == "claude_language_transport"
-    assert errors[0]["error_code"] == error_code
-    assert errors[0]["continued_with_fallback"] is True
-    assert "private-sensitive-detail" not in str(errors) + warning.call_args.args[0]
-    if failure == "proxy":
-        server.server_close.assert_not_called()
-        cache.stop.assert_not_called()
-        client.close.assert_not_called()
-    else:
-        server.server_close.assert_called_once()
-        cache.stop.assert_called_once()
-        client.close.assert_called_once()
-    server.shutdown.assert_not_called()
 
 
 def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):

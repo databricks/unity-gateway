@@ -91,25 +91,14 @@ and parallel calls as cards above the parent's next reply in call order.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
-provider latency or token renewal behavior. Child-language component coverage also checks
-configured language and task-language fallback on child and summary requests, parent/classifier passthrough,
-authentication, and private-header stripping. Generated-language compliance is a manual
-live-model check, not an assertion in this automated suite. Inspect both
-child replies and progress summaries with English, non-English and unset settings,
-including foreign-language source files and explicit translations. With no setting,
-the fallback follows the task text delivered to the child. Request
-construction alone does not establish generated language. The native task-view parser
-also recognizes an empty earlier-session section without treating running or
+provider latency or token renewal behavior. Native shared-context component coverage reads
+Claude's effective language and adds context without starting a language proxy. It checks
+English, Chinese, unset and excluded user settings while retaining Auto Mode approvals,
+denials and the routed model. Generated-language compliance remains a live-model check:
+inspect child replies and native progress summaries with foreign-language source files
+and explicit translation requests. The existing smart-routing CUJs and resumed-child
+journey also recognize an empty earlier-session task section without treating running or
 partially rendered task lists as complete.
-Proxy component tests keep language-refresh warnings out of interactive terminal output
-while preserving them in `~/.ucode/logs/gateway-proxy.log`. Explicit proxy diagnostics
-retain stderr unless a diagnostics file is configured; an unwritable file falls back
-to stderr. Language-proxy refresh errors
-omit raw exception text from both the file and redirected stderr while retaining the
-sign-in hint. The file is created with private permissions.
-The existing smart-routing CUJs and resumed-child journey use this task-view parser to
-wait for child completion before inspecting replies and returning to the prompt. The
-empty history section is not an active task and must not keep that wait pending.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component

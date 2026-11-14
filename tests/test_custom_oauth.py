@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -21,7 +19,6 @@ from ucode.custom_oauth import (
     _custom_oauth_lock,
     build_custom_auth_token_argv,
     get_custom_client_token,
-    launch_token,
 )
 
 WS = "https://example.databricks.com"
@@ -115,38 +112,16 @@ class TestCustomClientToken:
         assert query["redirect_uri"] == [redirect_url]
         assert query["scope"][0].split() == list(TEST_SCOPES)
 
-    @pytest.mark.parametrize("allow_consent", [True, False])
-    def test_reuses_cached_token_without_refresh_or_login(self, allow_consent):
+    def test_reuses_cached_token_without_refresh_or_login(self):
         self._cache().save(self._credentials("cached", "refresh"))
         assert (
-            get_custom_client_token(
-                WS + "/", client_id="custom-client", scopes=TEST_SCOPES, allow_consent=allow_consent
-            )
+            get_custom_client_token(WS + "/", client_id="custom-client", scopes=TEST_SCOPES)
             == "cached"
         )
         self.browser.assert_not_called()
         self.refresh.assert_not_called()
 
-    def test_noninteractive_token_waits_for_parallel_refresh(self):
-        self._cache().save(self._credentials("old-token", "old-refresh"))
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            with _custom_oauth_lock(Path(self._cache().filename).parent, "http://localhost:8020"):
-                pending = pool.submit(
-                    get_custom_client_token,
-                    WS,
-                    client_id="custom-client",
-                    scopes=TEST_SCOPES,
-                    allow_consent=False,
-                )
-                with pytest.raises(TimeoutError):
-                    pending.result(timeout=0.1)
-                self._cache().save(self._credentials("parallel-token", "parallel-refresh"))
-            assert pending.result(timeout=7) == "parallel-token"
-        self.browser.assert_not_called()
-        self.refresh.assert_not_called()
-
-    @pytest.mark.parametrize("allow_consent", [True, False])
-    def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self, allow_consent):
+    def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self):
         cached = self._credentials("expired", "old-refresh")
         self._cache().save(cached)
         cache_path = Path(self._cache().filename)
@@ -154,25 +129,18 @@ class TestCustomClientToken:
         payload["token"]["expiry"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         cache_path.write_text(json.dumps(payload))
         assert (
-            get_custom_client_token(
-                WS, client_id="custom-client", scopes=TEST_SCOPES, allow_consent=allow_consent
-            )
+            get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
             == "refreshed"
         )
         self.refresh.assert_called_once()
         self.browser.assert_not_called()
         assert self._cache().load().token().refresh_token == "rotated-refresh"
 
-    @pytest.mark.parametrize("allow_consent", [True, False])
-    def test_force_refresh_bypasses_fresh_access_token(self, allow_consent):
+    def test_force_refresh_bypasses_fresh_access_token(self):
         self._cache().save(self._credentials("cached", "refresh"))
         assert (
             get_custom_client_token(
-                WS,
-                client_id="custom-client",
-                scopes=TEST_SCOPES,
-                force_refresh=True,
-                allow_consent=allow_consent,
+                WS, client_id="custom-client", scopes=TEST_SCOPES, force_refresh=True
             )
             == "refreshed"
         )
@@ -192,50 +160,6 @@ class TestCustomClientToken:
         output = capsys.readouterr()
         assert "Sign in again" in output.err
         assert "sensitive server response" not in output.err
-
-    @pytest.mark.parametrize("cached", ["missing", "expired", "fresh", "contended"])
-    def test_noninteractive_launch_token_failure_does_not_start_consent(self, capsys, cached):
-        cache_path = Path(self._cache().filename)
-        if cached != "missing":
-            self._cache().save(self._credentials("cached", "revoked-refresh"))
-            if cached == "expired":
-                payload = json.loads(cache_path.read_text())
-                payload["token"]["expiry"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
-                cache_path.write_text(json.dumps(payload))
-        original = cache_path.read_bytes() if cache_path.exists() else None
-        self.refresh.side_effect = ValueError("sensitive server response")
-        state = {
-            "custom_oauth": {
-                "client_id": "custom-client",
-                "redirect_url": "http://localhost:8020",
-                "scopes": TEST_SCOPES,
-            }
-        }
-        message = (
-            "Custom-client OAuth timed out.*Retry shortly"
-            if cached == "contended"
-            else "Custom-client OAuth failed.*Rerun ug interactively"
-        )
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            with (
-                _custom_oauth_lock(cache_path.parent, "http://localhost:8020")
-                if cached == "contended"
-                else nullcontext()
-            ):
-                with pytest.raises(RuntimeError, match=message) as error:
-                    pool.submit(
-                        launch_token,
-                        state,
-                        WS,
-                        force_refresh=cached in {"fresh", "contended"},
-                        allow_consent=False,
-                    ).result(timeout=7)
-        self.browser.assert_not_called()
-        assert self.refresh.call_count == (0 if cached in {"missing", "contended"} else 1)
-        assert (cache_path.read_bytes() if cache_path.exists() else None) == original
-        output = capsys.readouterr()
-        assert output.out == output.err == ""
-        assert "sensitive server response" not in str(error.value)
 
     def test_invalid_redirect_fails_before_network(self):
         with pytest.raises(RuntimeError, match="--redirect-url must be"):

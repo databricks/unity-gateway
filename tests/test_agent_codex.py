@@ -1717,16 +1717,8 @@ class TestCodexLaunch:
         )
 
         def custom_token(
-            workspace,
-            client_id,
-            redirect_url,
-            *,
-            scopes,
-            profile,
-            force_refresh=False,
-            allow_consent,
+            workspace, client_id, redirect_url, *, scopes, profile, force_refresh=False
         ):
-            assert allow_consent is True
             seen["profile"] = profile
             return "custom-token"
 

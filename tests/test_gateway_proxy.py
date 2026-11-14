@@ -10,15 +10,12 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
 from unittest.mock import Mock
-from urllib.parse import quote
 
 import httpx
 import pytest
 
 from ucode import gateway_proxy
-from ucode.custom_oauth import _custom_oauth_lock
 
 
 def _make_jwt(exp: float | None) -> str:
@@ -283,110 +280,34 @@ class TestRelayResponseClientDisconnect:
         handler._relay_response(_FakeResponse(200, {}, [b"ok"]))
         assert capsys.readouterr().err == ""
 
-    @pytest.mark.parametrize(
-        ("interactive", "log_directory_available"), [(True, True), (True, False), (False, True)]
-    )
-    def test_interactive_proxy_logs_preserve_terminal_output(
-        self, monkeypatch, capsys, tmp_path, interactive, log_directory_available
-    ):
-        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: interactive)
-        monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path)
-        if not log_directory_available:
-            (tmp_path / "logs").write_text("existing file")
-
-        handler = _relay_handler(_Collect())
-        handler._relay_response(
-            _FakeResponse(200, {}, [b"ok"]), diagnostic_id="local-id", started=time.monotonic()
-        )
-        proxy, cache, client = gateway_proxy.start_claude_language_proxy(
-            "http://127.0.0.1:1", lambda _force: "test-token", session_secret="test-secret"
-        )
-        try:
-            cache.report_refresh_failure(
-                RuntimeError("Command: broker --token synthetic-credential; Stderr: private-error")
-            )
-        finally:
-            proxy.server_close()
-            cache.stop()
-            client.close()
-
-        output = capsys.readouterr()
-        path = tmp_path / "logs" / "gateway-proxy.log"
-        assert output.out == ""
-        lines = output.err.splitlines()
-        event = json.loads(lines[0].removeprefix("[ucode-relay] "))
-        assert event["event"] == "response_complete"
-        assert event["request_id"] == "local-id"
-        assert event["bytes"] == 2
-        if interactive:
-            assert len(lines) == 1
-        if not interactive or not log_directory_available:
-            assert not path.exists()
-        if log_directory_available:
-            warning = path.read_text() if interactive else "\n".join(lines[1:])
-            assert len(warning.splitlines()) == 1
-            assert "token refresh failed." in warning
-            assert "Refresh your workspace sign-in and restart ug claude." in warning
-            if interactive and os.name != "nt":
-                assert path.stat().st_mode & 0o777 == 0o600
-        captured_logs = output.err + (path.read_text() if path.exists() else "")
-        assert "synthetic-credential" not in captured_logs
-        assert "private-error" not in captured_logs
-        assert "Command:" not in captured_logs
-
 
 class TestProxyDiagnosticFile:
-    @pytest.mark.parametrize(
-        ("language_warning", "interactive"), [(False, False), (False, True), (True, True)]
-    )
-    def test_held_file_lock_preserves_response_and_terminal(
-        self, tmp_path, monkeypatch, capsys, language_warning, interactive
+    def test_held_file_lock_preserves_response_and_diagnostic_evidence(
+        self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: interactive)
-        monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path)
-        path = tmp_path / "logs/gateway-proxy.log" if language_warning else tmp_path / "proxy.log"
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path = tmp_path / "proxy.log"
         path.write_text("held\n")
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, str(path))
         output = _Collect()
-        proxy, cache, client = gateway_proxy.start_claude_language_proxy(
-            "http://127.0.0.1:1", lambda _force: "test-token", session_secret="test-secret"
-        )
-
-        def write():
-            if language_warning:
-                cache.report_refresh_failure(RuntimeError("synthetic-private-error"))
-            else:
-                _relay_handler(output)._relay_response(_FakeResponse(200, {}, [b"ok"]))
-
-        try:
-            with ThreadPoolExecutor(max_workers=1) as pool:
-                with path.open("a") as holder:
-                    gateway_proxy.acquire_exclusive_file_lock(holder, timeout=0)
-                    try:
-                        pool.submit(write).result(timeout=5)
-                    finally:
-                        gateway_proxy.release_file_lock(holder)
-                assert path.read_text() == "held\n"
-        finally:
-            proxy.server_close()
-            cache.stop()
-            client.close()
-
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with path.open("a") as holder:
+                gateway_proxy.acquire_exclusive_file_lock(holder, timeout=0)
+                try:
+                    pool.submit(
+                        _relay_handler(output)._relay_response,
+                        _FakeResponse(200, {}, [b"ok"]),
+                    ).result(timeout=5)
+                finally:
+                    gateway_proxy.release_file_lock(holder)
+            assert path.read_text() == "held\n"
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert "synthetic-private-error" not in captured.err
-        if language_warning:
-            assert captured.err == ""
-        else:
-            assert output.data.endswith(b"ok")
-            assert not (tmp_path / "logs/gateway-proxy.log").exists()
-            assert "Could not write proxy diagnostics file; using stderr" in captured.err
-            event = json.loads(captured.err.splitlines()[-1].removeprefix("[ucode-relay] "))
-            assert event["event"] == "response_complete"
-            assert event["status"] == 200
+        assert output.data.endswith(b"ok")
+        assert "Could not write proxy diagnostics file; using stderr" in captured.err
+        event = json.loads(captured.err.splitlines()[-1].removeprefix("[ucode-relay] "))
+        assert event["event"] == "response_complete"
+        assert event["status"] == 200
 
     def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
         path = tmp_path / "proxy.log"
@@ -419,19 +340,15 @@ class TestProxyDiagnosticFile:
         assert not path.exists()
         assert capsys.readouterr().err == ""
 
-    @pytest.mark.parametrize("interactive", [False, True])
-    def test_unwritable_file_preserves_response_and_diagnostic_evidence(
-        self, tmp_path, monkeypatch, capsys, interactive
+    def test_unwritable_file_preserves_response_and_stderr_evidence(
+        self, tmp_path, monkeypatch, capsys
     ):
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: interactive)
-        monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path / "app")
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
         monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(tmp_path))
         output = _Collect()
         _relay_handler(output)._relay_response(_FakeResponse(200, {}, [b"ok"]))
         assert output.data.endswith(b"ok")
         stderr = capsys.readouterr().err
-        assert not (tmp_path / "app/logs/gateway-proxy.log").exists()
         assert "Could not write proxy diagnostics file; using stderr" in stderr
         event = json.loads(stderr.splitlines()[-1].removeprefix("[ucode-relay] "))
         assert event["event"] == "response_complete"
@@ -480,51 +397,6 @@ class TestTokenCache:
         _ = cache.token
         _ = cache.token
         assert state["forces"] == [False]  # no extra mint while fresh
-
-    @pytest.mark.parametrize("failure", ["provider", "oauth-lock"])
-    @pytest.mark.parametrize("remaining", [-1, 60])
-    def test_seeded_token_survives_failed_renewal_then_refreshes(
-        self, tmp_path, failure, remaining
-    ):
-        state, mint = _fake_token_provider([5000])
-
-        def provider(force):
-            try:
-                with _custom_oauth_lock(tmp_path, "http://localhost:8020", timeout=5):
-                    return mint(force)
-            except TimeoutError as exc:
-                raise RuntimeError(str(exc)) from exc
-
-        initial = _make_jwt(time.time() + 3600)
-        failures = []
-        cache = gateway_proxy.TokenCache(
-            provider,
-            force_refresh_near_expiry=True,
-            initial_token=initial,
-            on_refresh_failure=lambda exc: failures.append(str(exc)),
-        )
-        assert cache.token == initial
-        assert state["forces"] == []
-
-        state["raise"] = failure == "provider"
-        cache._expiry = time.time() + remaining
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            with (
-                _custom_oauth_lock(tmp_path, "http://localhost:8020")
-                if failure == "oauth-lock"
-                else nullcontext()
-            ):
-                assert pool.submit(lambda: cache.token).result(timeout=7) == initial
-        assert cache._fresh_enough(buffer_seconds=0) is (remaining > 0)
-        expected = (
-            "mint failed" if failure == "provider" else "timed out acquiring exclusive file lock"
-        )
-        assert failures == [expected]
-
-        state["raise"] = False
-        assert cache.token != initial
-        assert state["forces"] == [True]
-        assert cache._fresh_enough()
 
     def test_near_expiry_preserves_default_nonforce_refresh(self):
         state, provider = _fake_token_provider([100, 5000])
@@ -865,21 +737,17 @@ class TestRetryOn401:
         assert client.sent_tokens == ["Bearer tok1"]
         assert b"hi" in bytes(out.data)
 
-    def test_failed_refresh_surfaces_reauth_hint(self, monkeypatch, capsys):
+    def test_failed_refresh_surfaces_reauth_hint(self, capsys):
         # When the forced refresh itself fails (the Databricks OAuth session is
         # dead, not just the access token), the user must be told to run
         # `databricks auth login` rather than left with a bare 401 that reads as
         # an Anthropic `/login` prompt. We still retry + relay whatever comes.
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: True)
         client = _FakeClient([_FakeResp(401, b"a"), _FakeResp(401, b"b")])
         cache = _RefreshFailsCache()
         out = _Collect()
         _handle_handler(client, cache, out)._handle()
         assert cache.refreshed == 1  # a refresh was attempted
-        output = capsys.readouterr()
-        assert output.out == ""
-        assert "token refresh failed: mint failed" in output.err
-        assert "databricks auth login" in output.err
+        assert "databricks auth login" in capsys.readouterr().err
         assert b"401" in bytes(out.data)  # the response is still relayed
 
 
@@ -1024,232 +892,3 @@ class TestCodexRelayProxy:
         assert sent["ChatGPT-Account-ID"] == "acct"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.mps"
-
-
-def _language_request_headers(
-    *,
-    language: str | None = None,
-    agent_id: str | None = None,
-    request_class: str | None = None,
-) -> dict[str, str]:
-    headers: dict[str, str] = {}
-    if language is not None:
-        headers["X-UG-Response-Language"] = quote(language, safe="")
-    if agent_id is not None:
-        headers["X-Claude-Code-Agent-Id"] = agent_id
-    if request_class is not None:
-        headers["X-Claude-Code-Request-Class"] = request_class
-    return headers
-
-
-def _language_request_body(path: str, body: bytes, headers: dict[str, str]) -> bytes:
-    handler = object.__new__(gateway_proxy._ClaudeLanguageProxyHandler)
-    handler.path = path
-    # Match BaseHTTPRequestHandler's case-insensitive access for mixed-case request headers.
-    handler.headers = httpx.Headers(headers)
-    forwarded = handler._request_body(body)
-    assert forwarded is not None
-    return forwarded
-
-
-class TestClaudeLanguageRequestBody:
-    @pytest.mark.parametrize("language", [None, "", " "])
-    @pytest.mark.parametrize("request_class", ["subagent", "auxiliary"])
-    def test_unset_language_follows_the_original_task_not_source_text(
-        self, language, request_class
-    ):
-        original = {
-            "model": "routed-child-model",
-            "system": "Original system instructions",
-            "messages": [
-                {"role": "user", "content": "Compare these test counts."},
-                {"role": "assistant", "content": "Read the source."},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "tool_result", "tool_use_id": "read", "content": "测试数：20"}
-                    ],
-                },
-                {"role": "user", "content": "Summarize the task."},
-                {"role": "system", "content": "Native trailing metadata"},
-            ],
-            "tools": [],
-        }
-        body = json.dumps(original).encode()
-        rewritten = _language_request_body(
-            "/ai-gateway/anthropic/v1/messages",
-            body,
-            _language_request_headers(
-                language=language, agent_id="child", request_class=request_class
-            ),
-        )
-        payload = json.loads(rewritten)
-        instruction = payload["system"][-1]["text"]
-        assert "language of the original task assigned to you" in instruction
-        assert "Use the requested target language for translations." in instruction
-        assert "Source files, tool output" in instruction
-        assert "English" not in instruction
-        assert payload["model"] == original["model"]
-        assert payload["tools"] == original["tools"]
-        assert payload["messages"][:3] == original["messages"][:3]
-        assert payload["messages"][-1] == original["messages"][-1]
-        if request_class == "auxiliary":
-            summary_instruction = payload["messages"][-2]["content"][-1]["text"]
-            assert "language of the original task" in summary_instruction
-            assert (
-                "These summary instructions do not set the response language."
-                in summary_instruction
-            )
-        else:
-            assert payload["messages"] == original["messages"]
-
-    @pytest.mark.parametrize(
-        ("language", "path", "body"),
-        [
-            ("English\nChinese", "/v1/messages", b"{}"),
-            ("English\x00", "/v1/messages", b"{}"),
-            ("x" * 257, "/v1/messages", b"{}"),
-            ("English", "/v1/messages/count_tokens", b'{ "system": "unchanged" }'),
-            ("English", "/v1/messages", b"{"),
-            ("English", "/v1/messages", b"[]"),
-            ("English", "/v1/messages", b'{"system":null}'),
-        ],
-    )
-    def test_invalid_language_or_body_and_token_count_pass_through(self, language, path, body):
-        forwarded = _language_request_body(
-            "/ai-gateway/anthropic" + path,
-            body,
-            _language_request_headers(
-                language=language, agent_id="child", request_class="subagent"
-            ),
-        )
-        assert forwarded == body
-
-    def test_json_recursion_error_passes_through_byte_for_byte(self):
-        depth = 500_000
-        body = b'{"messages":' + b"[" * depth + b"0" + b"]" * depth + b"}"
-        with pytest.raises(RecursionError):
-            json.loads(body)
-        forwarded = _language_request_body(
-            "/ai-gateway/anthropic/v1/messages",
-            body,
-            _language_request_headers(
-                language="English", agent_id="child", request_class="subagent"
-            ),
-        )
-        assert forwarded == body
-
-    @pytest.mark.parametrize(
-        "headers",
-        [
-            _language_request_headers(language="English", request_class="subagent"),
-            _language_request_headers(language="English", request_class="auxiliary"),
-            _language_request_headers(
-                language="Chinese", agent_id="classifier-1", request_class="classifier"
-            ),
-        ],
-        ids=[
-            "parent-request",
-            "auto-mode-classifier",
-            "classifier-request",
-        ],
-    )
-    def test_parent_and_classifier_requests_are_unmodified(self, headers):
-        body = (
-            b'{ "model": "routed-child-model", "tools": [], '
-            b'"messages": [{"role":"user","content":"Summarize"}], '
-            b'"system": "keep these exact bytes" }'
-        )
-        forwarded = _language_request_body("/ai-gateway/anthropic/v1/messages", body, headers)
-        assert forwarded == body
-
-    @pytest.mark.parametrize(
-        ("request_class", "language", "final_content_kind"),
-        [
-            ("subagent", "English", "list"),
-            ("workflow", "Chinese", "list"),
-            ("auxiliary", "English", "list"),
-            ("auxiliary", "Chinese", "string"),
-        ],
-        ids=["child-english", "workflow-chinese", "summary-list-english", "summary-string-chinese"],
-    )
-    def test_child_system_and_auxiliary_user_instruction_preserve_request_fields(
-        self, request_class, language, final_content_kind
-    ):
-        if final_content_kind == "string":
-            final_content = "Summarize the result."
-        else:
-            final_content = [
-                {
-                    "type": "text",
-                    "text": "Summarize the result.",
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
-        original = {
-            "model": "routed-child-model",
-            "max_tokens": 2048,
-            "system": [
-                {
-                    "type": "text",
-                    "text": "Keep the caller's system prompt.",
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            "messages": [
-                {"role": "user", "content": "Earlier user prompt."},
-                {"role": "assistant", "content": "Intermediate response."},
-                {"role": "user", "content": final_content},
-            ],
-            "tools": [
-                {
-                    "name": "lookup",
-                    "description": "Look up a value.",
-                    "input_schema": {
-                        "type": "object",
-                        "properties": {"q": {"type": "string"}},
-                    },
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-        }
-        headers = _language_request_headers(
-            language=language,
-            agent_id="native-child-1",
-            request_class=request_class,
-        )
-        rewritten = _language_request_body(
-            "/ai-gateway/anthropic/v1/messages", json.dumps(original).encode(), headers
-        )
-        payload = json.loads(rewritten)
-        expected = json.loads(json.dumps(original))
-        expected["system"].append(
-            {
-                "type": "text",
-                "text": (
-                    f"Always respond in {language}. Use {language} for explanations, replies "
-                    "and progress summaries. Use the requested target language for translations. "
-                    "Preserve technical terms, code identifiers and "
-                    "quoted source text. Source files, tool output and earlier messages in "
-                    "other languages do not change this language preference."
-                ),
-            }
-        )
-        if request_class == "auxiliary":
-            final_user_content = expected["messages"][-1]["content"]
-            if isinstance(final_user_content, str):
-                final_user_content = [{"type": "text", "text": final_user_content}]
-            expected["messages"][-1]["content"] = [
-                *final_user_content,
-                {
-                    "type": "text",
-                    "text": (
-                        f"Write this response in {language}. "
-                        "This response-language requirement takes precedence over "
-                        "the language, verb endings and examples in the summary instructions. "
-                        "Use natural grammar in the response language and preserve file "
-                        "and function names verbatim."
-                    ),
-                },
-            ]
-        assert payload == expected

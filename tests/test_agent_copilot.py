@@ -1472,10 +1472,7 @@ class TestTokenProvider:
     def test_uses_custom_oauth_when_configured(self, monkeypatch):
         calls = []
 
-        def get_custom(
-            workspace, client_id, redirect_url, *, scopes, profile, force_refresh, allow_consent
-        ):
-            assert allow_consent is True
+        def get_custom(workspace, client_id, redirect_url, *, scopes, profile, force_refresh):
             calls.append((workspace, client_id, redirect_url, scopes, profile, force_refresh))
             return "custom-token"
 

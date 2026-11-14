@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import shutil
 import subprocess
 import sys
 import threading
-import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
@@ -18,7 +16,6 @@ import pytest
 from session import Session
 
 from ucode.agents.claude import _header_mod_files
-from ucode.gateway_proxy import start_claude_language_proxy
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
@@ -68,237 +65,8 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
         if command == "validate":
             writes = next(line for line in result.stdout.splitlines() if "env writes:" in line)
             assert "ANTHROPIC_CUSTOM_HEADERS" in writes
-            assert "ANTHROPIC_BASE_URL" in writes
-            assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" in writes
-
-
-@pytest.mark.parametrize(
-    ("sources", "disable_nonessential", "health_failure", "hint_headers"),
-    [
-        ("user", False, "closed", "0"),
-        ("user", False, "closed", "1"),
-        ("project,local", False, "closed", "0"),
-        ("project,local", True, "closed", "0"),
-        ("project,local", True, "stalled-headers", "0"),
-        ("project,local", True, "stalled-body", "0"),
-        ("project,local", True, "forged-settings", "0"),
-        ("project,local", True, "empty-settings", "0"),
-        ("project,local", True, "malformed-settings", "0"),
-    ],
-)
-def test_language_transport_uses_native_settings_sources(
-    native_binary, tmp_path, sources, disable_nonessential, health_failure, hint_headers
-):
-    for path, text in _header_mod_files(tmp_path).items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    plugin = tmp_path / "ug-headers"
-    (plugin / "hooks/probe.ts").write_text("""
-import { register as headers } from './register';
-export function register(on) {
-  headers(on);
-  on('session.start', {isInteractive: false}, async ($, e, next) => {
-    await $.command.register({name: 'language-probe', description: 'Read language transport', immediate: true});
-    return next(e);
-  });
-  on('command.run', {command: 'language-probe'}, async ($) => ({text: JSON.stringify({
-    language: (await $.settings.read()).language,
-    configuredTransport: (await $.settings.read()).env?.UG_CLAUDE_LANGUAGE_PROXY,
-    hints: await $.env.get('CLAUDE_CODE_GATEWAY_HINT_HEADERS'),
-    base: await $.env.get('ANTHROPIC_BASE_URL'),
-    headers: await $.env.get('ANTHROPIC_CUSTOM_HEADERS'),
-  })}));
-}
-""")
-    (plugin / "hooks/hooks.json").write_text('{"modules":["./probe.ts"]}')
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    (config_dir / "settings.json").write_text(
-        json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": hint_headers}})
-    )
-    project_settings = tmp_path / ".claude/settings.json"
-    project_settings.parent.mkdir()
-    project_settings.write_text(
-        json.dumps({"language": "Chinese" if hint_headers == "1" else "English"})
-    )
-    upstream = "http://127.0.0.1:1"
-    server, cache, client = start_claude_language_proxy(
-        upstream, lambda _force: "fixture-only", session_secret="fixture-session"
-    )
-    stall_health = threading.Event()
-    release_health = threading.Event()
-    health_requested = threading.Event()
-
-    class HealthHandler(server.RequestHandlerClass):
-        def _discard(self):
-            if not stall_health.is_set():
-                return super()._discard()
-            health_requested.set()
-            if health_failure == "stalled-body":
-                self.send_response(200)
-                self.send_header("Content-Length", "1")
-                self.end_headers()
-                self.wfile.flush()
-            release_health.wait(timeout=45)
-
-    server.RequestHandlerClass = HealthHandler
-    server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-    server_thread.start()
-    proxy = f"http://127.0.0.1:{server.server_port}/ai-gateway/anthropic"
-    proc = subprocess.Popen(
-        [
-            native_binary,
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--debug-file",
-            str(tmp_path / "debug.log"),
-            "--setting-sources",
-            sources,
-            "--plugin-dir",
-            str(plugin),
-        ],
-        cwd=tmp_path,
-        env={
-            **{
-                key: os.environ[key]
-                for key in ("PATH", "SYSTEMROOT", "TEMP", "TMP")
-                if key in os.environ
-            },
-            "HOME": str(tmp_path),
-            "CLAUDE_CONFIG_DIR": str(config_dir),
-            "ANTHROPIC_API_KEY": "fixture-only",
-            "ANTHROPIC_BASE_URL": upstream,
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1" if disable_nonessential else "0",
-            "DISABLE_AUTOUPDATER": "1",
-            "CLAUDE_CODE_ELEGANT_MEADOW": "1",
-            "CLAUDE_CODE_MAX_RETRIES": "0",
-            "UG_CLAUDE_LANGUAGE_PROXY": json.dumps(
-                {"url": proxy, "upstream": upstream, "secret": "fixture-session"}
-            ),
-        },
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    lines = queue.Queue()
-    reader = threading.Thread(target=lambda: [lines.put(line) for line in proc.stdout], daemon=True)
-    reader.start()
-
-    def send(prompt, *, expect_error=False, timeout=10):
-        proc.stdin.write(
-            json.dumps({"type": "user", "message": {"role": "user", "content": prompt}}) + "\n"
-        )
-        proc.stdin.flush()
-        deadline = time.monotonic() + timeout
-        while True:
-            event = json.loads(lines.get(timeout=max(0, deadline - time.monotonic())))
-            if event.get("type") == "result":
-                assert bool(event.get("is_error")) == expect_error, event
-                return event
-
-    def probe():
-        event = send("/language-probe")
-        assert event["num_turns"] == 0 and event["usage"]["output_tokens"] == 0
-        return json.loads(event["result"].partition(": ")[2])
-
-    try:
-        observed = probe()
-        if sources == "user":
-            assert observed.get("language") is None
-            assert observed["hints"] == hint_headers
-            if hint_headers == "0":
-                assert observed["base"] == upstream
-                assert "x-ug-" not in observed["headers"].lower()
-            else:
-                assert observed["base"] == proxy
-                assert "X-UG-Language-Session: fixture-session" in observed["headers"]
-                assert "X-UG-Response-Language:" not in observed["headers"]
-                event = send("Reply with OK.", expect_error=True)
-                assert event["usage"]["output_tokens"] == 0
-                observed = probe()
-                assert observed.get("language") is None
-                assert observed["hints"] == "1"
-                assert observed["base"] == proxy
-                assert "X-UG-Language-Session: fixture-session" in observed["headers"]
-                assert "X-UG-Response-Language:" not in observed["headers"]
-        else:
-            assert observed["hints"] == "1"
-            assert observed["base"] == proxy
-            assert "X-UG-Response-Language: English" in observed["headers"]
-            assert "X-UG-Language-Session: fixture-session" in observed["headers"]
-            for language in ("French", None):
-                project_settings.write_text(json.dumps({"language": language} if language else {}))
-                deadline = time.monotonic() + 5
-                while probe().get("language") != language:
-                    assert time.monotonic() < deadline, "Native settings reload did not apply"
-                    time.sleep(0.05)
-                # A real model turn runs turn.step; the isolated endpoint intentionally refuses it.
-                send("Reply with OK.", expect_error=True)
-                observed = probe()
-                assert observed["base"] == proxy
-                assert "X-UG-Language-Session: fixture-session" in observed["headers"]
-                if language:
-                    assert "X-UG-Response-Language: French" in observed["headers"]
-                    assert "X-UG-Response-Language: English" not in observed["headers"]
-                else:
-                    assert "X-UG-Response-Language:" not in observed["headers"]
-            if health_failure.endswith("settings"):
-                forged = {
-                    "forged-settings": json.dumps(
-                        {"url": proxy, "upstream": "http://127.0.0.1:2", "secret": "forged"}
-                    ),
-                    "empty-settings": "",
-                    "malformed-settings": "{",
-                }[health_failure]
-                project_settings.write_text(
-                    json.dumps({"env": {"UG_CLAUDE_LANGUAGE_PROXY": forged}})
-                )
-                deadline = time.monotonic() + 5
-                while probe().get("configuredTransport") != forged:
-                    assert time.monotonic() < deadline, "Native settings reload did not apply"
-                    time.sleep(0.05)
-            elif health_failure == "closed":
-                server.shutdown()
-                server.server_close()
-            else:
-                stall_health.set()
-            started = time.monotonic()
-            event = send("Reply with OK.", expect_error=True, timeout=45)
-            elapsed = time.monotonic() - started
-            assert event["usage"]["output_tokens"] == 0
-            observed = probe()
-            assert observed["base"] == upstream
-            assert "x-ug-" not in observed["headers"].lower()
-            assert observed.get("hints") is None
-            if health_failure.startswith("stalled"):
-                assert health_requested.is_set()
-                assert 29 <= elapsed < 45
-                assert not release_health.is_set()
-                assert (
-                    "Optional subagent language inheritance is unavailable; continuing without it."
-                    in (tmp_path / "debug.log").read_text()
-                )
-    finally:
-        release_health.set()
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
-        reader.join(timeout=5)
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            stream.close()
-        server.shutdown()
-        server.server_close()
-        cache.stop()
-        client.close()
-        server_thread.join(timeout=5)
+            assert "ANTHROPIC_BASE_URL" not in writes
+            assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" not in writes
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):
@@ -473,8 +241,12 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
 
 
 @pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    ("language", "setting_sources"),
+    [("English", "user"), ("Chinese", "user"), (None, "user"), ("Chinese", "project,local")],
+)
 def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
-    native_binary, tmp_path, background
+    native_binary, tmp_path, background, language, setting_sources
 ):
     """Scenario: Auto Mode approves or flags a native Agent call.
 
@@ -642,12 +414,6 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
     server.verdict = "not_flagged"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    proxy, cache, client = start_claude_language_proxy(
-        f"http://127.0.0.1:{server.server_port}",
-        lambda _force: "fixture-only",
-        session_secret="language-session",
-    )
-    threading.Thread(target=proxy.serve_forever, daemon=True).start()
     route_script = """import json, sys
 event = json.load(sys.stdin)
 updated = {key: value for key, value in event["tool_input"].items() if key != "model"}
@@ -670,7 +436,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             config_dir = root / "config"
             config_dir.mkdir()
             (config_dir / "settings.json").write_text(
-                json.dumps({"language": "English"}), encoding="utf-8"
+                json.dumps({"language": language} if language else {}), encoding="utf-8"
             )
             options = _claude_mod_launch_options({})
             options["routeCommand"] = [
@@ -696,7 +462,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "--model",
                     "claude-sonnet-4-6",
                     "--setting-sources",
-                    "user",
+                    setting_sources,
                     "--settings",
                     json.dumps(settings),
                     "--plugin-dir",
@@ -720,13 +486,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "HOME": str(root),
                     "CLAUDE_CONFIG_DIR": str(config_dir),
                     "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{server.server_port}",
-                    "UG_CLAUDE_LANGUAGE_PROXY": json.dumps(
-                        {
-                            "url": f"http://127.0.0.1:{proxy.server_port}/ai-gateway/anthropic",
-                            "upstream": f"http://127.0.0.1:{server.server_port}",
-                            "secret": "language-session",
-                        }
-                    ),
+                    "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
                     "ANTHROPIC_API_KEY": "fixture-only",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                     "DISABLE_AUTOUPDATER": "1",
@@ -767,10 +527,17 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if request.get("stream") and request.get("model") == selected_model
                 ]
                 assert child_requests, server.requests
-                assert all(
-                    "Always respond in English." in json.dumps(request.get("system"))
-                    for request in child_requests
+                instruction = (
+                    f"Always respond in {language}."
+                    if language and setting_sources == "user"
+                    else "language of the original task assigned to you"
                 )
+                assert all(instruction in json.dumps(request) for request in child_requests)
+                if setting_sources == "project,local":
+                    assert all(
+                        "Always respond in Chinese." not in json.dumps(request)
+                        for request in child_requests
+                    )
                 parent_requests = [
                     request
                     for request in server.requests
@@ -822,10 +589,6 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
         run_case("not_flagged", "approved")
         run_case("flagged", "flagged")
     finally:
-        proxy.shutdown()
-        proxy.server_close()
-        cache.stop()
-        client.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)

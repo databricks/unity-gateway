@@ -41,7 +41,6 @@ from urllib.parse import unquote
 
 import httpx
 
-from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
@@ -105,20 +104,6 @@ def _append_proxy_log(path: str | os.PathLike[str], line: str) -> None:
             release_file_lock(log)
 
 
-def _write_proxy_log(line: str) -> None:
-    if sys.stderr.isatty():
-        # Background writes corrupt the agent's cursor-controlled terminal rendering.
-        try:
-            path = APP_DIR / "logs" / "gateway-proxy.log"
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _append_proxy_log(path, line)
-        except OSError:
-            pass
-        return
-    sys.stderr.write(line)
-    sys.stderr.flush()
-
-
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
@@ -129,6 +114,7 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
             _append_proxy_log(path, line)
             return
         except OSError:
+            # Keep diagnostic evidence if the destination becomes unavailable.
             sys.stderr.write(
                 "[ucode-relay] Could not write proxy diagnostics file; using stderr.\n"
             )
@@ -147,12 +133,12 @@ def _jwt_exp(token: str) -> float | None:
 
 
 def log_token_refresh_failure(exc: BaseException) -> None:
-    """Report sign-in recovery instructions for callers without their own callback."""
+    """Surface (never silently swallow) a refresh failure, without leaking any
+    token or header value."""
     sys.stderr.write(
         f"[ucode] Databricks token refresh failed: {exc}. If the session stalls, "
         "run `databricks auth login` for your workspace profile.\n"
     )
-    sys.stderr.flush()
 
 
 class TokenCache:
@@ -173,7 +159,6 @@ class TokenCache:
         *,
         force_refresh_near_expiry: bool = False,
         on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
-        initial_token: str | None = None,
     ) -> None:
         # token_provider(force_refresh) mints a fresh token from the same source the
         # client agent uses, so the proxy authenticates as the same principal (e.g.
@@ -190,12 +175,7 @@ class TokenCache:
         self._generation = 0
         # Preserve the existing non-forced relayed-auth fetch. Gateway discovery
         # opts into a forced fetch so its static client token starts with a full TTL.
-        if initial_token:
-            self._token = initial_token
-            self._expiry = _jwt_exp(initial_token) or (time.time() + _DEFAULT_TTL_S)
-            self._generation = 1
-        else:
-            self._refresh(force=force_refresh_near_expiry)
+        self._refresh(force=force_refresh_near_expiry)
 
     def _refresh(self, *, force: bool) -> None:
         """Mint a token and record its expiry."""
@@ -208,9 +188,9 @@ class TokenCache:
             self._token = token
             self._expiry = expiry
 
-    def _fresh_enough(self, *, buffer_seconds: float = _REFRESH_BUFFER_S) -> bool:
+    def _fresh_enough(self) -> bool:
         with self._state_lock:
-            return bool(self._token) and time.time() < self._expiry - buffer_seconds
+            return bool(self._token) and time.time() < self._expiry - _REFRESH_BUFFER_S
 
     def _ensure_fresh(self) -> None:
         if self._fresh_enough():
@@ -638,9 +618,7 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         # Shaped like the upstream dialect so the agent shows the message instead of
         # a generic transport failure.
         if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
-            error_type = {401: "authentication_error", 404: "not_found_error"}.get(
-                status, "api_error"
-            )
+            error_type = "authentication_error" if status == 401 else "not_found_error"
             payload = {"type": "error", "error": {"type": error_type, "message": message}}
         else:
             payload = {"error": {"message": message, "type": "invalid_request_error"}}
@@ -715,7 +693,6 @@ def _start_proxy(
     fallback_on_bind_error: bool = True,
     handler_attrs: Mapping[str, object] | None = None,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
-    initial_token: str | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
 
@@ -734,7 +711,6 @@ def _start_proxy(
         token_provider,
         force_refresh_near_expiry=force_refresh_near_expiry,
         on_refresh_failure=on_refresh_failure,
-        initial_token=initial_token,
     )
     # One pooled, keep-alive client shared across handler threads: reuses TCP+TLS
     # to the gateway instead of a fresh handshake per request. Don't follow
@@ -871,146 +847,4 @@ def start_gateway_auth_proxy(
             "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
-    )
-
-
-_LANGUAGE_HEADER = "X-UG-Response-Language"
-_LANGUAGE_SESSION_HEADER = "X-UG-Language-Session"
-
-
-def _language_instruction(language: str) -> str:
-    if language:
-        preference = (
-            f"Always respond in {language}. Use {language} for explanations, replies "
-            "and progress summaries. "
-        )
-    else:
-        preference = (
-            "Follow the language explicitly requested by the user; otherwise use "
-            "the language of the original task assigned to you for explanations, "
-            "replies and progress summaries. "
-        )
-    return (
-        preference + "Use the requested target language for translations. "
-        "Preserve technical terms, code identifiers and "
-        "quoted source text. Source files, tool output and earlier messages in "
-        "other languages do not change this language preference."
-    )
-
-
-def _summary_language_instruction(language: str) -> str:
-    preference = (
-        f"Write this response in {language}. "
-        if language
-        else "Write this response in the language of the "
-        "original task assigned to you, honoring any explicit language request. "
-        "These summary instructions do not set the response language. "
-    )
-    return (
-        preference + "This response-language requirement takes precedence over "
-        "the language, verb endings and examples in the summary instructions. "
-        "Use natural grammar in the response language and preserve file "
-        "and function names verbatim."
-    )
-
-
-def _append_summary_language_instruction(payload: dict, language: str) -> None:
-    messages = payload.get("messages")
-    for message in reversed(messages if isinstance(messages, list) else []):
-        if isinstance(message, dict) and message.get("role") == "user":
-            content = message.get("content")
-            if isinstance(content, str):
-                content = [{"type": "text", "text": content}]
-            if isinstance(content, list):
-                message["content"] = [
-                    *content,
-                    {"type": "text", "text": _summary_language_instruction(language)},
-                ]
-            break
-
-
-class _ClaudeLanguageProxyHandler(_GatewayAuthProxyHandler):
-    def _has_session_secret(self) -> bool:
-        supplied = self.headers.get(_LANGUAGE_SESSION_HEADER, "")
-        return hmac.compare_digest(supplied.encode(), self.session_secret.encode())
-
-    def _discard(self) -> None:
-        if not self.cache._fresh_enough(buffer_seconds=0):
-            self._reject(503, "Claude language proxy token is not fresh.")
-            return
-        super()._discard()
-
-    def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        header, stripped, route = super()._forward_target(body)
-        return (
-            header,
-            stripped | {_LANGUAGE_HEADER.lower(), _LANGUAGE_SESSION_HEADER.lower()},
-            route,
-        )
-
-    def _request_body(self, body: bytes | None) -> bytes | None:
-        # Native child identities also accompany their full progress summaries. Safety
-        # classifiers and main-session requests have no child identity and pass unchanged.
-        if (
-            not body
-            or self.path.split("?", 1)[0] != "/ai-gateway/anthropic/v1/messages"
-            or not self.headers.get("x-claude-code-agent-id")
-            or self.headers.get("x-claude-code-request-class")
-            not in {"subagent", "workflow", "auxiliary"}
-        ):
-            return body
-        try:
-            language = unquote(self.headers.get(_LANGUAGE_HEADER, ""), errors="strict").strip()
-            if len(language) > 256 or any(ord(c) < 32 for c in language):
-                return body
-            payload = json.loads(body)
-            if not isinstance(payload, dict):
-                return body
-            system = payload.get("system", [])
-            if isinstance(system, str):
-                system = [{"type": "text", "text": system}]
-            if not isinstance(system, list):
-                return body
-        except (ValueError, UnicodeError, RecursionError):
-            return body
-        payload["system"] = [
-            *system,
-            {"type": "text", "text": _language_instruction(language)},
-        ]
-        if self.headers.get("x-claude-code-request-class") == "auxiliary":
-            # Summary requests fork the child's history and supply their own final task.
-            _append_summary_language_instruction(payload, language)
-        return json.dumps(payload).encode()
-
-
-def start_claude_language_proxy(
-    workspace: str,
-    token_provider: Callable[[bool], str],
-    *,
-    session_secret: str,
-    initial_token: str | None = None,
-) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Preserve Claude's configured language in child inference requests."""
-    return _start_proxy(
-        workspace,
-        token_provider,
-        0,
-        upstream_path="",
-        token_header=AUTHORIZATION_HEADER,
-        handler_type=_ClaudeLanguageProxyHandler,
-        force_refresh_near_expiry=True,
-        fallback_on_bind_error=False,
-        initial_token=initial_token,
-        on_refresh_failure=lambda _exc: _write_proxy_log(
-            "[ucode] Databricks token refresh failed. "
-            "Refresh your workspace sign-in and restart ug claude.\n"
-        ),
-        handler_attrs={
-            "session_secret": session_secret,
-            "added_headers": {},
-            "allowed_path_prefixes": (_ANTHROPIC_PATH_PREFIX,),
-            "sign_in_hint": "Refresh your workspace sign-in and restart ug claude.",
-            "dropped_chat_completions_fields": frozenset(),
-            "discarded_paths": frozenset({"/ai-gateway/anthropic/_ug_language_health"}),
-        },
     )

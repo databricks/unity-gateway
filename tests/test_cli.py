@@ -1896,7 +1896,6 @@ class TestSubcommandRouting:
             scopes=["offline_access", "all-apis"],
             profile="custom-profile",
             force_refresh=True,
-            allow_consent=True,
         )
         assert route.call_args.kwargs["token"] == "custom-token"
 
