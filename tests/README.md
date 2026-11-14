@@ -52,7 +52,9 @@ reopens the ordinary Auto selector. Only the external Isaac target-inspection
 collector is substituted. It does not submit feedback or run inference.
 At 60 columns and 22 rows, Up/Down selects and reveals model rows, Enter commits,
 and Escape preserves the previous selection. Component checks preserve wheel/page
-scrolling, native save details and warnings, and regular-model confirmations.
+scrolling, native effort details and warnings, and regular-model confirmations.
+Auto confirmations omit the native claim that the choice is a default for new
+sessions; managed-model notices remain visible.
 Native tests require “Set to Auto mode with main model …” to name the selected
 main model after both picker and main-model selection.
 The native mod cases share immutable Auto catalog data; model/picker cases and

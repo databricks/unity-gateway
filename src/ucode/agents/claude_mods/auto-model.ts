@@ -26,7 +26,8 @@ const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model a
 export function formatAutoConfirmation(text: string, mainModel: string, setModel: boolean): string {
   return text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
     const model = mainModel.replace(/^system\.ai\./, '');
-    const suffix = details.trim().replace(/^and /, '');
+    const suffix = details.trim().replace(/^and /, '')
+      .replace(/^saved as your default for new sessions\b/, '').trim();
     return `<local-command-stdout>${setModel ? 'Set to' : 'Kept'} Auto mode with main model \`${model}\`. Subagents are smart routed.`
       + (suffix ? `\n${suffix[0].toUpperCase()}${suffix.slice(1)}` : '');
   });

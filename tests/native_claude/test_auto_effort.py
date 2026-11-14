@@ -1,5 +1,7 @@
 """Real terminal/profile checks; no gateway inference or model responses."""
 
+import re
+
 import pytest
 from auto_session import auto_session
 
@@ -28,6 +30,17 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             line.split("│", 1)[1].strip("│ ") for line in screen.splitlines() if "│" in line
         )
 
+    def assert_auto_confirmation(screen):
+        blocks = [
+            block
+            for block in re.split(r"(?m)^\s*❯ ", screen)
+            if "Set to Auto mode with main model" in block
+        ]
+        assert blocks, screen
+        assert all(
+            "saved as your default for new sessions" not in block.lower() for block in blocks
+        ), screen
+
     with fixture.launch("native-effort") as tui:
         tui.boot(timeout=45)
         tui.submit("/model")
@@ -45,6 +58,7 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             tui.wait_for(lambda s: "❯ Sonnet 5.5" in s, "Sonnet selected again")
             tui.send("\r", "save the arrow-selected model")
             tui.wait_for(lambda s: "Auto (Sonnet 5.5) saved" in s, "saved narrow selection")
+            assert_auto_confirmation(tui.visible)
             selected = fixture.observe(tui, "narrow-selected")
             assert selected["model"] == fixture.catalog["models"][1]["autoModel"]
             assert selected["routing"] == "1"
@@ -92,6 +106,7 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             ),
             "Auto confirmations name the main model after picker and main-model selection",
         )
+        assert_auto_confirmation(tui.visible)
         current = fixture.observe(tui, "selected")
         assert current["model"] == fixture.catalog["models"][0]["autoModel"], current
         tui.submit("/effort status")

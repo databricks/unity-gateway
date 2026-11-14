@@ -308,16 +308,27 @@ test('reselecting Auto opens the next step and manual selection disables routing
   expect(await hint($, state)).toBe('native · smart router OFF');
 });
 
-test('Auto confirmations preserve native save details and warnings', {options}, async ($, on) => {
+test('Auto confirmations omit the native default-save claim and preserve effort and warnings', {options}, async ($, on) => {
   const context = host(on, 'ug-auto-opus');
   const confirm = commandTranscript(context);
-  const details = ' and saved as your default for new sessions with `high` effort\nA native warning';
-  await confirm('Set model to `Opus 5.5`' + details);
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set to Auto mode with main model `opus`. Subagents are smart routed.\nSaved as your default for new sessions with `high` effort\nA native warning</local-command-stdout>');
-  expect(context.state.selected).toBe('ug-auto-opus');
-  context.state.selected = 'opus';
-  await confirm('Set model to `Opus 5.5`' + details);
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Opus 5.5`' + details + '</local-command-stdout>');
+  const warnings = '\nA native warning\nNote: ANTHROPIC_MODEL is set and may override this model choice.';
+  for (const [details, remaining] of [
+    [' and saved as your default for new sessions with `high` effort' + warnings, '\nWith `high` effort' + warnings],
+    [' and saved as your default for new sessions' + warnings, warnings],
+    [' and saved as your default for new sessions', ''],
+    [' saved as your default for new sessions', ''],
+    [' with `high` effort' + warnings, '\nWith `high` effort' + warnings],
+  ]) {
+    for (const action of ['Set model to', 'Kept model as']) {
+      context.state.selected = 'ug-auto-opus';
+      await confirm(`${action} \`Opus 5.5\`` + details);
+      expect(context.state.appended.at(-1)).toBe(`<local-command-stdout>${action === 'Set model to' ? 'Set to' : 'Kept'} Auto mode with main model \`opus\`. Subagents are smart routed.${remaining}</local-command-stdout>`);
+      expect(context.state.selected).toBe('ug-auto-opus');
+      context.state.selected = 'opus';
+      await confirm(`${action} \`Opus 5.5\`` + details);
+      expect(context.state.appended.at(-1)).toBe(`<local-command-stdout>${action} \`Opus 5.5\`` + details + '</local-command-stdout>');
+    }
+  }
   context.state.selected = 'ug-auto-opus';
   await confirm('Kept model as `Opus 5.5`');
   expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept Auto mode with main model `opus`. Subagents are smart routed.</local-command-stdout>');

@@ -3,6 +3,8 @@
 Claude Auto is opt-in. Existing config versions keep the old picker.
 [Component and native tests](../README.md) cover managed defaults, model policy,
 context and effort, confirmations, save/cancel transactions, and feedback.
+Auto confirmations omit the native default-for-new-sessions claim while preserving
+effort details, managed-model notices, and ordinary-model confirmations.
 Those local checks do not establish live inference or warm-cache behavior.
 
 `integration/test_ug_claude_auto.py` opts into `subagent_auto_v0_claude_only` explicitly and
