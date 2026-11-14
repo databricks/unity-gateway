@@ -1,7 +1,8 @@
 # Test suites and user journeys
 
 CLI component tests cover explicit Claude provider smart routing without a managed config,
-including saved providers and preservation of the inherited external-models gate.
+including saved providers, preservation of the inherited external-models gate, and
+provider forwarding through the Claude subagent hook.
 CUJ7 requires successful routed parent and child file tasks with provider headers.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,

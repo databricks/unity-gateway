@@ -26,7 +26,7 @@ from ucode.smart_routing.config import (
 )
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, ROUTING_PATH, CodingAgent
 from .helpers.evidence import (
     SessionEvidence,
     SessionObservation,
@@ -41,7 +41,6 @@ from .helpers.workspace import Workspace
 CUJ_NAME = "CUJ 4 · Smart routing"
 pytestmark = pytest.mark.harness_latest
 
-ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 AGENTS = (CLAUDE, CODEX)
 ORCHESTRATOR_CONTEXT = "Smart Router Orchestrator is on for this session."
 SMART_ROUTER_CONFIG_VERSIONS = (

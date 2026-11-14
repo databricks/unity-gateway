@@ -26,7 +26,7 @@ from .helpers.constants import (
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.desktop import assert_claude_desktop_profile, enable_claude_desktop
-from .helpers.evidence import SessionEvidence, assert_served
+from .helpers.evidence import SessionEvidence, assert_served, served_marker_request
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
 from .helpers.terminal import Terminal
@@ -178,29 +178,6 @@ def _agent_prompt(marker: str) -> str:
     return f"Reply with a short greeting. Do not use tools. Request ID: {marker}."
 
 
-def _served_marker_request(recorder, checkpoint: int, agent: str, marker: str):
-    """The marker-bearing inference request the gateway answered with HTTP 200.
-
-    Claude retries a request whose proxy-to-gateway connection failed (the recorder then
-    records a 502 for the first attempt), so the first marker request is not always the
-    one that was served. With no 200, return the first so its failure is asserted.
-    """
-    candidates = [
-        request
-        for request in recorder.requests_after(checkpoint)
-        if request.method == "POST"
-        and request.path == INFERENCE_PATHS[agent]
-        and marker.encode() in request.body
-    ]
-    assert candidates, f"No {agent} inference request carried marker {marker}"
-    # Stop at the first success: later requests resend the history (and so the marker),
-    # and one the agent abandoned at exit never records a response to wait for.
-    for request in candidates:
-        if recorder.response_for(request, timeout=INFERENCE_WAIT_SECONDS).status_code == 200:
-            return request
-    return candidates[0]
-
-
 def _assert_inference_request(recorder, request, *, provider: str, model: str, marker: str) -> None:
     assert request.headers[PROVIDER_HEADER] == provider
     assert marker.encode() in request.body, request.payload
@@ -349,7 +326,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
             after=checkpoint,
             timeout=INFERENCE_WAIT_SECONDS,
         )
-        request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
+        request = served_marker_request(recorder, checkpoint, CLAUDE, marker)
         _assert_inference_request(
             recorder,
             request,

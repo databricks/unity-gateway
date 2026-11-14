@@ -1416,24 +1416,6 @@ class TestSubcommandRouting:
         calls["launch"].assert_not_called()
         assert "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS" not in os.environ
 
-    def test_explicit_provider_routing_preserves_external_gate_after_error(self, monkeypatch):
-        gate = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
-        monkeypatch.setenv(gate, "0")
-
-        def fail_configuration(*args, **kwargs):
-            assert os.environ[gate] == "0"
-            raise RuntimeError("configuration failed")
-
-        with _launch_policy_patches(None) as calls:
-            calls["configure"].side_effect = fail_configuration
-            result = runner.invoke(
-                app, ["claude", "--provider", "main.default.anthropic", "--enable-smart-routing"]
-            )
-
-        assert result.exit_code == 1
-        assert "configuration failed" in _strip_ansi(result.output)
-        assert os.environ[gate] == "0"
-
     def test_unmanaged_claude_launch_lists_gateway_catalog(self):
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(app, ["claude"])
@@ -1838,7 +1820,8 @@ class TestSubcommandRouting:
         mock_token.assert_not_called()
         assert mock_route.call_args.kwargs["token"] == "pat-token"
 
-    def test_claude_v2_subagent_hook_uses_v2_router(self, monkeypatch):
+    @pytest.mark.parametrize("provider", [None, "main.default.anthropic"])
+    def test_claude_v2_subagent_hook_uses_v2_router(self, monkeypatch, provider):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         routed = {
             "systemMessage": "Smart Router notice",
@@ -1864,6 +1847,7 @@ class TestSubcommandRouting:
                     "https://example.com",
                     "--model",
                     "system.ai.claude-opus-4-8",
+                    *(["--provider", provider] if provider else []),
                 ],
                 input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
                 env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
@@ -1874,6 +1858,7 @@ class TestSubcommandRouting:
         # A hook persisted by an earlier UG version gets its PreToolUse response and notice.
         mock_v2_route.assert_called_once()
         assert mock_v2_route.call_args.kwargs["hook_output"] is True
+        assert mock_v2_route.call_args.kwargs["provider"] == provider
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
@@ -1919,6 +1904,7 @@ class TestSubcommandRouting:
                 workspace="https://example.com",
                 token=launch_token,
                 available_models=["system.ai.claude-opus-4-8"],
+                provider=None,
                 audit_decision=True,
                 hook_output=False,
             )

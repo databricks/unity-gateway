@@ -3474,7 +3474,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
-        **({"provider": provider} if provider else {}),
+        provider=provider,
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
