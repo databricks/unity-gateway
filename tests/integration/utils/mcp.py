@@ -107,7 +107,7 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
         output_start = len(tui.output)
         tui.send("/mcp verbose", "type text before pressing Enter")
         tui.wait_for(
-            lambda screen: "/mcpverbose" in "".join(screen.split()),
+            lambda _: "/mcpverbose" in "".join(inventory().split()),
             "typed input",
             timeout=remaining(),
             stable_for=0.5,
