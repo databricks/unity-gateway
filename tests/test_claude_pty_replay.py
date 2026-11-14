@@ -4,7 +4,7 @@ These tests cover:
 - Paste and Enter are separate writes with PASTE_SUBMIT_DELAY_S gap (Bug A fix).
 - Enter is retried when no submission signal arrives (Bug B fix).
 - Enter stops retrying once the submission signal fires (Bug B fix).
-- Switch-timeout path submits the prompt (Bug C fix).
+- Switch-timeout path submits the prompt after Claude settles (Bug C fix).
 - Persist-timeout path does not SIGTERM and submits (Bug C fix).
 - waiting_to_switch timeout submits without /model (Bug D fix).
 - Every write into the input box first clears the blocked prompt that Claude Code
@@ -14,9 +14,12 @@ These tests cover:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -42,6 +45,7 @@ def _write_fake_claude(path: Path, body: str) -> None:
 import json
 import os
 import select as sel
+import signal
 import socket
 import sys
 import time
@@ -50,6 +54,8 @@ from pathlib import Path
 
 socket_path = sys.argv[1]
 capture_path = Path(sys.argv[2])
+test_dir = capture_path.parent
+signal.alarm(35)
 
 def send_hook(sock_path, prompt):
     c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -72,6 +78,43 @@ def read_until(suffix):
 """
         + body
     )
+
+
+@contextmanager
+def _stdin_after(ready: Path, chunks: list[bytes], *, after_first: Path | None = None):
+    pipe_read, pipe_write = os.pipe()
+    saved_stdin = os.dup(0)
+    sent = []
+
+    def send():
+        deadline = time.monotonic() + 25
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if ready.exists():
+            for chunk in chunks:
+                os.write(pipe_write, chunk)
+                sent.append(chunk)
+                if len(sent) == 1 and after_first is not None:
+                    deadline = time.monotonic() + 25
+                    while not after_first.exists() and time.monotonic() < deadline:
+                        time.sleep(0.005)
+                    if not after_first.exists():
+                        return
+                time.sleep(0.01)
+
+    writer = threading.Thread(target=send)
+    try:
+        os.dup2(pipe_read, 0)
+        writer.start()
+        yield
+    finally:
+        os.dup2(saved_stdin, 0)
+        writer.join(timeout=26)
+        os.close(saved_stdin)
+        os.close(pipe_read)
+        os.close(pipe_write)
+    assert not writer.is_alive()
+    assert sent == chunks
 
 
 # ---------------------------------------------------------------------------
@@ -252,112 +295,539 @@ capture_path.write_text(json.dumps({
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def replay_model_switch(tmp_path):
+    settings = tmp_path / ".claude" / "settings.json"
+    settings.parent.mkdir()
+    settings.write_text(json.dumps({"model": "haiku", "unrelated": "preserved"}))
+    wrapper = """
+import json
+import sys
+import time
+from pathlib import Path
+from ucode.smart_routing import claude_pty, v2
+
+root = Path(sys.argv[1])
+settings = root / ".claude" / "settings.json"
+guard = v2._ClaudeModelSettingGuard(settings)
+observations = {"restorations": [], "checked_at": [], "deferred": 0, "errors": []}
+
+def persisted():
+    observations["checked_at"].append(time.monotonic())
+    result = guard.is_routed()
+    (root / "persistence-checked").touch()
+    return result
+
+def restore():
+    observations["restorations"].append(guard.is_routed())
+    try:
+        restored = guard.restore()
+    except (OSError, ValueError, RuntimeError) as exc:
+        observations["errors"].append(type(exc).__name__)
+        (root / "restore-failed").touch()
+        raise
+    if restored:
+        (root / "restored").touch()
+    return restored
+
+def defer():
+    guard.defer()
+    observations["deferred"] += 1
+    (root / "deferred").touch()
+
+def abandon():
+    try:
+        return guard.abandon()
+    except OSError:
+        (root / "handoff-failed").touch()
+        raise
+
+try:
+    result = claude_pty.run_claude_pty(
+        [sys.executable, str(root / "fc.py"), str(root / "first.sock"),
+         str(root / "capture.json"), str(settings)],
+        route_prompt=lambda _: claude_pty.FirstPromptRoute(
+            model="sonnet", display_model="sonnet", rationale=""),
+        socket_path=root / "first.sock",
+        prepare_model_switch=guard.begin,
+        model_switch_persisted=persisted,
+        restore_model_setting=restore,
+        defer_model_setting=defer,
+        abandon_model_setting=abandon,
+        log_path=root / "routing.log",
+    )
+finally:
+    observations["finished"] = guard.finish()
+    (root / "wrapper.json").write_text(json.dumps(observations))
+sys.exit(result)
+"""
+
+    def run(body):
+        _write_fake_claude(tmp_path / "fc.py", body)
+        result = subprocess.run(
+            [sys.executable, "-c", wrapper, str(tmp_path)],
+            stdin=0,
+            env={**os.environ, "HOME": str(tmp_path), "USERPROFILE": str(tmp_path)},
+            timeout=45,
+        )
+        assert result.returncode == 0
+        observations = json.loads((tmp_path / "wrapper.json").read_text())
+        assert observations["finished"]
+        return (
+            json.loads((tmp_path / "capture.json").read_text()),
+            json.loads(settings.read_text()),
+            observations,
+        )
+
+    return run
+
+
 class TestSwitchTimeoutFailOpen:
-    def test_switch_timeout_sends_esc_then_pastes_and_submits(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
-        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.25)
-        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.05)
-        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
-
-        socket_path = tmp_path / "first.sock"
-        capture = tmp_path / "capture.json"
-        restore_called: list[bool] = []
-        fake_claude = tmp_path / "fc.py"
-        _write_fake_claude(
-            fake_claude,
+    def test_confirmed_cancellation_replays_on_the_original_model(self, replay_model_switch):
+        capture, settings, observations = replay_model_switch(
             """\
-resp = send_hook(socket_path, "hello")
-assert resp["action"] == "block"
-print("blocked", flush=True)
+assert send_hook(socket_path, "hello")["action"] == "block"
 tty.setraw(0)
-
-read_until(b"\\r")    # /model command — but we never confirm the switch
-
-# After SWITCH_TIMEOUT_S: ESC is sent (to cancel /model), then paste, then CR.
-esc_byte = os.read(0, 1)
+print("blocked", flush=True)
+read_until(b"\\r")
+assert os.read(0, 1) == b"\\x1b"
+os.write(1, b"Kept model as haiku\\n")
 paste = read_until(b"\\x1b[201~")
-enter = os.read(0, 1)
-
+assert os.read(0, 1) == b"\\r"
+prompt = paste.split(b"\\x1b[200~", 1)[1].split(b"\\x1b[201~", 1)[0].decode()
+assert send_hook(socket_path, prompt)["action"] == "allow"
 capture_path.write_text(json.dumps({
-    "esc_received": esc_byte == b"\\x1b",
-    "paste_has_payload": b"\\x1b[200~" in paste,
-    "enter_is_cr": enter == b"\\r",
+    "prompt": prompt, "settings_while_running": json.loads(Path(sys.argv[3]).read_text()),
+}))
+"""
+        )
+
+        assert capture["prompt"] == "hello"
+        assert observations["restorations"] == [False]
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
+    @pytest.mark.parametrize(
+        ("persist_delay", "intermediate_redraw"),
+        [(0.0, False), (0.0, True), (0.8, False), (2.4, False)],
+        ids=["persisted-silent", "persisted-redraw", "pending-write", "late-write"],
+    )
+    def test_late_model_completion_cannot_discard_the_replayed_prompt(
+        self, replay_model_switch, persist_delay, intermediate_redraw
+    ):
+        capture, settings, observations = replay_model_switch(
+            f"PERSIST_DELAY = {persist_delay}\nINTERMEDIATE_REDRAW = {intermediate_redraw}\n"
+            + """\
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+
+# A late /model completion clears any prompt replayed before its final redraw.
+ready_at = None
+model_complete = False
+persist_at = None
+received = b""
+submitted = []
+deadline = time.monotonic() + 25
+while time.monotonic() < deadline:
+    if ready_at is not None and not model_complete and time.monotonic() >= ready_at:
+        model_complete = True
+        persist_at = time.monotonic() + PERSIST_DELAY
+        os.write(1, b"Set model to sonnet\\n")
+    if persist_at is not None and time.monotonic() >= persist_at:
+        settings = Path(sys.argv[3])
+        saved = json.loads(settings.read_text())
+        saved["model"] = "sonnet"
+        settings.write_text(json.dumps(saved))
+        persist_at = None
+    if not sel.select([0], [], [], 0.01)[0]:
+        continue
+    data = os.read(0, 4096)
+    if not model_complete:
+        if ready_at is None and b"\\x1b" in data:
+            ready_at = time.monotonic() + 0.3
+            if INTERMEDIATE_REDRAW:
+                os.write(1, b"Finishing model command...\\n")
+        continue
+    received += data
+    if b"\\x1b[200~" in received and b"\\x1b[201~" in received:
+        _, rest = received.split(b"\\x1b[200~", 1)
+        prompt, rest = rest.split(b"\\x1b[201~", 1)
+        if b"\\r" in rest:
+            submitted.append(prompt.decode())
+            assert send_hook(socket_path, prompt.decode())["action"] == "allow"
+            received = b""
+            deadline = min(deadline, time.monotonic() + 0.8)
+capture_path.write_text(json.dumps({
+    "submitted": submitted, "settings_while_running": json.loads(Path(sys.argv[3]).read_text()),
 }))
 """,
         )
 
-        result = claude_pty.run_claude_pty(
-            [sys.executable, str(fake_claude), str(socket_path), str(capture)],
-            route_prompt=_route_sonnet,
-            socket_path=socket_path,
-            restore_model_setting=lambda: restore_called.append(True),
+        assert capture["submitted"] == ["hello"]
+        assert observations["restorations"] == [True]
+        assert (
+            settings
+            == capture["settings_while_running"]
+            == {
+                "model": "haiku",
+                "unrelated": "preserved",
+            }
         )
+        assert bool(observations["deferred"]) == (persist_delay > 2.0)
 
-        assert result == 0
-        assert len(restore_called) == 1, (
-            "restore_model_setting must be called once on switch timeout"
+    @pytest.mark.parametrize(
+        ("chunks", "replay"),
+        [
+            ([b"\x1b[", b"A"], True),
+            ([b"\x1b[", b"?1;2c"], True),
+            ([b"\x1b[", b"Anew input"], False),
+            ([b"\x1b["], False),
+            ([b"new input"], False),
+            ([b"\x1b[200~", b"user paste\x1b[201~"], False),
+        ],
+        ids=[
+            "arrow",
+            "terminal-reply",
+            "edited-after-reply",
+            "unfinished-reply",
+            "user-edit",
+            "paste",
+        ],
+    )
+    def test_input_during_model_recovery(
+        self, replay_model_switch, tmp_path, capfd, chunks, replay
+    ):
+        body = (
+            f"INPUT = {chunks[0]!r}\n"
+            + """\
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+settings = Path(sys.argv[3])
+os.write(1, b"Set model to sonnet\\n")
+while not (test_dir / "persistence-checked").exists():
+    time.sleep(0.005)
+(test_dir / "ready").touch()
+received = b""
+while len(received) < len(INPUT):
+    received += os.read(0, len(INPUT) - len(received))
+assert received == INPUT
+settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+received = b""
+submitted = []
+forwarded = b""
+deadline = time.monotonic() + 3
+while time.monotonic() < deadline:
+    if sel.select([0], [], [], 0.01)[0]:
+        chunk = os.read(0, 4096)
+        received += chunk
+        forwarded += chunk
+    if b"\\x1b[200~" in received and b"\\x1b[201~\\r" in received:
+        prompt = received.split(b"\\x1b[200~", 1)[1].split(b"\\x1b[201~", 1)[0].decode()
+        submitted.append(prompt)
+        assert send_hook(socket_path, prompt)["action"] == "allow"
+        received = b""
+capture_path.write_text(json.dumps({
+    "submitted": submitted, "forwarded": forwarded.hex(),
+    "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
         )
-        data = json.loads(capture.read_text())
-        assert data["esc_received"], "ESC must be sent to cancel /model"
-        assert data["paste_has_payload"], "prompt must be pasted after switch timeout"
-        assert data["enter_is_cr"], "CR (Enter) must follow the paste"
+        restored = tmp_path / "restored"
+        with _stdin_after(tmp_path / "ready", chunks, after_first=restored):
+            capture, settings, _ = replay_model_switch(body)
 
+        assert restored.exists()
+        assert capture["submitted"] == (["hello"] if replay else [])
+        if not replay:
+            assert capture["forwarded"] == b"".join(chunks[1:]).hex()
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+        assert ("Resend your prompt" in capfd.readouterr().out) == (not replay)
 
-# ---------------------------------------------------------------------------
-# Test D: Persist-timeout path does not SIGTERM and submits (Bug C)
-# ---------------------------------------------------------------------------
+    @pytest.mark.parametrize(
+        ("chunks", "fail_handoff", "after_submission"),
+        [
+            ([b"/model ", b"sonnet\r"], False, False),
+            ([b"\x1b[A", b"\r"], False, False),
+            pytest.param(
+                [b"/model sonnet\r"],
+                True,
+                False,
+                marks=pytest.mark.skipif(
+                    os.name != "posix" or os.geteuid() == 0,
+                    reason="requires unprivileged POSIX directory permissions",
+                ),
+            ),
+            ([b"/model sonnet\r"], False, True),
+        ],
+        ids=["typed", "history", "handoff-error", "submitted"],
+    )
+    def test_manual_selection_of_the_routed_model_survives_recovery(
+        self, replay_model_switch, tmp_path, chunks, fail_handoff, after_submission
+    ):
+        body = (
+            f"FAIL_HANDOFF = {fail_handoff}\nAFTER_SUBMISSION = {after_submission}\n"
+            + """\
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+if AFTER_SUBMISSION:
+    os.write(1, b"Set model to sonnet\\n")
+    paste = read_until(b"\\x1b[201~")
+    assert b"\\x1b[200~hello\\x1b[201~" in paste
+    assert os.read(0, 1) == b"\\r"
+    assert send_hook(socket_path, "hello")["action"] == "allow"
+else:
+    assert os.read(0, 1) == b"\\x1b"
+    while not (test_dir / "deferred").exists():
+        time.sleep(0.01)
+recovery_dir = Path.home() / ".ucode"
+try:
+    if FAIL_HANDOFF:
+        recovery_dir.chmod(0o500)
+        assert not os.access(recovery_dir, os.W_OK), "requires unprivileged POSIX permissions"
+    (test_dir / "ready").touch()
+    command = read_until(b"\\r")
+    if FAIL_HANDOFF:
+        assert (test_dir / "handoff-failed").exists()
+finally:
+    recovery_dir.chmod(0o700)
+Path(sys.argv[3]).write_text(json.dumps({"model": "sonnet"}))
+os.write(1, b"Set model to sonnet\\n")
+time.sleep(0.8)
+capture_path.write_text(json.dumps({
+    "command": command.hex(), "settings_while_running": json.loads(Path(sys.argv[3]).read_text()),
+}))
+"""
+        )
+        with _stdin_after(tmp_path / "ready", chunks):
+            capture, settings, _ = replay_model_switch(body)
+        assert capture["command"] == b"".join(chunks).hex()
+        assert capture["settings_while_running"] == settings == {"model": "sonnet"}
+        assert (tmp_path / "handoff-failed").exists() is fail_handoff
 
-
-class TestPersistTimeoutFailOpen:
-    def test_persist_timeout_does_not_sigterm_and_submits(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
-        monkeypatch.setattr(claude_pty, "MODEL_PERSIST_TIMEOUT_S", 0.25)
-        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
-
-        socket_path = tmp_path / "first.sock"
-        capture = tmp_path / "capture.json"
-        restore_called: list[bool] = []
-        fake_claude = tmp_path / "fc.py"
-        _write_fake_claude(
-            fake_claude,
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
+    def test_restore_write_failure_is_retried_while_claude_runs(self, replay_model_switch):
+        capture, settings, observations = replay_model_switch(
             """\
-resp = send_hook(socket_path, "hello")
-assert resp["action"] == "block"
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+settings = Path(sys.argv[3])
+saved = json.loads(settings.read_text())
+saved["model"] = "sonnet"
+settings.write_text(json.dumps(saved))
+try:
+    settings.parent.chmod(0o500)
+    assert not os.access(settings.parent, os.W_OK), "requires unprivileged POSIX permissions"
+    os.write(1, b"Set model to sonnet\\n")
+    while not (test_dir / "restore-failed").exists():
+        time.sleep(0.005)
+    assert json.loads(settings.read_text()) == saved
+finally:
+    settings.parent.chmod(0o700)
+paste = read_until(b"\\x1b[201~")
+assert os.read(0, 1) == b"\\r"
+prompt = paste.split(b"\\x1b[200~", 1)[1].split(b"\\x1b[201~", 1)[0].decode()
+assert send_hook(socket_path, prompt)["action"] == "allow"
+capture_path.write_text(json.dumps({
+    "prompt": prompt, "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
+        )
+
+        assert capture["prompt"] == "hello"
+        assert observations["restorations"] == [True, True]
+        assert observations["errors"] == ["PermissionError"]
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
+    def test_missing_late_write_does_not_reserve_the_default_until_exit(self, replay_model_switch):
+        capture, settings, _ = replay_model_switch(
+            """\
+from ucode.smart_routing import v2
+
+assert send_hook(socket_path, "hello")["action"] == "block"
+tty.setraw(0)
+print("blocked", flush=True)
+read_until(b"\\r")
+assert os.read(0, 1) == b"\\x1b"
+while not (test_dir / "deferred").exists():
+    time.sleep(0.01)
+settings = Path(sys.argv[3])
+other = v2._ClaudeModelSettingGuard(settings)
+first_attempt = prepared = other.begin("opus")
+started = time.monotonic()
+while not prepared and time.monotonic() - started < 5:
+    time.sleep(0.02)
+    prepared = other.begin("opus")
+try:
+    assert prepared
+    settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+    assert other.restore()
+finally:
+    other.finish()
+capture_path.write_text(json.dumps({
+    "first_attempt": first_attempt, "prepared": prepared,
+    "settings_while_running": json.loads(settings.read_text()),
+}))
+"""
+        )
+
+        assert capture["first_attempt"] is False
+        assert capture["prepared"] is True
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
+    @pytest.mark.parametrize(
+        ("output", "later_model"),
+        [("silent", "user-selected"), ("busy", None), ("cancelled", "sonnet")],
+    )
+    def test_unconfirmed_switch_stops_automatic_input(
+        self, replay_model_switch, tmp_path, output, later_model
+    ):
+        capture, settings, observations = replay_model_switch(
+            f"OUTPUT = {output!r}\nLATER_MODEL = {later_model!r}\n"
+            + """\
+import fcntl
+
+assert send_hook(socket_path, "hello")["action"] == "block"
 print("blocked", flush=True)
 tty.setraw(0)
+read_until(b"\\r")
+assert os.read(0, 1) == b"\\x1b"
+if OUTPUT == "cancelled":
+    os.write(1, b"Cancelled model switch\\n")
+received = b""
+while not (test_dir / "deferred").exists():
+    if OUTPUT == "busy":
+        os.write(1, b"busy\\r")
+    if sel.select([0], [], [], 0.01)[0]:
+        received += os.read(0, 4096)
 
-read_until(b"\\r")                        # /model command
-os.write(1, b"Set model to sonnet\\n")    # switch confirmed
-sys.stdout.flush()
-
-# model_switch_persisted() always returns False in this test,
-# so after MODEL_PERSIST_TIMEOUT_S the loop must paste without SIGTERMing us.
-paste = read_until(b"\\x1b[201~")
-enter = os.read(0, 1)
-
+with (Path.home() / ".ucode" / "claude-v2-model.lock").open("a+") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+settings = Path(sys.argv[3])
+if LATER_MODEL is not None:
+    saved = json.loads(settings.read_text())
+    saved["model"] = LATER_MODEL
+    settings.write_text(json.dumps(saved))
+    if LATER_MODEL == "sonnet":
+        os.write(1, b"Set model to sonnet\\n")
+deadline = time.monotonic() + 1
+while time.monotonic() < deadline:
+    if OUTPUT == "busy":
+        os.write(1, b"busy\\r")
+    if sel.select([0], [], [], 0.01)[0]:
+        received += os.read(0, 4096)
 capture_path.write_text(json.dumps({
-    "paste_received": b"\\x1b[200~" in paste,
-    "enter_is_cr": enter == b"\\r",
+    "received": received.hex(), "settings_while_running": json.loads(settings.read_text()),
 }))
 """,
         )
 
-        result = claude_pty.run_claude_pty(
-            [sys.executable, str(fake_claude), str(socket_path), str(capture)],
-            route_prompt=_route_sonnet,
-            socket_path=socket_path,
-            model_switch_persisted=lambda: False,  # persist check always fails
-            restore_model_setting=lambda: restore_called.append(True),
+        assert capture["received"] == "", "a redraw must not trigger automatic input"
+        assert observations["deferred"] == 1
+        assert observations["restorations"] == ([True] if later_model == "sonnet" else [])
+        checks = observations["checked_at"]
+        assert checks
+        if output == "busy":
+            assert len(checks) >= 2
+        assert all(
+            later - earlier >= claude_pty.MODEL_RESTORE_INTERVAL_S - 0.01
+            for earlier, later in zip(checks, checks[1:], strict=False)
+        ), "busy output must not cause a settings read on every chunk"
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {
+                "model": "user-selected" if later_model == "user-selected" else "haiku",
+                "unrelated": "preserved",
+            }
         )
+        assert "automatic replay stopped" in (tmp_path / "routing.log").read_text()
 
-        # SIGTERM would yield exit code 128+15=143; clean exit must be 0.
-        assert result == 0, f"process should not be SIGTERMed; got exit code {result}"
-        assert len(restore_called) == 1, (
-            "restore_model_setting must be called once on persist timeout"
-        )
-        data = json.loads(capture.read_text())
-        assert data["paste_received"], "prompt must be pasted after persist timeout"
-        assert data["enter_is_cr"], "CR (Enter) must follow the paste"
+
+class TestModelSwitchInput:
+    @pytest.mark.parametrize(
+        "sequence",
+        [
+            b"\x1b[A",
+            b"\x1bOD",
+            b"\x1b[1~",
+            b"\x1b[4~",
+            b"\x1b[I",
+            b"\x1b[O",
+            b"\x1b[?1;2c",
+            b"\x1b[12;45R",
+        ],
+    )
+    def test_fragmented_navigation_and_terminal_replies_are_not_edits(self, sequence):
+        state = claude_pty.ModelSwitchInput()
+        for byte in sequence:
+            assert state.observe(bytes([byte]), 1.0) == (False, False)
+        assert state.observe(b"", 2.0) == (False, False)
+
+    def test_escape_alone_cancels_replay_without_relinquishing_the_default(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"\x1b", 1.0) == (False, False)
+        assert state.observe(b"", 2.0) == (True, False)
+
+    def test_submitted_slash_command_transfers_default_ownership(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"/model ", 1.0) == (True, False)
+        assert state.observe(b"sonnet\r", 1.1) == (True, True)
+        assert state.observe(b"/mod\r", 1.2) == (True, True)
+        assert state.observe(b"plain text\r", 1.3) == (True, False)
+
+    @pytest.mark.parametrize(
+        "editing",
+        [b"\x1b[A", b"\x1bOD", b"\t", b"\x12", b"\x10", b"\x19"],
+        ids=["history", "cursor", "completion", "search", "previous", "yank"],
+    )
+    def test_submitting_an_unknown_line_transfers_default_ownership(self, editing):
+        state = claude_pty.ModelSwitchInput()
+        state.observe(editing, 1.0)
+        assert state.observe(b"\r", 1.1) == (True, True)
+        assert state.observe(b"plain text\r", 1.2) == (True, False)
+
+    def test_terminal_replies_do_not_make_a_known_line_unknown(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"plain text", 1.0) == (True, False)
+        for reply in [b"\x1b[?1;2c", b"\x1b[12;45R", b"\x1b[I", b"\x1b]10;rgb:ff/ff/ff\x07"]:
+            assert state.observe(reply, 1.1) == (False, False)
+        assert state.observe(b"\r", 1.2) == (True, False)
+
+    def test_multiline_paste_is_not_a_submitted_model_command(self):
+        state = claude_pty.ModelSwitchInput()
+        assert state.observe(b"\x1b[200~/model sonnet\nexplain it\x1b[201~", 1.0) == (True, False)
+        assert state.observe(b"\r", 1.1) == (True, False)
+        assert state.observe(b"\x1b[200~", 1.2) == (True, False)
+        assert state.pending
+        assert state.observe(b"/model sonnet\nexplain it\x1b[201~", 1.3) == (True, False)
+        assert not state.pending
+        assert state.observe(b"\r", 1.4) == (True, False)
 
 
 # ---------------------------------------------------------------------------
@@ -441,8 +911,10 @@ box = blocked_prompt
 submitted = []
 pasting = False
 pending = b""
-in_hook = None
-while len(submitted) < EXPECTED_SUBMITS:
+deadline = time.monotonic() + 3.0
+while len(submitted) < EXPECTED_SUBMITS and time.monotonic() < deadline:
+    if not sel.select([0], [], [], 0.05)[0]:
+        continue
     pending += os.read(0, 1)
     if pending in (b"\\x1b", b"\\x1b[", b"\\x1b[2", b"\\x1b[20", b"\\x1b[200", b"\\x1b[201"):
         continue
@@ -454,15 +926,12 @@ while len(submitted) < EXPECTED_SUBMITS:
         continue
     if pending.startswith(b"\\x1b"):
         pending = b""
-        if in_hook is not None:  # ESC during the hook restores the typed prompt
-            box, in_hook = in_hook, None
         continue
     char, pending = pending.decode(), b""
     if char == "\\r" and not pasting:
         submitted.append(box)
         if box.startswith("/model ") and CONFIRM_SWITCH:
             os.write(1, b"Set model to sonnet\\n")
-        in_hook = None if box.startswith("/") else box
         box = ""
     elif char == "\\x15":
         if box.endswith("\\n"):
@@ -514,16 +983,6 @@ class TestBlockedPromptLeftInInputBox:
         submitted = _run_input_box_tui(tmp_path, confirm_switch=True, expected_submits=2)
 
         assert submitted == ["/model sonnet", "fix the parser\nthen run the tests"]
-
-    def test_switch_timeout_replay_is_not_mangled(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(claude_pty, "READY_QUIET_S", 0.05)
-        monkeypatch.setattr(claude_pty, "SWITCH_TIMEOUT_S", 0.25)
-        monkeypatch.setattr(claude_pty, "ESC_GAP_S", 0.05)
-        monkeypatch.setattr(claude_pty, "PASTE_SUBMIT_DELAY_S", 0.05)
-
-        submitted = _run_input_box_tui(tmp_path, confirm_switch=False, expected_submits=2)
-
-        assert submitted[-1] == "fix the parser\nthen run the tests"
 
     def test_ready_timeout_replay_is_not_duplicated(self, tmp_path, monkeypatch):
         monkeypatch.setattr(claude_pty, "READY_QUIET_S", 100.0)

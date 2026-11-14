@@ -1712,7 +1712,7 @@ source is `main.ucode.dont_delete_ci_company_anthropic_mps` with no static defau
 scenarios. The Codex module does the same with `codex_mps.json` and
 `main.default.ci_e2e_openai_mps`. Separate read-only, provider-scoped model-list requests
 establish expected IDs independently of the generated agent files. With no authored defaults,
-Claude's native cache and replacement picker must match those IDs, preserve catalog display names,
+Claude's picker waits for its native cache before exit. Both must match those IDs, preserve catalog display names,
 and show a model in a numbered picker row alongside its admin header.
 Codex's scoped and stable catalogs, ug-launched app server, and fresh bare app server must match
 its independently fetched IDs. The configured Codex journey subsequently runs real `ug revert`,
@@ -1740,6 +1740,11 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 "Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
 the file task, and normal exit. The managed default alone routes only Claude subagents, with the
 orchestrator; Codex's managed default is opted out and covered by its launch-only test.
+
+See the [component coverage inventory](../README.md) for delayed Claude model-switch
+recovery, manual choices, fragmented terminal input, and filesystem-failure coverage and gaps.
+Those checks use temporary settings and fake TUIs; they do not establish live Claude or gateway
+coverage or replace the completed file task required by these live journeys.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

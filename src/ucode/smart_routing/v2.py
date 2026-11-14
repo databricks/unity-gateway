@@ -7,10 +7,12 @@ import os
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -92,6 +94,7 @@ OAUTH_TOKEN_ENV_VAR = "OAUTH_TOKEN"
 HEALTH_REQUEST_TIMEOUT_SECONDS = 1
 HEALTH_POLL_INTERVAL_SECONDS = 0.25
 CLAUDE_ROUTE_SELECTION_TIMEOUT_S = 20.0
+CLAUDE_MODEL_DEFER_TIMEOUT_S = 2.0
 CLAUDE_ROUTED_AGENT_PREFIX = "ucode-route-"
 # Omnigent matches the "ug-smart-router" plugin name exactly; update Omnigent if it changes.
 CLAUDE_ROUTING_PLUGIN_NAME = "ug-smart-router"
@@ -654,35 +657,267 @@ class _ClaudeModelSettingGuard:
         self._before: dict | None = None
         self._routed_model: str | None = None
         self._lock: TextIO | None = None
+        self._owner_lock: TextIO | None = None
+        self._deferred_until: float | None = None
+        self._cancelled = False
+        self._begin_error_warned = False
+        self._token = uuid.uuid4().hex
+        settings_key = hashlib.sha256(str(settings_path.resolve()).encode()).hexdigest()[:16]
+        self._recovery_path = APP_DIR / f"claude-v2-model-{settings_key}.json"
 
-    def begin(self, routed_model: str) -> None:
+    @staticmethod
+    def _open_lock(name: str) -> TextIO | None:
         APP_DIR.mkdir(parents=True, exist_ok=True)
-        self._lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
-        acquire_exclusive_file_lock(self._lock)
-        self._before = read_json_safe(self.settings_path)
-        self._routed_model = routed_model
+        lock = open(APP_DIR / name, "a+", encoding="utf-8")
+        try:
+            acquire_exclusive_file_lock(lock, timeout=0)
+        except TimeoutError:
+            lock.close()
+            return None
+        except BaseException:
+            lock.close()
+            raise
+        return lock
+
+    def _read_settings(self) -> dict:
+        try:
+            current = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {}
+        if not isinstance(current, dict):
+            raise ValueError(f"Expected an object in {self.settings_path}")
+        return current
+
+    def _read_recovery(self) -> dict:
+        try:
+            recovery = json.loads(self._recovery_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"before": {}, "pending": {}}
+        if (
+            not isinstance(recovery, dict)
+            or not isinstance(recovery.get("before"), dict)
+            or not isinstance(recovery.get("pending"), dict)
+        ):
+            raise ValueError(f"Invalid model recovery state in {self._recovery_path}")
+        for entry in recovery["pending"].values():
+            if (
+                not isinstance(entry, dict)
+                or not isinstance(entry.get("model"), str)
+                or type(entry.get("pid")) is not int
+                or entry["pid"] <= 0
+            ):
+                raise ValueError(f"Invalid model recovery entry in {self._recovery_path}")
+        return recovery
+
+    @staticmethod
+    def _prune_finished_recovery(recovery: dict) -> None:
+        # Signal 0 only probes liveness on POSIX; Windows may terminate the process.
+        if os.name != "posix":
+            return
+        for token, entry in list(recovery["pending"].items()):
+            if entry["pid"] != os.getpid():
+                try:
+                    os.kill(entry["pid"], 0)
+                except ProcessLookupError:
+                    del recovery["pending"][token]
+                except PermissionError:
+                    pass
+
+    def _write_recovery(self, recovery: dict) -> None:
+        if recovery["pending"]:
+            config_io.atomic_write_json(self._recovery_path, recovery)
+        else:
+            self._recovery_path.unlink(missing_ok=True)
+
+    def _release_settings_lock(self) -> None:
+        if self._lock is not None:
+            release_file_lock(self._lock)
+            self._lock.close()
+            self._lock = None
+
+    def _release_owner_lock(self) -> None:
+        if self._owner_lock is not None:
+            release_file_lock(self._owner_lock)
+            self._owner_lock.close()
+            self._owner_lock = None
+
+    def _expire_owner(self) -> None:
+        if (
+            self._lock is None
+            and self._deferred_until is not None
+            and time.monotonic() >= self._deferred_until
+        ):
+            self._release_owner_lock()
+
+    def _lock_for_restore(self) -> bool:
+        self._expire_owner()
+        if self._owner_lock is None:
+            self._owner_lock = self._open_lock("claude-v2-model-owner.lock")
+            if self._owner_lock is None:
+                return False
+        if self._lock is None:
+            self._lock = self._open_lock("claude-v2-model.lock")
+            if self._lock is None:
+                self._expire_owner()
+                return False
+        return True
+
+    def _clear(self) -> None:
+        self._before = None
+        self._routed_model = None
+        self._deferred_until = None
+        self._cancelled = False
+        self._release_settings_lock()
+        self._release_owner_lock()
+
+    def begin(self, routed_model: str) -> bool:
+        if self._before is not None:
+            return False
+        try:
+            self._owner_lock = self._open_lock("claude-v2-model-owner.lock")
+            if self._owner_lock is None:
+                return False
+            self._lock = self._open_lock("claude-v2-model.lock")
+            if self._lock is not None:
+                current = self._read_settings()
+                before = {"model": current["model"]} if "model" in current else {}
+                recovery = self._read_recovery()
+                if recovery["pending"]:
+                    if any(
+                        current.get("model") == entry["model"]
+                        for entry in recovery["pending"].values()
+                    ):
+                        # A deferred session can persist after releasing ownership.
+                        before = recovery["before"]
+                    elif before != recovery["before"]:
+                        recovery["pending"].clear()  # Preserve a later manual choice.
+                recovery["before"] = before
+                # A dead owner may already have persisted its temporary model.
+                # Recover its baseline before discarding its pending entry.
+                self._prune_finished_recovery(recovery)
+                recovery["pending"][self._token] = {"model": routed_model, "pid": os.getpid()}
+                self._write_recovery(recovery)
+                self._before = before
+                self._routed_model = routed_model
+                return True
+        except (OSError, ValueError, RuntimeError) as exc:
+            if not self._begin_error_warned:
+                print_warning(
+                    f"Smart Routing could not prepare model recovery at {self._recovery_path}: "
+                    f"{exc}. Check the recovery file and its directory permissions."
+                )
+                self._begin_error_warned = True
+        except BaseException:
+            self._clear()
+            raise
+        finally:
+            self._release_settings_lock()
+        self._clear()
+        return False
 
     def is_routed(self) -> bool:
-        value = read_json_safe(self.settings_path).get("model")
-        return isinstance(value, str) and value == self._routed_model
-
-    def restore(self) -> None:
+        """Reserve a persisted write for the immediately following restoration."""
+        self._expire_owner()
+        if self._cancelled:
+            return True
         if self._before is None:
-            return
+            return False
+        ready = False
         try:
-            current = read_json_safe(self.settings_path)
-            if "model" in self._before:
-                current["model"] = self._before["model"]
-            else:
-                current.pop("model", None)
-            write_json_file(self.settings_path, current)
-            self._before = None
-            self._routed_model = None
+            if self._lock_for_restore():
+                ready = self._token not in self._read_recovery()["pending"] or (
+                    self._read_settings().get("model") == self._routed_model
+                )
+        except (OSError, ValueError):
+            self.defer()
+        if not ready:
+            self._release_settings_lock()
+            self._expire_owner()
+        return ready
+
+    def defer(self) -> None:
+        self._release_settings_lock()
+        if self._before is not None and self._deferred_until is None:
+            self._deferred_until = time.monotonic() + CLAUDE_MODEL_DEFER_TIMEOUT_S
+        self._expire_owner()
+
+    def abandon(self) -> bool:
+        self._cancelled = True
+        self._release_owner_lock()
+        if self._lock is None:
+            self._lock = self._open_lock("claude-v2-model.lock")
+        if self._lock is None:
+            return False
+        try:
+            # Explicit input supersedes every older automatic restoration,
+            # including one currently owned by a different routed session.
+            self._recovery_path.unlink(missing_ok=True)
         finally:
-            if self._lock is not None:
-                release_file_lock(self._lock)
-                self._lock.close()
-                self._lock = None
+            self._release_settings_lock()
+        self._clear()
+        return True
+
+    def restore(self) -> bool:
+        if self._cancelled:
+            return self.abandon()
+        if self._before is None:
+            return True
+        if not self._lock_for_restore():
+            return False
+        try:
+            recovery = self._read_recovery()
+            if self._token in recovery["pending"]:
+                current = self._read_settings()
+                # A later user choice is not the temporary /model write we own.
+                if current.get("model") == self._routed_model:
+                    if "model" in recovery["before"]:
+                        current["model"] = recovery["before"]["model"]
+                    else:
+                        current.pop("model", None)
+                    if config_io.is_dry_run():
+                        write_json_file(self.settings_path, current)
+                    else:
+                        target = self.settings_path.resolve()
+                        config_io.atomic_write_json(
+                            target, current, mode=stat.S_IMODE(target.stat().st_mode)
+                        )
+                del recovery["pending"][self._token]
+                self._write_recovery(recovery)
+        except BaseException:
+            self.defer()
+            raise
+        self._clear()
+        return True
+
+    def finish(self, *, timeout: float = 2.0) -> bool:
+        """Retry cleanup after the child has exited, without stalling exit forever."""
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    if self.restore():
+                        return True
+                except (OSError, ValueError, RuntimeError):
+                    pass
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    if self._cancelled:
+                        print_warning(
+                            "Smart Routing could not discard old model recovery state. "
+                            f"Remove {self._recovery_path} before another routed launch."
+                        )
+                        return False
+                    before = self._before or {}
+                    action = (
+                        f"Set its model back to {before['model']!r}."
+                        if "model" in before
+                        else "Remove its model setting."
+                    )
+                    print_warning(f"Smart Routing could not restore {self.settings_path}. {action}")
+                    return False
+                time.sleep(min(0.1, remaining))
+        finally:
+            self._clear()
 
 
 def launch_claude(
@@ -832,6 +1067,8 @@ def launch_claude(
                     prepare_model_switch=model_setting.begin,
                     model_switch_persisted=model_setting.is_routed,
                     restore_model_setting=model_setting.restore,
+                    defer_model_setting=model_setting.defer,
+                    abandon_model_setting=model_setting.abandon,
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
@@ -851,7 +1088,7 @@ def launch_claude(
                     proc.send_signal(signal.SIGINT)
                     returncode = proc.wait()
     finally:
-        model_setting.restore()
+        model_setting.finish()
     sys.exit(returncode)
 
 
