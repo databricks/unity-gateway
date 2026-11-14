@@ -351,9 +351,9 @@ class TestCujSmartRouting(BaseCujTest):
         ):
             default = configs[CLAUDE]["default_models"]["default_model"]
             settings = json.loads(MANAGED_PATHS[0].read_text())
-            row = next(row for row in settings["modelPicker"]["options"] if row["model"] == default)
-            label = row["label"].removeprefix("Claude ")
             rows = settings["modelPicker"]["options"]
+            row = next(row for row in rows if row["model"] == default)
+            label = row["label"].removeprefix("Claude ")
             index = rows.index(row)
             direction = 1 if index + 1 < len(rows) else -1
             alternate = rows[index + direction]
@@ -387,9 +387,24 @@ class TestCujSmartRouting(BaseCujTest):
                     "manual model with OFF band and footer",
                 )
                 tui.submit("/model auto")
-                tui.wait_for(lambda s: "Choose your main model" in s, "the Auto model selector")
+
+                def main_model_focused(screen, label):
+                    return any(
+                        re.search(r"│\s*❯\s+" + re.escape(label) + r"\s*$", line)
+                        for line in screen.splitlines()
+                    )
+
+                tui.wait_for(
+                    lambda s: "Choose your main model" in s and main_model_focused(s, label),
+                    "the Auto selector focused on the current main model",
+                )
                 arrow = "\x1b[B" if direction == 1 else "\x1b[A"
-                tui.send(arrow + "\r", "select " + alternate_label + " as the Auto main model")
+                tui.send(arrow, "focus " + alternate_label + " as the Auto main model")
+                tui.wait_for(
+                    lambda s: main_model_focused(s, alternate_label),
+                    "the selected Auto main model before saving",
+                )
+                tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
                         "Choose your main model" not in s
