@@ -268,7 +268,7 @@ def metrics_recorder(monkeypatch):
     # Tests exercise collection and real SDK aggregation without sending developer telemetry.
     runtime = metrics.Recorder("claude", metrics.time.perf_counter())
     monkeypatch.setattr(metrics, "_runtime", runtime)
-    monkeypatch.setattr(exporter, "send_in_background", Mock(return_value=None))
+    monkeypatch.setattr(exporter, "start_exporter", Mock(return_value=None))
     yield runtime
     runtime.stop.set()
     runtime.wake.set()
