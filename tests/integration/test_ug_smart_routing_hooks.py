@@ -758,23 +758,27 @@ def test_smart_router_routes_claude_subagent_at_launch(
             "--skip-upgrade",
             "--disable-databricks-ai-tools",
         )
-        with AgentTerminal(
-            session, "claude", [str(session.binary), "claude"], "smart-router-launch"
-        ) as tui:
-            tui.boot()
-            checkpoint = recorder.checkpoint()
-            task = _run_calculation(
-                tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True
-            )
-            _assert_claude_calculation_requests(
-                recorder,
-                checkpoint,
-                task,
-                routed=True,
-                launch_recipe=None,
-                orchestration_enabled=orchestration_enabled,
-            )
-            transcript = _assert_claude_session_finished(session, tui)
+        checkpoint = recorder.checkpoint()
+        try:
+            with AgentTerminal(
+                session, "claude", [str(session.binary), "claude"], "smart-router-launch"
+            ) as tui:
+                tui.boot()
+                checkpoint = recorder.checkpoint()
+                task = _run_calculation(
+                    tui, session, "claude", "1+1", "2", orchestration_enabled, routed=True
+                )
+                _assert_claude_calculation_requests(
+                    recorder,
+                    checkpoint,
+                    task,
+                    routed=True,
+                    launch_recipe=None,
+                    orchestration_enabled=orchestration_enabled,
+                )
+                transcript = _assert_claude_session_finished(session, tui)
+        finally:
+            session.record("request-lifecycle.json", recorder.request_lifecycle_after(checkpoint))
     _assert_claude_not_wrapped(session, transcript)
 
 

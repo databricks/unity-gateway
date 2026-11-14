@@ -1133,6 +1133,10 @@ smart routing overrides individual routing env vars. The shared Claude fixtures 
 `test_smart_router_routes_claude_subagent_at_launch[subagent_only_v0-glm]` loads
 `claude_smart_routing_glm.json`, which offers only GLM, so that case's parent and routed child run
 on GLM; the off and back-on journeys keep their six cases.
+The launch journey always saves `request-lifecycle.json`, including when TUI boot or the
+task fails. It records each forward's sequence, start/completion times, upstream status,
+received byte count, completion state, and transport error class. It contains no paths,
+headers, prompts, or response bodies, and snapshots do not wait for a stalled stream.
 Claude's toggle variants are temporarily non-blocking on both CI platforms; see
 [Soft-fail tests](#soft-fail-tests). Their assertions and local
 selection are unchanged. Codex toggles and the direct hook journeys remain required.
