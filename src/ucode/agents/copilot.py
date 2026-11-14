@@ -33,6 +33,7 @@ import re
 import secrets
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -83,6 +84,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
+from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
 from ucode.workspace import SELECTOR_HEADER_NAMES
@@ -728,13 +730,20 @@ def render_providers_config(
         if provider_service:
             provider["headers"] = {MODEL_PROVIDER_SERVICE_HEADER: provider_service}
         providers.append(provider)
+    labels = (
+        {}
+        if provider_service
+        else {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
+    )
+    counts = Counter(labels.values())
     models = []
     for model in catalog:
+        label = labels.get(model, model.id)
         entry: dict[str, Any] = {
             "id": model.id,
             "provider": model.provider,
             "wireModel": model.id,
-            "name": model.id,
+            "name": model.id if counts[label] > 1 else label,
         }
         catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
         if catalog_id is not None:

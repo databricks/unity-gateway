@@ -1624,3 +1624,8 @@ is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. No installed-agent journey currently covers mixed wildcard sources or
 proves inference with qualified MPS models.
+
+Copilot CLI registry label checks cover human-readable labels for qualified catalog models,
+duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names
+remain raw so regional target distinctions are preserved. Native picker and inference validation
+remain separate from these component checks.
