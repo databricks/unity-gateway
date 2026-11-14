@@ -101,8 +101,10 @@ the fallback follows the task text delivered to the child. Request
 construction alone does not establish generated language. The native task-view parser
 also recognizes an empty earlier-session section without treating running or
 partially rendered task lists as complete.
-Proxy diagnostic component tests keep background logs out of interactive terminal output
-while preserving them in `~/.ucode/logs/gateway-proxy.log`. Language-proxy refresh errors
+Proxy component tests keep language-refresh warnings out of interactive terminal output
+while preserving them in `~/.ucode/logs/gateway-proxy.log`. Explicit proxy diagnostics
+retain stderr unless a diagnostics file is configured; an unwritable file falls back
+to stderr. Language-proxy refresh errors
 omit raw exception text from both the file and redirected stderr while retaining the
 sign-in hint. The file is created with private permissions.
 The existing smart-routing CUJs and resumed-child journey use this task-view parser to

@@ -283,9 +283,6 @@ export function register(on) {
                     "Optional subagent language inheritance is unavailable; continuing without it."
                     in (tmp_path / "debug.log").read_text()
                 )
-                (tmp_path / "native-health-timeout.json").write_text(
-                    json.dumps({"failure": health_failure, "seconds": elapsed, "state": observed})
-                )
     finally:
         release_health.set()
         proc.terminate()

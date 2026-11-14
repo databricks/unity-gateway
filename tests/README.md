@@ -357,8 +357,9 @@ token-count passthrough, exact-byte preservation after decoder recursion errors,
 unchanged parent and classifier payloads. The socket tests in
 `test_gateway_proxy_integration.py` retain forwarding, session authentication, and
 private-header stripping.
-Interactive proxy diagnostics and the language proxy's refresh failures go to
-`~/.ucode/logs/gateway-proxy.log` without writing into the agent's terminal.
+Only language-proxy refresh warnings go to `~/.ucode/logs/gateway-proxy.log`
+when stderr is interactive. Explicit proxy diagnostics retain stderr unless a
+diagnostics file is configured; an unwritable diagnostics file falls back to stderr.
 Language-proxy refresh errors retain the sign-in hint but omit exception contents from
 both destinations; newly created log files are private. Other proxies retain their default
 stderr sign-in hint.
