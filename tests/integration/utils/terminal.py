@@ -25,6 +25,11 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def claude_workspace_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
+    """Match the disposable project's full path even when the terminal wraps it."""
+    return "Accessing workspace:" in screen and "".join(str(cwd).split()) in "".join(screen.split())
+
+
 def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
     """Whether Codex 0.156+ is asking to trust exactly the test project, with Trust selected."""
     return (
@@ -470,10 +475,8 @@ class AgentTerminal(TerminalProcess):
                         return
                     continue
                 ready_since = None
-            if (
-                self.agent != "antigravity"
-                and "Accessing workspace:" in text
-                and self.session.cwd.name in text
+            if self.agent != "antigravity" and claude_workspace_trust_dialog_shown(
+                text, self.session.cwd
             ):
                 ready_since = None
                 self.choose("Accessing workspace:", "Yes, I trust this folder")
@@ -590,6 +593,7 @@ class AgentTerminal(TerminalProcess):
             }.get(self.agent, "Codex")
             if (
                 title in text
+                and "Accessing workspace:" not in text
                 and "Confirm folder trust" not in text
                 and "loading" not in text.lower()
                 and not re.search(r"(?m)^\s*>\s+You are in\b", text)
