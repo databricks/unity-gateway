@@ -96,6 +96,9 @@ these cases. Tests only validate the published fixtures; they never update them.
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
+Its Auto toggle journey returns from a manual model through `/model auto` and
+checks that model switching does not expose internal model aliases. Native `/status` and headers for non-Claude models
+still display the selected alias on Claude 2.1.290.
 It runs the managed-default and explicit-model journeys and six
 `SMART_ROUTER_CONFIG_VERSION` presets using the shared version constants. With no selector,
 managed smart routing leaves the first prompt unrouted: the admin's default model completes the
@@ -106,6 +109,12 @@ cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journe
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+An additional Claude-only UI journey overrides the version with
+`subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
+selects a regular model and verifies the band and footer show OFF, then returns
+to Auto and verifies both show ON. It observes the chosen main-model row before
+pressing Enter to save, rather than sending navigation and confirmation together. It sends no inference requests;
+the existing journeys retain the checks for actual routing decisions and inference.
 Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |

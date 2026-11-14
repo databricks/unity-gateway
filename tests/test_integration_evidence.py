@@ -16,10 +16,20 @@ from tests.integration.utils.evidence import (
     tool_outputs,
 )
 from tests.integration.utils.terminal import (
+    claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+@pytest.mark.parametrize("wrap", ["", "\n "])
+def test_claude_workspace_trust_requires_full_project_path(wrap):
+    cwd = PureWindowsPath(r"D:\a\_temp\ug-integration-project-8725e2e1b7c0\project with spaces")
+    screen = f"Accessing workspace:\n{str(cwd).replace('with spaces', 'with' + wrap + ' spaces')}\n❯ No, exit\n  Yes, I trust this folder"
+    assert claude_workspace_trust_dialog_shown(screen, cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("8725e2e1b7c0", "other"), cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("Accessing workspace:", ""), cwd)
 
 
 @pytest.mark.parametrize(

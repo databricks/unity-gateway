@@ -1,5 +1,18 @@
 # Test suites and user journeys
 
+Claude Auto coverage is centered on
+`e2e_cuj/test_cuj4_smart_routing.py::TestCujSmartRouting::test_auto_preset_starts_on_managed_default_and_toggles_routing`.
+It uses the live workspace with `subagent_auto_v0_claude_only`, checks startup with
+the managed main model, switches routing off with a regular model, and returns to
+Auto with a different main model. It checks both routing indicators without sending
+inference requests. Existing CUJ 4 journeys independently verify applied routing.
+Small existing tests retain packaging and rollout checks. Separate Auto component,
+native profile/effort, and managed-fixture integration suites were removed in favor
+of this CUJ. Auto-specific live child routing, restart/resume, rollback to the old picker,
+policy, cancellation, feedback, effort, and context-window edge cases no longer
+have dedicated automated coverage. Existing routing CUJs do not prove those
+Auto-specific behaviors.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.

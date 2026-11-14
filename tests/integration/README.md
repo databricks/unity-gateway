@@ -1,5 +1,8 @@
 # Integration tests
 
+Auto picker coverage lives in the read-only workspace CUJ 4. See the
+[coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity

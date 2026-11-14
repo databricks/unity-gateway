@@ -34,8 +34,10 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -120,6 +122,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
@@ -1879,6 +1882,11 @@ def write_tool_config(
             *(["WebSearch"] if withdraws_web_search else []),
         ],
         passthrough_leaves=passthrough.record(),
+        auto_picker=(
+            not (provider or parent_schema or relayed)
+            and resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
+            == "1"
+        ),
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -2201,6 +2209,24 @@ def header_mod_active() -> bool:
     return True
 
 
+def auto_picker_available() -> bool:
+    """A managed picker/allowlist must admit Auto before native startup."""
+    from ucode.agents.claude_auto import (
+        AUTO_MODEL,
+        model_available,
+        picker_is_configured,
+    )
+
+    path = _managed_settings_path()
+    settings = read_json_safe(path) if path is not None else {}
+    if "modelPicker" in settings:
+        return picker_is_configured(settings)
+    env = settings.get("env", {})
+    if not isinstance(env, dict) or env.get("ANTHROPIC_CUSTOM_MODEL_OPTION"):
+        return False
+    return model_available(AUTO_MODEL, settings)
+
+
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
     """Add ug's credential blanks to the managed file only when asked; otherwise keep it as found.
 
@@ -2276,6 +2302,7 @@ def _reconcile_managed_settings(
     picker_keys: list[str],
     withdrawn_denies: list | None = None,
     passthrough_leaves: list | None = None,
+    auto_picker: bool = False,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -2341,6 +2368,37 @@ def _reconcile_managed_settings(
         header_mod_root, managed_file_exists=current_text is not None
     )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
+    if auto_picker:
+        from ucode.agents.claude_auto import (
+            AUTO_CUSTOM_MODEL_ENV_KEYS,
+            add_picker_entry,
+            is_auto_model,
+            picker_is_configured,
+        )
+
+        # The native picker and startup allowlist read their source directly,
+        # before the merged settings.read hook. Install the row at configure;
+        # subsequent launches only preserve an already configured row.
+        if "modelPicker" in picker_keys and (
+            _explicit_configure or picker_is_configured(managed_before)
+        ):
+            desired_settings = add_picker_entry(desired_settings)
+            owned_paths = [
+                *owned_paths,
+                ["modelPicker"],
+                *[
+                    ["modelOverrides", key]
+                    for source in (managed_before, desired_settings)
+                    for key in (source.get("modelOverrides") or {})
+                    if isinstance(key, str) and is_auto_model(key)
+                ],
+                *[
+                    ["env", key]
+                    for key in AUTO_CUSTOM_MODEL_ENV_KEYS
+                    if key in managed_before.get("env", {})
+                    and key not in desired_settings.get("env", {})
+                ],
+            ]
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
     if header_mod_root is not None:
@@ -2955,6 +3013,28 @@ def launch(
         if options.launch_model and not pinned_model
         else None
     )
+    if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) != "1":
+        from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, is_auto_model
+
+        managed_path = _managed_settings_path()
+        managed = read_json_safe(managed_path) if managed_path is not None else {}
+        managed_env = managed.get("env")
+        managed_env = managed_env if isinstance(managed_env, dict) else {}
+        saved = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
+        if (
+            isinstance(saved, str)
+            and is_auto_model(saved)
+            and not managed_env.get("ANTHROPIC_MODEL")
+        ):
+            for source in (managed, read_json_safe(CLAUDE_SETTINGS_PATH)):
+                overrides = source.get("modelOverrides")
+                target = overrides.get(saved) if isinstance(overrides, dict) else None
+                if isinstance(target, str) and not is_auto_model(target):
+                    session_model = session_model or target
+                    break
+        if is_auto_model(os.environ.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")):
+            for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
+                os.environ.pop(key, None)
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:
@@ -2963,8 +3043,8 @@ def launch(
                 tool_args,
                 binary=binary,
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
+                default_model=session_model,
                 compose_settings=functools.partial(
                     _compose_v2_settings, server_side_web_search=server_side_search
                 ),

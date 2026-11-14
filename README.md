@@ -529,6 +529,68 @@ by `task_sha256` (SHA-256 of its UTF-8 text) and `task_length` (characters). The
 and native child still receive the complete assignment. Reasons can quote task content,
 so these logs may still contain sensitive details. Claude's audit format is unchanged.
 
+### Auto in Claude Code
+
+Auto is opt-in. Enable the new config version for configure and launch:
+
+```bash
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent claude
+SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
+```
+
+All existing versions, including `subagent_orch_v0_claude_only`, keep the old
+model picker and Smart Router controls. `ENABLE_SMART_ROUTER_AUTO_MODE=1` enables
+the picker for an already smart-routed launch without a version selector; the flag
+alone does not enable routing. A known version overrides this flag.
+
+The native `/model` picker includes **Auto**:
+“Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
+enables UG's existing subagent router and opens the complete native main-agent model selector.
+`/model auto` selects Auto and opens the same selector without a model request. All available models
+appear in catalog order in one scrollable list.
+
+With the Auto config version, fresh sessions start in Auto with the managed default
+model, or the first available model if no default is configured. An explicit ordinary model
+stays selected and disables routing; resume keeps native model precedence.
+Claude's standard model display is retained.
+A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosing
+a main model through `/model auto` switches the underlying native Auto variant and its
+native context profile immediately, keeping the checkmark on Auto.
+Use h/l in `/model auto` to adjust effort inline. UG reads Claude’s native effort status
+and saves through `/effort`; it does not maintain a model capability table.
+Escape preserves the current selection. Each running session keeps its
+own selected profile, even when another session saves a different preference.
+Model-switch echoes and confirmations use Auto. Native `/status` and the header for non-Claude models still show the internal
+alias because Claude 2.1.290 does not expose a model-name display hook.
+
+This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
+wrapper. When opted in, configure writes fixed aliases only for UG-owned model
+pickers, preserving foreign administrator pickers and custom model options. It enables
+Claude's native custom-model row (`replaceBuiltInOptions: false`). This also exposes
+native built-in choices when no `availableModels` restriction is configured; existing
+`availableModels` and `deniedModels` policies still apply. The mod points that one row at the current Auto variant within each process; it never rewrites a
+shared capability profile. Launch settings supply the catalog and routing baseline;
+the routing mod resolves the selected variant to its real model before inference. No synthetic model ID is sent to the gateway. Selecting
+an ordinary model switches off routing through UG's existing atomic session
+controls. Launches do not edit managed files or install a custom status-line script.
+
+The Auto flow applies only to opted-in interactive subagent-routing launches. First-prompt-routing presets, headless runs,
+provider launches without routing support, and Isaac's feedback-gated controls
+retain their existing flows. `--disable-smart-routing` launches without the Auto routing mod. The configured row
+is supplied by routed UG launches; a saved alias outside that flow maps to its
+configured real model without enabling routing.
+The Auto flow hides the old `/smart-router` command. The Smart Router band and
+footer show ON in Auto and OFF after an ordinary model selection.
+The Codex integration is unchanged.
+
+Fresh managed launches start in Auto with the managed default model. Resume uses
+Claude's native model precedence without UG injecting a new Auto selection. A configured
+`ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
+uses the exact Claude ID or an explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
+Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
+uses the managed Claude catalog. Native Windows/macOS execution and actual compaction
+require separate validation.
+
 On Windows, Claude smart routing uses subagent hooks only. If first-prompt routing
 is enabled, ug warns and falls back to subagent routing because the first-prompt
 wrapper requires a Unix terminal.
@@ -547,8 +609,9 @@ and notes that Smart Routing is currently only supported for the Claude Code har
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
 turns routing off for the launch, including over a workspace config.
 
-An explicit `--model`, from `ug claude --model` or a launcher such as Omnigent, keeps
-subagent routing when first-prompt routing is off; the main session stays on that model.
+In the Auto flow, an explicit ordinary `--model` starts with routing off. In other
+smart-routing launches, an explicit `--model`, from `ug claude --model` or a launcher
+such as Omnigent, keeps subagent routing when first-prompt routing is off.
 With first-prompt routing on, an explicit model still skips routing.
 
 When a model response launches a subagent, UG buffers that step and removes
@@ -613,14 +676,15 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
 use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator |
-| --- | --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off |
-| `subagent_only_v0` | Claude, Codex | On | Off | Off |
-| `subagent_only_v1` | Claude, Codex | On | Off | Off |
-| `subagent_orch_v0` | Claude, Codex | On | Off | On |
-| `subagent_orch_v1` | Claude, Codex | On | Off | On |
-| `subagent_orch_v0_claude_only` | Claude | On | Off | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker |
+| --- | --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
+| `subagent_auto_v0_claude_only` | Claude | On | Off | On | On |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
@@ -628,7 +692,7 @@ orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=
 `subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
-and sets all three flags to `"0"` for Codex. Codex uses its ordinary launch and
+and sets all routing flags to `"0"` for Codex. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. `--enable-smart-routing` and
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
@@ -646,15 +710,14 @@ SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 
 The version takes precedence over conflicting legacy flags. Once the agent is selected,
 UG expands its mapping into
-`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`, and
-`ENABLE_SMART_ROUTER_ORCHESTRATOR` for the launched session. When the version is
+`ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
+`ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_SMART_ROUTER_AUTO_MODE` for the launched session. When the version is
 unset or empty, these legacy flags retain their existing behavior, including
 first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.
-Orchestration is off by default unless `--enable-smart-routing` or workspace smart routing
-selects `subagent_orch_v0_claude_only`, which enables it for Claude only.
+Ordinary launches keep routing and orchestration off unless enabled explicitly or by workspace policy.
 
 Version names require an explicit suffix. Future revisions use new `_v1`, `_v2`,
 etc. names without changing existing versions.

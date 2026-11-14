@@ -33,9 +33,16 @@ Tests live in `tests/`.
   - Agent configs and launch headers are built from the saved `workspace_id` (`selector_headers`).
   - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
-- Add or update focused tests for behavior changes.
+- For behavior changes, follow the testing preference below; extend an existing live integration journey first.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
+
+## Testing preference
+
+- Strongly prioritize end-to-end integration tests and live critical user journeys through the public CLI and real workspace/environment.
+- Extend an existing journey before adding another suite or test harness. Keep test code small and proportional to the change; do not accumulate large unit-test matrices or duplicate the same behavior across test layers.
+- Add focused unit tests only for important behavior that an end-to-end journey cannot practically validate, such as a safety invariant or hard-to-trigger failure. Explain the specific gap they cover.
+- Preserve existing E2E/CUJ coverage and assertions during cleanup. Never replace live validation with mocks or fixtures while claiming end-to-end coverage. Remove existing tests only when requested or when their removal is otherwise authorized.
 
 ## CLI performance metrics
 
@@ -96,6 +103,31 @@ Pass Claude's resolved launch baseline through native `pluginConfigs` options in
 launch settings. Keep the TypeScript static; toggles must not write configuration files. An explicit toggle
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
+
+Claude Auto is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
+`subagent_auto_v0_claude_only` config version. Existing versions set the flag to `"0"`.
+Fresh Auto launches use the managed default model, or the first available model;
+explicit model arguments and native resume retain precedence over startup Auto.
+Configure modifies only UG-owned pickers, preserving foreign admin picker/custom
+option settings. Inline effort controls read native `/effort status` and save through `/effort`;
+Claude owns model-specific capabilities and defaults.
+Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
+permits only aliases whose real targets are allowed. Configure removes stale UG
+aliases and sets `modelPicker.replaceBuiltInOptions` false only for UG-owned
+pickers so the native custom option is visible. Preserve admin custom model options
+and replacement pickers; skip Auto when they occupy or hide its native custom slot.
+Personal configure does not discover or persist a picker for Auto; unrestricted
+personal launches build their Auto aliases in launch-only settings. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+its display companions in the process environment: putting these in settings env
+would reset the pointer whenever native `/model` saves a selection. Keep one Auto
+row; aliases must not be separate modelPicker rows. Preserve other overrides and
+regular picker rows. `/model auto` selects Auto and opens its main-model selector.
+Keep `/auto` hidden as an internal selector command. Native context,
+effort, inference target and indicator derive from the selected alias, never another
+session's saved preference. The mod stores the per-workspace preference with native
+`$.store` and never writes configuration files. An ordinary `/model` selection
+disables session routing. Managed configuration changes require explicit configure;
+a launch never installs or rewrites machine-wide configuration.
 
 ### Adding a parameter
 
