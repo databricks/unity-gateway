@@ -7487,29 +7487,6 @@ class TestConfigureSharedStateDiscovery:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
-    def test_skip_model_discovery_only_fetches_claude_web_search_model(self, monkeypatch, tool):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        requests = []
-
-        def unexpected_listing(*args):
-            pytest.fail("provider mode must not list UC model services")
-
-        def web_search_models(workspace, token):
-            requests.append(workspace)
-            return ["system.ai.gpt-5"], None
-
-        monkeypatch.setattr(cli_mod, "discover_model_services", unexpected_listing)
-        monkeypatch.setattr(cli_mod, "discover_codex_models", web_search_models)
-
-        state = cli_mod.configure_shared_state(
-            self.WS, profile="DEFAULT", tools=[tool], skip_model_discovery=True
-        )
-
-        assert requests == ([self.WS] if tool == "claude" else [])
-        if tool == "claude":
-            assert state["web_search_model"] == "system.ai.gpt-5"
-
     @pytest.mark.parametrize("skip_model_discovery", [False, True])
     @pytest.mark.parametrize(
         "reason",
@@ -8036,7 +8013,8 @@ class TestConfigureSharedStateSkipDiscovery:
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
 
-    def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch):
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch, tool):
         import ucode.cli as cli_mod
 
         ws = "https://prov.databricks.com"
@@ -8059,10 +8037,11 @@ class TestConfigureSharedStateSkipDiscovery:
             lambda w, t: codex_calls.append((w, t)) or (["databricks-gpt-5"], None),
         )
 
-        state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+        state = cli_mod.configure_shared_state(ws, tools=[tool], skip_model_discovery=True)
 
-        assert codex_calls == [(ws, "token")]
-        assert state["web_search_model"] == "databricks-gpt-5"
+        assert codex_calls == ([(ws, "token")] if tool == "claude" else [])
+        if tool == "claude":
+            assert state["web_search_model"] == "databricks-gpt-5"
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
