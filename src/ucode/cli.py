@@ -3268,6 +3268,7 @@ def codex_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
@@ -3338,6 +3339,7 @@ def codex_router_hook_cmd(
                 workspace=host,
                 token=token,
                 available_models=model or [],
+                **({"provider": provider} if provider else {}),
                 audit_decision=True,
             )
     output = stamp_spawn(payload, enabled=enabled, output=output)
@@ -3393,6 +3395,7 @@ def claude_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
@@ -3473,6 +3476,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
+        **({"provider": provider} if provider else {}),
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
@@ -3845,9 +3849,10 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
+    """Allow Claude and Codex with a provider behind the external-models gate."""
     return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+        tool in ("claude", "codex")
+        and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
     )
 
 

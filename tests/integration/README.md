@@ -311,8 +311,9 @@ It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
 Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
-CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
+CUJ2 has five separately collected cases for exact published MPS/MCP configuration, Codex
+and Claude inference, and smart routing with an MPS for each agent. Its catalog checks require
+the fixture's exact native APIs,
 model, provider type and target restrictions. Offline checks accept Responses alongside Chat
 Completions in either order and reject missing or additional APIs. CUJ2 expects only
 `gpt-6-luna` in its OpenAI MPS and as its Codex default. CUJ1 and CUJ6's Codex Luna
@@ -321,6 +322,9 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
+Each smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` and checks that both
+first-prompt and subagent route selections carry the managed MPS header and return HTTP 200.
+An optional `UG_HEADERS` traffic selector is also checked on routing and inference requests.
 File, skill, MCP and subagent tasks retain their expected-value checks.
 The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.

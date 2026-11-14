@@ -19,7 +19,7 @@ ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR = "ENABLE_SMART_ROUTER_ORCHESTRATOR"
 SMART_ROUTER_CONFIG_VERSION_ENV_VAR = "SMART_ROUTER_CONFIG_VERSION"
 ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR = "ISAAC_SMART_ROUTER_FEEDBACK"
 ISAAC_LAUNCH_MODE_ENV_VAR = "ISAAC_LAUNCH_MODE"
-# Feature gate: "1" allows Claude smart routing with a Model Provider Service. A rollout gate,
+# Feature gate: "1" allows Claude and Codex smart routing with a Model Provider Service. A rollout gate,
 # not a version-owned routing parameter, so it is deliberately not in SMART_ROUTING_ENV_KEYS.
 ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
 SMART_ROUTING_ENV_KEYS = (
