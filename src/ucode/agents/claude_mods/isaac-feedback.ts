@@ -8,14 +8,10 @@ const FEEDBACK_ID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const FEEDBACK_COLLECTED_FLAG = '--feedback-collected';
 type FeedbackCategory = 'smart-routing' | 'other';
 
-type SmartRouterCommand = { action: 'on' | 'off'; feedbackCollected: boolean }
-  | { action: 'explain'; explanationAction: 'on' | 'off' | 'latest' };
+type SmartRouterCommand = { action: 'on' | 'off'; feedbackCollected: boolean };
 
 export function parseSmartRouterCommand(args: string): SmartRouterCommand | undefined {
   const [action, flag, ...rest] = args.trim().split(/\s+/);
-  if (action === 'explain' && !rest.length && (flag === 'on' || flag === 'off' || flag === 'latest')) {
-    return { action, explanationAction: flag };
-  }
   if (action !== 'on' && action !== 'off') return undefined;
   if (flag === undefined) return { action, feedbackCollected: false };
   if (action === 'off' && flag === FEEDBACK_COLLECTED_FLAG && !rest.length) return { action, feedbackCollected: true };

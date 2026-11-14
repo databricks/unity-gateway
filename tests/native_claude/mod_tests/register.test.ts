@@ -83,9 +83,9 @@ test('a launch without routing keeps the command inert', { options: { ...ROUTED,
 
   expect(reply.text).toContain('was not enabled');
   const explain = await $.command.run({ command: 'smart-router', args: 'explain on' });
-  expect(explain.text).toContain('was not enabled');
+  expect(explain.text).toBe('Usage: /smart-router on|off|logs');
   const invalidExplain = await $.command.run({ command: 'smart-router', args: 'explain invalid' });
-  expect(invalidExplain.text).toBe('Usage: /smart-router explain on|off|latest');
+  expect(invalidExplain.text).toBe('Usage: /smart-router on|off|logs');
   expect(env.CLAUDE_CODE_EXTRA_BODY).toBe(CALLER_BODY);
 });
 
@@ -290,7 +290,7 @@ test('the continuation note keeps the fork exception when the host offers forks'
 });
 
 
-test('explanation commands leave routing and feedback controls untouched', { options: ROUTED }, async ($, on) => {
+test('explain commands are no longer accepted and leave routing controls untouched', { options: ROUTED }, async ($, on) => {
   const { env, writes } = setup(on);
   env.ISAAC_SMART_ROUTER_FEEDBACK = '1';
   const initial = { ...env };
@@ -298,13 +298,9 @@ test('explanation commands leave routing and feedback controls untouched', { opt
   on('process.run', () => { processes++; return { value: { exitCode: 0, stdout: '', stderr: '' } }; });
   for (const action of ['on', 'latest', 'off']) {
     const args = ` explain\t ${action} `;
-    expect(parseSmartRouterCommand(args)).toEqual({ action: 'explain', explanationAction: action });
-    await $.command.run({ command: 'smart-router', args });
-  }
-  for (const args of ['explain', 'explain invalid', 'explain on extra', 'explain off --feedback-collected']) {
     expect(parseSmartRouterCommand(args)).toBeUndefined();
     expect((await $.command.run({ command: 'smart-router', args })).text)
-      .toBe('Usage: /smart-router explain on|off|latest');
+      .toBe('Usage: /smart-router on|off|logs');
   }
   expect(env).toEqual(initial);
   expect(writes).toEqual([]);
@@ -381,8 +377,11 @@ test('an omni launch skips the form only for an off marked --feedback-collected'
 
 test('--feedback-collected is accepted only after off', { options: ROUTED }, async ($, on) => {
   const { env, runs } = feedbackSession(on, { ISAAC_LAUNCH_MODE: 'omni' });
-  for (const args of ['on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected']) {
-    expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs|explain on|off|latest');
+  for (const args of [
+    'explain on', 'explain off', 'explain latest',
+    'on --feedback-collected', 'off --feedback-collected now', 'off --feedback', '--feedback-collected',
+  ]) {
+    expect((await $.command.run({ command: 'smart-router', args })).text).toBe('Usage: /smart-router on|off|logs');
   }
   expect(runs).toEqual([]);
 

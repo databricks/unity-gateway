@@ -91,7 +91,6 @@ def route_pre_tool_use(
             # Bound diagnostic text without changing the router input or native hook output.
             audit = replace(
                 decision,
-                explanation=None,
                 rationale=decision.rationale[:MAX_AUDIT_RATIONALE_CHARS],
                 raw_rationale=decision.raw_rationale[:MAX_AUDIT_RATIONALE_CHARS]
                 if decision.raw_rationale is not None

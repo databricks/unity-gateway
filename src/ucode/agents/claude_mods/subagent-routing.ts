@@ -1,24 +1,20 @@
 import type { On, PluginOptions } from 'claude-code'
-import { parseSmartRouterCommand } from './isaac-feedback.ts'
 
 type NumericDetails = Record<string, number>
-type ExplanationModel = {
+export type ExplanationModel = {
   id: string; name: string; selected: boolean; considered: boolean; reason: string
   qualityEstimate?: number; estimatedCostUsd?: number; routingScore?: number
   components?: NumericDetails; differenceFromWinner?: NumericDetails
 }
-type RoutingExplanation = {
+export type RoutingExplanation = {
   selectedModel: string; summary: string; taskUnderstanding: string[]; models: ExplanationModel[]
   recipe?: string; formula?: string
 }
 type RoutingRecord = {
   generation: number; toolUseId: string; name: string; task: string; model: string; rationale: string; seconds?: number
-  spawned?: { agentId: string; model?: string; background: boolean }; explanation?: RoutingExplanation
+  spawned?: { agentId: string; model?: string; background: boolean }
 }
-type ExplanationState = { generation: number; openAttempt: number; enabled: boolean; showNumbers?: boolean; latest?: RoutingRecord; paneRecord?: RoutingRecord; modelId?: string }
 
-const EXPLANATION_PANE = 'smart-router-explanation'
-const EXPLANATION_OPEN_FAILURE = 'Could not open the native routing explanation pane.'
 const MAX_EXPLANATION_BYTES = 64 * 1024
 const isObject = (value: unknown): value is Record<string, any> =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -86,8 +82,8 @@ function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: 
     || matchesIdentityFields(source, sessionId, toolUseId))
 }
 
-function parseExplanation(
-  value: unknown, routedModel: string, sessionId?: string, toolUseId?: string,
+export function parseRoutingExplanation(
+  value: unknown, routedModel: string, sessionId?: string, toolUseId?: string, offeredModels?: readonly string[],
 ): RoutingExplanation | undefined {
   if (!isObject(value)) return undefined
   const serialized = JSON.stringify(value)
@@ -131,6 +127,10 @@ function parseExplanation(
   }
   if (models.filter((model) => model.selected).length !== 1
       || !models.some((model) => model.id === selectedModel && model.selected)) return undefined
+  if (offeredModels) {
+    const offeredIds = new Set(offeredModels.map(explanationModelId))
+    if (ids.size !== offeredIds.size || [...offeredIds].some((id) => !ids.has(id))) return undefined
+  }
   const recipe = value.recipe === undefined ? undefined : safeText(value.recipe, 240)
   const formula = value.formula === undefined ? undefined : safeText(value.formula, 500)
   if ((value.recipe !== undefined && !recipe) || (value.formula !== undefined && !formula)) return undefined
@@ -170,33 +170,6 @@ const shortModel = (model: string): string => {
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }
 
-async function openExplanation($: any, state: ExplanationState, record: RoutingRecord): Promise<boolean | undefined> {
-  const attempt = ++state.openAttempt
-  state.showNumbers = false
-  state.paneRecord = record
-  state.modelId = record.explanation?.selectedModel
-  $.ui.invalidate('ui.render')
-  try {
-    const opened = await $.ui.open({
-      id: EXPLANATION_PANE, title: 'Why this model?', focus: true, closeOnEscape: true, rows: 18, columns: 72,
-    })
-    if (state.paneRecord && (state.openAttempt !== attempt || opened.isPlaced)) return true
-    await $.ui.close({ id: EXPLANATION_PANE })
-  } catch {}
-  if (state.openAttempt !== attempt) return state.paneRecord ? true : undefined
-  if (state.paneRecord === record) {
-    state.paneRecord = undefined
-    state.modelId = undefined
-    $.ui.invalidate('ui.render')
-  }
-  return false
-}
-
-const whyHandler = ($: any, state: ExplanationState, record: RoutingRecord) => async () => {
-  if (!state.enabled || record.generation !== state.generation) return
-  if (await openExplanation($, state, record) === false) $.ui.toast(EXPLANATION_OPEN_FAILURE)
-}
-
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -218,9 +191,9 @@ const secondsSince = async ($: any, start: number | undefined): Promise<number |
 // The selected model with its routing time, then the reason. Labels recede so the routed
 // model, in the status band's ON green, stands out; the time is omitted without a clock.
 const selection = (
-  $: any, e: any, record: RoutingRecord, arrow: string, reasonPadding: number, onWhy?: () => void,
+  $: any, e: any, record: RoutingRecord, arrow: string, reasonPadding: number,
 ) => {
-  const { Box, Text, Button } = $.ui.resolve(e)
+  const { Box, Text } = $.ui.resolve(e)
   const lines = [Box({
     flexDirection: 'row',
     children: [
@@ -229,7 +202,6 @@ const selection = (
       ...(record.seconds === undefined ? [] : [
         Text({ dimColor: true, children: [` (routed in ${record.seconds.toFixed(1)}s)`] }),
       ]),
-      ...(onWhy ? [Button({ key: `why-this-model-${record.toolUseId}`, label: 'Why this model?', onPress: onWhy })] : []),
     ],
   })]
   if (record.spawned?.model && record.spawned.model !== record.model) {
@@ -247,13 +219,13 @@ const selection = (
 }
 
 // A grouped call's decision: its task, then the selection.
-const card = ($: any, e: any, record: RoutingRecord, onWhy?: () => void) => {
+const card = ($: any, e: any, record: RoutingRecord) => {
   const { Box, Text } = $.ui.resolve(e)
   return Box({
     flexDirection: 'column',
     paddingLeft: 2,
     marginBottom: 1,
-    children: [Text({ bold: true, children: [record.name, ' — ', record.task] }), ...selection($, e, record, '↳ ', 2, onWhy)],
+    children: [Text({ bold: true, children: [record.name, ' — ', record.task] }), ...selection($, e, record, '↳ ', 2)],
   })
 }
 
@@ -285,99 +257,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const anchors = new Map<string, string[]>()
   // Replies already drawn before a batch was routed are never its anchor.
   const seen = new Set<string>()
-  const explanationState: ExplanationState = { generation: 0, openAttempt: 0, enabled: false }
-
-  on('command.run', { command: 'smart-router' }, async ($, e, next) => {
-    const command = parseSmartRouterCommand(e.args)
-    if (command?.action !== 'explain') return next(e)
-    const action = command.explanationAction
-    if (action === 'on') {
-      if (!(options.routeCommand as readonly string[] | undefined)?.length) {
-        return { text: 'Routing explanations are unavailable because subagent routing is not configured.' }
-      }
-      explanationState.enabled = true
-      $.ui.invalidate('ui.render')
-      return { text: 'Routing explanations are on.' }
-    }
-    if (action === 'off') {
-      explanationState.openAttempt++
-      explanationState.enabled = false
-      explanationState.paneRecord = undefined
-      explanationState.modelId = undefined
-      $.ui.invalidate('ui.render')
-      try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
-      return { text: 'Routing explanations are off.' }
-    }
-    if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
-    const opened = await openExplanation($, explanationState, explanationState.latest)
-    return { text: opened === undefined ? 'Routing explanation opening cancelled.'
-      : opened ? 'Showing the latest routing explanation.' : EXPLANATION_OPEN_FAILURE }
-  })
-
-  on('ui.render', { component: 'Pane' }, ($, e, next) => {
-    if (e.requestId !== EXPLANATION_PANE || e.surface === 'mobile') return next(e)
-    const { Box, Text, Button, Select } = $.ui.resolve(e)
-    const record = explanationState.paneRecord
-    if (!record) return next(e)
-    const explanation = record.explanation
-    if (!explanation) return Box({ flexDirection: 'column', children: [
-      Text({ bold: true, children: ['Why this model?'] }),
-      Text({ children: [`Selected route: ${shortModel(record.model)}`] }),
-      ...(safeText(record.rationale, 2000) ? [Text({ children: [safeText(record.rationale, 2000)!] })] : []),
-      Text({ children: ['No routing explanation details were returned. The selected model is unchanged.'] }),
-      Button({ key: 'close', label: 'Close', onPress: () => $.ui.close({ id: EXPLANATION_PANE }) }),
-    ] })
-
-    const selected = explanation.models.find((model) => model.id === explanationState.modelId)
-    const detail = selected ?? explanation.models.find((model) => model.selected)!
-    const numberText = (label: string, value: number | undefined, suffix = '') => value === undefined
-      ? undefined : Text({ children: [`${label}: ${value.toFixed(3)}${suffix}`] })
-    const cost = detail.estimatedCostUsd
-    const costText = cost === undefined ? undefined
-      : Text({ children: [`Est. cost: ${cost > 0 && cost < 1e-6
-        ? '<0.000001' : cost.toFixed(6).replace(/\.?0+$/, '')} USD`] })
-    const breakdown = (label: string, values: NumericDetails | undefined) => values && Object.keys(values).length
-      ? Text({ dimColor: true, children: [`${label}: ${Object.entries(values)
-        .map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`] }) : undefined
-    const detailLines = [
-      numberText('Quality estimate', detail.qualityEstimate),
-      costText,
-      numberText('Routing score', detail.routingScore),
-      breakdown('Components', detail.components),
-      breakdown('Vs. routed', detail.differenceFromWinner),
-    ].filter(Boolean)
-    return Box({ flexDirection: 'column', children: [
-      Text({ color: 'green', bold: true, children: [`Chosen: ${explanation.models.find((model) => model.selected)!.name}`] }),
-      Text({ children: [explanation.summary] }),
-      ...(explanation.taskUnderstanding.length ? [
-        Text({ bold: true, children: ['Task understanding'] }),
-        ...explanation.taskUnderstanding.map((item) => Text({ children: [item] })),
-      ] : []),
-      Box({ marginTop: 1, marginBottom: 1, children: [Select({
-        key: 'compare-model', label: 'Compare model', autoFocus: true,
-        value: detail.id,
-        options: explanation.models.map((model) => ({ value: model.id,
-          label: `${model.name}${model.selected ? ' · chosen' : ''}` })),
-        onSelect: (id) => { explanationState.modelId = id; $.ui.invalidate('ui.render') },
-      })] }),
-      Text({ bold: true, children: [`${detail.name} — ${detail.considered ? 'considered' : 'not considered'}`] }),
-      Text({ children: [detail.reason] }),
-      ...(detailLines.length || explanation.formula ? [Button({ key: 'numbers',
-        label: explanationState.showNumbers ? 'Hide numbers' : 'Show numbers',
-        onPress: () => { explanationState.showNumbers = !explanationState.showNumbers; $.ui.invalidate('ui.render') },
-      }), ...(explanationState.showNumbers ? detailLines : [])] : []),
-      ...(explanationState.showNumbers && explanation.formula ? [Text({ dimColor: true, children: [`Scoring formula: ${explanation.formula}`] })] : []),
-      Button({ key: 'close', label: 'Close', onPress: () => $.ui.close({ id: EXPLANATION_PANE }) }),
-    ] })
-  })
+  let sessionGeneration = 0
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[] | undefined
     if (!command?.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const generation = explanationState.generation
+    const generation = sessionGeneration
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
-    let explanation: RoutingExplanation | undefined
     let sessionId: string | undefined
     let spinner: { cancel: () => void } | undefined
     let name = ''
@@ -403,15 +290,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       pending.set(tool_use_id, undefined)
       startedAt = await now($)
-      if (generation === explanationState.generation) pending.set(tool_use_id, startedAt)
+      if (generation === sessionGeneration) pending.set(tool_use_id, startedAt)
       // Mods have no global timers; $.clock redraws the spinner while the router answers.
       // The frame comes from the clock, so parallel calls do not speed it up.
       try {
         spinner = $.clock.every(SPINNER_INTERVAL_MS, () => {
-          if (generation === explanationState.generation) $.ui.invalidate('ui.render')
+          if (generation === sessionGeneration) $.ui.invalidate('ui.render')
         })
       } catch {}
-      if (generation === explanationState.generation) $.ui.invalidate('ui.render')
+      if (generation === sessionGeneration) $.ui.invalidate('ui.render')
     }
     try {
       sessionId = await $.session.id()
@@ -433,26 +320,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     } finally {
       spinner?.cancel()
     }
-    if (route?.explanation !== undefined) {
-      try {
-        const selectedModel = route.selected_model === undefined ? route.model : route.selected_model
-        // Match Python's maybe_add_gpt_1m_suffix without collapsing catalog IDs.
-        const executionModel = typeof selectedModel === 'string'
-          && /^(?:anthropic-aigw-[0-9a-fA-F]{8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$/.test(selectedModel)
-          ? `${selectedModel}[1m]` : selectedModel
-        explanation = matchesRequestIdentity(route, sessionId, tool_use_id)
-          && typeof selectedModel === 'string'
-          && (route.selected_model === undefined || route.model === executionModel)
-          ? parseExplanation(route.explanation, selectedModel, sessionId, tool_use_id) : undefined
-      } catch {
-        // Optional display metadata must never discard a valid model selection.
-      }
-      if (!explanation) $.ui.log('Smart Router returned invalid explanation details; keeping its selected model.', { to: 'debug' })
-    }
     const seconds = await secondsSince($, startedAt)
     let record: RoutingRecord | undefined
     if (tool_use_id) {
-      if (generation === explanationState.generation) pending.delete(tool_use_id)
+      if (generation === sessionGeneration) pending.delete(tool_use_id)
       if (route) {
         record = {
           generation,
@@ -462,15 +333,13 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
           model: route.model,
           rationale: route.rationale,
           seconds,
-          explanation,
         }
         activeRoutes.set(tool_use_id, record)
-        if (generation === explanationState.generation) {
+        if (generation === sessionGeneration) {
           records.set(tool_use_id, record)
-          explanationState.latest = record
         }
       }
-      if (generation === explanationState.generation) $.ui.invalidate('ui.render')
+      if (generation === sessionGeneration) $.ui.invalidate('ui.render')
     }
     // Auto mode reviewed this input; model identity belongs in the result, not its arguments.
     try {
@@ -515,7 +384,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
-    const generation = explanationState.generation
+    const generation = sessionGeneration
     const record = records.get(e.requestId)
     const name = names.get(e.requestId)
     const renamed = name && (record || pending.has(e.requestId))
@@ -524,14 +393,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       props: { ...e.props, tool: name },
     } : e)
     // Native ref 0 draws the original props without invoking downstream hooks again.
-    if (generation !== explanationState.generation) return renamed ? { type: 'engine', ref: 0 } : original
+    if (generation !== sessionGeneration) return renamed ? { type: 'engine', ref: 0 } : original
     if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
       const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
       const seconds = await secondsSince($, pending.get(e.requestId))
-      if (generation !== explanationState.generation) return renamed ? { type: 'engine', ref: 0 } : original
+      if (generation !== sessionGeneration) return renamed ? { type: 'engine', ref: 0 } : original
       const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',
@@ -543,27 +412,26 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    const onWhy = explanationState.enabled ? whyHandler($, explanationState, record) : undefined
-    return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4, onWhy)] })
+    return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4)] })
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line
   // also says routing is under way, timed from the oldest call still waiting.
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
-    const generation = explanationState.generation
+    const generation = sessionGeneration
     if (!pending.size) return next(e)
     const starts = [...pending.values()].filter((start) => start !== undefined) as number[]
     const seconds = starts.length ? await secondsSince($, Math.min(...starts)) : undefined
-    if (generation !== explanationState.generation) return next(e)
+    if (generation !== sessionGeneration) return next(e)
     const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
     const what = pending.size > 1 ? `Selecting models for ${pending.size} agents` : 'Selecting a model'
     return next({ ...e, props: { ...e.props, message: `${what}…${elapsed}`, suffix: '' } })
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
-    const generation = explanationState.generation
+    const generation = sessionGeneration
     const original = await next(e)
-    if (generation !== explanationState.generation) return original
+    if (generation !== sessionGeneration) return original
     if (!seen.has(e.requestId)) {
       seen.add(e.requestId)
       // A call still routing waits for a later reply; one that failed routing is dropped.
@@ -576,13 +444,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const { Box } = $.ui.resolve(e)
     return Box({ flexDirection: 'column', children: [...ids.map((id) => {
       const record = records.get(id)!
-      const onWhy = explanationState.enabled ? whyHandler($, explanationState, record) : undefined
-      return card($, e, record, onWhy)
+      return card($, e, record)
     }), original] })
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
-    explanationState.generation++
-    explanationState.openAttempt++
+    sessionGeneration++
     pending.clear()
     records.clear()
     names.clear()
@@ -592,11 +458,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     seen.clear()
     cards.unplaced = []
     routedModels.reset()
-    explanationState.latest = undefined
-    explanationState.paneRecord = undefined
-    explanationState.modelId = undefined
     $.ui.invalidate('ui.render')
-    try { await $.ui.close({ id: EXPLANATION_PANE }) } catch {}
     return next(e)
   })
 }

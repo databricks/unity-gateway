@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -16,7 +17,7 @@ from ucode import custom_oauth
 from ucode.agents import LaunchOptions, claude
 from ucode.constants import AGENT_CLAUDE
 from ucode.databricks import AnthropicModelCatalog
-from ucode.smart_routing import claude_hooks, routing, v2
+from ucode.smart_routing import claude_hooks, routing, session_log, v2
 
 if sys.platform != "win32":
     from ucode.smart_routing import claude_pty
@@ -87,8 +88,9 @@ _EXPLANATION = {
         "invalid",
     ],
 )
+@pytest.mark.parametrize("include_task_text", [True, False])
 def test_explanation_roundtrip_does_not_change_subagent_selection(
-    tmp_path, monkeypatch, caplog, explanation, retained
+    tmp_path, monkeypatch, caplog, explanation, retained, include_task_text
 ):
     caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
     selected = "system.ai.model-b"
@@ -119,12 +121,14 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
 
     monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
     monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
     result = v2.route_claude_subagent(
         payload,
         workspace="https://example.com",
         token="token",
         available_models=[selected, "system.ai.alternative"],
         audit_decision=True,
+        include_task_text=include_task_text,
     )
     assert result["model"] == selected
     assert result["rationale"] == "Selected by router."
@@ -132,14 +136,29 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
     assert len(calls) == 1
     assert calls[0]["task"] == {"prompt": "inspect parser"}
     record = json.loads((tmp_path / "decisions.jsonl").read_text())
+    session_records = session_log.read_decisions("claude", "s1")
+    assert len(session_records) == 1
+    session_record = session_records[0]
     assert record["session_id"] == "s1" and record["tool_use_id"] == "t1"
     assert record["rationale"] == "Selected by router."
     if retained:
         expected = json.loads(explanation) if isinstance(explanation, str) else explanation
-        assert result["explanation"] == record["explanation"] == expected
+        assert result["explanation"] == expected
+        assert ("explanation" in record) is include_task_text
+        assert ("explanation" in session_record) is include_task_text
+        if include_task_text:
+            assert record["explanation"] == session_record["explanation"] == expected
+            assert session_record["prompt"]["preview"] == "inspect parser"
+        else:
+            assert session_record["prompt"]["preview"] is None
+            assert (
+                session_record["prompt"]["sha256"] == hashlib.sha256(b"inspect parser").hexdigest()
+            )
+            assert session_record["prompt"]["length"] == len("inspect parser")
     else:
         assert result == {"model": selected, "rationale": "Selected by router."}
         assert "explanation" not in record
+        assert "explanation" not in session_record
     assert ("Discarded routing explanation" in caplog.text) == (
         explanation is not None and not retained
     )

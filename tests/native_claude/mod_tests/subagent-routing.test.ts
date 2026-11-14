@@ -303,6 +303,7 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   expect(tree.indexOf('Compute 1+1 (agent A)')).toBeLessThan(tree.indexOf('Compute 1+1 (agent B)'));
   expect(tree.indexOf('Compute 1+1 (agent B)')).toBeLessThan(tree.indexOf('other row'));
   expect(tree).not.toContain('agent C');
+  expect(tree).not.toContain('Why this model?');
   expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
   await cards.unmount();
@@ -316,65 +317,6 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   const prompt = await $.ui.mount(panel);
   expect(await prompt.find({ type: 'Text', text: /Selected Model|claude-/ })).toBeUndefined();
   await prompt.unmount();
-});
-
-test('parallel cards open each call’s own routing explanation', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  const releases = new Map<string, () => void>();
-  let started: () => void = () => {};
-  const bothStarted = new Promise<void>((resolve) => { started = resolve; });
-  on('session.id', () => ({ value: 'session-1' }));
-  on('clock.every', () => ({ value: { cancel: () => {} } }));
-  on('process.run', async ($, e) => {
-    const request = JSON.parse(e.init.stdin);
-    const { tool_use_id } = request;
-    await new Promise<void>((resolve) => {
-      releases.set(tool_use_id, resolve);
-      if (releases.size === 2) started();
-    });
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: 'system.ai.model-b',
-      rationale: `Selected for ${request.tool_input.description}`,
-      explanation: { ...explanation, summary: `Explanation for ${tool_use_id}`,
-        session_id: request.session_id, tool_use_id },
-      session_id: request.session_id,
-      tool_use_id,
-    }) } };
-  });
-  on('tool.call', () => ({ result: 'ok' }));
-  let panePlaced = false;
-  on('ui.open', () => { panePlaced = true; return { value: { isPlaced: true } }; });
-
-  on('ui.close', () => { panePlaced = false; return { value: undefined }; });
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
-  await $.command.run({ command: 'smart-router', args: 'explain on' });
-
-  const input = { ...originalInput, run_in_background: true };
-  const callA = $.tool.call({ tool: 'Agent', tool_use_id: 'call-a', ...input, description: 'Compute 1+1 (agent A)' });
-  const callB = $.tool.call({ tool: 'Task', tool_use_id: 'call-b', ...input, description: 'Compute 1+1 (agent B)' });
-  await bothStarted;
-
-  releases.get('call-b')!();
-  await callB;
-  releases.get('call-a')!();
-  await callA;
-  const cards = await $.ui.mount(reply('reply-after-both-routes'));
-  const tree = JSON.stringify(await cards.drawn());
-  expect(tree).toContain('Compute 1+1 (agent A)');
-  expect(tree).toContain('Compute 1+1 (agent B)');
-  const whyButtons = await cards.findAll({ type: 'Button', text: 'Why this model?' });
-  expect(whyButtons.length).toBe(2);
-  expect(new Set(whyButtons.map(({ key }) => key)).size).toBe(2);
-
-  for (const [id, key] of [['call-b', 'why-this-model-call-b'], ['call-a', 'why-this-model-call-a']]) {
-    await cards.press({ key });
-    const pane = await $.ui.mount({
-      ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation',
-    });
-    expect(JSON.stringify(await pane.drawn())).toContain(`Explanation for ${id}`);
-    await pane.press({ key: 'close' });
-    await pane.unmount();
-  }
-  await cards.unmount();
 });
 
 test('an aborted turn leaves no card for the next turn, but a finished one keeps them for the reply', async ($, on) => {
@@ -572,341 +514,6 @@ test('a name the call gave is kept as the routed agent name', async ($, on) => {
   expect(forwarded[0].name).toBe('scout');
 });
 
-const explanationModel = 'system.ai.model-b[1m]';
-const explanation = {
-  selected_model: 'model-b',
-  summary: 'Model B was the best expected quality and cost trade-off.',
-  task_understanding: ['Reasoning: multi step', 'Coverage: exhaustive'],
-  models: [
-    { id: 'model-a', name: 'Model A', selected: false, considered: true,
-      reason: 'The router expected a weaker fit.', quality_estimate: 0.8, estimated_cost_usd: 0.0004,
-      routing_score: 0.7, components: { quality: 0.8 }, difference_from_winner: { quality: -0.1 } },
-    { id: 'model-b', name: 'Model B', selected: true, considered: true,
-      reason: 'Chosen for its expected quality.', quality_estimate: 0.9, estimated_cost_usd: 0.24,
-      routing_score: 0.85, components: { quality: 0.9 }, difference_from_winner: { quality: 0 } },
-  ],
-  evidence: { request_id: 'hidden-request', source: 'hidden-source' },
-};
-
-for (const [modelCount, customPrefix, routedModelOverride] of [
-  [2, undefined, undefined],
-  [20, undefined, undefined],
-  [2, 'custom.catalog', undefined],
-  [2, 'custom.catalog.withdots', undefined],
-  [2, undefined, 'anthropic-aigw-c442a48-system.ai.model-b'],
-] as const) {
-const label = routedModelOverride ? 'explanations with a seven-digit gateway wrapper' :
-  `explanations for ${modelCount} models with custom prefix ${customPrefix ?? 'none'}`
-test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  const canonicalJourney = modelCount === 2 && !customPrefix && !routedModelOverride;
-  const customModel = customPrefix ? `${customPrefix}.code` : undefined;
-  const details = customModel ? {
-    ...explanation, selected_model: customModel,
-    models: explanation.models.map((model) => ({ ...model,
-      id: model.selected ? customModel : `${customModel}[1m]`,
-    })),
-  } : explanation;
-  const routedModel = routedModelOverride ?? (customModel
-    ? `anthropic-aigw-01234567-${customModel}`
-    : modelCount === 20 ? 'anthropic-aigw-01234567-system.ai.model-b[1m]' : explanationModel);
-  let routeCalls = 0;
-  let closes = 0;
-  const spawns: any[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', ($, e) => {
-    routeCalls++;
-    const request = JSON.parse(e.init.stdin);
-    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: routedModel, rationale: 'Selected for the task', explanation: {
-        ...details, session_id: request.session_id, tool_use_id: request.tool_use_id,
-        ...(modelCount === 20 ? { formula: 'quality - cost' } : {}),
-        models: [...details.models, ...Array.from({ length: modelCount - 2 }, (_, i) => ({
-          id: `alternative-${i}`, name: `Alternative ${i}`, selected: false, considered: i !== 16,
-          reason: i === 16 ? 'Unavailable for this request.' : 'Lower expected fit.',
-        }))],
-      }, session_id: request.session_id, tool_use_id: request.tool_use_id,
-    }) } };
-  });
-  on('tool.call', () => ({ result: 'ok' }));
-  on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model, agentId: `child-${e.tool_use_id}` }; });
-  on('fs.write', () => ({ value: undefined }));
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-
-  on('ui.close', () => { closes++; return { value: undefined }; });
-
-  if (canonicalJourney) {
-    await $.tool.call({ tool: 'Agent', tool_use_id: 'off-by-default', ...originalInput });
-    const hidden = await $.ui.mount(row('off-by-default'));
-    expect(JSON.stringify(await hidden.drawn())).not.toContain('Why this model?');
-    await hidden.unmount();
-  }
-
-  await $.command.run({ command: 'smart-router', args: 'explain on' });
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'shown', ...originalInput });
-  const shown = await $.ui.mount(row('shown'));
-  expect(JSON.stringify(await shown.drawn())).toContain('Why this model?');
-  await shown.press({ key: 'why-this-model-shown' });
-  await shown.unmount();
-
-  if (canonicalJourney) {
-    expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
-      .toBe('Showing the latest routing explanation.');
-    expect(closes).toBe(0);
-  }
-  const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-  if (modelCount === 20) {
-    const routeCallsBeforeCompare = routeCalls;
-    await pane.select({ key: 'compare-model', value: 'alternative-17' });
-    const lastAlternative = JSON.stringify(await pane.drawn());
-    expect(lastAlternative).toContain('Alternative 17 — considered');
-    expect(lastAlternative).toContain('Lower expected fit.');
-    expect(lastAlternative).toContain('Show numbers');
-    expect(lastAlternative).not.toContain('Scoring formula:');
-    await pane.press({ key: 'numbers' });
-    const formulaOnly = JSON.stringify(await pane.drawn());
-    expect(formulaOnly).toContain('Scoring formula: quality - cost');
-    expect(formulaOnly).not.toContain('Est. cost:');
-    await pane.select({ key: 'compare-model', value: 'alternative-16' });
-    const excluded = JSON.stringify(await pane.drawn());
-    expect(excluded).toContain('Alternative 16 — not considered');
-    expect(excluded).toContain('Unavailable for this request.');
-    expect(routeCalls).toBe(routeCallsBeforeCompare);
-  } else if (canonicalJourney) {
-    const tree = JSON.stringify(await pane.drawn());
-    for (const text of ['best expected quality', 'Model A', 'Model B', 'Chosen for its expected quality', 'Show numbers']) {
-      expect(tree).toContain(text);
-    }
-    for (const text of ['hidden-request', 'hidden-source', 'session-1', 'shown']) {
-      expect(tree).not.toContain(text);
-    }
-    expect(tree).not.toContain('Est. cost');
-    await pane.select({ key: 'compare-model', value: 'model-a' });
-    expect(JSON.stringify(await pane.drawn())).toContain('The router expected a weaker fit');
-    await pane.press({ key: 'numbers' });
-    const numbers = ['Quality estimate: 0.800', 'Est. cost: 0.0004 USD',
-      'Routing score: 0.700', 'Components: quality 0.800', 'Vs. routed: quality -0.100'];
-    const visibleNumbers = JSON.stringify(await pane.drawn());
-    for (const text of numbers) expect(visibleNumbers).toContain(text);
-    await pane.press({ key: 'numbers' });
-    const hiddenNumbers = JSON.stringify(await pane.drawn());
-    for (const text of numbers) expect(hiddenNumbers).not.toContain(text);
-    expect(hiddenNumbers).toContain('Show numbers');
-  } else {
-    expect(JSON.stringify(await pane.drawn())).toContain('Chosen: Model B');
-    await pane.select({ key: 'compare-model', value: customModel ? `${customModel}[1m]` : 'model-a' });
-    const comparison = JSON.stringify(await pane.drawn());
-    expect(comparison).toContain('Model A — considered');
-    expect(comparison).toContain('The router expected a weaker fit');
-  }
-  await pane.unmount();
-
-  await $.agent.spawn({ tool_use_id: 'shown', name: 'caller', prompt: 'inspect' });
-  expect(spawns[0].model).toBe(routedModel);
-  expect(routeCalls).toBe(canonicalJourney ? 2 : 1);
-  if (canonicalJourney) {
-    await $.command.run({ command: 'smart-router', args: 'explain off' });
-    const off = await $.ui.mount(row('shown'));
-    expect(JSON.stringify(await off.drawn())).not.toContain('Why this model?');
-    await off.unmount();
-  }
-});
-
-}
-
-test('unknown explanation actions do not open the latest routing explanation', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  let opens = 0;
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-    model: 'system.ai.model-b', rationale: 'Selected for the task',
-  }) } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', () => { opens++; return { value: { isPlaced: true } }; });
-
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'latest', ...originalInput });
-  await $.command.run({ command: 'smart-router', args: 'explain unexpected' });
-  expect(opens).toBe(0);
-});
-
-test('explain on reports unavailable when subagent routing is not configured', { options: {
-  ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1', routeCommand: [],
-} }, async ($, on) => {
-  let routeCalls = 0;
-  on('process.run', () => { routeCalls++; return { value: { exitCode: 0, stderr: '', stdout: '' } }; });
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-
-  expect((await $.command.run({ command: 'smart-router', args: 'explain on' })).text)
-    .toBe('Routing explanations are unavailable because subagent routing is not configured.');
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'unrouted', ...originalInput });
-  const shown = await $.ui.mount(row('unrouted'));
-  expect(JSON.stringify(await shown.drawn())).not.toContain('Why this model?');
-  expect(routeCalls).toBe(0);
-  await shown.unmount();
-});
-
-test('explanation costs use decimal notation without rounding small costs to zero', { options: {
-  ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
-} }, async ($, on) => {
-  let cost = 0;
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-    model: explanationModel, rationale: 'Selected for the task', explanation: { ...explanation,
-      models: explanation.models.map((model) => ({ ...model, estimated_cost_usd: cost })),
-    },
-  }) } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  on('ui.open', () => ({ value: { isPlaced: true } }));
-
-
-  for (const [index, [value, expected]] of ([
-    [0, '0'], [1234.567, '1234.567'], [0.000001, '0.000001'],
-    [0.00000012345, '<0.000001'], [Number.MIN_VALUE, '<0.000001'],
-  ] as const).entries()) {
-    cost = value;
-    await $.tool.call({ tool: 'Agent', tool_use_id: `cost-${index}`, ...originalInput });
-    await $.command.run({ command: 'smart-router', args: 'explain latest' });
-    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-    await pane.press({ key: 'numbers' });
-    expect(JSON.stringify(await pane.drawn())).toContain(`Est. cost: ${expected} USD`);
-    await pane.unmount();
-  }
-});
-
-for (const [selectedModel, routedModel, explanationId, accepted] of [
-  ['gpt-5.4.1', 'gpt-5.4.1[1m]', 'gpt-5.4.1', true],
-  ['anthropic-aigw-c442a48-gpt-5.4.1', 'anthropic-aigw-c442a48-gpt-5.4.1', 'gpt-5.4.1', true],
-  ['system.ai.gpt-5.4.1', 'system.ai.gpt-5.4.1[1m]', 'gpt-5.4.1', true],
-  ['anthropic-aigw-01234567-system.ai.gpt-5.4.1', 'anthropic-aigw-01234567-system.ai.gpt-5.4.1[1m]', 'gpt-5.4.1', true],
-  ['anthropic-aigw-c442a48-system.ai.gpt-5.4.1', 'anthropic-aigw-c442a48-system.ai.gpt-5.4.1', 'gpt-5.4.1', true],
-  [undefined, 'gpt-5.4.1[1m]', 'gpt-5.4.1', false],
-  ['gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', 'gpt-5.4.1', false],
-  ['databricks-gpt-5.4.1', 'databricks-gpt-5.4.1[1m]', 'databricks-gpt-5.4.1', true],
-  ['anthropic-aigw-01234567-gpt-5.4.1', 'anthropic-aigw-01234567-gpt-5.4.1[1m]', 'gpt-5.4.1', true],
-  ['gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', true],
-  ['custom.catalog.gpt-5.4.1', 'custom.catalog.gpt-5.4.1', 'custom.catalog.gpt-5.4.1', true],
-  ['custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1[1m]', true],
-  ['custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1', false],
-  ['custom.catalog.gpt-5.4.1', 'custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1', false],
-  ['gpt-5.4.1', 'gpt-5.4.2[1m]', 'gpt-5.4.1', false],
-] as const) {
-  test(`explanation handoff ${selectedModel} to ${routedModel} with ${explanationId}`, { options: {
-    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
-  } }, async ($, on) => {
-    const spawns: string[] = [];
-    on('session.id', () => ({ value: 'session-1' }));
-    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: routedModel, selected_model: selectedModel, rationale: 'Original route reason',
-      explanation: { ...explanation, selected_model: explanationId,
-        models: explanation.models.map((model) => ({ ...model, id: model.selected ? explanationId : 'alternative' })),
-      },
-    }) } }));
-    on('tool.call', () => ({ result: 'ok' }));
-    on('agent.spawn', ($, e) => { spawns.push(e.model!); return { model: e.model }; });
-    on('ui.open', () => ({ value: { isPlaced: true } }));
-    await $.tool.call({ tool: 'Agent', tool_use_id: 'handoff', ...originalInput });
-    await $.command.run({ command: 'smart-router', args: 'explain latest' });
-    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-    const tree = JSON.stringify(await pane.drawn());
-    if (accepted) {
-      expect(tree).toContain('Chosen: Model B');
-      expect(tree).toContain('Chosen for its expected quality.');
-    } else {
-      expect(tree).toContain('No routing explanation details were returned.');
-      expect(tree).toContain('Original route reason');
-    }
-    await pane.unmount();
-    await $.agent.spawn({ tool_use_id: 'handoff', prompt: 'inspect' });
-    expect(spawns).toEqual([routedModel]);
-  });
-}
-
-for (const [name, details, diagnostic] of [
-  ['missing', undefined, false],
-  ['malformed', { ...explanation, selected_model: 'model-c' }, true],
-  ['corrupted selected identity', { ...explanation, selected_model: '\u001b[31mmodel-b\u001b[0m' }, true],
-  ['corrupted candidate identity', { ...explanation, models: explanation.models.map((model) => ({
-    ...model, id: `\u001b[31m${model.id}\u001b[0m`,
-  })) }, true],
-  ['trailing newline in candidate identity', { ...explanation, models: explanation.models.map((model) => ({
-    ...model, id: model.selected ? model.id : `${model.id}\n`,
-  })) }, true],
-  ['wrong session identity', { ...explanation, session_id: 'another-session' }, true],
-  ['wrong tool identity', { ...explanation, tool_use_id: 'another-tool' }, true],
-  ['nested session conflict', { ...explanation, session_id: 'session-1', tool_use_id: 'nested session conflict',
-    evidence: { session_id: 'another-session' } }, true],
-  ['nested tool conflict', { ...explanation, session_id: 'session-1', tool_use_id: 'nested tool conflict',
-    evidence: { tool_use_id: 'another-tool' } }, true],
-] as const) {
-  test(`${name} explanation shows no details while preserving the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-    const logs: string[] = [];
-    const logDestinations: unknown[] = [];
-    const routed = 'system.ai.model-b[1m]';
-    const forwarded: any[] = [];
-    on('session.id', () => ({ value: 'session-1' }));
-    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-      model: routed, rationale: 'Original route reason', ...(details ? { explanation: details } : {}),
-    }) } }));
-    on('tool.call', () => ({ result: 'ok' }));
-    on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
-    on('ui.log', ($, e) => { logs.push(e.text); logDestinations.push(e.to); return { value: undefined }; });
-    on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-    on('ui.open', () => ({ value: { isPlaced: true } }));
-
-    on('ui.close', () => ({ value: undefined }));
-
-    await $.tool.call({ tool: 'Agent', tool_use_id: name, ...originalInput });
-    expect(logs).toEqual(diagnostic
-      ? ['Smart Router returned invalid explanation details; keeping its selected model.'] : []);
-    expect(logDestinations).toEqual(diagnostic ? ['debug'] : []);
-    await $.command.run({ command: 'smart-router', args: 'explain latest' });
-    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-    expect(JSON.stringify(await pane.drawn())).toContain('No routing explanation details were returned.');
-    expect(JSON.stringify(await pane.drawn())).toContain('Original route reason');
-    await pane.unmount();
-
-    await $.agent.spawn({ tool_use_id: name, prompt: 'inspect' });
-    expect(forwarded[0].model).toBe(routed);
-  });
-}
-
-for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
-  test(`a mismatched route-level ${mismatchedField} preserves the selected model`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-    const logs: string[] = [];
-    const spawns: any[] = [];
-    on('session.id', () => ({ value: 'session-1' }));
-    on('process.run', ($, e) => {
-      const request = JSON.parse(e.init.stdin);
-      return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-        model: 'system.ai.model-b',
-        rationale: 'Selected for the task',
-        explanation: { ...explanation, session_id: request.session_id, tool_use_id: request.tool_use_id },
-        [mismatchedField]: 'another-request',
-      }) } };
-    });
-    on('tool.call', () => ({ result: 'ok' }));
-    on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model ?? 'native-default' }; });
-    on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-    on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-    on('ui.open', () => ({ value: { isPlaced: true } }));
-
-    on('ui.close', () => ({ value: undefined }));
-
-    await $.tool.call({ tool: 'Agent', tool_use_id: 'request-1', ...originalInput });
-    await $.command.run({ command: 'smart-router', args: 'explain latest' });
-    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-    const tree = JSON.stringify(await pane.drawn());
-    expect(tree).toContain('No routing explanation details were returned.');
-    expect(tree).not.toContain('Model A');
-    await pane.unmount();
-    await $.agent.spawn({ tool_use_id: 'request-1', prompt: 'inspect' });
-
-    expect(spawns[0].model).toBe('system.ai.model-b');
-    expect(logs).toEqual(['Smart Router returned invalid explanation details; keeping its selected model.']);
-  });
-}
-
 for (const reason of ['clear', 'resume'] as const) {
 test(`session ${reason} during native ToolUse rendering restores the original tool label`, { options: {
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
@@ -921,10 +528,9 @@ test(`session ${reason} during native ToolUse rendering restores the original to
   on('session.end', () => ({ sessionId: 'session-1' }));
   on('clock.every', () => ({ value: { cancel: () => {} } }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-    model: explanationModel, rationale: 'Selected for the task', explanation,
+    model: 'system.ai.model-b', rationale: 'Selected for the task',
   }) } }));
   on('tool.call', () => ({ result: 'ok' }));
-  on('ui.close', () => ({ value: undefined }));
   on('ui.render', async ($, e) => {
     renderCalls++;
     renderedTools.push(e.props.tool);
@@ -932,7 +538,6 @@ test(`session ${reason} during native ToolUse rendering restores the original to
     return { type: 'Text', props: {}, children: [`original ${e.props.tool} row`] };
   });
 
-  await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'rendering', ...originalInput });
   const rendering = $.ui.render(row('rendering'));
   await started;
@@ -944,15 +549,13 @@ test(`session ${reason} during native ToolUse rendering restores the original to
   expect(rendered).toEqual({ type: 'engine', ref: 0 });
   const tree = JSON.stringify(rendered);
   expect(tree).not.toContain('Selected Model');
-  expect(tree).not.toContain('Why this model?');
   expect(tree).not.toContain('Selecting a model');
 });
 
-test(`session ${reason} clears routing UI while pending routes keep their native spawn and receipt`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+test(`session ${reason} clears routing UI while pending routes keep their native spawn and receipt`, { options: {
+  ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+} }, async ($, on) => {
   on('session.end', () => ({ sessionId: 'session-1' }));
-  let closes = 0;
-  let opens = 0;
-  let panePlaced = false;
   let completePendingRoute: (() => void) | undefined;
   let onRouteStarted: (() => void) | undefined;
   const routeStarted = new Promise<void>((resolve) => { onRouteStarted = resolve; });
@@ -972,7 +575,6 @@ test(`session ${reason} clears routing UI while pending routes keep their native
     const response = { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.model-b',
       rationale: 'Selected for the task',
-      explanation: { ...explanation, session_id: request.session_id, tool_use_id: request.tool_use_id },
       session_id: request.session_id,
       tool_use_id: request.tool_use_id,
     }) } };
@@ -1005,24 +607,17 @@ test(`session ${reason} clears routing UI while pending routes keep their native
   const writes: any[] = [];
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
   on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.props.tool ?? 'original reply'] }));
-  on('ui.open', () => { opens++; panePlaced = true; return { value: { isPlaced: true } }; });
-
-  on('ui.close', () => { closes++; panePlaced = false; return { value: undefined }; });
   on('turn.step', async function* ($, e) {
     stepModels.push(e.model);
     yield { kind: 'text', index: 0, text: 'Native child response' };
     return { turnId: e.turnId, index: e.index, answer: 'Native child response', toolUses: [], stopReason: 'end_turn', usage: null };
   });
 
-  await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'before-clear', ...originalInput });
-  const oldWhy = await $.ui.mount(row('before-clear'));
-  expect(await oldWhy.find({ type: 'Button', key: 'why-this-model-before-clear' })).toBeDefined();
-  await $.ui.press({ plugin: 'ug-smart-router', key: 'why-this-model-before-clear', surface: 'terminal' });
-  expect(opens).toBe(1);
-  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
-    .toBe('Showing the latest routing explanation.');
-  expect(panePlaced).toBe(true);
+  const beforeClear = await $.ui.mount(row('before-clear'));
+  expect(await beforeClear.find({ type: 'Text', text: /Selected Model/ })).toBeDefined();
+  expect(await beforeClear.find({ type: 'Button', text: /Why this model/ })).toBeUndefined();
+  await beforeClear.unmount();
   const pendingRoute = $.tool.call({ tool: 'Agent', tool_use_id: 'pending-before-clear', ...originalInput });
   await routeStarted;
   await $.tool.call({ tool: 'Agent', tool_use_id: 'anchored-before-clear', ...originalInput });
@@ -1033,20 +628,12 @@ test(`session ${reason} clears routing UI while pending routes keep their native
   await spawnForwarded;
   const nativeSpawn = $.agent.spawn({ tool_use_id: 'pending-spawn', prompt: originalInput.prompt });
   await spawnStarted;
-  const closesBeforeEnd = closes;
-  const opensBeforeEnd = opens;
   await $.session.end({ reason });
 
-  expect(closes).toBe(closesBeforeEnd + 1);
-  expect(panePlaced).toBe(false);
-  // Direct press dispatches the still-hosted button; mounted.press would redraw
-  // the invalidated row first and remove the stale callback we want to exercise.
-  await $.ui.press({ plugin: 'ug-smart-router', key: 'why-this-model-before-clear', surface: 'terminal' });
-  expect(opens).toBe(opensBeforeEnd);
-  expect(panePlaced).toBe(false);
-  await oldWhy.unmount();
-  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
-    .toBe('No completed routing decision is available in this session.');
+  const clearedRow = await $.ui.mount(row('before-clear'));
+  expect(await clearedRow.find({ type: 'Text', text: 'Agent' })).toBeDefined();
+  expect(await clearedRow.find({ type: 'Text', text: /Selected Model|Selecting a model/ })).toBeUndefined();
+  await clearedRow.unmount();
   completePendingRoute?.();
   await routeForwarded;
   const routedChild = await $.agent.spawn({ tool_use_id: 'pending-before-clear', prompt: originalInput.prompt });
@@ -1069,187 +656,24 @@ test(`session ${reason} clears routing UI while pending routes keep their native
     expect(stepModels[index]).toBe('system.ai.model-b');
   }
   expect(writes).toEqual([]);
-  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
-    .toBe('No completed routing decision is available in this session.');
   for (const id of ['before-clear', 'anchored-before-clear', 'pending-before-clear', 'pending-spawn']) {
     const oldRow = await $.ui.mount(row(id));
     expect(await oldRow.find({ type: 'Text', text: 'Agent' })).toBeDefined();
-    expect(await oldRow.find({ type: 'Text', text: /Selected Model|Selecting a model|Why this model/ })).toBeUndefined();
+    expect(await oldRow.find({ type: 'Text', text: /Selected Model|Selecting a model/ })).toBeUndefined();
     await oldRow.unmount();
   }
   for (const id of ['anchored', 'new-reply']) {
     const oldReply = await $.ui.mount(reply(id));
-    expect(await oldReply.find({ type: 'Text', text: /Selected Model|Why this model/ })).toBeUndefined();
+    expect(await oldReply.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
     await oldReply.unmount();
   }
   // Reusing a formerly grouped row must behave as a fresh lone call.
   await $.tool.call({ tool: 'Agent', tool_use_id: 'anchored-before-clear', ...originalInput });
   const afterClear = await $.ui.mount(row('anchored-before-clear'));
-  expect(JSON.stringify(await afterClear.drawn())).toContain('Why this model?');
+  expect(JSON.stringify(await afterClear.drawn())).toContain('Selected Model');
   await afterClear.unmount();
 });
 }
-
-
-test('explanation parsing failures preserve a valid routed spawn', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  const forwarded: any[] = [];
-  const logs: string[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
-    '{"model":"model-b","rationale":"Original route reason","explanation":{"nested":'
-      + '['.repeat(20000) + '0' + ']'.repeat(20000) + '}}',
-  } }));
-  on('tool.call', ($, e) => { forwarded.push(e); return { result: 'ok' }; });
-  on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
-  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
-
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'deep-metadata', ...originalInput });
-  expect(forwarded[0]).toEqual({ tool: 'Agent', tool_use_id: 'deep-metadata', ...originalInput });
-  await $.agent.spawn({ tool_use_id: 'deep-metadata', prompt: 'inspect' });
-  expect(forwarded[1].model).toBe('model-b');
-  expect(logs).toEqual(['Smart Router returned invalid explanation details; keeping its selected model.']);
-});
-
-
-for (const failure of ['unplaced', 'open', 'close']) {
-test(`the Why button reports ${failure} failure and clears its pane record`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  const toasts: string[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
-    '{"model":"model-b","rationale":"Selected for the task"}',
-  } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', () => {
-    if (failure === 'open') throw new Error('Pane opening failed');
-    return { value: { isPlaced: false, reason: 'no surface' } };
-  });
-  on('ui.close', () => {
-    if (failure === 'close') throw new Error('Pane closing failed');
-    return { value: undefined };
-  });
-  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined }; });
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-
-  await $.command.run({ command: 'smart-router', args: 'explain on' });
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'unplaced-pane', ...originalInput });
-  const shown = await $.ui.mount(row('unplaced-pane'));
-  await shown.press({ key: 'why-this-model-unplaced-pane' });
-
-  expect(toasts).toEqual(['Could not open the native routing explanation pane.']);
-  const stalePane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-  const rendered = JSON.stringify(await stalePane.drawn());
-  expect(rendered).toContain('original Agent row');
-  expect(rendered).not.toContain('Selected route:');
-  await stalePane.unmount();
-  await shown.unmount();
-});
-}
-
-for (const outcome of ['failure', 'success'] as const) {
-for (const cancellation of ['none', 'off', 'clear', 'resume'] as const) {
-test(`a late pane-opening ${outcome} respects a newer open followed by ${cancellation}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  let finishFirst!: () => void;
-  let startedFirst!: () => void;
-  const started = new Promise<void>((resolve) => { startedFirst = resolve; });
-  const ready = new Promise<void>((resolve) => { finishFirst = resolve; });
-  let calls = 0;
-  let closes = 0;
-  let placed = false;
-  on('session.id', () => ({ value: 'session-1' }));
-  on('session.end', () => ({ sessionId: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
-    '{"model":"model-b","rationale":"Selected for the task"}',
-  } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', async () => {
-    if (calls++ === 0) {
-      startedFirst();
-      await ready;
-      if (outcome === 'failure') throw new Error('Earlier opening failed');
-    }
-    placed = true;
-    return { value: { isPlaced: true } };
-  });
-  on('ui.close', () => { closes++; placed = false; return { value: undefined }; });
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'overlapping-open', ...originalInput });
-  const first = $.command.run({ command: 'smart-router', args: 'explain latest' });
-  await started;
-  expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
-    .toBe('Showing the latest routing explanation.');
-  if (cancellation === 'off') await $.command.run({ command: 'smart-router', args: 'explain off' });
-  else if (cancellation !== 'none') await $.session.end({ reason: cancellation });
-  finishFirst();
-  expect((await first).text).toBe(cancellation === 'none'
-    ? 'Showing the latest routing explanation.' : 'Routing explanation opening cancelled.');
-  const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-  expect(JSON.stringify(await pane.drawn())).toContain(cancellation === 'none'
-    ? 'Selected for the task' : 'original Agent row');
-  expect(placed).toBe(cancellation === 'none');
-  expect(closes).toBe(cancellation === 'none' ? 0 : outcome === 'success' ? 2 : 1);
-  await pane.unmount();
-});
-}
-}
-
-for (const entry of ['command', 'button'] as const) {
-for (const outcome of ['success', 'failure'] as const) {
-test(`turning explanations off cancels an opening ${entry} before ${outcome}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  let finishOpen!: () => void;
-  let startedOpen!: () => void;
-  const started = new Promise<void>((resolve) => { startedOpen = resolve; });
-  const ready = new Promise<void>((resolve) => { finishOpen = resolve; });
-  let placed = false;
-  const toasts: string[] = [];
-  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined }; });
-  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
-    '{"model":"model-b","rationale":"Selected for the task"}',
-  } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', async () => {
-    startedOpen();
-    await ready;
-    if (outcome === 'failure') throw new Error('Cancelled opening failed');
-    placed = true;
-    return { value: { isPlaced: true } };
-  });
-
-  on('ui.close', () => { placed = false; return { value: undefined }; });
-  await $.command.run({ command: 'smart-router', args: 'explain on' });
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-opening', ...originalInput });
-  const shown = await $.ui.mount(row('pane-opening'));
-  const opening = entry === 'command'
-    ? $.command.run({ command: 'smart-router', args: 'explain latest' })
-    : shown.press({ key: 'why-this-model-pane-opening' });
-  await started;
-  await $.command.run({ command: 'smart-router', args: 'explain off' });
-  finishOpen();
-  const result = await opening;
-  if (entry === 'command') expect((result as { text: string }).text).toBe('Routing explanation opening cancelled.');
-  expect(toasts).toEqual([]);
-  expect(placed).toBe(false);
-  await shown.unmount();
-});
-}
-}
-
-test('an unplaced pane is rejected even when open returns normally', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  let closes = 0;
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
-    '{"model":"model-b","rationale":"Selected for the task"}',
-  } }));
-  on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', () => ({ value: { isPlaced: false, reason: 'no surface' } }));
-
-  on('ui.close', () => { closes++; return { value: undefined }; });
-  await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-placement', ...originalInput });
-  const result = await $.command.run({ command: 'smart-router', args: 'explain latest' });
-  expect(result.text).toBe('Could not open the native routing explanation pane.');
-  expect(closes).toBe(1);
-});
 
 test('parent receives the successful child model without rewriting requested inputs or results', async ($, on) => {
   const forwarded: any[] = [];

@@ -14,7 +14,14 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
-import { registerRoutingLogs } from './routing-logs.ts';
+import {
+  ROUTING_LOGS_PANE,
+  applyRoutingLogsRead,
+  logsReaderCommand,
+  registerRoutingLogs,
+  routingLogsPaneClosed,
+  routingLogsPaneOpen,
+} from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -55,6 +62,37 @@ async function readSessionEnvironment($: EngineInterface): Promise<Environment> 
     }
   }
   return current;
+}
+
+// While the Smart Router logs pane is open, a finished turn reruns the reader, so
+// decisions routed after the pane opened appear and the relative ages stay fresh. The
+// reader runs here rather than in routing-logs because the mod compiler keeps $ only
+// within the file that declares the function receiving it.
+async function refreshRoutingLogsPane($: EngineInterface, options: PluginOptions): Promise<void> {
+  if (!routingLogsPaneOpen()) return;
+  try {
+    const open = await $.ui.panes();
+    if (!Array.isArray(open) || !open.some((pane) => pane?.id === ROUTING_LOGS_PANE)) {
+      routingLogsPaneClosed();
+      return;
+    }
+  } catch {
+    return;
+  }
+  let note: string | undefined;
+  try {
+    const command = logsReaderCommand(options);
+    const session = await $.session.id();
+    const result = await $.process.run([...command, '--session', session], { timeoutMs: 10000 });
+    note = applyRoutingLogsRead(result.stdout,
+      result.exitCode !== 0 || result.isStdoutTruncated
+        ? `logs command exited ${result.exitCode} or truncated output`
+        : undefined);
+  } catch (error) {
+    note = applyRoutingLogsRead('', error instanceof Error ? error.message : 'read failed');
+  }
+  $.ui.invalidate('ui.render');
+  if (note) $.ui.log(note, { to: 'debug' });
 }
 
 async function readOrchestratorState($: EngineInterface, options: PluginOptions): Promise<boolean> {
@@ -174,9 +212,7 @@ export function register(on: On, options: PluginOptions): void {
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
-    if (!command) return {text: /^explain(?:\s|$)/.test(e.args.trim())
-      ? 'Usage: /smart-router explain on|off|latest'
-      : 'Usage: /smart-router on|off|logs|explain on|off|latest'};
+    if (!command) return {text: 'Usage: /smart-router on|off|logs'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (command.action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
@@ -192,7 +228,7 @@ export function register(on: On, options: PluginOptions): void {
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
-    if (!command || command.action === 'explain') return next(e);
+    if (!command) return next(e);
     const action = command.action;
     try {
       await setRouting($, options, action === 'on', true);
@@ -206,7 +242,8 @@ export function register(on: On, options: PluginOptions): void {
   registerStatusBand(on);
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
-  on('turn.complete', ($, e, next) => {
+  on('turn.complete', async ($, e, next) => {
+    await refreshRoutingLogsPane($, options);
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     return next(e);

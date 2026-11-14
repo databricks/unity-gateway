@@ -316,13 +316,14 @@ Record-shape assertions live here; missing/unreadable reader behavior is covered
 the CLI tests below. Filesystem failure cases cover directory creation, opening, and locking.
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing and unreadable sessions,
-and `--decision` hit/miss; local component checks only. Four native logs-pane tests cover
-rendering/background refresh, reader errors and recovery including truncated output, missing
-configuration, and launch gating with a fake logs reader. Exact styling and missing-width
-fallback are not asserted; interactive pane and live-session coverage remain absent.
-The refresh case holds a reader pending while foreground/background spawns complete and
-checks that parallel spawns queue a refresh. Ordinary turns, resumed/denied spawns, and
-closed panes do not trigger reads.
+and `--decision` hit/miss; local component checks only. Native logs-pane tests cover rendering and
+launch gating with a fake logs reader, drill-down into preview-only decision details (metadata,
+stale-request handling, Back navigation, detail-load failures and their error envelopes), reader
+errors and recovery including truncated output, missing configuration, and refreshes on turn
+completions and new subagent spawns while the pane is open. Exact styling and missing-width
+fallback are not asserted; interactive pane and live-session coverage remain absent. The refresh
+case holds a reader pending while foreground/background spawns complete and checks that parallel
+spawns queue one rerun; resumed/denied spawns and closed panes do not trigger reads.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -1606,19 +1607,16 @@ tool search, reduced context usage, or native connector consent.
 
 ### Routing explanation coverage
 
-The shared decision-writer checks retain explanations with task-text logging on
-and omit them with it off, while preserving model reconciliation in both modes.
-
-Routing explanation component tests cover opt-in native panes, seven- and eight-digit
-gateway model IDs, request-identity checks, per-model selection, optional numeric
-estimates, malformed metadata, and pane-open feedback. Python rejects explanation shapes
-the native renderer cannot display while preserving valid route choices when optional
-details are invalid. Declared session and tool-call identities must match the request before
-an explanation enters the response or audit log, including identities nested in evidence.
-Pending routes cannot restore the latest explanation after clear or resume; the selected
-spawn model remains intact. Custom catalog IDs with dotted names retain their identity.
-These checks do not establish deployed-service explanation
-availability. See the Claude mod guide for the optional service response contract.
+The Claude session log and decision audit apply the same task-text privacy setting:
+disabled logging omits the prompt preview and explanation while retaining the task digest
+and length, and it never changes the selected model. The existing `/smart-router logs`
+detail validates session and tool-call identity, the routed model, and the exact offered
+catalog before displaying comparisons. Native tests cover malformed and oversized
+metadata, dotted and gateway-wrapped model IDs, per-model selection, optional numeric
+estimates, and the default-hidden estimates control. Invalid explanation data leaves the
+selected route and rationale visible. These checks do not establish deployed-service
+explanation availability. See the Claude mod guide for the optional service response
+contract.
 
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed

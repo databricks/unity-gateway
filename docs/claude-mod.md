@@ -67,35 +67,27 @@ routing; the message that issued the calls is drawn before routing finishes and 
 a call still routing waits for a later reply, and a call whose routing failed draws no card.
 Cards survive a turn that ends while the reply waits on a background agent and are dropped
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
-Decisions are kept for the session; a plugin reload clears them from the screen, and the
-routing decision audit log retains any optional explanation returned with the decision.
+Decisions are kept for the session; a plugin reload clears them from the screen. The
+`/smart-router logs` pane opens a recorded decision and shows its validated explanation
+and offered-model comparisons when task-text logging permits those details to be saved.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 
 ### Routing explanations
 
-`/smart-router explain on` adds a **Why this model?** button to routing rows and
-parallel decision cards for the current plugin session. Explanations start off;
-`/smart-router explain off` hides the buttons and closes the pane.
-`/smart-router explain latest` opens the most recent recorded decision once, even
-with explanation buttons off. Turning explanations off does not erase decision history.
-These commands do not change routing, submit feedback, or make model requests.
-
-The native pane shows the selected model, a short explanation, and a model selector
-for the alternatives supplied by the router. **Show numbers** reveals optional quality,
-cost, and scoring details. These are the router's estimates, not measured outcomes or
-billed costs. The mod displays the service's reasons without generating new ones.
-Claude owns pane layout and focus: the fullscreen renderer supports the clickable side
-pane. The command reports when Claude cannot place the pane. UG does not change
-the user's renderer setting.
+`/smart-router logs` uses the existing logs pane. Select a recorded decision to see its
+validated explanation and compare the models the router was offered. **Show numbers**
+reveals optional quality, cost, and scoring estimates; these are not measured outcomes
+or billed costs. Missing or invalid explanation data leaves the selected route and its
+original rationale visible.
 
 Detailed comparisons require the routing service to include optional explanation data
 as `route_selection[0].params.routing_explanation`, either a JSON-encoded string or
 an object. The decoded object is limited to 64 KiB and must contain finite JSON values.
-Older services remain compatible: the pane shows the original rationale and identifies
-that comparison details were not returned, while routing continues normally. Malformed,
+Older services remain compatible: the log detail shows the original rationale and notes
+that no detailed explanation was recorded, while routing continues normally. Malformed,
 oversized, or mismatched explanation data is discarded independently of the model
-selection. Opening a pane uses the saved decision and never reruns the router.
+selection. Opening a detail uses the saved decision and never reruns the router.
 
 The explanation object contains `selected_model`, `summary`, `task_understanding`
 (a list of short strings), and `models`. Each model entry contains `id`, `name`,
@@ -107,7 +99,9 @@ present; shorter IDs drop that suffix. The client requires one explanation row p
 offered model and rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
 and `difference_from_winner` supply the numeric view. Optional `recipe` and `formula`
 identify the scoring policy. Any supplied `session_id` or `tool_use_id`, including
-inside `evidence`, must match the current call. The service must describe the same
+inside `evidence`, must match the recorded call. When task-text logging is disabled,
+the session log omits the prompt preview and explanation while retaining the same
+task digest and length used by the decision audit. The service must describe the same
 decision and offered alternatives, including reasons for excluded models, without
 running another classifier or changing its selection policy.
 

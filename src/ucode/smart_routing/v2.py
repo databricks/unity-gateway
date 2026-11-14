@@ -553,6 +553,7 @@ def route_claude_subagent(
     available_models: list[str],
     audit_decision: bool = False,
     hook_output: bool = False,
+    include_task_text: bool = True,
 ) -> dict | None:
     """Return the spawn-ready model and UI details using the shared Python client.
 
@@ -579,6 +580,7 @@ def route_claude_subagent(
             route.task,
             route.decision,
             route.routed_model,
+            include_task_text=include_task_text,
         )
         session_log.append_decision(
             AGENT_CLAUDE,
@@ -587,6 +589,7 @@ def route_claude_subagent(
             route.decision,
             route.routed_model,
             routing_ms=routing_ms,
+            include_task_text=include_task_text,
         )
     if hook_output:
         updated_input = {

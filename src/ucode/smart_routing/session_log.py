@@ -41,13 +41,18 @@ def append_decision(
     requested_model: str,
     *,
     routing_ms: int,
+    include_task_text: bool = True,
 ) -> None:
     """Write a decision without allowing filesystem failures to block routing."""
     try:
         path = session_log_path(harness, payload.get("session_id"))
         if path is None:
             return
-        preview = next((line.strip() for line in task_text.splitlines() if line.strip()), None)
+        preview = (
+            next((line.strip() for line in task_text.splitlines() if line.strip()), None)
+            if include_task_text
+            else None
+        )
         if preview is not None and len(preview) > PREVIEW_CHARS:
             preview = preview[:PREVIEW_CHARS] + "…"
         original = payload.get("tool_input")
@@ -61,8 +66,8 @@ def append_decision(
             "kind": "subagent",
             "session_id": payload["session_id"],
             "tool_use_id": payload.get("tool_use_id"),
-            # Only a bounded first-line preview is stored; the full prompt text
-            # stays out of ~/.ucode (the decisions file already holds it).
+            # The session log never stores the full task text; privacy mode also
+            # omits its preview, matching the decision audit's hashed representation.
             "prompt": {
                 "preview": preview,
                 "sha256": hashlib.sha256(
@@ -80,6 +85,11 @@ def append_decision(
                 {"model": model, "harness": candidate_harness}
                 for model, candidate_harness in decision.route_options
             ],
+            **(
+                {"explanation": decision.explanation}
+                if include_task_text and decision.explanation is not None
+                else {}
+            ),
             "router_name": decision.router_name,
             "routing_ms": routing_ms,
             "rationale": decision.rationale,
