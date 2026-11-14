@@ -1,21 +1,24 @@
-"""Detached OTel SDK/exporter. Receive the complete handoff before importing the SDK."""
+"""Detached, bounded metric buffer; flush on a timer, agent handoff, or parent exit."""
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
-from collections import defaultdict
+import threading
+from collections import defaultdict, deque
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import urlsplit, urlunsplit
+
+from ucode.metrics import EXPORT_INTERVAL_SECONDS, MAX_HANDOFF_BYTES, MAX_OBSERVATIONS
 
 if TYPE_CHECKING:
     from opentelemetry.sdk.metrics.export import MetricsData
 
 INGEST_PATH = "/api/2.0/ai-gateway/ug-cli/otel/v1/metrics"
 EXPORT_TIMEOUT_SECONDS = 5
-MAX_HANDOFF_BYTES = 2 * 1024 * 1024
 MAX_POINTS_PER_REQUEST = 100
 DURATION_BOUNDS = (
     1,
@@ -40,47 +43,110 @@ DURATION_BOUNDS = (
 BYTE_BOUNDS = (256, 1024, 4096, 16384, 65536, 262144, 1048576, 4194304, 16777216)
 
 
-def send_in_background(observations: list, credentials: dict):
+def start_exporter():
     from ucode.os_compatibility import subprocess_cross_os
 
-    grouped: dict[str, list] = defaultdict(list)
-    for workspace, name, value, labels in observations:
-        if workspace in credentials:
-            grouped[workspace].append((name, value, labels))
-    if not grouped:
-        return None
-    batches = [
-        {
-            "workspace": workspace,
-            "token": credentials[workspace][0],
-            "headers": credentials[workspace][1],
-            "observations": points,
-        }
-        for workspace, points in grouped.items()
-    ]
-    payload = json.dumps(batches, separators=(",", ":")).encode()
-    if len(payload) > MAX_HANDOFF_BYTES:
-        return None
     options: dict[str, Any] = (
         {"creationflags": subprocess.CREATE_NO_WINDOW}
         if sys.platform == "win32"
         else {"start_new_session": True}
     )
-    with suppress(OSError):
-        reporter = subprocess_cross_os.popen(
-            [sys.executable, "-P", "-m", "ucode.metrics.exporter"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            **options,
-        )
-        assert reporter.stdin is not None
-        # The child drains stdin before SDK initialization or networking. Credentials never go
-        # into argv, an added environment variable, or a persisted spool file.
-        with reporter.stdin:
-            reporter.stdin.write(payload)
-        return reporter
-    return None
+    reporter = subprocess_cross_os.popen(
+        [sys.executable, "-P", "-m", "ucode.metrics.exporter"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=False,
+        bufsize=0,
+        **options,
+    )
+    assert reporter.stdin is not None
+    try:
+        # Unbuffered, nonblocking writes cannot hold up a command, even if the child stalls.
+        os.set_blocking(reporter.stdin.fileno(), False)
+    except Exception:
+        reporter.stdin.close()
+        raise
+    return reporter
+
+
+class ExportBuffer:
+    def __init__(self):
+        self.pending: deque = deque(maxlen=MAX_OBSERVATIONS)
+        self.credentials: dict = {}
+        self.workspace: str | None = None
+        self.context: dict = {}
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.closed = threading.Event()
+
+    def receive(self, message: dict) -> None:
+        with self.lock:
+            if "credentials" in message:
+                self.credentials = message["credentials"]
+            if self.workspace is None and message.get("workspace"):
+                self.workspace = message["workspace"]
+                self.pending = deque(
+                    ((w or self.workspace, n, v, a) for w, n, v, a in self.pending),
+                    maxlen=MAX_OBSERVATIONS,
+                )
+            context = message.get("context", {})
+            if context != self.context:
+                for _, _, _, attrs in self.pending:
+                    if "command" in context:
+                        attrs["command"] = context["command"]
+                    if "agent" in context and attrs.get("agent") in (None, "unknown"):
+                        attrs["agent"] = context["agent"]
+                self.context = context
+            for workspace, name, value, labels in message.get("observations", []):
+                self.pending.append((workspace or self.workspace, name, value, labels))
+        if message.get("flush"):
+            self.wake.set()
+
+    def read(self, stream: BinaryIO) -> None:
+        try:
+            while line := stream.readline(MAX_HANDOFF_BYTES + 1):
+                if len(line) > MAX_HANDOFF_BYTES or not line.endswith(b"\n"):
+                    break
+                self.receive(json.loads(line))
+        except Exception:
+            return
+        finally:
+            self.closed.set()
+            self.wake.set()
+
+    def drain(self) -> list[dict]:
+        grouped: dict[str, list] = defaultdict(list)
+        with self.lock:
+            unbound: deque = deque(maxlen=MAX_OBSERVATIONS)
+            for workspace, name, value, labels in self.pending:
+                if workspace in self.credentials:
+                    grouped[workspace].append((name, value, labels))
+                else:
+                    unbound.append((workspace, name, value, labels))
+            self.pending = unbound
+            return [
+                {
+                    "workspace": workspace,
+                    "token": self.credentials[workspace][0],
+                    "headers": self.credentials[workspace][1],
+                    "observations": points,
+                }
+                for workspace, points in grouped.items()
+            ]
+
+    def run(self, stream: BinaryIO) -> None:
+        # Keep draining the pipe while SDK initialization or an HTTP upload is in progress.
+        threading.Thread(target=self.read, args=(stream,), daemon=True).start()
+        while True:
+            self.wake.wait(EXPORT_INTERVAL_SECONDS)
+            self.wake.clear()
+            closed = self.closed.is_set()
+            for batch in self.drain():
+                with suppress(Exception):
+                    export_batch(batch)
+            if closed:
+                return
 
 
 def aggregate(observations: list) -> MetricsData | None:
@@ -195,16 +261,8 @@ def export_batch(batch: dict) -> None:
 
 
 def main() -> None:
-    # No SDK import can delay the parent's pipe handoff.
-    payload = sys.stdin.buffer.read(MAX_HANDOFF_BYTES + 1)
-    if len(payload) > MAX_HANDOFF_BYTES:
-        return
-    try:
-        for batch in json.loads(payload):
-            export_batch(batch)
-    except Exception:
-        # Best-effort telemetry never writes to the user's terminal or changes command status.
-        return
+    with suppress(Exception):
+        ExportBuffer().run(sys.stdin.buffer)
 
 
 if __name__ == "__main__":

@@ -232,8 +232,8 @@ def _collect_integration_cases(expression):
 def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     if agent == "codex":
         workflow = WORKFLOW.read_text()
-        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.154\.0", workflow)
-        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}" in workflow
+        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.156\.0", workflow)
+        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}" in workflow
     jobs = _integration_jobs()
     selected = []
     for name in ("smoke", "full"):
@@ -253,7 +253,7 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             assert "smart_routing: [false]" in jobs[name]
             assert (
                 "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
-                "inputs.codex_version || '0.154.0' }}"
+                "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
         for platform in ("ubuntu-22.04", "windows-latest"):
@@ -421,7 +421,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
-        "inputs.codex_version || '0.154.0' }}"
+        "inputs.codex_version || '0.156.0' }}"
     ) in job
 
 

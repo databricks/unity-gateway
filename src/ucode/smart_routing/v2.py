@@ -20,7 +20,7 @@ from typing import NoReturn, TextIO
 
 import ucode.smart_routing.pricing as pricing
 import ucode.smart_routing.savings as savings
-from ucode import claude_answer_delivery, config_io
+from ucode import claude_answer_delivery, config_io, metrics
 from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
@@ -964,6 +964,7 @@ def launch_claude(
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
+                metrics.agent_handoff()
                 proc = subprocess_cross_os.popen(
                     argv, stdin=subprocess.PIPE if stdin_prompt is not None else None
                 )
@@ -1068,6 +1069,7 @@ def launch_codex(
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
+    metrics.agent_handoff()
     app_server = subprocess_cross_os.popen(
         [binary, "app-server", *config_args, "--listen", app_server_url],
         env=os.environ.copy(),
