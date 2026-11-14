@@ -148,7 +148,8 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert "shasum -a 256 -c" in job
     assert "--macos-desktop" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_macos_missing_click_records_native_accessibility_tree",
     }
 
 
@@ -169,7 +170,8 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
     assert "${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
-        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+        "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn",
+        "test_ug_codex_desktop_macos.py::test_macos_missing_click_records_native_accessibility_tree",
     }
 
 
