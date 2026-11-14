@@ -328,7 +328,7 @@ jobs:
                       "**Blocking issues** — clearly evidenced unrelated changes, correctness bugs, broken contracts, missing error handling on failure paths, data loss risks.",
                       "**Security vulnerabilities** — injection (SQL, command, template), authentication/authorization bypasses, secret exposure, unsafe deserialization, path traversal, SSRF, and any change that weakens an existing security boundary. Flag even subtle issues.",
                       "**Non-blocking notes** — scope clarification questions, design concerns or edge cases worth flagging (brief).",
-                      "**Approach** — apply the UG rubric's relevant architecture, metrics, latency, and configuration-reuse checks. Compare native agent mechanisms before adding a proxy or service. Name a concrete simpler alternative and its tradeoff, or say the approach is sound. Never blocking.",
+                      "**Approach** — apply the shared UG rubric's checks for simpler alternatives, reuse, and tradeoffs. Name a concrete alternative briefly, or say the approach is sound. Never blocking.",
                       "**Summary** — use the mandatory Changes, Tests, and Scope subsections below. The workflow inserts computed diff statistics here before publication.",
                   ],
                   1,
@@ -417,8 +417,7 @@ jobs:
           test edits explicitly without inventing test cases. Every changed test/support
           file listed above must appear here. Also describe missing coverage and whether
           existing tests suffice. If no tests changed, state that and assess existing
-          coverage. Distinguish local recording, real gateway request/response evidence,
-          and downstream usage verification when those claims are relevant. Report
+          coverage. Apply the shared UG rubric's API and telemetry evidence guidance. Report
           unavailable evidence as unverified. Keep all "keep" verdicts and full test rationale in this table.
           Surface only actionable test changes (add missing coverage, consolidate,
           move layer, change, or remove) outside this subsection, as concise notes

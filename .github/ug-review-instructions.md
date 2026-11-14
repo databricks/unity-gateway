@@ -37,9 +37,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    revert changes have meaningful coverage. For behavior changes, require the PR description to
    state `BEFORE: <behavior>` and `AFTER: <behavior>`, ideally with screenshots. Look for relevant
    failure cases and provider/auth/platform combinations rather than exhaustive test matrices.
-   For telemetry delivery, use the existing integration/TUI request recorder to assert the
-   outgoing request and successful gateway response; a monkeypatched recorder call proves only
-   local recording. If a change claims downstream attribution or usage correctness, distinguish
+   For API behavior, extend existing integration/TUI journeys and use their request recorder to
+   verify the outgoing request and actual response, including the status and relevant headers or
+   payload fields. Minimize monkeypatch-heavy tests that only assert internal calls; they do not
+   establish the API contract. If a change claims downstream attribution or usage correctness, distinguish
    request-header evidence from verification in the actual usage data. State what is unverified.
    For native UI changes, check the real model selector for expected readable names and require
    a completed agent response with the expected result; boot, echoed input, and config files alone
