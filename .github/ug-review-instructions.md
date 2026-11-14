@@ -69,6 +69,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    changes are material or performance is claimed. Separate local/component timing from real
    agent readiness and CI queue time. An optimization must preserve submitted prompts and avoid
    confusing hook messages; explain the user-visible tradeoff as well as the saved work.
+   For API polling, count requests across pages, retries, and parallel callers against the shared
+   rate limit, including unauthenticated calls from shared runner IPs. Check bounded waits,
+   backoff, duplicate gates, and actionable rate-limit errors without weakening required checks.
 8. **Preserve supply-chain and CI trust boundaries.** Use internal package sources per
    [go/registry-access](https://go/registry-access). The trusted default-branch
    `.github/workflows/polly-review.yml` records the npm and PyPI proxy endpoints in
@@ -77,6 +80,13 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+   A PR-editable runner choice or job condition cannot enforce protected-runner access. Require
+   evidence of the organization runner-group restrictions when safety depends on them; mark
+   unavailable settings as unverified rather than assuming protection or declaring a bypass.
+   For security scanners, check that quoted, non-ASCII, and whitespace-containing paths and
+   diff content resembling file headers remain in scope. Check whether PR-authored suppression
+   comments or configuration can disable required rules. Ask for focused boundary regressions
+   when these inputs can evade the changed detector; do not infer a bypass without evidence.
 
 ## Voice and tone
 
