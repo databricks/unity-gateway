@@ -153,6 +153,26 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
             pytest.param(
                 {
                     **_EXPLANATION,
+                    **(
+                        {"selected_model": model_id}
+                        if field == "selected_model"
+                        else {
+                            "models": [
+                                {**_EXPLANATION["models"][0], "id": model_id},
+                                _EXPLANATION["models"][1],
+                            ]
+                        }
+                    ),
+                },
+                id=f"model-{case}-{field}",
+            )
+            for field in ["selected_model", "candidate_id"]
+            for case, model_id in [("ansi", "\x1b[35mmodel-b\x1b[0m"), ("control", "model-b\x00")]
+        ],
+        *[
+            pytest.param(
+                {
+                    **_EXPLANATION,
                     "models": [
                         {**_EXPLANATION["models"][0], field: value},
                         _EXPLANATION["models"][1],
@@ -320,32 +340,6 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
     ],
 )
 def test_parse_routing_explanation_rejects_invalid_metadata(explanation):
-    assert (
-        routing._parse_routing_explanation(
-            explanation,
-            "system.ai.model-b",
-            (("system.ai.model-b", "claude"), ("system.ai.alternative", "claude")),
-        )
-        is None
-    )
-
-
-@pytest.mark.parametrize("field", ["selected_model", "candidate_id"])
-@pytest.mark.parametrize(
-    "model_id",
-    ["\x1b[35mmodel-b\x1b[0m", "model-b\x00"],
-    ids=["ansi", "control"],
-)
-def test_explanation_rejects_corrupted_model_identity(field, model_id):
-    explanation = {**_EXPLANATION}
-    if field == "selected_model":
-        explanation[field] = model_id
-    else:
-        explanation["models"] = [
-            {**_EXPLANATION["models"][0], "id": model_id},
-            _EXPLANATION["models"][1],
-        ]
-
     assert (
         routing._parse_routing_explanation(
             explanation,

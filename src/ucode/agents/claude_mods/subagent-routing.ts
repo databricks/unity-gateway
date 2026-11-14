@@ -180,8 +180,7 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
     const opened = await $.ui.open({
       id: EXPLANATION_PANE, title: 'Why this model?', focus: true, closeOnEscape: true, rows: 18, columns: 72,
     })
-    if (state.openAttempt !== attempt) return Boolean(state.paneRecord)
-    if (state.paneRecord && opened.isPlaced) return true
+    if (state.paneRecord && (state.openAttempt !== attempt || opened.isPlaced)) return true
     await $.ui.close({ id: EXPLANATION_PANE })
   } catch {}
   if (state.openAttempt !== attempt) return Boolean(state.paneRecord)

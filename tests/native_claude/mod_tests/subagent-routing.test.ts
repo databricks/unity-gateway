@@ -1094,14 +1094,16 @@ test(`the Why button reports ${failure} failure and clears its pane record`, { o
 });
 }
 
+for (const outcome of ['failure', 'success'] as const) {
 for (const cancellation of ['none', 'off', 'clear', 'resume'] as const) {
-test(`a late pane-opening failure respects a newer open followed by ${cancellation}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
-  let failFirst!: () => void;
+test(`a late pane-opening ${outcome} respects a newer open followed by ${cancellation}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+  let finishFirst!: () => void;
   let startedFirst!: () => void;
   const started = new Promise<void>((resolve) => { startedFirst = resolve; });
-  const ready = new Promise<void>((resolve) => { failFirst = resolve; });
+  const ready = new Promise<void>((resolve) => { finishFirst = resolve; });
   let calls = 0;
   let closes = 0;
+  let placed = false;
   on('session.id', () => ({ value: 'session-1' }));
   on('session.end', () => ({ sessionId: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
@@ -1112,11 +1114,12 @@ test(`a late pane-opening failure respects a newer open followed by ${cancellati
     if (calls++ === 0) {
       startedFirst();
       await ready;
-      throw new Error('Earlier opening failed');
+      if (outcome === 'failure') throw new Error('Earlier opening failed');
     }
+    placed = true;
     return { value: { isPlaced: true } };
   });
-  on('ui.close', () => { closes++; return { value: undefined }; });
+  on('ui.close', () => { closes++; placed = false; return { value: undefined }; });
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
   await $.tool.call({ tool: 'Agent', tool_use_id: 'overlapping-open', ...originalInput });
   const first = $.command.run({ command: 'smart-router', args: 'explain latest' });
@@ -1125,15 +1128,17 @@ test(`a late pane-opening failure respects a newer open followed by ${cancellati
     .toBe('Showing the latest routing explanation.');
   if (cancellation === 'off') await $.command.run({ command: 'smart-router', args: 'explain off' });
   else if (cancellation !== 'none') await $.session.end({ reason: cancellation });
-  failFirst();
+  finishFirst();
   expect((await first).text).toBe(cancellation === 'none'
     ? 'Showing the latest routing explanation.' : 'Could not open the native routing explanation pane.');
   const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
   expect(JSON.stringify(await pane.drawn())).toContain(cancellation === 'none'
     ? 'Selected for the task' : 'original Agent row');
-  expect(closes).toBe(cancellation === 'none' ? 0 : 1);
+  expect(placed).toBe(cancellation === 'none');
+  expect(closes).toBe(cancellation === 'none' ? 0 : outcome === 'success' ? 2 : 1);
   await pane.unmount();
 });
+}
 }
 
 test('turning explanations off closes a pane that is still opening', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
