@@ -65,6 +65,45 @@ def test_codex_native_diagnostics_keep_metadata_without_payloads(tmp_path):
     assert "private" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("timestamp", ["2026-11-14T02:19:54.646Z", "2026-11-14T02:19:54.646+00:00"])
+def test_codex_native_request_timestamp_survives_filtering(timestamp):
+    """Sanitized Codex 0.156.0 API metadata from CI run 43545162176."""
+    event = (
+        'INFO codex_otel.trace_safe: event.name="codex.api_request" '
+        f'event.timestamp="{timestamp}" duration_ms=919 '
+        "http.response.status_code=200 attempt=0"
+    )
+    assert codex.diagnostic_events(event) == [
+        {
+            "event.name": "codex.api_request",
+            "event.timestamp": timestamp,
+            "duration_ms": "919",
+            "http.response.status_code": "200",
+            "attempt": "0",
+        }
+    ]
+
+
+def test_codex_native_diagnostics_exclude_multiline_payload_fields():
+    text = (
+        'attempt=1 body="private response\nstatus=private-key\n'
+        'request_id=private-id\nend" status_code=429\n'
+        "attempt=2 status_code=200\n"
+        'attempt=3 body="unfinished private response\nstatus=private-key'
+    )
+    assert codex.diagnostic_events(text) == [
+        {"attempt": "1", "status_code": "429"},
+        {"attempt": "2", "status_code": "200"},
+    ]
+
+
+def test_codex_native_diagnostics_exclude_display_error_tail():
+    assert codex.diagnostic_events(
+        'event.name="codex.sse_event" duration_ms=500 error.message=private response '
+        "status=private-key\nrequest_id=private-id"
+    ) == [{"event.name": "codex.sse_event", "duration_ms": "500"}]
+
+
 def test_codex_native_diagnostics_report_unreadable_database(tmp_path):
     directory = tmp_path / ".codex"
     directory.mkdir()

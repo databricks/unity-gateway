@@ -16,7 +16,7 @@ import threading
 import time
 from pathlib import Path
 
-from .agents.codex import DIAGNOSTIC_TARGET, diagnostic_events
+from .agents.codex import DIAGNOSTIC_TARGET, split_diagnostic_output
 from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -175,12 +175,7 @@ class UserSession:
             stdout, stderr = proc.communicate(timeout=5)
         finally:
             stop_process(proc)
-        native_logs = [line for line in stderr.splitlines() if f" {DIAGNOSTIC_TARGET}:" in line]
-        stderr = "".join(
-            line
-            for line in stderr.splitlines(keepends=True)
-            if f" {DIAGNOSTIC_TARGET}:" not in line
-        )
+        stderr, codex_diagnostics = split_diagnostic_output(stderr)
         result = subprocess.CompletedProcess(
             command,
             proc.returncode,
@@ -197,7 +192,7 @@ class UserSession:
                 "stdin": input_text,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
-                "codex_diagnostics": diagnostic_events("\n".join(native_logs)),
+                "codex_diagnostics": codex_diagnostics,
             },
         )
         detail = f"{command}\n{result.stdout}\n{result.stderr}"
@@ -328,7 +323,6 @@ class UserSession:
         messages: queue.Queue = queue.Queue()
         transcript: list[str] = []
         diagnostics: list[str] = []
-        codex_diagnostics: list[dict[str, str]] = []
         proc = subprocess.Popen(
             command,
             cwd=self.cwd,
@@ -354,10 +348,7 @@ class UserSession:
 
         def read_diagnostics():
             for line in proc.stderr:
-                if f" {DIAGNOSTIC_TARGET}:" in line:
-                    codex_diagnostics.extend(diagnostic_events(line))
-                else:
-                    diagnostics.append(self.redact(line))
+                diagnostics.append(self.redact(line))
 
         reader = threading.Thread(target=read_output, daemon=True)
         stderr_reader = threading.Thread(target=read_diagnostics, daemon=True)
@@ -412,12 +403,13 @@ class UserSession:
             proc.stdin.close()
             proc.stdout.close()
             proc.stderr.close()
+            stderr, codex_diagnostics = split_diagnostic_output("".join(diagnostics))
             self.record(
                 f"{name}.json",
                 {
                     "argv": command,
                     "stdout": transcript,
-                    "stderr": diagnostics,
+                    "stderr": stderr.splitlines(keepends=True),
                     "codex_diagnostics": codex_diagnostics,
                 },
             )

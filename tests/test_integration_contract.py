@@ -73,12 +73,16 @@ def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
         "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
         'event.name="codex.api_request" duration_ms=700 '
         'http.response.status_code=429 auth.request_id="request-123" '
-        'error.message="private response"'
+        "error.message=private response\nstatus=private-key\nrequest_id=private-id\n"
+        "        payload codex_otel.trace_safe: status=private-key"
     )
     program = (
         "import sys,time; "
         "print('ordinary stderr', file=sys.stderr, flush=True); "
         f"print({diagnostic!r}, file=sys.stderr, flush=True); "
+        "print('ambiguous private continuation', file=sys.stderr, flush=True); "
+        "print('2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail', "
+        "file=sys.stderr, flush=True); "
         f"time.sleep({60 if timeout else 0})"
     )
     with (
@@ -90,16 +94,19 @@ def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
 
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["timed_out"] is timeout
-    assert recorded["stderr"] == "ordinary stderr\n"
+    assert recorded["stderr"] == (
+        "ordinary stderr\n2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail\n"
+    )
     assert recorded["codex_diagnostics"] == [
         {
+            "event.timestamp": "2026-11-14T00:00:00Z",
             "event.name": "codex.api_request",
             "duration_ms": "700",
             "http.response.status_code": "429",
             "auth.request_id": "request-123",
         }
     ]
-    assert "private response" not in json.dumps(
+    assert "private" not in json.dumps(
         {key: value for key, value in recorded.items() if key != "argv"}
     )
 
@@ -112,12 +119,16 @@ def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path):
     diagnostic = (
         "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
         'event.name="codex.api_request" auth.request_id="request-123" '
-        'error.message="private response"'
+        "error.message=private response\nstatus=private-key\nrequest_id=private-id\n"
+        "        payload codex_otel.trace_safe: status=private-key"
     )
     program = (
         "import sys,json; "
         "print('ordinary stderr', file=sys.stderr, flush=True); "
         f"print({diagnostic!r}, file=sys.stderr, flush=True); "
+        "print('ambiguous private continuation', file=sys.stderr, flush=True); "
+        "print('2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail', "
+        "file=sys.stderr, flush=True); "
         "request=json.loads(sys.stdin.readline()); "
         "print(json.dumps({'id':request['id'],'result':{'userAgent':'contract-check'}}), "
         "flush=True); sys.stdin.readline()"
@@ -126,11 +137,18 @@ def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path):
     session.app_server_handshake(["-c", program], binary=Path(sys.executable), timeout=30)
 
     recorded = json.loads((session.artifacts / "app-server.json").read_text())
-    assert recorded["stderr"] == ["ordinary stderr\n"]
-    assert recorded["codex_diagnostics"] == [
-        {"event.name": "codex.api_request", "auth.request_id": "request-123"}
+    assert recorded["stderr"] == [
+        "ordinary stderr\n",
+        "2026-11-14T00:00:01Z ERROR codex_core::test: ordinary tail\n",
     ]
-    assert "private response" not in json.dumps(
+    assert recorded["codex_diagnostics"] == [
+        {
+            "event.timestamp": "2026-11-14T00:00:00Z",
+            "event.name": "codex.api_request",
+            "auth.request_id": "request-123",
+        }
+    ]
+    assert "private" not in json.dumps(
         {key: value for key, value in recorded.items() if key != "argv"}
     )
 

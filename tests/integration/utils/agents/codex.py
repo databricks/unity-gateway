@@ -21,6 +21,11 @@ __all__ = [
 SESSION_DIRECTORY = ".codex/sessions"
 EVIDENCE_KIND = "client-selected model"
 DIAGNOSTIC_TARGET = "codex_otel.trace_safe"
+_NATIVE_LOG_HEADER = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2}))"
+    r"\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+(?P<target>[\w:.-]+):(?:\s|$)"
+)
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _DIAGNOSTIC_FIELDS = frozenset(
     {
         "event.name",
@@ -40,19 +45,59 @@ _DIAGNOSTIC_FIELDS = frozenset(
 
 def diagnostic_events(text: str) -> list[dict[str, str]]:
     events = []
-    for line in text.splitlines():
-        try:
-            tokens = shlex.split(line)
-        except ValueError:
-            continue
-        fields = {}
-        for token in tokens:
+    header = _NATIVE_LOG_HEADER.match(text)
+    fields = {"event.timestamp": header["timestamp"]} if header else {}
+    lexer = shlex.shlex(text, posix=True, punctuation_chars="\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        for token in lexer:
+            if not token.strip("\n"):
+                if fields:
+                    events.append(fields)
+                fields = {}
+                continue
             name, _, value = token.partition("=")
-            if name in _DIAGNOSTIC_FIELDS and re.fullmatch(r"[a-zA-Z0-9_.:/-]{1,128}", value):
+            if name == "error.message":
+                if fields:
+                    events.append(fields)
+                return events
+            pattern = (
+                r"[a-zA-Z0-9_.:/+-]{1,128}"
+                if name == "event.timestamp"
+                else r"[a-zA-Z0-9_.:/-]{1,128}"
+            )
+            if name in _DIAGNOSTIC_FIELDS and re.fullmatch(pattern, value):
                 fields[name] = value
-        if fields:
-            events.append(fields)
+    except ValueError:
+        return events
+    if fields:
+        events.append(fields)
     return events
+
+
+def split_diagnostic_output(text: str) -> tuple[str, list[dict[str, str]]]:
+    ordinary = []
+    events = []
+    record = []
+    capture = False
+    for line in text.splitlines(keepends=True):
+        clean = _ANSI_ESCAPE.sub("", line)
+        header = _NATIVE_LOG_HEADER.match(clean)
+        native = bool(header and header["target"] == DIAGNOSTIC_TARGET)
+        if header:
+            if record:
+                events.extend(diagnostic_events("".join(record)))
+                record = []
+            capture = native
+        if capture:
+            record.append(clean)
+        else:
+            ordinary.append(line)
+    if record:
+        events.extend(diagnostic_events("".join(record)))
+    return "".join(ordinary), events
 
 
 def native_diagnostics(home: Path) -> dict:
