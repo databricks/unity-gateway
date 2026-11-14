@@ -156,6 +156,7 @@ class _McpReply:
     snapshot: str
     echo_delay: float = 0
     not_before: float = 0
+    stream_chunks: tuple[tuple[float, str], ...] = ()
 
 
 class _ScriptedCodexPty:
@@ -178,8 +179,13 @@ class _ScriptedCodexPty:
         reply = self._reply()
         self.typed.append((self.clock.elapsed, keys))
         if keys == "\r":
-            chunk = "\x1b[2J\x1b[H" + reply.snapshot.replace("\n", "\r\n")
-            self.pending.append((max(self.clock.elapsed, reply.not_before), chunk))
+            chunks = reply.stream_chunks or (
+                (0, "\x1b[2J\x1b[H" + reply.snapshot.replace("\n", "\r\n")),
+            )
+            self.pending.extend(
+                (max(self.clock.elapsed, reply.not_before) + delay, chunk)
+                for delay, chunk in chunks
+            )
         else:
             self.pending.append((self.clock.elapsed + reply.echo_delay, f"› {keys}"))
         self.pending.sort(key=lambda item: item[0])
@@ -334,3 +340,59 @@ def test_codex_mcp_inventory_bounds_input_echo_by_the_remaining_budget(clock, ec
         assert "ug_e2e-tools-fixture_metadata: starting (1 tool)" in str(error.value)
         assert len(pty.enters) == 1
     assert clock.elapsed <= _MCP_BUDGET
+
+
+@pytest.mark.parametrize("echo_delay", [10, _MCP_BUDGET + 1])
+@pytest.mark.parametrize("starting_snapshots", [0, 1])
+def test_codex_mcp_inventory_requires_fresh_echo_despite_visible_history(
+    clock, echo_delay, starting_snapshots
+):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    pty = _ScriptedCodexPty(
+        clock,
+        [_McpReply("› /mcp verbose\n\n" + _mcp_snapshot("starting"))] * starting_snapshots
+        + [_McpReply(_mcp_snapshot(), echo_delay=echo_delay)],
+    )
+    terminal = _McpInventoryTerminal(pty)
+    pty.pending.append((0, "› /mcp verbose\r\n"))
+    terminal.read()
+
+    if echo_delay < _MCP_BUDGET:
+        inventory = open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+        assert "fixture_reader: connected (1 tool)" in inventory
+        assert len(pty.enters) == starting_snapshots + 1
+        typed_at = [at for at, keys in pty.typed if keys == "/mcp verbose"][-1]
+        assert pty.enters[-1] >= typed_at + echo_delay
+    else:
+        with pytest.raises(AssertionError, match="typed input"):
+            open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+        assert len(pty.enters) == starting_snapshots
+        assert _inventory_actions(terminal) == []
+    assert all(at < _MCP_BUDGET for at, _ in pty.typed)
+    assert clock.elapsed <= _MCP_BUDGET
+
+
+@pytest.mark.parametrize(
+    "split_before", ["  • ug_e2e-tools-fixture_metadata", "    • Tools: read_fixture"]
+)
+def test_codex_mcp_inventory_waits_for_native_split_response(clock, split_before):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    snapshot = _mcp_snapshot().replace("\n", "\r\n")
+    split_at = snapshot.index(split_before)
+    # Codex 0.156 clears the previous composer before writing each response redraw.
+    chunks = (
+        (0, "\x1b[9;1H\x1b[J• Loading MCP inventory…\x1b[13;1H› Ask Codex to do anything"),
+        (1, "\x1b[9;1H\x1b[J" + snapshot[:split_at]),
+        (10, snapshot[split_at:]),
+    )
+    pty = _ScriptedCodexPty(clock, [_McpReply("", stream_chunks=chunks)])
+    terminal = _McpInventoryTerminal(pty)
+    inventory = open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+    assert "fixture_metadata: connected (1 tool)" in inventory
+    assert "fixture_reader: connected (1 tool)" in inventory
+    assert "• Tools: read_fixture" in inventory
+    assert len(pty.enters) == 1
+    assert clock.elapsed >= pty.enters[0] + 10
+    assert _inventory_actions(terminal) == [{"reason": "codex-mcp-inventory", "screen": inventory}]
