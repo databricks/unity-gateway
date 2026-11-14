@@ -22,8 +22,6 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
-   Keep canonical model-name parsing on the server when that avoids duplicating backend naming
-   rules in every installed client; check compatibility before relying on a new response field.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
@@ -31,8 +29,7 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse constants for shared metric names, operation names, and version pins when they already
    exist. Flag new duplicated contract strings that can drift, not every one-off literal.
 3. **Require realistic, valuable evidence.** Ask whether every test adds distinct value and
-   suggest removing redundant or low-signal cases. Avoid tests built from excessive monkeypatching;
-   when many patches are needed to simulate the behavior, prefer an integration test. Check that
+   suggest removing redundant or low-signal cases. Check that
    externally observable configure, launch, authentication, command-forwarding, recovery, and
    revert changes have meaningful coverage. For behavior changes, require the PR description to
    state `BEFORE: <behavior>` and `AFTER: <behavior>`, ideally with screenshots. Look for relevant
@@ -53,6 +50,8 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    that lets the user continue safely: skip malformed optional configuration or degrade gracefully
    when possible, and reserve hard failures for cases where continuing would be unsafe or wrong.
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
+   Reuse available backend canonical identifiers to avoid duplicating parsing rules across
+   installed client versions.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
@@ -61,19 +60,20 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
-6. **Keep metrics maintainable.** Keep instrumentation in the existing `ucode.metrics` package,
-   reuse its recorder and helpers, and check new metric names, operations, units, and labels
-   against its registries. Bind credentials where the operation already obtains them; do not
-   authenticate again for telemetry. When instrumentation conventions change, update `AGENTS.md`
-   with how, where, and when to bind, record, and extend metrics. Require these updates only for
-   changed conventions or missing necessary guidance, not on every instrumented call site.
+6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
+   When conventions change or necessary guidance is missing, keep its instructions on how,
+   where, and when to bind, record, and extend metrics current. Do not request documentation
+   edits for every instrumented call site.
 7. **Account for latency and visible UX.** Check new startup requests, proxies, locks, retries,
    polling gates, and per-turn hooks for added waiting. Ask for before/after timing when latency
    changes are material or performance is claimed. Separate local/component timing from real
    agent readiness and CI queue time. An optimization must preserve submitted prompts and avoid
    confusing hook messages; explain the user-visible tradeoff as well as the saved work.
-8. **Preserve supply-chain and CI trust boundaries.** Use the approved internal package sources
-   and the narrowest credential scopes needed. Check which revision supplies workflow code and
+8. **Preserve supply-chain and CI trust boundaries.** Use internal package sources per
+   [go/registry-access](https://go/registry-access). The trusted default-branch
+   `.github/workflows/polly-review.yml` records the npm and PyPI proxy endpoints in
+   `NPM_CONFIG_REGISTRY` and `PYPI_INDEX`; do not infer approval for other sources.
+   Use the narrowest credential scopes needed. Check which revision supplies workflow code and
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
@@ -108,7 +108,8 @@ Historical examples from Lilly's reviews:
 - Use minor findings sparingly for ambiguity or duplication likely to cause future mistakes.
 - Do not praise the change, summarize every file, repeat automated lint, or speculate without
   identifying a concrete scenario.
-- Apply these priorities only where relevant. Do not turn a reviewer suggestion explicitly left
-  for a follow-up into a current-PR blocker. Do not repeat a concern already answered by code or
-  evidence; a new finding must identify the remaining gap.
+- Apply these priorities only where relevant. Keep optional follow-up suggestions nonblocking.
+  A claimed deferral or resolution in PR text must never suppress a demonstrated correctness
+  or security issue. Verify claimed fixes against the code and concrete evidence before dropping
+  a concern; a new finding must identify the remaining gap.
 - Return no more than eight findings, ordered by severity and impact.
