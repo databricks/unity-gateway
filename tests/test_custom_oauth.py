@@ -211,15 +211,18 @@ class TestCustomClientToken:
                 "scopes": TEST_SCOPES,
             }
         }
+        message = (
+            "Custom-client OAuth timed out.*Retry shortly"
+            if cached == "contended"
+            else "Custom-client OAuth failed.*Rerun ug interactively"
+        )
         with ThreadPoolExecutor(max_workers=1) as pool:
             with (
                 _custom_oauth_lock(cache_path.parent, "http://localhost:8020")
                 if cached == "contended"
                 else nullcontext()
             ):
-                with pytest.raises(
-                    RuntimeError, match="Custom-client OAuth failed.*Rerun ug interactively"
-                ) as error:
+                with pytest.raises(RuntimeError, match=message) as error:
                     pool.submit(
                         launch_token,
                         state,

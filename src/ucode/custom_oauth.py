@@ -253,6 +253,8 @@ def get_custom_client_token(
             metrics.bind(workspace, token)
             return token
     except Exception as exc:
+        if not allow_consent and isinstance(exc, TimeoutError):
+            raise RuntimeError("Custom-client OAuth timed out. Retry shortly.") from exc
         raise RuntimeError(
             "Custom-client OAuth failed. Rerun ug interactively to sign in again."
             if not allow_consent
