@@ -1617,6 +1617,11 @@ which includes Claude, GPT, and supported open models while filtering incompatib
 Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
 and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
 wire APIs and Claude limits. These checks use controlled discovery responses.
+Bedrock and Mantle component checks cover mixed Claude/GPT catalogs for Copilot CLI and VS Code,
+GPT-OSS on its declared native OpenAI API, incompatible API exclusion, and allow-all discovery
+from both catalogs. Partial failures preserve discovered IDs and warn, including managed provider
+wildcards. Claude/Codex discovery retains its existing catalog selection. These checks do not
+establish live inference through Bedrock or Mantle.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering

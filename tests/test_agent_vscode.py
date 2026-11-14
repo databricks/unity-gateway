@@ -224,7 +224,7 @@ class TestConfigure:
         monkeypatch.setattr(
             copilot,
             "list_provider_service_models",
-            lambda *args: (["gpt-5.5", "gpt-4.1"], None),
+            lambda *args, **kwargs: (["gpt-5.5", "gpt-4.1"], None),
         )
 
         assert vscode.configure(STATE, provider="main.default.openai")
@@ -253,7 +253,7 @@ class TestConfigure:
             databricks_module, "list_model_provider_services", lambda *a, **k: ([service], None)
         )
         monkeypatch.setattr(
-            copilot, "list_provider_service_models", lambda *args: ([], "forbidden")
+            copilot, "list_provider_service_models", lambda *args, **kwargs: ([], "forbidden")
         )
 
         assert not vscode.configure(STATE, provider="main.default.mps")

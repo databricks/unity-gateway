@@ -65,6 +65,7 @@ from ucode.custom_oauth import launch_token
 from ucode.databricks import (
     ANTHROPIC_API_PROVIDER_TYPES,
     ANTHROPIC_FAMILIES,
+    BEDROCK_PROVIDER_TYPES,
     MICROSOFT_FOUNDRY_PROVIDER_TYPE,
     AnthropicModelCatalog,
     ModelServiceEntry,
@@ -127,6 +128,7 @@ CREDENTIAL_ENV_KEYS = ("COPILOT_PROVIDER_BEARER_TOKEN", "OAUTH_TOKEN")
 CATALOG_STATE_KEY = "copilot_catalog"
 # The Copilot CLI version configure found, for the managed-config read's User-Agent.
 VERSION_STATE_KEY = "copilot_cli_version"
+NATIVE_MODEL_API_TYPES_KEY = "_copilot_native_model_api_types"
 # The Model Provider Service this launch routes through; set by the launch command, never saved.
 LAUNCH_PROVIDER_SERVICE_KEY = "_copilot_launch_provider_service"
 # The Unity Catalog schema whose model services this launch uses; never saved.
@@ -146,6 +148,11 @@ _WIRE_ROUTES: dict[str, tuple[str, ...]] = {
     WIRE_ANTHROPIC: (API_ANTHROPIC_MESSAGES,),
     WIRE_RESPONSES: (API_MLFLOW_RESPONSES, API_OPENAI_RESPONSES, API_CODEX_RESPONSES),
     WIRE_COMPLETIONS: (API_MLFLOW_CHAT_COMPLETIONS, API_OPENAI_CHAT_COMPLETIONS),
+}
+_NATIVE_WIRE_ROUTES = {
+    WIRE_ANTHROPIC: API_ANTHROPIC_MESSAGES,
+    WIRE_RESPONSES: API_OPENAI_RESPONSES,
+    WIRE_COMPLETIONS: API_OPENAI_CHAT_COMPLETIONS,
 }
 _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",
@@ -200,12 +207,11 @@ def classify_model(
 ) -> tuple[str | None, str | None]:
     """The wire API Copilot uses for ``model``, or why it can't use it.
 
-    Names decide the wire, so ``api_types`` only excludes: the gateway serves some models on APIs
-    they don't declare. Without ``provider_type``, ``model`` is a Databricks model service and
-    ``api_types`` its advertised routes. With it, ``model`` is a Model Provider Service target and
-    ``api_types`` its declared APIs: Anthropic-API provider types serve only Claude, and other types
-    put every model that isn't GPT 5+ or o-series on Chat Completions, except Foundry's Claude
-    models, which use Anthropic."""
+    Without ``provider_type``, names select the wire and advertised ``api_types`` only exclude.
+    With it, ``model`` is a Model Provider Service target and ``api_types`` its declared APIs.
+    Bedrock models keep their native API; an unknown name needs a declared OpenAI chat API.
+    Anthropic serves only Claude. Other providers put every model that isn't GPT 5+ or o-series
+    on Chat Completions, except Foundry's Claude models, which use Anthropic."""
     declared = tuple(api_types)
     tail = bare_model_name(model)
     if provider_type is None:
@@ -216,6 +222,8 @@ def classify_model(
     elif declared and _CHAT_API_TYPES.isdisjoint(declared):
         return None, f"it isn't a chat model (it serves {', '.join(declared)})"
     wire = _wire_from_name(tail)
+    if provider_type in BEDROCK_PROVIDER_TYPES:
+        return _classify_native_model(model, declared)
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         if wire != WIRE_ANTHROPIC:
             return None, "only the Claude models of this service can be used"
@@ -234,6 +242,25 @@ def classify_model(
         wire = WIRE_COMPLETIONS
     if declared and not set(declared) & set(_WIRE_ROUTES[wire]):
         return None, f"it isn't served on {_WIRE_ROUTES[wire][0]}"
+    return wire, None
+
+
+def _classify_native_model(model: str, api_types: Iterable[str]) -> tuple[str | None, str | None]:
+    declared = tuple(api_types)
+    wire = _wire_from_name(bare_model_name(model))
+    if wire is None:
+        wire = next(
+            (
+                candidate
+                for candidate in (WIRE_RESPONSES, WIRE_COMPLETIONS)
+                if _NATIVE_WIRE_ROUTES[candidate] in declared
+            ),
+            None,
+        )
+    if wire is None:
+        return None, "no supported native chat API is declared"
+    if declared and _NATIVE_WIRE_ROUTES[wire] not in declared:
+        return None, f"it isn't served on {_NATIVE_WIRE_ROUTES[wire]}"
     return wire, None
 
 
@@ -350,6 +377,7 @@ def build_catalog(
     *,
     provider_type: str | None = None,
     fallback_wire: str | None = None,
+    native_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[CopilotModel], list[tuple[str, str]]]:
     """The ``(model, api_types)`` pairs Copilot can use, sorted Claude first (by family, newest
     first), then GPT, then open models, and the skipped models with the reason (see
@@ -360,7 +388,11 @@ def build_catalog(
     usable: dict[str, CopilotModel] = {}
     skipped: dict[str, str] = {}
     for model, api_types in models:
-        wire, reason = classify_model(model, api_types, provider_type=provider_type)
+        wire, reason = (
+            _classify_native_model(model, native_api_types[model])
+            if native_api_types and model in native_api_types
+            else classify_model(model, api_types, provider_type=provider_type)
+        )
         if wire is None and fallback_wire and bare_model_name(model) not in _UNSUPPORTED_MODELS:
             wire = fallback_wire
         if wire is not None:
@@ -370,10 +402,26 @@ def build_catalog(
     return sorted(usable.values(), key=_catalog_sort_key), list(skipped.items())
 
 
-def build_copilot_catalog(entries: Iterable[ModelServiceEntry | str]) -> list[CopilotModel]:
+def build_copilot_catalog(
+    entries: Iterable[ModelServiceEntry | str],
+    *,
+    native_api_types: object = None,
+) -> list[CopilotModel]:
     """The Databricks models Copilot can use (see :func:`build_catalog`)."""
     pairs = ((e, ()) if isinstance(e, str) else (e.id, e.api_types) for e in entries)
-    return build_catalog(pairs)[0]
+    return build_catalog(pairs, native_api_types=_native_model_api_types(native_api_types))[0]
+
+
+def _native_model_api_types(value: object) -> dict[str, tuple[str, ...]]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        model: tuple(api_types)
+        for model, api_types in value.items()
+        if isinstance(model, str)
+        and isinstance(api_types, (list, tuple))
+        and all(isinstance(api_type, str) for api_type in api_types)
+    }
 
 
 def _without_registry_prefix(model: str) -> str:
@@ -397,6 +445,7 @@ def provider_service_catalog(
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
     agent = "Copilot" if tool == "copilot" else "VS Code"
     provider_type = service["provider_type"]
+    api_types: dict[str, tuple[str, ...]] = {}
     named = list(service.get("targets") or [])
     listed: list[str] = []
     allow_all = bool(service.get("allow_all_targets"))
@@ -404,8 +453,15 @@ def provider_service_catalog(
         start = _without_registry_prefix(requested) if requested else None
         managed_default = state.get("copilot_default_model")
         start = start or (managed_default if isinstance(managed_default, str) else None)
-        listed, reason = list_provider_service_models(workspace, token, service_name, provider_type)
-        if reason and not start:
+        listed, reason = list_provider_service_models(
+            workspace,
+            token,
+            service_name,
+            provider_type,
+            tool=tool,
+            discovered_api_types=api_types,
+        )
+        if reason and not start and not listed:
             raise RuntimeError(
                 f"Could not list the models of '{service_name}': {reason}."
                 + (
@@ -418,7 +474,7 @@ def provider_service_catalog(
             print_warning(f"Could not list the models of {service_name}: {reason}.")
         if start:
             named.append(start)
-    api_types = service.get("target_api_types") or {}
+    api_types.update(service.get("target_api_types") or {})
     catalog, skipped = build_catalog(
         ((model, api_types.get(model, ())) for model in [*named, *listed]),
         provider_type=provider_type,
@@ -541,7 +597,10 @@ def copilot_catalog(state: dict) -> list[CopilotModel]:
     GPT discovery lists."""
     saved = state.get(CATALOG_STATE_KEY)
     limits = _saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
-    static = build_copilot_catalog(_string_list(state.get("copilot_static_models")))
+    static = build_copilot_catalog(
+        _string_list(state.get("copilot_static_models")),
+        native_api_types=state.get(NATIVE_MODEL_API_TYPES_KEY),
+    )
     if static:
         return [replace(model, listed_limits=limits.get(model.id)) for model in static]
     if isinstance(saved, dict):
@@ -560,11 +619,16 @@ def unservable_static_models(state: dict) -> list[tuple[str, str]]:
     Empty when none of the list is usable: the launch then reports that the whole list was
     ignored instead."""
     static = _string_list(state.get("copilot_static_models"))
-    if not build_copilot_catalog(static):
+    native_api_types = _native_model_api_types(state.get(NATIVE_MODEL_API_TYPES_KEY))
+    if not build_copilot_catalog(static, native_api_types=native_api_types):
         return []
     skipped = []
     for model in static:
-        reason = copilot_exclusion_reason(model)
+        reason = (
+            _classify_native_model(model, native_api_types[model])[1]
+            if native_api_types and model in native_api_types
+            else copilot_exclusion_reason(model)
+        )
         if reason is not None:
             skipped.append((model, reason))
     return skipped
@@ -631,10 +695,11 @@ def launch_model(
     ``managed_list=False`` ignores the managed model lists, which name Databricks models."""
     static = _string_list(state.get("copilot_static_models")) if managed_list else []
     managed_models = _string_list(state.get("copilot_models")) if managed_list else []
+    available = {model.id for model in catalog}
     candidates = [
         requested,
         state.get("copilot_default_model"),
-        next((m for m in static if classify_copilot_model(m)), None),
+        next((m for m in static if m in available), None),
         managed_models[0] if managed_models else None,
     ]
     chosen = _first_available(dict.fromkeys(c for c in candidates if c), catalog, warn=warn)

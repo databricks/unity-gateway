@@ -3298,7 +3298,17 @@ def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
         target_api_types = service.get("target_api_types") or {}
         return [target for target in targets if api_type in (target_api_types.get(target) or ())]
     if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
-        return [target for target in targets if _bedrock_target_family(target) is not None]
+        from ucode.agents.copilot import classify_model
+
+        api_types = service.get("target_api_types") or {}
+        return [
+            target
+            for target in targets
+            if classify_model(
+                target, api_types.get(target, ()), provider_type=service["provider_type"]
+            )[0]
+            is not None
+        ]
     return targets
 
 
@@ -4212,27 +4222,48 @@ def _fetch_codex_model_catalog(
 
 
 def list_provider_service_models(
-    workspace: str, token: str, service_name: str, provider_type: str
+    workspace: str,
+    token: str,
+    service_name: str,
+    provider_type: str,
+    *,
+    tool: str | None = None,
+    discovered_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[str], str | None]:
     """The models the gateway lists for Model Provider Service ``service_name``, and why listing
     failed. An empty listing is not a failure.
 
     Anthropic-API providers use the Anthropic catalog; other providers use the Codex catalog.
+    Copilot and VS Code combine both catalogs for Bedrock and Mantle, retaining partial results
+    with an error when one listing fails. ``discovered_api_types`` receives native Responses
+    capabilities from that mixed lookup's Codex catalog, which lists only Responses-capable targets.
     """
 
+    models: list[str] = []
+    reason = None
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+        models = listing.model_ids
+        reason = None if listing.error_msg == _NO_ANTHROPIC_MODEL_IDS else listing.error_msg
+        if provider_type not in BEDROCK_PROVIDER_TYPES or tool not in ("copilot", "vscode"):
+            return models, reason
     try:
         catalog = _fetch_codex_model_catalog(
             workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
         )
     except CodexModelCatalogEmpty:
-        return [], None
+        return models, reason
     except RuntimeError as exc:
-        return [], str(exc)
-    return catalog_slugs(catalog), None
+        return models, "; ".join(filter(None, [reason, str(exc)]))
+    codex_models = catalog_slugs(catalog)
+    if (
+        discovered_api_types is not None
+        and provider_type in BEDROCK_PROVIDER_TYPES
+        and tool in ("copilot", "vscode")
+    ):
+        for model in codex_models:
+            discovered_api_types[model] = (API_OPENAI_RESPONSES,)
+    return list(dict.fromkeys([*models, *codex_models])), reason
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

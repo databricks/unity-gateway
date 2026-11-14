@@ -5,6 +5,7 @@ from collections.abc import Callable
 from ucode.agents.copilot import build_copilot_catalog
 from ucode.codex_config import catalog_slugs
 from ucode.databricks import (
+    BEDROCK_PROVIDER_TYPES,
     CodexCatalogSource,
     _fetch_codex_model_catalog,
     get_model_provider_service,
@@ -45,7 +46,11 @@ def is_model_source_wildcard(source: str) -> bool:
 
 
 def _expand_wildcard_source(
-    source: str, tool: str, workspace: str, token: str
+    source: str,
+    tool: str,
+    workspace: str,
+    token: str,
+    native_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[str], str | None]:
     source_name = source[:-2]
     if len(source.split(".")) == 3:
@@ -53,9 +58,28 @@ def _expand_wildcard_source(
     service, reason = get_model_provider_service(source_name, workspace, token)
     if service is None:
         return [], reason
+    discovered_api_types: dict[str, tuple[str, ...]] = {}
+    provider_type = service.get("provider_type", "")
     targets, reason = list_provider_service_models(
-        workspace, token, source_name, service.get("provider_type", "")
+        workspace,
+        token,
+        source_name,
+        provider_type,
+        tool=tool,
+        discovered_api_types=discovered_api_types,
     )
+    discovered_api_types.update(service.get("target_api_types") or {})
+    if (
+        native_api_types is not None
+        and tool == "copilot"
+        and provider_type in BEDROCK_PROVIDER_TYPES
+    ):
+        for target in targets:
+            if target in discovered_api_types:
+                qualified = (
+                    target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
+                )
+                native_api_types[qualified] = discovered_api_types[target]
     return [
         target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
         for target in targets
@@ -69,6 +93,7 @@ def resolve_model_sources(
     token: str,
     *,
     fallbacks: dict[str, list[str]] | None = None,
+    native_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[str], dict[str, list[str]]]:
     expanded: list[str] = []
     lookups: dict[str, list[str]] = {}
@@ -79,11 +104,18 @@ def resolve_model_sources(
             continue
         if source not in lookups:
             try:
-                targets, reason = _expand_wildcard_source(source, tool, workspace, token)
+                targets, reason = _expand_wildcard_source(
+                    source, tool, workspace, token, native_api_types
+                )
             except RuntimeError as exc:
                 targets, reason = [], str(exc)
             if targets:
                 live[source] = list(targets)
+                if reason:
+                    print_warning(
+                        f"Could not fully expand managed model source {source} ({reason}); "
+                        "using the models that were discovered."
+                    )
             else:
                 detail = f" ({reason})" if reason else ""
                 prefix = f"Could not expand managed model source {source}{detail}; "

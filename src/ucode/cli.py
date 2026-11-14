@@ -1120,8 +1120,14 @@ def _expand_managed_model_sources(
     if tool not in SCHEMA_MODEL_CATALOGS or not wildcards:
         return managed, {}
     token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
+    native_api_types: dict[str, tuple[str, ...]] = {}
     expanded, live_expansions = resolve_model_sources(
-        sources, tool, state["workspace"], token, fallbacks=fallbacks
+        sources,
+        tool,
+        state["workspace"],
+        token,
+        fallbacks=fallbacks,
+        native_api_types=native_api_types,
     )
     if not expanded:
         # Every wildcard failed to expand. An empty static list reads as unset, which would
@@ -1131,6 +1137,8 @@ def _expand_managed_model_sources(
             "back to workspace discovery. Check service access and compatible models, then retry."
         )
     managed = copy.deepcopy(managed)
+    if tool == "copilot":
+        managed[copilot_agent.NATIVE_MODEL_API_TYPES_KEY] = native_api_types
     set_static_model_list(managed["enabled_agents"][tool]["model_config"], expanded)
     return managed, live_expansions
 
