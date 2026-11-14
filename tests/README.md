@@ -6,6 +6,8 @@ It uses the live workspace with `subagent_auto_v0_claude_only`, checks startup w
 the managed main model, switches routing off with a regular model, and returns to
 Auto with a different main model. It checks both routing indicators without sending
 inference requests. Existing CUJ 4 journeys independently verify applied routing.
+The full-screen Auto alias assertion is temporarily disabled pending native Claude
+support for friendly header and `/status` names; its TODO records the restoration condition.
 Small existing tests retain packaging and rollout checks. Separate Auto component,
 native profile/effort, and managed-fixture integration suites were removed in favor
 of this CUJ. Auto-specific live child routing, restart/resume, rollback to the old picker,
