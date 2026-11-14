@@ -342,8 +342,8 @@ test('parallel cards open each call’s own routing explanation', { options: { E
   });
   on('tool.call', () => ({ result: 'ok' }));
   let panePlaced = false;
-  on('ui.open', () => { panePlaced = true; return { value: undefined }; });
-  on('ui.panes', () => ({ value: panePlaced ? [{ id: 'smart-router-explanation', isPlaced: true }] : [] }));
+  on('ui.open', () => { panePlaced = true; return { value: { isPlaced: true } }; });
+
   on('ui.close', () => { panePlaced = false; return { value: undefined }; });
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['other row'] }));
   await $.command.run({ command: 'smart-router', args: 'explain on' });
@@ -631,9 +631,8 @@ test(`${label} preserve the route`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_O
   on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model, agentId: `child-${e.tool_use_id}` }; });
   on('fs.write', () => ({ value: undefined }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  on('ui.open', () => ({ value: undefined }));
-  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
-    isPlaced: true, isShown: true, isFocused: true }] }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+
   on('ui.close', () => { closes++; return { value: undefined }; });
 
   if (canonicalJourney) {
@@ -722,7 +721,7 @@ test('unknown explanation actions do not open the latest routing explanation', {
     model: 'system.ai.model-b', rationale: 'Selected for the task',
   }) } }));
   on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', () => { opens++; return { value: undefined }; });
+  on('ui.open', () => { opens++; return { value: { isPlaced: true } }; });
 
   await $.tool.call({ tool: 'Agent', tool_use_id: 'latest', ...originalInput });
   await $.command.run({ command: 'smart-router', args: 'explain unexpected' });
@@ -758,9 +757,8 @@ test('explanation costs use decimal notation without rounding small costs to zer
   }) } }));
   on('tool.call', () => ({ result: 'ok' }));
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-  on('ui.open', () => ({ value: undefined }));
-  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
-    isPlaced: true, isShown: true, isFocused: true }] }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+
 
   for (const [index, [value, expected]] of ([
     [0, '0'], [1234.567, '1234.567'], [0.000001, '0.000001'],
@@ -806,9 +804,8 @@ for (const [name, details, diagnostic] of [
     on('agent.spawn', ($, e) => { forwarded.push(e); return { model: e.model }; });
     on('ui.log', ($, e) => { logs.push(e.text); logDestinations.push(e.to); return { value: undefined }; });
     on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-    on('ui.open', () => ({ value: undefined }));
-    on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
-      isPlaced: true, isShown: true, isFocused: true }] }));
+    on('ui.open', () => ({ value: { isPlaced: true } }));
+
     on('ui.close', () => ({ value: undefined }));
 
     await $.tool.call({ tool: 'Agent', tool_use_id: name, ...originalInput });
@@ -844,9 +841,8 @@ for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
     on('agent.spawn', ($, e) => { spawns.push(e); return { model: e.model ?? 'native-default' }; });
     on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
     on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
-    on('ui.open', () => ({ value: undefined }));
-    on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
-      isPlaced: true, isShown: true, isFocused: true }] }));
+    on('ui.open', () => ({ value: { isPlaced: true } }));
+
     on('ui.close', () => ({ value: undefined }));
 
     await $.tool.call({ tool: 'Agent', tool_use_id: 'request-1', ...originalInput });
@@ -958,8 +954,8 @@ test(`session ${reason} clears routing UI while pending routes keep their native
   const writes: any[] = [];
   on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
   on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [e.props.tool ?? 'original reply'] }));
-  on('ui.open', () => { opens++; panePlaced = true; return { value: undefined }; });
-  on('ui.panes', () => ({ value: panePlaced ? [{ id: 'smart-router-explanation', isPlaced: true }] : [] }));
+  on('ui.open', () => { opens++; panePlaced = true; return { value: { isPlaced: true } }; });
+
   on('ui.close', () => { closes++; panePlaced = false; return { value: undefined }; });
   on('turn.step', async function* ($, e) {
     stepModels.push(e.model);
@@ -1064,7 +1060,7 @@ test('explanation parsing failures preserve a valid routed spawn', { options: { 
 });
 
 
-for (const failure of ['unplaced', 'open', 'panes', 'close']) {
+for (const failure of ['unplaced', 'open', 'close']) {
 test(`the Why button reports ${failure} failure and clears its pane record`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   const toasts: string[] = [];
   on('session.id', () => ({ value: 'session-1' }));
@@ -1074,11 +1070,7 @@ test(`the Why button reports ${failure} failure and clears its pane record`, { o
   on('tool.call', () => ({ result: 'ok' }));
   on('ui.open', () => {
     if (failure === 'open') throw new Error('Pane opening failed');
-    return { value: undefined };
-  });
-  on('ui.panes', () => {
-    if (failure === 'panes') throw new Error('Pane lookup failed');
-    return { value: [] };
+    return { value: { isPlaced: false, reason: 'no surface' } };
   });
   on('ui.close', () => {
     if (failure === 'close') throw new Error('Pane closing failed');
@@ -1102,32 +1094,28 @@ test(`the Why button reports ${failure} failure and clears its pane record`, { o
 });
 }
 
-for (const delayedFailure of ['ui.open', 'ui.panes'] as const) {
 for (const cancellation of ['none', 'off', 'clear', 'resume'] as const) {
-test(`a late ${delayedFailure} failure respects a newer open followed by ${cancellation}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+test(`a late pane-opening failure respects a newer open followed by ${cancellation}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let failFirst!: () => void;
   let startedFirst!: () => void;
   const started = new Promise<void>((resolve) => { startedFirst = resolve; });
   const ready = new Promise<void>((resolve) => { failFirst = resolve; });
   let calls = 0;
   let closes = 0;
-  const panes = [{ id: 'smart-router-explanation', title: 'Why this model?',
-    isPlaced: true, isShown: true, isFocused: true }];
   on('session.id', () => ({ value: 'session-1' }));
   on('session.end', () => ({ sessionId: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
     '{"model":"model-b","rationale":"Selected for the task"}',
   } }));
   on('tool.call', () => ({ result: 'ok' }));
-  const delay = async (event: typeof delayedFailure) => {
-    if (event === delayedFailure && calls++ === 0) {
+  on('ui.open', async () => {
+    if (calls++ === 0) {
       startedFirst();
       await ready;
       throw new Error('Earlier opening failed');
     }
-  };
-  on('ui.open', async () => { await delay('ui.open'); return { value: undefined }; });
-  on('ui.panes', async () => { await delay('ui.panes'); return { value: panes }; });
+    return { value: { isPlaced: true } };
+  });
   on('ui.close', () => { closes++; return { value: undefined }; });
   on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
   await $.tool.call({ tool: 'Agent', tool_use_id: 'overlapping-open', ...originalInput });
@@ -1147,7 +1135,6 @@ test(`a late ${delayedFailure} failure respects a newer open followed by ${cance
   await pane.unmount();
 });
 }
-}
 
 test('turning explanations off closes a pane that is still opening', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let finishOpen!: () => void;
@@ -1164,10 +1151,9 @@ test('turning explanations off closes a pane that is still opening', { options: 
     startedOpen();
     await ready;
     placed = true;
-    return { value: undefined };
+    return { value: { isPlaced: true } };
   });
-  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
-    isPlaced: placed, isShown: placed, isFocused: placed }] }));
+
   on('ui.close', () => { placed = false; return { value: undefined }; });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-opening', ...originalInput });
   const opening = $.command.run({ command: 'smart-router', args: 'explain latest' });
@@ -1185,9 +1171,8 @@ test('an unplaced pane is rejected even when open returns normally', { options: 
     '{"model":"model-b","rationale":"Selected for the task"}',
   } }));
   on('tool.call', () => ({ result: 'ok' }));
-  on('ui.open', () => ({ value: undefined }));
-  on('ui.panes', () => ({ value: [{ id: 'smart-router-explanation', title: 'Why this model?',
-    isPlaced: false, isShown: false, isFocused: false }] }));
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'no surface' } }));
+
   on('ui.close', () => { closes++; return { value: undefined }; });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-placement', ...originalInput });
   const result = await $.command.run({ command: 'smart-router', args: 'explain latest' });
