@@ -768,11 +768,13 @@ The contributor skill `/pr-demo` (also `$pr-demo` in Codex; see
 `.agents/skills/pr-demo/SKILL.md`) records the same `ug` commands against the
 merge-base with `origin/main` and the PR head with a built-in pty recorder
 (pyte + Pillow; no extra tool installs beyond `uv run --with pyte --with pillow`),
-publishes the gifs to the PR description from the orphan `pr-demo-assets`
-branch, and adds the `pr-demo-recorded` label without an approval pause. A nonempty
+links public images from the `pr-demo-assets` GitHub prerelease in the PR
+description, and adds the `pr-demo-recorded` label without an approval pause. A nonempty
 committed branch diff containing only test files and `.yml`/`.yaml` files skips the
 recording and adds `no-pr-demo-needed` instead. Each run writes to a new temporary
-directory outside the checkout; both recordings share a cropped frame height:
+directory outside the checkout; both recordings share a cropped frame height.
+After the PR closes, cleanup deletes its images, so their links stop loading while
+the text diff remains in the PR description:
 
 ```bash
 uv run --with pyte --with pillow python scripts/pr_demo/record.py \

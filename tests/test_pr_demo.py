@@ -39,6 +39,11 @@ def publish(record: Any) -> Any:
     return _load_script("pr_demo_publish", "publish.py")
 
 
+@pytest.fixture(scope="module")
+def cleanup() -> Any:
+    return _load_script("pr_demo_cleanup", "cleanup_assets.py")
+
+
 @pytest.fixture
 def recorder(record: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     """Control the git/install/command boundaries while running the real orchestration."""
@@ -298,11 +303,174 @@ def test_pr_body_insert_replace_and_idempotency(publish: Any) -> None:
 def test_published_block_has_images_and_text_diff(publish: Any) -> None:
     block = _block(publish, "2222222222")
     for side in ("before", "after"):
-        assert f"/raw/pr-demo-assets/42/2222222/{side}.gif" in block
-        assert f"/raw/pr-demo-assets/42/2222222/{side}.png" in block
+        for ext in ("gif", "png"):
+            assert (
+                f"https://github.com/databricks/unity-gateway/releases/download/pr-demo-assets/"
+                f"pr42-2222222-{side}.{ext}"
+            ) in block
     assert "````diff" in block and "-before output" in block and "+after output" in block
     same = _block(publish, "2222222222", before_text="same", after_text="same", stills=False)
     assert "````text" in same and ".png" not in same
+
+
+def test_cleanup_plans_only_confirmed_closed_pr_assets(cleanup: Any) -> None:
+    assets = [
+        "pr1-aaaaaaa-before.gif",
+        "pr1-aaaaaaa-after.png",
+        "pr2-bbbbbbb-before.gif",
+        "pr3-ccccccc-after.gif",
+        "pr4-ddddddd-before.gif",
+        "pr5-eeeeeee-before.gif",
+        "42-old-before.gif",
+        "prx-old-before.gif",
+    ]
+    states = {1: "MERGED", 2: "CLOSED", 3: "OPEN", 4: "UNKNOWN"}
+    assert cleanup.plan_deletions(assets, states) == assets[:3]
+
+
+def test_cleanup_dry_run_and_delete_failure_keep_unknown_assets(
+    cleanup: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    calls: list[list[str]] = []
+
+    def run(args: list[str], **kwargs: Any) -> Any:
+        calls.append(args)
+        if args[1:3] == ["release", "view"]:
+            names = ["pr1-old-before.gif", "pr2-old-after.gif", "pr3-old.gif", "other.gif"]
+            return SimpleNamespace(
+                returncode=0,
+                stderr="",
+                stdout=json.dumps({"assets": [{"name": name} for name in names]}),
+            )
+        if args[1:3] == ["pr", "view"]:
+            number = args[3]
+            if number == "3":
+                return SimpleNamespace(returncode=1, stderr="lookup failed", stdout="")
+            return SimpleNamespace(
+                returncode=0,
+                stderr="",
+                stdout=json.dumps({"state": {"1": "CLOSED", "2": "OPEN"}[number]}),
+            )
+        return SimpleNamespace(returncode=1, stderr="delete failed", stdout="")
+
+    monkeypatch.setattr(cleanup.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(cleanup.subprocess, "run", run)
+    assert cleanup.main(["--repo", "owner/name", "--dry-run"]) == 0
+    output = capsys.readouterr()
+    assert "would delete pr1-old-before.gif" in output.out
+    assert "unrecognized asset" in output.err and "PR #3" in output.err
+    assert not any(call[1:3] == ["release", "delete-asset"] for call in calls)
+    calls.clear()
+    assert cleanup.main(["--repo", "owner/name"]) == 1
+    assert [call[4] for call in calls if call[1:3] == ["release", "delete-asset"]] == [
+        "pr1-old-before.gif"
+    ]
+    assert "delete failed" in capsys.readouterr().err
+
+
+def test_stale_assets_are_scoped_to_pr_and_sha(publish: Any) -> None:
+    assets = [
+        "pr42-aaaaaaa-before.gif",
+        "pr42-aaaaaaa-extra.png",
+        "pr42-bbbbbbb-before.gif",
+        "pr420-bbbbbbb-before.gif",
+        "pr42-aaaaaaab-before.gif",
+        "unrelated.gif",
+    ]
+    assert publish.stale_assets(assets, 42, "aaaaaaa") == [assets[2], assets[4]]
+
+
+def test_upload_handles_release_creation_race_and_removes_stale_assets(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    for name in ("before.gif", "after.gif", "before.png", "after.png"):
+        (tmp_path / name).write_bytes(name.encode())
+    calls: list[tuple[str, ...]] = []
+
+    def gh(*args: str, **kwargs: Any) -> Any:
+        calls.append(args)
+        if args[:2] == ("release", "view"):
+            if len(calls) == 1:
+                return SimpleNamespace(returncode=1, stderr="release not found", stdout="")
+            return SimpleNamespace(
+                returncode=0,
+                stderr="",
+                stdout=json.dumps(
+                    {
+                        "assets": [
+                            {"name": "pr42-old-before.gif"},
+                            {"name": "pr420-old-before.gif"},
+                        ]
+                    }
+                ),
+            )
+        if args[:2] == ("release", "create"):
+            return SimpleNamespace(returncode=1, stderr="already exists", stdout="")
+        if args[:2] == ("release", "upload"):
+            files = [Path(path) for path in args[3:7]]
+            assert [path.name for path in files] == [
+                "pr42-aaaaaaa-before.gif",
+                "pr42-aaaaaaa-after.gif",
+                "pr42-aaaaaaa-before.png",
+                "pr42-aaaaaaa-after.png",
+            ]
+            assert [path.read_bytes() for path in files] == [
+                b"before.gif",
+                b"after.gif",
+                b"before.png",
+                b"after.png",
+            ]
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr(publish, "gh", gh)
+    publish.publish_assets(tmp_path, "aaaaaaaaaa", 42, "databricks/unity-gateway", dry_run=False)
+    assert [call[:2] for call in calls] == [
+        ("release", "view"),
+        ("release", "create"),
+        ("release", "view"),
+        ("release", "delete-asset"),
+        ("release", "upload"),
+    ]
+    assert calls[3][3] == "pr42-old-before.gif"
+    assert "--prerelease" in calls[1] and "--latest=false" in calls[1]
+    assert "--clobber" in calls[-1]
+
+
+def test_failed_upload_still_updates_pr_and_provides_manual_instructions(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"base_sha": "base", "head_sha": "aaaaaaaaaa", "commands": ["ug --version"]})
+    )
+    (tmp_path / "before.txt").write_text("before")
+    (tmp_path / "after.txt").write_text("after")
+    for name in ("before.gif", "after.gif"):
+        (tmp_path / name).write_bytes(b"image")
+    calls: list[tuple[str, ...]] = []
+    body: list[str] = []
+
+    def gh(*args: str, **kwargs: Any) -> Any:
+        calls.append(args)
+        if args[:2] == ("release", "view"):
+            return SimpleNamespace(returncode=1, stderr="permission denied", stdout="")
+        if args[:2] == ("pr", "view"):
+            return SimpleNamespace(stdout=json.dumps({"body": "original"}))
+        if "--body-file" in args:
+            body.append(Path(args[args.index("--body-file") + 1]).read_text())
+        return SimpleNamespace(stdout="", returncode=0)
+
+    monkeypatch.setattr(publish, "gh", gh)
+    monkeypatch.setattr(
+        publish, "git", lambda *args: "https://github.com/databricks/unity-gateway.git"
+    )
+    assert publish.main(["--out", str(tmp_path), "--pr", "42"]) == 0
+    output = capsys.readouterr()
+    assert "Ask a maintainer" in output.err and "pr42-aaaaaaa-before.gif" in output.err
+    assert "pending manual upload" in output.out
+    assert "pr42-aaaaaaa-before.gif" in body[0] and "original" in body[0]
+    assert any("--add-label" in call for call in calls)
+    assert any("--remove-label" in call for call in calls)
+    assert not any(call[:2] == ("release", "create") for call in calls)
 
 
 def test_normalize_rationale_is_one_bounded_line(publish: Any) -> None:

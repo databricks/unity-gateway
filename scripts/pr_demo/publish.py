@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Publish pr-demo recordings to a pull request.
 
-Re-runs the secret scan, pushes the gifs to the orphan `pr-demo-assets` branch
-of databricks/unity-gateway using git plumbing in a temporary index (no
-worktree, no checkout, the developer's index is untouched), edits the PR body
+Re-runs the secret scan, uploads images to the `pr-demo-assets` GitHub release,
+edits the PR body
 between the `<!-- pr-demo:start ... -->` / `<!-- pr-demo:end -->` markers, and
 adds the `pr-demo-recorded` label. Publishing also removes any stale
 `NO_PR_DEMO_NEEDED_RATIONALE=` line from the body and drops the
@@ -28,8 +27,8 @@ import argparse
 import difflib
 import fnmatch
 import json
-import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -38,7 +37,7 @@ from pathlib import Path
 
 import record  # same directory; provides the shared secret-scan helpers
 
-ASSETS_BRANCH = "pr-demo-assets"
+ASSETS_RELEASE = "pr-demo-assets"
 LABEL = "pr-demo-recorded"
 NO_DEMO_LABEL = "no-pr-demo-needed"
 RATIONALE_PREFIX = "NO_PR_DEMO_NEEDED_RATIONALE="
@@ -65,7 +64,10 @@ def run(cmd: list[str], *, check: bool = True, env: dict[str, str] | None = None
 
 
 def git(*args: str, check: bool = True) -> str:
-    return run(["git", *args], check=check).stdout.strip()
+    git_path = shutil.which("git")
+    if not git_path:
+        raise SystemExit("git was not found on PATH")
+    return run([git_path, *args], check=check).stdout.strip()
 
 
 def gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -80,9 +82,21 @@ def gh(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
 # ---------------------------------------------------------------------------
 
 
+def asset_name(pr: int, short_sha: str, name: str) -> str:
+    return f"pr{pr}-{short_sha}-{name}"
+
+
 def asset_url(repo_slug: str, pr: int, short_sha: str, name: str) -> str:
-    """Raw github.com URL for a gif on the pr-demo-assets branch."""
-    return f"https://github.com/{repo_slug}/raw/{ASSETS_BRANCH}/{pr}/{short_sha}/{name}"
+    return (
+        f"https://github.com/{repo_slug}/releases/download/{ASSETS_RELEASE}/"
+        f"{asset_name(pr, short_sha, name)}"
+    )
+
+
+def stale_assets(assets: list[str], pr: int, short_sha: str) -> list[str]:
+    prefix = f"pr{pr}-"
+    current = f"{prefix}{short_sha}-"
+    return [name for name in assets if name.startswith(prefix) and not name.startswith(current)]
 
 
 def capture_section(before_text: str, after_text: str) -> str:
@@ -297,72 +311,96 @@ def remove_label(pr: int, label: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Git plumbing for the orphan assets branch
+# Release assets
 # ---------------------------------------------------------------------------
 
 
-def assets_parent() -> str | None:
-    """Current tip of origin/pr-demo-assets, if the branch exists."""
-    result = run(["git", "ls-remote", "origin", f"refs/heads/{ASSETS_BRANCH}"], check=False)
-    output = result.stdout.strip()
-    return output.split()[0] if output else None
-
-
-def commit_assets(out_dir: Path, head_sha: str, pr: int) -> str:
-    """Build a commit holding the gifs (and PNGs) at <pr>/<short-sha>/ via plumbing."""
-    prefix = f"{pr}/{head_sha[:7]}"
-    blobs = []
+def publish_assets(out_dir: Path, head_sha: str, pr: int, repo_slug: str, *, dry_run: bool) -> None:
+    """Ensure the release exists, remove older assets, then upload named copies."""
+    paths = []
     for name in (*GIF_NAMES, *PNG_NAMES):
         path = out_dir / name
         if not path.exists():
             if name in GIF_NAMES:
                 raise SystemExit(f"missing {path}; run scripts/pr_demo/record.py first")
-            continue  # PNG stills are optional
-        blobs.append((name, git("hash-object", "-w", str(path))))
-
-    parent = assets_parent()
-    with tempfile.TemporaryDirectory(prefix="pr-demo-index-") as tmp:
-        index = str(Path(tmp) / "index")
-        env = {**os.environ, "GIT_INDEX_FILE": index}
-        run(["git", "read-tree", *(["--empty"] if not parent else [parent])], env=env)
-        for name, blob in blobs:
-            run(
-                [
-                    "git",
-                    "update-index",
-                    "--add",
-                    "--cacheinfo",
-                    f"100644,{blob},{prefix}/{name}",
-                ],
-                check=True,
-                env=env,
+            continue
+        paths.append(path)
+    repo_args = ("--repo", repo_slug)
+    if dry_run:
+        print(
+            f"dry run: would run gh release view {ASSETS_RELEASE} --json assets --repo {repo_slug}"
+        )
+    result = gh("release", "view", ASSETS_RELEASE, "--json", "assets", *repo_args, check=False)
+    if result.returncode:
+        if "release not found" not in (result.stderr or "").lower():
+            raise RuntimeError(f"could not read release: {(result.stderr or '').strip()}")
+        create_args = (
+            "release",
+            "create",
+            ASSETS_RELEASE,
+            "--prerelease",
+            "--latest=false",
+            "--title",
+            "pr-demo assets",
+            "--notes",
+            "Auto-managed by scripts/pr_demo; assets are for open PRs and are deleted when PRs close.",
+            "--target",
+            "main",
+            *repo_args,
+        )
+        if dry_run:
+            print("dry run: would run gh " + shlex.join(create_args))
+            assets = []
+        else:
+            created = gh(*create_args, check=False)
+            # Another publisher may have created the release since our read.
+            result = gh(
+                "release", "view", ASSETS_RELEASE, "--json", "assets", *repo_args, check=False
             )
-        tree = run(["git", "write-tree"], check=True, env=env).stdout.strip()
-    message = f"pr-demo assets for PR {pr} (head {head_sha[:7]})"
-    parent_args = ["-p", parent] if parent else []
-    return git("commit-tree", tree, *parent_args, "-m", message)
+            if result.returncode:
+                raise RuntimeError(
+                    f"could not create release: {(created.stderr or result.stderr or '').strip()}"
+                )
+            assets = [asset["name"] for asset in json.loads(result.stdout)["assets"]]
+    else:
+        assets = [asset["name"] for asset in json.loads(result.stdout)["assets"]]
+    for name in stale_assets(assets, pr, head_sha[:7]):
+        delete_args = ("release", "delete-asset", ASSETS_RELEASE, name, "--yes", *repo_args)
+        if dry_run:
+            print("dry run: would run gh " + shlex.join(delete_args))
+        else:
+            gh(*delete_args)
+    if dry_run:
+        names = [asset_name(pr, head_sha[:7], path.name) for path in paths]
+        print("dry run: would copy images to temporary files named " + ", ".join(names))
+        print(
+            "dry run: would run gh "
+            + shlex.join(("release", "upload", ASSETS_RELEASE, *names, "--clobber", *repo_args))
+        )
+        return
+    with tempfile.TemporaryDirectory(prefix="pr-demo-assets-") as tmp:
+        files = []
+        for path in paths:
+            destination = Path(tmp) / asset_name(pr, head_sha[:7], path.name)
+            shutil.copyfile(path, destination)
+            files.append(str(destination))
+        gh("release", "upload", ASSETS_RELEASE, *files, "--clobber", *repo_args)
 
 
-def push_assets(commit: str) -> tuple[bool, str]:
-    result = run(
-        ["git", "push", "origin", f"{commit}:refs/heads/{ASSETS_BRANCH}"],
-        check=False,
+def manual_upload_instructions(pr: int, head_sha: str, out_dir: Path, repo_slug: str) -> str:
+    files = "\n".join(
+        f"       {out_dir / name} as {asset_name(pr, head_sha[:7], name)}"
+        for name in (*GIF_NAMES, *PNG_NAMES)
+        if (out_dir / name).exists()
     )
-    return result.returncode == 0, (result.stderr or result.stdout).strip()
-
-
-def manual_upload_instructions(pr: int, head_sha: str, out_dir: Path) -> str:
     return (
-        "Could not push to the pr-demo-assets branch (fork without push access?). "
-        "Upload the gifs manually, then re-run this command:\n"
-        f"  1. Open https://github.com/databricks/unity-gateway/tree/{ASSETS_BRANCH}\n"
-        "  2. Add the files via the GitHub web UI (drag and drop works), creating "
-        "the branch when prompted:\n"
-        f"       {head_sha[:7]}/before.gif from {out_dir / 'before.gif'}\n"
-        f"       {head_sha[:7]}/after.gif from {out_dir / 'after.gif'}\n"
-        f"       {head_sha[:7]}/before.png from {out_dir / 'before.png'}\n"
-        f"       {head_sha[:7]}/after.png from {out_dir / 'after.png'}\n"
-        f"  3. Re-run publish.py --out {out_dir} --pr {pr}"
+        "Could not upload release assets (fork without release access?). "
+        "Ask a maintainer with release access to upload them manually:\n"
+        f"  1. Open https://github.com/{repo_slug}/releases/tag/{ASSETS_RELEASE} "
+        "(create the prerelease first if needed).\n"
+        "  2. Edit the release and drag in copies renamed as follows:\n"
+        f"{files}\n"
+        f"  3. Save the release; the links in PR #{pr} will then work."
     )
 
 
@@ -570,7 +608,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.dry_run:
-        print(f"dry run: would push gifs to {ASSETS_BRANCH} at {pr or '<PR>'}/{head_sha[:7]}/")
+        try:
+            publish_assets(out_dir, head_sha, pr, repo_slug, dry_run=True)
+        except (
+            subprocess.CalledProcessError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+        ) as error:
+            print(f"warning: could not plan release upload: {error}", file=sys.stderr)
         print("dry run: PR body block:\n")
         print(block)
         return 0
@@ -586,12 +634,21 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
 
-    commit = commit_assets(out_dir, head_sha, pr)
-    print(f"built assets commit {commit[:7]}")
-    ok, error = push_assets(commit)
-    if not ok:
-        print(manual_upload_instructions(pr, head_sha, out_dir), file=sys.stderr)
-        print(f"git push failed: {error}", file=sys.stderr)
+    try:
+        publish_assets(out_dir, head_sha, pr, repo_slug, dry_run=False)
+        uploaded = True
+    except (
+        subprocess.CalledProcessError,
+        OSError,
+        RuntimeError,
+        ValueError,
+        KeyError,
+        TypeError,
+    ) as error:
+        uploaded = False
+        print(manual_upload_instructions(pr, head_sha, out_dir, repo_slug), file=sys.stderr)
+        detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
+        print(f"release upload failed: {detail}", file=sys.stderr)
 
     current_body = json.loads(gh("pr", "view", str(pr), "--json", "body").stdout)["body"]
     new_body = apply_pr_block(current_body, block)
@@ -615,8 +672,9 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
     remove_label(pr, NO_DEMO_LABEL)
-    print(f"published: {asset_url(repo_slug, pr, head_sha[:7], 'before.gif')}")
-    print(f"published: {asset_url(repo_slug, pr, head_sha[:7], 'after.gif')}")
+    status = "published" if uploaded else "pending manual upload"
+    print(f"{status}: {asset_url(repo_slug, pr, head_sha[:7], 'before.gif')}")
+    print(f"{status}: {asset_url(repo_slug, pr, head_sha[:7], 'after.gif')}")
     print(f"PR #{pr} body updated and labeled {LABEL} (when the label exists)")
     return 0
 

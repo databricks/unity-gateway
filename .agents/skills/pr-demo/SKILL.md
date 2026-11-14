@@ -12,9 +12,10 @@ and the PR head (AFTER), show both gifs in the PR description, and label the PR
 so interactive flows are macOS/Linux only), the output is replayed through
 `pyte`, and frames are rendered to an animated GIF with Pillow. Recordings run
 in disposable virtualenvs built from the two commits, inside a sandboxed HOME,
-so nothing touches the developer's real configuration. Gifs are pushed to the
-orphan branch `pr-demo-assets` in `databricks/unity-gateway` and linked from the
-PR body.
+so nothing touches the developer's real configuration. Images are public release
+assets in `databricks/unity-gateway` and are linked from the PR body. Cleanup
+deletes them after the PR closes, so image links in closed PRs stop loading;
+the text diff stays in the PR body.
 
 ## Prerequisites
 
@@ -128,8 +129,9 @@ ROOT=$(git rev-parse --show-toplevel)
    Use `--dry-run` to preview without a network write. A secret scan hit blocks
    recording or publishing; change the offending command and retry, or report the
    failure and stop. Never bypass the scan. The scanner is pattern-based, not a
-   guarantee that arbitrary sensitive data is absent. The publisher pushes the
-   gifs and PNGs to `pr-demo-assets` at `<pr>/<short-sha>/{before,after}.{gif,png}`,
+   guarantee that arbitrary sensitive data is absent. The publisher uploads the
+   gifs and PNGs to the `pr-demo-assets` prerelease as
+   `pr<pr>-<short-sha>-{before,after}.{gif,png}` and deletes older assets for that PR,
    replaces the PR body block between `<!-- pr-demo:start ... -->` and
    `<!-- pr-demo:end -->`, removes any stale `NO_PR_DEMO_NEEDED_RATIONALE=` line
    and the `no-pr-demo-needed` label (the PR now has a demo), and adds
@@ -156,10 +158,10 @@ ROOT=$(git rev-parse --show-toplevel)
 
 ## Failure handling
 
-- If pushing to `pr-demo-assets` fails (fork without push access), publish.py
+- If uploading to the `pr-demo-assets` release fails (fork without release access), publish.py
   prints manual upload instructions and still updates the PR body and label; pass
   the instructions on to the developer.
 - If adding the label fails, a maintainer should run
   `gh label create pr-demo-recorded` once; tell the developer.
 - The label is informational and is never removed on new pushes; re-running
-  publish.py after new commits replaces the PR body block and pushes new gifs.
+  publish.py after new commits replaces the PR body block and uploads new gifs.
