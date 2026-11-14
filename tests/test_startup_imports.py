@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.util
 import json
+import os
 import subprocess
 import sys
 import zipfile
@@ -204,6 +207,14 @@ def test_metadata_reader_falls_back_for_egg_info(tmp_path, monkeypatch) -> None:
     assert version("unity-gateway") == "1.2.3"
 
 
+def _unreadable_cwd() -> str:
+    raise PermissionError("denied")
+
+
+def _unexpected_chdir(path: str) -> None:
+    raise AssertionError(f"unexpected chdir to {path}")
+
+
 @pytest.mark.parametrize("flag", ["--version", "-V"])
 def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -> None:
     from ucode import telemetry
@@ -211,6 +222,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
     monkeypatch.setattr(sys, "argv", ["ug", flag])
     monkeypatch.setattr(entrypoint, "_read_installed_version", lambda: None)
     monkeypatch.setattr(telemetry, "ug_version", lambda: "1.2.3.post4+abc123")
+    monkeypatch.setattr(entrypoint.os, "chdir", _unexpected_chdir)
 
     entrypoint.main()
 
@@ -227,6 +239,7 @@ def test_version_entrypoint_falls_back_to_telemetry(monkeypatch, capsys, flag) -
         ["--version", "--help"],
         ["-V", "claude"],
         ["claude", "--version"],
+        ["configure"],
     ],
 )
 def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
@@ -234,6 +247,9 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
 
     calls = []
     monkeypatch.setattr(sys, "argv", ["ug", *argv])
+    # cwd recovery is limited to the apiKeyHelper; even an unreadable cwd is left alone here.
+    monkeypatch.setattr(entrypoint.os, "getcwd", _unreadable_cwd)
+    monkeypatch.setattr(entrypoint.os, "chdir", _unexpected_chdir)
     monkeypatch.setattr(cli, "main", lambda: calls.append(sys.argv.copy()))
     monkeypatch.setattr(
         entrypoint, "_read_installed_version", lambda: pytest.fail("unexpected version fast path")
@@ -242,3 +258,115 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
     entrypoint.main()
 
     assert calls == [["ug", *argv]]
+
+
+class _CwdReadingCliFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Import a stand-in ``ucode.cli`` that reads the cwd at import time, as Rich does."""
+
+    def __init__(self) -> None:
+        self.import_cwd: str | None = None
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname == "ucode.cli":
+            return importlib.util.spec_from_loader(fullname, self)
+        return None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        self.import_cwd = os.getcwd()  # raises like Rich's import if the cwd is unreadable
+        module.main = lambda: print("token")
+
+
+def _import_cli_through(monkeypatch, finder: _CwdReadingCliFinder) -> None:
+    import ucode
+
+    monkeypatch.delitem(sys.modules, "ucode.cli", raising=False)
+    monkeypatch.delattr(ucode, "cli", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [finder, *sys.meta_path])
+
+
+def test_api_key_helper_keeps_readable_cwd(tmp_path, monkeypatch, capsys) -> None:
+    # A project-relative DATABRICKS_BEARER_COMMAND (e.g. ./get-token.sh) resolves against this cwd.
+    monkeypatch.chdir(tmp_path)
+    finder = _CwdReadingCliFinder()
+    _import_cli_through(monkeypatch, finder)
+    monkeypatch.setattr(entrypoint.os, "chdir", _unexpected_chdir)
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
+
+    entrypoint.main()
+
+    assert finder.import_cwd == str(tmp_path)
+    assert capsys.readouterr() == ("token\n", "")
+
+
+@pytest.mark.parametrize("failure", [PermissionError("denied"), FileNotFoundError("removed")])
+def test_api_key_helper_recovers_unreadable_cwd_before_cli_import(
+    tmp_path, monkeypatch, capsys, failure
+) -> None:
+    home = tmp_path / "home"
+    blocked = tmp_path / "blocked"
+    home.mkdir()
+    blocked.mkdir()
+    monkeypatch.chdir(blocked)  # restore the original cwd at teardown
+    real_getcwd = os.getcwd
+
+    def getcwd_denied_in_blocked() -> str:
+        # Like macOS for a privacy-protected folder: only the blocked cwd is unreadable.
+        cwd = real_getcwd()
+        if cwd == str(blocked):
+            raise failure
+        return cwd
+
+    finder = _CwdReadingCliFinder()
+    _import_cli_through(monkeypatch, finder)
+    # Windows resolves `~` from USERPROFILE, not HOME, so patch the lookup itself.
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(home))
+    monkeypatch.setattr(os, "getcwd", getcwd_denied_in_blocked)
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
+
+    entrypoint.main()
+
+    assert finder.import_cwd == str(home)
+    assert capsys.readouterr() == ("token\n", "")
+
+
+def test_api_key_helper_falls_back_to_temp_when_home_is_unavailable(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    temporary = tmp_path / "temporary"
+    temporary.mkdir()
+    monkeypatch.chdir(tmp_path)
+    real_getcwd = os.getcwd
+    unreadable = True
+
+    def getcwd_until_moved() -> str:
+        if unreadable:
+            raise PermissionError("denied")
+        return real_getcwd()
+
+    real_chdir = os.chdir
+    attempts = []
+
+    def chdir_without_home(path: str) -> None:
+        nonlocal unreadable
+        attempts.append(path)
+        if path != str(temporary):
+            raise PermissionError("denied")
+        real_chdir(path)
+        unreadable = False
+
+    finder = _CwdReadingCliFinder()
+    _import_cli_through(monkeypatch, finder)
+    monkeypatch.setattr(entrypoint.os.path, "expanduser", lambda _path: str(tmp_path / "home"))
+    monkeypatch.setattr(entrypoint.tempfile, "gettempdir", lambda: str(temporary))
+    monkeypatch.setattr(os, "getcwd", getcwd_until_moved)
+    monkeypatch.setattr(entrypoint.os, "chdir", chdir_without_home)
+    monkeypatch.setattr(sys, "argv", ["ug", "auth-token"])
+
+    entrypoint.main()
+
+    assert attempts == [str(tmp_path / "home"), str(temporary)]
+    assert finder.import_cwd == str(temporary)
+    assert capsys.readouterr() == ("token\n", "")

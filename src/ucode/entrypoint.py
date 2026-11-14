@@ -10,9 +10,34 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
+# Claude Code's apiKeyHelper (standard and custom OAuth) runs `ug auth-token`.
+_API_KEY_HELPER_COMMAND = "auth-token"
+
+
+def _recover_unreadable_cwd() -> None:
+    """Recover from an unreadable cwd before Rich is imported.
+
+    macOS denies ``os.getcwd()`` with ``PermissionError`` inside privacy-protected folders such as
+    ``~/Desktop``. Rich reads the cwd at import and handles only ``FileNotFoundError``, so the
+    apiKeyHelper crashed before printing a token. A readable cwd is kept, since a
+    ``DATABRICKS_BEARER_COMMAND`` may be relative to it. This changes only this short-lived
+    process, and prints nothing because stdout is the token.
+    """
+    try:
+        os.getcwd()
+        return
+    except OSError:
+        pass
+    for directory in (lambda: os.path.expanduser("~"), tempfile.gettempdir):
+        try:
+            os.chdir(directory())
+            return
+        except OSError:
+            continue
 
 
 def _read_installed_version() -> str | None:
@@ -59,6 +84,9 @@ def _read_installed_version() -> str | None:
 
 
 def main() -> None:
+    if sys.argv[1:2] == [_API_KEY_HELPER_COMMAND]:
+        _recover_unreadable_cwd()
+
     if sys.argv[1:] in _VERSION_ARGV:
         version = _read_installed_version()
         if version is None:
