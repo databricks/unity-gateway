@@ -112,6 +112,8 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    if rows and rows[-1] == "Earlier in this session (0)":
+        rows.pop()
     if not rows:
         return False
     completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
