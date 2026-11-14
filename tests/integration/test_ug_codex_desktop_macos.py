@@ -64,3 +64,28 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
     answers = [answer for records in sessions for answer in assistant_answers("codex", records)]
     assert [answer.strip() for answer in answers] == [marker], answers
     assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)
+
+
+def test_macos_missing_click_records_native_accessibility_tree(live_session):
+    """Scenario: request a nonexistent control from the real desktop Accessibility helper.
+
+    Expected: the native helper fails with the requested label and flushes its application
+    tree to the captured command output before trapping. No control is clicked.
+    """
+    session = live_session
+    label = f"missing-{fresh_id()}"
+    with MacApp(session, CHATGPT_APP, "chatgpt") as app:
+        app.wait_for("AXApplication", None, timeout=180)
+        result = session.run(
+            "click",
+            str(app.proc.pid),
+            "AXRadioButton",
+            label,
+            binary=app.client,
+            ok=False,
+            timeout=60,
+        )
+
+    assert result.returncode != 0
+    assert f"No AXRadioButton labelled {label}" in result.stderr
+    assert any(line.split("\t")[0] == "AXApplication" for line in result.stdout.splitlines())
