@@ -65,6 +65,14 @@ jobs:
           uv lock
           uv sync
       - run: uv run --no-sync pytest --ignore=tests/test_e2e.py
+      - name: Windows provisioning helpers (Windows PowerShell 5.1)
+        if: ${{ runner.os == 'Windows' }}
+        shell: powershell
+        run: ./tests/mdm/windows-provision.Tests.ps1
+      - name: Windows provisioning helpers (PowerShell 7)
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./tests/mdm/windows-provision.Tests.ps1
 
   claude-mod:
     name: Claude mod · 2.1.290
