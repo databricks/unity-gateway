@@ -39,6 +39,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
 ROUTING_BOX_WIDTH = 73
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
+_EXPLANATION_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}")
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -267,7 +268,7 @@ def _parse_routing_explanation(
         normalized_task_understanding.append(text)
     if (
         not isinstance(selected_model, str)
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", selected_model)
+        or not _EXPLANATION_MODEL_ID_RE.fullmatch(selected_model)
         or selected_model != _explanation_model_id(routed_model)
         or not summary
         or not isinstance(models, list)
@@ -295,7 +296,7 @@ def _parse_routing_explanation(
         considered = candidate.get("considered")
         if (
             not isinstance(model_id, str)
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}", model_id)
+            or not _EXPLANATION_MODEL_ID_RE.fullmatch(model_id)
             or not name
             or not reason
             or not isinstance(selected, bool)
