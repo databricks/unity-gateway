@@ -100,11 +100,15 @@ atomically; the mod itself still writes no file.
 Claude Auto is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
 `subagent_auto_v0_claude_only` config version. Existing versions set the flag to `"0"`.
 Configure modifies only UG-owned pickers, preserving foreign admin picker/custom
-option settings. Native `/effort` owns effort capabilities and selection.
+option settings. Inline effort controls read native `/effort status` and save through `/effort`;
+Claude owns model-specific capabilities and defaults.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
 permits only aliases whose real targets are allowed. Configure removes stale UG
-aliases and sets `modelPicker.replaceBuiltInOptions` false so the native custom
-option is visible. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+aliases and sets `modelPicker.replaceBuiltInOptions` false only for UG-owned
+pickers so the native custom option is visible. Preserve admin custom model options
+and replacement pickers; skip Auto when they occupy or hide its native custom slot.
+Personal configure does not discover or persist a picker for Auto; unrestricted
+personal launches build their Auto aliases in launch-only settings. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
 its display companions in the process environment: putting these in settings env
 would reset the pointer whenever native `/model` saves a selection. Keep one Auto
 row; aliases must not be separate modelPicker rows. Preserve other overrides and

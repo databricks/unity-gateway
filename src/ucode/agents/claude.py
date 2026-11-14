@@ -2229,6 +2229,9 @@ def auto_picker_available() -> bool:
         return False
     if "modelPicker" in settings:
         return picker_is_configured(settings)
+    env = settings.get("env", {})
+    if not isinstance(env, dict) or env.get("ANTHROPIC_CUSTOM_MODEL_OPTION"):
+        return False
     return model_available(AUTO_MODEL, settings)
 
 
@@ -2385,12 +2388,22 @@ def _reconcile_managed_settings(
             desired_settings = add_picker_entry(desired_settings)
             owned_paths = [
                 *owned_paths,
-                ["modelPicker"],
+                *([["modelPicker"]] if "modelPicker" in picker_keys else []),
                 *[
                     ["modelOverrides", key]
                     for source in (managed_before, desired_settings)
-                    for key in source.get("modelOverrides", {})
-                    if is_auto_model(key)
+                    for key in (source.get("modelOverrides") or {})
+                    if isinstance(key, str) and is_auto_model(key)
+                ],
+                *[
+                    ["env", key]
+                    for key in (
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+                    )
+                    if key in managed_before.get("env", {})
+                    and key not in desired_settings.get("env", {})
                 ],
             ]
     # Only the explicit `ug configure` path adds the blanks.

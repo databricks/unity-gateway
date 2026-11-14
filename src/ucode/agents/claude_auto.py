@@ -49,14 +49,24 @@ def model_available(model: str, settings: dict) -> bool:
     )
 
 
-def add_picker_entry(settings: dict) -> dict:
+def add_picker_entry(settings: dict, *, owns_picker: bool = True) -> dict:
     """Install immutable aliases and one native custom row at explicit configure.
 
     Aliases are not modelPicker rows: identical labels would create duplicate rows.
     The mod changes only the process-local custom option, never shared profiles.
     """
     picker = settings.get("modelPicker")
-    if not isinstance(picker, dict):
+    if not isinstance(picker, dict) or not isinstance(picker.get("options", []), list):
+        return settings
+    if not owns_picker and picker.get("replaceBuiltInOptions", False):
+        return settings
+    if not isinstance(settings.get("modelOverrides", {}), dict):
+        return settings
+    env = settings.get("env", {})
+    if not isinstance(env, dict):
+        return settings
+    custom = env.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
+    if custom and (not isinstance(custom, str) or not is_auto_model(custom)):
         return settings
     rows = [
         row
@@ -90,13 +100,12 @@ def add_picker_entry(settings: dict) -> dict:
         if remaining:
             allowed[:] = remaining
     env = result.setdefault("env", {})
-    ug_custom = is_auto_model(str(env.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")))
-    for key in (
-        "ANTHROPIC_CUSTOM_MODEL_OPTION",
-        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-    ):
-        if ug_custom:
+    if isinstance(custom, str) and is_auto_model(custom):
+        for key in (
+            "ANTHROPIC_CUSTOM_MODEL_OPTION",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+        ):
             env.pop(key, None)
     result["modelPicker"] = {**picker, "options": rows}
     if not available:
@@ -113,14 +122,19 @@ def add_picker_entry(settings: dict) -> dict:
 
 def picker_is_configured(settings: dict) -> bool:
     """Check the actual native source, including policy and immutable mapping."""
-    picker = settings.get("modelPicker")
-    overrides = settings.get("modelOverrides")
-    if not isinstance(picker, dict) or not isinstance(overrides, dict):
+    picker = settings.get("modelPicker", {})
+    overrides = settings.get("modelOverrides", {})
+    env = settings.get("env", {})
+    if not all(isinstance(value, dict) for value in (picker, overrides, env)):
+        return False
+    custom = env.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
+    if custom and (not isinstance(custom, str) or not is_auto_model(custom)):
         return False
     if picker.get("replaceBuiltInOptions", False):
         return False
     return any(
-        alias.startswith(AUTO_PREFIX)
+        isinstance(alias, str)
+        and alias.startswith(AUTO_PREFIX)
         and isinstance(target, str)
         and not is_auto_model(target)
         and model_available(alias, settings)
@@ -133,15 +147,18 @@ def picker_config(
     catalog: AnthropicModelCatalog,
     workspace: str,
     settings: dict | None = None,
+    *,
     default_model: str | None = None,
 ) -> str:
     """Give the mod only configured aliases for permitted inference targets."""
     overrides = (settings or {}).get("modelOverrides", {})
-    overrides = overrides if isinstance(overrides, dict) else {}
+    if not isinstance(overrides, dict):
+        overrides = {}
     configured = {
         target: alias
         for alias, target in overrides.items()
-        if alias.startswith(AUTO_PREFIX)
+        if isinstance(alias, str)
+        and alias.startswith(AUTO_PREFIX)
         and isinstance(target, str)
         and model_available(alias, settings or {})
         and model_available(target, settings or {})
@@ -166,7 +183,10 @@ def picker_config(
         )
     if not rows:
         raise ValueError("Auto needs at least one available main model")
-    default = next((row for row in rows if row["model"] == default_model), rows[0])
+    env = (settings or {}).get("env", {})
+    configured_default = env.get("ANTHROPIC_MODEL") if isinstance(env, dict) else None
+    preferred = configured_default or default_model
+    default = next((row for row in rows if preferred in (row["model"], row["autoModel"])), rows[0])
     return json.dumps(
         {
             "model": default["autoModel"],

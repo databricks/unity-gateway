@@ -72,8 +72,21 @@ def test_default_stays_in_available_catalog_and_preserves_custom_labels():
         (None, "opus", ["--continue"], True, False, "opus", True),
     ],
 )
+@pytest.mark.parametrize(
+    "managed_default,missing_alias", [(None, False), ("admin-default", False), (None, True)]
+)
 def test_native_launch_default_precedence_and_compatibility(
-    tmp_path, monkeypatch, saved, pinned, forwarded, installed, feedback, expected, has_auto
+    tmp_path,
+    monkeypatch,
+    saved,
+    pinned,
+    forwarded,
+    installed,
+    feedback,
+    expected,
+    has_auto,
+    managed_default,
+    missing_alias,
 ):
     from ucode import custom_oauth
     from ucode.agents import claude
@@ -92,7 +105,24 @@ def test_native_launch_default_precedence_and_compatibility(
     monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, sys.executable)
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(claude, "auto_picker_available", lambda: installed)
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent-managed.json")
+    managed_path = tmp_path / "managed.json"
+    if managed_default or missing_alias:
+        managed_settings = add_picker_entry(
+            {
+                "modelPicker": {
+                    "options": [
+                        {"model": "other" if missing_alias else "system.ai.claude-opus-5-5"}
+                    ]
+                },
+                "env": {"ANTHROPIC_MODEL": managed_default} if managed_default else {},
+            }
+        )
+        managed_path.write_text(json.dumps(managed_settings))
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+    if missing_alias:
+        has_auto = False
+    if (managed_default or missing_alias) and not pinned and "--model" not in forwarded:
+        expected = None
     monkeypatch.setattr(
         v2,
         "_model_picker_catalog",
@@ -341,3 +371,99 @@ def test_empty_or_malformed_picker_falls_through(tmp_path, monkeypatch, rows):
     monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "absent")
     monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "absent")
     assert v2._model_picker_catalog() is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("modelPicker", None),
+        ("modelPicker", []),
+        ("modelOverrides", []),
+        ("modelOverrides", None),
+        ("env", []),
+    ],
+)
+def test_malformed_optional_auto_settings_do_not_crash(field, value):
+    settings = {"modelPicker": {"options": [{"model": "opus"}]}, field: value}
+    assert not picker_is_configured(settings)
+    assert add_picker_entry(settings) == settings
+
+
+def test_admin_custom_option_and_hidden_builtins_are_preserved():
+    base = {
+        "modelPicker": {"options": [{"model": "opus"}], "replaceBuiltInOptions": True},
+        "env": {
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": "admin-model",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Admin",
+        },
+    }
+    assert add_picker_entry(base) == base
+    assert not picker_is_configured(base)
+    base.pop("env")
+    assert add_picker_entry(base, owns_picker=False) == base
+    assert picker_is_configured(add_picker_entry(base, owns_picker=True))
+
+
+def test_only_ug_custom_option_is_migrated():
+    settings = {
+        "modelPicker": {"options": [{"model": "opus"}]},
+        "env": {
+            "ANTHROPIC_CUSTOM_MODEL_OPTION": "ug-auto",
+            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Auto",
+            "OTHER": "keep",
+        },
+    }
+    assert add_picker_entry(settings)["env"] == {"OTHER": "keep"}
+
+
+def test_managed_default_wins_and_absent_default_uses_catalog_order():
+    settings = add_picker_entry(
+        {
+            "modelPicker": {"options": [{"model": "sonnet"}, {"model": "opus"}]},
+            "env": {"ANTHROPIC_MODEL": "sonnet"},
+        }
+    )
+    catalog = AnthropicModelCatalog(["sonnet", "opus"], {})
+    assert (
+        json.loads(picker_config(catalog, "w", settings, default_model="opus"))["mainModel"]
+        == "sonnet"
+    )
+    assert json.loads(picker_config(catalog, "w"))["mainModel"] == "sonnet"
+
+
+@pytest.mark.parametrize("rows", [[], [None, {"model": "ug-auto"}]])
+def test_empty_picker_can_fall_through_without_bypassing_denies(tmp_path, monkeypatch, rows):
+    from ucode.agents import claude
+
+    managed, user = tmp_path / "managed.json", tmp_path / "user.json"
+    managed.write_text(json.dumps({"modelPicker": {"options": rows}, "deniedModels": ["opus"]}))
+    user.write_text(
+        json.dumps({"modelPicker": {"options": [{"model": "opus"}, {"model": "sonnet"}]}})
+    )
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+    monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", user)
+    monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "absent")
+    assert v2._model_picker_catalog().model_ids == ["sonnet"]
+
+
+def test_configure_preserves_admin_custom_slot_and_does_not_claim_it(tmp_path, monkeypatch):
+    from tests.test_claude_header_mod import WS, _managed_env
+    from ucode.agents import claude
+
+    admin = {
+        "ANTHROPIC_CUSTOM_MODEL_OPTION": "team-custom",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Team custom",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION": "Admin-owned option",
+    }
+    original = {
+        "env": admin,
+        "modelPicker": {"options": [{"model": "opus"}], "replaceBuiltInOptions": True},
+    }
+    path, _, _ = _managed_env(tmp_path, monkeypatch, original)
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+    monkeypatch.setattr(claude, "_explicit_configure", True)
+    claude.write_tool_config({"workspace": WS, "claude_models": {"opus": "opus"}}, "opus")
+    result = json.loads(path.read_text())
+    assert {key: result["env"][key] for key in admin} == admin
+    assert result["modelPicker"] == original["modelPicker"]
+    assert not claude.auto_picker_available()

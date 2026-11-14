@@ -16,7 +16,7 @@ const options = {
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
 function host(on: any, selected = 'ug-auto-opus') {
-  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, processExitCode: 0, rejectModel: false, questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+  const state = {selected, rejectModel: false, processExitCode: 0, agents: [] as any[], toasts: [] as string[], modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -30,6 +30,7 @@ function host(on: any, selected = 'ug-auto-opus') {
     if (!e.args) return next(e);
     if (!state.rejectModel) state.selected = e.args; return state.modelResult;
   });
+  on('command.run', {command:'effort'}, () => ({text:'Effort level: auto (currently medium)'}));
   on('settings.read', () => ({value:{}}));
   on('session.model', () => ({value: state.selected}));
   on('session.start', () => ({cwd: '/work'}));
@@ -40,8 +41,8 @@ function host(on: any, selected = 'ug-auto-opus') {
   on('process.run', ($: any, e: any) => {state.calls.push(e); return {value: {exitCode: state.processExitCode, stdout: '', stderr: ''}};});
   on('ui.open', ($: any, e: any) => { state.questions.push(e); return {value: {isPlaced: true}}; });
   on('ui.close', ($: any, e: any) => {state.closed.push(e); return {value: undefined};});
-  on('agent.list', () => ({value: []}));
-  on('ui.toast', () => ({value: undefined}));
+  on('agent.list', () => ({value: state.agents}));
+  on('ui.toast', ($: any, e: any) => {state.toasts.push(JSON.stringify(e)); return {value: undefined};});
   on('ui.render', {component: 'PromptHint'}, ($: any, e: any) => {
     state.tails.push(e.props.tail);
     return $.ui.resolve(e).Text({children: [e.props.tail ?? '']});
@@ -65,6 +66,7 @@ function commandTranscript({state, env}: ReturnType<typeof host>) {
     const pending: Array<() => Promise<void>> = [];
     const engine = {
       session: {model: async () => state.selected},
+      command: {run: async () => ({text:'Effort level: auto (currently medium)'})},
       env: {
         get: async (key: string) => env[key],
         set: async (key: string, value: string) => {env[key] = value;},
@@ -75,6 +77,7 @@ function commandTranscript({state, env}: ReturnType<typeof host>) {
         return {exitCode: 0, stdout: '', stderr: ''};
       }},
       ui: {
+        focus: async () => ({}),
         open: async (request: any) => {state.questions.push(request);},
         close: async (request: any) => {state.closed.push(request);},
         invalidate: (event: string) => {state.invalidations.push(event);},
@@ -314,6 +317,36 @@ for (const selected of ['opus', 'ug-auto-opus']) {
       expect(child.result).toBe('native child');
       expect(state.calls.length).toBe(before + 1);
       await step($);
-      expect(state.calls.length).toBe(before + 2);
+      expect(state.calls.length).toBe(before + 1);
     });
 }
+
+test('a failed routing sync warns once and main turns continue', {options}, async ($, on) => {
+  const {state, env} = host(on);
+  env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY = '0';
+  state.processExitCode = 1;
+  await step($);
+  await step($);
+  expect(state.forwarded.length).toBe(2);
+  expect(state.toasts.length).toBe(1);
+  expect(state.toasts[0]).toContain('Could not update Smart Routing');
+});
+
+test('rejected main model leaves the pane open and shows a retry message', {options}, async ($, on) => {
+  const {state} = host(on);
+  state.rejectModel = true;
+  await $.command.run({command:'auto'});
+  const pane = await $.ui.mount({plugin:'ug-smart-router', component:'Pane', requestId:'auto-main', surface:'terminal', props:{} as any});
+  await pane.press({key:'auto-main-model-3'});
+  expect(state.selected).toBe('ug-auto-opus');
+  expect(state.saved).toBeUndefined();
+  expect(state.closed.length).toBe(0);
+  expect(state.toasts.at(-1)).toContain('Could not save Auto');
+  await pane.unmount();
+});
+
+test('manual models still show the running agent count', {options}, async ($, on) => {
+  const {state} = host(on, 'opus');
+  state.agents = [{id:'a',status:'running'}];
+  expect(await hint($,state)).toBe('native · 1 subagent running');
+});
