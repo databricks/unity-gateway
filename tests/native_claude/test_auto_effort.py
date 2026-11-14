@@ -54,7 +54,7 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             selected = observe(tui, "narrow-selected")
             assert selected["model"] == catalog["models"][1]["autoModel"]
             assert selected["routing"] == "1"
-            tui.submit("/auto")
+            tui.submit("/model auto")
             tui.wait_for(lambda s: "❯ Sonnet 5.5" in s, "reopened narrow selector")
             tui.send("\x1b[A", "draft Opus without saving")
             tui.wait_for(lambda s: "❯ Opus 5.5" in s, "draft Opus selection")
@@ -98,7 +98,7 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
         tui.submit("/effort status")
         tui.wait_for(lambda s: "Current effort level: high" in s, "native effort agrees")
         picker(tui)
-        tui.submit("/auto")
+        tui.submit("/model auto")
         tui.wait_for(lambda s: heading in s, "reopened effort pane")
         tui.send("h", "draft lower effort")
         tui.wait_for(lambda s: "Medium effort" in s, "lower draft")

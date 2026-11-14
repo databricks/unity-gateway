@@ -373,8 +373,7 @@ class TestCujSmartRouting(BaseCujTest):
                     ),
                     "manual model with the Auto routing indicator off",
                 )
-                tui.submit("/model")
-                tui.choose("Select model", "Auto")
+                tui.submit("/model auto")
                 tui.wait_for(lambda s: "Choose your main model" in s, "the Auto model selector")
                 tui.send("\x1b", "keep the managed default main model")
                 tui.wait_for(
@@ -384,6 +383,7 @@ class TestCujSmartRouting(BaseCujTest):
                     ),
                     "the restored Auto routing indicator",
                 )
+                assert "ug-auto" not in tui.visible
                 tui.exit_normally()
             assert not any(
                 request.path == INFERENCE_PATHS[CLAUDE]

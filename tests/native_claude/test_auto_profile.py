@@ -20,6 +20,7 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
 
     Expected: one checked Auto row, updated native context and effort, the other
     session unchanged, cancellation preserved, and manual selection disables routing.
+    Model-command echoes and confirmations use friendly Auto names.
     This exercises local model/UI metadata, not inference or an actual /compact call.
     """
     fixture = auto_session(
@@ -35,26 +36,36 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         fixture.catalog,
     )
 
+    def assert_friendly_commands(screen):
+        commands = [
+            line for line in screen.splitlines() if line.lstrip().startswith(("❯ /model", "⎿"))
+        ]
+        assert not any("ug-auto" in line for line in commands), screen
+
     selector = "Choose your main model"  # The remainder wraps in a narrow native dock.
     with launch("a") as a, launch("b") as b:
         a.boot(timeout=45)
         b.boot(timeout=45)
+
+        assert_friendly_commands(a.visible)
         before = observe(a, "before")
         assert before["usage"]["context"]["window"] == 1_000_000
-        picker(a)
-        a.submit("/auto")
+        assert "ug-auto" not in picker(a).split("Select model", 1)[1]
+        a.submit("/model auto")
         a.wait_for(lambda s: selector in s, "UG's main-model selector")
         a.send("\x1b[B\r", "select " + alternate_label)
         a.wait_for(
             lambda s: selector not in s and f"Auto ({alternate_label}) saved" in s,
             "the native model switch",
         )
+        assert_friendly_commands(a.visible)
         changed = observe(a, "changed")
         assert changed["model"] == catalog["models"][1]["autoModel"]
         assert changed["custom"] == changed["model"]
         assert changed["usage"]["context"]["window"] == context_window
         assert changed["routing"] == "1"
         auto_screen = picker(a)
+        assert "ug-auto" not in auto_screen.split("Select model", 1)[1]
         if alternate == "claude-haiku-4-5":
             assert "Effort not supported for Auto" in auto_screen
         other = observe(b, "other")
@@ -68,6 +79,7 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         a.wait_for(lambda s: selector in s, "the selector after Auto reselection")
         a.send("\x1b", "cancel the selector")
         a.wait_for(lambda s: selector not in s, "the dismissed selector")
+        assert_friendly_commands(a.visible)
         assert observe(a, "cancelled")["model"] == changed["model"]
         a.submit("/model")
         a.choose("Select model", "Opus 5.5")
@@ -76,15 +88,17 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         assert manual["model"] == catalog["models"][0]["model"]
         assert manual["routing"] == "0"
         picker(a, checked=False)
-        a.submit("/auto")
-        a.wait_for(lambda s: selector in s, "the preference-only selector")
-        a.send("\x1b[A\r", "choose Opus without enabling Auto")
+        a.submit("/model auto")
+        a.wait_for(lambda s: selector in s, "Auto enabled by /model auto")
+        a.send("\x1b[A\r", "choose Opus as the Auto main model")
         a.wait_for(
-            lambda s: selector not in s and "Auto (Opus 5.5) saved" in s, "the saved preference"
+            lambda s: selector not in s and "Auto (Opus 5.5) saved" in s, "the saved Auto model"
         )
-        preference = observe(a, "preference")
-        assert preference["model"] == catalog["models"][0]["model"]
-        assert preference["routing"] == "0"
-        assert preference["custom"] == catalog["models"][0]["autoModel"]
+        restored = observe(a, "restored")
+        assert restored["model"] == catalog["models"][0]["autoModel"]
+        assert restored["custom"] == restored["model"]
+        assert restored["routing"] == "1"
+        assert "Auto (Opus 5.5)" in a.visible
+        assert_friendly_commands(a.visible)
         a.exit_normally()
         b.exit_normally()

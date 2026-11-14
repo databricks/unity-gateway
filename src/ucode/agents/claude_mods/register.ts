@@ -1,4 +1,4 @@
-import type { EngineInterface, On, PluginOptions } from 'claude-code';
+import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
@@ -21,7 +21,14 @@ import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
-const MODEL_CONFIRMATION = /^(<local-command-stdout>Set model to )(`+).+?\2/;
+const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2/;
+const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
+
+function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
+  return a.kind === b.kind
+    && (a.kind !== 'plugin' || (b.kind === 'plugin' && a.name === b.name))
+    && (a.kind !== 'channel' || (b.kind === 'channel' && a.server === b.server));
+}
 
 type Environment = Record<string, string | undefined>;
 type AutoPicker = {
@@ -206,6 +213,7 @@ export function register(on: On, options: PluginOptions): void {
   const routingSync: RoutingSyncState = {};
   let choosing = false;
   let switchingAuto = false;
+  let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
   const pickerState: AutoPickerState = {drafts:{}, native:{}};
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
@@ -240,7 +248,21 @@ export function register(on: On, options: PluginOptions): void {
 
   if (auto) {
     on('command.run', { command: 'model' }, async ($, e, next) => {
-      const result = await next(e);
+      let command = e;
+      publicAutoEcho = undefined;
+      if (e.args.trim().toLowerCase() === 'auto') {
+        const model = await mainModel($, auto);
+        await customAutoRow($, auto, model);
+        command = { ...e, args: auto.models.find((row) => row.model === model)!.autoModel };
+        publicAutoEcho = { model: command.args, args: e.args, origin: e.origin };
+      }
+      let result;
+      try {
+        result = await next(command);
+      } catch (error) {
+        publicAutoEcho = undefined;
+        throw error;
+      }
       if (switchingAuto) return result;
       // Panel commands return an opaque ref, before their transcript is appended.
       // Place the pane while this still carries the user's command context; the
@@ -356,7 +378,7 @@ export function register(on: On, options: PluginOptions): void {
         Text({dimColor:true,children:['Enter to save · Esc to cancel']}),
       ] });
     });
-    on('command.describe', { command: ['smart-router', 'smart-router-orchestrator'] }, ($, e, next) =>
+    on('command.describe', { command: ['auto', 'smart-router', 'smart-router-orchestrator'] }, ($, e, next) =>
       next({ ...e, isHidden: true }));
     on('skill.prompt', { skill: ['smart-router', 'smart-router-orchestrator'] }, () =>
       ({ text: 'Routing is controlled only by the user selecting Auto in /model. Do not change routing controls through a skill.' }));
@@ -387,11 +409,22 @@ export function register(on: On, options: PluginOptions): void {
         await $.ui.close({ id: 'auto-main' });
         if (setModel) await syncAutoRouting($, options, auto, routingSync);
       }
-      // Keep native success details, but name the selected mode in its confirmation.
-      // This changes the transcript text only, never the selected model/profile.
-      const confirmation = setModel && await autoSelected($, auto) ? {
+      const echo = MODEL_COMMAND_ECHO.exec(text);
+      // Claude 2.1.290 stamps typed native model-command echoes as unclassified.
+      const pendingEcho = echo && publicAutoEcho?.model === echo[2]
+        && (sameOrigin(publicAutoEcho.origin, e.origin)
+          || (publicAutoEcho.origin.kind !== 'plugin' && e.origin.kind === 'unclassified'))
+        ? publicAutoEcho : undefined;
+      const echoArgs = pendingEcho?.args ?? 'Auto';
+      const autoEcho = echo && (pendingEcho
+        || (e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router'))
+        && auto.models.some((row) => row.autoModel === echo[2]);
+      if (pendingEcho) publicAutoEcho = undefined;
+      const autoConfirmation = (setModel || keptModel) && await autoSelected($, auto);
+      const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
-          ...block, text: block.text.replace(MODEL_CONFIRMATION, '$1`Auto`'),
+          ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
+            : block.text.replace(MODEL_CONFIRMATION, '$1`Auto`'),
         } : block) },
       } : e;
       const result = await next(confirmation);
@@ -450,7 +483,7 @@ export function register(on: On, options: PluginOptions): void {
   registerRoutingLogs(on, options, launchedEnabled);
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /auto to customize the main agent model.' };
+    if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /model auto to customize the main agent model.' };
     const command = parseSmartRouterCommand(e.args);
     if (!command) return {text: 'Usage: /smart-router on|off|logs'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};

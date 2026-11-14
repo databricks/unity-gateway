@@ -29,7 +29,7 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
     /model picker, customize its main model, run a child, then select a regular model.
 
     Expected: all permitted main models appear, Escape preserves the preference,
-    reselecting Auto opens the selector, and /auto alone does not enable routing.
+    reselecting Auto or running /model auto opens the selector.
     Both child tasks and parent answers complete; only the Auto task has a correlated
     gateway decision. The regular model has no Auto indicator. This checks settled
     UI states, not individual rendered frames. Fresh managed launches select Auto
@@ -107,8 +107,8 @@ export function register(on) {
             lambda s: selector not in s and f"Auto ({labels[1]}) saved" in s, "the saved main model"
         )
 
-        tui.submit("/auto")
-        tui.wait_for(lambda s: selector in s, "the /auto selector")
+        tui.submit("/model auto")
+        tui.wait_for(lambda s: selector in s, "the /model auto selector")
         tui.send("\x1b", "cancel without changing the main model")
         tui.wait_for(lambda s: selector not in s, "the dismissed selector")
         tui.submit("/model")
@@ -134,14 +134,6 @@ export function register(on) {
         tui.choose("Select model", labels[1])
         tui.wait_for(
             lambda s: "Set model to" in s and selector not in s, "the regular model selection"
-        )
-        # /auto may save a preference while a regular model remains selected.
-        tui.submit("/auto")
-        tui.wait_for(lambda s: selector in s, "the preference-only selector")
-        tui.send("\x1b[A\r", "save the first main model without enabling Auto")
-        tui.wait_for(
-            lambda s: selector not in s and f"Auto ({labels[0]}) saved" in s,
-            "the preference confirmation",
         )
         before = read_jsonl(decisions)
         manual = SubagentCalculation("17*29", "493")

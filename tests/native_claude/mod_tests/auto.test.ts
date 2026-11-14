@@ -59,10 +59,12 @@ function host(on: any, selected = 'ug-auto-opus') {
 // journey covers native transcript dispatch as well as the resulting UI.
 function commandTranscript({state, env}: ReturnType<typeof host>) {
   let append: any;
+  let model: any;
   register(((event: string, ...args: any[]) => {
     if (event === 'session.append' && args[0]?.door === 'command') append = args.at(-1);
+    if (event === 'command.run' && args[0]?.command === 'model') model = args.at(-1);
   }) as any, options);
-  return async (text: string) => {
+  return async (text: string, metadata: {raw?: boolean; origin?: {kind: string; name?: string}; selectAuto?: boolean} = {}) => {
     const pending: Array<() => Promise<void>> = [];
     const engine = {
       session: {model: async () => state.selected},
@@ -88,8 +90,9 @@ function commandTranscript({state, env}: ReturnType<typeof host>) {
         return {cancel: () => {cancelled = true;}};
       }},
     };
-    const event = {door: 'command', uuid: text, message: {type: 'user', content: [
-      {type: 'text', text: `<local-command-stdout>${text}</local-command-stdout>`},
+    if (metadata.selectAuto) await model(engine, {command:'model', args:'auto', origin:{kind:'composer'}}, async () => ({}));
+    const event = {door: 'command', origin: metadata.origin ?? {kind: 'composer'}, uuid: text, message: {type: 'user', content: [
+      {type: 'text', text: metadata.raw ? text : `<local-command-stdout>${text}</local-command-stdout>`},
     ]}};
     await append(engine, event, async (forwarded: any) => {
       state.appendClosed.push(state.closed.length);
@@ -142,6 +145,32 @@ test('/auto changes only the main preference and offers the complete catalog', {
   expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
 });
 
+test('/model auto selects the configured Auto profile and opens its controls', {options}, async ($, on) => {
+  const {state, env} = host(on, 'opus');
+  state.saved = 'astra';
+  await $.session.start(start);
+  await $.command.run({command:'model', args:'auto'});
+  expect(state.selected).toBe('ug-auto-astra');
+  expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('ug-auto-astra');
+  expect(state.saved).toBe('astra');
+  expect(state.questions.length).toBe(1);
+  expect(state.questions[0].id).toBe('auto-main');
+  await step($);
+  expect(state.forwarded[0].model).toBe('astra');
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+});
+
+test('Auto help exposes /model auto and hides the internal /auto command', {options}, async ($, on) => {
+  host(on);
+  on('command.describe', ($: any, e: any) => ({description:e.description, isHidden:e.isHidden}));
+  const description = await $.command.describe({command:'auto', description:'Customize main agent model',
+    isHidden:false, immediate:true, provider:{plugin:'ug-smart-router', tier:'user'}});
+  expect(description.isHidden).toBe(true);
+  const reply = await $.command.run({command:'smart-router', args:'on'});
+  expect(reply.text).toContain('Use /model auto');
+  expect(reply.text).not.toContain('Use /auto');
+});
+
 test('a removed saved model preserves a valid default', {options}, async ($, on) => {
   const {state} = host(on);
   state.saved = 'removed';
@@ -180,8 +209,47 @@ test('Auto confirmations preserve native save details and warnings', {options}, 
   expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Opus 5.5`' + details + '</local-command-stdout>');
   context.state.selected = 'ug-auto-opus';
   await confirm('Kept model as `Opus 5.5`');
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept model as `Opus 5.5`</local-command-stdout>');
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept model as `Auto`</local-command-stdout>');
 });
+
+test('only UG internal model-command echoes relabel configured Auto aliases', {options}, async ($, on) => {
+  const context = host(on);
+  const append = commandTranscript(context);
+  const echo = '<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>ug-auto-opus</command-args>';
+  const metadata = {raw:true, origin:{kind:'plugin', name:'ug-smart-router'}};
+  await append(echo, metadata);
+  expect(context.state.appended.at(-1)).toBe(echo.replace('ug-auto-opus', 'Auto'));
+  expect(context.state.selected).toBe('ug-auto-opus');
+  expect(context.state.saved).toBeUndefined();
+  expect(context.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  for (const origin of [{kind:'composer'}, {kind:'plugin', name:'another-plugin'}]) {
+    await append(echo, {raw:true, origin});
+    expect(context.state.appended.at(-1)).toBe(echo);
+  }
+  for (const text of [
+    echo.replace('ug-auto-opus', 'ug-auto-unconfigured'),
+    echo.replace('ug-auto-opus', 'opus'),
+    'Discuss ug-auto-opus in this example',
+    echo + '\nDiscuss ug-auto-opus',
+  ]) {
+    await append(text, metadata);
+    expect(context.state.appended.at(-1)).toBe(text);
+  }
+});
+
+for (const kind of ['composer', 'unclassified']) {
+  test(`a foreign echo cannot consume a pending ${kind} /model auto echo`, {options}, async ($, on) => {
+    const context = host(on);
+    const append = commandTranscript(context);
+    const echo = '<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args>ug-auto-opus</command-args>';
+    await append(echo, {raw:true, selectAuto:true, origin:{kind:'plugin', name:'another-plugin'}});
+    expect(context.state.appended.at(-1)).toBe(echo);
+    await append(echo, {raw:true, origin:{kind}});
+    expect(context.state.appended.at(-1)).toBe(echo.replace('ug-auto-opus', 'auto'));
+    await append(echo, {raw:true, origin:{kind}});
+    expect(context.state.appended.at(-1)).toBe(echo);
+  });
+}
 
 test('native model panel places Auto before its transcript and dismisses it on cancellation', {options}, async ($, on) => {
   const context = host(on);

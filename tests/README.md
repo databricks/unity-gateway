@@ -13,7 +13,9 @@ requires completed parent/child answers with a correlated routing decision only
 in Auto mode. It also verifies the old picker after switching back to an existing
 config version. Both journeys explicitly use the checked-in `claude_auto` managed fixture.
 CUJ 4 adds a UI-only Auto-version journey for startup with the managed default,
-manual routing-off selection, and return to Auto, with no inference requests.
+manual routing-off selection, and return through `/model auto`, with no inference
+requests. Native `/status` and headers for non-Claude models still display the internal
+alias on Claude 2.1.290.
 The integration journey retains actual child-routing checks and verifies fresh
 restarts return to Auto while resume keeps native precedence. Component checks
 alone do not establish live workspace coverage.
@@ -42,6 +44,9 @@ At 60 columns and 22 rows, Up/Down selects and reveals model rows, Enter commits
 and Escape preserves the previous selection. Component checks preserve wheel/page
 scrolling, native save details and warnings, and regular-model confirmations.
 Native tests require “Set model to Auto” for both picker and main-model selection.
+The native profile journey also checks that model-command echoes, confirmations,
+and picker rows use friendly Auto names after selection and cancellation. Native
+`/status` and headers for non-Claude models remain display gaps.
 
 Auto review regressions cover malformed optional settings, admin custom options and
 replacement pickers, configured defaults, empty picker fallback with policy retained,

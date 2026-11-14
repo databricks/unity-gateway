@@ -114,8 +114,8 @@ personal launches build their Auto aliases in launch-only settings. Only the lau
 its display companions in the process environment: putting these in settings env
 would reset the pointer whenever native `/model` saves a selection. Keep one Auto
 row; aliases must not be separate modelPicker rows. Preserve other overrides and
-regular picker rows. `/auto` changes the native selected alias while Auto is active,
-and only the next-Auto preference while a regular model is active. Native context,
+regular picker rows. `/model auto` selects Auto and opens its main-model selector.
+Keep `/auto` hidden as an internal selector command. Native context,
 effort, inference target and indicator derive from the selected alias, never another
 session's saved preference. The mod stores the per-workspace preference with native
 `$.store` and never writes configuration files. An ordinary `/model` selection
