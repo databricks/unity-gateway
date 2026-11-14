@@ -27,6 +27,8 @@ inspection and `revert`; Copilot never reads it and it never holds a credential.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -39,6 +41,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import UUID, uuid4
 
 from ucode.config_io import (
     APP_DIR,
@@ -1091,6 +1094,96 @@ def proxy_headers(state: dict) -> dict[str, str]:
     return headers
 
 
+# The gateway logs these as the usage table's client session and subagent ids, as it does for
+# Codex's own headers. Copilot sends no such ids to a provider of its own.
+SESSION_ID_HEADER = "session-id"
+SUBAGENT_ID_HEADER = "thread-id"
+_SESSION_FLAGS = ("--session-id", "-r", "--resume", "--continue", "--connect")
+
+
+def _uuid(value: str) -> str | None:
+    try:
+        return str(UUID(value))
+    except ValueError:
+        return None
+
+
+def session_args(tool_args: list[str]) -> tuple[list[str], str]:
+    """``tool_args`` with a new session's id, and the id the gateway logs for this launch: the
+    session the user names by UUID, else a new one. A session the user picks otherwise (by name,
+    the latest, a subcommand) gets an id of this launch only."""
+    for index, arg in enumerate(tool_args):
+        name, equals, value = arg.partition("=")
+        if name not in _SESSION_FLAGS:
+            continue
+        if not equals and index + 1 < len(tool_args):
+            value = tool_args[index + 1]
+        return tool_args, _uuid(value) or str(uuid4())
+    session_id = str(uuid4())
+    if tool_args and not tool_args[0].startswith("-"):
+        return tool_args, session_id
+    return ["--session-id", session_id, *tool_args], session_id
+
+
+def with_session_id(headers: dict[str, str], session_id: str) -> dict[str, str]:
+    """``headers`` and the session id, unless an admin's header of that name already sets it."""
+    if any(name.casefold() == SESSION_ID_HEADER for name in headers):
+        return headers
+    return {SESSION_ID_HEADER: session_id, **headers}
+
+
+def _text(content: object) -> str | None:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return None
+    texts = [
+        part["text"]
+        for part in content
+        if isinstance(part, dict) and isinstance(part.get("text"), str)
+    ]
+    return "\n".join(texts) if texts else None
+
+
+def first_user_text(body: bytes | None) -> str | None:
+    """The text of the first user message of an Anthropic Messages, Chat Completions or
+    Responses request."""
+    try:
+        payload = json.loads(body or b"")
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    turns = payload.get("messages", payload.get("input"))
+    if isinstance(turns, str):
+        return turns
+    if not isinstance(turns, list):
+        return None
+    for turn in turns:
+        if isinstance(turn, dict) and turn.get("role") == "user":
+            return _text(turn.get("content"))
+    return None
+
+
+def subagent_headers(session_id: str) -> Callable[[Any, bytes | None], dict[str, str]]:
+    """Gives a subagent's requests an id of that subagent: Copilot marks them only by type, and
+    its delegated prompt, the first user message, stays the same over the subagent's turns. The
+    hash is keyed for this launch, so the id can't confirm a guess at the prompt."""
+    key = secrets.token_bytes(32)
+
+    def headers(request_headers: Any, body: bytes | None) -> dict[str, str]:
+        if request_headers.get("x-interaction-type") != "conversation-subagent":
+            return {}
+        prompt = first_user_text(body)
+        if prompt is None:
+            return {}
+        # JSON can carry a lone surrogate, which strict UTF-8 can't encode.
+        digest = hmac.new(key, prompt.encode("utf-8", "surrogatepass"), hashlib.sha256)
+        return {SUBAGENT_ID_HEADER: f"{session_id}-{digest.hexdigest()[:16]}"}
+
+    return headers
+
+
 def _log_proxy_failure(exc: BaseException) -> None:
     # Copilot owns the terminal, so failures go to a file instead of stderr.
     try:
@@ -1159,6 +1252,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     from ucode import gateway_proxy
 
     workspace = state["workspace"]
+    tool_args, session_id = session_args(tool_args)
     session_secret = secrets.token_urlsafe(32)
     tracing = bool(state.get("copilot_otel_tracing"))
     otel_paths = (OTEL_TRACES_PATH, OTEL_METRICS_PATH) if tracing else ()
@@ -1166,7 +1260,8 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         workspace,
         _token_provider(state),
         session_secret=session_secret,
-        added_headers=proxy_headers(state),
+        added_headers=with_session_id(proxy_headers(state), session_id),
+        request_headers_adder=subagent_headers(session_id),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
         on_refresh_failure=_log_proxy_failure,
         # Every model on Chat Completions mishandles Copilot's `reasoning_effort`: OpenAI and Azure
