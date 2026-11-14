@@ -1,6 +1,7 @@
 """Inspect MCP inventories through the real agent terminals."""
 
 import re
+import time
 
 import pyte
 
@@ -81,28 +82,61 @@ def open_claude_mcp_inventory(tui, services: dict[str, str]) -> str:
 
 
 def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
-    output_start = len(tui.output)
-    tui.submit("/mcp verbose")
-    for service, tool in services.items():
-        name = re.escape(service.replace(".", "-"))
+    deadline = time.monotonic() + 120
+    current = ""
+
+    def remaining():
+        left = deadline - time.monotonic()
+        assert left > 0, (
+            f"Codex's MCP servers did not connect with the expected tools within 120s:\n{current}"
+        )
+        return left
+
+    def inventory():
+        screen = pyte.HistoryScreen(140, 60, history=1000)
+        pyte.Stream(screen).feed("".join(tui.output[output_start:]))
+        assert len(screen.history.top) < screen.history.size, "Codex's MCP inventory was truncated"
+        history = [
+            "".join(line[column].data for column in range(screen.columns))
+            for line in screen.history.top
+        ]
+        return "\n".join([*history, *screen.display])
+
+    while True:
+        remaining()
+        output_start = len(tui.output)
+        tui.send("/mcp verbose", "type text before pressing Enter")
         tui.wait_for(
-            lambda screen, name=name, tool=tool: re.search(
-                rf"(?m)^\s*• {name}: connected \(1 tool\)\s*\n"
+            lambda _: "/mcpverbose" in "".join(inventory().split()),
+            "typed input",
+            timeout=remaining(),
+            stable_for=0.5,
+        )
+        output_start = len(tui.output)
+        remaining()
+        tui.send("\r", "press Enter after the input has rendered")
+        tui.wait_for(
+            lambda _: re.search(r"(?ms)MCP Tools.*?^\s*[›❯>]\s", inventory()),
+            "Codex's complete MCP inventory response",
+            timeout=remaining(),
+        )
+        current = inventory()
+        pending = [
+            service
+            for service, tool in services.items()
+            if not re.search(
+                rf"(?m)^\s*• {re.escape(service.replace('.', '-'))}: connected \(1 tool\)\s*\n"
                 rf"\s*• Auth: [^\n]*\n"
                 rf"\s*• Tools: {re.escape(tool)}\s*$",
-                screen,
-            ),
-            f"{service} connected with {tool} loaded in Codex's MCP inventory",
-            timeout=120,
-        )
-    screen = pyte.HistoryScreen(140, 60, history=1000)
-    pyte.Stream(screen).feed("".join(tui.output[output_start:]))
-    assert len(screen.history.top) < screen.history.size, "Codex's MCP inventory was truncated"
-    history = [
-        "".join(line[column].data for column in range(screen.columns))
-        for line in screen.history.top
-    ]
-    inventory = "\n".join([*history, *screen.display])
-    assert "MCP Tools" in inventory, inventory
-    tui.actions.append({"reason": "codex-mcp-inventory", "screen": inventory})
-    return inventory
+                current,
+            )
+        ]
+        if not pending:
+            tui.actions.append({"reason": "codex-mcp-inventory", "screen": current})
+            return current
+        assert all(
+            re.search(rf"(?m)^\s*• {re.escape(service.replace('.', '-'))}: starting\b", current)
+            for service in pending
+        ), f"Codex's MCP servers did not connect with the expected tools:\n{current}"
+        # /mcp prints a snapshot; startup completion does not update its old rows.
+        time.sleep(min(1, remaining()))
