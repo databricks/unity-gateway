@@ -254,6 +254,11 @@ def test_codex_mcp_inventory_refreshes_static_startup_snapshots(clock, starting_
         _mcp_snapshot("failed"),
         _mcp_snapshot(tool="wrong_tool"),
         _mcp_snapshot(other_status="failed"),
+        pytest.param(_mcp_snapshot("failed", other_status="starting"), id="failed-and-starting"),
+        pytest.param(
+            _mcp_snapshot(tool="wrong_tool", other_status="starting"), id="wrong-tool-and-starting"
+        ),
+        pytest.param(_mcp_snapshot("starting", other_status="failed"), id="starting-and-failed"),
     ],
 )
 def test_codex_mcp_inventory_rejects_failed_servers_and_wrong_tools(clock, snapshot):

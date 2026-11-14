@@ -120,21 +120,22 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
             timeout=remaining(),
         )
         current = inventory()
-        connected = all(
-            re.search(
+        pending = [
+            service
+            for service, tool in services.items()
+            if not re.search(
                 rf"(?m)^\s*• {re.escape(service.replace('.', '-'))}: connected \(1 tool\)\s*\n"
                 rf"\s*• Auth: [^\n]*\n"
                 rf"\s*• Tools: {re.escape(tool)}\s*$",
                 current,
             )
-            for service, tool in services.items()
-        )
-        if connected:
+        ]
+        if not pending:
             tui.actions.append({"reason": "codex-mcp-inventory", "screen": current})
             return current
-        assert any(
+        assert all(
             re.search(rf"(?m)^\s*• {re.escape(service.replace('.', '-'))}: starting\b", current)
-            for service in services
+            for service in pending
         ), f"Codex's MCP servers did not connect with the expected tools:\n{current}"
         # /mcp prints a snapshot; startup completion does not update its old rows.
         time.sleep(min(1, remaining()))
