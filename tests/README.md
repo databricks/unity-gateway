@@ -145,8 +145,10 @@ unchanged token values, delayed rejections, and recovery after refresh failure.
 Non-forced lookups only supersede a rejected request when the token changes.
 These component checks retain the one-retry limit; live provider latency is unmeasured.
 
-Proxy diagnostic tests also cover concurrent file appends, disabled logging, and
-stderr fallback when a log file cannot be written. `test_integration_terminal_screen.py`
+Proxy diagnostic tests cover a real file with 21 events, including 20 concurrent
+appends across four threads in one process. They also cover disabled logging and
+stderr fallback when a log file cannot be written. Concurrent appends from separate
+processes are not guaranteed. `test_integration_terminal_screen.py`
 uses a real Python subprocess and PTY to check that proxy diagnostics stay outside
 the screen, ordinary stderr remains visible, and redacted evidence survives both
 successful and failed tests. This is harness coverage, not live agent inference.
