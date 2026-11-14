@@ -5318,7 +5318,7 @@ def configure(
         if custom_oauth is not None and use_pat:
             raise RuntimeError("--client-id cannot be combined with --use-pat.")
         if model_location is not None and provider is not None:
-            raise RuntimeError("--model-location and --provider cannot be combined.")
+            raise RuntimeError("--model-location and --provider cannot be used together.")
         if model_location is not None and not is_valid_catalog_schema(model_location):
             raise RuntimeError("--model-location must be <catalog>.<schema>, e.g. main.default.")
         if provider is not None and not is_valid_catalog_schema_name(provider):

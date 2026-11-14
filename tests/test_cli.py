@@ -9643,7 +9643,9 @@ class TestHeadlessConfigureModelSource:
             "--agent", "claude", "--model-location", "main.models", "--provider", "main.default.mps"
         )
         assert result.exit_code != 0
-        assert "--model-location and --provider cannot be combined" in _strip_ansi(result.output)
+        assert "--model-location and --provider cannot be used together" in _strip_ansi(
+            result.output
+        )
 
     @pytest.mark.parametrize(
         ("flag", "value"),
