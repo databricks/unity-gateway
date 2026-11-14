@@ -531,6 +531,18 @@ checks that repeated launch preflights reuse a successful CLI version probe, hig
 minimums recheck insufficient cached versions, and an installer invalidates discovery.
 The installer result is checked before another version gate can refresh it, and the
 unparseable-version case preserves the cold-failure probe count.
+It also checks mixed PATH entries: unchanged binaries reuse saved versions while replaced
+binaries refresh and merge their versions. A new process avoids unchanged probes, and probes
+again when the binary is replaced or the saved version is over a day old. An
+insufficient saved version is rechecked before any upgrade; unparseable versions and
+dry runs save nothing, a PATH refresh reuses saved versions without probing (with registry PATH isolated),
+and `ug doctor` probes.
+An unwritable cache directory is best-effort: failed temporary-file creation never
+blocks ordinary CLI discovery or launch preflight. Oversized saved timestamps are
+ignored and re-probed without overflowing numeric conversion. Raw JSON numbers beyond
+Python's integer-parsing limit and excessive JSON nesting are cache misses for discovery
+and doctor.
+
 These component checks do not establish end-to-end launch latency.
 
 Agent configuration tests also verify `ug` auth/MCP helper commands, including

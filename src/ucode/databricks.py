@@ -35,7 +35,7 @@ from urllib.parse import quote, urlencode, urlparse
 
 from ucode import metrics
 from ucode.codex_config import catalog_slugs
-from ucode.config_io import APP_DIR
+from ucode.config_io import APP_DIR, atomic_write_json, is_dry_run, read_json_safe
 from ucode.constants import (
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
@@ -867,6 +867,55 @@ def _read_databricks_cli_version(path: str) -> tuple[int, int, int] | None:
 # preserved among equals. `databricks_cli_path` just reads the front. None means
 # "not yet scanned" — distinct from an empty list, a cached "found nothing".
 _DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None]] | None = None
+# Versions earlier processes read, keyed by real path, so a launch and the helpers an agent spawns
+# skip `databricks --version`; through a wrapper such as dbexec it can cost more than the call it
+# precedes. Reused while the binary's size, mtime and inode match, for at most a day: a wrapper can
+# update the CLI it runs without touching its own file. Only parsed versions are saved.
+SAVED_CLI_VERSIONS_PATH = APP_DIR / "databricks-cli-versions.json"
+SAVED_CLI_VERSION_MAX_AGE_SECONDS = 24 * 60 * 60
+# Whether the cached discovery took any version from SAVED_CLI_VERSIONS_PATH instead of a probe.
+_DISCOVERY_REUSED_SAVED_VERSION = False
+
+
+def _cli_file_signature(path: str) -> list[int] | None:
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    return [stat.st_size, stat.st_mtime_ns, stat.st_ino]
+
+
+def _fresh_saved_entry(entry: object) -> TypeGuard[dict]:
+    """Whether a saved entry was probed recently enough to reuse."""
+    if not isinstance(entry, dict):
+        return False
+    checked_at = entry.get("checked_at")
+    if not isinstance(checked_at, int | float) or isinstance(checked_at, bool):
+        return False
+    now = time.time()
+    return now - SAVED_CLI_VERSION_MAX_AGE_SECONDS < checked_at <= now
+
+
+def _saved_cli_version(entry: object, signature: list[int] | None) -> tuple[int, int, int] | None:
+    """The version in a saved entry that still describes the same, recently probed binary."""
+    if signature is None or not _fresh_saved_entry(entry) or entry.get("signature") != signature:
+        return None
+    version = entry.get("version")
+    if isinstance(version, list) and len(version) == 3 and all(type(n) is int for n in version):
+        return version[0], version[1], version[2]
+    return None
+
+
+def _save_cli_versions(saved: dict, probed: dict[str, dict]) -> None:
+    """Merge newly probed versions into the saved ones, dropping entries too old to reuse."""
+    if is_dry_run():
+        return
+    merged = {real: entry for real, entry in saved.items() if _fresh_saved_entry(entry)}
+    merged.update(probed)
+    try:
+        atomic_write_json(SAVED_CLI_VERSIONS_PATH, merged)
+    except (RuntimeError, OSError):
+        pass  # Best effort: the next process probes again.
 
 
 def _discover_databricks_clis(
@@ -879,13 +928,21 @@ def _discover_databricks_clis(
     Version is None when the candidate's ``--version`` errors or its output can't
     be parsed. The result is sorted newest-version-first (unparseable last, PATH
     order kept among ties), so the front entry is the one to run. Cached for the
-    life of the process; pass ``use_cache=False`` to force a fresh scan (which
-    also refreshes the cache).
+    life of the process, and each binary's version is reused from an earlier
+    process while it is unchanged (see ``SAVED_CLI_VERSIONS_PATH``); pass
+    ``use_cache=False`` to probe every binary (which also refreshes both caches).
     """
-    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED, _DISCOVERY_REUSED_SAVED_VERSION
     if use_cache and _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None:
         return _DISCOVERED_DATABRICKS_CLIS_ORDERED
 
+    try:
+        saved = read_json_safe(SAVED_CLI_VERSIONS_PATH)
+    except (ValueError, RecursionError):
+        # JSON number/depth limits can raise errors other than JSONDecodeError.
+        saved = {}
+    probed: dict[str, dict] = {}
+    reused_saved = False
     seen_real: set[str] = set()
     discovered: list[tuple[str, tuple[int, int, int] | None]] = []
     for path in _iter_databricks_executables():
@@ -893,7 +950,22 @@ def _discover_databricks_clis(
         if real in seen_real:
             continue
         seen_real.add(real)
-        discovered.append((path, _read_databricks_cli_version(path)))
+        signature = _cli_file_signature(real)
+        version = _saved_cli_version(saved.get(real), signature) if use_cache else None
+        if version is not None:
+            reused_saved = True
+        else:
+            version = _read_databricks_cli_version(path)
+            if version is not None and signature is not None:
+                probed[real] = {
+                    "signature": signature,
+                    "version": list(version),
+                    "checked_at": time.time(),
+                }
+        discovered.append((path, version))
+    if probed:
+        _save_cli_versions(saved, probed)
+    _DISCOVERY_REUSED_SAVED_VERSION = reused_saved
 
     # Best-first: highest version wins. A stable sort keeps PATH order among equal
     # versions, and the None-version sentinel (unparseable) sinks below every real one.
@@ -934,10 +1006,20 @@ def databricks_cli_path() -> str:
     return clis[0][0] if clis else "databricks"
 
 
-def clear_databricks_cli_cache() -> None:
-    """Forget cached CLI discovery/resolution (used by tests, and after an install/upgrade)."""
-    global _DISCOVERED_DATABRICKS_CLIS_ORDERED
+def clear_databricks_cli_cache(*, saved_versions: bool = True) -> None:
+    """Forget cached CLI discovery/resolution (used by tests, and after an install/upgrade).
+
+    ``saved_versions=False`` keeps the versions earlier processes read, for a PATH change that
+    replaced no binary.
+    """
+    global _DISCOVERED_DATABRICKS_CLIS_ORDERED, _DISCOVERY_REUSED_SAVED_VERSION
     _DISCOVERED_DATABRICKS_CLIS_ORDERED = None
+    _DISCOVERY_REUSED_SAVED_VERSION = False
+    if saved_versions and not is_dry_run():
+        try:
+            SAVED_CLI_VERSIONS_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
     with _AUTH_LOGIN_NO_BROWSER_SUPPORT_LOCK:
         _AUTH_LOGIN_NO_BROWSER_SUPPORT.clear()
 
@@ -982,7 +1064,7 @@ def _refresh_windows_path() -> None:
         return
     # Writing renames the inherited `Path` to `PATH` for child processes, so only write on change.
     os.environ["PATH"] = os.pathsep.join([*new_entries, *entries])
-    clear_databricks_cli_cache()
+    clear_databricks_cli_cache(saved_versions=False)
 
 
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
@@ -1033,11 +1115,12 @@ def ensure_databricks_cli_version(
 ) -> None:
     discovery_was_cached = _DISCOVERED_DATABRICKS_CLIS_ORDERED is not None
     clis = _discover_databricks_clis()
-    if discovery_was_cached and not any(
+    if (discovery_was_cached or _DISCOVERY_REUSED_SAVED_VERSION) and not any(
         version is not None and version >= minimum for _, version in clis
     ):
-        # Recheck an insufficient result before upgrading: a prior probe may have failed,
-        # or another process may have installed a CLI that meets this higher floor.
+        # Recheck an insufficient result before upgrading: a prior probe may have failed, a saved
+        # version may predate an update, or another process may have installed a CLI that meets
+        # this higher floor.
         clis = _discover_databricks_clis(use_cache=False)
     if not clis:
         raise RuntimeError("Failed to read Databricks CLI version.")
@@ -1081,10 +1164,11 @@ def databricks_cli_version() -> tuple[int, int, int] | None:
     """Return the version of the Databricks CLI that ``databricks_cli_path()``
     would run, or None if none was discovered / its version can't be
     read/parsed. Unlike ``ensure_databricks_cli_version`` this only reports —
-    it never upgrades — so ``ucode doctor`` can decide what to recommend."""
+    it never upgrades — so ``ucode doctor`` can decide what to recommend. It
+    probes the binaries rather than trusting a saved version."""
     # Discovery is ordered best-first, so the front entry's version is the one
     # `databricks_cli_path()` would run.
-    clis = _discover_databricks_clis()
+    clis = _discover_databricks_clis(use_cache=False)
     return clis[0][1] if clis else None
 
 
