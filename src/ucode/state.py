@@ -448,6 +448,21 @@ def mark_tool_managed(state: dict, tool: str, managed_keys: list) -> dict:
     return state
 
 
+# Set when Claude launches relayed only because its static model list names a relay-backed
+# model service (no relayed Model Provider Service source).
+CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY = "claude_relayed_for_model_services"
+
+
+def desktop_uses_claude_subscription_relay(state: dict) -> bool:
+    """True when Claude Desktop should take the subscription relay.
+
+    Relay-backed model services in a static list are CLI-only for now: Desktop has no
+    per-model proxy, so it keeps gateway auth unless a relayed provider is the source."""
+    return bool(state.get("claude_relayed")) and not state.get(
+        CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY
+    )
+
+
 def get_managed_model_source_expansions(state: dict, tool: str) -> dict[str, list[str]]:
     """Return valid last-configure wildcard expansions for this workspace and agent."""
     saved = state.get(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY)

@@ -811,8 +811,15 @@ def _configure_one(
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:
-        # `ug configure` writes the managed model keys a plain launch would.
-        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
+        # `ug configure` writes the managed model keys a plain launch would. A static list that
+        # names a subscription-relayed model service needs the relayed launch (credential swap).
+        return configure_tool(
+            tool,
+            state,
+            model,
+            relayed=claude.static_models_need_subscription_relay(state, configuring=True),
+            derive_managed_model_inputs=True,
+        )
     return configure_tool(tool, state, model)
 
 

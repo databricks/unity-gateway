@@ -4243,6 +4243,10 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CLAUDE and not provider and not parent_schema:
+            # A static model list (no provider) can still name a model service that routes to a
+            # subscription relay; that launch must swap credentials like a relayed provider.
+            relayed = claude_agent.static_models_need_subscription_relay(state)
         # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"

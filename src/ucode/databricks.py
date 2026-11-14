@@ -2358,6 +2358,8 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
+    _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
+    _RELAY_LOOKUP_FAILED_AT.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -3181,7 +3183,7 @@ def _provider_service_entry(raw_service: object) -> dict | None:
 
 
 def get_model_provider_service(
-    service_name: str, workspace: str, token: str
+    service_name: str, workspace: str, token: str, *, timeout: float = 30
 ) -> tuple[dict | None, str | None]:
     """Fetch one provider service by its full `catalog.schema.name`, bypassing the listing.
 
@@ -3191,13 +3193,131 @@ def get_model_provider_service(
     """
     origin = workspace_origin(workspace)
     url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
-    payload, reason = _http_get_json(url, token, timeout=30)
+    payload, reason = _http_get_json(url, token, timeout=timeout)
     if payload is None:
         return None, reason
     entry = _provider_service_entry(payload)
     if entry is None:
         return None, "model-provider-service response had an unexpected shape"
     return entry, None
+
+
+def get_model_service(
+    service_name: str, workspace: str, token: str, *, timeout: float = 30
+) -> tuple[dict | None, str | None]:
+    """Fetch one model service, with its routing config, by full ``catalog.schema.name``."""
+    origin = workspace_origin(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-services/{quote(service_name, safe='.')}"
+    payload, reason = _http_get_json(url, token, timeout=timeout)
+    if not isinstance(payload, dict):
+        return None, reason or "model-service response had an unexpected shape"
+    return payload, None
+
+
+def model_service_primary_providers(service: dict) -> list[str]:
+    """The Model Provider Services behind ``service``'s live primary destinations."""
+    routing = (service.get("config") or {}).get("routing") or {}
+    destinations = routing.get("destinations")
+    providers: list[str] = []
+    for destination in destinations if isinstance(destinations, list) else []:
+        if (
+            not isinstance(destination, dict)
+            or destination.get("is_deleted")
+            or not (destination.get("traffic_percentage") or 0) > 0
+        ):
+            continue
+        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
+        if isinstance(provider, str) and provider:
+            providers.append(provider.removeprefix("model-provider-services/"))
+    return providers
+
+
+class RelayLookup(Enum):
+    """Whether a model service routes to a Claude subscription relay."""
+
+    RELAYED = "relayed"
+    NOT_RELAYED = "not_relayed"
+    UNKNOWN = "unknown"  # a lookup failed, so the answer isn't known yet
+
+
+# The relay proxy asks per request, so a slow or failing workspace mustn't stall each one.
+_RELAY_LOOKUP_TIMEOUT_S = 5
+_RELAY_LOOKUP_RETRY_AFTER_S = 60
+
+# Per-process memos keyed by (workspace, service): confirmed answers, and when a lookup last failed.
+_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
+_RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
+
+
+def relay_candidate_model_services(models: list[str]) -> list[str]:
+    """The entries of ``models`` that name a customer model service (``catalog.schema.name``,
+    not ``system.*``), the only kind that can route to a subscription relay."""
+    candidates: list[str] = []
+    for model in models:
+        if not isinstance(model, str):
+            continue
+        parts = model.removesuffix("[1m]").split(".")
+        if len(parts) == 3 and parts[0] != "system":
+            candidates.append(model)
+    return candidates
+
+
+def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayLookup:
+    """Whether ``model`` routes to a Claude subscription relay: a live primary destination on an
+    Anthropic MPS with relayed auth.
+
+    Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
+    the Databricks token in the swap header). A relayed OpenAI (ChatGPT) MPS needs a different
+    credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
+    lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
+    """
+    if not relay_candidate_model_services([model]):
+        return RelayLookup.NOT_RELAYED
+    name = model.removesuffix("[1m]")
+    key = (workspace, name)
+    if key in _RELAY_BACKED_MODEL_SERVICES_CACHE:
+        return (
+            RelayLookup.RELAYED
+            if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]
+            else RelayLookup.NOT_RELAYED
+        )
+    failed_at = _RELAY_LOOKUP_FAILED_AT.get(key)
+    if failed_at is not None and time.monotonic() - failed_at < _RELAY_LOOKUP_RETRY_AFTER_S:
+        return RelayLookup.UNKNOWN
+    lookup = _fetch_model_service_relay_lookup(name, workspace, token)
+    if lookup is RelayLookup.UNKNOWN:
+        _RELAY_LOOKUP_FAILED_AT[key] = time.monotonic()
+    else:
+        _RELAY_LOOKUP_FAILED_AT.pop(key, None)
+        _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = lookup is RelayLookup.RELAYED
+    return lookup
+
+
+def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
+    """True when any model in ``models`` routes to a Claude subscription relay. An unknown answer
+    counts as not relayed, which keeps the gateway-auth behavior."""
+    return any(
+        model_service_relay_lookup(workspace, token, model) is RelayLookup.RELAYED
+        for model in models
+    )
+
+
+def _fetch_model_service_relay_lookup(name: str, workspace: str, token: str) -> RelayLookup:
+    service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
+    if service is None:
+        _debug("relay detection", f"{name}: {reason}")
+        return RelayLookup.UNKNOWN
+    lookup = RelayLookup.NOT_RELAYED
+    for provider in model_service_primary_providers(service):
+        entry, reason = get_model_provider_service(
+            provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
+        )
+        if entry is None:
+            _debug("relay detection", f"{provider}: {reason}")
+            lookup = RelayLookup.UNKNOWN
+        elif entry.get("relayed") and entry.get("provider_type") == "anthropic":
+            return RelayLookup.RELAYED
+    return lookup
 
 
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from

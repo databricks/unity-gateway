@@ -124,6 +124,24 @@ class TestIsDatabricksRoutedModel:
         assert not gateway_proxy.is_databricks_routed_model("")
 
 
+class TestIsUcModelService:
+    def test_three_part_names_are_model_services(self):
+        for model in ("my_catalog.my_schema.my_model", "main.default.claude_seat_fallback"):
+            assert gateway_proxy.is_uc_model_service(model), model
+
+    def test_databricks_hosted_ids_are_not_model_services(self):
+        for model in (
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-oss-120b",
+            "databricks-meta-llama-3-3-70b-instruct",
+        ):
+            assert not gateway_proxy.is_uc_model_service(model), model
+
+    def test_bare_and_missing_ids_are_not_model_services(self):
+        for model in ("claude-opus-4-1", "claude-3-7-sonnet-20250219", "a.b", "", None):
+            assert not gateway_proxy.is_uc_model_service(model), model
+
+
 class TestRequestModel:
     def test_extracts_model_from_json_body(self):
         assert gateway_proxy._request_model(b'{"model": "system.ai.x", "n": 1}') == "system.ai.x"
@@ -775,8 +793,11 @@ class TestStartProxyPortFallback:
             occupied.close()
 
 
-def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:
+def _relayed_oss_handler(
+    client, cache, wfile, *, headers, body, routes_to_subscription_relay=None
+) -> gateway_proxy._ProxyHandler:
     h = object.__new__(gateway_proxy._RelayProxyHandler)
+    h.routes_to_subscription_relay = routes_to_subscription_relay
     h.client = client
     h.cache = cache
     h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
@@ -830,6 +851,80 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestRelayedModelServiceRouting:
+    def test_relay_backed_model_service_keeps_oauth_and_swap_without_mps(self):
+        # A UC model service that routes to a relayed provider: the OAuth stays in
+        # Authorization, the swap header carries the Databricks token, and the MPS header
+        # is dropped so the service's own routing chooses the destination.
+        asked: list[tuple[str, str]] = []
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=TestRelayedOssRouting._CLIENT_HEADERS,
+            body=b'{"model": "my_catalog.my_schema.claude_seat_fallback"}',
+            routes_to_subscription_relay=lambda model, token: asked.append((model, token)) or True,
+        )._handle()
+        sent = client.sent_headers[0]
+        assert asked == [("my_catalog.my_schema.claude_seat_fallback", "tok1")]
+        assert sent["Authorization"] == "Bearer anthropic-oauth"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert "Databricks-Model-Provider-Service" not in sent
+
+    @pytest.mark.parametrize("routes_to_subscription_relay", [None, lambda _m, _t: False])
+    def test_model_service_not_backed_by_a_relay_routes_to_gateway_auth(
+        self, routes_to_subscription_relay
+    ):
+        # The gateway rejects a relayed request to a non-relayed MPS, so a service backed by an
+        # api-key MPS (or one whose lookup failed) takes the gateway-auth path.
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=TestRelayedOssRouting._CLIENT_HEADERS,
+            body=b'{"model": "my_catalog.my_schema.api_key_claude"}',
+            routes_to_subscription_relay=routes_to_subscription_relay,
+        )._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer tok1"
+        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in sent
+        assert "Databricks-Model-Provider-Service" not in sent
+
+    def test_hosted_and_bare_models_skip_the_relay_lookup(self):
+        def no_lookup(_model, _token):
+            pytest.fail("only UC model services are looked up")
+
+        for model in (b"system.ai.claude-opus-4-8", b"claude-sonnet-4-5"):
+            client = _FakeClient([_FakeResp(200, b"ok")])
+            _relayed_oss_handler(
+                client,
+                _FakeCache(),
+                _Collect(),
+                headers=TestRelayedOssRouting._CLIENT_HEADERS,
+                body=b'{"model": "' + model + b'"}',
+                routes_to_subscription_relay=no_lookup,
+            )._handle()
+
+
+class TestClaudeRelayProxyWiring:
+    def test_relay_lookup_reaches_the_handler(self, monkeypatch):
+        cache = Mock(token="tok1")
+        cache.token_snapshot.return_value = ("tok1", 1)
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
+
+        def lookup(_model, _token):
+            return True
+
+        server, _cache, upstream = gateway_proxy.start_relay_proxy(
+            "https://w", lambda _f: "t", 0, routes_to_subscription_relay=lookup
+        )
+        server.server_close()
+        upstream.close()
+        assert server.RequestHandlerClass.routes_to_subscription_relay is lookup
 
 
 class TestCodexRelayProxy:
