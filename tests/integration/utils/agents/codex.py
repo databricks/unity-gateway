@@ -1,5 +1,12 @@
 """Codex-specific integration evidence and model discovery helpers."""
 
+import json
+import re
+import shlex
+import sqlite3
+from contextlib import closing
+from pathlib import Path
+
 from ..model_discovery import codex_model_in_picker as model_in_picker
 from . import _evidence_id
 
@@ -14,6 +21,139 @@ __all__ = [
 
 SESSION_DIRECTORY = ".codex/sessions"
 EVIDENCE_KIND = "client-selected model"
+DIAGNOSTIC_TARGET = "codex_otel.trace_safe"
+_NATIVE_LOG_HEADER = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2}))"
+    r"\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+"
+)
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+_DIAGNOSTIC_FIELDS = frozenset(
+    {
+        "event.name",
+        "event.timestamp",
+        "conversation.id",
+        "duration_ms",
+        "attempt",
+        "http.response.status_code",
+        "auth.request_id",
+        "request_id",
+        "status",
+        "status_code",
+        "event.kind",
+    }
+)
+
+
+def diagnostic_events(text: str) -> list[dict[str, str]]:
+    header = _NATIVE_LOG_HEADER.match(text)
+    fields = {"event.timestamp": header["timestamp"]} if header else {}
+    lexer = shlex.shlex(text, posix=True, punctuation_chars="\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        for token in lexer:
+            if not token.strip("\n"):
+                break
+            name, _, value = token.partition("=")
+            if name == "error.message":
+                break
+            pattern = (
+                r"[a-zA-Z0-9_.:/+-]{1,128}"
+                if name == "event.timestamp"
+                else r"[a-zA-Z0-9_.:/-]{1,128}"
+            )
+            if name in _DIAGNOSTIC_FIELDS and re.fullmatch(pattern, value):
+                fields[name] = value
+    except ValueError:
+        pass
+    return [fields] if fields else []
+
+
+def split_diagnostic_output(text: str) -> tuple[str, list[dict[str, str]]]:
+    ordinary = []
+    events = []
+    record = []
+    capture = False
+    for line in text.splitlines(keepends=True):
+        clean = _ANSI_ESCAPE.sub("", line)
+        header = _NATIVE_LOG_HEADER.match(clean)
+        native = bool(header and f" {DIAGNOSTIC_TARGET}:" in clean)
+        if capture and clean.startswith("[ucode-relay] "):
+            ordinary.append(_relay_diagnostic_line(clean))
+            continue
+        if header:
+            if record:
+                events.extend(diagnostic_events("".join(record)))
+                record = []
+            capture = native
+        if capture:
+            record.append(clean)
+        else:
+            ordinary.append(line)
+    if record:
+        events.extend(diagnostic_events("".join(record)))
+    return "".join(ordinary), events
+
+
+def _relay_diagnostic_line(line: str) -> str:
+    prefix = "[ucode-relay] "
+    if line.rstrip("\r\n") == prefix + "Could not write proxy diagnostics file; using stderr.":
+        return line
+    try:
+        payload = json.loads(line[len(prefix) :])
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    strings = {"event", "request_id", "method", "path", "route", "phase", "error_type"}
+    integers = {
+        "timestamp_ms",
+        "attempt",
+        "elapsed_ms",
+        "status",
+        "chunks",
+        "bytes",
+        "first_byte_ms",
+    }
+    fields = {
+        name: value
+        for name, value in payload.items()
+        if (name in strings and isinstance(value, str) and re.fullmatch(r"[\w./:-]{1,256}", value))
+        or (name in integers and (type(value) is int or value is None))
+    }
+    if "event" not in fields or type(fields.get("timestamp_ms")) is not int:
+        return ""
+    return prefix + json.dumps(fields, sort_keys=True, separators=(",", ":")) + "\n"
+
+
+def native_diagnostics(home: Path) -> dict:
+    databases = {}
+    for path in (home / ".codex").glob("logs_*.sqlite"):
+        try:
+            with closing(
+                sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=1)
+            ) as connection:
+                rows = connection.execute(
+                    "SELECT ts, level, target, thread_id FROM logs "
+                    "WHERE target LIKE 'codex_api%' OR target LIKE 'codex_http_client%' "
+                    "OR target LIKE 'codex_core::client%' ORDER BY id DESC LIMIT 2000"
+                ).fetchall()
+            databases[path.name] = {
+                "latest_rows_limit": 2000,
+                "events": [
+                    {
+                        "timestamp": ts,
+                        "level": level,
+                        "target": target,
+                        "thread_id": thread_id,
+                    }
+                    for ts, level, target, thread_id in reversed(rows)
+                ],
+            }
+        except sqlite3.DatabaseError as error:
+            databases[path.name] = {"read_error": type(error).__name__}
+    return databases
 
 
 def assert_agent_interaction_completed(records: list[dict], target: str, thread_id: str) -> None:

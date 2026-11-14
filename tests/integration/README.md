@@ -1,5 +1,19 @@
 # Integration tests
 
+Codex command evidence includes native API request timestamps, durations, retry attempts,
+HTTP status codes and request IDs when the client emits them. Headless runs enable the
+native `codex_otel.trace_safe` target and keep only these allowlisted fields in
+`command-*.json` and app-server artifacts under `codex_diagnostics`. A free-form
+native error tail and ambiguous continuation lines are excluded. Timestamped native
+logs retain their stderr boundaries; framed relay records preserve known primitive
+metadata fields and the fixed diagnostic-file warning without releasing continuation lines.
+Before cleanup, `codex-native-diagnostics.json` snapshots the latest 2,000 native
+API/client SQLite log rows per database, including timestamps, levels, targets and thread IDs.
+SQLite message bodies are never selected or parsed. Missing logs produce an empty
+snapshot; unreadable databases record only the exception class. These artifacts help
+distinguish a request waiting for headers from client retries or stalled streaming;
+they do not establish the backend cause of a timeout. Existing task assertions and timeouts remain.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
