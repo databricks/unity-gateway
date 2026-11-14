@@ -876,6 +876,10 @@ def launch_claude(
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             session_path = _prepare_smart_router_session("claude")
+            if auto_picker:
+                # Initialization is not a user-requested disable. Start OFF until
+                # the native session resolves its model (including resume).
+                write_json_file(session_path, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)

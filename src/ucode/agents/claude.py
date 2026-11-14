@@ -2368,7 +2368,7 @@ def _reconcile_managed_settings(
         header_mod_root, managed_file_exists=current_text is not None
     )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
-    if auto_picker:
+    if auto_picker or not _explicit_configure:
         from ucode.agents.claude_auto import (
             AUTO_CUSTOM_MODEL_ENV_KEYS,
             add_picker_entry,
@@ -2378,7 +2378,8 @@ def _reconcile_managed_settings(
 
         # The native picker and startup allowlist read their source directly,
         # before the merged settings.read hook. Install the row at configure;
-        # subsequent launches only preserve an already configured row.
+        # subsequent launches preserve an installed row independently of their
+        # Auto flag. Only explicit configure may change the installed mode.
         if "modelPicker" in picker_keys and (
             _explicit_configure or picker_is_configured(managed_before)
         ):
@@ -3018,7 +3019,12 @@ def launch(
         else None
     )
     if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) != "1":
-        from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, is_auto_model
+        from ucode.agents.claude_auto import (
+            AUTO_CUSTOM_MODEL_ENV_KEYS,
+            auto_model_target,
+            is_auto_model,
+            model_available,
+        )
 
         managed_path = _managed_settings_path()
         managed = read_json_safe(managed_path) if managed_path is not None else {}
@@ -3036,6 +3042,9 @@ def launch(
                 if isinstance(target, str) and not is_auto_model(target):
                     session_model = session_model or target
                     break
+            if not session_model and (target := auto_model_target(saved)):
+                if model_available(target, managed):
+                    session_model = target
         if is_auto_model(os.environ.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")):
             for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
                 os.environ.pop(key, None)

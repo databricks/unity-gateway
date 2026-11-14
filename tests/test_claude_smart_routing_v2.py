@@ -439,9 +439,13 @@ class TestV2Launch:
             "theme": "dark",
         }
 
-    def test_subagent_only_launch_skips_first_prompt_routing(self, tmp_path, monkeypatch):
-        # Exercise the legacy launch independently of the developer's installed Auto row.
-        monkeypatch.setattr(claude, "auto_picker_available", lambda: False)
+    @pytest.mark.parametrize("auto_picker", [False, True])
+    def test_subagent_only_launch_skips_first_prompt_routing(
+        self, tmp_path, monkeypatch, auto_picker
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1" if auto_picker else "0")
+        monkeypatch.setattr(claude, "auto_picker_available", lambda: auto_picker)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent")
         monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
@@ -482,6 +486,9 @@ class TestV2Launch:
                 settings_path = Path(argv[argv.index("--settings") + 1])
                 captured["settings_path"] = settings_path
                 captured["settings"] = json.loads(settings_path.read_text())
+                captured["controls"] = json.loads(
+                    Path(captured["settings"]["env"][v2.SESSION_ENV_VAR]).read_text()
+                )
                 plugin_dir = Path(argv[argv.index("--plugin-dir") + 1])
                 captured["plugin_dir"] = plugin_dir
                 captured["plugin_models"] = _plugin_agent_models(plugin_dir)
@@ -512,7 +519,14 @@ class TestV2Launch:
 
         assert exc.value.code == 4
         settings = captured["settings"]
-        assert settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME] == {
+        plugin_config = settings["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]
+        if auto_picker:
+            auto = json.loads(plugin_config["options"].pop("autoPicker"))
+            assert auto["mainModel"] == "system.ai.claude-opus-4-8"
+        assert captured["controls"] == (
+            dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if auto_picker else {}
+        )
+        assert plugin_config == {
             "options": {
                 **v2._claude_mod_launch_options({**os.environ, **settings["env"]}),
                 "logsCommand": ["/bin/ug", "smart-router-logs"],
@@ -536,7 +550,10 @@ class TestV2Launch:
         # Subagent routing is fully wired; only the first-prompt machinery is absent.
         assert "UserPromptSubmit" not in settings["hooks"]
         assert "PreToolUse" not in settings["hooks"]
-        assert settings["modelOverrides"] == {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
+        expected_overrides = {"claude-opus-4-8": "system.ai.claude-opus-4-8"}
+        if auto_picker:
+            expected_overrides[auto["model"]] = "system.ai.claude-opus-4-8"
+        assert settings["modelOverrides"] == expected_overrides
         assert captured["plugin_models"] == set()
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"].count("--agents") == 1

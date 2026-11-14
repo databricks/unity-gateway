@@ -101,7 +101,9 @@ async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto:
   try {
     const enabled = await autoSelected($, auto);
     const current = isRoutingEnabled(await readSessionEnvironment($));
-    if (current !== enabled) await setRouting($, options, enabled, true);
+    // Fresh Auto controls start OFF. Initialize the process too, even when
+    // the control file already agrees with a native manual-model selection.
+    if (state.model === undefined || current !== enabled) await setRouting($, options, enabled, true);
     if (model !== state.model || current !== enabled) {
       showStatusBand();
       $.ui.invalidate('ui.render');

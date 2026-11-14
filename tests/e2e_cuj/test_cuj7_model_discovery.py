@@ -15,6 +15,7 @@ from tests.integration.utils.model_discovery import (
     assert_codex_default_models,
 )
 from tests.integration.utils.terminal import TerminalProcess
+from ucode.smart_routing.config import SUBAGENT_AUTO_V0_CLAUDE_ONLY
 
 from .base import BaseCujTest, bearer
 from .helpers.constants import (
@@ -140,23 +141,25 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
 
     @pytest.mark.claude
     @pytest.mark.tui
-    def test_case_07_configured_claude_discovers_system_models(self, live_session):
+    def test_case_07_configured_claude_discovers_system_models(
+        self, live_session, request_recorder
+    ):
         """Scenario: configure Claude, then launch without source overrides or discovery flags.
 
         Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-        gateway aliases and shows a discovered picker entry.
+        gateway aliases and shows a discovered picker entry. After saving a personal Auto
+        selection, restarting without Auto completes inference on the same real main model.
         """
         session = live_session
-        session.configure(
+        request_recorder.configure_session(
+            session,
             [
                 "configure",
                 "--agents",
                 CLAUDE,
-                "--workspace",
-                self.workspace.config.host,
                 "--skip-upgrade",
                 "--disable-databricks-ai-tools",
-            ]
+            ],
         )
         with Terminal(session, "case-07-system-models", [CLAUDE]) as tui:
             tui.boot()
@@ -165,6 +168,65 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             )
             tui.exit_normally()
         assert_claude_system_models_in_picker(session, screen)
+
+        main_model = session.workspace_state()["claude_models"]["sonnet"]
+        supported = set(session.workspace_state()["claude_models"].values())
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_AUTO_V0_CLAUDE_ONLY
+        request_recorder.prepare_launch()
+        with Terminal(session, "case-07-personal-auto", [CLAUDE]) as tui:
+            tui.boot()
+            tui.submit("/model " + main_model)
+            tui.wait_for(
+                lambda screen: (
+                    "Set model to" in screen and "Auto (" not in "\n".join(screen.splitlines()[-4:])
+                ),
+                "the regular main model",
+            )
+            tui.submit("/model auto")
+            tui.wait_for(
+                lambda screen: "Choose your main model" in screen,
+                "Auto main-model selection",
+                stable_for=0.5,
+            )
+            tui.send("\r", "save the current main model in Auto")
+            tui.wait_for(
+                lambda screen: (
+                    "Choose your main model" not in screen
+                    and "Auto (" in "\n".join(screen.splitlines()[-4:])
+                ),
+                "saved Auto model",
+            )
+            task = claude_file_task(session)
+            evidence = SessionEvidence(session.home, CLAUDE)
+            checkpoint = request_recorder.checkpoint()
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            evidence.assert_applied(task, supported, expected=main_model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, main_model)
+            tui.exit_normally()
+        saved = json.loads((session.home / ".claude/settings.json").read_text())["model"]
+        assert saved.startswith("ug-auto-")
+        for path in (session.home / ".claude/ucode-settings.json", *MANAGED_PATHS):
+            if path.is_file():
+                assert saved not in json.loads(path.read_text()).get("modelOverrides", {})
+        session.env.pop("SMART_ROUTER_CONFIG_VERSION")
+        request_recorder.prepare_launch()
+        checkpoint = request_recorder.checkpoint()
+        with Terminal(
+            session, "case-07-restart-without-auto", [CLAUDE, "--disable-smart-routing"]
+        ) as tui:
+            tui.boot()
+            task = claude_file_task(session)
+            evidence = SessionEvidence(session.home, CLAUDE)
+            tui.submit(task.prompt)
+            tui.task(evidence, task)
+            evidence.assert_applied(task, supported, expected=main_model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, main_model)
+            assert not any(
+                request.path.endswith("/routes:select")
+                for request in request_recorder.requests_after(checkpoint)
+            )
+            tui.exit_normally()
 
     @pytest.mark.codex
     def test_case_08_configured_codex_uses_default_models(self, live_session):

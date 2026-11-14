@@ -340,12 +340,12 @@ class TestCujSmartRouting(BaseCujTest):
 
         Expected: Auto starts with the managed default and ON in its band and footer.
         Both show OFF for a regular model and ON after selecting a different Auto main model.
-        No inference is sent; the existing routing journeys independently check applied
-        router decisions.
+        The selected alternate main model then completes real inference. The existing
+        preset journey also exercises Auto main/subagent inference and routing decisions.
         """
         with smart_router_preset(cuj, SUBAGENT_AUTO_V0_CLAUDE_ONLY) as (
             session,
-            _,
+            workspace,
             recorder,
             configs,
         ):
@@ -416,14 +416,26 @@ class TestCujSmartRouting(BaseCujTest):
                 )
                 # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
                 # assert "ug-auto" not in tui.visible
+                task = _file_task(session, CLAUDE)
+                evidence = SessionEvidence(session.home, CLAUDE)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                requests = recorder.requests_after(checkpoint)
+                inference = _task_inference_request(requests, CLAUDE, task.prompt)
+                inference = served_inference_request(recorder, requests, inference, CLAUDE)
+                assert canonical_model(inference.payload["model"]) == canonical_model(
+                    alternate["model"]
+                )
+                assert not any(request.path == ROUTING_PATH for request in requests)
+                evidence.assert_applied(
+                    task, workspace.model_ids(CLAUDE), expected=alternate["model"]
+                )
                 tui.exit_normally()
-            assert not any(
-                request.path == INFERENCE_PATHS[CLAUDE]
-                for request in recorder.requests_after(checkpoint)
-            ), "The Auto toggle journey must not submit inference requests"
 
     @pytest.mark.parametrize("agent", AGENTS)
-    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION", (*SMART_ROUTER_CONFIG_VERSIONS, SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    )
     def test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent(
         self, cuj, agent, SMART_ROUTER_CONFIG_VERSION
     ):

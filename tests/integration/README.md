@@ -1,6 +1,6 @@
 # Integration tests
 
-Auto picker coverage lives in the read-only workspace CUJ 4. See the
+Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 
 `../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile

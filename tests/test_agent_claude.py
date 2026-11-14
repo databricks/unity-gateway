@@ -1607,6 +1607,27 @@ class TestWriteToolConfigManagedSettings:
         )
         return managed_path, sudo_writes
 
+    @pytest.mark.parametrize("can_write", [False, True])
+    def test_auto_picker_survives_ordinary_launch(self, tmp_path, monkeypatch, can_write):
+        from ucode.agents.claude_auto import picker_is_configured
+
+        path, writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.setattr(claude, "_explicit_configure", True)
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        assert picker_is_configured(json.loads(path.read_text()))
+        installed = path.read_bytes()
+        write_count = len(writes)
+        monkeypatch.setattr(claude, "_explicit_configure", False)
+        monkeypatch.setattr(claude, "managed_writes_allowed", lambda: can_write)
+        for auto_enabled in ("0", "1"):
+            monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", auto_enabled)
+            claude.write_tool_config(state, state["claude_static_models"][0])
+            assert picker_is_configured(json.loads(path.read_text()))
+            assert path.read_bytes() == installed
+            assert len(writes) == write_count
+
     def test_reapply_unchanged_config_invokes_no_sudo(self, tmp_path, monkeypatch):
         # Repeated `ug claude` launches with an unchanged config and an intact managed file must
         # reach a fixed point: exactly one privileged write, then none.
@@ -3681,6 +3702,32 @@ class TestClaudeLaunch:
         assert launch_settings["enforceAvailableModels"] is True
         assert json.loads(settings_path.read_text()) == original_settings
         assert calls[0][-2:] == ["--model", custom_model]
+
+    @pytest.mark.parametrize(
+        "target", ["system.ai.claude-sonnet-5-5", "claude-haiku-4-5", "team.models.custom"]
+    )
+    def test_personal_auto_alias_restarts_on_real_model(self, monkeypatch, tmp_path, target):
+        from ucode.agents.claude_auto import auto_variant
+
+        calls = []
+        saved = auto_variant({"model": target})
+        user_path = tmp_path / "settings.json"
+        user_path.write_text(json.dumps({"model": saved}))
+        settings_path = tmp_path / "ucode-settings.json"
+        settings_path.write_text("{}")
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_path)
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+        claude.launch({"workspace": WS}, [], options=LaunchOptions())
+        argv = calls[0]
+        assert argv[argv.index("--model") + 1] == target
+        assert json.loads(user_path.read_text())["model"] == saved
+        assert "modelOverrides" not in json.loads(settings_path.read_text())
 
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)

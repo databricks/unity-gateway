@@ -1,19 +1,22 @@
 # Test suites and user journeys
 
-Claude Auto coverage is centered on
-`e2e_cuj/test_cuj4_smart_routing.py::TestCujSmartRouting::test_auto_preset_starts_on_managed_default_and_toggles_routing`.
-It uses the live workspace with `subagent_auto_v0_claude_only`, checks startup with
-the managed main model, switches routing off with a regular model, and returns to
-Auto with a different main model. It checks both routing indicators without sending
-inference requests. Existing CUJ 4 journeys independently verify applied routing.
-The full-screen Auto alias assertion is temporarily disabled pending native Claude
-support for friendly header and `/status` names; its TODO records the restoration condition.
-Small existing tests retain packaging and rollout checks. Separate Auto component,
-native profile/effort, and managed-fixture integration suites were removed in favor
-of this CUJ. Auto-specific live child routing, restart/resume, rollback to the old picker,
-policy, cancellation, feedback, effort, and context-window edge cases no longer
-have dedicated automated coverage. Existing routing CUJs do not prove those
-Auto-specific behaviors.
+Claude Auto's existing CUJ 4 selector journey verifies the managed default, manual
+OFF and Auto ON transitions, and completed inference on the newly selected main model.
+The existing main/subagent preset journey now includes `subagent_auto_v0_claude_only`:
+completed parent/child answers must match correlated router decisions and paired
+successful inference responses carrying real model IDs. CUJ 7's discovery journey
+saves a personal Auto selection, restarts with routing disabled, and requires
+completed inference on the same real model without persistent Auto mappings.
+These journeys require authenticated live CI; collection is not a live pass.
+
+Focused regressions in the existing suites cover Auto configure → ordinary launch →
+Auto launch without a managed-file rewrite, fresh OFF session controls, and native
+manual-model startup with feedback required through the next main turn. The native
+case deliberately fails inference without credentials and checks state only.
+Rollout ownership and restoration share the existing known-version test matrix.
+The full-screen Auto alias assertion remains disabled pending native Claude support
+for friendly header and `/status` names. Cancellation, effort and context-window
+edge cases still lack dedicated live coverage.
 
 Profile discovery component checks in `test_databricks.py::TestGetDatabricksProfiles`
 require local metadata listing without validating unrelated workspaces, preserve PAT

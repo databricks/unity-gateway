@@ -222,12 +222,19 @@ def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
 @pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
 @pytest.mark.parametrize("version", sorted(config._VERSIONS))
 def test_enabled_version_keeps_a_known_version(agent, version):
-    inherited = {ENABLE_SMART_ROUTING_ENV_VAR: "1", SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}
+    inherited = {
+        ENABLE_SMART_ROUTING_ENV_VAR: "1",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    }
     applied = inherited.copy()
 
     previous = config.apply_enabled_version(applied, agent=agent)
 
     assert applied == config.resolve_environment(inherited, agent=agent)
+    assert applied[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] == (
+        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE else "0"
+    )
     v2.restore_smart_routing_env(previous, applied)
     assert applied == inherited
 
@@ -359,22 +366,6 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
     assert config.enabled_version_routes(env, agent="opencode") is False
     assert config.enabled_version_routes({}, agent="opencode") is False
-
-
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
-@pytest.mark.parametrize("version", sorted(config._VERSIONS))
-def test_auto_rollout_is_owned_by_versions_and_restored(agent, version):
-    inherited = {
-        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
-        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
-    }
-    applied = inherited.copy()
-    previous = config.apply_config(applied, agent=agent)
-    assert applied[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] == (
-        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE else "0"
-    )
-    v2.restore_smart_routing_env(previous, applied)
-    assert applied == inherited
 
 
 def test_auto_flag_alone_does_not_enable_routing():

@@ -20,7 +20,16 @@ from ucode.smart_routing.v2 import (
 
 
 class Session:
-    def __init__(self, binary, root, env, api="http://127.0.0.1:1", route_command=(), resume=None):
+    def __init__(
+        self,
+        binary,
+        root,
+        env,
+        api="http://127.0.0.1:1",
+        route_command=(),
+        resume=None,
+        auto_picker=None,
+    ):
         self.root = root
         root.mkdir()
         resume_args = []
@@ -39,6 +48,8 @@ class Session:
             Path(__file__).parents[2] / "skills/smart-router/SKILL.md", skill / "SKILL.md"
         )
         options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
+        if auto_picker is not None:
+            options["autoPicker"] = json.dumps(auto_picker)
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),

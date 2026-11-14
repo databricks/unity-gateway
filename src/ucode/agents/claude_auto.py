@@ -41,6 +41,21 @@ def auto_variant(row: dict) -> str:
     return AUTO_PREFIX + digest + "-" + (model_behavior(row) or row["model"])
 
 
+def auto_model_target(alias: str) -> str | None:
+    """Recover a launch-only alias only when its complete identity verifies.
+
+    Personal aliases retain the target ID (Claude IDs omit system.ai in their
+    capability suffix). Admin behavesAs aliases still require their explicit mapping.
+    """
+    match = re.fullmatch(r"ug-auto-[a-f0-9]{12}-(.+)", alias)
+    if match:
+        suffix = match[1]
+        for target in (suffix, "system.ai." + suffix):
+            if auto_variant({"model": target}) == alias:
+                return target
+    return None
+
+
 def model_available(model: str, settings: dict) -> bool:
     """Conservatively keep exact configured targets, including context suffixes."""
 

@@ -100,22 +100,23 @@ Its Auto toggle journey returns from a manual model through `/model auto`.
 The full-screen alias assertion is temporarily commented out with a TODO: Claude
 2.1.290 exposes internal Auto aliases in some headers and in `/status`. Model-selection
 and routing-indicator assertions remain enabled.
-It runs the managed-default and explicit-model journeys and six
+It runs the managed-default and explicit-model journeys and seven
 `SMART_ROUTER_CONFIG_VERSION` presets using the shared version constants. With no selector,
 managed smart routing leaves the first prompt unrouted: the admin's default model completes the
 file task, no `routes:select` request is sent, and the Smart Router Orchestrator context reaches
 that inference request. Each preset runs as independent tests so a slow live subagent call
 cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journey per agent
-(12 cases, with Claude ending in the native background-task wait) and one Claude-only status
+(14 cases, including the Auto preset, with Claude ending in the native background-task wait) and one Claude-only status
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
-An additional Claude-only UI journey overrides the version with
+An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns
 to Auto and verifies both show ON. It observes the chosen main-model row before
-pressing Enter to save, rather than sending navigation and confirmation together. It sends no inference requests;
-the existing journeys retain the checks for actual routing decisions and inference.
+pressing Enter to save, then completes a real main-model file task with paired gateway
+request/response evidence. The existing main/subagent journey also includes Auto
+and verifies its correlated routing decision, real model IDs, and completed answers.
 Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
@@ -126,6 +127,7 @@ Component tests independently verify the preset values. The resulting expectatio
 | `subagent_orch_v0` | No | Yes | No | Yes, routed |
 | `subagent_orch_v1` | No | Yes | No | Yes, routed |
 | `subagent_orch_v0_claude_only` | No | Claude only | No | Yes for both; only Claude routed |
+| `subagent_auto_v0_claude_only` | No | No | No | Yes for both; only Claude routed |
 
 First prompts explicitly forbid delegation to isolate first-prompt routing. Assertions require
 the expected presence/absence of a prompt-correlated router request, successful inference on
@@ -179,3 +181,8 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
   -k test_smart_router_preset -v
 ```
+
+CUJ 7's existing Claude discovery case also saves an Auto selection on the unmanaged
+workspace, completes a main-model file task, then restarts with routing disabled.
+The restart must complete another task on the same real model with paired successful
+HTTP evidence and no router request. It never seeds Auto aliases in shared settings.
