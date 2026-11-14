@@ -211,6 +211,21 @@ def default_model(state: dict) -> str | None:
     return gemini_models[0] if gemini_models else None
 
 
+def resolve_explicit_model(model: str, state: dict) -> str:
+    """Return a ``--model`` this workspace serves, else raise rather than launch on another."""
+    configured = list(state.get("gemini_models") or [])
+    default = default_model(state)
+    if default and default not in configured:
+        configured.append(default)  # a managed default needn't be in the admin's model list
+    if model in configured:
+        return model
+    available = ", ".join(configured) or "none"
+    raise RuntimeError(
+        f"Gemini CLI model '{model}' is not configured. Available: {available}. "
+        "Run `ug configure --agent gemini` to rediscover models."
+    )
+
+
 def persisted_provider_model() -> str | None:
     """The Gemini model currently pinned in the env file, if any.
 
@@ -220,49 +235,50 @@ def persisted_provider_model() -> str | None:
     return parse_dotenv(GEMINI_ENV_PATH).get("GEMINI_MODEL")
 
 
-def _launch_model(state: dict, provider: str | None) -> str | None:
+def _launch_model(state: dict, provider: str | None, pinned: str | None = None) -> str | None:
     """The model this session runs on.
 
     Under a provider it is the service's target model, pinned into the env file
     by ``write_tool_config`` (``default_model`` would return a Databricks id the
-    gateway can't resolve behind the provider header). Otherwise the usual default.
+    gateway can't resolve behind the provider header). Otherwise the user's ``--model``
+    (``pinned``), else the usual default.
     """
     if provider:
         written = persisted_provider_model()
         if written:
             return written
+    elif pinned:
+        return pinned
     return default_model(state)
 
 
-def _refresh_token_once(state: dict, *, force_refresh: bool = False) -> str:
+def _refresh_token_once(state: dict, model: str, *, force_refresh: bool = False) -> str:
     provider = get_provider_service(state, "gemini")
-    model = _launch_model(state, provider)
-    if not model:
-        raise RuntimeError("No Gemini model is configured.")
     _, token = write_tool_config(state, model, force_refresh=force_refresh, provider=provider)
     return token
 
 
-def _refresh_forever(state: dict, stop_event: threading.Event) -> None:
+def _refresh_forever(state: dict, model: str, stop_event: threading.Event) -> None:
     while not stop_event.wait(TOKEN_REFRESH_INTERVAL_SECONDS):
         try:
-            _refresh_token_once(state, force_refresh=True)
+            _refresh_token_once(state, model, force_refresh=True)
         except RuntimeError:
             continue
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider = get_provider_service(state, "gemini")
-    token = _refresh_token_once(state)
-    model = _launch_model(state, provider)
+    # The launch path already rejected a `--model` that discovery didn't find.
+    model = _launch_model(state, provider, options.user_pinned_model)
     if not model:
         raise RuntimeError("No Gemini model is configured.")
+    token = _refresh_token_once(state, model)
     env = build_runtime_env(state["workspace"], model, token, provider=provider)
 
     stop_event = threading.Event()
     refresher = threading.Thread(
         target=_refresh_forever,
-        args=(state, stop_event),
+        args=(state, model, stop_event),
         daemon=True,
     )
     refresher.start()
