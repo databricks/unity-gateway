@@ -538,6 +538,11 @@ SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent cl
 SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
 ```
 
+UG preserves replacement pickers owned by other managers, including installed
+Isaac's. These currently prevent Auto, and `ug configure --agent claude` cannot
+repair them. Auto requires support from the picker manager, which is not currently
+available for Isaac. Isaac bootstrap alone does not enable Auto.
+
 All existing versions, including `subagent_orch_v0_claude_only`, keep the old
 model picker and Smart Router controls. `ENABLE_SMART_ROUTER_AUTO_MODE=1` enables
 the picker for an already smart-routed launch without a version selector; the flag

@@ -771,7 +771,9 @@ def launch_claude(
 
     if auto_picker and not auto_picker_available():
         print_warning(
-            "Auto is missing from Claude's configured picker. Run `ug configure --agent claude` once, then restart `ug claude`."
+            "Auto is unavailable under Claude's current managed picker or custom-model policy. "
+            "`ug configure --agent claude` can repair only a UG-owned picker. "
+            "Other pickers require Auto support from their own manager; this setup is currently unsupported."
         )
         auto_picker = False
     if auto_picker:
