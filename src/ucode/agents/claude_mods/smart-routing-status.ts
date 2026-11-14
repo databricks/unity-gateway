@@ -76,7 +76,7 @@ export const registerStatusBand = (on: On, auto?: { model: string; mainModel: st
     if (auto) {
       const selected = await $.session.model()
       const main = auto.models.find((row) => row.autoModel === selected)
-      state = main ? `Auto (${main.label})${agents}` : agents.replace(/^ · /, '')
+      if (main) state = `Auto (${main.label}) · ${state}`
     }
     const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
     return next({ ...e, props: { ...e.props, tail } })
@@ -84,7 +84,7 @@ export const registerStatusBand = (on: On, auto?: { model: string; mainModel: st
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (auto || !band.isVisible) return theirs
+    if (!band.isVisible) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
@@ -97,7 +97,7 @@ export const registerStatusBand = (on: On, auto?: { model: string; mainModel: st
           italic: true,
           children: ['— ' + (firstPrompt ? 'routing first prompt + subagents' : 'routing subagents')],
         })
-      : Text({ dimColor: true, children: ["— Reenable with '/smart-router on'"] })
+      : Text({ dimColor: true, children: [auto ? "— Reenable with Auto in '/model'" : "— Reenable with '/smart-router on'"] })
 
     const line = Box({
       flexDirection: 'row',

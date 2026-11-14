@@ -1,5 +1,7 @@
 """Real terminal/profile checks; no gateway inference or model responses."""
 
+import re
+
 import pytest
 from auto_session import auto_session
 
@@ -20,7 +22,8 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
 
     Expected: one checked Auto row, updated native context and effort, the other
     session unchanged, cancellation preserved, and manual selection disables routing.
-    Model-command echoes and confirmations use friendly Auto names.
+    Model-command echoes and confirmations use friendly Auto names. The band and
+    footer show ON for Auto and OFF for manual models.
     This exercises local model/UI metadata, not inference or an actual /compact call.
     """
     fixture = auto_session(
@@ -42,11 +45,24 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         ]
         assert not any("ug-auto" in line for line in commands), screen
 
+    def assert_routing_status(tui, *, enabled, label=None):
+        state = "ON" if enabled else "OFF"
+        tui.wait_for(
+            lambda s: (
+                re.search(rf"(?m)^\s*unity gateway smart router\s+{state}\b", s)
+                and f"smart router {state}" in "\n".join(s.splitlines()[-4:])
+                and (label is None or f"Auto ({label})" in s)
+            ),
+            f"the Smart Router {state} band and footer",
+        )
+
     selector = "Choose your main model"  # The remainder wraps in a narrow native dock.
     with launch("a") as a, launch("b") as b:
         a.boot(timeout=45)
         b.boot(timeout=45)
 
+        assert_routing_status(a, enabled=True, label="Opus 5.5")
+        assert_routing_status(b, enabled=True, label="Opus 5.5")
         assert_friendly_commands(a.visible)
         before = observe(a, "before")
         assert before["usage"]["context"]["window"] == 1_000_000
@@ -58,6 +74,7 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
             lambda s: selector not in s and f"Auto ({alternate_label}) saved" in s,
             "the native model switch",
         )
+        assert_routing_status(a, enabled=True, label=alternate_label)
         assert_friendly_commands(a.visible)
         changed = observe(a, "changed")
         assert changed["model"] == catalog["models"][1]["autoModel"]
@@ -84,6 +101,7 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         a.submit("/model")
         a.choose("Select model", "Opus 5.5")
         a.wait_for(lambda s: "Set model to" in s and selector not in s, "the ordinary model switch")
+        assert_routing_status(a, enabled=False)
         manual = observe(a, "manual")
         assert manual["model"] == catalog["models"][0]["model"]
         assert manual["routing"] == "0"
@@ -94,6 +112,7 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         a.wait_for(
             lambda s: selector not in s and "Auto (Opus 5.5) saved" in s, "the saved Auto model"
         )
+        assert_routing_status(a, enabled=True, label="Opus 5.5")
         restored = observe(a, "restored")
         assert restored["model"] == catalog["models"][0]["autoModel"]
         assert restored["custom"] == restored["model"]

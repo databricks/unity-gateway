@@ -338,9 +338,10 @@ class TestCujSmartRouting(BaseCujTest):
     def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
         """Scenario: select the Auto preset, launch Claude, switch to manual, then back to Auto.
 
-        Expected: Auto starts with the managed default, its routing indicator disappears
-        for a regular model, and returns after selecting Auto again. No inference is sent;
-        the existing routing journeys independently check applied router decisions.
+        Expected: Auto starts with the managed default and ON in its band and footer.
+        Both show OFF for a regular model and ON after selecting a different Auto main model.
+        No inference is sent; the existing routing journeys independently check applied
+        router decisions.
         """
         with smart_router_preset(cuj, SUBAGENT_AUTO_V0_CLAUDE_ONLY) as (
             session,
@@ -352,13 +353,22 @@ class TestCujSmartRouting(BaseCujTest):
             settings = json.loads(MANAGED_PATHS[0].read_text())
             row = next(row for row in settings["modelPicker"]["options"] if row["model"] == default)
             label = row["label"].removeprefix("Claude ")
+            rows = settings["modelPicker"]["options"]
+            index = rows.index(row)
+            direction = 1 if index + 1 < len(rows) else -1
+            alternate = rows[index + direction]
+            alternate_label = alternate["label"].removeprefix("Claude ")
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
             with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
                 tui.boot(timeout=150)
                 tui.wait_for(
-                    lambda s: f"Auto ({label})" in "\n".join(s.splitlines()[-4:]),
-                    "startup Auto with the managed default model",
+                    lambda s: (
+                        f"Auto ({label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "startup Auto with the managed default and ON band and footer",
                 )
                 tui.submit("/model")
                 tui.wait_for(lambda s: "Select model" in s, "the native model picker")
@@ -369,19 +379,25 @@ class TestCujSmartRouting(BaseCujTest):
                 tui.choose("Select model", label)
                 tui.wait_for(
                     lambda s: (
-                        "Set model to" in s and "Auto (" not in "\n".join(s.splitlines()[-4:])
+                        "Set model to" in s
+                        and "Auto (" not in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=False, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=False)
                     ),
-                    "manual model with the Auto routing indicator off",
+                    "manual model with OFF band and footer",
                 )
                 tui.submit("/model auto")
                 tui.wait_for(lambda s: "Choose your main model" in s, "the Auto model selector")
-                tui.send("\x1b", "keep the managed default main model")
+                arrow = "\x1b[B" if direction == 1 else "\x1b[A"
+                tui.send(arrow + "\r", "select " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
                         "Choose your main model" not in s
-                        and f"Auto ({label})" in "\n".join(s.splitlines()[-4:])
+                        and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=True)
                     ),
-                    "the restored Auto routing indicator",
+                    "the restored Auto ON band and footer",
                 )
                 assert "ug-auto" not in tui.visible
                 tui.exit_normally()

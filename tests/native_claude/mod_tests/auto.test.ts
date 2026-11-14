@@ -34,7 +34,6 @@ function host(on: any, selected = 'ug-auto-opus') {
   on('settings.read', () => ({value:{}}));
   on('session.model', () => ({value: state.selected}));
   on('session.start', () => ({cwd: '/work'}));
-  on('ui.invalidate', () => ({value: undefined}));
   on('command.register', () => ({value: {}}));
   on('store.get', () => ({value: state.saved}));
   on('store.set', ($: any, e: any) => {state.saved = e.value; return {value: undefined};});
@@ -120,9 +119,65 @@ test('Auto sends the main model and retains the native model display with a sepa
   await step($);
   expect(state.forwarded[0].model).toBe('opus');
   expect(state.selected).toBe('ug-auto-opus');
-  expect(await hint($, state)).toBe('native · Auto (Opus 5.5)');
+  expect(await hint($, state)).toBe('native · Auto (Opus 5.5) · smart router ON');
   await step($, 'child');
   expect(state.forwarded[1].model).toBe('native');
+});
+
+test('Auto bands show successful model changes and hide after the next completed prompt', {options}, async ($, on) => {
+  const {state} = host(on);
+  on('ui.render', {component:'AbovePrompt'}, ($, e) => $.ui.resolve(e).Text({children:['native content']}));
+  on('prompt.submit', ($, e) => ({text:e.text}));
+  on('turn.complete', () => ({text:''}));
+  await $.session.start(start);
+  const band = await $.ui.mount({plugin:'ug-smart-router', component:'AbovePrompt', surface:'terminal', props:{}});
+  const shown = async (enabled: boolean) => {
+    const tree = JSON.stringify(await band.drawn());
+    expect(tree).toContain('unity gateway smart router');
+    expect(tree).toContain(enabled ? ' ON ' : ' OFF ');
+    expect(tree).toContain(enabled ? 'green' : 'gray');
+    expect(tree).toContain('native content');
+    expect(tree).toContain(enabled ? 'routing subagents' : "Reenable with Auto in '/model'");
+    expect(await hint($, state)).toContain(enabled ? 'smart router ON' : 'smart router OFF');
+  };
+  const complete = async () => {
+    await $.prompt.submit({text:'next prompt'});
+    expect(JSON.stringify(await band.drawn())).toContain('unity gateway smart router');
+    await $.turn.complete({answer:'done'});
+    expect(JSON.stringify(await band.drawn())).not.toContain('unity gateway smart router');
+    await $.prompt.submit({text:'second prompt'});
+    await step($);
+    await hint($, state);
+    expect(JSON.stringify(await band.drawn())).not.toContain('unity gateway smart router');
+    await $.turn.complete({answer:'done'});
+    expect(JSON.stringify(await band.drawn())).not.toContain('unity gateway smart router');
+  };
+  await shown(true);
+  state.agents = [{id:'child', status:'running'}];
+  expect(await hint($, state)).toBe('native · Auto (Opus 5.5) · smart router ON · 1 subagent running');
+  state.agents = [];
+  await complete();
+  await $.command.run({command:'auto'});
+  const pane = await $.ui.mount({plugin:'ug-smart-router', component:'Pane', requestId:'auto-main', surface:'terminal', props:{} as any});
+  await pane.press({key:'auto-main-model-3'});
+  await pane.unmount();
+  expect(state.selected).toBe('ug-auto-astra');
+  await shown(true);
+  await complete();
+  state.selected = 'opus';
+  await step($);
+  await shown(false);
+  await complete();
+  state.selected = 'ug-auto-astra';
+  await step($);
+  await shown(true);
+  await complete();
+  state.selected = 'opus';
+  state.processExitCode = 1;
+  await step($);
+  expect(state.toasts.at(-1)).toContain('Could not update Smart Routing');
+  expect(JSON.stringify(await band.drawn())).not.toContain('unity gateway smart router');
+  await band.unmount();
 });
 
 test('/auto changes only the main preference and offers the complete catalog', {options}, async ($, on) => {
@@ -137,12 +192,12 @@ test('/auto changes only the main preference and offers the complete catalog', {
   expect(state.saved).toBe('astra');
   expect(state.selected).toBe('opus');
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
-  expect(await hint($, state)).toBe('native');
+  expect(await hint($, state)).toBe('native · smart router OFF');
   state.selected = env.ANTHROPIC_CUSTOM_MODEL_OPTION!;
   await step($);
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
   expect(state.forwarded[0].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
+  expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
 });
 
 test('/model auto selects the configured Auto profile and opens its controls', {options}, async ($, on) => {
@@ -194,7 +249,7 @@ test('reselecting Auto opens the next step and manual selection disables routing
   await select('Opus');
   expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
   expect(state.questions.length).toBe(1);
-  expect(await hint($, state)).toBe('native');
+  expect(await hint($, state)).toBe('native · smart router OFF');
 });
 
 test('Auto confirmations preserve native save details and warnings', {options}, async ($, on) => {
@@ -297,11 +352,11 @@ test('/auto switches the native identity while Auto is selected', {options}, asy
   expect(state.questions.length).toBe(1);
   await step($);
   expect(state.forwarded[0].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
+  expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
   state.saved = 'opus'; // Another session's persisted preference cannot change this profile.
   await step($);
   expect(state.forwarded[1].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
+  expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
 });
 
 
@@ -415,6 +470,7 @@ test('rejected main model leaves the pane open and shows a retry message', {opti
 
 test('manual models still show the running agent count', {options}, async ($, on) => {
   const {state} = host(on, 'opus');
+  await $.session.start(start);
   state.agents = [{id:'a',status:'running'}];
-  expect(await hint($,state)).toBe('native · 1 subagent running');
+  expect(await hint($,state)).toBe('native · smart router OFF · 1 subagent running');
 });

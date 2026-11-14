@@ -74,11 +74,11 @@ async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: Auto
     if (status.text) state.native[model] = status.text;
     $.ui.invalidate('ui.render');
   });
-  await $.ui.open({ id: 'auto-main', title: 'Choose your main model for Smart Routing', focus: true, closeOnEscape: true, rows: 18 });
+  await $.ui.open({ id: 'auto-main', title: 'Choose your main model', focus: true, closeOnEscape: true, rows: 18 });
   $.ui.invalidate('ui.render');
 }
 
-type RoutingSyncState = {failedModel?: string};
+type RoutingSyncState = {model?: string; failedModel?: string};
 async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker, state: RoutingSyncState): Promise<void> {
   const model = await $.session.model();
   if (model === state.failedModel) return;
@@ -86,6 +86,11 @@ async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto:
     const enabled = await autoSelected($, auto);
     const current = isRoutingEnabled(await readSessionEnvironment($));
     if (current !== enabled) await setRouting($, options, enabled, true);
+    if (model !== state.model || current !== enabled) {
+      showStatusBand();
+      $.ui.invalidate('ui.render');
+    }
+    state.model = model;
     state.failedModel = undefined;
   } catch (error) {
     state.failedModel = model;
@@ -348,6 +353,7 @@ export function register(on: On, options: PluginOptions): void {
         } finally {
           switchingAuto = false;
         }
+        await syncAutoRouting($, options, auto, routingSync);
         await $.ui.close({ id: 'auto-main' });
         $.ui.invalidate('ui.render');
         $.ui.toast(`Auto (${selected.label}) saved`);
@@ -357,8 +363,8 @@ export function register(on: On, options: PluginOptions): void {
         : !profile.levels.length ? `Effort not supported for ${row.label}`
         : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!pickerState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
-        Text({ bold: true, children: ['Choose your main model for Smart Routing'] }),
-        Text({ dimColor: true, children: ['Your main conversation uses this model. Smart Routing selects models for subagent tasks.'] }),
+        Text({ bold: true, children: ['Choose your main model'] }),
+        Text({ dimColor: true, children: ['Auto smart routes your subagents. Your main agent uses the model you choose below.'] }),
         Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
           Button({key:'auto-main-model-' + index,
             plain:true, autoFocus:item.model === model ? true : undefined,
@@ -432,7 +438,7 @@ export function register(on: On, options: PluginOptions): void {
         pickerState.native[await $.session.model()] = text;
         $.clock.after(0, async () => {
           if (!(await $.ui.panes()).some(pane => pane.id === 'auto-main')) return;
-          await $.ui.open({id:'auto-main', title:'Choose your main model for Smart Routing', focus:true, closeOnEscape:true, rows:18});
+          await $.ui.open({id:'auto-main', title:'Choose your main model', focus:true, closeOnEscape:true, rows:18});
           const index = Math.max(0, auto.models.findIndex(row => row.model === pickerState.model));
           await $.ui.focus({requestId:'auto-main', key:'auto-main-model-' + index});
         });
