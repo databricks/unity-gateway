@@ -387,7 +387,7 @@ def _http_get_bytes(
         request_started = time.perf_counter()
         status = None
         if attempt:
-            metrics.record("http_retry_count", 1, api_operation=operation, http_method="GET")
+            metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
                 status = response.status
@@ -437,7 +437,7 @@ def _http_get_bytes(
 
         finally:
             metrics.record(
-                "http_request_duration_ms",
+                metrics.HTTP_REQUEST_DURATION_MS,
                 (time.perf_counter() - request_started) * 1000,
                 api_operation=operation,
                 http_method="GET",
@@ -562,7 +562,7 @@ def _http_send_json(
         return None, f"network error: {exc}"
     finally:
         metrics.record(
-            "http_request_duration_ms",
+            metrics.HTTP_REQUEST_DURATION_MS,
             (time.perf_counter() - request_started) * 1000,
             api_operation=metrics.api_operation(url),
             http_method=method,
@@ -1525,7 +1525,7 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
-@metrics.timed("databricks_login_duration_ms", login_method="cli")
+@metrics.timed(metrics.DATABRICKS_LOGIN_DURATION_MS, login_method="cli")
 def run_databricks_login(
     workspace: str, profile: str | None = None, *, workspace_id: str | None = None
 ) -> None:
@@ -1796,12 +1796,12 @@ def _browser_login(
             # Keep login output off the helper's token-only stdout.
             metrics.mark_login()
             with metrics.measure(
-                "databricks_login_duration_ms",
+                metrics.DATABRICKS_LOGIN_DURATION_MS,
                 workspace=workspace,
-                operation="databricks_login",
+                operation=metrics.DATABRICKS_LOGIN_OPERATION,
                 login_method="cli",
             ):
-                subprocess_cross_os.run(
+                result = subprocess_cross_os.run(
                     [
                         databricks_cli_path(),
                         "auth",
@@ -1816,6 +1816,13 @@ def _browser_login(
                     stderr=sys.stderr,
                     env=env,
                 )
+                metrics.annotate(process_exit_code=result.returncode)
+                if result.returncode:
+                    metrics.failure(
+                        metrics.DATABRICKS_LOGIN_OPERATION,
+                        subprocess.CalledProcessError(result.returncode, result.args),
+                        login_method="cli",
+                    )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         return fetch()
@@ -2014,7 +2021,9 @@ def _fetch_databricks_token_for_profile(
     return token
 
 
-@metrics.timed("databricks_token_fetch_duration_ms", token_source="cli", in_process_cache_hit=False)
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
 def get_databricks_token(
     workspace: str,
     profile: str | None = None,
@@ -2398,7 +2407,7 @@ def _get_model_services_page(
     for attempt in range(retries):
         if attempt:
             metrics.record(
-                "http_retry_count", 1, api_operation="model_services_list", http_method="GET"
+                metrics.HTTP_RETRY_COUNT, 1, api_operation="model_services_list", http_method="GET"
             )
         with metrics.http_attempt(attempt + 1):
             payload, reason = _http_get_json(url, token, timeout=30)
@@ -2619,7 +2628,7 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
 
 
 @metrics.timed(
-    "model_service_discovery_duration_ms", reason_result=True, continued_with_fallback=True
+    metrics.MODEL_SERVICE_DISCOVERY_DURATION_MS, reason_result=True, continued_with_fallback=True
 )
 def discover_model_services(
     workspace: str, token: str
@@ -2702,7 +2711,7 @@ def _managed_config_user_agent() -> str:
 
 
 @metrics.timed(
-    "coding_agent_config_fetch_duration_ms", reason_result=True, continued_with_fallback=True
+    metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS, reason_result=True, continued_with_fallback=True
 )
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the Unity Gateway."""
@@ -4081,7 +4090,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 )
 
 
-@metrics.timed("model_service_access_check_duration_ms")
+@metrics.timed(metrics.MODEL_SERVICE_ACCESS_CHECK_DURATION_MS)
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
     base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None

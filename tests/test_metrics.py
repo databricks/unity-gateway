@@ -16,17 +16,12 @@ import pytest
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
+from tests.conftest import metric_observations as observations
 from ucode import databricks, metrics, workspace
 from ucode.metrics import exporter
 from ucode.metrics.exporter import start_exporter
 
 HOST = "https://dbc-test.cloud.databricks.com"
-
-
-def observations(metrics_recorder, name):
-    return [
-        (value, labels) for _, metric, value, labels in metrics_recorder.pending if metric == name
-    ]
 
 
 def test_bounds_buffer_and_drops_oldest(metrics_recorder):
@@ -637,3 +632,11 @@ def test_partial_pipe_writes_preserve_complete_batches(metrics_recorder, reporte
     batch = buffer.drain()[0]
     assert batch["token"] == "fake-token"
     assert [row[1] for row in batch["observations"]] == list(range(1000))
+
+
+def test_final_network_failure_clears_previous_http_status(metrics_recorder):
+    with metrics.measure(metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS):
+        metrics.annotate(http_status_code=503)
+        metrics.annotate(http_status_code=None)
+    [(_, labels)] = observations(metrics_recorder, metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS)
+    assert "http_status_code" not in labels

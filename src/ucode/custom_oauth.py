@@ -173,9 +173,9 @@ def ensure_custom_oauth_cli_token(
     try:
         metrics.mark_login()
         with metrics.measure(
-            "databricks_login_duration_ms",
+            metrics.DATABRICKS_LOGIN_DURATION_MS,
             workspace=workspace,
-            operation="databricks_login",
+            operation=metrics.DATABRICKS_LOGIN_OPERATION,
             login_method="cli",
         ):
             run(login_args, timeout=CUSTOM_OAUTH_TIMEOUT_MS // 1000)
@@ -200,15 +200,15 @@ def get_custom_client_token(
         profile = profile or _custom_cli_profile(workspace, config["client_id"])
         return get_databricks_token(workspace, profile, force_refresh=force_refresh)
     # `databricks.sdk` eagerly imports every service module (~0.7s); only the SDK backend needs it.
+    from databricks.sdk import oauth
+
     with metrics.measure(
-        "databricks_token_fetch_duration_ms",
+        metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS,
         workspace=workspace,
-        operation="databricks_token_fetch",
+        operation=metrics.DATABRICKS_TOKEN_FETCH_OPERATION,
         token_source="sdk",
         in_process_cache_hit=False,
     ):
-        from databricks.sdk import oauth
-
         try:
             endpoints = oauth.get_workspace_endpoints(workspace)
             cache = oauth.TokenCache(
@@ -252,9 +252,9 @@ def get_custom_client_token(
                     )
                     metrics.mark_login()
                     with metrics.measure(
-                        "databricks_login_duration_ms",
+                        metrics.DATABRICKS_LOGIN_DURATION_MS,
                         workspace=workspace,
-                        operation="databricks_login",
+                        operation=metrics.DATABRICKS_LOGIN_OPERATION,
                         login_method="sdk",
                     ):
                         credentials = consent.launch_external_browser()
