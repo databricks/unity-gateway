@@ -167,12 +167,6 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         ["claude-opus-5-5", alternate],
         {"claude-opus-5-5": "Opus 5.5", alternate: alternate_label},
     )
-    launch, observe, picker, catalog = (
-        fixture.launch,
-        fixture.observe,
-        fixture.picker,
-        fixture.catalog,
-    )
 
     def assert_friendly_commands(screen):
         commands = [
@@ -192,16 +186,16 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         )
 
     selector = "Choose your main model"  # The remainder wraps in a narrow native dock.
-    with launch("a") as a, launch("b") as b:
+    with fixture.launch("a") as a, fixture.launch("b") as b:
         a.boot(timeout=45)
         b.boot(timeout=45)
 
         assert_routing_status(a, enabled=True, label="Opus 5.5")
         assert_routing_status(b, enabled=True, label="Opus 5.5")
         assert_friendly_commands(a.visible)
-        before = observe(a, "before")
+        before = fixture.observe(a, "before")
         assert before["usage"]["context"]["window"] == 1_000_000
-        assert "ug-auto" not in picker(a).split("Select model", 1)[1]
+        assert "ug-auto" not in fixture.picker(a).split("Select model", 1)[1]
         a.submit("/model auto")
         a.wait_for(lambda s: selector in s, "UG's main-model selector")
         a.send("\x1b[B\r", "select " + alternate_label)
@@ -211,20 +205,20 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         )
         assert_routing_status(a, enabled=True, label=alternate_label)
         assert_friendly_commands(a.visible)
-        changed = observe(a, "changed")
-        assert changed["model"] == catalog["models"][1]["autoModel"]
+        changed = fixture.observe(a, "changed")
+        assert changed["model"] == fixture.catalog["models"][1]["autoModel"]
         assert changed["custom"] == changed["model"]
         assert changed["usage"]["context"]["window"] == context_window
         assert changed["routing"] == "1"
-        auto_screen = picker(a)
+        auto_screen = fixture.picker(a)
         assert "ug-auto" not in auto_screen.split("Select model", 1)[1]
         if alternate == "claude-haiku-4-5":
             assert "Effort not supported for Auto" in auto_screen
-        other = observe(b, "other")
+        other = fixture.observe(b, "other")
         assert other["model"] == before["model"]
         assert other["usage"]["context"]["window"] == 1_000_000
         assert other["custom"] == before["custom"]
-        picker(b)
+        fixture.picker(b)
         # Reselecting Auto must still open the next step; Escape preserves the model.
         a.submit("/model")
         a.choose("Select model", "Auto")
@@ -232,15 +226,15 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         a.send("\x1b", "cancel the selector")
         a.wait_for(lambda s: selector not in s, "the dismissed selector")
         assert_friendly_commands(a.visible)
-        assert observe(a, "cancelled")["model"] == changed["model"]
+        assert fixture.observe(a, "cancelled")["model"] == changed["model"]
         a.submit("/model")
         a.choose("Select model", "Opus 5.5")
         a.wait_for(lambda s: "Set model to" in s and selector not in s, "the ordinary model switch")
         assert_routing_status(a, enabled=False)
-        manual = observe(a, "manual")
-        assert manual["model"] == catalog["models"][0]["model"]
+        manual = fixture.observe(a, "manual")
+        assert manual["model"] == fixture.catalog["models"][0]["model"]
         assert manual["routing"] == "0"
-        picker(a, checked=False)
+        fixture.picker(a, checked=False)
         a.submit("/model auto")
         a.wait_for(
             lambda s: selector in s and "❯ Opus 5.5" in s,
@@ -251,8 +245,8 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
             lambda s: selector not in s and "Auto (Opus 5.5) saved" in s, "the saved Auto model"
         )
         assert_routing_status(a, enabled=True, label="Opus 5.5")
-        restored = observe(a, "restored")
-        assert restored["model"] == catalog["models"][0]["autoModel"]
+        restored = fixture.observe(a, "restored")
+        assert restored["model"] == fixture.catalog["models"][0]["autoModel"]
         assert restored["custom"] == restored["model"]
         assert restored["routing"] == "1"
         assert "Auto (Opus 5.5)" in a.visible

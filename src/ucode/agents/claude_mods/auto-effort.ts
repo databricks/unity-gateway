@@ -13,7 +13,7 @@ export function effortProfile(id: string, layers: readonly (EffortSettings | nul
     if (max && EFFORT_LEVELS.includes(max)) cap = Math.min(cap, EFFORT_LEVELS.indexOf(max));
   }
   const unsupported = status && /does not support|not supported/i.test(status);
-  const levels = unsupported ? [] : EFFORT_LEVELS.filter((_, i) => i <= cap);
+  const levels = unsupported ? [] : EFFORT_LEVELS.slice(0, cap + 1);
   const native = status?.match(/currently (low|medium|high|xhigh|max)/i)?.[1]
     ?? status?.match(/effort level(?: to|:)\s*(low|medium|high|xhigh|max)/i)?.[1];
   // An unvisited model keeps its native default; selecting a row never invents one.

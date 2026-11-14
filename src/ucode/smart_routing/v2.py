@@ -152,11 +152,10 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
         if path is None or not path.is_file():
             continue
         settings = read_json_safe(path)
-        if isinstance(settings, dict):
-            for key in ("availableModels", "deniedModels"):
-                if key in settings:
-                    policy.setdefault(key, settings[key])
-        picker_settings = settings.get("modelPicker") if isinstance(settings, dict) else None
+        for key in ("availableModels", "deniedModels"):
+            if key in settings:
+                policy.setdefault(key, settings[key])
+        picker_settings = settings.get("modelPicker")
         picker = picker_settings.get("options") if isinstance(picker_settings, dict) else None
         if not isinstance(picker, list):
             continue
@@ -491,6 +490,7 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     for name in (
         "register.ts",
         "auto-effort.ts",
+        "auto-model.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
@@ -731,7 +731,7 @@ def launch_claude(
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.agents.claude_auto import AUTO_MODEL, picker_config
+    from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -863,12 +863,7 @@ def launch_claude(
             rationale=decision.rationale,
         )
 
-    auto_env_keys = (
-        "ANTHROPIC_CUSTOM_MODEL_OPTION",
-        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-    )
-    auto_env_before = {key: os.environ.get(key) for key in auto_env_keys}
+    auto_env_before = {key: os.environ.get(key) for key in AUTO_CUSTOM_MODEL_ENV_KEYS}
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:

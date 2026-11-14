@@ -288,7 +288,6 @@ def test_configure_changes_only_ug_owned_picker_when_enabled(
     )
     path, _, writes = _managed_env(tmp_path, monkeypatch, existing)
     monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1" if enabled else "0")
-    monkeypatch.setattr(claude, "_explicit_configure", True)
     state = {"workspace": WS, "claude_models": {"opus": "opus"}}
     if not foreign_picker:
         state["claude_static_models"] = ["opus"]
@@ -311,7 +310,6 @@ def test_personal_configure_does_not_discover_or_own_picker(tmp_path, monkeypatc
 
     path, _, _ = _managed_env(tmp_path, monkeypatch)
     monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
-    monkeypatch.setattr(claude, "_explicit_configure", True)
     monkeypatch.setattr(
         "ucode.databricks.list_anthropic_model_catalog", lambda *_: pytest.fail("Extra discovery")
     )
@@ -531,7 +529,6 @@ def test_configure_preserves_admin_custom_slot_and_does_not_claim_it(tmp_path, m
     }
     path, _, _ = _managed_env(tmp_path, monkeypatch, original)
     monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
-    monkeypatch.setattr(claude, "_explicit_configure", True)
     claude.write_tool_config({"workspace": WS, "claude_models": {"opus": "opus"}}, "opus")
     result = json.loads(path.read_text())
     assert {key: result["env"][key] for key in admin} == admin

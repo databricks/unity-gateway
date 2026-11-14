@@ -572,13 +572,13 @@ provider launches without routing support, and Isaac's feedback-gated controls
 retain their existing flows. `--disable-smart-routing` launches without the Auto routing mod. The configured row
 is supplied by routed UG launches; a saved alias outside that flow maps to its
 configured real model without enabling routing.
-The Auto flow hides the old `/smart-router` command and ON/OFF routing banner.
+The Auto flow hides the old `/smart-router` command. The Smart Router band and
+footer show ON in Auto and OFF after an ordinary model selection.
 The Codex integration is unchanged.
 
-The native header shows the underlying model name. Saved ordinary model aliases
-remain ordinary choices on restart; resume uses Claude's native model precedence
-without UG injecting a new Auto selection. A configured `ANTHROPIC_MODEL` can still
-override the restored model, just as it does in Claude itself. Capability recognition
+Fresh managed launches start in Auto with the managed default model. Resume uses
+Claude's native model precedence without UG injecting a new Auto selection. A configured
+`ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
 uses the exact Claude ID or an explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
 Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
 uses the managed Claude catalog. Native Windows/macOS execution and actual compaction

@@ -87,8 +87,6 @@ def add_picker_entry(settings: dict) -> dict:
     result = deepcopy(settings)
     # Remove obsolete UG aliases, including targets withdrawn by the administrator.
     overrides = result.get("modelOverrides", {})
-    if not isinstance(overrides, dict):
-        return settings
     result["modelOverrides"] = overrides
     for model in list(overrides):
         if is_auto_model(model):
@@ -177,7 +175,7 @@ def picker_config(
             {
                 "model": model,
                 "label": label,
-                "autoModel": configured.get(model, auto_variant({"model": model})),
+                "autoModel": configured.get(model) or auto_variant({"model": model}),
             }
         )
     if not rows:

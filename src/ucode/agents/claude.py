@@ -2213,20 +2213,12 @@ def auto_picker_available() -> bool:
     """A managed picker/allowlist must admit Auto before native startup."""
     from ucode.agents.claude_auto import (
         AUTO_MODEL,
-        is_auto_model,
         model_available,
         picker_is_configured,
     )
 
     path = _managed_settings_path()
     settings = read_json_safe(path) if path is not None else {}
-    custom = settings.get("env", {})
-    if (
-        isinstance(custom, dict)
-        and custom.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
-        and not is_auto_model(str(custom["ANTHROPIC_CUSTOM_MODEL_OPTION"]))
-    ):
-        return False
     if "modelPicker" in settings:
         return picker_is_configured(settings)
     env = settings.get("env", {})

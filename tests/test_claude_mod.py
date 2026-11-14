@@ -22,6 +22,7 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     filenames = (
         "register.ts",
         "auto-effort.ts",
+        "auto-model.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",

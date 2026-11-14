@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import type { AutoPicker } from './register.ts'
+import type { AutoPicker } from './auto-model.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 

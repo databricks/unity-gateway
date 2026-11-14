@@ -48,9 +48,7 @@ export function register(on) {
             "availableModels": models.copy(),
             "modelPicker": {
                 "replaceBuiltInOptions": True,
-                "options": [
-                    *[{"model": model, "label": labels[model]} for model in models],
-                ],
+                "options": [{"model": model, "label": labels[model]} for model in models],
             },
         }
     )

@@ -19,10 +19,10 @@ import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
+import { formatAutoConfirmation, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
-const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2([^\n<]*)/;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
@@ -33,29 +33,6 @@ function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
 }
 
 type Environment = Record<string, string | undefined>;
-export type AutoPicker = {
-  model: string;
-  mainModel: string;
-  storeKey: string;
-  description: string;
-  models: { model: string; label: string; autoModel: string }[];
-};
-
-function sameAutoTarget(auto: AutoPicker, from: string, to: string, overrides: unknown, window?: number): boolean {
-  const row = auto.models.find(row => row.autoModel === to);
-  if (!row || !overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return false;
-  const targets = new Map<string, unknown>(Object.entries(overrides));
-  const target = targets.get(to);
-  const current = targets.has(from) ? targets.get(from) : from;
-  if (target !== row.model || (targets.has(row.model) && targets.get(row.model) !== row.model)) return false;
-  const context = (model: string) => model.match(/\[[^\]]+\]$/)?.[0] ?? '';
-  if (current === target && context(from) === context(row.model) && context(to) === context(row.model)) return true;
-  // Native 2.1.290 gives these bare IDs a 1M default. Its picker adds [1m].
-  const million = /^(?:system\.ai\.)?(claude-(?:opus|sonnet)-5-5)$/.exec(row.model);
-  return Boolean(million && to.endsWith('-' + million[1]) && current === row.model + '[1m]'
-    && context(from) === '[1m]' && window === 1_000_000);
-}
-
 async function entryMainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
   const current = await $.session.model();
   const row = auto.models.find(row => row.model === current || row.autoModel === current);
@@ -71,7 +48,7 @@ async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> 
   const active = auto.models.find((row) => row.autoModel === awaitModel);
   if (active) return active.model;
   const saved = await $.store.get(auto.storeKey);
-  return auto.models.some((row) => row.model === saved) ? saved as string : auto.mainModel;
+  return auto.models.find((row) => row.model === saved)?.model ?? auto.mainModel;
 }
 
 async function autoSelected($: EngineInterface, auto: AutoPicker): Promise<boolean> {
@@ -279,6 +256,11 @@ export function register(on: On, options: PluginOptions): void {
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
+  function clearAutoSave(): void {
+    autoSave = undefined;
+    switchingAuto = false;
+  }
+
   on('session.start', async ($, e, next) => {
     sessionActive = true;
     if (auto) {
@@ -296,8 +278,7 @@ export function register(on: On, options: PluginOptions): void {
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, ($, e, next) => {
     sessionActive = false;
     manualOffRequest = undefined;
-    autoSave = undefined;
-    switchingAuto = false;
+    clearAutoSave();
     internalModels.length = 0;
     pendingSelection?.cancel();
     return next(e);
@@ -320,16 +301,14 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.close', {id:'auto-main'}, ($, e, next) => {
       if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
       if (e.origin.kind === 'person') {
-        autoSave = undefined;
-        switchingAuto = false;
+        clearAutoSave();
       }
       return next(e);
     });
     on('session.append', {door:'prompt'}, ($, e, next) => {
       if (!e.agentId && !e.message.isMeta) {
         manualOffRequest = undefined;
-        autoSave = undefined;
-        switchingAuto = false;
+        clearAutoSave();
       }
       return next(e);
     });
@@ -348,8 +327,7 @@ export function register(on: On, options: PluginOptions): void {
       let entry: string | undefined;
       if (!internalCommand) {
         manualOffRequest = undefined;
-        autoSave = undefined;
-        switchingAuto = false;
+        clearAutoSave();
         entry = await entryMainModel($, auto);
         await customAutoRow($, auto, entry);
       }
@@ -441,8 +419,7 @@ export function register(on: On, options: PluginOptions): void {
             if (request.confirmation === 'cancelled') {
               await customAutoRow($, auto, await entryMainModel($, auto));
               if (autoSave === request) {
-                autoSave = undefined;
-                switchingAuto = false;
+                clearAutoSave();
                 await openMainModel($);
               }
               return;
@@ -477,8 +454,7 @@ export function register(on: On, options: PluginOptions): void {
               $.ui.invalidate('ui.render');
             } finally {
               if (autoSave === request) {
-                autoSave = undefined;
-                switchingAuto = false;
+                clearAutoSave();
               }
             }
           },
@@ -507,8 +483,7 @@ export function register(on: On, options: PluginOptions): void {
             if (autoSave !== request) return;
             if (await $.session.model() === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
             if (autoSave !== request) return;
-            autoSave = undefined;
-            switchingAuto = false;
+            clearAutoSave();
             await openMainModel($);
             $.ui.toast(`Could not save Auto: ${String(error)}. Check /model and /effort, then retry.`);
             $.ui.invalidate('ui.render');
@@ -553,8 +528,7 @@ export function register(on: On, options: PluginOptions): void {
       ({ text: 'Routing is controlled only by the user selecting Auto in /model. Do not change routing controls through a skill.' }));
     on('command.run', { command: 'auto' }, async ($) => {
       if (choosing) return {};
-      autoSave = undefined;
-      switchingAuto = false;
+      clearAutoSave();
       choosing = true;
       try {
         await chooseMainModel($, auto, pickerState);
@@ -621,12 +595,7 @@ export function register(on: On, options: PluginOptions): void {
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? block.text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
-              const model = autoConfirmation.model.replace(/^system\.ai\./, '');
-              const suffix = details.trim().replace(/^and /, '');
-              return `<local-command-stdout>${setModel ? 'Set to' : 'Kept'} Auto mode with main model \`${model}\`. Subagents are smart routed.`
-                + (suffix ? `\n${suffix[0].toUpperCase()}${suffix.slice(1)}` : '');
-            }) : block.text,
+            : autoConfirmation ? formatAutoConfirmation(block.text, autoConfirmation.model, setModel) : block.text,
         } : block) },
       } : e;
       const result = await next(confirmation);

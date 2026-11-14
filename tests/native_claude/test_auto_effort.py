@@ -20,12 +20,6 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
         {"claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5"},
         dimensions,
     )
-    launch, observe, picker, catalog = (
-        fixture.launch,
-        fixture.observe,
-        fixture.picker,
-        fixture.catalog,
-    )
 
     def pane_text(screen):
         # Claude 2.1.290 can use a narrow side pane. Join its wrapped text
@@ -34,7 +28,7 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             line.split("│", 1)[1].strip("│ ") for line in screen.splitlines() if "│" in line
         )
 
-    with launch("native-effort") as tui:
+    with fixture.launch("native-effort") as tui:
         tui.boot(timeout=45)
         tui.submit("/model")
         tui.choose("Select model", "Auto")
@@ -51,8 +45,8 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             tui.wait_for(lambda s: "❯ Sonnet 5.5" in s, "Sonnet selected again")
             tui.send("\r", "save the arrow-selected model")
             tui.wait_for(lambda s: "Auto (Sonnet 5.5) saved" in s, "saved narrow selection")
-            selected = observe(tui, "narrow-selected")
-            assert selected["model"] == catalog["models"][1]["autoModel"]
+            selected = fixture.observe(tui, "narrow-selected")
+            assert selected["model"] == fixture.catalog["models"][1]["autoModel"]
             assert selected["routing"] == "1"
             tui.submit("/model auto")
             tui.wait_for(lambda s: "❯ Sonnet 5.5" in s, "reopened narrow selector")
@@ -60,7 +54,7 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             tui.wait_for(lambda s: "❯ Opus 5.5" in s, "draft Opus selection")
             tui.send("\x1b", "cancel narrow selection")
             tui.wait_for(lambda s: "❯ Opus 5.5" not in s, "closed narrow selector")
-            assert observe(tui, "narrow-cancelled")["model"] == selected["model"]
+            assert fixture.observe(tui, "narrow-cancelled")["model"] == selected["model"]
             tui.exit_normally()
             return
         tui.wait_for(
@@ -98,11 +92,11 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             ),
             "Auto confirmations name the main model after picker and main-model selection",
         )
-        current = observe(tui, "selected")
-        assert current["model"] == catalog["models"][0]["autoModel"], current
+        current = fixture.observe(tui, "selected")
+        assert current["model"] == fixture.catalog["models"][0]["autoModel"], current
         tui.submit("/effort status")
         tui.wait_for(lambda s: "Current effort level: high" in s, "native effort agrees")
-        picker(tui)
+        fixture.picker(tui)
         tui.submit("/model auto")
         tui.wait_for(lambda s: heading in s, "reopened effort pane")
         tui.send("h", "draft lower effort")
@@ -111,5 +105,5 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
         tui.wait_for(lambda s: heading not in s, "cancelled pane")
         tui.submit("/effort status")
         tui.wait_for(lambda s: "Current effort level: high" in s, "cancelled effort unchanged")
-        assert observe(tui, "cancelled")["model"] == current["model"]
+        assert fixture.observe(tui, "cancelled")["model"] == current["model"]
         tui.exit_normally()

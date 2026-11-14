@@ -53,7 +53,10 @@ collector is substituted. It does not submit feedback or run inference.
 At 60 columns and 22 rows, Up/Down selects and reveals model rows, Enter commits,
 and Escape preserves the previous selection. Component checks preserve wheel/page
 scrolling, native save details and warnings, and regular-model confirmations.
-Native tests require “Set model to Auto” for both picker and main-model selection.
+Native tests require “Set to Auto mode with main model …” to name the selected
+main model after both picker and main-model selection.
+The native mod cases share immutable Auto catalog data; model/picker cases and
+save/feedback transaction cases retain separate engine harnesses.
 The native profile journey also checks that model-command echoes, confirmations,
 and picker rows use friendly Auto names after selection and cancellation. Native
 `/status` and headers for non-Claude models remain display gaps.
