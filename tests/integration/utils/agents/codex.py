@@ -23,7 +23,7 @@ EVIDENCE_KIND = "client-selected model"
 DIAGNOSTIC_TARGET = "codex_otel.trace_safe"
 _NATIVE_LOG_HEADER = re.compile(
     r"^(?P<timestamp>\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2}))"
-    r"\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+(?P<target>[\w:.-]+):(?:\s|$)"
+    r"\s+(?:TRACE|DEBUG|INFO|WARN|ERROR)\s+"
 )
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _DIAGNOSTIC_FIELDS = frozenset(
@@ -85,7 +85,7 @@ def split_diagnostic_output(text: str) -> tuple[str, list[dict[str, str]]]:
     for line in text.splitlines(keepends=True):
         clean = _ANSI_ESCAPE.sub("", line)
         header = _NATIVE_LOG_HEADER.match(clean)
-        native = bool(header and header["target"] == DIAGNOSTIC_TARGET)
+        native = bool(header and f" {DIAGNOSTIC_TARGET}:" in clean)
         if header:
             if record:
                 events.extend(diagnostic_events("".join(record)))

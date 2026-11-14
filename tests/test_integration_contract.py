@@ -70,7 +70,9 @@ def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
     project.mkdir()
     session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
     diagnostic = (
-        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+        "2026-11-14T00:00:00Z  INFO list_models{refresh_strategy=online}:"
+        'endpoint_session.execute_with{http.method=GET api.path="models"}: '
+        "codex_otel.trace_safe: "
         'event.name="codex.api_request" duration_ms=700 '
         'http.response.status_code=429 auth.request_id="request-123" '
         "error.message=private response\nstatus=private-key\nrequest_id=private-id\n"
@@ -117,7 +119,9 @@ def test_app_server_codex_diagnostics_exclude_raw_payloads(tmp_path):
     project.mkdir()
     session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
     diagnostic = (
-        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+        "2026-11-14T00:00:00Z  INFO list_models{refresh_strategy=online}:"
+        'endpoint_session.execute_with{http.method=GET api.path="models"}: '
+        "codex_otel.trace_safe: "
         'event.name="codex.api_request" auth.request_id="request-123" '
         "error.message=private response\nstatus=private-key\nrequest_id=private-id\n"
         "        payload codex_otel.trace_safe: status=private-key"
