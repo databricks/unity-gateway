@@ -132,11 +132,11 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
                     release_file_lock(log)
             return
         except OSError:
-            destination = "application log" if sys.stderr.isatty() else "stderr"
-            _write_proxy_log(
-                f"[ucode-relay] Could not write proxy diagnostics file; using {destination}.\n"
+            sys.stderr.write(
+                "[ucode-relay] Could not write proxy diagnostics file; using stderr.\n"
             )
-    _write_proxy_log(line)
+    sys.stderr.write(line)
+    sys.stderr.flush()
 
 
 def _jwt_exp(token: str) -> float | None:

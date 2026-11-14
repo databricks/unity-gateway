@@ -312,32 +312,37 @@ class TestRelayResponseClientDisconnect:
         output = capsys.readouterr()
         path = tmp_path / "logs" / "gateway-proxy.log"
         assert output.out == ""
+        lines = output.err.splitlines()
+        event = json.loads(lines[0].removeprefix("[ucode-relay] "))
+        assert event["event"] == "response_complete"
+        assert event["request_id"] == "local-id"
+        assert event["bytes"] == 2
         if interactive:
-            assert output.err == ""
-        else:
+            assert len(lines) == 1
+        if not interactive or not log_directory_available:
             assert not path.exists()
         if log_directory_available:
-            lines = (path.read_text() if interactive else output.err).splitlines()
-            event = json.loads(lines[0].removeprefix("[ucode-relay] "))
-            assert event["event"] == "response_complete"
-            assert event["request_id"] == "local-id"
-            assert event["bytes"] == 2
-            assert "token refresh failed." in lines[1]
-            assert "Refresh your workspace sign-in and restart ug claude." in lines[1]
-            assert "synthetic-credential" not in "\n".join(lines)
-            assert "private-error" not in "\n".join(lines)
-            assert "Command:" not in "\n".join(lines)
+            warning = path.read_text() if interactive else "\n".join(lines[1:])
+            assert len(warning.splitlines()) == 1
+            assert "token refresh failed." in warning
+            assert "Refresh your workspace sign-in and restart ug claude." in warning
             if interactive and os.name != "nt":
                 assert path.stat().st_mode & 0o777 == 0o600
+        captured_logs = output.err + (path.read_text() if path.exists() else "")
+        assert "synthetic-credential" not in captured_logs
+        assert "private-error" not in captured_logs
+        assert "Command:" not in captured_logs
 
 
 class TestProxyDiagnosticFile:
-    @pytest.mark.parametrize("language_warning", [False, True])
+    @pytest.mark.parametrize(
+        ("language_warning", "interactive"), [(False, False), (False, True), (True, True)]
+    )
     def test_held_file_lock_preserves_response_and_terminal(
-        self, tmp_path, monkeypatch, capsys, language_warning
+        self, tmp_path, monkeypatch, capsys, language_warning, interactive
     ):
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
-        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: language_warning)
+        monkeypatch.setattr(gateway_proxy.sys.stderr, "isatty", lambda: interactive)
         monkeypatch.setattr(gateway_proxy, "APP_DIR", tmp_path)
         path = tmp_path / "logs/gateway-proxy.log" if language_warning else tmp_path / "proxy.log"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -375,6 +380,7 @@ class TestProxyDiagnosticFile:
             assert captured.err == ""
         else:
             assert output.data.endswith(b"ok")
+            assert not (tmp_path / "logs/gateway-proxy.log").exists()
             assert "Could not write proxy diagnostics file; using stderr" in captured.err
             event = json.loads(captured.err.splitlines()[-1].removeprefix("[ucode-relay] "))
             assert event["event"] == "response_complete"
@@ -423,15 +429,9 @@ class TestProxyDiagnosticFile:
         _relay_handler(output)._relay_response(_FakeResponse(200, {}, [b"ok"]))
         assert output.data.endswith(b"ok")
         stderr = capsys.readouterr().err
-        if interactive:
-            assert stderr == ""
-            diagnostic = (tmp_path / "app/logs/gateway-proxy.log").read_text()
-            destination = "application log"
-        else:
-            diagnostic = stderr
-            destination = "stderr"
-        assert f"Could not write proxy diagnostics file; using {destination}" in diagnostic
-        event = json.loads(diagnostic.splitlines()[-1].removeprefix("[ucode-relay] "))
+        assert not (tmp_path / "app/logs/gateway-proxy.log").exists()
+        assert "Could not write proxy diagnostics file; using stderr" in stderr
+        event = json.loads(stderr.splitlines()[-1].removeprefix("[ucode-relay] "))
         assert event["event"] == "response_complete"
         assert event["status"] == 200
 
