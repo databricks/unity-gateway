@@ -347,6 +347,10 @@ refresh cached child context and the parent's preference. Native tests cover a s
 English-to-Chinese settings reload, unchanged-turn deduplication, routing toggles, Chinese,
 unset and excluded user settings, approved foreground/background calls and one denial per mode.
 They require the selected child model, unchanged reviewed inputs and no fallback classifier.
+Language inheritance requires the current UG organization mod installed by `ug configure`
+without `--user` or `UG_SKIP_OS_SETTINGS`. Launches do not elevate or update managed files.
+A missing, outdated or unverified third-party mod produces a routing-launch warning; routing
+continues unchanged.
 These controlled-provider checks establish instruction delivery, not generated-language compliance.
 
 The required Isaac feedback form and background delivery notifications need manual

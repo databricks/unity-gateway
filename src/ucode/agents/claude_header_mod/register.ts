@@ -80,6 +80,7 @@ export function register(on: On): void {
   });
   on('session.end', { reason: ['clear', 'resume'] }, ($, e, next) => {
     submittedLanguage = undefined;
+    routingActive = undefined;
     return next(e);
   });
   // Shared context requires managed trust and reaches child progress-summary forks.

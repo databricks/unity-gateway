@@ -155,6 +155,7 @@ test('external routing controls invalidate language context once per transition 
   on('fs.read', () => ({ value: JSON.stringify({ ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? '1' : '0' }) }));
   on('settings.read', () => ({ value: { language: 'English' } }));
   on('prompt.context', ($, e) => ({ blocks: e.blocks }));
+  on('session.end', () => ({ sessionId: 'routing-session' }));
   on('ui.invalidate', ($, e) => {
     expect(e.event).toBe('prompt.context');
     invalidations += 1;
@@ -178,5 +179,13 @@ test('external routing controls invalidate language context once per transition 
     const context = await $.prompt.context({ blocks: [] });
     if (enabled) expect(context.blocks[0].text).toContain('Always respond in English.');
     else expect(context.blocks).toEqual([]);
+  }
+  for (const reason of ['clear', 'resume'] as const) {
+    await $.session.end({ reason });
+    enabled = !enabled;
+    const stream = $.turn.step(event);
+    expect(await stream.next()).toEqual({ done: false, value: chunk });
+    expect(await stream.next()).toEqual({ done: true, value: result });
+    expect(invalidations).toBe(2);
   }
 });

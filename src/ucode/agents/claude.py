@@ -2171,10 +2171,11 @@ def _remove_header_mod() -> None:
         print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
 
 
-def header_mod_active() -> bool:
+def header_mod_active(*, require_current: bool = False) -> bool:
     """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own mod, or another installer's copy enabled in the managed settings.
+    ``require_current`` requires ug's current files for its language-context hooks.
     """
     root = claude_header_mod_root()
     path = _managed_settings_path()
@@ -2186,7 +2187,7 @@ def header_mod_active() -> bool:
         if not isinstance(plugins, dict):
             return False
         # TODO: remove once other installers use ug to update managed settings.
-        if any(
+        if not require_current and any(
             key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
             for key, value in plugins.items()
         ):
@@ -2957,6 +2958,12 @@ def launch(
     )
     routing_setup_failed = False
     if options.launch_smart_routing:
+        if not header_mod_active(require_current=True):
+            print_warning(
+                "Cannot verify Smart Router language inheritance: it requires the current UG "
+                "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
+                "Routing continues."
+            )
         try:
             smart_routing_v2.launch_claude(
                 state,

@@ -4330,6 +4330,7 @@ class TestServerSideWebSearchOptIn:
 
     @pytest.fixture(params=["_normal", "_routing"])
     def launch_settings(self, request, monkeypatch):
+        monkeypatch.setattr(claude, "header_mod_active", lambda *, require_current=False: True)
         return lambda **kwargs: getattr(self, request.param)(monkeypatch, **kwargs)
 
     @pytest.mark.parametrize("env", [None, "0", "false", "NO", "off"])

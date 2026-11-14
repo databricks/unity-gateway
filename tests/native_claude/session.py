@@ -20,6 +20,13 @@ from ucode.smart_routing.v2 import (
 )
 
 
+def install_header_mod(root: Path) -> Path:
+    for path, text in _header_mod_files(root).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return root
+
+
 class Session:
     def __init__(
         self,
@@ -58,10 +65,7 @@ class Session:
             },
             "pluginConfigs": {CLAUDE_ROUTING_PLUGIN_NAME: {"options": options}},
         }
-        header_root = root / "managed-mod"
-        for path, text in _header_mod_files(header_root).items():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+        header_root = install_header_mod(root / "managed-mod")
         _enable_header_mod(settings, header_root)
         process_env = {
             **{

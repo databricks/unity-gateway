@@ -14,9 +14,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from session import Session
+from session import Session, install_header_mod
 
-from ucode.agents.claude import _enable_header_mod, _header_mod_files
+from ucode.agents.claude import _enable_header_mod
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
@@ -50,10 +50,7 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
 
 
 def test_header_mod_validation_and_merge(native_binary, tmp_path):
-    for path, text in _header_mod_files(tmp_path).items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    plugin = tmp_path / "ug-headers"
+    plugin = install_header_mod(tmp_path) / "ug-headers"
     shutil.copytree(Path(__file__).with_name("header_mod_tests"), plugin / "tests")
     for command in ("validate", "test"):
         result = subprocess.run(
@@ -443,10 +440,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 routed_type,
             ]
             settings = {"pluginConfigs": {"ug-smart-router": {"options": options}}}
-            header_root = root / "managed-mod"
-            for path, text in _header_mod_files(header_root).items():
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(text)
+            header_root = install_header_mod(root / "managed-mod")
             _enable_header_mod(settings, header_root)
             server.requests = []
             server.message_count = 0
