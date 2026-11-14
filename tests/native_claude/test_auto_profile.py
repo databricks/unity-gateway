@@ -1,9 +1,144 @@
 """Real terminal/profile checks; no gateway inference or model responses."""
 
+import json
 import re
 
 import pytest
 from auto_session import auto_session
+
+
+@pytest.mark.parametrize("family", ["opus", "sonnet"])
+def test_auto_entry_matches_native_million_context_picker_variant(native_binary, tmp_path, family):
+    """Scenario: native /model adds [1m] while Auto's immutable targets remain bare.
+
+    Expected: each native 5.5 alias and explicit [1m] picker model reports 1M;
+    returning to Auto selects the same family before its chooser, and Escape
+    preserves that Auto profile. No inference runs, so warm-cache behavior is
+    checked by the live integration recorder rather than this metadata test.
+    """
+    models = ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-5-5"]
+    fixture = auto_session(
+        native_binary,
+        tmp_path,
+        models,
+        dict(zip(models, ["Opus 5.5", "Sonnet 5.5"], strict=True)),
+    )
+    row = next(row for row in fixture.catalog["models"] if family in row["model"])
+    # Ordinary native settings input reproduces UG's [1m] picker hints, while
+    # retaining the bare alias targets from the managed Auto catalog.
+    path = tmp_path / "settings.json"
+    settings = json.loads(path.read_text())
+    for option in settings["modelPicker"]["options"]:
+        option["model"] += "[1m]"
+        settings["availableModels"].append(option["model"])
+    path.write_text(json.dumps(settings))
+    fixture.catalog["model"] = row["autoModel"]
+    selector = "Choose your main model"
+    with fixture.launch("native-context") as tui:
+        tui.boot(timeout=45)
+        original = fixture.observe(tui, "original")
+        assert original["model"] == row["autoModel"]
+        assert original["usage"]["context"]["window"] == 1_000_000
+        tui.submit("/model")
+        tui.choose("Select model", row["label"])
+        tui.wait_for(lambda s: "smart router OFF" in s, "the manual native model")
+        manual = fixture.observe(tui, "manual")
+        assert manual["model"] == row["model"] + "[1m]"
+        assert manual["usage"]["context"]["window"] == 1_000_000
+        assert manual["routing"] == "0"
+        tui.submit("/model")
+        tui.choose("Select model", "Auto")
+        tui.wait_for(
+            lambda s: selector in s and f"❯ {row['label']}" in s,
+            "the same-family Auto main chooser",
+        )
+        assert "Switch model?" not in tui.visible
+        assert "blocked by a PreModelSwitch hook" not in tui.visible
+        tui.send("\x1b", "keep the Auto profile selected at entry")
+        tui.wait_for(lambda s: selector not in s, "the dismissed main chooser")
+        selected = fixture.observe(tui, "selected")
+        assert selected["model"] == row["autoModel"]
+        assert selected["custom"] == row["autoModel"]
+        assert selected["usage"]["context"]["window"] == 1_000_000
+        assert selected["routing"] == "1"
+        tui.exit_normally()
+
+
+@pytest.mark.parametrize("policy_decision", ["deny", "ask"])
+def test_auto_policy_denial_restores_profile_and_allows_retry(
+    native_binary, tmp_path, policy_decision
+):
+    """Scenario: a native policy denies a model or asks for confirmation, then the user cancels.
+
+    Expected: native denial restores the current Auto pointer, saves no different
+    profile, and permits the same selection after the policy is removed.
+    No gateway inference runs.
+    """
+    fixture = auto_session(
+        native_binary,
+        tmp_path,
+        ["claude-opus-5-5", "claude-sonnet-5-5"],
+        {"claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5"},
+    )
+    target = fixture.catalog["models"][1]["autoModel"]
+    policy = tmp_path / "project" / "deny-switch"
+    policy.write_text("Deny the Sonnet selection")
+    observer = tmp_path / "observer" / "hooks" / "register.ts"
+    observer.write_text(
+        observer.read_text().replace(
+            "export function register(on) {",
+            "export function register(on) {"
+            + """
+  on('classic.PreModelSwitch', {to_model:AUTO_TARGET}, async ($, e, next) => {
+    const result = await next(e);
+    return await $.fs.exists('deny-switch')
+      ? {...result, permissionDecision:POLICY_DECISION, permissionDecisionReason:'Test model policy'}
+      : result;
+  });
+""".replace("AUTO_TARGET", json.dumps(target)).replace(
+                "POLICY_DECISION", json.dumps(policy_decision)
+            ),
+        )
+    )
+    selector = "Choose your main model"
+    with fixture.launch("policy") as tui:
+        tui.boot(timeout=45)
+        tui.submit("/model auto")
+        tui.wait_for(lambda s: selector in s, "the main-model chooser")
+        tui.send("\x1b[B\r", "choose the model denied by policy")
+        if policy_decision == "ask":
+            tui.wait_for(
+                lambda s: "Switch model?" in s and "Test model policy" in s,
+                "native policy confirmation after the main choice",
+            )
+            assert selector not in tui.visible
+            tui.send("\x1b[B\r", "cancel the native policy confirmation")
+        tui.wait_for(
+            lambda s: selector in s and "Switch model?" not in s,
+            "the reopened chooser after cancellation or denial",
+        )
+        if policy_decision == "deny":
+            assert "blocked by a PreModelSwitch hook" in tui.visible
+        assert "Could not save Auto" not in tui.visible
+        tui.send("\x1b", "dismiss the reopened chooser")
+        tui.wait_for(lambda s: selector not in s, "the dismissed chooser")
+        denied = fixture.observe(tui, "denied")
+        assert denied["model"] == fixture.catalog["models"][0]["autoModel"]
+        assert denied["custom"] == denied["model"]
+        assert denied["routing"] == "1"
+        policy.unlink()
+        tui.submit("/model auto")
+        tui.wait_for(lambda s: selector in s, "retrying the main-model choice")
+        tui.send("\x1b[B\r", "choose Sonnet after the policy is removed")
+        tui.wait_for(
+            lambda s: selector not in s and "Auto (Sonnet 5.5) saved" in s,
+            "the accepted retry",
+        )
+        accepted = fixture.observe(tui, "accepted")
+        assert accepted["model"] == target
+        assert accepted["custom"] == target
+        assert accepted["routing"] == "1"
+        tui.exit_normally()
 
 
 @pytest.mark.parametrize(
@@ -107,8 +242,11 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         assert manual["routing"] == "0"
         picker(a, checked=False)
         a.submit("/model auto")
-        a.wait_for(lambda s: selector in s, "Auto enabled by /model auto")
-        a.send("\x1b[A\r", "choose Opus as the Auto main model")
+        a.wait_for(
+            lambda s: selector in s and "❯ Opus 5.5" in s,
+            "Auto retains the current Opus main model",
+        )
+        a.send("\r", "keep Opus as the Auto main model")
         a.wait_for(
             lambda s: selector not in s and "Auto (Opus 5.5) saved" in s, "the saved Auto model"
         )

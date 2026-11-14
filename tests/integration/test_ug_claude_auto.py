@@ -29,7 +29,8 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
     /model picker, customize its main model, run a child, then select a regular model.
 
     Expected: all permitted main models appear, Escape preserves the preference,
-    reselecting Auto or running /model auto opens the selector.
+    reselecting Auto or running /model auto opens the selector titled
+    "Choose your main model". Auto entry uses the current permitted main target.
     Both child tasks and parent answers complete; only the Auto task has a correlated
     gateway decision. The regular model has no Auto indicator. This checks settled
     UI states, not individual rendered frames. Fresh managed launches select Auto
@@ -57,7 +58,7 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
         "--disable-databricks-ai-tools",
         timeout=240,
     )
-    selector = "Choose your main model for Smart Routing"
+    selector = "Choose your main model"
     decisions = session.home / ".ucode/claude-smart-routing-decisions.jsonl"
 
     # A user-owned observer reports native state without changing model or routing.

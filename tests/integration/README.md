@@ -7,6 +7,12 @@ Existing versions explicitly disable the Auto flag. Native profile checks drive
 two real terminals and preserve each session’s context window and model choice.
 Inline effort reads Claude’s own `/effort status` and saves through `/effort`.
 Native `/model` effort behavior remains unchanged.
+Auto entry keeps the current permitted main model. Native profile tests check
+Opus/Sonnet 5.5 bare Auto targets against native `[1m]` picker variants at 1M context.
+Component tests preserve policy confirmations and defer preference/effort writes
+until native acceptance, including same-model cancellation and stale callbacks.
+A native policy-denial test verifies pointer restoration and a successful retry.
+These metadata/component checks do not establish warm-cache or live inference behavior.
 
 `integration/test_ug_claude_auto.py` opts into `subagent_auto_v0_claude_only` explicitly and
 requires completed parent/child answers with a correlated routing decision only
