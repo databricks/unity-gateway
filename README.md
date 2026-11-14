@@ -542,9 +542,10 @@ enables UG's existing subagent router and opens the complete native main-agent m
 `/auto` opens the same selector without a model request. All available models
 appear in catalog order in one scrollable list.
 
-A managed default model keeps its native precedence. Otherwise fresh sessions
-default to Auto with the configured main model or the first available model. A saved or explicit ordinary model
-stays selected and disables routing. Claude's standard model display is retained.
+With the Auto config version, fresh sessions start in Auto with the managed default
+model, or the first available model if no default is configured. An explicit ordinary model
+stays selected and disables routing; resume keeps native model precedence.
+Claude's standard model display is retained.
 A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosing
 a main model through `/auto` switches the underlying native Auto variant and its
 native context profile immediately, keeping the checkmark on Auto.

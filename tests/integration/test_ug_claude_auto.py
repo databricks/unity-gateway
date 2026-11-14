@@ -32,8 +32,8 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
     reselecting Auto opens the selector, and /auto alone does not enable routing.
     Both child tasks and parent answers complete; only the Auto task has a correlated
     gateway decision. The regular model has no Auto indicator. This checks settled
-    UI states, not individual rendered frames. Fresh launches preserve saved native
-    choices; resume matches Claude's native model/settings precedence.
+    UI states, not individual rendered frames. Fresh managed launches select Auto
+    with the admin default; resume matches Claude's native model/settings precedence.
     """
     session = live_session
     session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0_claude_only"
@@ -94,6 +94,8 @@ export function register(on) {
 
     with AgentTerminal(session, "claude", launch, "auto-picker", dimensions=(60, 80)) as tui:
         tui.boot()
+        initial = snapshot(tui, "initial")
+        assert initial["routing"] == "1"
         tui.submit("/model")
         tui.choose("Select model", "Auto")
         tui.wait_for(
@@ -161,20 +163,14 @@ export function register(on) {
 
     native = shutil.which("claude", path=session.env["PATH"])
     assert native is not None
-    with AgentTerminal(
-        session, "claude", [native, "--plugin-dir", str(observer)], "auto-native-restart"
-    ) as tui:
-        tui.boot()
-        native_restarted = snapshot(tui, "native-restart")
-        tui.exit_normally()
     with AgentTerminal(session, "claude", launch, "auto-restart") as tui:
         tui.boot()
         restarted = snapshot(tui, "restart")
-        assert restarted["model"] == native_restarted["model"]
-        assert restarted["routing"] == "0"
+        assert restarted["model"] == initial["model"]
+        assert restarted["routing"] == "1"
         tui.exit_normally()
 
-    # A managed ANTHROPIC_MODEL keeps native precedence on restart and resume.
+    # Resume retains Claude's native model/settings precedence.
     resume = ["--resume", original["id"], "--plugin-dir", str(observer)]
 
     def resumed_prompt(tui):

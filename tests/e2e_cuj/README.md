@@ -106,6 +106,11 @@ cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journe
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+An additional Claude-only UI journey overrides the version with
+`subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
+selects a regular model and verifies the Auto routing indicator disappears, then
+returns to Auto and verifies the indicator returns. It sends no inference requests;
+the existing journeys retain the checks for actual routing decisions and inference.
 Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |

@@ -55,12 +55,14 @@ def test_default_stays_in_available_catalog_and_preserves_custom_labels():
         picker_config(AnthropicModelCatalog([AUTO_MODEL], {}), "w")
 
 
+@pytest.mark.parametrize("managed_default", [None, "system.ai.claude-sonnet-5-5"])
+@pytest.mark.parametrize("launch_default", [None, "system.ai.claude-haiku-5-5"])
 @pytest.mark.parametrize(
     ("saved", "pinned", "forwarded", "installed", "feedback", "expected", "has_auto"),
     [
         (None, None, [], True, False, AUTO_MODEL, True),
         (AUTO_MODEL, None, [], True, False, AUTO_MODEL, True),
-        ("opus", None, [], True, False, "opus", True),
+        ("opus", None, [], True, False, AUTO_MODEL, True),
         (AUTO_MODEL, "opus", [], True, False, "opus", True),
         (None, None, ["--model", "opus"], True, False, "opus", True),
         (None, None, [], False, False, None, False),
@@ -73,7 +75,17 @@ def test_default_stays_in_available_catalog_and_preserves_custom_labels():
     ],
 )
 def test_native_launch_default_precedence_and_compatibility(
-    tmp_path, monkeypatch, saved, pinned, forwarded, installed, feedback, expected, has_auto
+    tmp_path,
+    monkeypatch,
+    saved,
+    pinned,
+    forwarded,
+    installed,
+    feedback,
+    expected,
+    has_auto,
+    managed_default,
+    launch_default,
 ):
     from ucode import custom_oauth
     from ucode.agents import claude
@@ -92,11 +104,20 @@ def test_native_launch_default_precedence_and_compatibility(
     monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, sys.executable)
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(claude, "auto_picker_available", lambda: installed)
-    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent-managed.json")
+    managed_path = tmp_path / "managed.json"
+    managed_path.write_text(json.dumps({"env": {"ANTHROPIC_MODEL": managed_default}}))
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
     monkeypatch.setattr(
         v2,
         "_model_picker_catalog",
-        lambda: AnthropicModelCatalog(["system.ai.claude-opus-5-5"], {}),
+        lambda: AnthropicModelCatalog(
+            [
+                "system.ai.claude-opus-5-5",
+                "system.ai.claude-sonnet-5-5",
+                "system.ai.claude-haiku-5-5",
+            ],
+            {},
+        ),
     )
     monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
@@ -123,20 +144,26 @@ def test_native_launch_default_precedence_and_compatibility(
             binary="claude",
             user_settings_path=user_settings,
             launch_model=pinned,
+            default_model=launch_default,
             compose_settings=lambda args: ({}, args),
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
         )
     assert exit_info.value.code == 0
+    main_model = (
+        (launch_default or managed_default or "system.ai.claude-opus-5-5")
+        if not pinned
+        else "system.ai.claude-opus-5-5"
+    )
     if expected == AUTO_MODEL:
-        expected = auto_variant({"model": "system.ai.claude-opus-5-5"})
+        expected = auto_variant({"model": main_model})
     argv = captured["argv"]
     assert (argv[argv.index("--model") + 1] if "--model" in argv else None) == expected
     options = captured["settings"]["pluginConfigs"]["ug-smart-router"]["options"]
     assert ("autoPicker" in options) is has_auto
     if has_auto:
         assert picker_is_configured(captured["settings"])
-        assert json.loads(options["autoPicker"])["mainModel"] == "system.ai.claude-opus-5-5"
+        assert json.loads(options["autoPicker"])["mainModel"] == main_model
         assert options["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
     assert user_settings.read_bytes() == original
 

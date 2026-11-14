@@ -99,6 +99,8 @@ atomically; the mod itself still writes no file.
 
 Claude Auto is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
 `subagent_auto_v0_claude_only` config version. Existing versions set the flag to `"0"`.
+Fresh Auto launches use the managed default model, or the first available model;
+explicit model arguments and native resume retain precedence over startup Auto.
 Configure modifies only UG-owned pickers, preserving foreign admin picker/custom
 option settings. Native `/effort` owns effort capabilities and selection.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and

@@ -3039,8 +3039,8 @@ def launch(
                 tool_args,
                 binary=binary,
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
+                default_model=session_model,
                 compose_settings=functools.partial(
                     _compose_v2_settings, server_side_web_search=server_side_search
                 ),

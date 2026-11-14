@@ -731,11 +731,12 @@ def launch_claude(
     compose_settings: Callable[[list[str]], tuple[dict, list[str]]],
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
+    default_model: str | None = None,
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
-    from ucode.agents.claude_auto import AUTO_MODEL, is_auto_model, picker_config
+    from ucode.agents.claude_auto import AUTO_MODEL, picker_config
 
     if os.name != "nt":
         from ucode.smart_routing import claude_pty
@@ -801,6 +802,7 @@ def launch_claude(
                     workspace,
                     managed_auto if "modelPicker" in managed_auto else settings,
                     default_model=launch_model
+                    or default_model
                     or managed_auto.get("env", {}).get("ANTHROPIC_MODEL"),
                 )
             )
@@ -914,14 +916,8 @@ def launch_claude(
                 and not start_model
                 and not has_explicit_model_arg(remaining)
                 and not resuming
-                and not managed_auto.get("env", {}).get("ANTHROPIC_MODEL")
             ):
-                saved = read_json_safe(user_settings_path).get("model")
-                variants = [row["autoModel"] for row in auto_config["models"]]
-                # Native aliases (e.g. opus) need not be literal catalog IDs. Let
-                # Claude enforce its normal policy instead of silently enabling Auto.
-                native_saved = isinstance(saved, str) and bool(saved) and not is_auto_model(saved)
-                start_model = saved if saved in variants or native_saved else auto_config["model"]
+                start_model = auto_config["model"]
             if auto_picker and start_model == AUTO_MODEL:
                 start_model = auto_config["model"]
             model_args = launch_model_args(remaining, start_model)

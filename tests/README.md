@@ -12,7 +12,11 @@ its dedicated tests were removed. Native `/model` effort behavior remains unchan
 requires completed parent/child answers with a correlated routing decision only
 in Auto mode. It also verifies the old picker after switching back to an existing
 config version. Both journeys explicitly use the checked-in `claude_auto` managed fixture.
-These component checks do not establish live workspace coverage by themselves.
+CUJ 4 adds a UI-only Auto-version journey for startup with the managed default,
+manual routing-off selection, and return to Auto, with no inference requests.
+The integration journey retains actual child-routing checks and verifies fresh
+restarts return to Auto while resume keeps native precedence. Component checks
+alone do not establish live workspace coverage.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
