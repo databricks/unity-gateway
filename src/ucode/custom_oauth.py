@@ -254,9 +254,13 @@ def get_custom_client_token(
             return token
     except Exception as exc:
         raise RuntimeError(
-            "Custom-client OAuth failed. Check the workspace, client ID, and registered "
-            f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
-            "the SDK token cache is writable, then retry."
+            "Custom-client OAuth failed. Rerun ug interactively to sign in again."
+            if not allow_consent
+            else (
+                "Custom-client OAuth failed. Check the workspace, client ID, and registered "
+                f"redirect URL ({config['redirect_url']}); ensure its local port is available and "
+                "the SDK token cache is writable, then retry."
+            )
         ) from exc
 
 

@@ -217,7 +217,9 @@ class TestCustomClientToken:
                 if cached == "contended"
                 else nullcontext()
             ):
-                with pytest.raises(RuntimeError, match="Custom-client OAuth failed") as error:
+                with pytest.raises(
+                    RuntimeError, match="Custom-client OAuth failed.*Rerun ug interactively"
+                ) as error:
                     pool.submit(
                         launch_token,
                         state,
