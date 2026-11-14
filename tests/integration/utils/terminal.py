@@ -20,7 +20,12 @@ from pathlib import PurePath
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
 
-from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
+from .evidence import (
+    agent_sessions,
+    assert_no_terminal_api_error,
+    codex_turn_completed,
+    fresh_id,
+)
 
 SELECTED = "[›❯>]"
 
@@ -706,6 +711,18 @@ class AgentTerminal(TerminalProcess):
         )
         if completion is None:
             task.assert_completed(self.session, self.agent)
+
+    def wait_for_codex_turn(self, timeout=300):
+        """Wait for Codex to finish a turn, without judging what the model answered."""
+        assert self.agent == "codex", self.agent
+
+        def finished(screen):
+            assert_no_terminal_api_error(screen)
+            if self.approve_windows_command(screen):
+                return False
+            return codex_turn_completed(self.session)
+
+        self.wait_for(finished, "a completed Codex turn", timeout=timeout)
 
     def wait_for_background_tasks(self, timeout=180):
         """Wait in Claude's native task view without stopping or detaching work."""
