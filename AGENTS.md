@@ -69,10 +69,12 @@ Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
   label allowlists. String values must be bounded identifiers; never record tokens, URLs,
   prompts, response bodies, or raw exception messages. A new non-duration histogram also
   needs an entry in `METRICS` and its unit and bucket configuration in `exporter.py`.
-- Keep OTel SDK imports and uploads in the exporter. Recording must not wait for locks,
-  process startup, pipe writes, or networking. The daemon worker drains at most 1,000 queued
-  observations every 60 seconds or on a flush signal, with one uploader at a time. Never
-  join it on the command path; losing telemetry, including the final batch, is acceptable.
+- Keep OTel SDK imports and uploads in the exporter. A daemon starts the detached exporter
+  when recording is enabled; command threads hand off observations through an unbuffered,
+  nonblocking pipe. The exporter holds at most 1,000 observations and uploads every 60 seconds,
+  on a flush signal, or after EOF when the CLI exits or execs an agent. Recording and shutdown
+  must never wait for locks, process startup, pipe capacity, or networking. A bounded startup
+  backlog handles helper startup; contention and backpressure may still drop telemetry.
 - Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
   tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
   recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import json
 import math
+import os
 import re
 import threading
 import time
@@ -27,6 +29,7 @@ COMMAND_OPERATION = "command"
 UG_CLI_ERROR = "ug_cli_error"
 
 MAX_OBSERVATIONS = 1000
+MAX_HANDOFF_BYTES = 2 * 1024 * 1024
 EXPORT_INTERVAL_SECONDS = 60
 DURATION_METRICS = frozenset(
     {
@@ -144,12 +147,15 @@ class Recorder:
             maxlen=MAX_OBSERVATIONS
         )
         self.lock = threading.Lock()
-        self.export_lock = threading.Lock()
         self.worker_lock = threading.Lock()
         self.stop = threading.Event()
         self.wake = threading.Event()
         self.thread: threading.Thread | None = None
         self.reporter = None
+        self.unsent = b""
+        self.dirty = False
+        self.credentials_dirty = True
+        self.flush_requested = False
 
     def record(self, name: str, value: float | int, workspace: str | None, labels: dict) -> None:
         if name not in METRICS or not math.isfinite(value) or value < 0:
@@ -165,11 +171,14 @@ class Recorder:
                     {**self.common, **_labels(labels)},
                 )
             )
+            self.dirty = True
+            self._handoff_locked()
         finally:
             self.lock.release()
+            if self.reporter is None or self.unsent:
+                self.wake.set()
 
     def bind(self, workspace: str, token: str) -> None:
-        # The bearer is already available from the operation being measured. Never log in for telemetry.
         from ucode.workspace import split_workspace_key, workspace_headers
 
         host, selected = split_workspace_key(workspace)
@@ -186,40 +195,97 @@ class Recorder:
             self.workspace = key
             if len(self.credentials) >= 16 and key not in self.credentials:
                 self.credentials.pop(next(iter(self.credentials)))
+            self.credentials_dirty |= self.credentials.get(key) != (token, headers)
             self.credentials[key] = (token, headers)
-            # Startup observations made before workspace selection belong to the first selected workspace.
             if first_workspace:
                 self.pending = deque(
                     ((w or key, n, v, a) for w, n, v, a in self.pending), maxlen=MAX_OBSERVATIONS
                 )
+            self.dirty = True
+            self._handoff_locked()
         finally:
             self.lock.release()
+            if self.reporter is None or self.unsent:
+                self.wake.set()
+
+    def set_context(self, **labels: Any) -> None:
+        self.common.update(_labels(labels))
+        self.dirty = True
+        if not self.lock.acquire(blocking=False):
+            return
+        try:
+            for _, _, _, attrs in self.pending:
+                if "command" in labels:
+                    attrs["command"] = self.common["command"]
+                if "agent" in labels and attrs.get("agent") in (None, "unknown"):
+                    attrs["agent"] = self.common["agent"]
+            self.dirty = True
+            self._handoff_locked()
+        finally:
+            self.lock.release()
+            if self.reporter is None or self.unsent:
+                self.wake.set()
+
+    def _write_locked(self) -> bool:
+        assert self.reporter is not None
+        try:
+            written = os.write(self.reporter.stdin.fileno(), self.unsent)
+            self.unsent = self.unsent[written:]
+        except BlockingIOError:
+            return False
+        except OSError:
+            self.reporter.stdin.close()
+            self.unsent = b""
+            return False
+        return not self.unsent
+
+    def _handoff_locked(self) -> None:
+        if self.reporter is None or self.reporter.stdin.closed:
+            return
+        # Finish a partial frame before sending another; EOF discards an incomplete frame.
+        if self.unsent and not self._write_locked():
+            return
+        if not self.dirty and not self.flush_requested:
+            return
+        message = {
+            "observations": list(self.pending),
+            "workspace": self.workspace,
+            "context": self.common,
+            "flush": self.flush_requested,
+        }
+        if self.credentials_dirty:
+            message["credentials"] = self.credentials
+        payload = json.dumps(message, separators=(",", ":")).encode() + b"\n"
+        self.pending.clear()
+        self.dirty = False
+        self.flush_requested = False
+        if len(payload) > MAX_HANDOFF_BYTES:
+            return
+        self.credentials_dirty = False
+        self.unsent = payload
+        self._write_locked()
 
     def flush(self) -> None:
         self.start_periodic()
-        self.wake.set()
-
-    def _export_once(self) -> None:
-        from ucode.metrics.exporter import send_in_background
-
-        # A stalled reporter must not produce unbounded children or a second export queue.
-        if not self.export_lock.acquire(blocking=False):
-            return
-        try:
-            if self.reporter is not None and self.reporter.poll() is None:
-                return
-            if not self.lock.acquire(blocking=False):
-                return
+        if self.lock.acquire(blocking=False):
             try:
-                observations = list(self.pending)
-                self.pending.clear()
-                credentials = dict(self.credentials)
+                self.flush_requested = True
+                self._handoff_locked()
             finally:
                 self.lock.release()
-            if observations:
-                self.reporter = send_in_background(observations, credentials)
-        finally:
-            self.export_lock.release()
+        if self.reporter is None or self.unsent:
+            self.wake.set()
+
+    def close(self) -> None:
+        self.stop.set()
+        if self.lock.acquire(blocking=False):
+            try:
+                self._handoff_locked()
+                if self.reporter is not None:
+                    self.reporter.stdin.close()
+            finally:
+                self.lock.release()
+        self.wake.set()
 
     def start_periodic(self) -> None:
         if self.thread is not None or self.stop.is_set():
@@ -235,14 +301,32 @@ class Recorder:
             self.worker_lock.release()
 
     def _export_loop(self) -> None:
-        while True:
-            self.wake.wait(EXPORT_INTERVAL_SECONDS)
-            self.wake.clear()
-            stopping = self.stop.is_set()
-            with suppress(Exception):
-                self._export_once()
-            if stopping:
-                return
+        from ucode.metrics.exporter import start_exporter
+
+        try:
+            while not self.stop.is_set():
+                self.wake.clear()
+                with suppress(Exception):
+                    if self.reporter is None or self.reporter.poll() is not None:
+                        if self.reporter is not None:
+                            self.reporter.stdin.close()
+                        reporter = start_exporter()
+                        with self.lock:
+                            self.reporter = reporter
+                            self.unsent = b""
+                            self.credentials_dirty = True
+                            self.dirty = True
+                            self._handoff_locked()
+                    else:
+                        with self.lock:
+                            self._handoff_locked()
+                if not self.stop.is_set():
+                    # Retry backpressure only in the daemon, never on a command thread.
+                    self.wake.wait(1 if self.unsent else None)
+        finally:
+            with self.lock:
+                if self.reporter is not None:
+                    self.reporter.stdin.close()
 
 
 @_best_effort
@@ -264,22 +348,14 @@ def set_command(command: str) -> None:
     runtime = _runtime
     if runtime is None:
         return
-    runtime.common.update(_labels({"command": command}))
     runtime.phase = "agent_session" if command in _AGENT_SESSION_COMMANDS else "command"
-    # CLI import is measured before Typer resolves global options and subcommands.
-    if not runtime.lock.acquire(blocking=False):
-        return
-    try:
-        for _, _, _, labels in runtime.pending:
-            labels["command"] = runtime.common["command"]
-    finally:
-        runtime.lock.release()
+    runtime.set_context(command=command)
 
 
 @_best_effort
 def set_context(**labels: Any) -> None:
     if _runtime is not None:
-        _runtime.common.update(_labels(labels))
+        _runtime.set_context(**labels)
 
 
 def bind(workspace: str, token: str) -> None:
@@ -490,13 +566,6 @@ def start_agent(
         runtime.startup = True
         runtime.phase = "startup"
         set_context(agent=agent)
-        if runtime.lock.acquire(blocking=False):
-            try:
-                for _, _, _, attrs in runtime.pending:
-                    if attrs.get("agent") in (None, "unknown"):
-                        attrs["agent"] = agent
-            finally:
-                runtime.lock.release()
         runtime.startup_labels.update(
             preflight_skipped=preflight_skipped, first_time_setup=first_time_setup
         )
@@ -541,11 +610,11 @@ def finish() -> None:
                 None,
                 runtime.startup_labels,
             )
-    # A daemon may lose the final batch at exit/exec; never join it on the command path.
+    # Closing the nonblocking pipe lets the already-running helper flush after CLI exit.
     with suppress(Exception):
         runtime.flush()
-    runtime.stop.set()
-    runtime.wake.set()
+    with suppress(Exception):
+        runtime.close()
 
 
 def api_operation(url: str) -> str:
