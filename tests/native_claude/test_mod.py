@@ -277,12 +277,21 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.server.requests.append(request)
             request_class = self.headers.get("X-Claude-Code-Request-Class")
             if "count_tokens" in self.path:
                 self.send_json({"input_tokens": 100})
                 return
-            if not request.get("stream"):
+            summary = request_class == "auxiliary" and (
+                "Describe your most recent action in 3-5 words"
+                in json.dumps(request.get("messages", [])[-1:])
+            )
+            if summary:
+                self.server.summary_requests.append(
+                    (self.headers.get("X-Claude-Code-Agent-Id"), request)
+                )
+            else:
+                self.server.requests.append(request)
+            if not request.get("stream") and not summary:
                 self.server.classifier_requests += 1
                 self.send_json(
                     {
@@ -303,14 +312,22 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
             if count == 0:
                 tool_name = "Agent"
             elif request_class == "subagent":
-                tool_name = "SubagentHandback"
+                self.server.child_requests += 1
+                self.server.child_agent_id = self.headers.get("X-Claude-Code-Agent-Id")
+                if not background and self.server.child_requests == 1:
+                    # The native handback reminder supplies the third transcript message.
+                    tool_name = None
+                else:
+                    if not background:
+                        self.server.summary_seen.wait(timeout=40)
+                    tool_name = "SubagentHandback"
             else:
                 tool_name = None
             tool_input = original if tool_name == "Agent" else {"message": "Probe finished."}
             tool_use_id = f"toolu_fixture_{count}"
             tool_call = tool_name is not None
-            answer = "Probe finished."
-            if request["model"] == "claude-sonnet-4-6":
+            answer = "Reading arithmetic inputs" if summary else "Probe finished."
+            if not summary and request["model"] == "claude-sonnet-4-6":
                 answer = false_claim
                 if not tool_call:
                     self.server.parent_answers += 1
@@ -403,6 +420,8 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
                 f"event: {name}\ndata: {json.dumps(value)}\n\n" for name, value in events
             ).encode()
             self.send_json(body, "text/event-stream")
+            if summary:
+                self.server.summary_seen.set()
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.requests = []
@@ -446,12 +465,18 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             server.message_count = 0
             server.classifier_requests = 0
             server.parent_answers = 0
+            server.child_requests = 0
+            server.child_agent_id = None
+            server.summary_requests = []
+            server.summary_seen = threading.Event()
             server.verdict = verdict
             debug_file = root / "debug.log"
             result = subprocess.run(
                 [
                     native_binary,
                     "-p",
+                    "--input-format",
+                    "stream-json",
                     "--permission-mode",
                     "auto",
                     "--model",
@@ -471,7 +496,6 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "--verbose",
                     "--debug-file",
                     str(debug_file),
-                    "Use a subagent to return 10, with no tools.",
                 ],
                 cwd=root,
                 env={
@@ -489,12 +513,33 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "CLAUDE_CODE_ELEGANT_MEADOW": "1",
                     "AUTOMODE_DECISION_LOG": "1",
                 },
+                input="\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "type": "control_request",
+                            "request_id": "fixture-initialize",
+                            "request": {"subtype": "initialize", "agentProgressSummaries": True},
+                        },
+                        {
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": "Use a subagent to return 10, with no tools.",
+                            },
+                        },
+                    )
+                )
+                + "\n",
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=60,
             )
             assert result.returncode == 0, result.stderr + result.stdout
             debug_log = debug_file.read_text(encoding="utf-8")
+            (root / "summary-requests.json").write_text(
+                json.dumps(server.summary_requests, ensure_ascii=False), encoding="utf-8"
+            )
             assert "prompt.context bypassed" not in debug_log
             events = [
                 json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")
@@ -527,6 +572,15 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     else "language of the original task assigned to you"
                 )
                 assert all(instruction in json.dumps(request) for request in child_requests)
+                if not background:
+                    assert server.summary_requests, debug_log
+                    assert server.child_agent_id
+                    for agent_id, summary_request in server.summary_requests:
+                        assert agent_id == server.child_agent_id
+                        assert len(summary_request["messages"]) >= 3
+                        assert instruction in json.dumps(summary_request)
+                        if setting_sources == "project,local":
+                            assert "Always respond in Chinese." not in json.dumps(summary_request)
                 if setting_sources == "project,local":
                     assert all(
                         "Always respond in Chinese." not in json.dumps(request)

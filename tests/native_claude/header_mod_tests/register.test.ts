@@ -73,8 +73,14 @@ test('without routing the header mod leaves language and submitted context untou
 test('routed shared context preserves existing blocks and effective language or task-language fallback', async ($, on) => {
   setup(on, { ENABLE_SMART_ROUTING_V2: '1' });
   let language: unknown = 'English';
-  on('settings.read', () => ({ value: { language } }));
+  let readMode = 'settings';
+  on('settings.read', () => {
+    if (readMode === 'deny') return { deny: 'Settings unavailable' };
+    return { value: { language } };
+  });
+  on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }));
   const blocks = [{ name: 'existing', text: 'Existing context' }];
+  const prompt = { text: 'Original task', context: ['Existing context'] };
   let calls = 0;
   on('prompt.context', ($, e) => {
     calls += 1;
@@ -82,8 +88,12 @@ test('routed shared context preserves existing blocks and effective language or 
     return { blocks: e.blocks };
   });
   await $.session.start(start);
-  for (const value of ['English', '中文', 'Português', '', undefined]) {
+  for (const [value, mode] of [
+    ['English', 'settings'], ['中文', 'settings'], ['Português', 'settings'],
+    ['', 'settings'], [undefined, 'settings'], [undefined, 'deny'],
+  ] as const) {
     language = value;
+    readMode = mode;
     const result = await $.prompt.context({ blocks });
     expect(result.blocks).toHaveLength(2);
     expect(result.blocks[0]).toEqual(blocks[0]);
@@ -98,8 +108,9 @@ test('routed shared context preserves existing blocks and effective language or 
     expect(instruction).toContain('requested target language for translations');
     expect(instruction).toContain('quoted source text');
     expect(instruction).toContain('progress summaries');
+    if (mode !== 'settings') expect(await $.prompt.submit(prompt)).toEqual(prompt);
   }
-  expect(calls).toBe(5);
+  expect(calls).toBe(6);
 });
 
 test('only changed language appends context and lifecycle resets preserve first-prompt deduplication', async ($, on) => {

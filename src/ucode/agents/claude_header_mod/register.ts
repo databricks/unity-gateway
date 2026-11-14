@@ -61,7 +61,12 @@ async function routingEnabled($: EngineInterface): Promise<boolean> {
 }
 
 async function responseLanguage($: EngineInterface): Promise<string> {
-  const { language } = await $.settings.read();
+  let language: unknown;
+  try {
+    language = (await $.settings.read())?.language;
+  } catch {
+    language = undefined;
+  }
   const configured = typeof language === 'string' && language.trim();
   const instruction = configured
     ? `Always respond in ${configured}. Use ${configured} for explanations, replies and progress summaries.`
