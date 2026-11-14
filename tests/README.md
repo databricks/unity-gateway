@@ -1617,6 +1617,9 @@ which includes Claude, GPT, and supported open models while filtering incompatib
 Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
 and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
 wire APIs and Claude limits. These checks use controlled discovery responses.
+Codex relay regression checks use the native Codex parser to verify that a distinct relay provider
+avoids merging a user's auth command into subscription auth and preserves the user's config bytes.
+These parser-only checks do not establish authenticated relay inference.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering

@@ -1118,15 +1118,16 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
             "contact your administrator."
         ) from exc
     conflicts = ["model_provider"] if "model_provider" in doc else []
-    provider = (doc.get("model_providers") or {}).get(CODEX_MODEL_PROVIDER_NAME) or {}
-    if provider and path.name == CODEX_REQUIREMENTS_FILE:
-        # requirements.toml replaces the whole provider entry, dropping the relay's `-c` keys.
-        return [*conflicts, f"model_providers.{CODEX_MODEL_PROVIDER_NAME}"]
-    return conflicts + [
-        f"model_providers.{CODEX_MODEL_PROVIDER_NAME}.{key}"
-        for key in ("base_url", "auth")
-        if key in provider
-    ]
+    for name in (CODEX_MODEL_PROVIDER_NAME, CODEX_APP_RELAY_PROVIDER_NAME):
+        provider = (doc.get("model_providers") or {}).get(name) or {}
+        if provider and path.name == CODEX_REQUIREMENTS_FILE:
+            # requirements.toml replaces the whole entry, dropping the relay's `-c` keys.
+            conflicts.append(f"model_providers.{name}")
+        else:
+            conflicts.extend(
+                f"model_providers.{name}.{key}" for key in ("base_url", "auth") if key in provider
+            )
+    return conflicts
 
 
 def _reconcile_managed_config(
@@ -1981,6 +1982,12 @@ def launch(
         profile_doc["model_providers"][CODEX_MODEL_PROVIDER_NAME]["base_url"] = (
             f"http://{LOOPBACK_HOST}:{port}/v1"
         )
+    if relayed:
+        # Keep base user-provider auth out of the ChatGPT relay's merged config.
+        profile_doc["model_providers"][CODEX_APP_RELAY_PROVIDER_NAME] = profile_doc[
+            "model_providers"
+        ].pop(CODEX_MODEL_PROVIDER_NAME)
+        profile_doc["model_provider"] = CODEX_APP_RELAY_PROVIDER_NAME
     _run_codex(
         state,
         [binary, *codex_config_args(profile_doc)],

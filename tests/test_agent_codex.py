@@ -6,6 +6,8 @@ import json
 import os
 import plistlib
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
@@ -1866,9 +1868,75 @@ class TestCodexLaunch:
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
+        assert 'model_provider="DatabricksRelay"' in argv
+        relay_arg = next(arg for arg in argv if arg.startswith("model_providers.DatabricksRelay="))
+        assert 'Databricks-Model-Provider-Service = "cat.s.mps"' in relay_arg
+        assert not any(arg.startswith("model_providers.Databricks=") for arg in argv)
         assert argv[-2:] == ["exec", "hi"]
         cache.stop.assert_called_once_with()
         server.shutdown.assert_called_once_with()
+
+    @pytest.mark.parametrize("tool_args", [[], ["update"]])
+    @pytest.mark.parametrize("desktop_relay", [False, True])
+    def test_relayed_launch_keeps_user_provider_auth_with_native_parser(
+        self, tmp_path, monkeypatch, tool_args, desktop_relay
+    ):
+        binary = shutil.which("codex")
+        if binary is None:
+            pytest.skip("Native Codex is required for provider config merge validation")
+        self._patch(tmp_path, monkeypatch)
+        codex.CODEX_CONFIG_PATH.write_text(
+            codex.tomlkit.dumps(codex.render_overlay(WS, provider="cat.s.mps", relayed=True)),
+            encoding="utf-8",
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            'model_provider = "Databricks"\n'
+            'model_reasoning_effort = "low"\n'
+            "[model_providers.Databricks]\n"
+            'name = "User provider"\n'
+            'base_url = "http://127.0.0.1:9/v1"\n'
+            'wire_api = "responses"\n'
+            "[model_providers.Databricks.auth]\n"
+            'command = "unused-auth-command"\n',
+            encoding="utf-8",
+        )
+        if desktop_relay:
+            doc = read_toml_safe(user_config)
+            block = codex._provider_block(WS, None, provider="cat.s.mps", relayed=True)
+            block["base_url"] = "http://127.0.0.1:54320/v1"
+            doc["model_providers"][codex.CODEX_APP_RELAY_PROVIDER_NAME] = block
+            codex.write_toml_file(user_config, doc)
+        original = user_config.read_bytes()
+        launches = []
+        login = Mock()
+        monkeypatch.setattr(codex, "_ensure_chatgpt_login", login)
+        # Only config parsing runs; no login or relay inference is needed.
+        relay = Mock(return_value=(Mock(server_address=("127.0.0.1", 54321)), Mock(), Mock()))
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", relay)
+        monkeypatch.setattr(
+            codex, "_run_codex", lambda state, argv, *a, **kw: launches.append(argv)
+        )
+
+        codex.launch(
+            {"workspace": WS, "codex_relayed": True, "_codex_launch_provider": "cat.s.mps"},
+            tool_args,
+            options=LaunchOptions(),
+        )
+        if tool_args == ["update"]:
+            login.assert_not_called()
+            relay.assert_not_called()
+        result = subprocess.run(
+            [binary, *launches[0][1:], "features", "list"],
+            env={**os.environ, "CODEX_HOME": str(tmp_path)},
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert user_config.read_bytes() == original
 
     def test_relayed_launch_logs_in_when_not_chatgpt(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
@@ -2119,11 +2187,12 @@ class TestCodexManagedConfig:
         assert "auth" in provider
         assert "codex_relayed" not in state
 
-    def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("provider_name", ["Databricks", "DatabricksRelay"])
+    def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch, provider_name):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True)
         managed_path.write_text(
-            'model_provider = "Databricks"\n[model_providers.Databricks]\nbase_url = "x"\n',
+            f'model_provider = "{provider_name}"\n[model_providers.{provider_name}]\nbase_url = "x"\n',
             encoding="utf-8",
         )
 
@@ -2133,9 +2202,11 @@ class TestCodexManagedConfig:
         # requirements.toml replaces the whole entry, so even a name-only one would drop the relay.
         requirements = tmp_path / "ProgramData" / "requirements.toml"
         requirements.parent.mkdir(parents=True)
-        requirements.write_text('[model_providers.Databricks]\nname = "x"\n', encoding="utf-8")
+        requirements.write_text(
+            f'[model_providers.{provider_name}]\nname = "x"\n', encoding="utf-8"
+        )
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: requirements)
-        with pytest.raises(RuntimeError, match=r"define model_providers\.Databricks at"):
+        with pytest.raises(RuntimeError, match=rf"define model_providers\.{provider_name} at"):
             codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
 
     def test_relayed_state_requires_relay_compatible_scope(self, tmp_path, monkeypatch):
