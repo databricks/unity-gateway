@@ -603,7 +603,8 @@ export function register(on: On, options: PluginOptions): void {
         ? publicAutoEcho : undefined;
       const echoArgs = pendingEcho?.args ?? 'Auto';
       const autoEcho = echo && (pendingEcho
-        || (e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router'))
+        || (e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router')
+        || (!e.agentId && e.origin.kind === 'engine' && autoSave?.model === echo[2]))
         && auto.models.some((row) => row.autoModel === echo[2]);
       if (pendingEcho) publicAutoEcho = undefined;
       const autoConfirmation = (setModel || keptModel) && await autoSelected($, auto);

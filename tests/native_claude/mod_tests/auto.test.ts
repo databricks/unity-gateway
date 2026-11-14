@@ -583,7 +583,7 @@ async function manualFeedbackFlow() {
     rejectManual:false, rejectRestore:false, failOff:false, failPrepare:false, failUpload:false, deferConfirmations:false,
     controls:{} as Record<string,string>, reason:undefined as any, cancel:undefined as any,
     offWrite:undefined as undefined | (() => Promise<void>), nativeModels:[] as string[],
-    deferModel:false, saved:undefined as unknown, buttons:{} as Record<string,() => Promise<void>>, efforts:[] as string[],
+    deferModel:false, saved:undefined as unknown, transcripts:[] as string[], buttons:{} as Record<string,() => Promise<void>>, efforts:[] as string[],
   };
   const env: Record<string,string | undefined> = {
     ...options, ISAAC_SMART_ROUTER_FEEDBACK:'1', UCODE_SMART_ROUTER_PYTHON:'/ug/python',
@@ -659,8 +659,8 @@ async function manualFeedbackFlow() {
   };
   const finishModel = async (text: string, origin: {kind:string;name?:string} = {kind:'plugin',name:'ug-smart-router'}, agentId?: string) => {
     await append(engine, {door:'command',origin,agentId,message:{content:[{
-      type:'text',text:`<local-command-stdout>${text}</local-command-stdout>`,
-    }]}}, async () => ({}));
+      type:'text',text:text.startsWith('<command-name>') ? text : `<local-command-stdout>${text}</local-command-stdout>`,
+    }]}}, async e => {state.transcripts.push(JSON.stringify(e.message));return {};});
     await flush();
   };
   const confirm = async (accepted: boolean) => {
@@ -701,6 +701,24 @@ for (const accepted of [true,false]) {
     expect(flow.state.toasts).toEqual(accepted ? ['Auto (Opus 5.5) saved'] : []);
   });
 }
+
+test('only the pending main Auto command relabels its engine-origin echo', async () => {
+  const flow = await manualFeedbackFlow();
+  await flow.run({command:'auto',args:''});
+  await flow.render();
+  flow.state.deferModel = true;
+  await flow.state.buttons['auto-main-model-0']();
+  await flow.flush();
+  const echo = (model: string) => `<command-name>/model</command-name><command-message>model</command-message><command-args>${model}</command-args>`;
+  await flow.finishModel(echo('ug-auto-opus'), {kind:'engine'}, 'child');
+  expect(flow.state.transcripts.at(-1)).toContain('ug-auto-opus');
+  await flow.finishModel(echo('ug-auto-fable'), {kind:'engine'});
+  expect(flow.state.transcripts.at(-1)).toContain('ug-auto-fable');
+  await flow.finishModel(echo('ug-auto-opus'), {kind:'engine'});
+  expect(flow.state.transcripts.at(-1)).toContain('<command-args>Auto</command-args>');
+  expect(flow.state.transcripts.at(-1)).not.toContain('ug-auto-');
+  await flow.confirm(false);
+});
 
 test('cancelling a deferred same-main confirmation does not save its draft effort', async () => {
   const flow = await manualFeedbackFlow();
