@@ -190,6 +190,64 @@ source. The choice is saved for later launches, and each one replaces the other.
 source fails before anything is saved. A managed config that enables agents names the source itself
 and rejects both flags.
 
+### Model IDs in managed configuration
+
+A default model uses the identifiers of its configured source. For a direct Model Provider
+Service (`models.model_provider_service`), use the provider's target ID, such as `gpt-5.5`.
+For a Unity Catalog model service, use its full name, such as `system.ai.gpt-5-5`.
+These are separate catalog entries; do not convert one to the other by replacing punctuation.
+Use an ID actually returned by the selected source and supported by the agent's API.
+
+With `models.sources`, several sources can coexist. Qualify an external target with its Model
+Provider Service name: `<catalog>.<schema>.<service>.<provider-target-id>`. Keep the target ID
+unchanged, including any provider prefix, dots, colons, or version suffix. A UC model-service
+default remains its three-part name. A wildcard in `sources` expands the available choices;
+`default_model` still identifies one concrete model from those choices.
+
+These examples configure Copilot CLI for the same external target. Replace `main.default.mantle`
+and `anthropic.claude-sonnet-5` with your service and an allowed target it actually serves.
+For a direct service, the default is the raw target ID:
+
+```json
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_GITHUB_COPILOT",
+      "config": {
+        "models": { "model_provider_service": "main.default.mantle" },
+        "default_models": { "default_model": "anthropic.claude-sonnet-5" },
+        "vscode_integration": { "enabled": false }
+      }
+    }
+  ]
+}
+```
+
+With sources, qualify that same target with the service name:
+
+```json
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_GITHUB_COPILOT",
+      "config": {
+        "models": { "sources": ["main.default.mantle.*"] },
+        "default_models": { "default_model": "main.default.mantle.anthropic.claude-sonnet-5" },
+        "vscode_integration": { "enabled": false }
+      }
+    }
+  ]
+}
+```
+
+The examples are strict JSON: quote service names, omit trailing commas, and place explanations
+outside the JSON rather than adding `//` comments. Configured source restrictions still apply;
+choosing a default does not add a model to the service's allowlist.
+
 By default, `ug configure` writes both the per-user settings and the machine-wide Claude Code and
 Codex managed settings with sudo, with or without a terminal: run headless as root (or with
 passwordless sudo), since a write that can't be authorized fails the command.
