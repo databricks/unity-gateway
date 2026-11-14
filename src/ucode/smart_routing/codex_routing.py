@@ -71,7 +71,7 @@ def request_routing_decision(
         task,
         route_options,
         router_name=router_name,
-        **({"provider": provider} if provider else {}),
+        provider=provider,
         timeout=timeout,
     )
 
@@ -112,7 +112,7 @@ def route_pre_tool_use(
             token,
             task,
             available_models,
-            **({"provider": provider} if provider else {}),
+            provider=provider,
             timeout=timeout,
         ),
         default_task_label="Codex subagent task",

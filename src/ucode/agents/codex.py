@@ -1655,6 +1655,38 @@ def _detach_app_catalog_after_failure() -> None:
         print_warning_err(str(exc))
 
 
+def _prepare_launch_model_catalog(
+    binary: str,
+    workspace: str,
+    token: str,
+    *,
+    source: CodexCatalogSource,
+    identifier: str,
+    require_models: bool = False,
+) -> tuple[Path | None, list[str] | None]:
+    """Validate and sync launch discovery, detaching stale app metadata on failure."""
+    try:
+        catalog = _fetch_codex_model_catalog(workspace, token, source=source, identifier=identifier)
+        validate_codex_catalog(binary, catalog)
+        models = catalog_slugs(catalog)
+        if require_models and not models:
+            raise RuntimeError(
+                f"Model Provider Service {identifier} returned no Codex model slugs."
+            )
+    except CodexMpsModelCatalogUnavailable:
+        detach_app_model_catalog()
+        return None, None
+    except RuntimeError:
+        # Independently launched app servers must not retain a previous workspace's catalog.
+        _detach_app_catalog_after_failure()
+        raise
+    scope = "provider" if source == CodexCatalogSource.PROVIDER else "parent"
+    catalog_path = _model_catalog_path(workspace, f"{scope}:{identifier}")
+    _write_model_catalog(catalog_path, catalog)
+    sync_app_model_catalog(catalog)
+    return catalog_path, models
+
+
 def _print_app_catalog_restart_notice() -> None:
     # A desktop reconnect can reuse a daemon whose model manager still holds
     # the startup catalog. Never restart it here: it may be running tasks.
@@ -1926,42 +1958,28 @@ def launch(
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
     if workspace and token and (provider or parent_schema) and not updating and not relayed:
-        try:
-            if provider is not None:
-                catalog_source = CodexCatalogSource.PROVIDER
-                catalog_identifier = provider
-                catalog_scope = f"provider:{provider}"
-            elif parent_schema is not None:
-                catalog_source = CodexCatalogSource.PARENT_SCHEMA
-                catalog_identifier = parent_schema
-                catalog_scope = f"parent:{parent_schema}"
-            else:
-                raise RuntimeError("Codex model discovery requires a provider or parent schema.")
-            catalog = _fetch_codex_model_catalog(
-                workspace,
-                token,
-                source=catalog_source,
-                identifier=catalog_identifier,
-            )
-            validate_codex_catalog(binary, catalog)
-        except CodexMpsModelCatalogUnavailable:
-            detach_app_model_catalog()
-        except RuntimeError:
-            # A failed discovery/validation must not leave a previous workspace's
-            # catalog active in independently launched app servers.
-            _detach_app_catalog_after_failure()
-            raise
+        if provider:
+            source = CodexCatalogSource.PROVIDER
+            identifier = provider
+        elif parent_schema:
+            source = CodexCatalogSource.PARENT_SCHEMA
+            identifier = parent_schema
         else:
-            catalog_path = _model_catalog_path(workspace, catalog_scope)
-            _write_model_catalog(catalog_path, catalog)
-            sync_app_model_catalog(catalog)
+            raise RuntimeError("Codex model discovery requires a provider or parent schema.")
+        catalog_path, slugs = _prepare_launch_model_catalog(
+            binary,
+            workspace,
+            token,
+            source=source,
+            identifier=identifier,
+        )
+        if catalog_path is not None:
             profile_doc["model_catalog_json"] = str(catalog_path)
             # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
             # which an MPS's allowlist doesn't route, so the first request 403s. Pin
             # the MPS's primary (first) target unless the user chose a model or a
             # managed default already applies.
             if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
-                slugs = catalog_slugs(catalog)
                 if slugs:
                     profile_doc["model"] = slugs[0]
     relay = None
@@ -2012,16 +2030,18 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
             )
         _reject_managed_model_catalog()
         token = _launch_token(state, workspace)
-        catalog = _fetch_codex_model_catalog(
-            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=provider
+        catalog_path, provider_models = _prepare_launch_model_catalog(
+            binary,
+            workspace,
+            token,
+            source=CodexCatalogSource.PROVIDER,
+            identifier=provider,
+            require_models=True,
         )
-        validate_codex_catalog(binary, catalog)
-        models = catalog_slugs(catalog)
-        if not models:
-            raise RuntimeError(f"Model Provider Service {provider} returned no Codex model slugs.")
-        catalog_path = _model_catalog_path(workspace, f"provider:{provider}")
-        _write_model_catalog(catalog_path, catalog)
-        provider_models = models
+        # Provider slugs are authoritative; native GPT alias translation can leave the allowlist.
+        if provider_models and configured_model not in provider_models:
+            configured_model = provider_models[0]
+        models = provider_models or []
         provider_overlay = _bedrock_runtime_web_search_overlay(state, workspace, token, provider)
     else:
         models = custom_catalog_models() or routing_models(state)
@@ -2036,16 +2056,10 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
-        **(
-            {
-                "provider_catalog_path": catalog_path,
-                "provider_models": provider_models,
-                "provider_token": token,
-                "provider_overlay": provider_overlay,
-            }
-            if provider
-            else {}
-        ),
+        provider_catalog_path=catalog_path,
+        provider_models=provider_models,
+        provider_token=token,
+        provider_overlay=provider_overlay,
     )
 
 

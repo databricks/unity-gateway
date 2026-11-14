@@ -41,6 +41,40 @@ from tests.e2e_cuj.test_cuj3_models import _catalog_display_names
 from tests.e2e_cuj.test_cuj4_smart_routing import _task_inference_request
 
 
+@pytest.mark.parametrize(
+    "headers",
+    [
+        "X-Databricks-Traffic-Id: earlier\nx-databricks-traffic-id: expected",
+        "X-Databricks-Traffic-Id: expected\nx-databricks-traffic-id:",
+        "X-Databricks-Traffic-Id: expected\nx-databricks-traffic-id: invalid\x00value",
+    ],
+)
+def test_cuj2_traffic_assertion_uses_only_sendable_headers(headers):
+    session = SimpleNamespace(env={"UG_HEADERS": headers})
+    cuj2._assert_traffic_header(
+        session, SimpleNamespace(headers={"x-databricks-traffic-id": "expected"})
+    )
+    with pytest.raises(AssertionError):
+        cuj2._assert_traffic_header(
+            session, SimpleNamespace(headers={"x-databricks-traffic-id": "wrong"})
+        )
+
+
+@pytest.mark.parametrize("previous", [None, "", "existing"])
+def test_cuj2_provider_routing_restores_environment_after_failure(previous):
+    keys = ("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "SMART_ROUTER_CONFIG_VERSION")
+    original = {"unrelated": "preserved"}
+    if previous is not None:
+        original.update(dict.fromkeys(keys, previous))
+    session = SimpleNamespace(env=original.copy())
+    with pytest.raises(RuntimeError, match="task failed"):
+        with cuj2._provider_routing(session):
+            assert session.env[keys[0]] == "1"
+            assert session.env[keys[1]] == "first_prompt_and_subagent_no_orch_v0"
+            raise RuntimeError("task failed")
+    assert session.env == original
+
+
 def _client(headers):
     return SimpleNamespace(config=SimpleNamespace(authenticate=lambda: headers))
 

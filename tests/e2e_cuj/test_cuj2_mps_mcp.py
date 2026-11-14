@@ -6,12 +6,19 @@ import hashlib
 import json
 import shutil
 import tomllib
+from contextlib import contextmanager
 from dataclasses import asdict
 from types import SimpleNamespace
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
 from tests.integration.utils.evidence import FileTask, fresh_id, read_jsonl
+from ucode.constants import ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR, UG_HEADERS_ENV_VAR
+from ucode.smart_routing.config import (
+    FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+)
+from ucode.ug_headers import ug_headers
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -211,13 +218,37 @@ def _assert_inference_request(recorder, request, *, provider: str, model: str, m
 
 def _assert_traffic_header(session, request) -> None:
     """Verify an opt-in traffic selector on each recorded gateway request."""
-    traffic_id = None
-    for line in session.env.get("UG_HEADERS", "").splitlines():
-        name, separator, value = line.partition(":")
-        if separator and name.strip().casefold() == "x-databricks-traffic-id":
-            traffic_id = value.strip()
+    headers = {
+        name.casefold(): value
+        for name, value in ug_headers(session.env.get(UG_HEADERS_ENV_VAR, "")).items()
+    }
+    traffic_id = headers.get("x-databricks-traffic-id")
     if traffic_id:
         assert request.headers.get("x-databricks-traffic-id") == traffic_id
+
+
+@contextmanager
+def _provider_routing(session):
+    settings = {
+        ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR: "1",
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    }
+    previous = {key: session.env.get(key) for key in settings}
+    session.env.update(settings)
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                session.env.pop(key, None)
+            else:
+                session.env[key] = value
+
+
+def _assert_provider_route(session, recorder, route, *, agent: str) -> None:
+    assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[agent][0]
+    _assert_traffic_header(session, route)
+    assert recorder.response_for(route).status_code == 200
 
 
 class _Cuj2Base(BaseCujTest):
@@ -329,13 +360,7 @@ class TestCuj2CodexSmartRouting(_Cuj2Base):
             session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
         )
         _assert_configured_files(session, workspace.url)
-        settings = {
-            "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS": "1",
-            "SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0",
-        }
-        previous = {key: session.env.get(key) for key in settings}
-        session.env.update(settings)
-        try:
+        with _provider_routing(session):
             recorder.prepare_launch()
             marker = f"CUJ2-CODEX-ROUTER-{fresh_id()}"
             task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
@@ -348,9 +373,7 @@ class TestCuj2CodexSmartRouting(_Cuj2Base):
                 tui.wait_until(lambda: evidence.completed(task), "completed Codex task")
                 route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
                 assert route.payload["task"]["prompt"] == task.prompt
-                assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0]
-                _assert_traffic_header(session, route)
-                assert recorder.response_for(route).status_code == 200
+                _assert_provider_route(session, recorder, route, agent=CODEX)
                 request = _served_marker_request(recorder, checkpoint, CODEX, marker)
                 _assert_traffic_header(session, request)
                 _assert_inference_request(
@@ -389,18 +412,8 @@ class TestCuj2CodexSmartRouting(_Cuj2Base):
                 ]
                 assert routes, "No route request matched a delegated task decision"
                 for route in routes:
-                    assert (
-                        route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0]
-                    )
-                    _assert_traffic_header(session, route)
-                    assert recorder.response_for(route).status_code == 200
+                    _assert_provider_route(session, recorder, route, agent=CODEX)
                 tui.exit_normally()
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    session.env.pop(key, None)
-                else:
-                    session.env[key] = value
 
 
 class TestCuj2ClaudeSmartRouting(_Cuj2Base):
@@ -412,13 +425,7 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
             session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
         )
         _assert_configured_files(session, workspace.url)
-        settings = {
-            "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS": "1",
-            "SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0",
-        }
-        previous = {key: session.env.get(key) for key in settings}
-        session.env.update(settings)
-        try:
+        with _provider_routing(session):
             recorder.prepare_launch()
             marker = f"CUJ2-CLAUDE-ROUTER-{fresh_id()}"
             task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
@@ -434,9 +441,7 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 tui.wait_until(lambda: evidence.completed(task), "completed Claude task")
                 route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
                 assert route.payload["task"]["prompt"] == task.prompt
-                assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
-                _assert_traffic_header(session, route)
-                assert recorder.response_for(route).status_code == 200
+                _assert_provider_route(session, recorder, route, agent=CLAUDE)
                 request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
                 _assert_traffic_header(session, request)
                 _assert_inference_request(
@@ -467,19 +472,9 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 ]
                 assert routes, "No route request matched the delegated task"
                 for route in routes:
-                    assert (
-                        route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
-                    )
-                    _assert_traffic_header(session, route)
-                    assert recorder.response_for(route).status_code == 200
+                    _assert_provider_route(session, recorder, route, agent=CLAUDE)
                 tui.wait_for_background_tasks()
                 tui.exit_normally()
-        finally:
-            for key, value in previous.items():
-                if value is None:
-                    session.env.pop(key, None)
-                else:
-                    session.env[key] = value
 
 
 class TestCuj2ClaudeInference(_Cuj2Base):

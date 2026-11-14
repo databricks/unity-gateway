@@ -907,9 +907,14 @@ def launch_codex(
         (catalog_models or []) if provider else catalog_models or _cached_routing_models(state)
     )
     if not available_models:
+        guidance = (
+            f"Check model discovery for Model Provider Service {provider}."
+            if provider
+            else "Run `ucode configure codex` to enable routing."
+        )
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
-            "Run `ucode configure codex` to enable routing."
+            + guidance
         )
     custom_oauth = state.get("custom_oauth")
     overlay = render_overlay(
@@ -917,7 +922,7 @@ def launch_codex(
         start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
-        **({"provider": provider} if provider else {}),
+        provider=provider,
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
         managed_http_headers=state.get("codex_http_headers"),
     )
@@ -976,7 +981,7 @@ def launch_codex(
             available_models=available_models,
             workspace=workspace if first_prompt else None,
             token_provider=(lambda: launch_token(state, workspace)) if first_prompt else None,
-            **({"provider": provider} if provider else {}),
+            provider=provider,
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
