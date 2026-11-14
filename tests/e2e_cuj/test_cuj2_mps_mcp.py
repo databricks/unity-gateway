@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tomllib
@@ -10,7 +11,7 @@ from types import SimpleNamespace
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
-from tests.integration.utils.evidence import FileTask, fresh_id
+from tests.integration.utils.evidence import FileTask, fresh_id, read_jsonl
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -208,6 +209,17 @@ def _assert_inference_request(recorder, request, *, provider: str, model: str, m
     assert_served(recorder, request, model)
 
 
+def _assert_traffic_header(session, request) -> None:
+    """Verify an opt-in traffic selector on each recorded gateway request."""
+    traffic_id = None
+    for line in session.env.get("UG_HEADERS", "").splitlines():
+        name, separator, value = line.partition(":")
+        if separator and name.strip().casefold() == "x-databricks-traffic-id":
+            traffic_id = value.strip()
+    if traffic_id:
+        assert request.headers.get("x-databricks-traffic-id") == traffic_id
+
+
 class _Cuj2Base(BaseCujTest):
     WORKSPACE_URL = WORKSPACE_URL
 
@@ -308,6 +320,89 @@ class TestCuj2CodexInference(_Cuj2Base):
         session.record("cuj2-codex-evidence", {"marker": marker, **asdict(turn)})
 
 
+class TestCuj2CodexSmartRouting(_Cuj2Base):
+    def test_cuj_codex_mps_smart_routing_header(self, cuj):
+        """A managed MPS reaches the real router for Codex's parent and child tasks."""
+        session, workspace, recorder = cuj
+        _assert_cuj2_config(workspace.config())
+        recorder.configure_session(
+            session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
+        )
+        _assert_configured_files(session, workspace.url)
+        settings = {
+            "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS": "1",
+            "SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0",
+        }
+        previous = {key: session.env.get(key) for key in settings}
+        session.env.update(settings)
+        try:
+            recorder.prepare_launch()
+            marker = f"CUJ2-CODEX-ROUTER-{fresh_id()}"
+            task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+            evidence = SessionEvidence(session.home, CODEX)
+            checkpoint = recorder.checkpoint()
+            decisions_path = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
+            with Terminal(session, "cuj2-codex-router", [CODEX]) as tui:
+                tui.boot(timeout=150)
+                tui.submit(task.prompt)
+                tui.wait_until(lambda: evidence.completed(task), "completed Codex task")
+                route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
+                assert route.payload["task"]["prompt"] == task.prompt
+                assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0]
+                _assert_traffic_header(session, route)
+                assert recorder.response_for(route).status_code == 200
+                request = _served_marker_request(recorder, checkpoint, CODEX, marker)
+                _assert_traffic_header(session, request)
+                _assert_inference_request(
+                    recorder,
+                    request,
+                    provider=MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0],
+                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][1],
+                    marker=marker,
+                )
+
+                child = FileTask(session)
+                child.prompt = child.delegate_prompt
+                checkpoint = recorder.checkpoint()
+                decision_count = len(read_jsonl(decisions_path))
+                tui.submit(child.prompt)
+                tui.wait_until(
+                    lambda: (
+                        child.completed(session, CODEX, child=True)
+                        and child.completed(session, CODEX)
+                    ),
+                    "completed native subagent task and parent reply",
+                )
+                tasks = {
+                    decision["task_sha256"]
+                    for decision in read_jsonl(decisions_path)[decision_count:]
+                }
+                routes = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.method == "POST"
+                    and request.path == ROUTING_PATH
+                    and hashlib.sha256(
+                        request.payload["task"]["prompt"].encode("utf-8")
+                    ).hexdigest()
+                    in tasks
+                ]
+                assert routes, "No route request matched a delegated task decision"
+                for route in routes:
+                    assert (
+                        route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0]
+                    )
+                    _assert_traffic_header(session, route)
+                    assert recorder.response_for(route).status_code == 200
+                tui.exit_normally()
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    session.env.pop(key, None)
+                else:
+                    session.env[key] = value
+
+
 class TestCuj2ClaudeSmartRouting(_Cuj2Base):
     def test_cuj_claude_mps_smart_routing_header(self, cuj):
         """A managed MPS reaches the real router during a Claude TUI first prompt."""
@@ -340,8 +435,10 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
                 assert route.payload["task"]["prompt"] == task.prompt
                 assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
+                _assert_traffic_header(session, route)
                 assert recorder.response_for(route).status_code == 200
                 request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
+                _assert_traffic_header(session, request)
                 _assert_inference_request(
                     recorder,
                     request,
@@ -373,6 +470,7 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                     assert (
                         route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
                     )
+                    _assert_traffic_header(session, route)
                     assert recorder.response_for(route).status_code == 200
                 tui.wait_for_background_tasks()
                 tui.exit_normally()
