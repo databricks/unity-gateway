@@ -576,6 +576,7 @@ class TestFindCode:
             "which",
             lambda name: "/opt/bin/code-insiders" if name == "code-insiders" else None,
         )
+        monkeypatch.setattr(vscode, "_install_locations", lambda command: [])
 
         assert vscode.find_code() == Path("/opt/bin/code-insiders")
 
