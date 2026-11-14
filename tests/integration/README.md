@@ -1,5 +1,14 @@
 # Integration tests
 
+Comment-triggered `/integration-test` runs require authorization and a successful shared
+Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
+that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner
+selection and failure-reporting component tests are documented in the [main test guide](../README.md).
+They do not exercise live GitHub comment delivery or credentialed integration runs.
+
+`../test_security_scan.py` covers scanner policy and parsing with inert fixtures. Bash
+cases target the Linux scanner and do not run on Windows; Python parser checks run on both.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
