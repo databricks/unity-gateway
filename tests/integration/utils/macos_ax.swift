@@ -21,16 +21,24 @@ guard arguments.count >= 3, let pid = pid_t(arguments[2]) else { fatalError("usa
 guard AXIsProcessTrusted() else { fatalError("This process is not trusted for Accessibility") }
 let all = elements(AXUIElementCreateApplication(pid))
 let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
-switch arguments[1] {
-case "tree":
+func printTree(_ all: [AXUIElement]) {
     for element in all {
         print(([kAXRoleAttribute] + labels).map { attribute(element, $0) }.joined(separator: "\t"))
     }
+}
+switch arguments[1] {
+case "tree":
+    printTree(all)
 case "click" where arguments.count == 5:
     guard let target = all.first(where: { element in
         attribute(element, kAXRoleAttribute) == arguments[3]
             && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
-    }) else { fatalError("No \(arguments[3]) labelled \(arguments[4])") }
+    }) else {
+        printTree(all)
+        // fatalError traps before buffered stdout is flushed.
+        fflush(stdout)
+        fatalError("No \(arguments[3]) labelled \(arguments[4])")
+    }
     var position = CGPoint.zero, size = CGSize.zero
     var value: CFTypeRef?
     AXUIElementCopyAttributeValue(target, kAXPositionAttribute as CFString, &value)

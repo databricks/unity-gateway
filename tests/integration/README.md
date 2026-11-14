@@ -1492,7 +1492,11 @@ The required **Codex desktop inference · macOS** job installs the ChatGPT deskt
 OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml`, and runs the
 `macos_desktop` marker against the managed e2e workspace. GitHub's macOS image pre-grants
 Accessibility to the runner's shell, so no permission prompt is needed. It uploads
-`integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
+`integration-codex-desktop-macos` evidence.
+On a failed click, `chatgpt-click-failure.json` records the target, the readiness tree and a
+fresh failure tree (or capture-error class). A missing-control command also prints its lookup
+tree in `command-*.json`; the original click error remains the test failure.
+To update the app, take a newer `<enclosure>` from
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journey against the newest appcast build, so it shows
 when a bump is due.
