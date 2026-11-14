@@ -180,13 +180,13 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
     await $.ui.open({
       id: EXPLANATION_PANE, title: 'Why this model?', focus: true, closeOnEscape: true, rows: 18, columns: 72,
     })
-    if (state.openAttempt !== attempt) return true
+    if (state.openAttempt !== attempt) return Boolean(state.paneRecord)
     const panes = await $.ui.panes()
-    if (state.openAttempt !== attempt) return true
+    if (state.openAttempt !== attempt) return Boolean(state.paneRecord)
     if (state.paneRecord && panes.some((pane) => pane.id === EXPLANATION_PANE && pane.isPlaced)) return true
     await $.ui.close({ id: EXPLANATION_PANE })
   } catch {}
-  if (state.openAttempt !== attempt) return true
+  if (state.openAttempt !== attempt) return Boolean(state.paneRecord)
   if (state.paneRecord === record) {
     state.paneRecord = undefined
     state.modelId = undefined

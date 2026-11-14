@@ -1103,7 +1103,8 @@ test(`the Why button reports ${failure} failure and clears its pane record`, { o
 }
 
 for (const delayedFailure of ['ui.open', 'ui.panes'] as const) {
-test(`a late ${delayedFailure} failure preserves a newer open of the same decision`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+for (const cancellation of ['none', 'off', 'clear', 'resume'] as const) {
+test(`a late ${delayedFailure} failure respects a newer open followed by ${cancellation}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let failFirst!: () => void;
   let startedFirst!: () => void;
   const started = new Promise<void>((resolve) => { startedFirst = resolve; });
@@ -1113,6 +1114,7 @@ test(`a late ${delayedFailure} failure preserves a newer open of the same decisi
   const panes = [{ id: 'smart-router-explanation', title: 'Why this model?',
     isPlaced: true, isShown: true, isFocused: true }];
   on('session.id', () => ({ value: 'session-1' }));
+  on('session.end', () => ({ sessionId: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
     '{"model":"model-b","rationale":"Selected for the task"}',
   } }));
@@ -1133,13 +1135,18 @@ test(`a late ${delayedFailure} failure preserves a newer open of the same decisi
   await started;
   expect((await $.command.run({ command: 'smart-router', args: 'explain latest' })).text)
     .toBe('Showing the latest routing explanation.');
+  if (cancellation === 'off') await $.command.run({ command: 'smart-router', args: 'explain off' });
+  else if (cancellation !== 'none') await $.session.end({ reason: cancellation });
   failFirst();
-  await first;
+  expect((await first).text).toBe(cancellation === 'none'
+    ? 'Showing the latest routing explanation.' : 'Could not open the native routing explanation pane.');
   const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
-  expect(JSON.stringify(await pane.drawn())).toContain('Selected for the task');
-  expect(closes).toBe(0);
+  expect(JSON.stringify(await pane.drawn())).toContain(cancellation === 'none'
+    ? 'Selected for the task' : 'original Agent row');
+  expect(closes).toBe(cancellation === 'none' ? 0 : 1);
   await pane.unmount();
 });
+}
 }
 
 test('turning explanations off closes a pane that is still opening', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
