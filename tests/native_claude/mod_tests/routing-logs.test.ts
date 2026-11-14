@@ -236,7 +236,7 @@ test('the comparison selector preserves gateway and full dotted catalog identiti
     await ui.press({ key: 'd1' });
     let tree = JSON.stringify(await ui.drawn());
     expect(tree).toContain('The selected model matches the offered catalog.');
-    expect(tree).not.toContain('No detailed routing explanation was recorded.');
+    expect(tree).not.toContain('No detailed routing explanation is available.');
     await ui.select({ key: 'compare-model', value: cases[caseIndex].otherId });
     tree = JSON.stringify(await ui.drawn());
     expect(tree).toContain(`Catalog model ${cases[caseIndex].ids.indexOf(cases[caseIndex].otherId)} — considered`);
@@ -255,6 +255,10 @@ test('invalid explanation identity, selected model, catalog, or numbers keep the
     { ...explanation, selected_model: 'claude-opus' },
     { ...explanation, models: [...explanation.models, extraModel] },
     { ...explanation, models: [explanation.models[0]] },
+    { ...explanation, models: [explanation.models[0], explanation.models[0]] },
+    { ...explanation, models: explanation.models.map(model => ({ ...model, selected: true })) },
+    { ...explanation, models: explanation.models.map(model => ({ ...model, selected: false })) },
+    { ...explanation, models: explanation.models.map(model => ({ ...model, considered: false })) },
     { ...explanation, models: [{ ...explanation.models[0], quality_estimate: Number.NaN }, explanation.models[1]] },
   ];
   let index = -1;
@@ -278,7 +282,7 @@ test('invalid explanation identity, selected model, catalog, or numbers keep the
     expect(selectedRow).toBeDefined();
     const rendered = JSON.stringify(tree);
     expect(rendered).toContain('Because it is a search.');
-    expect(rendered).toContain('No detailed routing explanation was recorded.');
+    expect(rendered).toContain('No detailed routing explanation is available.');
     expect(rendered).not.toContain('Sonnet is the best fit for this search task.');
     if (index + 1 < invalid.length) await ui.press({ key: 'back' });
   }

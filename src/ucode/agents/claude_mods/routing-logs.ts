@@ -248,7 +248,7 @@ function explanationSection(
   const { Box, Text, Button, Select } = $.ui.resolve(e);
   const children = [Text({ bold: true, children: ['Routing explanation'] })];
   if (!current.explanation) {
-    children.push(Text({ children: ['No detailed routing explanation was recorded.'] }));
+    children.push(Text({ children: ['No detailed routing explanation is available.'] }));
   } else {
     const explanation = current.explanation;
     const chosen = explanation.models.find((model) => model.selected)!;
