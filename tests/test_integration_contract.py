@@ -1,6 +1,7 @@
 """Keep the black-box suite independent of application internals and test doubles."""
 
 import ast
+import contextlib
 import io
 import json
 import os
@@ -60,6 +61,47 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     assert event == {"event": "request_start", "request_id": "diagnostic-check"}
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["stderr"] == result.stderr
+
+
+@pytest.mark.parametrize("timeout", [False, True])
+def test_headless_codex_diagnostics_keep_metadata_on_timeout(tmp_path, timeout):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    diagnostic = (
+        "2026-11-14T00:00:00Z INFO codex_otel.trace_safe: "
+        'event.name="codex.api_request" duration_ms=700 '
+        'http.response.status_code=429 auth.request_id="request-123" '
+        'error.message="private response"'
+    )
+    program = (
+        "import sys,time; "
+        "print('ordinary stderr', file=sys.stderr, flush=True); "
+        f"print({diagnostic!r}, file=sys.stderr, flush=True); "
+        f"time.sleep({10 if timeout else 0})"
+    )
+    with (
+        pytest.raises(AssertionError, match="Command exceeded")
+        if timeout
+        else contextlib.nullcontext()
+    ):
+        session.run("-c", program, timeout=1 if timeout else 10)
+
+    recorded = json.loads((session.artifacts / "command-1.json").read_text())
+    assert recorded["timed_out"] is timeout
+    assert recorded["stderr"] == "ordinary stderr\n"
+    assert recorded["codex_diagnostics"] == [
+        {
+            "event.name": "codex.api_request",
+            "duration_ms": "700",
+            "http.response.status_code": "429",
+            "auth.request_id": "request-123",
+        }
+    ]
+    assert "private response" not in json.dumps(
+        {key: value for key, value in recorded.items() if key != "argv"}
+    )
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():

@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+from .agents.codex import DIAGNOSTIC_TARGET, diagnostic_events
 from .constants import CLAUDE_TEST_MODEL, CODEX_TEST_MODEL
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -77,6 +78,7 @@ def clean_environment(home: Path) -> dict[str, str]:
             # agy requires the literal "true"; "1" leaves background updates enabled.
             "AGY_CLI_DISABLE_AUTO_UPDATE": "true",
             "UCODE_RELAYED_PROXY_DIAGNOSTICS": "1",
+            "RUST_LOG": f"error,{DIAGNOSTIC_TARGET}=info",
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "NO_COLOR": "1",
             "TERM": "dumb",
@@ -173,6 +175,12 @@ class UserSession:
             stdout, stderr = proc.communicate(timeout=5)
         finally:
             stop_process(proc)
+        native_logs = [line for line in stderr.splitlines() if f" {DIAGNOSTIC_TARGET}:" in line]
+        stderr = "".join(
+            line
+            for line in stderr.splitlines(keepends=True)
+            if f" {DIAGNOSTIC_TARGET}:" not in line
+        )
         result = subprocess.CompletedProcess(
             command,
             proc.returncode,
@@ -189,6 +197,7 @@ class UserSession:
                 "stdin": input_text,
                 "stdout": result.stdout,
                 "stderr": result.stderr,
+                "codex_diagnostics": diagnostic_events("\n".join(native_logs)),
             },
         )
         detail = f"{command}\n{result.stdout}\n{result.stderr}"

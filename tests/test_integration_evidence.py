@@ -2,6 +2,7 @@
 
 import json
 import re
+import sqlite3
 from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
@@ -20,6 +21,57 @@ from tests.integration.utils.terminal import (
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+def test_codex_native_diagnostics_keep_metadata_without_payloads(tmp_path):
+    directory = tmp_path / ".codex"
+    directory.mkdir()
+    with sqlite3.connect(directory / "logs_2.sqlite") as connection:
+        connection.execute(
+            "CREATE TABLE logs (id INTEGER PRIMARY KEY, ts INTEGER, level TEXT, target TEXT, "
+            "thread_id TEXT, feedback_log_body TEXT)"
+        )
+        connection.executemany(
+            "INSERT INTO logs VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    1,
+                    100,
+                    "DEBUG",
+                    "codex_http_client::transport",
+                    "thread-id",
+                    'status_code=429 request_id="request-123" headers="Bearer private-key" '
+                    'body="private-response status=private-key" duration_ms=500',
+                ),
+                (2, 101, "INFO", "unrelated", "thread-id", 'body="private-other"'),
+                (
+                    3,
+                    102,
+                    "WARN",
+                    "codex_core::client",
+                    "thread-id",
+                    'attempt=2 error="private-prompt"',
+                ),
+            ],
+        )
+
+    result = codex.native_diagnostics(tmp_path)["logs_2.sqlite"]
+    assert result["latest_rows_limit"] == 2000
+    assert [event["timestamp"] for event in result["events"]] == [100, 102]
+    assert result["events"][0]["fields"] == [
+        {"status_code": "429", "request_id": "request-123", "duration_ms": "500"}
+    ]
+    assert result["events"][1]["fields"] == [{"attempt": "2"}]
+    assert "private" not in json.dumps(result)
+
+
+def test_codex_native_diagnostics_report_unreadable_database(tmp_path):
+    directory = tmp_path / ".codex"
+    directory.mkdir()
+    (directory / "logs_2.sqlite").write_text("private-invalid-database")
+
+    assert codex.native_diagnostics(tmp_path) == {"logs_2.sqlite": {"read_error": "DatabaseError"}}
+    assert codex.native_diagnostics(tmp_path / "missing") == {}
 
 
 @pytest.mark.parametrize(
