@@ -774,6 +774,48 @@ test('explanation costs use decimal notation without rounding small costs to zer
   }
 });
 
+for (const [selectedModel, routedModel, explanationId, accepted] of [
+  ['gpt-5.4.1', 'gpt-5.4.1[1m]', 'gpt-5.4.1', true],
+  ['databricks-gpt-5.4.1', 'databricks-gpt-5.4.1[1m]', 'databricks-gpt-5.4.1', true],
+  ['anthropic-aigw-01234567-gpt-5.4.1', 'anthropic-aigw-01234567-gpt-5.4.1[1m]', 'gpt-5.4.1', true],
+  ['gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', true],
+  ['custom.catalog.gpt-5.4.1', 'custom.catalog.gpt-5.4.1', 'custom.catalog.gpt-5.4.1', true],
+  ['custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1[1m]', true],
+  ['custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1', false],
+  ['custom.catalog.gpt-5.4.1', 'custom.catalog.gpt-5.4.1[1m]', 'custom.catalog.gpt-5.4.1', false],
+  ['gpt-5.4.1', 'gpt-5.4.2[1m]', 'gpt-5.4.1', false],
+] as const) {
+  test(`explanation handoff ${selectedModel} to ${routedModel} with ${explanationId}`, { options: {
+    ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
+  } }, async ($, on) => {
+    const spawns: string[] = [];
+    on('session.id', () => ({ value: 'session-1' }));
+    on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: routedModel, selected_model: selectedModel, rationale: 'Original route reason',
+      explanation: { ...explanation, selected_model: explanationId,
+        models: explanation.models.map((model) => ({ ...model, id: model.selected ? explanationId : 'alternative' })),
+      },
+    }) } }));
+    on('tool.call', () => ({ result: 'ok' }));
+    on('agent.spawn', ($, e) => { spawns.push(e.model!); return { model: e.model }; });
+    on('ui.open', () => ({ value: { isPlaced: true } }));
+    await $.tool.call({ tool: 'Agent', tool_use_id: 'handoff', ...originalInput });
+    await $.command.run({ command: 'smart-router', args: 'explain latest' });
+    const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
+    const tree = JSON.stringify(await pane.drawn());
+    if (accepted) {
+      expect(tree).toContain('Chosen: Model B');
+      expect(tree).toContain('Chosen for its expected quality.');
+    } else {
+      expect(tree).toContain('No routing explanation details were returned.');
+      expect(tree).toContain('Original route reason');
+    }
+    await pane.unmount();
+    await $.agent.spawn({ tool_use_id: 'handoff', prompt: 'inspect' });
+    expect(spawns).toEqual([routedModel]);
+  });
+}
+
 for (const [name, details, diagnostic] of [
   ['missing', undefined, false],
   ['malformed', { ...explanation, selected_model: 'model-c' }, true],
@@ -860,10 +902,11 @@ for (const mismatchedField of ['session_id', 'tool_use_id'] as const) {
 }
 
 for (const reason of ['clear', 'resume'] as const) {
-test(`session ${reason} during native ToolUse rendering does not render the native row twice`, { options: {
+test(`session ${reason} during native ToolUse rendering restores the original tool label`, { options: {
   ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
 } }, async ($, on) => {
   let renderCalls = 0;
+  const renderedTools: string[] = [];
   let renderStarted!: () => void;
   let finishRender!: () => void;
   const started = new Promise<void>((resolve) => { renderStarted = resolve; });
@@ -876,10 +919,11 @@ test(`session ${reason} during native ToolUse rendering does not render the nati
   }) } }));
   on('tool.call', () => ({ result: 'ok' }));
   on('ui.close', () => ({ value: undefined }));
-  on('ui.render', async () => {
+  on('ui.render', async ($, e) => {
     renderCalls++;
+    renderedTools.push(e.props.tool);
     if (renderCalls === 1) { renderStarted(); await ready; }
-    return { type: 'Text', props: {}, children: ['original Agent row'] };
+    return { type: 'Text', props: {}, children: [`original ${e.props.tool} row`] };
   });
 
   await $.command.run({ command: 'smart-router', args: 'explain on' });
@@ -889,7 +933,9 @@ test(`session ${reason} during native ToolUse rendering does not render the nati
   await $.session.end({ reason });
   finishRender();
   const rendered = await rendering;
-  expect(renderCalls).toBe(1);
+  expect(renderCalls).toBe(2);
+  expect(renderedTools[0]).not.toBe('Agent');
+  expect(renderedTools[1]).toBe('Agent');
   const tree = JSON.stringify(rendered);
   expect(tree).toContain('original Agent row');
   expect(tree).not.toContain('Selected Model');

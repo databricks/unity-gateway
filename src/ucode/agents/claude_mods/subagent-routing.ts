@@ -434,8 +434,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     }
     if (route?.explanation !== undefined) {
       try {
+        const selectedModel = route.selected_model === undefined ? route.model : route.selected_model
+        // Match Python's maybe_add_gpt_1m_suffix without collapsing catalog IDs.
+        const executionModel = typeof selectedModel === 'string'
+          && /^(?:anthropic-aigw-[0-9a-fA-F]{8}-)?(?:system\.ai\.)?(?:databricks-)?gpt-\d[a-z0-9.-]*$/.test(selectedModel)
+          ? `${selectedModel}[1m]` : selectedModel
         explanation = matchesRequestIdentity(route, sessionId, tool_use_id)
-          ? parseExplanation(route.explanation, route.model, sessionId, tool_use_id) : undefined
+          && typeof selectedModel === 'string'
+          && (route.selected_model === undefined || route.model === executionModel)
+          ? parseExplanation(route.explanation, selectedModel, sessionId, tool_use_id) : undefined
       } catch {
         // Optional display metadata must never discard a valid model selection.
       }
@@ -510,18 +517,19 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const generation = explanationState.generation
     const record = records.get(e.requestId)
     const name = names.get(e.requestId)
-    const original = await next(name && (record || pending.has(e.requestId)) ? {
+    const renamed = name && (record || pending.has(e.requestId))
+    const original = await next(renamed ? {
       ...e,
       props: { ...e.props, tool: name },
     } : e)
-    if (generation !== explanationState.generation) return original
+    if (generation !== explanationState.generation) return renamed ? next(e) : original
     if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
       const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
       const seconds = await secondsSince($, pending.get(e.requestId))
-      if (generation !== explanationState.generation) return original
+      if (generation !== explanationState.generation) return renamed ? next(e) : original
       const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',

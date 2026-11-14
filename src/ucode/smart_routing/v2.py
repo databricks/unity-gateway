@@ -614,7 +614,7 @@ def route_claude_subagent(
         "model": maybe_add_gpt_1m_suffix(route.routed_model),
         "rationale": route.decision.rationale,
         **(
-            {"explanation": route.decision.explanation}
+            {"selected_model": route.routed_model, "explanation": route.decision.explanation}
             if route.decision.explanation is not None
             else {}
         ),

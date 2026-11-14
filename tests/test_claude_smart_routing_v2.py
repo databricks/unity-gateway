@@ -523,9 +523,42 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
     assert normalized_null_identity["evidence"] == {"session_id": None, "tool_use_id": None}
 
 
-@pytest.mark.parametrize("prefix", ["anthropic-aigw-c442a48-", "anthropic-aigw-01234567-"])
-def test_gateway_wrappers_preserve_valid_explanation(tmp_path, monkeypatch, prefix):
-    selected = prefix + "system.ai.model-b"
+@pytest.mark.parametrize(
+    ("selected", "execution_model", "explanation_id"),
+    [
+        (
+            "anthropic-aigw-c442a48-system.ai.model-b",
+            "anthropic-aigw-c442a48-system.ai.model-b",
+            "model-b",
+        ),
+        (
+            "anthropic-aigw-01234567-system.ai.model-b",
+            "anthropic-aigw-01234567-system.ai.model-b",
+            "model-b",
+        ),
+        ("gpt-5.4.1", "gpt-5.4.1[1m]", "gpt-5.4.1"),
+        ("databricks-gpt-5.4.1", "databricks-gpt-5.4.1[1m]", "databricks-gpt-5.4.1"),
+        ("anthropic-aigw-01234567-gpt-5.4.1", "anthropic-aigw-01234567-gpt-5.4.1[1m]", "gpt-5.4.1"),
+        ("gpt-5.4.1[1m]", "gpt-5.4.1[1m]", "gpt-5.4.1[1m]"),
+        ("custom.catalog.gpt-5.4.1", "custom.catalog.gpt-5.4.1", "custom.catalog.gpt-5.4.1"),
+        (
+            "custom.catalog.gpt-5.4.1[1m]",
+            "custom.catalog.gpt-5.4.1[1m]",
+            "custom.catalog.gpt-5.4.1[1m]",
+        ),
+    ],
+)
+def test_gateway_wrappers_and_context_hint_preserve_valid_explanation(
+    tmp_path, monkeypatch, selected, execution_model, explanation_id
+):
+    explanation = {
+        **_EXPLANATION,
+        "selected_model": explanation_id,
+        "models": [
+            {**model, "id": explanation_id if model["selected"] else model["id"]}
+            for model in _EXPLANATION["models"]
+        ],
+    }
 
     def reply(request, timeout):
         return io.BytesIO(
@@ -534,7 +567,7 @@ def test_gateway_wrappers_preserve_valid_explanation(tmp_path, monkeypatch, pref
                     "route_selection": [
                         {
                             "route_option": {"model": selected},
-                            "params": {"routing_explanation": _EXPLANATION},
+                            "params": {"routing_explanation": explanation},
                         }
                     ],
                     "rationale": "Selected by router.",
@@ -553,11 +586,12 @@ def test_gateway_wrappers_preserve_valid_explanation(tmp_path, monkeypatch, pref
         },
         workspace="https://example.com",
         token="token",
-        available_models=[selected, prefix + "system.ai.alternative"],
+        available_models=[selected, "system.ai.alternative"],
     )
 
-    assert result["model"] == selected
-    assert result["explanation"] == _EXPLANATION
+    assert result["model"] == execution_model
+    assert result["selected_model"] == selected
+    assert result["explanation"] == explanation
 
 
 @pytest.mark.parametrize("wrapped", [False, True])
