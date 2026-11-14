@@ -4,11 +4,12 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from databricks.sdk.errors import DatabricksError, NotFound
 
-from tests.integration.utils.evidence import FileTask, assert_subagent_routed
+from tests.integration.utils.evidence import FileTask, assert_subagent_routed, fresh_id
 from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
@@ -217,8 +218,10 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 "--disable-databricks-ai-tools",
             ],
         )
-        task = FileTask(session)
-        task.prompt = task.delegate_prompt
+        greeting = SimpleNamespace(
+            prompt=f"Reply with a short greeting. Do not use tools. Request ID: {fresh_id()}.",
+            value=None,
+        )
         evidence = SessionEvidence(session.home, CLAUDE)
         checkpoint = request_recorder.checkpoint()
         with Terminal(
@@ -235,35 +238,47 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             ],
         ) as tui:
             tui.boot(timeout=150)
+            tui.submit(greeting.prompt)
+            tui.wait_until(lambda: evidence.completed(greeting), "completed routed greeting")
+            first_route = request_recorder.expect_request(
+                method="POST", path="/ai-gateway/routing/v1/routes:select", after=checkpoint
+            )
+            assert first_route.payload["task"]["prompt"] == greeting.prompt
+            assert first_route.headers[PROVIDER_HEADER] == provider
+            assert request_recorder.response_for(first_route).status_code == 200
+            evidence.assert_models(greeting, model)
+            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, greeting, model)
+
+            task = FileTask(session)
+            task.prompt = task.delegate_prompt
+            child_checkpoint = request_recorder.checkpoint()
             tui.submit(task.prompt)
             tui.wait_until(
-                lambda: evidence.completed(task) and task.completed(session, CLAUDE, child=True),
+                lambda: (
+                    task.completed(session, CLAUDE) and task.completed(session, CLAUDE, child=True)
+                ),
                 "completed routed parent and native child file task",
             )
-            requests = request_recorder.requests_after(checkpoint)
             routes = [
                 request
-                for request in requests
+                for request in request_recorder.requests_after(child_checkpoint)
                 if request.method == "POST"
                 and request.path == "/ai-gateway/routing/v1/routes:select"
                 and task.filename in request.payload["task"]["prompt"]
             ]
-            assert any(route.payload["task"]["prompt"] == task.prompt for route in routes)
-            assert any(route.payload["task"]["prompt"] != task.prompt for route in routes)
+            assert routes, "No route request matched the delegated file task"
             for route in routes:
                 assert route.headers[PROVIDER_HEADER] == provider
                 assert request_recorder.response_for(route).status_code == 200
             inference = [
                 request
-                for request in requests
+                for request in request_recorder.requests_after(checkpoint)
                 if request.method == "POST" and request.path == INFERENCE_PATHS[CLAUDE]
             ]
             assert inference, "No provider inference request was recorded"
             for request in inference:
                 assert request.headers[PROVIDER_HEADER] == provider
                 assert_served(request_recorder, request, model)
-            evidence.assert_models(task, model)
-            assert_inference_evidence(request_recorder, checkpoint, CLAUDE, task, model)
             assert_subagent_routed(session, CLAUDE, task)
             tui.wait_for_background_tasks()
             tui.exit_normally()
