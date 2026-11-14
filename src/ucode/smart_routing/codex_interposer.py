@@ -213,6 +213,7 @@ async def _handle_tui(
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
+    provider: str | None = None,
 ) -> None:
     path = getattr(getattr(tui, "request", None), "path", "/") or "/"
     uri = upstream_uri.rstrip("/") + path
@@ -230,6 +231,7 @@ async def _handle_tui(
                 token,
                 prompt,
                 list(available_models or []),
+                **({"provider": provider} if provider else {}),
                 log=log,
             )
 
@@ -346,6 +348,7 @@ async def _serve(
     token_provider: TokenProvider | None = None,
     switch_message_fn: SwitchMessageFn | None = None,
     session_controls: Path | None = None,
+    provider: str | None = None,
 ):
     async def handler(tui):
         try:
@@ -360,6 +363,7 @@ async def _serve(
                 token_provider,
                 switch_message_fn,
                 session_controls,
+                provider,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"[ERR] session: {exc!r}")
@@ -383,6 +387,7 @@ def start_interposer_thread(
     log_path: Path | None = None,
     ready_timeout: float = 10.0,
     session_controls: Path | None = None,
+    provider: str | None = None,
 ) -> tuple[int, Callable[[], None]]:
     def log(message: str) -> None:
         if log_path is None:
@@ -414,6 +419,7 @@ def start_interposer_thread(
                     token_provider,
                     switch_message_fn,
                     session_controls,
+                    provider,
                 )
             )
             holder["port"] = holder["server"].sockets[0].getsockname()[1]
