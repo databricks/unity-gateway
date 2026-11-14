@@ -34,8 +34,10 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -120,6 +122,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import MANAGED_OVERLAY_KEY, is_tool_managed, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
@@ -1591,19 +1594,6 @@ def write_tool_config(
         coding_agent_config_defaults = derived.coding_agent_config_defaults
         route_root_model = derived.route_root_model
         picker_catalog = derived.picker_catalog
-        if _explicit_configure and managed_manifest is None and picker_catalog is None:
-            from ucode.databricks import list_anthropic_model_catalog
-
-            discovered = list_anthropic_model_catalog(
-                state["workspace"], get_databricks_token(state["workspace"], state.get("profile"))
-            )
-            if not discovered.model_ids:
-                raise RuntimeError(
-                    discovered.error_msg or "No models are available for Claude Auto."
-                )
-            picker_catalog = default_model_picker_catalog(
-                state.get("claude_models") or {}, discovered_catalog=discovered
-            )
     previous_keys = ((state.get("managed_configs") or {}).get("claude") or {}).get("keys", [])
     web_search_model = _resolve_web_search_model(state)
     if web_search_model is not None and machine_wide_only():
@@ -1892,7 +1882,11 @@ def write_tool_config(
             *(["WebSearch"] if withdraws_web_search else []),
         ],
         passthrough_leaves=passthrough.record(),
-        auto_picker=not (provider or parent_schema or relayed),
+        auto_picker=(
+            not (provider or parent_schema or relayed)
+            and resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
+            == "1"
+        ),
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -2217,10 +2211,22 @@ def header_mod_active() -> bool:
 
 def auto_picker_available() -> bool:
     """A managed picker/allowlist must admit Auto before native startup."""
-    from ucode.agents.claude_auto import AUTO_MODEL, model_available, picker_is_configured
+    from ucode.agents.claude_auto import (
+        AUTO_MODEL,
+        is_auto_model,
+        model_available,
+        picker_is_configured,
+    )
 
     path = _managed_settings_path()
     settings = read_json_safe(path) if path is not None else {}
+    custom = settings.get("env", {})
+    if (
+        isinstance(custom, dict)
+        and custom.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
+        and not is_auto_model(str(custom["ANTHROPIC_CUSTOM_MODEL_OPTION"]))
+    ):
+        return False
     if "modelPicker" in settings:
         return picker_is_configured(settings)
     return model_available(AUTO_MODEL, settings)
@@ -2373,7 +2379,9 @@ def _reconcile_managed_settings(
         # The native picker and startup allowlist read their source directly,
         # before the merged settings.read hook. Install the row at configure;
         # subsequent launches only preserve an already configured row.
-        if installed or picker_is_configured(managed_before):
+        if "modelPicker" in picker_keys and (
+            _explicit_configure or picker_is_configured(managed_before)
+        ):
             desired_settings = add_picker_entry(desired_settings)
             owned_paths = [
                 *owned_paths,
@@ -2383,14 +2391,6 @@ def _reconcile_managed_settings(
                     for source in (managed_before, desired_settings)
                     for key in source.get("modelOverrides", {})
                     if is_auto_model(key)
-                ],
-                *[
-                    ["env", key]
-                    for key in (
-                        "ANTHROPIC_CUSTOM_MODEL_OPTION",
-                        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-                        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-                    )
                 ],
             ]
     # Only the explicit `ug configure` path adds the blanks.
@@ -3007,6 +3007,30 @@ def launch(
         if options.launch_model and not pinned_model
         else None
     )
+    if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) != "1":
+        from ucode.agents.claude_auto import is_auto_model
+
+        managed_path = _managed_settings_path()
+        managed = read_json_safe(managed_path) if managed_path is not None else {}
+        saved = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
+        if (
+            isinstance(saved, str)
+            and is_auto_model(saved)
+            and not managed.get("env", {}).get("ANTHROPIC_MODEL")
+        ):
+            for source in (managed, read_json_safe(CLAUDE_SETTINGS_PATH)):
+                overrides = source.get("modelOverrides")
+                target = overrides.get(saved) if isinstance(overrides, dict) else None
+                if isinstance(target, str) and not is_auto_model(target):
+                    session_model = session_model or target
+                    break
+        if is_auto_model(os.environ.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")):
+            for key in (
+                "ANTHROPIC_CUSTOM_MODEL_OPTION",
+                "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+                "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+            ):
+                os.environ.pop(key, None)
     routing_setup_failed = False
     if options.launch_smart_routing:
         try:

@@ -7,6 +7,7 @@ import pytest
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -19,26 +20,31 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
     },
 }
 
@@ -232,9 +238,13 @@ def test_enabled_version_keeps_a_known_version(agent, version):
         (None, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (config.SUBAGENT_AUTO_V0, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         *(
             (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
-            for version in sorted(set(config._VERSIONS) - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY})
+            for version in sorted(
+                set(config._VERSIONS)
+                - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_AUTO_V0}
+            )
         ),
     ],
 )
@@ -261,6 +271,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -268,6 +279,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
@@ -347,3 +359,25 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
     assert config.enabled_version_routes(env, agent="opencode") is False
     assert config.enabled_version_routes({}, agent="opencode") is False
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("version", sorted(config._VERSIONS))
+def test_auto_rollout_is_owned_by_versions_and_restored(agent, version):
+    inherited = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1",
+    }
+    applied = inherited.copy()
+    previous = config.apply_config(applied, agent=agent)
+    assert applied[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] == (
+        "1" if version == config.SUBAGENT_AUTO_V0 and agent == AGENT_CLAUDE else "0"
+    )
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == inherited
+
+
+def test_auto_flag_alone_does_not_enable_routing():
+    assert not v2.smart_routing_enabled(
+        {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
+    )

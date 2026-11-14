@@ -124,7 +124,11 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+export const registerSubagentRouting = (
+  on: On,
+  options: PluginOptions,
+  autoModels?: readonly string[],
+): void => {
   routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
@@ -143,6 +147,11 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    if (autoModels && (
+      !autoModels.includes(await $.session.model()) ||
+      (await $.env.get('ENABLE_SMART_ROUTING_V2') !== '1' &&
+       await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') !== '1')
+    )) return next(e)
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined

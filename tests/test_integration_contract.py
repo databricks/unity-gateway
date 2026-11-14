@@ -111,8 +111,8 @@ WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"
 # The quarantined Claude Smart Router toggle journey, split into one test per toggle state.
 CLAUDE_TOGGLE_TESTS = (
     "test_smart_router_routes_claude_subagent_at_launch",
-    "test_smart_router_model_turns_claude_subagent_routing_off",
-    "test_smart_router_model_turns_claude_subagent_routing_back_on",
+    "test_smart_router_skill_turns_claude_subagent_routing_off",
+    "test_smart_router_skill_turns_claude_subagent_routing_back_on",
 )
 
 

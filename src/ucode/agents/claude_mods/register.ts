@@ -3,6 +3,8 @@ import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-r
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
+  MODEL_SET_PREFIX,
+  MODEL_KEPT_PREFIX,
   CLI_MODULE,
   DISABLE_ROUTING_FLAG,
   DISABLED_RECIPE,
@@ -13,7 +15,6 @@ import {
 } from './constants.ts';
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
-import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 
@@ -46,19 +47,25 @@ async function customAutoRow($: EngineInterface, auto: AutoPicker, model: string
   await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION', auto.description);
 }
 
-type AutoEffortState = {model?: string; drafts: Record<string, string>; native: Record<string, string | undefined>};
+type AutoSelection = {model?: string};
 
-async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoEffortState): Promise<void> {
+async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoSelection): Promise<void> {
   state.model = await mainModel($, auto);
-  state.drafts = {};
   await $.ui.open({ id: 'auto-main', title: 'Choose your main model for Smart Routing', focus: true, closeOnEscape: true, rows: 18 });
   $.ui.invalidate('ui.render');
 }
 
-async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker): Promise<void> {
+async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker): Promise<boolean> {
   const enabled = await autoSelected($, auto);
   const current = isRoutingEnabled(await readSessionEnvironment($));
-  if (current !== enabled) await setRouting($, options, enabled, true);
+  if (current === enabled) return true;
+  try {
+    await setRouting($, options, enabled, true);
+    return true;
+  } catch {
+    $.ui.toast('Could not update Smart Routing. Restart through UG or retry the model selection.');
+    return false;
+  }
 }
 
 // Kept when a host description has no Usage notes section, so continuation stays native.
@@ -76,6 +83,7 @@ async function readEnvironment($: EngineInterface): Promise<Environment> {
     ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
     ENABLE_SMART_ROUTER_ORCHESTRATOR: await $.env.get('ENABLE_SMART_ROUTER_ORCHESTRATOR'),
+    ENABLE_SMART_ROUTER_AUTO_MODE: await $.env.get('ENABLE_SMART_ROUTER_AUTO_MODE'),
     CLAUDE_CODE_EXTRA_BODY: await $.env.get('CLAUDE_CODE_EXTRA_BODY'),
   };
 }
@@ -90,6 +98,7 @@ async function readSessionEnvironment($: EngineInterface): Promise<Environment> 
         'ENABLE_SMART_ROUTING_V2',
         'ENABLE_SMART_ROUTING_SUBAGENT_ONLY',
         'ENABLE_SMART_ROUTER_ORCHESTRATOR',
+        'ENABLE_SMART_ROUTER_AUTO_MODE',
       ]) {
         if (typeof overrides?.[key] === 'string') current[key] = overrides[key];
       }
@@ -111,6 +120,7 @@ async function writeEnvironment($: EngineInterface, env: Environment): Promise<v
   await $.env.set('ENABLE_SMART_ROUTING_V2', env.ENABLE_SMART_ROUTING_V2);
   await $.env.set('ENABLE_SMART_ROUTING_SUBAGENT_ONLY', env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY);
   await $.env.set('ENABLE_SMART_ROUTER_ORCHESTRATOR', env.ENABLE_SMART_ROUTER_ORCHESTRATOR);
+  await $.env.set('ENABLE_SMART_ROUTER_AUTO_MODE', env.ENABLE_SMART_ROUTER_AUTO_MODE);
   await $.env.set('CLAUDE_CODE_EXTRA_BODY', env.CLAUDE_CODE_EXTRA_BODY);
 }
 
@@ -153,6 +163,7 @@ async function setRouting(
     ENABLE_SMART_ROUTING_V2: enabled ? original('ENABLE_SMART_ROUTING_V2') : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: enabled ? original('ENABLE_SMART_ROUTING_SUBAGENT_ONLY') : '0',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: enabled ? original('ENABLE_SMART_ROUTER_ORCHESTRATOR') : '0',
+    ENABLE_SMART_ROUTER_AUTO_MODE: original('ENABLE_SMART_ROUTER_AUTO_MODE'),
     CLAUDE_CODE_EXTRA_BODY: mergeExtraBody(previous.CLAUDE_CODE_EXTRA_BODY, {
       [RECIPE_FIELD]: recipe,
     }),
@@ -173,10 +184,11 @@ async function setRouting(
 }
 
 export function register(on: On, options: PluginOptions): void {
-  const auto: AutoPicker | undefined = options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
+  const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   let choosing = false;
   let switchingAuto = false;
-  const effortState: AutoEffortState = {drafts:{}, native:{}};
+  const selection: AutoSelection = {};
+  let lastAutoModel: string | undefined;
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
@@ -196,7 +208,12 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   on('turn.step', async function* ($, e, next) {
-    if (auto && !e.agentId) await syncAutoRouting($, options, auto);
+    if (auto && !e.agentId) {
+      const selected = await $.session.model();
+      if (selected !== lastAutoModel) {
+        if (await syncAutoRouting($, options, auto)) lastAutoModel = selected;
+      }
+    }
     const active = await readOrchestratorState($, options);
     if (active !== orchestratorActive) {
       orchestratorActive = active;
@@ -218,20 +235,14 @@ export function register(on: On, options: PluginOptions): void {
       // Direct /model <name> commands have no panel handoff. In particular,
       // never reopen a pane after their manual-model confirmation closed it.
       if ((!e.args.trim() && typeof result.ref === 'number') || (e.args.trim() && await autoSelected($, auto))) {
-        await chooseMainModel($, auto, effortState);
+        await chooseMainModel($, auto, selection);
       }
-      return result;
-    });
-    on('command.run', {command:'effort'}, async ($, e, next) => {
-      const result = await next(e);
-      if (result.text) effortState.native[await $.session.model()] = result.text;
-      $.ui.invalidate('ui.render');
       return result;
     });
     on('ui.focus', {requestId:'auto-main'}, async ($, e, next) => {
       const row = auto.models.find((_, index) => e.element === 'auto-main-model-' + index);
-      if (row && effortState.model !== row.model) {
-        effortState.model = row.model;
+      if (row && selection.model !== row.model) {
+        selection.model = row.model;
         $.ui.invalidate('ui.render');
       }
       return next(e);
@@ -240,7 +251,7 @@ export function register(on: On, options: PluginOptions): void {
       // Overflow makes the native pane consume arrows as one-row scrolls.
       // Keep those keys on the model list; wheel and page scrolling stay native.
       if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e);
-      const current = Math.max(0, auto.models.findIndex(row => row.model === effortState.model));
+      const current = Math.max(0, auto.models.findIndex(row => row.model === selection.model));
       const index = Math.max(0, Math.min(auto.models.length - 1, current + e.by));
       const key = 'auto-main-model-' + index;
       const focused = await $.ui.focus({requestId:'auto-main', key});
@@ -251,26 +262,8 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.render', { component: 'Pane' }, async ($, e, next) => {
       if (e.requestId !== 'auto-main') return next(e);
       const { Box, Text, Button } = $.ui.resolve(e);
-      const layers = await Promise.all([
-        $.settings.read({source:'user'}), $.settings.read({source:'project'}),
-        $.settings.read({source:'local'}), $.settings.read({source:'flag'}), $.settings.read({source:'policy'}),
-      ]);
-      const environment = await $.env.get('CLAUDE_CODE_EFFORT_LEVEL');
-      const active = await autoSelected($, auto);
-      const model = effortState.model ?? await mainModel($, auto);
-      const row = auto.models.find(row => row.model === model) ?? auto.models[0];
-      const profile = effortProfile(row.autoModel, layers, environment, effortState.native[row.autoModel]);
-      const effort = effortState.drafts[row.model] ?? profile.level;
-      const editable = active && profile.levels.length > 0 && !profile.locked;
-      const adjust = (delta: number) => {
-        if (!editable) return;
-        const index = Math.max(0, Math.min(profile.levels.length - 1, profile.levels.indexOf(effort) + delta));
-        effortState.drafts[row.model] = profile.levels[index];
-        $.ui.invalidate('ui.render');
-      };
+      const model = selection.model ?? await mainModel($, auto);
       const save = async (selected: AutoPicker['models'][number]) => {
-        const draft = effortState.drafts[selected.model];
-        const previous = await mainModel($, auto);
         const active = await autoSelected($, auto);
         switchingAuto = true;
         pendingSelection?.cancel();
@@ -282,15 +275,12 @@ export function register(on: On, options: PluginOptions): void {
               throw new Error('Claude did not accept the selected main model.');
             }
           }
-          if (active && typeof draft === 'string' && EFFORT_LEVELS.includes(draft)) {
-            const result = await $.command.run({command: 'effort', args: draft});
-            if (result.text) effortState.native[selected.autoModel] = result.text;
-          }
           await $.store.set(auto.storeKey, selected.model);
         } catch (error) {
           // Preserve the selected profile and the single row after a rejected switch.
-          await customAutoRow($, auto, await mainModel($, auto) || previous);
-          throw error;
+          await customAutoRow($, auto, await mainModel($, auto));
+          $.ui.toast('Could not change Auto model. Check /model permissions and retry.');
+          return;
         } finally {
           switchingAuto = false;
         }
@@ -298,10 +288,6 @@ export function register(on: On, options: PluginOptions): void {
         $.ui.invalidate('ui.render');
         $.ui.toast(`Auto (${selected.label}) saved`);
       };
-      const symbols: Record<string,string> = {low:'○',medium:'◐',high:'●',xhigh:'◉',max:'✦',auto:'○'};
-      const hint = !active ? 'Select Auto in /model to adjust effort'
-        : !profile.levels.length ? `Effort not supported for ${row.label}`
-        : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!effortState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
         Text({ bold: true, children: ['Choose your main model for Smart Routing'] }),
         Text({ dimColor: true, children: ['Your main conversation uses this model. Smart Routing selects models for subagent tasks.'] }),
@@ -309,18 +295,7 @@ export function register(on: On, options: PluginOptions): void {
           Button({key:'auto-main-model-' + index,
             plain:true, autoFocus:item.model === model ? true : undefined,
             label:`${item.model === model ? '❯' : ' '} ${item.label}`, onPress:() => save(item)}))}),
-        Box({flexDirection:'row', marginY:1, children:[
-          Text({children:[hint, ...(editable ? [
-            Text({dimColor:true,children:[' · h/l to adjust effort']}),
-          ] : [])]}),
-          ...(editable ? [
-            // Keep pane shortcuts mounted without Claude's automatic button captions.
-            Box({width:0,height:0,overflow:'hidden',children:[
-              Button({key:'auto-effort-less',plain:true,hotkey:'h',label:'Lower effort',onPress:() => adjust(-1)}),
-              Button({key:'auto-effort-more',plain:true,hotkey:'l',label:'Raise effort',onPress:() => adjust(1)}),
-            ]}),
-          ] : []),
-        ]}),
+        Text({dimColor:true,children:['Use /effort to adjust the selected model’s native effort.']}),
         Text({dimColor:true,children:['Enter to save · Esc to cancel']}),
       ] });
     });
@@ -332,7 +307,7 @@ export function register(on: On, options: PluginOptions): void {
       if (choosing) return {};
       choosing = true;
       try {
-        await chooseMainModel($, auto, effortState);
+        await chooseMainModel($, auto, selection);
       } finally {
         choosing = false;
       }
@@ -345,8 +320,8 @@ export function register(on: On, options: PluginOptions): void {
       const internalSwitch = switchingAuto;
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
-      const keptModel = /^<local-command-stdout>Kept model/.test(text);
-      const setModel = /^<local-command-stdout>Set model to /.test(text);
+      const keptModel = text.startsWith(MODEL_KEPT_PREFIX);
+      const setModel = text.startsWith(MODEL_SET_PREFIX);
       // Close the provisional pane before forwarding the native confirmation.
       // Forwarding first can dismiss /model and expose the pane for one frame.
       const dismiss = !internalSwitch && (keptModel || (setModel && !await autoSelected($, auto)));
@@ -363,12 +338,6 @@ export function register(on: On, options: PluginOptions): void {
         } : block) },
       } : e;
       const result = await next(confirmation);
-      if (/^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i.test(text)) {
-        effortState.native[await $.session.model()] = text;
-        $.ui.invalidate('ui.render');
-      }
-      const modelEffort = text.match(/^<local-command-stdout>Set model to .*? with `?(low|medium|high|xhigh|max)`? effort/i)?.[1];
-      if (modelEffort) effortState.native[await $.session.model()] = 'Effort level: ' + modelEffort;
       if (dismiss && setModel) $.ui.invalidate('ui.render');
       if (internalSwitch || dismiss) return result;
       if (setModel) {
@@ -383,7 +352,7 @@ export function register(on: On, options: PluginOptions): void {
           if (choosing) return;
           choosing = true;
           try {
-            await chooseMainModel($, auto, effortState);
+            await chooseMainModel($, auto, selection);
           } finally {
             choosing = false;
           }
@@ -394,6 +363,7 @@ export function register(on: On, options: PluginOptions): void {
   }
 
   on('tool.describe', {tool: ['Agent', 'Task']}, async ($, e, next) => {
+    if (auto && !await autoSelected($, auto)) return next(e);
     const instructions = options.orchestratorInstructions as string;
     const orchestrating = await readOrchestratorState($, options);
     if (!orchestrating && (!options.routeCommand?.length || !isRoutingEnabled(await readSessionEnvironment($)))) return next(e);
@@ -442,7 +412,7 @@ export function register(on: On, options: PluginOptions): void {
     return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
   });
   registerStatusBand(on, auto);
-  registerSubagentRouting(on, options);
+  registerSubagentRouting(on, options, auto?.models.map(row => row.autoModel));
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', ($, e, next) => {
     endSubagentRoutingTurn(e.isAborted);

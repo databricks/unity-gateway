@@ -84,6 +84,7 @@ export function register(on) {
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "1",
     }
     options = {**_claude_mod_launch_options(routing), "autoPicker": json.dumps(catalog)}
     config["pluginConfigs"] = {"ug-smart-router": {"options": options}}

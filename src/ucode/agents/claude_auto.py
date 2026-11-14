@@ -73,7 +73,10 @@ def add_picker_entry(settings: dict) -> dict:
     ]
     result = deepcopy(settings)
     # Remove obsolete UG aliases, including targets withdrawn by the administrator.
-    overrides = result.setdefault("modelOverrides", {})
+    overrides = result.get("modelOverrides", {})
+    if not isinstance(overrides, dict):
+        return settings
+    result["modelOverrides"] = overrides
     for model in list(overrides):
         if is_auto_model(model):
             del overrides[model]
@@ -87,12 +90,14 @@ def add_picker_entry(settings: dict) -> dict:
         if remaining:
             allowed[:] = remaining
     env = result.setdefault("env", {})
+    ug_custom = is_auto_model(str(env.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")))
     for key in (
         "ANTHROPIC_CUSTOM_MODEL_OPTION",
         "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
         "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
     ):
-        env.pop(key, None)
+        if ug_custom:
+            env.pop(key, None)
     result["modelPicker"] = {**picker, "options": rows}
     if not available:
         return result
@@ -108,7 +113,11 @@ def add_picker_entry(settings: dict) -> dict:
 
 def picker_is_configured(settings: dict) -> bool:
     """Check the actual native source, including policy and immutable mapping."""
-    if settings.get("modelPicker", {}).get("replaceBuiltInOptions", False):
+    picker = settings.get("modelPicker")
+    overrides = settings.get("modelOverrides")
+    if not isinstance(picker, dict) or not isinstance(overrides, dict):
+        return False
+    if picker.get("replaceBuiltInOptions", False):
         return False
     return any(
         alias.startswith(AUTO_PREFIX)
@@ -116,17 +125,22 @@ def picker_is_configured(settings: dict) -> bool:
         and not is_auto_model(target)
         and model_available(alias, settings)
         and model_available(target, settings)
-        for alias, target in settings.get("modelOverrides", {}).items()
+        for alias, target in overrides.items()
     )
 
 
 def picker_config(
-    catalog: AnthropicModelCatalog, workspace: str, settings: dict | None = None
+    catalog: AnthropicModelCatalog,
+    workspace: str,
+    settings: dict | None = None,
+    default_model: str | None = None,
 ) -> str:
     """Give the mod only configured aliases for permitted inference targets."""
+    overrides = (settings or {}).get("modelOverrides", {})
+    overrides = overrides if isinstance(overrides, dict) else {}
     configured = {
         target: alias
-        for alias, target in (settings or {}).get("modelOverrides", {}).items()
+        for alias, target in overrides.items()
         if alias.startswith(AUTO_PREFIX)
         and isinstance(target, str)
         and model_available(alias, settings or {})
@@ -152,7 +166,7 @@ def picker_config(
         )
     if not rows:
         raise ValueError("Auto needs at least one available main model")
-    default = next((row for row in rows if "opus-5-5" in row["model"]), rows[0])
+    default = next((row for row in rows if row["model"] == default_model), rows[0])
     return json.dumps(
         {
             "model": default["autoModel"],

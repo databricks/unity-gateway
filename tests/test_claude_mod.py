@@ -20,7 +20,6 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
     # The entry point imports these, so they ship beside it unmodified.
     filenames = (
-        "auto-effort.ts",
         "register.ts",
         "constants.ts",
         "extra-body.ts",
@@ -116,6 +115,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
@@ -143,7 +143,8 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "unset": ["ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "ENABLE_SMART_ROUTER_ORCHESTRATOR"],
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "",
+        "unset": [key for key in SMART_ROUTING_ENV_KEYS if key != "ENABLE_SMART_ROUTING_V2"],
         "recipe": "stable",
         "routeCommand": [],
         "logsCommand": [],

@@ -32,6 +32,7 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -164,10 +165,13 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
         model_ids: list[str] = []
         labels: dict[str, str] = {}
         seen: set[str] = set()
+        has_targets = False
         for row in picker:
             if not isinstance(row, dict) or not isinstance(row.get("model"), str):
                 continue
             model_id = row["model"].strip()
+            if model_id and not is_auto_model(model_id):
+                has_targets = True
             if (
                 not model_id
                 or is_auto_model(model_id)
@@ -179,6 +183,8 @@ def _model_picker_catalog() -> AnthropicModelCatalog | None:
             model_ids.append(model_id)
             if isinstance(row.get("label"), str):
                 labels[model_id] = row["label"]
+        if not has_targets:
+            continue
         # An authoritative picker with no permitted targets must fail closed,
         # not fall through to a lower-priority list or gateway discovery.
         return AnthropicModelCatalog(
@@ -489,7 +495,6 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
     # These are imported by the entry point, so they ship beside it rather than as modules.
     for name in (
-        "auto-effort.ts",
         "register.ts",
         "constants.ts",
         "extra-body.ts",
@@ -761,7 +766,8 @@ def launch_claude(
     # Isaac's feedback-gated toggle remains its own flow. Do not sidestep it
     # through a model selection; explicit first-prompt presets also stay intact.
     auto_picker = (
-        not route_first_prompt
+        resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) == "1"
+        and not route_first_prompt
         and not _claude_print_mode(remaining)
         and not env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
     )
@@ -788,11 +794,19 @@ def launch_claude(
         settings = add_picker_entry(settings)
         managed_path = _managed_settings_path()
         managed_auto = read_json_safe(managed_path) if managed_path is not None else {}
-        auto_config = json.loads(
-            picker_config(
-                catalog, workspace, managed_auto if "modelPicker" in managed_auto else settings
+        try:
+            auto_config = json.loads(
+                picker_config(
+                    catalog,
+                    workspace,
+                    managed_auto if "modelPicker" in managed_auto else settings,
+                    default_model=launch_model
+                    or managed_auto.get("env", {}).get("ANTHROPIC_MODEL"),
+                )
             )
-        )
+        except ValueError as exc:
+            print_warning(f"Skipped Claude Auto: {exc}")
+            auto_picker = False
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
     if route_first_prompt and _claude_print_mode(remaining):
@@ -850,6 +864,12 @@ def launch_claude(
             rationale=decision.rationale,
         )
 
+    auto_env_keys = (
+        "ANTHROPIC_CUSTOM_MODEL_OPTION",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+    )
+    auto_env_before = {key: os.environ.get(key) for key in auto_env_keys}
     try:
         APP_DIR.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="claude-v2-", dir=APP_DIR) as directory:
@@ -894,6 +914,7 @@ def launch_claude(
                 and not start_model
                 and not has_explicit_model_arg(remaining)
                 and not resuming
+                and not managed_auto.get("env", {}).get("ANTHROPIC_MODEL")
             ):
                 saved = read_json_safe(user_settings_path).get("model")
                 variants = [row["autoModel"] for row in auto_config["models"]]
@@ -946,6 +967,7 @@ def launch_claude(
                     returncode = proc.wait()
     finally:
         model_setting.restore()
+        restore_smart_routing_env(auto_env_before)
     sys.exit(returncode)
 
 

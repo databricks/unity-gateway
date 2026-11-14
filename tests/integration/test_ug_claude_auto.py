@@ -3,7 +3,6 @@
 import json
 import re
 import shutil
-from urllib.parse import urlparse
 
 import pytest
 from utils.evidence import (
@@ -37,14 +36,8 @@ def test_ug_claude_auto_picker_routes_then_manual_model_disables_routing(live_se
     choices; resume matches Claude's native model/settings precedence.
     """
     session = live_session
-    # The staging workspace exposes the 5.5 generation; the CI workspace uses
-    # the existing routing fixture. The caller still selects workspace/auth.
-    fixture = (
-        "claude_auto"
-        if urlparse(workspace).hostname
-        == "eng-ml-agent-bricks-us-east-1.staging.cloud.databricks.com"
-        else "claude_smart_routing"
-    )
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0"
+    fixture = "claude_auto"
     path = use_managed_config_fixture(session, fixture)
     config = json.loads(path.read_text())["enabled_agents"][0]["config"]
     models = config["models"]["model_services"]
@@ -166,28 +159,22 @@ export function register(on) {
         original = snapshot(tui, "original")
         tui.exit_normally()
 
+    native = shutil.which("claude", path=session.env["PATH"])
+    assert native is not None
+    with AgentTerminal(
+        session, "claude", [native, "--plugin-dir", str(observer)], "auto-native-restart"
+    ) as tui:
+        tui.boot()
+        native_restarted = snapshot(tui, "native-restart")
+        tui.exit_normally()
     with AgentTerminal(session, "claude", launch, "auto-restart") as tui:
         tui.boot()
         restarted = snapshot(tui, "restart")
-        assert restarted["model"] == original["model"]
+        assert restarted["model"] == native_restarted["model"]
         assert restarted["routing"] == "0"
-        tui.submit("/model opus")
-        tui.wait_for(
-            lambda screen: "Set model to" in screen and selector not in screen,
-            "the saved native alias",
-        )
-        alias = snapshot(tui, "alias")
         tui.exit_normally()
 
-    with AgentTerminal(session, "claude", launch, "auto-restart-alias") as tui:
-        tui.boot()
-        assert snapshot(tui, "restart-alias")["model"] == alias["model"]
-        tui.exit_normally()
-
-    # Compare resume to the same installed Claude with the same managed settings.
-    # ANTHROPIC_MODEL, when configured, legitimately outranks a restored model.
-    native = shutil.which("claude", path=session.env["PATH"])
-    assert native is not None
+    # A managed ANTHROPIC_MODEL keeps native precedence on restart and resume.
     resume = ["--resume", original["id"], "--plugin-dir", str(observer)]
 
     def resumed_prompt(tui):
@@ -215,4 +202,40 @@ export function register(on) {
         tui.submit(task.prompt)
         tui.wait_for_task(task)
         task.assert_completed(session, "claude")
+        tui.exit_normally()
+
+
+def test_ug_claude_old_config_hides_auto_after_opt_in_configure(live_session, workspace):
+    """Scenario: configure Auto, then launch with the existing Claude-only preset.
+
+    Expected: a real file task completes, /model has no Auto row, and the old
+    Smart Router controls remain visible despite installed Auto aliases.
+    """
+    session = live_session
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_auto_v0"
+    use_managed_config_fixture(session, "claude_auto")
+    session.run(
+        "configure",
+        "--agent",
+        "claude",
+        "--workspace",
+        workspace,
+        "--skip-upgrade",
+        "--disable-databricks-ai-tools",
+        timeout=240,
+    )
+    session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_orch_v0_claude_only"
+    with AgentTerminal(session, "claude", [str(session.binary), "claude"], "legacy-picker") as tui:
+        tui.boot()
+        tui.submit("/model")
+        tui.wait_for(lambda screen: "Select model" in screen, "the legacy model picker")
+        assert not re.search(r"\d+\. Auto\b", tui.visible), tui.visible
+        tui.send("\x1b", "close legacy picker")
+        tui.wait_for(lambda screen: "Select model" not in screen, "the closed picker")
+        task = FileTask(session)
+        tui.submit(task.prompt)
+        tui.wait_for_task(task)
+        task.assert_completed(session, "claude")
+        tui.submit("/smart-router off")
+        tui.wait_for(lambda screen: "Smart Router is off" in screen, "legacy routing controls")
         tui.exit_normally()

@@ -17,12 +17,14 @@ from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import v2
 
 
-def test_auto_is_distinct_and_opus_55_is_default():
+def test_auto_uses_configured_default_and_preserves_catalog():
     catalog = AnthropicModelCatalog(
         ["system.ai.claude-fable-5-1", "system.ai.claude-opus-5-5[1m]", AUTO_MODEL],
         {"system.ai.claude-opus-5-5[1m]": "Opus"},
     )
-    result = json.loads(picker_config(catalog, "https://workspace"))
+    result = json.loads(
+        picker_config(catalog, "https://workspace", default_model="system.ai.claude-opus-5-5[1m]")
+    )
     assert result["model"] == auto_variant({"model": "system.ai.claude-opus-5-5[1m]"})
     assert result["mainModel"] == "system.ai.claude-opus-5-5[1m]"
     assert result["models"] == [
@@ -85,6 +87,7 @@ def test_native_launch_default_precedence_and_compatibility(
     monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "0")
     monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
     monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "1" if feedback else "0")
     monkeypatch.setenv(v2.SESSION_PYTHON_ENV_VAR, sys.executable)
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
@@ -218,76 +221,50 @@ def test_managed_policy_cannot_fall_through_to_unrestricted_user_models(
     assert v2._model_picker_catalog().model_ids == ["opus"]
 
 
-@pytest.mark.parametrize("existing_picker", [False, True])
-def test_configure_installs_auto_before_native_startup_and_launch_does_not_write(
-    tmp_path, monkeypatch, existing_picker
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("foreign_picker", [False, True])
+def test_configure_changes_only_ug_owned_picker_when_enabled(
+    tmp_path, monkeypatch, enabled, foreign_picker
 ):
     from tests.test_claude_header_mod import WS, _managed_env
     from ucode.agents import claude
 
     existing = (
-        {
-            "modelPicker": {
-                "replaceBuiltInOptions": True,
-                "options": [{"model": "system.ai.claude-opus-5", "label": "Opus 5"}],
-            }
-        }
-        if existing_picker
+        {"modelPicker": {"replaceBuiltInOptions": True, "options": [{"model": "admin-model"}]}}
+        if foreign_picker
         else None
     )
-    path, _root, writes = _managed_env(tmp_path, monkeypatch, existing)
-    state = {
-        "workspace": WS,
-        "claude_static_models": ["system.ai.claude-opus-5"],
-        "claude_models": {"opus": "system.ai.claude-opus-5"},
-    }
-    if existing_picker:
-        # No central CodingAgentConfig: keep the existing machine-wide list.
-        state.pop("claude_static_models")
-    monkeypatch.setattr(claude, "_explicit_configure", False)
-    claude.write_tool_config(state, "system.ai.claude-opus-5")
-    assert not claude.auto_picker_available()
-    assert not picker_is_configured(json.loads(path.read_text()))
+    path, _, writes = _managed_env(tmp_path, monkeypatch, existing)
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1" if enabled else "0")
     monkeypatch.setattr(claude, "_explicit_configure", True)
-    claude.write_tool_config(state, "system.ai.claude-opus-5")
-    assert claude.auto_picker_available()
-    assert picker_is_configured(json.loads(path.read_text()))
+    state = {"workspace": WS, "claude_models": {"opus": "opus"}}
+    if not foreign_picker:
+        state["claude_static_models"] = ["opus"]
+    claude.write_tool_config(state, "opus")
+    configured = json.loads(path.read_text())
+    assert picker_is_configured(configured) is (enabled and not foreign_picker)
+    if foreign_picker:
+        assert configured["modelPicker"] == existing["modelPicker"]
     before = path.read_bytes()
     count = len(writes)
     monkeypatch.setattr(claude, "_explicit_configure", False)
-    claude.write_tool_config(state, "system.ai.claude-opus-5")
+    claude.write_tool_config(state, "opus")
     assert path.read_bytes() == before
     assert len(writes) == count
 
 
-def test_configure_discovers_catalog_without_central_config(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
+def test_personal_configure_does_not_discover_or_own_picker(tmp_path, monkeypatch):
     from tests.test_claude_header_mod import WS, _managed_env
     from ucode.agents import claude
 
-    path, _, writes = _managed_env(tmp_path, monkeypatch)
+    path, _, _ = _managed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+    monkeypatch.setattr(claude, "_explicit_configure", True)
     monkeypatch.setattr(
-        claude, "refresh_managed_config", lambda *_a, **_k: SimpleNamespace(manifest=None)
+        "ucode.databricks.list_anthropic_model_catalog", lambda *_: pytest.fail("Extra discovery")
     )
-    monkeypatch.setattr(claude, "get_databricks_token", lambda *_a: "fixture")
-    catalog = AnthropicModelCatalog(["system.ai.claude-opus-5-5", "astra"], {"astra": "Astra"})
-    monkeypatch.setattr("ucode.databricks.list_anthropic_model_catalog", lambda *_a: catalog)
-    state = {"workspace": WS, "claude_models": {"opus": "system.ai.claude-opus-5-5"}}
-    claude.write_tool_config(state, "system.ai.claude-opus-5-5", derive_managed_model_inputs=True)
-    assert picker_is_configured(json.loads(path.read_text()))
-    before = path.read_bytes()
-    count = len(writes)
-    monkeypatch.setattr(claude, "_explicit_configure", False)
-    claude.write_tool_config(
-        state,
-        "system.ai.claude-opus-5-5",
-        picker_catalog=claude.default_model_picker_catalog(
-            state["claude_models"], discovered_catalog=catalog
-        ),
-    )
-    assert path.read_bytes() == before
-    assert len(writes) == count
+    claude.write_tool_config({"workspace": WS, "claude_models": {"opus": "opus"}}, "opus")
+    assert "modelPicker" not in json.loads(path.read_text())
 
 
 def test_auto_profiles_are_immutable_and_migrate_stale_aliases():
@@ -337,3 +314,30 @@ def test_removing_last_auto_alias_does_not_turn_allowlist_into_unrestricted():
     assert result["availableModels"] == [AUTO_MODEL]
     assert AUTO_MODEL not in result["modelOverrides"]
     assert not picker_is_configured(result)
+
+
+@pytest.mark.parametrize("value", [None, [], "malformed", 7])
+@pytest.mark.parametrize("key", ["modelPicker", "modelOverrides"])
+def test_malformed_settings_do_not_enable_auto(key, value):
+    assert not picker_is_configured({key: value})
+
+
+def test_admin_custom_option_is_preserved():
+    custom = {
+        "ANTHROPIC_CUSTOM_MODEL_OPTION": "admin-model",
+        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Admin",
+    }
+    original = {"env": custom, "modelPicker": {"options": [{"model": "opus"}]}}
+    assert add_picker_entry(original)["env"] == custom
+
+
+@pytest.mark.parametrize("rows", [[], [None, {}, {"model": "ug-auto"}]])
+def test_empty_or_malformed_picker_falls_through(tmp_path, monkeypatch, rows):
+    from ucode.agents import claude
+
+    path = tmp_path / "managed.json"
+    path.write_text(json.dumps({"modelPicker": {"options": rows}}))
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+    monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "absent")
+    monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "absent")
+    assert v2._model_picker_catalog() is None

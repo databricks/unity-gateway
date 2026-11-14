@@ -10,13 +10,13 @@ const config = {
 };
 const options = {
   ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
-  ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', unset: [], recipe: 'task_v3',
+  ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', ENABLE_SMART_ROUTER_AUTO_MODE: '1', unset: [], recipe: 'task_v3',
   autoPicker: JSON.stringify(config),
 };
 const start = {surface: 'terminal', isInteractive: true, cwd: '/work'} as const;
 
 function host(on: any, selected = 'ug-auto-opus') {
-  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+  const state = {selected, modelResult: {text: 'Set model'} as any, saved: undefined as unknown, processExitCode: 0, rejectModel: false, questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -28,7 +28,7 @@ function host(on: any, selected = 'ug-auto-opus') {
   on('fs.read', () => ({value: '{}'}));
   on('command.run', {command: 'model'}, ($: any, e: any, next: any) => {
     if (!e.args) return next(e);
-    state.selected = e.args; return state.modelResult;
+    if (!state.rejectModel) state.selected = e.args; return state.modelResult;
   });
   on('settings.read', () => ({value:{}}));
   on('session.model', () => ({value: state.selected}));
@@ -37,7 +37,7 @@ function host(on: any, selected = 'ug-auto-opus') {
   on('command.register', () => ({value: {}}));
   on('store.get', () => ({value: state.saved}));
   on('store.set', ($: any, e: any) => {state.saved = e.value; return {value: undefined};});
-  on('process.run', ($: any, e: any) => {state.calls.push(e); return {value: {exitCode: 0, stdout: '', stderr: ''}};});
+  on('process.run', ($: any, e: any) => {state.calls.push(e); return {value: {exitCode: state.processExitCode, stdout: '', stderr: ''}};});
   on('ui.open', ($: any, e: any) => { state.questions.push(e); return {value: {isPlaced: true}}; });
   on('ui.close', ($: any, e: any) => {state.closed.push(e); return {value: undefined};});
   on('agent.list', () => ({value: []}));
@@ -139,10 +139,9 @@ test('/auto changes only the main preference and offers the complete catalog', {
   expect(await hint($, state)).toBe('native · Auto (Astra 6.0)');
 });
 
-test('cancellation and a removed saved model preserve a valid default', {options}, async ($, on) => {
+test('a removed saved model preserves a valid default', {options}, async ($, on) => {
   const {state} = host(on);
   state.saved = 'removed';
-  state.ask = 'dismiss';
   await $.command.run({command: 'auto'});
   expect(state.saved).toBe('removed');
   await step($);
@@ -276,3 +275,45 @@ test('Auto arrow scrolling selects a model but wheel and page scrolling remain n
   expect(forwarded).toHaveLength(3);
   expect(focused).toHaveLength(1);
 });
+
+
+test('Auto remains unavailable when the launch feature flag is disabled', {options:{...options, ENABLE_SMART_ROUTER_AUTO_MODE:'0'}}, async ($, on) => {
+  const {state, env} = host(on, 'opus');
+  await $.session.start(start);
+  expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBeUndefined();
+  expect(state.questions).toHaveLength(0);
+  expect(await hint($, state)).toBe('native · smart router ON');
+});
+
+test('a rejected main-model switch preserves the current selection and preference', {options}, async ($, on) => {
+  const {state, env} = host(on);
+  state.rejectModel = true;
+  state.modelResult = {text:'Model not permitted'};
+  await $.session.start(start);
+  await $.command.run({command:'auto'});
+  const pane = await $.ui.mount({plugin:'ug-smart-router', component:'Pane', requestId:'auto-main', surface:'terminal', props:{} as any});
+  await pane.press({key:'auto-main-model-3'});
+  await pane.unmount();
+  expect(state.selected).toBe('ug-auto-opus');
+  expect(state.saved).toBeUndefined();
+  expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('ug-auto-opus');
+});
+
+for (const selected of ['opus', 'ug-auto-opus']) {
+  test(`failed routing controls fail closed when switching to ${selected}`,
+    {options: {...options, routeCommand: ['/ug/router']}}, async ($, on) => {
+      const {state} = host(on, selected === 'opus' ? 'ug-auto-opus' : 'opus');
+      on('tool.call', () => ({result: 'native child'}));
+      await $.session.start(start);
+      state.selected = selected;
+      state.processExitCode = 1;
+      const before = state.calls.length;
+      await step($);
+      expect(state.calls.length).toBe(before + 1);
+      const child = await $.tool.call({tool:'Agent', tool_use_id:'child', prompt:'Calculate 2+2', description:'Calculate', subagent_type:'general-purpose'});
+      expect(child.result).toBe('native child');
+      expect(state.calls.length).toBe(before + 1);
+      await step($);
+      expect(state.calls.length).toBe(before + 2);
+    });
+}

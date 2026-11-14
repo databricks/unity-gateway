@@ -1,50 +1,18 @@
 # Test suites and user journeys
 
-Claude Auto has Python and native Claude 2.1.290 component coverage for fixed
-per-main-model aliases, managed allow/deny policy, migration of the old shared alias,
-complete catalog selection, cancellation/reselection, and routing activation only
-while a configured Auto variant is selected. The native mod tests check actual
-model-command dispatch and that another session's saved preference cannot change
-the active inference target or indicator. The selector is labeled “Choose your main model
-for Smart Routing”; the active indicator uses `Auto (model name)`.
+Claude Auto component coverage checks immutable model aliases, configured defaults,
+admin policy and malformed settings, opt-in config precedence and restoration,
+main-model selection/cancellation, and routing on Auto versus ordinary models.
+Existing versions explicitly disable the Auto flag. Native profile checks drive
+two real terminals and preserve each session’s context window and model choice.
+Effort uses Claude’s own `/effort`; the duplicate custom effort implementation and
+its dedicated tests were removed. Native `/model` effort behavior remains unchanged.
 
-`native_claude/test_auto_profile.py` (relative to the tests directory) drives two real
-Claude terminals with the production UG mod. It checks a single checked Auto row,
-Opus 5.5 switching to Haiku 4.5 (200K), Sonnet 5.5 (1M), Fable 5.1 (1M),
-and Astra with `[1m]` (1M), changed effort support, independent sessions,
-Auto reselection, cancellation, and preference-only `/auto` under a manual model.
-It uses a dummy credential with no model responses: it does not establish
-inference, subagent routing, or actual `/compact` coverage. Native version pins are
-unchanged. It also guards against putting the custom option in settings env, which
-Claude reapplies after `/model` saves a selection.
-
-`native_claude/test_auto_effort.py` exercises Auto's custom main-model pane
-on the existing Claude 2.1.290 pin: h/l effort adjustment without moving model
-focus, Enter confirmation, a single checked Auto row, and Escape cancellation.
-It also runs at 60 columns and 22 rows, where the pane overflows: Up/Down must
-select and reveal model rows, Enter commits that model, and Escape preserves the
-previous selection. A native component test keeps wheel and page scrolling intact.
-Confirmation coverage requires “Set model to Auto” after both picker selection and
-main-model confirmation, with the internal selected profile unchanged. Component
-checks preserve native save/effort details, warnings, and regular-model confirmations.
-The change is applied through native `/effort` after model confirmation. This uses
-no inference. Profile component tests cover supported levels, settings caps and
-environment overrides. The stock `/model` picker remains unchanged.
-
-The existing `integration/test_ug_claude_auto.py` managed 80-column journey requires
-real parent/child answers and correlated routing decisions before and after a manual
-model choice. The fixed-variant journey passed on Ubuntu ARM64 with the existing Claude 2.1.290
-pin, including real routed and unrouted child tasks. The two-session native profile
-journey passed for all four alternatives on 2.1.290 and for Haiku on 2.1.322.
-A reported pane flash during manual selection was traced to closing the provisional
-Auto pane after forwarding the native confirmation. A regression verifies it closes
-before that confirmation is rendered, including cancellation, and that a regular
-model confirmation still refreshes the UI afterward. A 2.1.322 80-column
-capture found no unwanted pane in 33 frames across cancellation and manual selection;
-this does not guarantee frame-by-frame behavior on every terminal. Native header labels
-continue to show the underlying model. Launch regressions cover saved native aliases
-and avoiding an implicit model flag on resume/continue; the live journey additionally
-checks restart and compares resume against the same native Claude and managed settings.
+`integration/test_ug_claude_auto.py` opts into `subagent_auto_v0` explicitly and
+requires completed parent/child answers with a correlated routing decision only
+in Auto mode. It also verifies the old picker after switching back to an existing
+config version. Both journeys explicitly use the checked-in `claude_auto` managed fixture.
+These component checks do not establish live workspace coverage by themselves.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
