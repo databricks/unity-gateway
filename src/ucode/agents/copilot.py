@@ -226,7 +226,9 @@ def classify_model(
     elif declared and _CHAT_API_TYPES.isdisjoint(declared):
         return None, f"it isn't a chat model (it serves {', '.join(declared)})"
     wire = _wire_from_name(tail)
-    if provider_type in BEDROCK_PROVIDER_TYPES:
+    if provider_type in BEDROCK_PROVIDER_TYPES or (
+        provider_type in ("openai", "azure_openai") and API_OPENAI_RESPONSES in declared
+    ):
         return _classify_native_model(model, declared)
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         if wire != WIRE_ANTHROPIC:
@@ -250,8 +252,6 @@ def classify_model(
 
 
 def _classify_native_model(model: str, api_types: Iterable[str]) -> tuple[str | None, str | None]:
-    if reason := _UNSUPPORTED_MODELS.get(bare_model_name(model)):
-        return None, reason
     api, reason = native_chat_model_api(model, api_types)
     return next((wire for wire, route in _NATIVE_WIRE_ROUTES.items() if route == api), None), reason
 
@@ -379,19 +379,19 @@ def build_catalog(
     usable: dict[str, CopilotModel] = {}
     skipped: dict[str, str] = {}
     for model, api_types in models:
-        wire, reason = (
-            _classify_native_model(model, native_api_types[model])
-            if native_api_types and model in native_api_types
-            else classify_model(model, api_types, provider_type=provider_type)
-        )
+        native = bool(native_api_types and model in native_api_types)
+        if native and bare_model_name(model) in _UNSUPPORTED_MODELS:
+            wire, reason = None, _UNSUPPORTED_MODELS[bare_model_name(model)]
+        elif native:
+            wire, reason = _classify_native_model(model, native_api_types[model])
+        else:
+            wire, reason = classify_model(model, api_types, provider_type=provider_type)
         if wire is None and fallback_wire and bare_model_name(model) not in _UNSUPPORTED_MODELS:
             wire = fallback_wire
         if wire is not None:
             usable.setdefault(
                 model,
-                CopilotModel(
-                    model, wire, native=bool(native_api_types and model in native_api_types)
-                ),
+                CopilotModel(model, wire, native=native),
             )
         elif reason is not None:
             skipped.setdefault(model, reason)

@@ -712,6 +712,18 @@ class TestCopilotCatalogModelId:
 
 
 class TestClassifyProviderModel:
+    @pytest.mark.parametrize(
+        ("provider", "model", "api", "wire"),
+        [
+            ("anthropic", "claude-opus-4-1", "anthropic/v1/messages", "anthropic"),
+            ("microsoft_foundry", "claude-opus-4-1", "anthropic/v1/messages", "anthropic"),
+            ("azure_openai", "deployment-alias", "openai/v1/responses", "responses"),
+            ("openai", "gpt-4o", "openai/v1/responses", "responses"),
+        ],
+    )
+    def test_direct_provider_keeps_its_supported_native_wire(self, provider, model, api, wire):
+        assert copilot.classify_model(model, (api,), provider_type=provider) == (wire, None)
+
     @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
     @pytest.mark.parametrize(
         ("model", "api", "expected"),
