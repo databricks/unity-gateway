@@ -5,11 +5,21 @@ Re-runs the secret scan, pushes the gifs to the orphan `pr-demo-assets` branch
 of databricks/unity-gateway using git plumbing in a temporary index (no
 worktree, no checkout, the developer's index is untouched), edits the PR body
 between the `<!-- pr-demo:start ... -->` / `<!-- pr-demo:end -->` markers, and
-adds the `pr-demo-recorded` label. `--dry-run` prints the new PR body block
-without any network write.
+adds the `pr-demo-recorded` label. Publishing also removes any stale
+`NO_PR_DEMO_NEEDED_RATIONALE=` line from the body and drops the
+`no-pr-demo-needed` label. `--dry-run` prints the new PR body block without
+any network write.
+
+Every skip path also updates the PR body: it carries exactly one plain
+`NO_PR_DEMO_NEEDED_RATIONALE=<rationale>` line (top-level, outside any code
+fence) plus the `no-pr-demo-needed` label. `--mark-no-demo-needed` without
+`--reason` uses an automatic rationale for test/YAML-only branches;
+`--reason "<text>"` records an agent-judged skip with a human-readable block.
 
 Usage:
     uv run python scripts/pr_demo/publish.py --out pr-demo-out [--pr 123] [--dry-run]
+    uv run python scripts/pr_demo/publish.py --mark-no-demo-needed --pr 123 \
+        [--reason "<text>" [--tried "<command>"] ...] [--dry-run]
 """
 
 from __future__ import annotations
@@ -30,11 +40,21 @@ import record  # same directory; provides the shared secret-scan helpers
 
 ASSETS_BRANCH = "pr-demo-assets"
 LABEL = "pr-demo-recorded"
+NO_DEMO_LABEL = "no-pr-demo-needed"
+RATIONALE_PREFIX = "NO_PR_DEMO_NEEDED_RATIONALE="
+RATIONALE_MAX_CHARS = 300
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
 START_MARKER = "<!-- pr-demo:start"
 END_MARKER = "<!-- pr-demo:end -->"
+# Markers count only on their own lines, so prose that mentions them inline
+# (e.g. in backticks) is never treated as the block.
 PR_BLOCK_RE = re.compile(
-    re.escape(START_MARKER) + r"[^>]*-->.*?" + re.escape(END_MARKER) + r"\n?",
-    re.DOTALL,
+    r"^"
+    + re.escape(START_MARKER)
+    + r"[^>\n]*-->[ \t]*\n.*?^"
+    + re.escape(END_MARKER)
+    + r"[ \t]*(?:\n|\Z)",
+    re.DOTALL | re.MULTILINE,
 )
 GIF_NAMES = ("before.gif", "after.gif")
 PNG_NAMES = ("before.png", "after.png")
@@ -136,6 +156,144 @@ def repo_slug_from_remote(remote_url: str) -> str:
     """Parse owner/name from an origin URL; fall back to the upstream repo."""
     match = re.search(r"github\.com[:/](.+?)(?:\.git)?/?$", remote_url)
     return match.group(1) if match else "databricks/unity-gateway"
+
+
+def normalize_rationale(text: str) -> str:
+    """One plain line: collapse whitespace, strip, and cap near the limit."""
+    collapsed = " ".join(text.split())
+    if len(collapsed) > RATIONALE_MAX_CHARS:
+        collapsed = collapsed[: RATIONALE_MAX_CHARS - 3].rstrip() + "..."
+    return collapsed
+
+
+def _rationale_lines(body: str) -> tuple[list[int], list[int]]:
+    """Indices of rationale lines outside and inside code fences."""
+    outside: list[int] = []
+    fenced: list[int] = []
+    in_fence = False
+    for index, line in enumerate(body.split("\n")):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if line.startswith(RATIONALE_PREFIX):
+            (fenced if in_fence else outside).append(index)
+    return outside, fenced
+
+
+def apply_rationale_line(body: str, rationale: str) -> str:
+    """Body with exactly one top-level NO_PR_DEMO_NEEDED_RATIONALE line.
+
+    An existing top-level line is replaced in place; extra or code-fenced
+    copies are removed. With none present, the line is appended at the end
+    after a blank line. The rest of the body is preserved.
+    """
+    lines = body.split("\n")
+    outside, fenced = _rationale_lines(body)
+    for index in fenced:
+        lines[index] = None  # type: ignore[assignment]
+    if outside:
+        lines[outside[0]] = f"{RATIONALE_PREFIX}{rationale}"
+        for index in outside[1:]:
+            lines[index] = None
+    else:
+        while lines and lines[-1] is not None and not lines[-1].strip():
+            lines.pop()
+        if lines and any(line is not None and line.strip() for line in lines):
+            lines.append("")
+        lines.append(f"{RATIONALE_PREFIX}{rationale}")
+    result = "\n".join(line for line in lines if line is not None)
+    return result if result.endswith("\n") else result + "\n"
+
+
+def remove_rationale_line(body: str) -> tuple[str, bool]:
+    """Drop every NO_PR_DEMO_NEEDED_RATIONALE line; report whether one existed."""
+    lines = body.split("\n")
+    outside, fenced = _rationale_lines(body)
+    removed = set(outside) | set(fenced)
+    if not removed:
+        return body, False
+    kept = [line for index, line in enumerate(lines) if index not in removed]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    return "\n".join(kept) + "\n", True
+
+
+def build_no_demo_block(*, reason: str, tried: list[str]) -> str:
+    """Human-readable marker block for an agent-judged skip."""
+    lines = [
+        f"{START_MARKER} no-demo -->",
+        "## No demo recorded (pr-demo)",
+        "",
+        "No before/after demo was recorded for this pull request.",
+        "",
+        f"Reason: {reason}",
+    ]
+    if tried:
+        lines.extend(["", "Commands tried:", *(f"- `{command}`" for command in tried)])
+    lines.extend(["", END_MARKER])
+    return "\n".join(lines)
+
+
+def scan_secret_text(kind: str, text: str) -> None:
+    """Refuse text that matches the secret patterns, before any gh write."""
+    _, remaining = record.sanitize_capture(text, redact_host=False)
+    if remaining:
+        listing = "\n".join(f"  - {matched_kind}: {value}" for matched_kind, value in remaining)
+        raise SystemExit(f"{kind} looks like it contains secrets; not updating the PR:\n{listing}")
+
+
+def current_pr_body(pr: int) -> str | None:
+    """The current PR body, or None when it cannot be read."""
+    try:
+        return json.loads(gh("pr", "view", str(pr), "--json", "body").stdout)["body"]
+    except (subprocess.CalledProcessError, KeyError, TypeError, json.JSONDecodeError, OSError):
+        return None
+
+
+def update_pr_body(pr: int, new_body: str) -> bool:
+    """Replace the PR body from a file; report success."""
+    with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as handle:
+        handle.write(new_body)
+        body_file = handle.name
+    try:
+        gh("pr", "edit", str(pr), "--body-file", body_file)
+        return True
+    except subprocess.CalledProcessError as error:
+        print(
+            f"warning: could not update the PR body ({error.stderr.strip()})",
+            file=sys.stderr,
+        )
+        return False
+    finally:
+        Path(body_file).unlink()
+
+
+def add_label(pr: int, label: str) -> bool:
+    """Add a PR label; report success."""
+    try:
+        gh("pr", "edit", str(pr), "--add-label", label)
+        return True
+    except subprocess.CalledProcessError as error:
+        print(
+            f"warning: could not add the {label} label ({error.stderr.strip()})",
+            file=sys.stderr,
+        )
+        return False
+
+
+def remove_label(pr: int, label: str) -> bool:
+    """Remove a PR label; a missing label is not a failure."""
+    try:
+        gh("pr", "edit", str(pr), "--remove-label", label)
+        return True
+    except subprocess.CalledProcessError as error:
+        if "not found" in (error.stderr or "").lower():
+            return False
+        print(
+            f"warning: could not remove the {label} label ({error.stderr.strip()})",
+            file=sys.stderr,
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -246,9 +404,7 @@ def branch_changes() -> list[str]:
     return [path for path in result.stdout.split("\0") if path]
 
 
-def check_skip() -> tuple[bool, list[str]]:
-    paths = branch_changes()
-    skip, blockers = classify_skip(paths)
+def report_skip(paths: list[str], skip: bool, blockers: list[str]) -> None:
     if skip:
         print("skip: all committed changes are tests or YAML files")
     elif not paths:
@@ -257,7 +413,71 @@ def check_skip() -> tuple[bool, list[str]]:
         print("record: non-test, non-YAML changes require a demo:")
         for path in blockers:
             print(f"  {path}")
+
+
+def check_skip() -> tuple[bool, list[str]]:
+    paths = branch_changes()
+    skip, blockers = classify_skip(paths)
+    report_skip(paths, skip, blockers)
     return skip, blockers
+
+
+def mark_no_demo_needed(args: argparse.Namespace) -> int:
+    """Label the PR no-pr-demo-needed and record the rationale in its body."""
+    if args.reason:
+        scan_secret_text("reason", args.reason)
+        for command in args.tried:
+            scan_secret_text("tried command", command)
+        rationale = normalize_rationale(args.reason)
+        block: str | None = build_no_demo_block(reason=args.reason, tried=args.tried)
+        note = f"reason: {rationale}"
+    else:
+        paths = branch_changes()
+        skip, blockers = classify_skip(paths)
+        report_skip(paths, skip, blockers)
+        if not skip:
+            return 1
+        rationale = normalize_rationale(
+            f"only test files and .yml/.yaml files changed ({len(paths)} files)"
+        )
+        block = None
+        note = "classifier: only test and YAML files changed"
+
+    if args.dry_run:
+        current = current_pr_body(args.pr)
+        if current is None:
+            print("dry run: could not read the current PR body (no write performed)")
+            print(f"dry run: rationale line: {RATIONALE_PREFIX}{rationale}")
+        else:
+            body = apply_rationale_line(
+                apply_pr_block(current, block) if block else current, rationale
+            )
+            print("dry run: resulting PR body:\n")
+            print(body)
+        if block:
+            print("\ndry run: PR body block:\n")
+            print(block)
+        print(f"\ndry run: would add the {NO_DEMO_LABEL} label to PR #{args.pr}")
+        return 0
+
+    current = current_pr_body(args.pr)
+    body_ok = False
+    if current is None:
+        print(
+            "warning: could not read the PR body; trying the label only",
+            file=sys.stderr,
+        )
+    else:
+        new_body = apply_rationale_line(
+            apply_pr_block(current, block) if block else current, rationale
+        )
+        body_ok = update_pr_body(args.pr, new_body)
+    label_ok = add_label(args.pr, NO_DEMO_LABEL)
+    print(
+        f"PR #{args.pr} marked no-pr-demo-needed ({note}); "
+        f"body updated: {body_ok}, label added: {label_ok}"
+    )
+    return 0 if body_ok and label_ok else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -272,6 +492,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--pr", type=int, help="pull request number (default: gh pr view)")
     parser.add_argument(
+        "--reason",
+        help="with --mark-no-demo-needed: an agent-judged reason written into the PR body",
+    )
+    parser.add_argument(
+        "--tried",
+        action="append",
+        default=[],
+        help="with --reason: a command that was tried and showed no change; repeatable",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="print the new PR body block without network writes"
     )
     args = parser.parse_args(argv)
@@ -282,19 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mark_no_demo_needed:
         if not args.pr:
             parser.error("--mark-no-demo-needed requires --pr")
-        skip, _ = check_skip()
-        if not skip:
-            return 1
-        try:
-            gh("pr", "edit", str(args.pr), "--add-label", "no-pr-demo-needed")
-        except subprocess.CalledProcessError as error:
-            print(
-                f"warning: could not add the no-pr-demo-needed label ({error.stderr.strip()})",
-                file=sys.stderr,
-            )
-            return 1
-        print(f"PR #{args.pr} labeled no-pr-demo-needed; body unchanged")
-        return 0
+        return mark_no_demo_needed(args)
     if not args.out:
         parser.error("--out is required when publishing")
 
@@ -319,6 +537,13 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(
             "text captures look like they contain secrets; not publishing:\n"
             f"{listing}\nRe-run record.py with --redact-host for workspace-hostname matches."
+        )
+
+    if not manifest.get("allow_identical") and captures["before"] == captures["after"]:
+        raise SystemExit(
+            "BEFORE and AFTER text captures are identical; the recording shows no change. "
+            "Re-record with commands whose output differs between the merge-base and "
+            "HEAD, or record with --allow-identical if an unchanged demo is intentional."
         )
 
     record.check_commands_for_secrets(commands, redact_host=False)
@@ -370,6 +595,7 @@ def main(argv: list[str] | None = None) -> int:
 
     current_body = json.loads(gh("pr", "view", str(pr), "--json", "body").stdout)["body"]
     new_body = apply_pr_block(current_body, block)
+    new_body, rationale_removed = remove_rationale_line(new_body)
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as handle:
         handle.write(new_body)
         body_file = handle.name
@@ -377,6 +603,8 @@ def main(argv: list[str] | None = None) -> int:
         gh("pr", "edit", str(pr), "--body-file", body_file)
     finally:
         Path(body_file).unlink()
+    if rationale_removed:
+        print("removed the stale NO_PR_DEMO_NEEDED_RATIONALE line from the PR body")
 
     try:
         gh("pr", "edit", str(pr), "--add-label", LABEL)
@@ -386,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
             f"a maintainer should run `gh label create {LABEL}` once",
             file=sys.stderr,
         )
+    remove_label(pr, NO_DEMO_LABEL)
     print(f"published: {asset_url(repo_slug, pr, head_sha[:7], 'before.gif')}")
     print(f"published: {asset_url(repo_slug, pr, head_sha[:7], 'after.gif')}")
     print(f"PR #{pr} body updated and labeled {LABEL} (when the label exists)")

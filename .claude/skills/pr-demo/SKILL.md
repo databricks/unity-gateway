@@ -50,17 +50,43 @@ ROOT=$(git rev-parse --show-toplevel)
    uv run python "$ROOT/scripts/pr_demo/publish.py" --mark-no-demo-needed --pr <number>
    ```
 
-   Report the label result and stop. The PR body is not edited. On a label failure,
-   report the warning and stop. An empty or mixed diff prints `record`.
+   This records the skip in the PR body as a single plain
+   `NO_PR_DEMO_NEEDED_RATIONALE=only test files and .yml/.yaml files changed (<n> files)`
+   line at column 0 (an existing line is replaced in place; running it twice is
+   idempotent and the rest of the body is preserved) and adds the
+   `no-pr-demo-needed` label. Report the result and stop. On a body or label
+   failure, report the warning and stop. An empty or mixed diff prints `record`.
 2. **Verify the branch is pushed and has an open PR.** Run
    `gh pr view --json number,headRefOid` and check that the PR head matches the
    branch. If no PR exists, report that and stop.
-3. **Read the diff and select commands.** Run
-   `git diff "$(git merge-base origin/main HEAD)"..HEAD` and skim the changed
-   files. Pick 2–4 short `ug` commands whose output visibly changes. Prefer
-   deterministic offline commands (`ug --help`, a subcommand's `--help`,
-   `ug --version`, or an argument error). Use workspace mode only if the change
-   cannot be shown offline.
+3. **Select commands: use supplied ones, or trace the diff.** If the invocation
+   that started this skill includes `ug ...` commands (for example
+   `/pr-demo ug configure --foo`, or several separated by `;` or newlines), use
+   them as given and skip the discovery below. The identical-output check in the
+   recording step still applies; if a supplied command shows no change, report
+   that instead of silently substituting other commands.
+
+   Otherwise run `git diff "$(git merge-base origin/main HEAD)"..HEAD` and trace
+   each changed function or string under `src/ucode/` to a command:
+
+   - Grep for its callers up to the Typer command in `src/ucode/cli.py` (the
+     `@app.command` / `app.add_typer` registration) that reaches it.
+   - Prefer arguments that reach the changed line without a workspace:
+     validation errors, flag conflicts, `--help` text, or early returns.
+   - Verify each candidate locally, offline, in a throwaway home:
+
+     ```bash
+     HOME=$(mktemp -d) UG_SKIP_OS_SETTINGS=1 uv run ug <args>
+     ```
+
+     It must exit within a few seconds with no prompt. Use `--workspace` only
+     if no offline path reaches the change. Keep 2–4 verified commands.
+
+   Worked example: a changed `RuntimeError` message in configure's flag
+   validation is reached with
+   `ug configure --model-location main.default --provider main.default.anthropic`
+   (it prints `ERROR --model-location and --provider cannot be combined.` and
+   exits in a few seconds, offline).
 4. **Record.** For example:
 
    ```bash
@@ -87,6 +113,12 @@ ROOT=$(git rev-parse --show-toplevel)
 
    Pass working-tree and unpushed-HEAD warnings on to the developer. Per-commit
    virtualenvs are cached under `~/.cache/ug-pr-demo/<sha>`.
+
+   If record.py exits with code 3 (`BEFORE and AFTER output are identical`),
+   the picked commands show no change: choose different commands and retry,
+   at most 3 recording attempts in total. Never pass `--allow-identical` to
+   bypass this check. If every attempt is identical, go to step 6 instead of
+   publishing an unchanged demo.
 5. **Publish.** Run:
 
    ```bash
@@ -99,8 +131,28 @@ ROOT=$(git rev-parse --show-toplevel)
    guarantee that arbitrary sensitive data is absent. The publisher pushes the
    gifs and PNGs to `pr-demo-assets` at `<pr>/<short-sha>/{before,after}.{gif,png}`,
    replaces the PR body block between `<!-- pr-demo:start ... -->` and
-   `<!-- pr-demo:end -->`, and adds `pr-demo-recorded`.
-6. **Report the result** (image links and PR link, or the skip label).
+   `<!-- pr-demo:end -->`, removes any stale `NO_PR_DEMO_NEEDED_RATIONALE=` line
+   and the `no-pr-demo-needed` label (the PR now has a demo), and adds
+   `pr-demo-recorded`.
+6. **No visible change: skip with a reason.** If the change has no user-visible
+   CLI output (for example an internal refactor), or three recording attempts
+   all produced identical output, mark the PR with an agent-judged reason:
+
+   ```bash
+   uv run python "$ROOT/scripts/pr_demo/publish.py" --mark-no-demo-needed \
+     --pr <number> \
+     --reason "<why no demo can show this change>" \
+     --tried "<command tried>" --tried "<another command>"
+   ```
+
+   `--reason` writes a short block between the usual `<!-- pr-demo:start ... -->`
+   and `<!-- pr-demo:end -->` markers (replacing any existing block idempotently)
+   plus the same `NO_PR_DEMO_NEEDED_RATIONALE=<reason>` line outside the block,
+   then adds `no-pr-demo-needed`. List the commands you attempted with the
+   repeatable `--tried`. The reason and tried commands go through the secret
+   scan; a hit blocks the update. Without `--reason`, the classifier must say
+   `skip` (step 1) or the command refuses.
+7. **Report the result** (image links and PR link, or the skip rationale).
 
 ## Failure handling
 

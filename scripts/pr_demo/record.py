@@ -13,6 +13,10 @@ dependencies and never touch the lock file):
     uv run --with pyte --with pillow python scripts/pr_demo/record.py \
         --command "ug --help" --command "ug doctor --help"
 
+When every command produces identical BEFORE and AFTER text, the demo would
+show no change: the run exits with code 3 before rendering anything.
+``--allow-identical`` overrides that guard for intentional no-op recordings.
+
 Like the other scripts in this directory, this file runs before ug is installed
 and uses the stdlib subprocess module directly. Interactive flows are recorded
 on macOS/Linux only; on Windows (or where pty is unavailable) recording falls
@@ -564,6 +568,17 @@ def screen_text(segments: list[list[tuple[float, bytes]]], *, rows: int, cols: i
     return "\n\n---\n\n".join(screen for screen in screens if screen)
 
 
+def compare_sides(
+    commands: list[str], before_texts: list[str], after_texts: list[str]
+) -> list[str]:
+    """Commands whose final screen text is identical before and after."""
+    return [
+        command
+        for command, before, after in zip(commands, before_texts, after_texts, strict=True)
+        if before == after
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
@@ -700,6 +715,12 @@ def main(argv: list[str] | None = None) -> int:
         help="replace workspace hostnames in text captures instead of failing on them",
     )
     parser.add_argument(
+        "--allow-identical",
+        action="store_true",
+        help="record even when BEFORE and AFTER output are identical (escape hatch; "
+        "the skill workflow must not use it)",
+    )
+    parser.add_argument(
         "--sleep", type=float, default=DEFAULT_SLEEP_SECONDS, help="seconds per command"
     )
     parser.add_argument("--rows", type=int, default=DEFAULT_ROWS, help="terminal rows")
@@ -794,6 +815,34 @@ def main(argv: list[str] | None = None) -> int:
     for _, chunks, _ in recordings.values():
         check_recording_for_secrets(chunks, rows=args.rows, cols=args.cols)
 
+    if not args.allow_identical:
+        before_texts = [
+            final_display(segment, rows=args.rows, cols=args.cols)
+            for segment in recordings["before"][2]
+        ]
+        after_texts = [
+            final_display(segment, rows=args.rows, cols=args.cols)
+            for segment in recordings["after"][2]
+        ]
+        identical = compare_sides(commands, before_texts, after_texts)
+        if len(identical) == len(commands):
+            print(
+                "error: BEFORE and AFTER output are identical for every command; "
+                "the demo would show no change:",
+                file=sys.stderr,
+            )
+            for command in commands:
+                print(f"  - {command}", file=sys.stderr)
+            print(
+                "Pick commands whose output differs between the merge-base and HEAD "
+                "and retry. If the change has no user-visible CLI output, mark the PR "
+                "with publish.py --mark-no-demo-needed --reason instead.",
+                file=sys.stderr,
+            )
+            return 3
+        for command in identical:
+            warn(f"'{command}' produced identical BEFORE and AFTER output; it shows no change")
+
     render_rows = shared_render_rows(
         [chunks for _, chunks, _ in recordings.values()], rows=args.rows, cols=args.cols
     )
@@ -841,6 +890,7 @@ def main(argv: list[str] | None = None) -> int:
             "commands": commands,
             "mode": "workspace" if args.workspace else "offline",
             "redact_host": args.redact_host,
+            "allow_identical": args.allow_identical,
             "rows": args.rows,
             "render_rows": render_rows,
             "cols": args.cols,

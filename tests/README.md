@@ -1161,9 +1161,12 @@ they do not establish live agent coverage.
 `test_pr_demo.py` exercises the contributor `pr-demo` recorder and publisher with
 controlled git, install, and command boundaries. It checks output location and
 warnings, sandbox isolation, shared frame cropping (including transient content),
-identical recordings, ANSI/GIF/PNG/text output, secret scanning and host redaction,
-PR body preservation/idempotency, test/YAML-only skip classification and labeling,
-secret-blocked publishing, and matching skill discovery frontmatter. Renderer
+the identical-output gate (record exits with code 3 and publishing refuses an
+all-identical manifest), renderer fairness, ANSI/GIF/PNG/text output, secret
+gates for recordings, publishing, and skip reasons, the test/YAML-only skip
+classifier, PR body block and `NO_PR_DEMO_NEEDED_RATIONALE=` line transforms
+(insert, in-place replace, dedupe, idempotency, removal, one-line normalization),
+and matching skill discovery frontmatter. Renderer
 cases use `importorskip` for pyte and Pillow; run them with
 `uv run --with pyte --with pillow pytest tests/test_pr_demo.py`. They do not run
 real ug commands or use the network. `test_packaging.py` builds the wheel and

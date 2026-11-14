@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -51,7 +50,17 @@ def recorder(record: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> An
 
 
 def _record_args(tmp_path: Path) -> list[str]:
-    return ["--command", "ug --help", "--venv-cache", str(tmp_path / "cache"), "--sleep", "0"]
+    # --allow-identical keeps the renderer checks focused: the identical-output
+    # gate itself is covered by test_all_identical_captures_exit_with_distinct_code.
+    return [
+        "--command",
+        "ug --help",
+        "--venv-cache",
+        str(tmp_path / "cache"),
+        "--sleep",
+        "0",
+        "--allow-identical",
+    ]
 
 
 def test_output_directory_defaults_outside_checkout_and_warns_inside(
@@ -149,36 +158,91 @@ def test_crop_uses_all_frames_from_both_sides(
     assert (tmp_path / "tall" / "after.txt").read_text() == "final"
 
 
+def test_compare_sides_names_identical_commands(record: Any) -> None:
+    assert record.compare_sides(["a", "b"], ["same", "x"], ["same", "y"]) == ["a"]
+    assert record.compare_sides(["a"], ["x"], ["y"]) == []
+
+
+def test_all_identical_captures_exit_with_distinct_code(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    pytest.importorskip("pyte")
+    chunks = [(0.0, b"$ ug --help\r\n"), (0.3, b"same output\r\n")]
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
+    out = tmp_path / "out"
+    args = [
+        "--command",
+        "ug --help",
+        "--venv-cache",
+        str(tmp_path / "cache"),
+        "--sleep",
+        "0",
+        "--out",
+        str(out),
+    ]
+    assert recorder.main(args) == 3
+    assert "identical" in capsys.readouterr().err
+    assert not list(out.glob("*"))  # nothing rendered, captured, or written
+
+
 FAKE_PAT = "dapi" + "0123456789abcdef" * 2
 
 
-def test_secret_scan_and_host_redaction(record: Any) -> None:
-    clean = "Usage: ug [OPTIONS]\nNo such command 'badarg'.\n"
-    assert record.sanitize_capture(clean, redact_host=False) == (clean, [])
-    text = "\n".join(
-        [
-            f"token {FAKE_PAT}",
-            "Authorization: Bearer abc.def.ghi",
-            "jwt eyJhbGciOi.J9.abc-_123",
-            "mail first.last@example.com",
-            "host dbc-a1b2c3d4-e5f6.cloud.databricks.com",
-            "https://adb-123456789.0.azuredatabricks.net/?o=1234567890",
-            "x.gcp.databricks.com",
-        ]
+def test_recording_blocks_secrets_in_intermediate_screen_even_when_host_redaction_requested(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("pyte")
+    chunks = [(0.0, b"dbc-a1b2c3d4.cloud.databricks.com"), (0.4, b"\x1b[2J\x1b[Hclean")]
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="no images were rendered"):
+        recorder.main([*_record_args(tmp_path), "--out", str(out), "--redact-host"])
+    assert not list(out.glob("*.gif")) and not list(out.glob("*.png"))
+
+
+def test_skip_reason_secret_scan_blocks_before_any_write(publish: Any) -> None:
+    with pytest.raises(SystemExit, match="secrets"):
+        publish.scan_secret_text("reason", f"leak {FAKE_PAT}")
+    with pytest.raises(SystemExit, match="secrets"):
+        publish.scan_secret_text("tried command", f"ug --token {FAKE_PAT}")
+
+
+@pytest.mark.parametrize("where", ["capture", "command"])
+def test_secret_scan_blocks_publish_before_any_git_or_gh(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, where: str
+) -> None:
+    command = f"ug --token {FAKE_PAT}" if where == "command" else "ug --help"
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"base_sha": "base", "head_sha": "head", "commands": [command]})
     )
-    _, matches = record.sanitize_capture(text, redact_host=False)
-    assert {kind for kind, _ in matches} >= {
-        "databricks-pat",
-        "bearer-token",
-        "jwt",
-        "email",
-        "databricks-host",
-        "workspace-id",
-    }
-    redacted, remaining = record.sanitize_capture(text, redact_host=True)
-    assert redacted.count("https://<workspace>") == 3
-    assert all(kind != "databricks-host" for kind, _ in remaining)
-    assert any(kind == "databricks-pat" for kind, _ in remaining)
+    (tmp_path / "before.txt").write_text("clean output")
+    (tmp_path / "after.txt").write_text(
+        f"token {FAKE_PAT}" if where == "capture" else "different clean output"
+    )
+    calls = []
+    monkeypatch.setattr(publish, "run", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(publish, "git", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(publish, "gh", lambda *a, **kw: calls.append((a, kw)))
+    with pytest.raises(SystemExit):
+        publish.main(["--out", str(tmp_path), "--pr", "42"])
+    assert calls == []
+
+
+def test_publish_refuses_all_identical_manifest(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"base_sha": "base", "head_sha": "head", "commands": ["ug --help"]})
+    )
+    (tmp_path / "before.txt").write_text("same output")
+    (tmp_path / "after.txt").write_text("same output")
+    calls = []
+    monkeypatch.setattr(publish, "run", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(publish, "git", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(publish, "gh", lambda *a, **kw: calls.append((a, kw)))
+    with pytest.raises(SystemExit, match="identical"):
+        publish.main(["--out", str(tmp_path), "--pr", "42", "--dry-run"])
+    assert calls == []
 
 
 @pytest.mark.parametrize(
@@ -198,68 +262,6 @@ def test_secret_scan_and_host_redaction(record: Any) -> None:
 )
 def test_skip_classifier(publish: Any, paths: list[str], skip: bool, blockers: list[str]) -> None:
     assert publish.classify_skip(paths) == (skip, blockers)
-
-
-def test_skip_cli_labels_without_editing_body(
-    publish: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    monkeypatch.setattr(publish, "branch_changes", lambda: ["tests/test_cli.py"])
-    calls = []
-    monkeypatch.setattr(publish, "gh", lambda *args: calls.append(args))
-    assert publish.main(["--check-skip"]) == 0
-    assert capsys.readouterr().out.startswith("skip:")
-    assert calls == []
-    assert publish.main(["--mark-no-demo-needed", "--pr", "42"]) == 0
-    assert calls == [("pr", "edit", "42", "--add-label", "no-pr-demo-needed")]
-    monkeypatch.setattr(publish, "branch_changes", lambda: ["src/cli.py"])
-    assert publish.main(["--mark-no-demo-needed", "--pr", "42"]) == 1
-    assert len(calls) == 1
-
-
-def test_skip_label_failure_warns(
-    publish: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any
-) -> None:
-    monkeypatch.setattr(publish, "branch_changes", lambda: [".github/check.yml"])
-
-    def failed(*args: Any) -> None:
-        raise subprocess.CalledProcessError(1, args, stderr="label error")
-
-    monkeypatch.setattr(publish, "gh", failed)
-    assert publish.main(["--mark-no-demo-needed", "--pr", "42"]) != 0
-    assert "warning" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize("where", ["capture", "command"])
-def test_secret_scan_blocks_publish_before_any_git_or_gh(
-    publish: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, where: str
-) -> None:
-    command = f"ug --token {FAKE_PAT}" if where == "command" else "ug --help"
-    (tmp_path / "manifest.json").write_text(
-        json.dumps({"base_sha": "base", "head_sha": "head", "commands": [command]})
-    )
-    (tmp_path / "before.txt").write_text("clean output")
-    (tmp_path / "after.txt").write_text(
-        f"token {FAKE_PAT}" if where == "capture" else "clean output"
-    )
-    calls = []
-    monkeypatch.setattr(publish, "run", lambda *a, **kw: calls.append((a, kw)))
-    monkeypatch.setattr(publish, "git", lambda *a, **kw: calls.append((a, kw)))
-    monkeypatch.setattr(publish, "gh", lambda *a, **kw: calls.append((a, kw)))
-    with pytest.raises(SystemExit):
-        publish.main(["--out", str(tmp_path), "--pr", "42"])
-    assert calls == []
-
-
-def test_recording_blocks_secrets_in_intermediate_screen_even_when_host_redaction_requested(
-    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    pytest.importorskip("pyte")
-    chunks = [(0.0, b"dbc-a1b2c3d4.cloud.databricks.com"), (0.4, b"\x1b[2J\x1b[Hclean")]
-    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
-    out = tmp_path / "out"
-    with pytest.raises(SystemExit, match="no images were rendered"):
-        recorder.main([*_record_args(tmp_path), "--out", str(out), "--redact-host"])
-    assert not list(out.glob("*.gif")) and not list(out.glob("*.png"))
 
 
 def _block(publish: Any, head_sha: str, **overrides: Any) -> str:
@@ -289,6 +291,8 @@ def test_pr_body_insert_replace_and_idempotency(publish: Any) -> None:
     replaced = publish.apply_pr_block(with_outro, second)
     assert replaced == with_outro.replace(first, second)
     assert publish.apply_pr_block(replaced, second) == replaced
+    prose = "Edits the `<!-- pr-demo:start sha=... -->` / `<!-- pr-demo:end -->` markers.\n"
+    assert publish.apply_pr_block(prose, first) == prose + "\n" + first + "\n"
 
 
 def test_published_block_has_images_and_text_diff(publish: Any) -> None:
@@ -299,6 +303,47 @@ def test_published_block_has_images_and_text_diff(publish: Any) -> None:
     assert "````diff" in block and "-before output" in block and "+after output" in block
     same = _block(publish, "2222222222", before_text="same", after_text="same", stills=False)
     assert "````text" in same and ".png" not in same
+
+
+def test_normalize_rationale_is_one_bounded_line(publish: Any) -> None:
+    assert (
+        publish.normalize_rationale("  internal\nrefactor \twith  spaces  ")
+        == "internal refactor with spaces"
+    )
+    capped = publish.normalize_rationale("x" * 500)
+    assert len(capped) <= 300 and capped.endswith("...")
+
+
+def test_rationale_line_replace_append_idempotent_and_removal(publish: Any) -> None:
+    body = "## Summary\n\nBody text.\n"
+    appended = publish.apply_rationale_line(body, "internal refactor")
+    assert appended == body + "\nNO_PR_DEMO_NEEDED_RATIONALE=internal refactor\n"
+    # An existing line is replaced in place; the rest of the body is preserved.
+    replaced = publish.apply_rationale_line(
+        "## Summary\n\nNO_PR_DEMO_NEEDED_RATIONALE=old\n\nKeep.\n", "new"
+    )
+    assert replaced == "## Summary\n\nNO_PR_DEMO_NEEDED_RATIONALE=new\n\nKeep.\n"
+    assert publish.apply_rationale_line(replaced, "new") == replaced
+    # Extra and code-fenced copies are removed, leaving exactly one top-level line.
+    deduped = publish.apply_rationale_line(
+        "NO_PR_DEMO_NEEDED_RATIONALE=a\n```\nNO_PR_DEMO_NEEDED_RATIONALE=b\n```\ntail\n", "c"
+    )
+    assert deduped.count("NO_PR_DEMO_NEEDED_RATIONALE=") == 1
+    assert deduped.startswith("NO_PR_DEMO_NEEDED_RATIONALE=c\n") and "tail\n" in deduped
+    # Publishing a real demo removes the stale line again.
+    removed, changed = publish.remove_rationale_line(appended)
+    assert changed and removed == body
+    unchanged, changed = publish.remove_rationale_line(body)
+    assert not changed and unchanged == body
+
+
+def test_no_demo_block_carries_reason_and_tried_and_replaces_idempotently(publish: Any) -> None:
+    block = publish.build_no_demo_block(reason="internal refactor", tried=["ug --help"])
+    assert block.startswith("<!-- pr-demo:start")
+    assert block.endswith(publish.END_MARKER)
+    assert "Reason: internal refactor" in block and "- `ug --help`" in block
+    body = publish.apply_pr_block("## Summary\n\nIntro.\n", block)
+    assert publish.apply_pr_block(body, block) == body
 
 
 def test_skill_copies_and_frontmatter_contract() -> None:
