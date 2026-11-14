@@ -21,16 +21,22 @@ CURSOR_CIMD_CLIENT_ID = "https://cursor.com/oauth/mcp-client.json"
 
 
 def workspace_supports_cimd(workspace: str) -> bool:
-    """Whether this workspace advertises public-client CIMD for agent-driven OAuth."""
+    """Whether this workspace advertises CIMD. Retry failed metadata reads."""
+    try:
+        return _workspace_cimd_capability(workspace)
+    except (OSError, ValueError):
+        return False
+
+
+@lru_cache(maxsize=32)
+def _workspace_cimd_capability(workspace: str) -> bool:
+    """Cache valid authorization metadata for agents in this CLI process."""
     request = urllib.request.Request(
         f"{workspace.rstrip('/')}/oidc/.well-known/oauth-authorization-server",
         headers=ug_headers(),
     )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
-            metadata = json.load(response)
-    except (OSError, ValueError):
-        return False
+    with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310
+        metadata = json.load(response)
     if not isinstance(metadata, dict):
         return False
     methods = metadata.get("token_endpoint_auth_methods_supported")

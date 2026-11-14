@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import * as vscode from "vscode";
@@ -125,16 +126,34 @@ export const requestHeaders = (copilotChatVersion: unknown, managed: Readonly<Re
   };
 };
 
+/** The gateway logs this as the usage table's client session id, as it does for Codex. */
+export const SESSION_ID_HEADER = "session-id";
+
+/** Copilot Chat passes its chat session's id to other providers' models as `_conversationId`, a
+ * private option. Its subagents share their parent's, so a subagent gets no id of its own. */
+export const sessionHeaders = (modelOptions: unknown): Record<string, string> => {
+  const id = (modelOptions as { _conversationId?: unknown } | undefined)?._conversationId;
+  // A value fetch rejects as a header would fail every request.
+  return typeof id === "string" && /^[\x21-\x7e]{1,256}$/.test(id) ? { [SESSION_ID_HEADER]: id } : {};
+};
+
 type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
 
 export class DatabricksModels implements vscode.LanguageModelChatProvider<Model> {
   private tokens: Tokens | undefined;
+  private readonly changed = new vscode.EventEmitter<void>();
+  readonly onDidChangeLanguageModelChatInformation = this.changed.event;
 
   constructor(
     private readonly settings: () => Settings,
     private readonly log: (line: string) => void,
     private readonly headers: () => Record<string, string> = () => ({}),
   ) {}
+
+  /** Asks VS Code to list the models again. */
+  refresh(): void {
+    this.changed.fire();
+  }
 
   async provideLanguageModelChatInformation(): Promise<Model[]> {
     const { workspace, models, authCommand } = this.settings();
@@ -169,7 +188,11 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     const turn = { model: model.id, messages, tools: options.tools ?? [], toolRequired: options.toolMode === vscode.LanguageModelChatToolMode.Required };
     const abort = new AbortController();
     const cancelled = token.onCancellationRequested(() => abort.abort());
-    const headers = { ...this.headers(), ...(provider ? { [PROVIDER_HEADER]: provider } : {}) };
+    const headers = {
+      ...sessionHeaders(options.modelOptions),
+      ...this.headers(),
+      ...(provider ? { [PROVIDER_HEADER]: provider } : {}),
+    };
     const tokens = this.tokens;
     const stream = (path: string, body: object, extra: Record<string, string> = {}) =>
       streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);
@@ -212,13 +235,97 @@ const readConfigFile = (path: string): string | undefined => {
   }
 };
 
+const COPILOT_CHAT = "GitHub.copilot-chat";
+const TURN_ON_COMMAND = "workbench.action.chat.manage";
+const TURN_ON = "Turn On Copilot Chat";
+export const NOTICE_SHOWN_KEY = "copilotChatOffNoticeShown";
+
+/** Runs `ready` now if Copilot Chat is on, or else once it's turned on, asking the user once per profile to turn it
+ * on. VS Code turns Copilot Chat off in a profile that never finished its chat setup, and a prompt sent to a
+ * Databricks model then asks the user to sign in to GitHub. */
+export function whenCopilotChatIsOn(context: vscode.ExtensionContext, ready: (late: boolean) => void, log: (line: string) => void): void {
+  // In a remote window Copilot Chat runs on the remote side, out of this extension's sight.
+  if (vscode.env.remoteName || vscode.extensions.getExtension(COPILOT_CHAT)) {
+    ready(false);
+    return;
+  }
+  log("Copilot Chat is turned off in this VS Code profile, so the Databricks models aren't listed yet.");
+  const listener = vscode.extensions.onDidChange(() => {
+    const chat = vscode.extensions.getExtension(COPILOT_CHAT);
+    if (!chat) {
+      return;
+    }
+    listener.dispose();
+    Promise.resolve(chat.activate())
+      .catch((error: unknown) => log(`Copilot Chat didn't start: ${String(error)}`))
+      .finally(() => ready(true));
+  });
+  context.subscriptions.push(listener);
+  if (vscode.workspace.getConfiguration("chat").get("disableAIFeatures") === true || context.globalState.get(NOTICE_SHOWN_KEY)) {
+    return;
+  }
+  void offerToTurnOn(context).catch((error: unknown) => log(`Couldn't turn on Copilot Chat: ${String(error)}`));
+}
+
+const VENDOR = "databricks-unity-gateway";
+const OPEN_CHAT_COMMAND = "workbench.action.chat.open";
+export const SWITCHED_KEY = "modelSwitchedForConfig";
+
+/** Opens the chat on the configured default model, else the first model, once per `configKey`. VS Code applies the
+ * default model setting only to an empty chat whose model the user didn't pick, VS Code didn't restore and Copilot
+ * didn't set, so a chat left on a Copilot model would otherwise stay there. A developer's own default model wins. */
+export async function switchToDefaultModel(
+  context: vscode.ExtensionContext,
+  settings: Settings,
+  configKey: string,
+  log: (line: string) => void,
+): Promise<void> {
+  const model = settings.models.find(({ id }) => id === settings.defaultModel) ?? settings.models[0];
+  if (!model || context.globalState.get(SWITCHED_KEY) === configKey) {
+    return;
+  }
+  const own = vscode.workspace.getConfiguration("chat").get("defaultModel");
+  if (typeof own === "string" && own && own !== model.id) {
+    return;
+  }
+  const [chat] = await vscode.lm.selectChatModels({ vendor: VENDOR, id: model.id });
+  if (!chat) {
+    return;
+  }
+  await context.globalState.update(SWITCHED_KEY, configKey);
+  try {
+    // VS Code's own command, not API. Its model selector also finds the model in a Copilot session, where a model
+    // from an extension is wrapped under the agent host's vendor and the change-model command can't name it.
+    await vscode.commands.executeCommand(OPEN_CHAT_COMMAND, { modelSelector: { vendor: chat.vendor, id: chat.id } });
+  } catch (error) {
+    log(`Couldn't switch the chat to ${model.id}: ${String(error)}`);
+  }
+}
+
+const offerToTurnOn = async (context: vscode.ExtensionContext): Promise<void> => {
+  const choice = await vscode.window.showInformationMessage("Databricks models need Copilot Chat, which is turned off.", TURN_ON);
+  // Only once the user answered: a window closed first asks again next time.
+  await context.globalState.update(NOTICE_SHOWN_KEY, true);
+  if (choice !== TURN_ON) {
+    return;
+  }
+  try {
+    await vscode.commands.executeCommand(TURN_ON_COMMAND);
+  } catch {
+    // The command is VS Code's own, not API, so it may be gone in a later version.
+    await vscode.window.showInformationMessage("To turn on Copilot Chat, click + in the chat's model picker.");
+  }
+};
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Unity Gateway", { log: true });
   // Read once: ug changes the file only by reinstalling the extension, which takes a restart to load.
-  const settings = readConfig(readConfigFile(join(context.extensionPath, CONFIG_FILE)));
-  const headers = () => requestHeaders(vscode.extensions.getExtension("GitHub.copilot-chat")?.packageJSON?.version, settings.headers);
+  const configText = readConfigFile(join(context.extensionPath, CONFIG_FILE));
+  const settings = readConfig(configText);
+  const configKey = createHash("sha256").update(configText ?? "").digest("hex");
+  const headers = () => requestHeaders(vscode.extensions.getExtension(COPILOT_CHAT)?.packageJSON?.version, settings.headers);
   const provider = new DatabricksModels(() => settings, (line) => output.info(line), headers);
-  context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider("databricks-unity-gateway", provider));
+  context.subscriptions.push(output, vscode.lm.registerLanguageModelChatProvider(VENDOR, provider));
   const warn = (line: string) => output.warn(line);
   if (settings.otel && settings.workspace && settings.authCommand) {
     const receiver = startReceiver(settings.otel, settings.workspace, new Tokens(settings.authCommand), headers, warn);
@@ -230,7 +337,22 @@ export function activate(context: vscode.ExtensionContext): void {
     ...(settings.otel ? otelSettings(otelEndpoint(settings.otel)) : {}),
     ...(settings.defaultModel ? { [DEFAULT_MODEL_SETTING]: settings.defaultModel } : {}),
   };
-  syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
-    (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
+  const sync = () =>
+    syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
+      (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
+    );
+  const synced = sync();
+  // VS Code lists a provider's models only when a chat view asks or the provider reports a change, so a window that
+  // was open when ug installed the extension never lists them otherwise.
+  whenCopilotChatIsOn(
+    context,
+    (late) => {
+      provider.refresh();
+      // Copilot Chat's own settings exist only once it's on.
+      void (late ? sync() : synced)
+        .then(() => switchToDefaultModel(context, settings, configKey, warn))
+        .catch((error: unknown) => warn(`Couldn't switch to a Databricks model: ${String(error)}`));
+    },
+    warn,
   );
 }

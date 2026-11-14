@@ -105,7 +105,6 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
     while True:
         remaining()
         output_start = len(tui.output)
-        # AgentTerminal.submit's typed-input check, bounded by this inventory's deadline.
         tui.send("/mcp verbose", "type text before pressing Enter")
         tui.wait_for(
             lambda screen: "/mcpverbose" in "".join(screen.split()),

@@ -1,6 +1,6 @@
 """Managed coding-agent config: fetch, normalize, and local persistence (launch/refresh side).
 
-An org admin defines a ``CodingAgentConfig`` on the Databricks AI Gateway; developers read it
+An org admin defines a ``CodingAgentConfig`` on the Databricks Unity Gateway; developers read it
 (non-admin) and ``ucode`` applies it locally. This module owns the fetch/normalize side and the one
 machine-wide file, ``/etc/unitygateway/managed-settings.json`` (root-owned, 0644):
 
@@ -30,12 +30,14 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple, cast
 
 import ucode.config_io as config_io
+from ucode.constants import MDM_OS_ENV, MDM_OS_NONE
 from ucode.databricks import (
     fetch_managed_coding_agent_configs,
     fetch_model_recommendation,
@@ -65,6 +67,14 @@ REFRESH_TS_PATH = config_io.APP_DIR / "refresh_ts.json"
 # case, not an error. Kept here so the CLI (which surfaces it) uses one consistent message.
 NO_MANAGED_CONFIG_MESSAGE = "No coding-agent config has been set up by your workspace admin yet."
 
+# Telemetry: whether this machine was provisioned through MDM, and on which OS. `ug configure --mdm`
+# saves it beside the workspace policy; every run exports it as `MDM_OS`.
+_MDM_OS_NAMES = {OS.MACOS: "Mac", OS.WINDOWS: "Windows", OS.LINUX: "Linux"}
+# None outside `ug configure`; otherwise what this configure saves (`MDM_OS_NONE` clears it).
+_requested_mdm_os: str | None = None
+# `MDM_OS` as this process inherited it, used when nothing is saved.
+_inherited_mdm_os: str | None = None
+
 # CodingAgent proto enum -> ucode tool name. Anything unrecognized (e.g. a newer agent this ucode
 # build doesn't know) is dropped during normalization rather than guessed at. Public because the
 # admin-write side (``managed_setup``) inverts these maps to serialize, so a new agent or MCP type
@@ -83,7 +93,9 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
     enum[len(_AGENT_ENUM_PREFIX) :].lower(): tool for enum, tool in AGENT_ENUM_TO_TOOL.items()
 }
 
-MAX_SPEC_VERSION = 1
+# The newest managed-config ``spec_version`` this build reads. The server stamps 2 on a config that
+# uses ``mcp_servers.sources``, so builds that can't read ``sources`` refuse it and keep their cache.
+MAX_SPEC_VERSION = 2
 
 # The last authoritative read's outcome, persisted alongside the config so a launch can replay it
 # without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome is what
@@ -218,22 +230,57 @@ class AgentConfig:
         return result
 
 
+MCP_SOURCE_SCHEMA = "schema"
+MCP_SOURCE_NAME = "name"
+
+
+def mcp_source_kind(source: str) -> str | None:
+    """Classify one ``mcp_servers.sources`` entry, matching the server's rule.
+
+    Returns :data:`MCP_SOURCE_SCHEMA` for ``<catalog>.<schema>.*`` (every MCP service in that
+    schema), :data:`MCP_SOURCE_NAME` for an exact ``<catalog>.<schema>.<service>``, and ``None`` for
+    anything else: a different depth, an empty or whitespace-bearing part, or a ``*`` anywhere but
+    as the entire last part.
+    """
+    parts = source.split(".")
+    if len(parts) != 3 or any(not part or any(c.isspace() for c in part) for part in parts):
+        return None
+    catalog, schema, last = parts
+    if "*" in catalog or "*" in schema:
+        return None
+    if last == "*":
+        return MCP_SOURCE_SCHEMA
+    return None if "*" in last else MCP_SOURCE_NAME
+
+
 @dataclass(frozen=True)
 class NamesOrLocation:
-    """Selector for mcp_servers and skills: names list or UC location."""
+    """Selector for mcp_servers and skills: a names list, a UC location, or a sources list.
+
+    ``sources`` (mcp_servers only) mixes exact ``catalog.schema.name`` entries with
+    ``catalog.schema.*`` patterns, so one config can span several schemas; it supersedes the
+    deprecated single ``unity_catalog_location``.
+    """
 
     names: list[str] | None = None
     unity_catalog_location: str | None = None
+    sources: list[str] | None = None
 
     @classmethod
-    def from_wire(cls, value: object) -> NamesOrLocation | None:
-        """Parse the wire ``{names, unity_catalog_location}`` selector (exactly one per the API)."""
+    def from_wire(cls, value: object, *, allow_sources: bool = False) -> NamesOrLocation | None:
+        """Parse the wire ``{names, unity_catalog_location, sources}`` selector.
+
+        The API accepts exactly one of the three; keep whatever is present and let the resolver
+        apply the precedence ``sources`` > ``unity_catalog_location`` > ``names``. Only
+        ``mcp_servers`` has ``sources`` (``allow_sources``); a skills selector ignores it.
+        """
         value_dict = _as_dict(value)
         names = _str_list(value_dict.get("names"))
         location = _str(value_dict.get("unity_catalog_location"))
-        if not names and not location:
+        sources = _str_list(value_dict.get("sources")) if allow_sources else []
+        if not names and not location and not sources:
             return None
-        return cls(names=names or None, unity_catalog_location=location)
+        return cls(names=names or None, unity_catalog_location=location, sources=sources or None)
 
     def to_internal(self) -> dict:
         """Convert to internal shape."""
@@ -242,6 +289,8 @@ class NamesOrLocation:
             result["names"] = self.names
         if self.unity_catalog_location:
             result["unity_catalog_location"] = self.unity_catalog_location
+        if self.sources:
+            result["sources"] = self.sources
         return result
 
 
@@ -344,7 +393,7 @@ class CodingAgentConfig:
                 if tool is not None:
                     enabled_agents_dict[tool] = AgentConfig.from_wire(entry_dict.get("config"))
 
-        mcp_servers = NamesOrLocation.from_wire(raw_dict.get("mcp_servers"))
+        mcp_servers = NamesOrLocation.from_wire(raw_dict.get("mcp_servers"), allow_sources=True)
         skills = NamesOrLocation.from_wire(raw_dict.get("skills"))
 
         # ``smart_defaults`` is the current wire key. A config read or cached by an older ug may
@@ -684,7 +733,8 @@ def save_managed_state(
 
     ``sets_machine_workspace`` marks an explicit ``ug configure``, which decides the machine's
     workspace: a workspace that publishes no policy then also removes another workspace's
-    installed policy. A launch never does.
+    installed policy. A launch never does. The saved ``mdm_os`` survives either change;
+    :func:`save_requested_mdm_os` changes it.
     """
     workspace = normalize_workspace_url(workspace)
     existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
@@ -694,28 +744,101 @@ def save_managed_state(
         and bool(existing_workspace.strip())
         and normalize_workspace_url(existing_workspace) == workspace
     )
-    if not config:
-        if matches or (sets_machine_workspace and existing_workspace):
-            _require_policy_write(allow_write)
-            update_workspace_policy(
-                MANAGED_CONFIG_PATH, None, interactive=interactive, allow_sudo=allow_sudo
-            )
-        return
+    current = {key: existing[key] for key in ("workspace", "config", "mdm_os") if key in existing}
     existing_config = existing.get("config")
-    if (
+    if not config:
+        drop = matches or (sets_machine_workspace and existing_workspace)
+        desired = {} if drop else {k: v for k, v in current.items() if k != "mdm_os"}
+    elif (
         matches
         and isinstance(existing_config, dict)
         and _policy_content(existing_config) == _policy_content(config)
     ):
+        desired = {"workspace": existing_workspace, "config": existing_config}
+    else:
+        desired = {"workspace": workspace, "config": config}
+    if "mdm_os" in current:
+        desired["mdm_os"] = current["mdm_os"]
+    if desired == current:
         return
     _require_policy_write(allow_write)
-    payload = {"workspace": workspace, "config": config}
     update_workspace_policy(
         MANAGED_CONFIG_PATH,
-        json.dumps(payload, indent=2) + "\n",
+        json.dumps(desired, indent=2) + "\n" if desired else None,
         interactive=interactive,
         allow_sudo=allow_sudo,
     )
+
+
+def request_mdm_os(enabled: bool | None) -> None:
+    """Record ``ug configure`` with (True) or without (False) ``--mdm``; None ends the request.
+
+    Only the machine-wide managed settings hold ``mdm_os``, so a run that can't install them
+    (``--user``, ``UG_SKIP_OS_SETTINGS``) ignores ``--mdm`` and leaves the saved value alone.
+    """
+    global _requested_mdm_os
+    if enabled is None or not _machine_policy_installable():
+        if enabled:
+            print_warning(
+                "--mdm is ignored: it is saved only in machine-wide managed settings, which "
+                "`--user` and UG_SKIP_OS_SETTINGS don't write."
+            )
+        _requested_mdm_os = None
+    else:
+        _requested_mdm_os = _MDM_OS_NAMES.get(current_os(), MDM_OS_NONE) if enabled else MDM_OS_NONE
+    _apply_mdm_os_env()
+
+
+def saved_mdm_os() -> str | None:
+    """The ``mdm_os`` saved by ``ug configure --mdm`` in machine-wide managed settings, or None."""
+    if not _machine_policy_installable():
+        return None
+    value = config_io.read_json_safe(MANAGED_CONFIG_PATH).get("mdm_os")
+    return value if isinstance(value, str) and value else None
+
+
+def _apply_mdm_os_env() -> None:
+    os.environ[MDM_OS_ENV] = _requested_mdm_os or saved_mdm_os() or _inherited_mdm_os or MDM_OS_NONE
+
+
+def export_mdm_os() -> Callable[[], None]:
+    """Set ``MDM_OS`` for this run and the agents it launches; returns a restore for exit.
+
+    A saved value wins; with none, an inherited ``MDM_OS`` is kept, else ``"None"``.
+    """
+    global _inherited_mdm_os
+    previous = os.environ.get(MDM_OS_ENV)
+    _inherited_mdm_os = previous
+    _apply_mdm_os_env()
+
+    def restore() -> None:
+        if previous is None:
+            os.environ.pop(MDM_OS_ENV, None)
+        else:
+            os.environ[MDM_OS_ENV] = previous
+
+    return restore
+
+
+def save_requested_mdm_os() -> None:
+    """Save ``mdm_os`` for ``--mdm``, or clear it without, in machine-wide managed settings.
+
+    It is telemetry, so a failed write warns and never fails configure.
+    """
+    if _requested_mdm_os is None:
+        return
+    existing = config_io.read_json_safe(MANAGED_CONFIG_PATH)
+    desired = {key: value for key, value in existing.items() if key != "mdm_os"}
+    if _requested_mdm_os != MDM_OS_NONE:
+        desired["mdm_os"] = _requested_mdm_os
+    if desired == existing:
+        return
+    text = json.dumps(desired, indent=2) + "\n" if desired else None
+    try:
+        update_workspace_policy(MANAGED_CONFIG_PATH, text, interactive=True, allow_sudo=True)
+    except RuntimeError as exc:
+        action = "save --mdm to" if _requested_mdm_os != MDM_OS_NONE else "clear mdm_os from"
+        print_warning(f"Could not {action} {MANAGED_CONFIG_PATH}: {exc}")
 
 
 def _require_policy_write(allow_write: bool) -> None:

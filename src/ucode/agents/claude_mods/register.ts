@@ -14,6 +14,7 @@ import {
 import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
+import { registerRoutingLogs } from './routing-logs.ts';
 
 type Environment = Record<string, string | undefined>;
 
@@ -169,10 +170,11 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   // The installed smart-router skill already supplies the slash command.
+  registerRoutingLogs(on, options, launchedEnabled);
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
-    if (!command) return {text: 'Usage: /smart-router on|off'};
+    if (!command) return {text: 'Usage: /smart-router on|off|logs'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (command.action === 'off') {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.

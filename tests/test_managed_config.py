@@ -241,6 +241,37 @@ class TestNormalize:
         assert cfg["mcp_servers"] == {"unity_catalog_location": "main.mcp"}
         assert cfg["skills"] == {"unity_catalog_location": "main.skills"}
 
+    def test_mcp_servers_carry_sources_across_several_schemas(self):
+        # `sources` lets one config keep `system.ai` and add a team schema plus a single service.
+        raw = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", " main.tools.foo ", ""]}}
+        cfg = normalize_managed_config(raw)
+        assert cfg["mcp_servers"] == {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}
+
+    @pytest.mark.parametrize(
+        ("source", "kind"),
+        [
+            ("system.ai.*", mc_mod.MCP_SOURCE_SCHEMA),
+            ("main.tools.github", mc_mod.MCP_SOURCE_NAME),
+            ("system.*", None),
+            ("a.b.c.d", None),
+            ("*", None),
+            ("a.b.c*", None),
+            ("a.*.*", None),
+            ("*.a.b", None),
+            ("a..b", None),
+            ("a. b.c", None),
+            ("a.b. *", None),
+        ],
+    )
+    def test_mcp_source_kind(self, source, kind):
+        # The one rule shared by the resolver, MDM, and export validation.
+        assert mc_mod.mcp_source_kind(source) == kind
+
+    def test_skills_ignore_sources(self):
+        # Only mcp_servers has `sources`; a stray skills value must not become a selector.
+        cfg = normalize_managed_config({"skills": {"sources": ["system.ai.*"]}})
+        assert "skills" not in cfg
+
     def test_codex_provider_service(self):
         codex = normalize_managed_config(RAW_MANIFEST)["enabled_agents"]["codex"]
         assert codex["model_config"]["model_provider_service"] == "main.default.openai-mps"
@@ -344,6 +375,22 @@ class TestGetManagedConfig:
         cfg, reason = get_managed_config("https://ws", "tok")
         assert reason is None
         assert cfg == RAW_MANIFEST
+
+    def test_spec_version_2_with_mcp_sources_is_read(self, monkeypatch):
+        # The server serves a config that uses mcp_servers.sources as spec_version 2.
+        raw = {
+            **RAW_MANIFEST,
+            "spec_version": 2,
+            "mcp_servers": {"sources": ["system.ai.*", "main.exa.*"]},
+        }
+        monkeypatch.setattr(
+            mc_mod, "fetch_managed_coding_agent_configs", lambda ws, tok: ([raw], None)
+        )
+        cfg, reason = get_managed_config("https://ws", "tok")
+        assert reason is None
+        assert normalize_managed_config(cfg)["mcp_servers"] == {
+            "sources": ["system.ai.*", "main.exa.*"]
+        }
 
     def test_spec_version_newer_than_supported_is_refused(self, monkeypatch):
         raw = {**RAW_MANIFEST, "spec_version": mc_mod.MAX_SPEC_VERSION + 1}
@@ -2004,3 +2051,146 @@ class TestRevertMachinePolicy:
         assert mc_mod.revert_machine_policy() == "failed"
         assert mc_mod.MANAGED_CONFIG_PATH.exists()
         assert "ug revert" in warnings[0]
+
+
+class TestMdmOs:
+    """`ug configure --mdm` saves `mdm_os` beside the policy; every run exports it as `MDM_OS`."""
+
+    def _saved(self, path=None) -> dict:
+        return json.loads((path or mc_mod.MANAGED_CONFIG_PATH).read_text())
+
+    def _save(self, enabled: bool) -> None:
+        mc_mod.request_mdm_os(enabled)
+        mc_mod.save_requested_mdm_os()
+        mc_mod.request_mdm_os(None)
+
+    @pytest.mark.parametrize(
+        ("host_os", "expected"),
+        [("MACOS", "Mac"), ("LINUX", "Linux"), ("WINDOWS", "Windows"), ("OTHER", "None")],
+    )
+    def test_request_resolves_the_host_os(self, monkeypatch, host_os, expected):
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS[host_os])
+        mc_mod.request_mdm_os(True)
+        assert os.environ["MDM_OS"] == expected
+
+    def test_saved_beside_the_policy_and_exported(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+        os.environ.pop("MDM_OS")
+
+        assert self._saved() == {"workspace": WORKSPACE, "config": RAW_MANIFEST, "mdm_os": "Linux"}
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Linux"
+
+    def test_unset_exports_none(self):
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_inherited_value_is_kept_until_one_is_saved(self, monkeypatch):
+        monkeypatch.setenv("MDM_OS", "Mac")
+        restore = mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Mac"
+        self._save(True)
+        assert os.environ["MDM_OS"] == "Linux"
+        restore()
+        assert os.environ["MDM_OS"] == "Mac"
+
+    def test_kept_when_the_policy_changes_or_is_removed(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+
+        changed = {**RAW_MANIFEST, "default_agent": "CODING_AGENT_CODEX"}
+        save_managed_state(WORKSPACE, changed)
+        assert self._saved()["mdm_os"] == "Linux"
+        save_managed_state(WORKSPACE, {}, sets_machine_workspace=True)
+        assert self._saved() == {"mdm_os": "Linux"}
+        assert mc_mod.load_managed_configuration(WORKSPACE) is None
+        assert mc_mod.managed_state_workspace() is None
+
+    def test_policy_write_never_applies_the_request(self):
+        mc_mod.request_mdm_os(True)
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        assert "mdm_os" not in self._saved()
+
+    def test_saved_without_a_policy(self):
+        self._save(True)
+        assert self._saved() == {"mdm_os": "Linux"}
+
+    def test_configure_without_mdm_clears_it(self):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+        self._save(False)
+        assert self._saved() == {"workspace": WORKSPACE, "config": RAW_MANIFEST}
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_configure_without_mdm_removes_a_file_holding_only_it(self):
+        self._save(True)
+        self._save(False)
+        assert not mc_mod.MANAGED_CONFIG_PATH.exists()
+
+    def test_failed_write_warns_and_keeps_the_run_value(self, monkeypatch):
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        before = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+
+        def deny(*_a, **_k):
+            raise RuntimeError("needs sudo")
+
+        warnings: list[str] = []
+        monkeypatch.setattr(mc_mod, "update_workspace_policy", deny)
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        mc_mod.request_mdm_os(True)
+        mc_mod.save_requested_mdm_os()
+
+        assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
+        assert os.environ["MDM_OS"] == "Linux"
+        assert len(warnings) == 1 and "save --mdm" in warnings[0]
+
+    def test_saved_after_a_failed_policy_read(self, monkeypatch):
+        monkeypatch.setattr(mc_mod, "get_databricks_token", lambda ws, profile: "tok")
+        monkeypatch.setattr(mc_mod, "get_managed_config", lambda ws, token: (None, "HTTP 503"))
+        mc_mod.request_mdm_os(True)
+        refresh_managed_config(_state(), force_refresh=True)
+        mc_mod.save_requested_mdm_os()
+        assert self._saved() == {"mdm_os": "Linux"}
+
+    @pytest.mark.parametrize("mode", ["user_scope", "skip_os_settings"])
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_without_machine_settings_mdm_is_a_no_op(self, monkeypatch, mode, enabled):
+        import ucode.managed_files as mf_mod
+
+        save_managed_state(WORKSPACE, RAW_MANIFEST)
+        self._save(True)
+        before = mc_mod.MANAGED_CONFIG_PATH.read_bytes()
+        if mode == "user_scope":
+            monkeypatch.setattr(mf_mod, "_config_scope", "user")
+        else:
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        warnings: list[str] = []
+        monkeypatch.setattr(mc_mod, "print_warning", warnings.append)
+        self._save(enabled)
+
+        assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert os.environ["MDM_OS"] == "None"
+        assert len(warnings) == (1 if enabled else 0)
+
+    def test_scope_change_reads_the_selected_scope(self, monkeypatch):
+        import ucode.managed_files as mf_mod
+
+        self._save(True)
+        monkeypatch.delenv("MDM_OS")
+        mc_mod.export_mdm_os()
+        assert os.environ["MDM_OS"] == "Linux"
+        monkeypatch.setattr(mf_mod, "_config_scope", "user")
+        mc_mod.request_mdm_os(None)
+        assert os.environ["MDM_OS"] == "None"
+
+    def test_windows_saves_machine_wide(self, monkeypatch):
+        """An elevated MDM run (e.g. as SYSTEM) saves beside the ProgramData policy every user reads."""
+        monkeypatch.setattr(mc_mod, "current_os", lambda: mc_mod.OS.WINDOWS)
+        self._save(True)
+
+        assert self._saved() == {"mdm_os": "Windows"}
+        assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
+        assert mc_mod.saved_mdm_os() == "Windows"

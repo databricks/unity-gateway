@@ -1589,6 +1589,10 @@ class TestListProviderServiceModels:
         ("main.ucode.claude_haiku", "claude_haiku"),
         ("gpt-5.5", "gpt-5.5"),
         ("main.default.gpt-5.5", "gpt-5.5"),
+        ("main.default.lilly-personal-anthropic.claude-haiku-5-5", "claude-haiku-5-5"),
+        ("main.default.lill-oai.gpt-6.1-sol", "gpt-6.1-sol"),
+        ("main.default.lill-oai.gpt-6.1-terra", "gpt-6.1-terra"),
+        ("system.ai.claude-opus-4-7[foo.bar]", "claude-opus-4-7"),
         # An Azure deployment names its region with a slash.
         ("eu/gpt-5.6-luna", "gpt-5.6-luna"),
         ("us/gpt-4o-mini-2024-07-18", "gpt-4o-mini-2024-07-18"),
@@ -1970,6 +1974,61 @@ class TestListMcpServices:
 
         assert reason is None
         assert names == ["main.schema3.github", "main.schema3.slack"]
+
+    @staticmethod
+    def _paged(monkeypatch, second_page):
+        """Serve a first page of `main.s.a` with a next token, then ``second_page``."""
+
+        def fake_get(url, token, timeout=30):
+            if "page_token" in url:
+                return second_page
+            return {"mcp_services": [{"name": "main.s.a"}], "next_page_token": "p2"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+
+    @pytest.mark.parametrize(
+        "second_page",
+        [
+            (None, "HTTP 404 Not Found: NOT_FOUND"),
+            (None, "HTTP 500 Internal Server Error"),
+            (None, None),
+            (["not", "a", "dict"], None),
+            ({"mcp_services": {"name": "main.s.b"}}, None),
+            # The same token again: the listing would loop rather than finish.
+            ({"mcp_services": [], "next_page_token": "p2"}, None),
+        ],
+    )
+    def test_strict_reports_every_incomplete_scoped_listing(self, monkeypatch, second_page):
+        self._paged(monkeypatch, second_page)
+        lenient = db_mod.list_mcp_services(WS, "token", parent="main.s")
+        strict = db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True)
+        assert lenient == (["main.s.a"], None)
+        # A later-page failure is marked incomplete, so it never reads as a missing schema.
+        assert strict[0] == ["main.s.a"]
+        assert strict[1] and strict[1].startswith("incomplete listing: ")
+
+    def test_strict_reports_the_page_limit(self, monkeypatch):
+        tokens = iter(range(10))
+
+        def fake_get(url, token, timeout=30):
+            return {"mcp_services": [], "next_page_token": f"t{next(tokens)}"}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        _names, reason = db_mod.list_mcp_services(
+            WS, "token", parent="main.s", max_pages=3, strict=True
+        )
+        assert reason == "incomplete listing: MCP listing exceeded 3 pages"
+
+    def test_strict_rejects_a_malformed_first_page(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, timeout=30: ({"mcp_services": "main.s.a"}, None),
+        )
+        assert db_mod.list_mcp_services(WS, "token", parent="main.s", strict=True) == (
+            [],
+            "unexpected MCP listing response",
+        )
 
     def test_http_404_reason_surfaces_for_invalid_parent(self, monkeypatch):
         monkeypatch.setattr(

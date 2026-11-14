@@ -1,12 +1,55 @@
 """Unit checks for the integration harness's virtual terminal screen."""
 
+import json
+import sys
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
+from pathlib import Path
 
 import pyte
 import pytest
 
-from tests.integration.utils.terminal import AgentTerminal, TerminalScreen
+from tests.integration.utils.harness import UserSession
+from tests.integration.utils.terminal import AgentTerminal, TerminalProcess, TerminalScreen
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_terminal_preserves_redacted_proxy_diagnostics_outside_screen(tmp_path, fail):
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+    session.env["DATABRICKS_BEARER"] = "test-secret-bearer"
+    command = [
+        str(session.binary),
+        "-c",
+        "import os, sys; "
+        "from ucode.gateway_proxy import log_proxy_diagnostic; "
+        "print('prompt-ready', flush=True); input(); "
+        "log_proxy_diagnostic('request_start', request_id=os.environ['DATABRICKS_BEARER']); "
+        "print('ordinary stderr remains visible', file=sys.stderr, flush=True); "
+        "print('diagnostic-recorded', flush=True); input()",
+    ]
+    expected = (
+        pytest.raises(RuntimeError, match="simulated test failure") if fail else nullcontext()
+    )
+    with expected:
+        with TerminalProcess(session, "ug", command, "diagnostic-terminal") as terminal:
+            terminal.wait_for(lambda screen: "prompt-ready" in screen, "initial prompt")
+            terminal.send("\r", "emit proxy diagnostic")
+            terminal.wait_for(lambda screen: "diagnostic-recorded" in screen, "diagnostic emitted")
+            assert "ordinary stderr remains visible" in terminal.visible
+            assert "[ucode-relay]" not in terminal.visible
+            if fail:
+                raise RuntimeError("simulated test failure")
+
+    recorded = json.loads((session.artifacts / "diagnostic-terminal.json").read_text())
+    assert "[ucode-relay]" not in recorded["transcript"]
+    assert "test-secret-bearer" not in json.dumps(recorded)
+    event = json.loads(recorded["proxy_diagnostics"].strip().removeprefix("[ucode-relay] "))
+    assert isinstance(event.pop("timestamp_ms"), int)
+    assert event == {"event": "request_start", "request_id": "<redacted>"}
 
 
 def _screen() -> TerminalScreen:
@@ -245,7 +288,6 @@ def test_codex_mcp_inventory_bounds_permanent_startup(clock):
             id="snapshot-just-before-deadline",
         ),
         pytest.param(
-            # The second submission types at 101.5s, so its echo settles at exactly 120s.
             [
                 _McpReply(_mcp_snapshot("starting"), not_before=100),
                 _McpReply(_mcp_snapshot(), echo_delay=18),

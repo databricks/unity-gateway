@@ -87,7 +87,7 @@ describe("startReceiver", () => {
 
     assert.equal((await post(port, `/${SECRET}/v1/traces`, "{}")).status, 400);
 
-    assert.ok(logs.some((line) => line.includes("AI Gateway refused traces (400)")), logs.join("\n"));
+    assert.ok(logs.some((line) => line.includes("Unity Gateway refused traces (400)")), logs.join("\n"));
   });
 
   it("answers logs and metrics itself", async () => {

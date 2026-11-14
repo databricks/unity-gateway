@@ -28,8 +28,41 @@ UG allows 30 seconds for the Windows package query and distinguishes a missing
 installation from a query timeout, PowerShell launch failure, or package-query error.
 Detection failures still fail the test; the inference assertion is unchanged.
 
-The test rejects model-provider routing, accepts gateway onboarding, opens
-Cowork, and verifies the selected model maps to `system.ai.claude-haiku-4-5`.
+Every step below runs once per Claude model source on each OS:
+
+| Source | `ug configure` | Target model | Windows lane | macOS lane |
+|--------|----------------|--------------|--------------|------------|
+| Databricks Hosted | no `--provider` | `system.ai.claude-haiku-4-5` | `cowork-inference-windows` | `cowork-inference-macos` |
+| Anthropic MPS | `--provider main.ucode.dont_delete_ci_company_anthropic_mps` (staging) | `claude-haiku-4-5-20251001` | `anthropic-mps`, Windows Claude row | — |
+| Anthropic MPS (legacy) | `--provider main.ucode.ci_e2e_anthropic_nonrelay_mps` | `claude-haiku-4-5-20251001` | — | `cowork-inference-macos` |
+| Anthropic relay MPS | `--provider main.ucode.ci_e2e_anthropic_relay_mps` | `claude-haiku-4-5-20251001` | `cowork-inference-windows` | `cowork-inference-macos` |
+
+The non-relay service lives in the staging workspace that the CLI `anthropic-mps` tests use.
+Staging rejects GitHub-hosted runners, so the Windows Desktop tasks run as extra steps of that
+lane's Windows Claude row on `databricks-protected-runner-group`. These steps are in the
+shared live steps but run only where the job sets `UG_COWORK_DESKTOP`, and they skip
+merge-group runs like the other Desktop lanes. That runner reaches packages only through the
+internal PyPI and npm proxies; the Claude installer still downloads directly. Desktop's
+credential helper authenticates with the lane's `ug-ci-sp` service principal through
+`DATABRICKS_BEARER_COMMAND`, which reruns `bearer-token.py` to mint a fresh M2M token on each
+fetch, so long tasks don't outlive the one-hour token. No protected macOS runner exists, so
+macOS keeps the legacy non-relay service in the e2e workspace. The configuration check
+requires the profile's `Databricks-Model-Provider-Service` header to equal the selected
+service (absent for Databricks Hosted), and requires the credential helper's `--relay` and
+`--claude-binary` arguments exactly when the source is a relay.
+
+The relay entry alone receives the existing `CLAUDE_CODE_OAUTH_TOKEN` secret (a long-lived
+`claude setup-token` subscription token) in every step that launches Desktop. Desktop
+inherits it and passes it to UG's relay credential helper, which returns it as the inference
+token without running `claude auth`, plus the Databricks token in the separate gateway
+header. No Claude.ai sign-in or browser is involved. When the token expires, every relay
+entry fails until the secret is rotated.
+
+The test accepts gateway onboarding and opens Cowork. Desktop opens on its own default
+model, which is the first configured model: that is the target for Databricks Hosted and
+the single-model Anthropic MPS, but not for the relay MPS, which lists every Claude model.
+When the picker shows another model, the test selects the target label in the model
+picker, then requires `Model: <label>`; the opening model is recorded in the evidence.
 It submits a number-conversion prompt and requires both `Claude responded: 48213`
 in the conversation pane and `Claude finished the response` within four minutes.
 The prompt spells the number in words so echoing the input cannot pass.
@@ -49,7 +82,7 @@ After inference, two fresh Cowork tasks run through the same native UI:
 prompt and requires an assistant `end_turn`. Failed tools, mismatched result IDs,
 wrong files, unrelated sessions, and echoed prompts cannot satisfy these assertions.
 `tests/test_cowork_session_evidence.py` exercises these rejection cases offline.
-Each task checks the model shown in the UI, has a five-minute response limit, and
+Each task selects and checks the target model the same way, has a five-minute response limit, and
 stops Desktop before the next task. The skill is an ordinary user-authored plugin;
 this does not verify Unity Catalog skill downloads or UG's downloaded-skill propagation.
 On macOS, Desktop copies installed plugins into its native runtime directory. The test
@@ -60,8 +93,9 @@ the skill fixture from `task-fixture.json`. File-path comparisons remain case-se
 
 ## Dependencies
 
-The official Claude Desktop 2.42304.2 x64 MSIX is pinned by URL and SHA256 in
-`integration.yml`; the installer script also verifies the Anthropic signature. Installer
+The official Claude Desktop 2.42304.2 x64 MSIX is pinned by URL and SHA256 once in
+`integration.yml`'s workflow-level environment and installed by `download-desktop.ps1` in both
+Windows lanes; the installer script also verifies the Anthropic signature. Installer
 provenance comes from Microsoft's winget-pkgs catalog:
 `manifests/a/Anthropic/Claude/2.42304.2/Anthropic.Claude.installer.yaml`.
 Direct official Anthropic installer/runtime downloads were approved for these
@@ -71,7 +105,8 @@ Python dependencies come from PyPI and Claude Code CLI 2.1.290 from public npm,
 matching the existing GitHub-hosted Windows CLI integration tests. These public
 package sources are approved for this CI job. Python 3.12 is selected explicitly;
 Claude Code's native binary selection requires its npm postinstall script.
-Package installation needs no JFrog credentials or GitHub OIDC permission.
+Package installation needs no JFrog credentials or GitHub OIDC permission. The staging lane installs the same
+versions through the internal PyPI and npm proxies its CLI tests already use.
 
 Desktop and CLI versions are upgraded deliberately. For Desktop, update the official
 URL and SHA256 together, keep signature/version checks, and run the native job on each
@@ -82,8 +117,8 @@ a CLI pin change does not update the app.
 
 Artifacts contain installer provenance, configuration status, UI control names,
 window screenshots, native launch logs, and redacted task transcripts/results. Raw process logs stay outside the
-artifact directory. Known bearer values, authorization bearer strings, and JWT-shaped tokens are
-redacted before writing text artifacts; app profiles and credential files are not archived. Artifacts expire
+artifact directory. Known bearer and subscription-token values, authorization bearer strings, `sk-ant-`
+tokens, and JWT-shaped tokens are redacted before writing text artifacts; app profiles and credential files are not archived. Artifacts expire
 after three days.
 
 The named `desktop-ci` Databricks profile contains host/auth metadata, not a

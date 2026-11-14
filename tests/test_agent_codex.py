@@ -37,8 +37,8 @@ class TestMinimumVersion:
     @pytest.mark.parametrize(
         "version,smart_routing_allowed",
         [
-            ("0.145.0", False),
-            ("0.148.0", False),
+            ("0.156.0", False),
+            ("0.158.0", False),
             ("0.163.0", False),
             ("0.164.0", True),
             ("0.165.0", True),
@@ -54,9 +54,9 @@ class TestMinimumVersion:
         ) == smart_routing_allowed
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.144.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.155.0")
 
-        expected = "ug requires Codex 0.145.0 or newer; found 0.144.0."
+        expected = "ug requires Codex 0.156.0 or newer; found 0.155.0."
         assert codex.minimum_version_error() == expected
 
     def test_unknown_version_does_not_block(self, monkeypatch):
@@ -307,7 +307,7 @@ class TestCodexWriteConfig:
         config_path.write_text('model = "gpt-5.6-sol"\n')
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda _: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.156.0")
         monkeypatch.setenv(codex.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
         monkeypatch.delenv("CODEX_HOME", raising=False)
         state = {"workspace": WS}
@@ -600,7 +600,7 @@ class TestCodexWriteConfig:
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", tmp_path / "backup.toml")
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.156.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
 
         codex.write_tool_config(
@@ -634,7 +634,7 @@ class TestCodexWriteConfig:
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_path)
         monkeypatch.setattr(codex, "CODEX_BACKUP_PATH", backup_path)
-        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.156.0")
         monkeypatch.setattr(codex, "save_state", lambda state: None)
         state = {
             "workspace": WS,
@@ -801,7 +801,7 @@ class TestCodexRemoveLegacyProfile:
             "[profiles.ucode]\n"
             'model_provider = "ucode-databricks"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n\n'
+            'name = "Databricks Unity Gateway"\n\n'
             "[model_providers.other]\n"
             'name = "keep"\n',
             encoding="utf-8",
@@ -834,7 +834,7 @@ class TestCodexRevertLegacySharedConfig:
             "[profiles.other]\n"
             'model_provider = "keep"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n',
+            'name = "Databricks Unity Gateway"\n',
             encoding="utf-8",
         )
         monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
@@ -1082,7 +1082,7 @@ class TestCodexLaunch:
         profile_path.write_text(
             'model_provider = "Databricks"\n\n'
             "[model_providers.Databricks]\n"
-            'name = "Databricks AI Gateway"\n'
+            'name = "Databricks Unity Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
             encoding="utf-8",
@@ -1367,7 +1367,7 @@ class TestCodexLaunch:
             'model_provider = "ucode-databricks"\n'
             'model = "managed-default"\n\n'
             "[model_providers.ucode-databricks]\n"
-            'name = "Databricks AI Gateway"\n'
+            'name = "Databricks Unity Gateway"\n'
             'base_url = "https://example.databricks.com/ai-gateway/codex/v1"\n'
             'wire_api = "responses"\n',
             encoding="utf-8",

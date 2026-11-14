@@ -2,6 +2,7 @@
 
 import json
 import re
+from pathlib import PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -14,7 +15,11 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.terminal import (
+    codex_command_approval_pending,
+    codex_session_footer_shown,
+    codex_trust_dialog_shown,
+)
 
 
 @pytest.mark.parametrize(
@@ -40,11 +45,14 @@ from tests.integration.utils.terminal import codex_command_approval_pending
         "no-choice",
     ],
 )
-def test_codex_approval_requires_the_exact_local_command(command, environment, missing, expected):
+@pytest.mark.parametrize("command_gap", ["\n", "\n\n\n"])
+def test_codex_approval_requires_the_exact_local_command(
+    command, environment, missing, expected, command_gap
+):
     prompt = "Would you like to run the following command?"
     footer = "Press enter to confirm or esc to cancel"
     choice = "› 1. Yes, proceed (y)"
-    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}\n{choice}\n{footer}"
+    screen = f"{prompt}\nEnvironment: {environment}\n  $ {command}{command_gap}{choice}\n{footer}"
     if missing == "prompt":
         screen = screen.replace(prompt, "")
     elif missing == "footer":
@@ -61,6 +69,129 @@ def test_codex_approval_requires_the_exact_local_command(command, environment, m
         assert (
             codex_command_approval_pending(screen, "ug codex --disable-smart-routing") is expected
         )
+
+
+# Codex 0.156.0 folder-trust screens captured in CI run 42283317759. Windows ConPTY rendered the
+# selection marker and the footer separator as U+FFFD.
+_TRUST_TEXT = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your permission "
+    "settings. Folder settings can run code\n"
+    "  automatically, even without a model request. Continue only if you trust these files. "
+    "Your trust decision will be saved.\n"
+)
+_LINUX_CWD = PurePosixPath("/tmp/ug-integration-project-pf6kf82t/project with spaces")
+_LINUX_TRUST = (
+    f"  Folder access\n  {_LINUX_CWD}\n\n{_TRUST_TEXT}\n"
+    "› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit"
+)
+_WINDOWS_CWD = PureWindowsPath(
+    r"D:\a\_temp\ug-integration\ug-integration-project-da67c71c70c8\project with spaces"
+)
+_WINDOWS_TRUST = (
+    f"  Folder access\n  {_WINDOWS_CWD}\n{_TRUST_TEXT}"
+    "\ufffd 1. Trust and continue\n  2. Quit\n  enter continue \ufffd esc quit"
+)
+
+
+@pytest.mark.parametrize(
+    ("screen", "cwd", "change", "shown"),
+    [
+        (_LINUX_TRUST, _LINUX_CWD, None, True),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, None, True),
+        (_LINUX_TRUST, _LINUX_CWD, ("project with spaces", "other project"), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("project with spaces", "other project"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("› 1.", "  1."), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("\ufffd 1.", "  1."), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Folder access", "Folder"), False),
+    ],
+)
+def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown):
+    if change:
+        screen = screen.replace(*change)
+    assert codex_trust_dialog_shown(screen, cwd) is shown
+
+
+# Codex 0.156.0's ready screen captured in CI run 42294239789; its footer ends in a warning badge.
+_FOOTER_CWD = PurePosixPath("/tmp/ug-integration-project-jhrdmhry/project with spaces")
+_CODEX_0_156_READY = (
+    "╭───────────────────────────────────────────╮\n"
+    "│ >_ OpenAI Codex (v0.156.0)                │\n"
+    "│                                           │\n"
+    "│ model:     GPT-5.6-Sol   /model to change │\n"
+    "│ directory: /tmp/…/project with spaces     │\n"
+    "╰───────────────────────────────────────────╯\n"
+    "\n"
+    "  Tip: Use /feedback to send logs to the maintainers when something looks off.\n"
+    "\n"
+    "\n"
+    "› Ask Codex to do anything\n"
+    "\n"
+    "  GPT-5.6-Sol default · /tmp/ug-integration-project-jhrdmhry/project with spaces                                   ⚠ 1 warning · f2 to view"
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "shown"),
+    [
+        (None, True),
+        (("                                   ⚠ 1 warning · f2 to view", ""), True),
+        (("⚠ 1 warning", "⚠ 2 warnings"), True),
+        (("⚠ 1 warning · f2 to view", "something else"), False),
+        (("project with spaces    ", "other project    "), False),
+        (("GPT-5.6-Sol default · ", ""), False),
+    ],
+)
+def test_codex_session_footer_accepts_the_warning_badge(change, shown):
+    screen = _CODEX_0_156_READY.replace(*change) if change else _CODEX_0_156_READY
+    assert codex_session_footer_shown(screen, _FOOTER_CWD) is shown
+
+
+@pytest.mark.parametrize(
+    "missing_message",
+    ['"SMART_ROUTER_ENV_UNSET"', "'MISSING_SMART_ROUTER_ENV'", '"$(Remove-Item important.txt)"'],
+)
+@pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
+@pytest.mark.parametrize("guard_style", ["exit", "else"])
+def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
+    extra_command, missing_message, guard_style
+):
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
+    suffix = "" if guard_style == "exit" else " }"
+    guard = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        f"{{ Write-Output {missing_message}{branch}"
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    expected_guard = guard.replace(missing_message, '"SMART_ROUTER_ENV_UNSET"')
+    expected = (command, f"{expected_guard} {command[2:]}{suffix}")
+    if extra_command or "$" in missing_message:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, expected)
+    else:
+        assert codex_command_approval_pending(screen, expected)
+
+
+@pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])
+def test_codex_posix_toggle_approval_accepts_only_the_known_guard(extra_command):
+    command = '"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    guarded = (
+        'test -n "$UCODE_SMART_ROUTER_PYTHON" && test -n "$UCODE_SESSION_ENV_FILE" && ' + command
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f"  $ {guarded}{extra_command}\n\n"
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    if extra_command:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen, (command, guarded))
+    else:
+        assert codex_command_approval_pending(screen, (command, guarded))
 
 
 class _Session:

@@ -134,8 +134,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
     SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
     AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
 }
-MINIMUM_CODEX_VERSION = (0, 145, 0)
-MINIMUM_CODEX_VERSION_TEXT = "0.145.0"
+MINIMUM_CODEX_VERSION = (0, 156, 0)
+MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
 MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
 MINIMUM_SMART_ROUTING_CODEX_VERSION_TEXT = "0.164.0"
 # Codex 0.134.0 introduced per-profile config files; older releases use the legacy layout.
@@ -280,7 +280,7 @@ def _provider_block(
     # Last, so an admin header can't select another workspace.
     _apply_managed_headers(http_headers, workspace_headers(workspace))
     block = {
-        "name": "Databricks AI Gateway",
+        "name": "Databricks Unity Gateway",
         "base_url": base_url,
         "wire_api": "responses",
         "http_headers": http_headers,
