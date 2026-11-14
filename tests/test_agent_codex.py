@@ -2298,6 +2298,22 @@ class TestCodexManagedConfig:
             with pytest.raises(RuntimeError, match=rf"define model_providers\.{provider_name} at"):
                 codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
 
+    @pytest.mark.parametrize("provider_name", ["DatabricksRelay", "DatabricksCliRelay"])
+    def test_relayed_rejects_managed_auth_without_provider_selection(
+        self, tmp_path, monkeypatch, provider_name
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(
+            f'[model_providers.{provider_name}]\nauth = {{ command = "auth" }}\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(
+            RuntimeError, match=rf"model_providers\.{provider_name}\.auth.*ug revert"
+        ):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
     @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
     def test_relayed_preserves_unrelated_managed_provider(self, tmp_path, monkeypatch, filename):
         self._patch(tmp_path, monkeypatch)
