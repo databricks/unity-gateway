@@ -294,6 +294,9 @@ def _response_protocol(response: RecordedResponse | None) -> dict:
     }
     if response is None:
         return result
+    if response.status_code >= 400:
+        result["state"] = "error"
+        return result
 
     def observe(value, allowed, key):
         if not isinstance(value, str):

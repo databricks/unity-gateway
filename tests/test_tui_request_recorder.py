@@ -468,10 +468,13 @@ def _sse(block_type="tool_use", stop_reason="tool_use"):
             [],
         ),
         (b"[]", "application/json", None, 200, "malformed", [], []),
-        (_PRIVATE.encode(), "application/json", None, 502, "malformed", [], []),
+        (_PRIVATE.encode(), "application/json", None, 502, "error", [], []),
+        (_PRIVATE.encode(), None, None, 401, "error", [], []),
+        (json.dumps(_message("tool_use")).encode(), "application/json", None, 429, "error", [], []),
+        (b"bad gzip", "application/json", "gzip", 500, "error", [], []),
         (b"\xff", "text/event-stream", None, 200, "decode_error", [], []),
         (b"bad gzip", "application/json", "gzip", 200, "decode_error", [], []),
-        (_PRIVATE.encode(), "text/html", None, 502, "malformed", [], []),
+        (_PRIVATE.encode(), "text/html", None, 502, "error", [], []),
     ],
 )
 def test_claude_protocol_projects_only_safe_response_metadata(
@@ -564,6 +567,8 @@ def test_claude_protocol_context_records_history_after_exit(protocol_session, fa
                     raise failure
         except AssertionError as error:
             assert fail and error is failure
+        else:
+            assert not fail, "The calculation failure was suppressed"
     assert recorder._client.is_closed
     rows = json.loads((protocol_session.artifacts / "claude-response-protocol.json").read_text())
     assert [row["sequence"] for row in rows] == [1, 2]
