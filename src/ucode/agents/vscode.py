@@ -185,6 +185,8 @@ def _model_entry(model: CopilotModel, name: str) -> dict[str, object]:
         # vscode-extension/src/extension.ts).
         "api": model.wire,
     }
+    if model.native:
+        entry["native"] = True
     # Models without known limits get the extension's 128K-in, 32K-out default.
     if limits := catalog_model_limits(model):
         entry["maxInputTokens"], entry["maxOutputTokens"] = limits

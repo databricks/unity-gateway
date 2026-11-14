@@ -113,8 +113,13 @@ Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` 
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
 
 `ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
-Service instead, and `/model` lists that service's models: Claude models of an Anthropic or
-Bedrock service, and the chat models of an OpenAI, Azure OpenAI or Microsoft Foundry service. For a service that
+Service instead, and `/model` lists that service's models: Claude models of an Anthropic service,
+Claude and OpenAI-compatible chat models of a Bedrock or Bedrock Mantle service, and the chat models
+of an OpenAI, Azure OpenAI or Microsoft Foundry service. Bedrock models keep their native API;
+models whose names don't identify one, including GPT-OSS, need a declared OpenAI Responses or
+Chat Completions API and prefer Chat Completions when both are declared. Managed wildcard
+configuration caches this metadata with its model list for discovery outages, and routes those
+models through the native OpenAI endpoint alongside hosted models on the MLflow endpoint. For a service that
 allows every model, `/model` lists the models the gateway reports for it, which the provider
 account may not serve; name the one to start on with `--model`. Services that relay a Claude subscription work only with Claude Code. Interactive
 `ug configure` offers the matching services under **External Models**, and a managed workspace

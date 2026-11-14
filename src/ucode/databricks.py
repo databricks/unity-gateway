@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -39,6 +39,7 @@ from ucode.config_io import APP_DIR
 from ucode.constants import (
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
+    API_OPENAI_CHAT_COMPLETIONS,
     API_OPENAI_RESPONSES,
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
@@ -3298,7 +3299,12 @@ def provider_targets_for_tool(tool: str, service: dict) -> list[str]:
         target_api_types = service.get("target_api_types") or {}
         return [target for target in targets if api_type in (target_api_types.get(target) or ())]
     if tool in ("copilot", "vscode") and service.get("provider_type") in BEDROCK_PROVIDER_TYPES:
-        return [target for target in targets if _bedrock_target_family(target) is not None]
+        api_types = service.get("target_api_types") or {}
+        return [
+            target
+            for target in targets
+            if native_chat_model_api(target, api_types.get(target, ()))[0] is not None
+        ]
     return targets
 
 
@@ -3872,6 +3878,42 @@ def bare_model_name(model: str) -> str:
     return match.group("name") if match else ""
 
 
+def native_chat_model_api(
+    model: str, api_types: Iterable[str] = ()
+) -> tuple[str | None, str | None]:
+    """Select a model's native chat API while honoring declared target restrictions."""
+    declared = tuple(api_types)
+    name = bare_model_name(model)
+    gpt = re.match(r"^gpt-(\d+)o?(?=$|[.-])", name)
+    if name.startswith("claude-"):
+        api = API_ANTHROPIC_MESSAGES
+    elif (gpt and int(gpt.group(1)) >= 5) or re.match(r"^o(?=\d)", name):
+        # Copilot sends temperature=0 on Completions, which GPT 5+ and o-series reject.
+        api = API_OPENAI_RESPONSES
+    elif gpt:
+        api = (
+            API_OPENAI_RESPONSES
+            if declared
+            and API_OPENAI_CHAT_COMPLETIONS not in declared
+            and API_OPENAI_RESPONSES in declared
+            else API_OPENAI_CHAT_COMPLETIONS
+        )
+    else:
+        api = next(
+            (
+                candidate
+                for candidate in (API_OPENAI_CHAT_COMPLETIONS, API_OPENAI_RESPONSES)
+                if candidate in declared
+            ),
+            None,
+        )
+    if api is None:
+        return None, "no supported native chat API is declared"
+    if declared and api not in declared:
+        return None, f"it isn't served on {api}"
+    return api, None
+
+
 def model_version_sort_key(name: str) -> tuple:
     """Sort endpoint names so newer model versions come first.
 
@@ -4212,27 +4254,54 @@ def _fetch_codex_model_catalog(
 
 
 def list_provider_service_models(
-    workspace: str, token: str, service_name: str, provider_type: str
+    workspace: str,
+    token: str,
+    service_name: str,
+    provider_type: str,
+    *,
+    tool: str | None = None,
+    discovered_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[str], str | None]:
     """The models the gateway lists for Model Provider Service ``service_name``, and why listing
     failed. An empty listing is not a failure.
 
     Anthropic-API providers use the Anthropic catalog; other providers use the Codex catalog.
+    Copilot and VS Code combine both catalogs for Bedrock and Mantle, retaining partial results
+    with an error when one listing fails. ``discovered_api_types`` receives additive native API
+    evidence from each catalog; the Codex catalog lists only Responses-capable targets.
     """
 
+    models: list[str] = []
+    reason = None
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
         listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+        models = listing.model_ids
+        reason = None if listing.error_msg == _NO_ANTHROPIC_MODEL_IDS else listing.error_msg
+        if provider_type not in BEDROCK_PROVIDER_TYPES or tool not in ("copilot", "vscode"):
+            return models, reason
+        if discovered_api_types is not None:
+            for model in models:
+                discovered_api_types[model] = (API_ANTHROPIC_MESSAGES,)
     try:
         catalog = _fetch_codex_model_catalog(
             workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
         )
     except CodexModelCatalogEmpty:
-        return [], None
+        return models, reason
     except RuntimeError as exc:
-        return [], str(exc)
-    return catalog_slugs(catalog), None
+        return models, "; ".join(filter(None, [reason, str(exc)]))
+    codex_models = catalog_slugs(catalog)
+    if (
+        discovered_api_types is not None
+        and provider_type in (*BEDROCK_PROVIDER_TYPES, "openai", "azure_openai")
+        and tool in ("copilot", "vscode")
+    ):
+        for model in codex_models:
+            discovered_api_types[model] = (
+                *discovered_api_types.get(model, ()),
+                API_OPENAI_RESPONSES,
+            )
+    return list(dict.fromkeys([*models, *codex_models])), reason
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

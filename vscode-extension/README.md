@@ -14,6 +14,8 @@ The models are the ones the Copilot CLI gets: the workspace's managed model list
 config has one, else the models `ug configure` discovered. With `--provider <catalog.schema.name>`
 they are a Model Provider Service's: the config then names the service, every request carries the
 `Databricks-Model-Provider-Service` header, and OpenAI models use the gateway's `/openai/v1` route.
+Managed provider wildcards also mark native models individually, so a mixed hosted/MPS list
+keeps hosted OpenAI models on `/mlflow/v1` and MPS models on `/openai/v1` with their qualified IDs.
 With `--model-location <catalog.schema>` they are the model services in that schema.
 
 `headers` are the workspace's managed headers, which win by name over the extension's User-Agent, and on

@@ -104,6 +104,11 @@ def managed_state_overrides(managed: dict, tool: str) -> dict[str, object]:
         static_models = managed_static_models(managed, tool)
         if static_models:
             overrides[f"{tool}_static_models"] = static_models
+    if tool == "copilot":
+        from ucode.agents.copilot import NATIVE_MODEL_API_TYPES_KEY
+
+        if NATIVE_MODEL_API_TYPES_KEY in managed:
+            overrides[NATIVE_MODEL_API_TYPES_KEY] = _as_dict(managed[NATIVE_MODEL_API_TYPES_KEY])
     default_model = _str(_agent_model_config(managed, tool).get("default_model"))
     if default_model:
         overrides[f"{tool}_default_model"] = default_model
@@ -129,10 +134,21 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
     valid model FQN it cannot route, and copilot serves only Claude and GPT.
     """
     if tool == "copilot":
-        from ucode.agents.copilot import classify_copilot_model
+        from ucode.agents.copilot import (
+            NATIVE_MODEL_API_TYPES_KEY,
+            build_copilot_catalog,
+            native_model_api_types,
+        )
 
         listed = managed_static_models(managed, tool) or []
-        return [] if any(classify_copilot_model(m) for m in listed) else listed
+        return (
+            []
+            if build_copilot_catalog(
+                listed,
+                native_api_types=native_model_api_types(managed.get(NATIVE_MODEL_API_TYPES_KEY)),
+            )
+            else listed
+        )
     if tool not in ("opencode", "pi"):
         return []
     models = _manifest_models(managed, tool)

@@ -10,9 +10,18 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ucode import custom_oauth
+from ucode import cli as cli_mod
+from ucode import custom_oauth, databricks
 from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
+from ucode.managed_resolve import managed_unservable_models, resolve_state
+from ucode.state import (
+    get_managed_model_source_api_types,
+    get_managed_model_source_expansions,
+    load_state,
+    save_state,
+    set_managed_model_source_expansions,
+)
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -99,6 +108,189 @@ class TestClassifyCopilotModel:
 
 
 class TestBuildCopilotCatalog:
+    @pytest.mark.parametrize(
+        ("target", "apis", "expected"),
+        [
+            ("claude-opus-4-1", ("anthropic/v1/messages",), None),
+            ("gpt-4o", ("openai/v1/responses",), "responses"),
+            ("gpt-4o", ("openai/v1/chat/completions",), "completions"),
+            ("gpt-5.5", ("openai/v1/chat/completions",), None),
+            ("claude-sonnet-5-5", ("openai/v1/responses",), None),
+        ],
+    )
+    def test_managed_native_metadata_preserves_model_restrictions(self, target, apis, expected):
+        model = f"main.default.external.{target}"
+        catalog = copilot.build_copilot_catalog([model], native_api_types={model: apis})
+        assert [(entry.id, entry.wire) for entry in catalog] == (
+            [(model, expected)] if expected else []
+        )
+
+    @pytest.mark.parametrize(
+        ("provider_type", "target"),
+        [
+            ("bedrock_mantle", "openai.gpt-oss-120b"),
+            ("openai", "gpt-5.6-luna"),
+            ("azure_openai", "test-deployment"),
+        ],
+    )
+    def test_managed_provider_wildcard_preserves_native_api_through_launch(
+        self, monkeypatch, provider_type, target
+    ):
+        service = "main.default.external"
+        qualified = f"{service}.{target}"
+        managed = {"enabled_agents": {"copilot": {"model_config": {"sources": [f"{service}.*"]}}}}
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(
+            model_sources,
+            "get_model_provider_service",
+            lambda *args: ({"provider_type": provider_type}, None),
+        )
+
+        def get(url, token, **kwargs):
+            if "/codex/" in url:
+                return {"models": [{"slug": target}]}, None
+            return {"data": []}, None
+
+        monkeypatch.setattr(databricks, "_http_get_json", get)
+
+        expanded, live = cli_mod._expand_managed_model_sources(
+            managed, {"workspace": WS}, "copilot"
+        )
+        resolved = resolve_state(expanded, {"workspace": WS}, "copilot")
+        models = copilot._session_catalog(resolved, [], None, None)
+
+        assert [(entry.id, entry.wire) for entry in models] == [(qualified, "responses")]
+        assert managed_unservable_models(expanded, "copilot") == []
+        assert copilot.unservable_static_models(resolved) == []
+        assert copilot.launch_model(resolved, models).id == qualified
+        registry = copilot.render_providers_config(models, PROXY, "session-secret")
+        assert registry["models"][0]["wireModel"] == qualified
+        assert registry["providers"][0]["baseUrl"] == f"{PROXY}/ai-gateway/openai/v1"
+        assert copilot.NATIVE_MODEL_API_TYPES_KEY not in managed
+        set_managed_model_source_expansions(
+            resolved,
+            "copilot",
+            live,
+            native_api_types=copilot.native_model_api_types(
+                expanded[copilot.NATIVE_MODEL_API_TYPES_KEY]
+            ),
+        )
+        save_state(resolved)
+        saved = load_state()
+        assert copilot.NATIVE_MODEL_API_TYPES_KEY not in saved
+        monkeypatch.setattr(
+            model_sources, "get_model_provider_service", lambda *args: (None, "offline")
+        )
+        cached, _ = cli_mod._expand_managed_model_sources(
+            managed,
+            saved,
+            "copilot",
+            fallbacks=get_managed_model_source_expansions(saved, "copilot"),
+        )
+        cached_models = copilot.copilot_catalog(resolve_state(cached, saved, "copilot"))
+        assert [(entry.id, entry.wire) for entry in cached_models] == [(qualified, "responses")]
+
+    def test_mixed_managed_native_and_hosted_models_keep_distinct_routes_and_refs(self):
+        native_gpt = "main.default.mantle.openai.gpt-5.6-luna"
+        native_oss = "main.default.bedrock.openai.gpt-oss-20b-1:0"
+        hosted_oss = "system.ai.kimi-k3"
+        models = copilot.copilot_catalog(
+            {
+                "copilot_static_models": [GPT, native_gpt, hosted_oss, native_oss],
+                copilot.NATIVE_MODEL_API_TYPES_KEY: {
+                    native_gpt: ("openai/v1/responses",),
+                    native_oss: ("openai/v1/chat/completions",),
+                },
+            }
+        )
+        config = copilot.render_providers_config(models, PROXY, "secret")
+        providers = {provider["name"]: provider for provider in config["providers"]}
+        expected = {
+            GPT: ("dbx-responses", "responses", "mlflow"),
+            hosted_oss: ("dbx-completions", "completions", "mlflow"),
+            native_gpt: ("dbx-native-responses", "responses", "openai"),
+            native_oss: ("dbx-native-completions", "completions", "openai"),
+        }
+        for entry in config["models"]:
+            name, wire, route = expected[entry["id"]]
+            assert entry["provider"] == name
+            assert entry["wireModel"] == entry["id"]
+            assert providers[name]["wireApi"] == wire
+            assert providers[name]["baseUrl"] == f"{PROXY}/ai-gateway/{route}/v1"
+            ref = f"{name}/{entry['id']}"
+            assert copilot.resolve_copilot_model(ref, models).ref == ref
+            assert copilot._without_registry_prefix(ref) == entry["id"]
+
+    def test_partial_provider_wildcard_keeps_ids_and_warns(self, monkeypatch, capsys):
+        service = "main.default.bedrock"
+        seen = []
+        monkeypatch.setattr(
+            model_sources,
+            "get_model_provider_service",
+            lambda *args: ({"provider_type": "amazon_bedrock"}, None),
+        )
+
+        def list_models(workspace, token, name, provider, *, tool, **kwargs):
+            seen.append(tool)
+            return ["us.openai.gpt-5.6-sol"], "Anthropic listing: HTTP 503"
+
+        monkeypatch.setattr(model_sources, "list_provider_service_models", list_models)
+
+        models, live = model_sources.resolve_model_sources([f"{service}.*"], "copilot", WS, "token")
+
+        assert models == [f"{service}.us.openai.gpt-5.6-sol"]
+        assert live == {f"{service}.*": models}
+        assert seen == ["copilot"]
+        output = " ".join(capsys.readouterr().out.split())
+        assert "Could not fully expand managed model source" in output
+        assert "Anthropic listing: HTTP 503" in output
+
+    def test_partial_configure_preserves_full_cache_for_offline_launch(self, monkeypatch):
+        service = "main.default.bedrock"
+        source = f"{service}.*"
+        old, fresh = f"{service}.old-model", f"{service}.fresh-model"
+        state = {"workspace": WS}
+        set_managed_model_source_expansions(
+            state,
+            "copilot",
+            {source: [old], "removed.default.service.*": [old]},
+            native_api_types={old: ("openai/v1/chat/completions",)},
+        )
+        managed = {"enabled_agents": {"copilot": {"model_config": {"sources": [source]}}}}
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args: "token")
+
+        def partial_listing(source, tool, workspace, token, native_api_types):
+            native_api_types[fresh] = ("openai/v1/responses",)
+            return [fresh], "Anthropic listing: HTTP 503"
+
+        monkeypatch.setattr(model_sources, "_expand_wildcard_source", partial_listing)
+        runtime, cache = cli_mod._expand_managed_model_sources(managed, state, "copilot")
+        assert runtime["enabled_agents"]["copilot"]["model_config"]["sources"] == [fresh]
+        assert cache == {source: [old, fresh]}
+        set_managed_model_source_expansions(
+            state,
+            "copilot",
+            cache,
+            native_api_types=runtime[copilot.NATIVE_MODEL_API_TYPES_KEY],
+        )
+        monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *args: ([], "offline"))
+        offline, _ = cli_mod._expand_managed_model_sources(
+            managed,
+            state,
+            "copilot",
+            fallbacks=get_managed_model_source_expansions(state, "copilot"),
+        )
+        models = copilot.copilot_catalog(resolve_state(offline, state, "copilot"))
+        assert [(entry.id, entry.wire, entry.native) for entry in models] == [
+            (fresh, "responses", True),
+            (old, "completions", True),
+        ]
+        monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *args: ([fresh], None))
+        _, complete = cli_mod._expand_managed_model_sources(managed, state, "copilot")
+        assert complete == {source: [fresh]}
+        set_managed_model_source_expansions(state, "copilot", complete)
+        assert get_managed_model_source_api_types(state, "copilot") == {}
+
     def test_provider_wildcards_reach_the_registry_with_qualified_ids(self, monkeypatch):
         services = {
             "main.default.lilly-personal-anthropic": (
@@ -115,7 +307,7 @@ class TestBuildCopilotCatalog:
         monkeypatch.setattr(
             model_sources,
             "list_provider_service_models",
-            lambda workspace, token, name, provider: (services[name][1], None),
+            lambda workspace, token, name, provider, **kwargs: (services[name][1], None),
         )
         models, _ = model_sources.resolve_model_sources(
             [SONNET, *(f"{service}.*" for service in services)], "copilot", WS, "token"
@@ -523,6 +715,52 @@ class TestCopilotCatalogModelId:
 
 class TestClassifyProviderModel:
     @pytest.mark.parametrize(
+        ("provider", "model", "api", "wire"),
+        [
+            ("anthropic", "claude-opus-4-1", "anthropic/v1/messages", "anthropic"),
+            ("microsoft_foundry", "claude-opus-4-1", "anthropic/v1/messages", "anthropic"),
+            ("azure_openai", "deployment-alias", "openai/v1/responses", "responses"),
+            ("openai", "gpt-4o", "openai/v1/responses", "responses"),
+        ],
+    )
+    def test_direct_provider_keeps_its_supported_native_wire(self, provider, model, api, wire):
+        assert copilot.classify_model(model, (api,), provider_type=provider) == (wire, None)
+
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    @pytest.mark.parametrize(
+        ("model", "api", "expected"),
+        [
+            ("openai.gpt-oss-120b", "openai/v1/responses", "responses"),
+            ("openai.gpt-oss-120b", "openai/v1/chat/completions", "completions"),
+            ("openai.gpt-oss-120b", "openai/v1/embeddings", None),
+            ("openai.gpt-oss-120b", "anthropic/v1/messages", None),
+            ("openai.gpt-oss-120b", None, None),
+            ("us.openai.gpt-5.6-sol", "openai/v1/chat/completions", None),
+            ("us.openai.gpt-5.6-sol", None, "responses"),
+            ("openai.o3", "openai/v1/responses", "responses"),
+        ],
+    )
+    def test_bedrock_models_require_their_native_api(self, provider_type, model, api, expected):
+        wire, reason = copilot.classify_model(
+            model, () if api is None else (api,), provider_type=provider_type
+        )
+
+        assert wire == expected
+        assert (reason is None) == (expected is not None)
+
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    def test_unknown_native_model_prefers_completions_when_both_apis_are_declared(
+        self, provider_type
+    ):
+        wire, reason = copilot.classify_model(
+            "openai.gpt-oss-20b-1:0",
+            ("openai/v1/responses", "openai/v1/chat/completions"),
+            provider_type=provider_type,
+        )
+        assert wire == "completions"
+        assert reason is None
+
+    @pytest.mark.parametrize(
         ("model", "provider_type", "wire"),
         [
             ("claude-sonnet-5", "anthropic", "anthropic"),
@@ -556,7 +794,7 @@ class TestClassifyProviderModel:
         ("model", "provider_type", "reason"),
         [
             ("us.anthropic.claude-sonnet-4-6", "openai", None),
-            ("amazon.titan-text-express-v1", "amazon_bedrock", "Claude models"),
+            ("amazon.titan-text-express-v1", "amazon_bedrock", "native chat API"),
         ],
     )
     def test_unusable_models_say_why(self, model, provider_type, reason):
@@ -629,7 +867,7 @@ def _stub_provider_service(monkeypatch, service, *, listed=(), listing_error=Non
         seen["resolve"] = (tool, name, workspace, token)
         return (dict(service, name=name), None) if service else (None, f"'{name}' was not found.")
 
-    def list_models(workspace, token, service_name, provider_type):
+    def list_models(workspace, token, service_name, provider_type, *, tool=None, **kwargs):
         seen["listing"] = (service_name, provider_type)
         return list(listed), listing_error
 
@@ -642,6 +880,121 @@ MPS = "main.default.anthropic_mps"
 
 
 class TestProviderCatalog:
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    @pytest.mark.parametrize("explicit_api", [None, "openai/v1/chat/completions"])
+    def test_allow_all_bedrock_preserves_responses_discovery_for_gpt_oss(
+        self, monkeypatch, provider_type, tool, explicit_api
+    ):
+        model = "openai.gpt-oss-120b"
+        _stub_provider_service(
+            monkeypatch,
+            {
+                "provider_type": provider_type,
+                "targets": [model] if explicit_api else [],
+                "target_api_types": {model: (explicit_api,)} if explicit_api else {},
+                "allow_all_targets": True,
+            },
+        )
+        monkeypatch.setattr(
+            copilot, "list_provider_service_models", databricks.list_provider_service_models
+        )
+
+        def get(url, token, **kwargs):
+            if "/codex/" in url:
+                return {"models": [{"slug": model}]}, None
+            return {"data": []}, None
+
+        monkeypatch.setattr(databricks, "_http_get_json", get)
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None, tool=tool)
+
+        assert [(entry.id, entry.wire) for entry in models] == [
+            (model, "completions" if explicit_api else "responses")
+        ]
+        registry = copilot.render_providers_config(models, PROXY, "session-secret")
+        assert registry["models"][0]["wireModel"] == model
+
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    @pytest.mark.parametrize("restricted", [False, True])
+    def test_overlapping_catalogs_keep_claude_messages_unless_target_restricts_it(
+        self, monkeypatch, provider_type, tool, restricted
+    ):
+        claude, gpt = "anthropic.claude-sonnet-5", "openai.gpt-5.6-sol"
+        _stub_provider_service(
+            monkeypatch,
+            {
+                "provider_type": provider_type,
+                "targets": [claude] if restricted else [],
+                "target_api_types": {claude: ("openai/v1/responses",)} if restricted else {},
+                "allow_all_targets": True,
+            },
+        )
+        monkeypatch.setattr(
+            copilot, "list_provider_service_models", databricks.list_provider_service_models
+        )
+
+        def get(url, token, **kwargs):
+            if "/codex/" in url:
+                return {"models": [{"slug": claude}, {"slug": gpt}]}, None
+            return {"data": [{"id": claude}]}, None
+
+        monkeypatch.setattr(databricks, "_http_get_json", get)
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None, tool=tool)
+        assert [(model.id, model.wire) for model in models] == (
+            [] if restricted else [(claude, "anthropic")]
+        ) + [(gpt, "responses")]
+
+    def test_partial_bedrock_discovery_keeps_working_models_and_warns(self, monkeypatch, capsys):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "bedrock_mantle", "targets": [], "allow_all_targets": True},
+            listed=["openai.gpt-5.6-sol"],
+            listing_error="Anthropic listing failed: HTTP 503",
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None)
+
+        assert [(model.id, model.wire) for model in models] == [("openai.gpt-5.6-sol", "responses")]
+        assert "Anthropic listing failed: HTTP 503" in " ".join(capsys.readouterr().out.split())
+
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_mixed_bedrock_catalog_keeps_gpt_and_filters_incompatible_apis(
+        self, monkeypatch, provider_type, tool
+    ):
+        claude = "anthropic.claude-sonnet-5"
+        gpt = "us.openai.gpt-5.6-sol"
+        old_gpt = "openai.gpt-4.1-mini"
+        oss = "openai.gpt-oss-120b"
+        embedding = "amazon.titan-embed-text-v2"
+        wrong_api = "openai.gpt-5.6-luna"
+        _stub_provider_service(
+            monkeypatch,
+            {
+                "provider_type": provider_type,
+                "targets": [claude, gpt, old_gpt, oss, embedding, wrong_api],
+                "target_api_types": {
+                    claude: ["anthropic/v1/messages"],
+                    gpt: ["openai/v1/responses"],
+                    old_gpt: ["openai/v1/chat/completions"],
+                    oss: ["openai/v1/responses"],
+                    embedding: ["openai/v1/embeddings"],
+                    wrong_api: ["anthropic/v1/messages"],
+                },
+            },
+        )
+
+        models = copilot.provider_service_catalog({"workspace": WS}, MPS, None, tool=tool)
+
+        assert [(model.id, model.wire) for model in models] == [
+            (claude, "anthropic"),
+            (gpt, "responses"),
+            (oss, "responses"),
+            (old_gpt, "completions"),
+        ]
+
     def test_uses_the_declared_targets(self, monkeypatch):
         seen = _stub_provider_service(
             monkeypatch,

@@ -1542,6 +1542,82 @@ class TestResolveProviderService:
 
 
 class TestListProviderServiceModels:
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    def test_mixed_bedrock_discovers_anthropic_and_openai_models(self, monkeypatch, provider_type):
+        claude = "anthropic.claude-sonnet-5"
+        gpt = "openai.gpt-5.6-sol"
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            if "/codex/" in url:
+                return {"models": [{"slug": gpt}]}, None
+            return {"data": [{"id": claude}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        api_types = {}
+        models, reason = db_mod.list_provider_service_models(
+            WS,
+            "token",
+            "main.a.b",
+            provider_type,
+            tool="copilot",
+            discovered_api_types=api_types,
+        )
+
+        assert reason is None
+        assert models == [claude, gpt]
+        assert len(calls) == 2
+        assert api_types == {
+            claude: ("anthropic/v1/messages",),
+            gpt: ("openai/v1/responses",),
+        }
+
+    @pytest.mark.parametrize("failed_api", ["anthropic", "codex", "both"])
+    def test_mixed_bedrock_listing_retains_partial_results_and_errors(
+        self, monkeypatch, failed_api
+    ):
+        claude = "anthropic.claude-sonnet-5"
+        gpt = "openai.gpt-5.6-sol"
+
+        def get(url, token, **kwargs):
+            api = "codex" if "/codex/" in url else "anthropic"
+            if failed_api in (api, "both"):
+                return None, f"{api}: HTTP 503"
+            if api == "codex":
+                return {"models": [{"slug": gpt}]}, None
+            return {"data": [{"id": claude}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        models, reason = db_mod.list_provider_service_models(
+            WS, "token", "main.a.b", "bedrock_mantle", tool="copilot"
+        )
+
+        assert models == ({"anthropic": [gpt], "codex": [claude], "both": []}[failed_api])
+        assert reason is not None and "HTTP 503" in reason
+
+    @pytest.mark.parametrize("tool", [None, "claude", "codex"])
+    def test_other_consumers_keep_anthropic_only_bedrock_discovery(self, monkeypatch, tool):
+        calls = []
+
+        def get(url, token, **kwargs):
+            calls.append(url)
+            return {"data": [{"id": "anthropic.claude-sonnet-5"}]}, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+
+        api_types = {}
+        models, reason = db_mod.list_provider_service_models(
+            WS, "token", "main.a.b", "bedrock_mantle", tool=tool, discovered_api_types=api_types
+        )
+
+        assert models == ["anthropic.claude-sonnet-5"]
+        assert reason is None
+        assert len(calls) == 1
+        assert api_types == {}
+
     @pytest.mark.parametrize(
         ("provider_type", "response", "expected"),
         [
@@ -1699,7 +1775,7 @@ class TestServiceUsableForTool:
             ("vscode", "bedrock_mantle"),
         ],
     )
-    def test_missing_compatible_targets_error(self, tool, provider_type):
+    def test_gpt_responses_targets_require_an_openai_client(self, tool, provider_type):
         service = {
             "provider_type": provider_type,
             "targets": ["gpt-5.4"],
@@ -1708,10 +1784,13 @@ class TestServiceUsableForTool:
 
         reason = db_mod._provider_service_unusable_reason(tool, service, "main.test.models")
 
-        assert reason == (
-            f"Model provider service 'main.test.models' exposes no compatible models for {tool} — "
-            "add compatible targets, enable allow_all_targets, or pick a different service."
-        )
+        if tool in ("copilot", "vscode"):
+            assert reason is None
+        else:
+            assert reason == (
+                f"Model provider service 'main.test.models' exposes no compatible models for {tool} — "
+                "add compatible targets, enable allow_all_targets, or pick a different service."
+            )
         service["allow_all_targets"] = True
         assert db_mod._provider_service_unusable_reason(tool, service, "main.test.models") is None
 
@@ -1781,7 +1860,8 @@ class TestServiceUsableForTool:
         }
         assert not db_mod.service_usable_for_tool("claude", service)
         assert db_mod.service_usable_for_tool("codex", service)
-        assert not db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("copilot", service)
+        assert db_mod.service_usable_for_tool("vscode", service)
 
     @pytest.mark.parametrize(
         "provider_type",
