@@ -12,7 +12,7 @@ from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing.v2 import _claude_mod_launch_options, _write_routed_claude_plugin
 
 
-def auto_session(native_binary, tmp_path, models, labels, dimensions=(50, 110)):
+def auto_session(native_binary, tmp_path, models, labels, dimensions=(50, 110), *, feedback=False):
     home = tmp_path / "home"
     cwd = tmp_path / "project"
     for directory in (home, cwd):
@@ -64,6 +64,18 @@ export function register(on) {
         "ENABLE_SMART_ROUTER_AUTO_MODE": "1",
     }
     options = {**_claude_mod_launch_options(routing), "autoPicker": json.dumps(catalog)}
+    if feedback:
+        # Isaac is an external report collector, not part of this native UI subject.
+        # Execute only its inspection fixture; an upload attempt must fail this test.
+        options["isaacExecutable"] = sys.executable
+        options["isaacFeedbackDirectory"] = str(home / ".isaac" / "feedback")
+        (cwd / "feedback").write_text(
+            "import json, pathlib, sys\n"
+            "assert sys.argv[1:5] == ['--inspect-target', '--harness', 'claude', '--session-id']\n"
+            "assert len(sys.argv) == 6\n"
+            "pathlib.Path('feedback-inspected').write_text(sys.argv[5])\n"
+            "print(json.dumps({'message_id': None}))\n"
+        )
     config["pluginConfigs"] = {"ug-smart-router": {"options": options}}
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps(config))
@@ -89,6 +101,7 @@ export function register(on) {
             CLAUDE_CODE_ELEGANT_MEADOW="1",
             CLAUDE_CODE_USE_GATEWAY="1",
             DISABLE_AUTOUPDATER="1",
+            ISAAC_SMART_ROUTER_FEEDBACK="1" if feedback else "0",
             UCODE_SMART_ROUTER_PYTHON=sys.executable,
             UCODE_SESSION_ENV_FILE=str(tmp_path / (name + "-controls.json")),
         )

@@ -121,3 +121,62 @@ def test_auto_switch_updates_native_profile_without_changing_another_session(
         assert_friendly_commands(a.visible)
         a.exit_normally()
         b.exit_normally()
+
+
+def test_auto_feedback_escape_preserves_exact_auto_and_routing(native_binary, tmp_path):
+    """Scenario: select a manual model from a nondefault Auto profile with feedback on.
+
+    Expected: the existing feedback pane opens after native selection, Escape
+    preserves the exact Auto alias and routing ON, and another picker still works.
+    Only the external Isaac target collector is a fixture. Claude and the form
+    remain real; this never submits feedback or inference.
+    """
+    fixture = auto_session(
+        native_binary,
+        tmp_path,
+        ["claude-opus-5-5", "claude-haiku-4-5"],
+        {"claude-opus-5-5": "Opus 5.5", "claude-haiku-4-5": "Haiku 4.5"},
+        feedback=True,
+    )
+    selector = "Choose your main model"
+    with fixture.launch("feedback") as tui:
+        tui.boot(timeout=45)
+        tui.submit("/model auto")
+        tui.wait_for(lambda s: selector in s, "the Auto selector")
+        pane = " ".join(line.partition("│")[2].strip() for line in tui.visible.splitlines())
+        assert "Subagents are smart routed. Your main agent isn't; choose its model below." in (
+            " ".join(pane.split())
+        )
+        tui.send("\x1b[B\r", "choose Haiku as Auto's main model")
+        tui.wait_for(lambda s: selector not in s and "Auto (Haiku 4.5) saved" in s, "saved Auto")
+        expected = fixture.catalog["models"][1]["autoModel"]
+        assert fixture.observe(tui, "before-feedback")["model"] == expected
+        for attempt in range(2):
+            tui.submit("/model")
+            tui.choose("Select model", "Opus 5.5")
+            tui.wait_for(
+                lambda s: "Why are you turning Smart Router off?" in s,
+                "the existing feedback form after native manual selection",
+            )
+            assert selector not in tui.visible
+            assert "Enter at least 16 characters." in tui.visible
+            assert (tui.session.cwd / "feedback-inspected").is_file()
+            tui.send("\x1b", "cancel feedback without a reason or upload")
+            tui.wait_for(
+                lambda s: "Why are you turning Smart Router off?" not in s,
+                "the dismissed feedback form",
+            )
+            restored = fixture.observe(tui, f"cancelled-feedback-{attempt}")
+            assert restored["model"] == expected
+            assert restored["routing"] == "1"
+            assert "smart router ON" in tui.visible
+        fixture.picker(tui)
+        tui.submit("/model auto")
+        tui.wait_for(lambda s: selector in s, "the ordinary Auto selector after feedback")
+        assert "Why are you turning Smart Router off?" not in tui.visible
+        tui.send("\x1b", "close the restored Auto selector")
+        tui.wait_for(lambda s: selector not in s, "the dismissed Auto selector")
+        restored = fixture.observe(tui, "after-feedback-selector")
+        assert restored["model"] == expected
+        assert restored["routing"] == "1"
+        tui.exit_normally()

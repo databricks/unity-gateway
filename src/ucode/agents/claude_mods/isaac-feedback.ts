@@ -44,6 +44,8 @@ type FeedbackState = {
   turnOff?: boolean;
   readRoutingEnabled?: () => Promise<boolean>;
   disableRouting?: (sessionControlArgs: readonly string[]) => Promise<void>;
+  paneId?: 'auto-main';
+  openRoutingOff?: () => Promise<string | undefined>;
 };
 
 export function createIsaacFeedbackState(): FeedbackState {
@@ -144,7 +146,7 @@ async function submitFeedback(
     state.submitted = false;
     return 'Could not prepare feedback. Nothing was uploaded; retry /isaac-feedback.';
   }
-  await $.ui.close({ id: FEEDBACK_PANE }).catch(() => {});
+  await $.ui.close({ id: state.paneId ?? FEEDBACK_PANE }).catch(() => {});
   showSending($, feedbackId);
   if (feedbackId && promptId === null) {
     $.ui.log('No earlier task was found. This feedback can help diagnose setup or controls, but has no task or model request to analyze.');
@@ -169,23 +171,54 @@ async function openFeedbackForm(
   if (state.category !== 'other') await prepareFeedbackTarget($, state, isaacExecutable);
   $.ui.invalidate('ui.render');
   const pane = await $.ui.open({
-    id: FEEDBACK_PANE, title: state.turnOff ? 'Turn Smart Router off' : 'Isaac feedback',
+    id: state.paneId ?? FEEDBACK_PANE, title: state.turnOff ? 'Turn Smart Router off' : 'Isaac feedback',
     focus: true, closeOnEscape: true, rows: 6, columns: 56,
   });
   if (pane.isPlaced) return true;
-  await $.ui.close({ id: FEEDBACK_PANE });
+  await $.ui.close({ id: state.paneId ?? FEEDBACK_PANE });
   return false;
+}
+
+async function openRoutingOff(
+  $: EngineInterface, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
+): Promise<string | undefined> {
+  if (state.submitted) return 'Feedback is being prepared.';
+  try {
+    if (!state.readRoutingEnabled || !state.disableRouting) {
+      throw new Error('Smart Router controls are unavailable.');
+    }
+    if (!await state.readRoutingEnabled()) return SMART_ROUTER_OFF_REPLY;
+    state.submitted = false;
+    state.reason = '';
+    state.category = 'smart-routing';
+    state.turnOff = true;
+    if (await openFeedbackForm($, state, isaacExecutable, isaacFeedbackDirectory)) return;
+  } catch {
+    // No reason was collected, so leave routing unchanged.
+  }
+  return 'Could not open the feedback form. Smart Router is still on; retry /smart-router off.';
 }
 
 export function registerIsaacFeedback(
   on: On, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): void {
+  on('session.append', {door:'command'}, ($, e, next) => {
+    // Keep the engine-bound callback in this module for the native mod compiler.
+    state.openRoutingOff = () => openRoutingOff($, state, isaacExecutable, isaacFeedbackDirectory);
+    return next(e);
+  });
+  on('ui.close', ($, e, next) => {
+    if (e.id === (state.paneId ?? FEEDBACK_PANE)) state.paneId = undefined;
+    return next(e);
+  });
   on('session.append', { door: 'prompt' }, ($, e, next) => {
     if (!e.agentId && !e.message.isMeta) state.lastPromptId = e.uuid;
     return next(e);
   });
   on('session.end', ($, e, next) => {
     state.lastPromptId = undefined;
+    state.paneId = undefined;
+    state.openRoutingOff = undefined;
     return next(e);
   });
   on('command.run', { command: 'isaac-feedback' }, async ($, e, next) => {
@@ -220,6 +253,7 @@ export function registerIsaacFeedback(
             || (action === 'status' && feedbackId && !rest.length && FEEDBACK_ID.test(feedbackId))) return next(e);
       }
     }
+    state.paneId = undefined;
     state.turnOff = false;
     state.category = category;
     state.reason = message;
@@ -244,25 +278,13 @@ export function registerIsaacFeedback(
     if (!feedbackRequired || (command.feedbackCollected && await $.env.get('ISAAC_LAUNCH_MODE') === 'omni')) {
       return next(e);
     }
-    if (state.submitted) return { text: 'Feedback is being prepared.' };
-    try {
-      if (!state.readRoutingEnabled || !state.disableRouting) {
-        throw new Error('Smart Router controls are unavailable.');
-      }
-      if (!await state.readRoutingEnabled()) return {text: SMART_ROUTER_OFF_REPLY};
-      state.submitted = false;
-      state.reason = '';
-      state.category = 'smart-routing';
-      state.turnOff = true;
-      if (await openFeedbackForm($, state, isaacExecutable, isaacFeedbackDirectory)) return {};
-    } catch {
-      // No reason was collected, so leave routing unchanged.
-    }
-    return {text: 'Could not open the feedback form. Smart Router is still on; retry /smart-router off.'};
+    state.paneId = undefined;
+    const error = await openRoutingOff($, state, isaacExecutable, isaacFeedbackDirectory);
+    return error ? {text:error} : {};
   });
 
   on('ui.render', { component: 'Pane' }, ($, e, next) => {
-    if (e.requestId !== FEEDBACK_PANE || e.surface === 'mobile') return next(e);
+    if (e.requestId !== (state.paneId ?? FEEDBACK_PANE) || e.surface === 'mobile') return next(e);
     const { Box, Text, Input, Button } = $.ui.resolve(e);
     if (!state.category) {
       const choose = async (category: FeedbackCategory) => {
@@ -277,7 +299,7 @@ export function registerIsaacFeedback(
         Text({ children: ['What is your feedback about?'] }),
         Button({ key: 'routing', label: 'Smart routing (with session details)', autoFocus: true, onPress: () => choose('smart-routing') }),
         Button({ key: 'other', label: 'Other (text only)', onPress: () => choose('other') }),
-        Button({ key: 'cancel', label: 'Cancel', onPress: () => $.ui.close({ id: FEEDBACK_PANE }) }),
+        Button({ key: 'cancel', label: 'Cancel', onPress: () => $.ui.close({ id: state.paneId ?? FEEDBACK_PANE }) }),
       ] });
     }
     return Box({
@@ -301,7 +323,7 @@ export function registerIsaacFeedback(
             if (error) $.ui.toast(error);
           },
         }),
-        Button({ key: 'cancel', label: state.turnOff ? 'Cancel (keep routing on)' : 'Cancel', onPress: () => $.ui.close({ id: FEEDBACK_PANE }) }),
+        Button({ key: 'cancel', label: state.turnOff ? 'Cancel (keep routing on)' : 'Cancel', onPress: () => $.ui.close({ id: state.paneId ?? FEEDBACK_PANE }) }),
       ],
     });
   });

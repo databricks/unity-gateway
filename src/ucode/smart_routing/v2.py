@@ -36,7 +36,6 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
-    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
@@ -49,7 +48,6 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
-from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -761,13 +759,12 @@ def launch_claude(
 
     route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     settings, remaining = compose_settings(tool_args)
-    # Isaac's feedback-gated toggle remains its own flow. Do not sidestep it
-    # through a model selection; explicit first-prompt presets also stay intact.
+    # Auto's native model selection collects Isaac feedback before disabling routing.
+    # Explicit first-prompt presets retain their own launch behavior.
     auto_picker = (
         resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) == "1"
         and not route_first_prompt
         and not _claude_print_mode(remaining)
-        and not env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
     )
     from ucode.agents.claude import _managed_settings_path, auto_picker_available
     from ucode.agents.claude_auto import add_picker_entry

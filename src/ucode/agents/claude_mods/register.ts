@@ -9,6 +9,7 @@ import {
   DISABLE_ROUTING_FLAG,
   DISABLED_RECIPE,
   ENABLE_ROUTING_FLAG,
+  envBool,
   RECIPE_FIELD,
   SMART_ROUTER_OFF_REPLY,
   SMART_ROUTER_ON_REPLY,
@@ -79,6 +80,7 @@ async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: Auto
 }
 
 type RoutingSyncState = {model?: string; failedModel?: string};
+type ManualOffRequest = {autoModel: string; manualModel: string; phase: 'restoring' | 'feedback' | 'committing'};
 async function syncAutoRouting($: EngineInterface, options: PluginOptions, auto: AutoPicker, state: RoutingSyncState): Promise<void> {
   const model = await $.session.model();
   if (model === state.failedModel) return;
@@ -218,6 +220,9 @@ export function register(on: On, options: PluginOptions): void {
   const routingSync: RoutingSyncState = {};
   let choosing = false;
   let switchingAuto = false;
+  const internalModels: string[] = [];
+  let sessionActive = true;
+  let manualOffRequest: ManualOffRequest | undefined;
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
   const pickerState: AutoPickerState = {drafts:{}, native:{}};
   let pendingSelection: { cancel: () => void } | undefined;
@@ -226,6 +231,7 @@ export function register(on: On, options: PluginOptions): void {
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
+    sessionActive = true;
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
       await customAutoRow($, auto, await mainModel($, auto));
@@ -238,8 +244,16 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, ($, e, next) => {
+    sessionActive = false;
+    manualOffRequest = undefined;
+    internalModels.length = 0;
+    pendingSelection?.cancel();
+    return next(e);
+  });
+
   on('turn.step', async function* ($, e, next) {
-    if (auto && !e.agentId) await syncAutoRouting($, options, auto, routingSync);
+    if (auto && !e.agentId && !switchingAuto && !manualOffRequest) await syncAutoRouting($, options, auto, routingSync);
     const active = await readOrchestratorState($, options);
     if (active !== orchestratorActive) {
       orchestratorActive = active;
@@ -252,7 +266,18 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   if (auto) {
+    on('ui.close', {id:'auto-main'}, ($, e, next) => {
+      if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
+      return next(e);
+    });
+    on('session.append', {door:'prompt'}, ($, e, next) => {
+      if (!e.agentId && !e.message.isMeta) manualOffRequest = undefined;
+      return next(e);
+    });
     on('command.run', { command: 'model' }, async ($, e, next) => {
+      const internalCommand = internalModels.includes(e.args)
+        && (switchingAuto || (e.origin?.kind === 'plugin' && e.origin.name === 'ug-smart-router'));
+      if (!internalCommand) manualOffRequest = undefined;
       let command = e;
       publicAutoEcho = undefined;
       if (e.args.trim().toLowerCase() === 'auto') {
@@ -268,7 +293,7 @@ export function register(on: On, options: PluginOptions): void {
         publicAutoEcho = undefined;
         throw error;
       }
-      if (switchingAuto) return result;
+      if (internalCommand) return result;
       // Panel commands return an opaque ref, before their transcript is appended.
       // Place the pane while this still carries the user's command context; the
       // confirmation below focuses it after /model closes or dismisses it on Esc.
@@ -296,6 +321,7 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.scroll', {requestId:'auto-main'}, async ($, e, next) => {
       // Overflow makes the native pane consume arrows as one-row scrolls.
       // Keep those keys on the model list; wheel and page scrolling stay native.
+      if (feedback.paneId === 'auto-main') return next(e);
       if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e);
       const current = Math.max(0, auto.models.findIndex(row => row.model === pickerState.model));
       const index = Math.max(0, Math.min(auto.models.length - 1, current + e.by));
@@ -306,7 +332,7 @@ export function register(on: On, options: PluginOptions): void {
       return {};
     });
     on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-      if (e.requestId !== 'auto-main') return next(e);
+      if (e.requestId !== 'auto-main' || feedback.paneId === 'auto-main') return next(e);
       const { Box, Text, Button } = $.ui.resolve(e);
       const layers = await Promise.all([
         $.settings.read({source:'user'}), $.settings.read({source:'project'}),
@@ -326,6 +352,7 @@ export function register(on: On, options: PluginOptions): void {
         $.ui.invalidate('ui.render');
       };
       const save = async (selected: AutoPicker['models'][number]) => {
+        manualOffRequest = undefined;
         const draft = pickerState.drafts[selected.model];
         const active = await autoSelected($, auto);
         switchingAuto = true;
@@ -333,6 +360,7 @@ export function register(on: On, options: PluginOptions): void {
         try {
           await customAutoRow($, auto, selected.model);
           if (active) {
+            internalModels.push(selected.autoModel);
             await $.command.run({ command: 'model', args: selected.autoModel });
             if (await $.session.model() !== selected.autoModel) {
               throw new Error('Claude did not accept the selected main model.');
@@ -364,7 +392,7 @@ export function register(on: On, options: PluginOptions): void {
         : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!pickerState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
         Text({ bold: true, children: ['Choose your main model'] }),
-        Text({ dimColor: true, children: ['Auto smart routes your subagents. Your main agent uses the model you choose below.'] }),
+        Text({ dimColor: true, children: ["Subagents are smart routed. Your main agent isn't; choose its model below."] }),
         Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
           Button({key:'auto-main-model-' + index,
             plain:true, autoFocus:item.model === model ? true : undefined,
@@ -402,18 +430,33 @@ export function register(on: On, options: PluginOptions): void {
     // change hook alone misses that first-use/reselection case. Defer the next
     // native question until the model picker has closed; never self-dispatch /auto.
     on('session.append', { door: 'command' }, async ($, e, next) => {
-      const internalSwitch = switchingAuto;
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
       const keptModel = text.startsWith(MODEL_KEPT_PREFIX);
       const setModel = text.startsWith(MODEL_SET_PREFIX);
+      const selectedModel = setModel || keptModel ? await $.session.model() : undefined;
+      const internalIndex = selectedModel && e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router'
+        ? internalModels.indexOf(selectedModel) : -1;
+      const internalSwitch = internalIndex >= 0;
+      if (internalIndex >= 0) internalModels.splice(internalIndex, 1);
+      const previousAuto = routingSync.model;
+      const manualModel = setModel && !internalSwitch ? await $.session.model() : undefined;
+      const requested: ManualOffRequest | undefined = manualModel && previousAuto && auto.models.some(row => row.autoModel === previousAuto)
+        && !auto.models.some(row => row.autoModel === manualModel)
+        && envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))
+        && isRoutingEnabled(await readSessionEnvironment($))
+        ? {autoModel: previousAuto, manualModel, phase:'restoring'} : undefined;
+      const restored = internalSwitch && manualOffRequest?.phase === 'restoring'
+        && selectedModel === manualOffRequest.autoModel ? manualOffRequest : undefined;
+      const request = requested ?? restored;
+      if (!internalSwitch && setModel) manualOffRequest = requested;
       // Close the provisional pane before forwarding the native confirmation.
       // Forwarding first can dismiss /model and expose the pane for one frame.
       const dismiss = !internalSwitch && (keptModel || (setModel && !await autoSelected($, auto)));
       if (dismiss) {
         pendingSelection?.cancel();
         await $.ui.close({ id: 'auto-main' });
-        if (setModel) await syncAutoRouting($, options, auto, routingSync);
+        if (setModel && !request) await syncAutoRouting($, options, auto, routingSync);
       }
       const echo = MODEL_COMMAND_ECHO.exec(text);
       // Claude 2.1.290 stamps typed native model-command echoes as unclassified.
@@ -434,6 +477,93 @@ export function register(on: On, options: PluginOptions): void {
         } : block) },
       } : e;
       const result = await next(confirmation);
+      if (request) {
+        if (restored) request.phase = 'feedback';
+        pendingSelection = $.clock.after(0, async () => {
+          if (manualOffRequest !== request) return;
+          if (!restored) {
+            switchingAuto = true;
+            try {
+              internalModels.push(request.autoModel);
+              await $.command.run({command:'model', args:request.autoModel});
+              if (await $.session.model() !== request.autoModel) throw new Error('Claude did not restore Auto.');
+            } catch (error) {
+              manualOffRequest = undefined;
+              $.ui.toast(`Could not restore Auto: ${String(error)}. Check /model before continuing.`);
+              return;
+            } finally {
+              switchingAuto = false;
+            }
+            return;
+          }
+          try {
+            // Native command.run skips this plugin's own hooks. Bind the existing form directly.
+            feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
+            feedback.disableRouting = async (sessionControlArgs) => {
+              if (manualOffRequest !== request || await $.session.model() !== request.autoModel) {
+                throw new Error('The model selection changed. Select a model again.');
+              }
+              request.phase = 'committing';
+              switchingAuto = true;
+              let disabled = false;
+              try {
+                await setRouting($, options, false, true, sessionControlArgs);
+                disabled = true;
+                if (manualOffRequest !== request) throw new Error('The model selection changed while updating routing.');
+                internalModels.push(request.manualModel);
+                await $.command.run({command:'model', args:request.manualModel});
+                if (manualOffRequest !== request) throw new Error('The model selection changed while selecting the manual model.');
+                if (await $.session.model() !== request.manualModel) throw new Error('Claude did not accept the manual model.');
+                if (manualOffRequest !== request) throw new Error('The model selection changed.');
+                routingSync.model = request.manualModel;
+                routingSync.failedModel = undefined;
+                manualOffRequest = undefined;
+              } catch (error) {
+                if (manualOffRequest !== request) {
+                  if (sessionActive && auto) await syncAutoRouting($, options, auto, routingSync);
+                  throw error;
+                }
+                try {
+                  internalModels.push(request.autoModel);
+                  await $.command.run({command:'model', args:request.autoModel});
+                  if (await $.session.model() !== request.autoModel) throw new Error('Claude did not restore Auto.');
+                } catch (restoreError) {
+                  $.ui.toast(`Could not restore Auto: ${String(restoreError)}. Check /model before continuing.`);
+                }
+                if (disabled && manualOffRequest === request) {
+                  try {
+                    await setRouting($, options, true, true);
+                  } catch (restoreError) {
+                    $.ui.toast(`Could not reenable Smart Routing: ${String(restoreError)}. Restart ug claude to retry.`);
+                  }
+                }
+                $.ui.toast(`Could not select the manual model: ${String(error)}.`);
+                throw error;
+              } finally {
+                switchingAuto = false;
+                if (manualOffRequest === request) manualOffRequest = undefined;
+              }
+              showStatusBand();
+              $.ui.invalidate('ui.render');
+            };
+            // Native panes first opened by a person remain placeable at 110 columns.
+            feedback.paneId = 'auto-main';
+            if (!feedback.openRoutingOff) throw new Error('Feedback controls are unavailable.');
+            const error = await feedback.openRoutingOff();
+            if (error) {
+              feedback.paneId = undefined;
+              if (manualOffRequest === request) manualOffRequest = undefined;
+              $.ui.toast(error);
+            }
+          } catch (error) {
+            if (manualOffRequest === request) manualOffRequest = undefined;
+            feedback.paneId = undefined;
+            $.ui.toast(`Could not open the feedback form: ${String(error)}.`);
+          }
+          $.ui.invalidate('ui.render');
+        });
+        return result;
+      }
       if (EFFORT_STATUS.test(text)) {
         pickerState.native[await $.session.model()] = text;
         $.clock.after(0, async () => {
@@ -489,12 +619,11 @@ export function register(on: On, options: PluginOptions): void {
   registerRoutingLogs(on, options, launchedEnabled);
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
-    if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /model auto to customize the main agent model.' };
     const command = parseSmartRouterCommand(e.args);
+    if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /model auto to customize the main agent model.' };
     if (!command) return {text: 'Usage: /smart-router on|off|logs'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (command.action === 'off') {
-      // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
         await setRouting($, options, false, true, sessionControlArgs);

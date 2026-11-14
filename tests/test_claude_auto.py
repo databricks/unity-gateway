@@ -69,7 +69,7 @@ def test_default_stays_in_available_catalog_and_preserves_custom_labels():
         (AUTO_MODEL, "opus", [], True, False, "opus", True),
         (None, None, ["--model", "opus"], True, False, "opus", True),
         (None, None, [], False, False, None, False),
-        (None, None, [], True, True, None, False),
+        (None, None, [], True, True, AUTO_MODEL, True),
         (None, None, ["-p", "hello"], True, False, None, False),
         ("opus", None, ["--resume", "session-id"], True, False, None, True),
         ("opus", None, ["--continue"], True, False, None, True),

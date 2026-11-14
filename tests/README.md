@@ -40,6 +40,10 @@ native `/effort status` and commits via `/effort`; it no longer copies model-gen
 capability/default tables. Unvisited models retain native auto effort until queried;
 Claude validates their supported choices on save. Typed settings still apply caps.
 The shared `native_claude/auto_session.py` harness also supports the context/profile journey.
+The feedback profile regression uses the real Claude 2.1.290 form at 110 columns.
+It checks repeated Escape preserves the exact Auto model and routing ON, then
+reopens the ordinary Auto selector. Only the external Isaac target-inspection
+collector is substituted. It does not submit feedback or run inference.
 At 60 columns and 22 rows, Up/Down selects and reveals model rows, Enter commits,
 and Escape preserves the previous selection. Component checks preserve wheel/page
 scrolling, native save details and warnings, and regular-model confirmations.
