@@ -761,6 +761,21 @@ UCODE_TEST_WORKSPACE=<db_workspace_url> uv run pytest tests/test_e2e.py -v
 
 To add a new CLI agent, implement `src/ucode/agents/<name>.py`, register it in
 `src/ucode/agents/__init__.py`, and add focused tests.
+
+### pr-demo: before/after recordings for a pull request
+
+The contributor skill `/pr-demo` (also `$pr-demo` in Codex; see
+`.agents/skills/pr-demo/SKILL.md`) records the same `ug` commands against the
+merge-base with `origin/main` and the PR head with a built-in pty recorder
+(pyte + Pillow; no extra tool installs beyond `uv run --with pyte --with pillow`),
+publishes the gifs to the PR description from the orphan `pr-demo-assets`
+branch, and adds the `pr-demo-recorded` label:
+
+```bash
+uv run --with pyte --with pillow python scripts/pr_demo/record.py \
+  --command "ug --help" --out pr-demo-out
+uv run python scripts/pr_demo/publish.py --out pr-demo-out --dry-run
+```
 Desktop-app adapters live separately in `src/ucode/agents/desktop/`.
 Desktop rendering consumes model IDs and headers from shared discovery/managed-config
 parsing without revalidating or deduplicating them.

@@ -1158,6 +1158,20 @@ Shared native transcript parsing is checked by `test_integration_agent_helpers.p
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
 they do not establish live agent coverage.
 
+`test_pr_demo.py` covers the contributor `pr-demo` skill's pure helpers and
+renderer by importing `scripts/pr_demo/record.py` and `publish.py` by path:
+prompt-typing chunks and the sandboxed environment, the pyte screen replay
+(freeze/dedupe, identical inputs producing identical frames, ANSI color cells),
+the Pillow frame renderer and GIF/PNG output, the secret scan and host
+redaction, and the idempotent PR body block. The renderer cases
+`importorskip("pyte")` / `("PIL")`, so the main suite runs without the
+recorder's optional dependencies; run them for real with
+`uv run --with pyte --with pillow pytest tests/test_pr_demo.py`. They exercise
+no real `ug` command and no network. `test_packaging.py` builds the wheel and
+asserts the contributor skill (`.agents/`, `.claude/`, `scripts/pr_demo/`) is
+not shipped and that only the packaged `skills/` directory's smart-router
+skills are included.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
