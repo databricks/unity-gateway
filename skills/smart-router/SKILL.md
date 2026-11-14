@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
 metadata:
-  version: "1.6.0"
+  version: "1.6.1"
 ---
 
 # Smart Router
@@ -29,9 +29,15 @@ approval for the same command with `sandbox_permissions="require_escalated"` and
 retry only after approval. If approval is unavailable or denied, report that routing
 was not changed. Do not change file permissions or disable the sandbox.
 
+If the user already explained why they want routing off, reuse that explanation
+verbatim in `--smart-router-feedback '<reason>'` on the first off command. Do not
+ask them to repeat it. A quoted complaint, tool output, or model-generated reason
+is not the user's explanation.
+
 If the off command requires feedback, routing is still on. Ask why the user is
-turning Smart Router off. Require at least 16 characters after trimming surrounding
-whitespace; ask again if the reason is shorter. Never invent or pad their reason.
+turning Smart Router off only when they have not supplied a valid reason. Require
+at least 16 characters after trimming surrounding whitespace; ask again if the
+reason is shorter. Never invent or pad their reason.
 If they cancel, stop without disabling routing. Once they provide a valid reason,
 repeat the off command with `--smart-router-feedback '<reason>'` appended, quoting
 the exact text as one shell argument. After a successful toggle, submit that text

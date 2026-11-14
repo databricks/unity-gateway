@@ -234,6 +234,7 @@ def test_spawn_rewrite_uses_codex_model_id_for_uc_endpoint(monkeypatch, tmp_path
         "\n┌───────────────────────────────────────────────────────────────────────────┐\n"
         "│ Using Unity Gateway Smart Router - Subagent                               │\n"
         "│ Subagent : routing-smoke-test [orchestrator on]                           │\n"
+        "│ Prompt preview : encrypted                                                │\n"
         "│ Selected Model : gpt-5.6-luna                                             │\n"
         "└───────────────────────────────────────────────────────────────────────────┘"
     )
@@ -333,6 +334,10 @@ def test_spawn_routes_on_plaintext_message_when_present(tmp_path, monkeypatch):
         audit_decision=True,
     )
     assert captured["task"] == assignment
+    assert (
+        "Prompt preview : Review the parser's café/日本語 error handling...."
+        in output["systemMessage"]
+    )
     assert output["hookSpecificOutput"]["updatedInput"]["message"] == assignment
     record = json.loads(decisions.read_text())
     assert record["task_sha256"] == hashlib.sha256(assignment.encode("utf-8")).hexdigest()
@@ -383,7 +388,7 @@ def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
         )
 
     monkeypatch.setattr(codex_routing, "request_routing_decision", fake_decision)
-    codex_routing.route_pre_tool_use(
+    output = codex_routing.route_pre_tool_use(
         {
             "tool_name": "collaborationspawn_agent",
             "tool_input": {
@@ -397,6 +402,7 @@ def test_spawn_falls_through_fernet_message_to_task_name(monkeypatch):
     )
 
     assert captured["task"] == "reviewer"
+    assert "Prompt preview" not in output["systemMessage"]
 
 
 def test_spawn_uses_generic_task_instead_of_fernet_message(monkeypatch):

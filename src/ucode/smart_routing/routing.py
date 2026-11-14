@@ -61,10 +61,9 @@ def format_subagent_message(
     """Format a routed-subagent notice without the first-prompt disclaimer."""
     lines = [
         "Using Unity Gateway Smart Router - Subagent",
+        *([f"Subagent : {subagent_name}"] if subagent_name else []),
         *(
-            [f"Subagent : {subagent_name}"]
-            if subagent_name
-            else [f"Prompt : {prompt}"]
+            [f"Prompt preview : {textwrap.shorten(prompt, width=240, placeholder='...')}"]
             if prompt
             else []
         ),
@@ -147,7 +146,7 @@ class SubagentNoticeConfig:
         return _nonempty_string(tool_input.get(self.name_field))
 
     def prompt(self, tool_input: dict[str, Any]) -> str | None:
-        return _nonempty_string(tool_input.get(self.prompt_field))
+        return _plaintext_string(tool_input.get(self.prompt_field))
 
     def display_model(self, decision_model: str, routed_model: str) -> str:
         if self.display_model_mapper is None:
