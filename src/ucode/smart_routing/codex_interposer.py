@@ -231,7 +231,7 @@ async def _handle_tui(
                 token,
                 prompt,
                 list(available_models or []),
-                **({"provider": provider} if provider else {}),
+                provider=provider,
                 log=log,
             )
 
