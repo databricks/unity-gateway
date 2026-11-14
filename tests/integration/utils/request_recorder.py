@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import TracebackType
@@ -35,6 +37,16 @@ _SECRET_HEADERS = {
 }
 # How long teardown waits for in-flight forwards before leaving their connections to them.
 _DRAIN_SECONDS = 10
+_CONTENT_BLOCK_TYPES = {"text", "tool_use", "server_tool_use", "thinking", "redacted_thinking"}
+_STOP_REASONS = {
+    "end_turn",
+    "max_tokens",
+    "stop_sequence",
+    "tool_use",
+    "pause_turn",
+    "refusal",
+    "model_context_window_exceeded",
+}
 
 
 @dataclass(frozen=True)
@@ -186,6 +198,18 @@ class TuiRequestRecorder:
                 self._condition.wait(remaining)
             return self._responses[request.sequence]
 
+    def _claude_response_protocol(self) -> list[dict]:
+        with self._condition:
+            responses = [
+                (request.sequence, self._responses.get(request.sequence))
+                for request in self._requests
+                if request.method == "POST" and request.path == "/ai-gateway/anthropic/v1/messages"
+            ]
+        return [
+            {"sequence": sequence, **_response_protocol(response)}
+            for sequence, response in responses
+        ]
+
     def _forward(self, handler: BaseHTTPRequestHandler) -> None:
         assert self._client
         length = int(handler.headers.get("Content-Length", 0))
@@ -259,6 +283,148 @@ class TuiRequestRecorder:
                 )
                 self._condition.notify_all()
             handler.send_error(502, "upstream request failed")
+
+
+def _response_protocol(response: RecordedResponse | None) -> dict:
+    result = {
+        "status_code": response.status_code if response else None,
+        "state": "pending" if response is None else "incomplete",
+        "content_block_types": [],
+        "stop_reasons": [],
+    }
+    if response is None:
+        return result
+
+    def observe(value, allowed, key):
+        if not isinstance(value, str):
+            raise ValueError
+        label = value if value in allowed else "unknown"
+        if label not in result[key]:
+            result[key].append(label)
+
+    def message(value):
+        if not isinstance(value, dict) or value.get("type") != "message":
+            raise ValueError
+        blocks = value.get("content")
+        if not isinstance(blocks, list):
+            raise ValueError
+        for block in blocks:
+            if not isinstance(block, dict):
+                raise ValueError
+            observe(block.get("type"), _CONTENT_BLOCK_TYPES, "content_block_types")
+        reason = value.get("stop_reason")
+        if reason is not None:
+            observe(reason, _STOP_REASONS, "stop_reasons")
+
+    try:
+        decoded = httpx.Response(
+            response.status_code, headers=response.headers, content=response.body
+        )
+        media_type = decoded.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if media_type != "text/event-stream":
+            payload = decoded.json()
+            if isinstance(payload, dict) and payload.get("type") == "error":
+                result["state"] = "error"
+            else:
+                message(payload)
+                if result["stop_reasons"]:
+                    result["state"] = "complete"
+        else:
+            frames = (
+                decoded.content.decode("utf-8")
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+                .split("\n\n")
+            )
+            tail = frames.pop()
+            started = stopped = unknown = False
+            for frame in frames:
+                data = []
+                event = None
+                for line in frame.split("\n"):
+                    field, _, value = line.partition(":")
+                    value = value.removeprefix(" ")
+                    if field == "data":
+                        data.append(value)
+                    elif field == "event":
+                        event = value
+                if not data:
+                    continue
+                payload = json.loads("\n".join(data))
+                if not isinstance(payload, dict):
+                    raise ValueError
+                kind = payload.get("type")
+                if not isinstance(kind, str) or (event is not None and event != kind):
+                    raise ValueError
+                if (kind == "message_start" and started) or (
+                    kind
+                    in {
+                        "content_block_start",
+                        "content_block_delta",
+                        "content_block_stop",
+                        "message_delta",
+                        "message_stop",
+                    }
+                    and (not started or stopped)
+                ):
+                    raise ValueError
+                if kind == "message_start":
+                    message(payload.get("message"))
+                    started = True
+                elif kind == "content_block_start":
+                    block = payload.get("content_block")
+                    if not isinstance(block, dict):
+                        raise ValueError
+                    observe(block.get("type"), _CONTENT_BLOCK_TYPES, "content_block_types")
+                elif kind == "message_delta":
+                    delta = payload.get("delta")
+                    if not isinstance(delta, dict):
+                        raise ValueError
+                    reason = delta.get("stop_reason")
+                    if reason is not None:
+                        observe(reason, _STOP_REASONS, "stop_reasons")
+                elif kind == "message_stop":
+                    stopped = True
+                elif kind == "error":
+                    result["state"] = "error"
+                elif kind not in {"ping", "content_block_delta", "content_block_stop"}:
+                    unknown = True
+            if result["state"] != "error":
+                if unknown:
+                    result["state"] = "unknown"
+                elif (
+                    started
+                    and stopped
+                    and not any(
+                        line == "data" or line.startswith("data:") for line in tail.split("\n")
+                    )
+                    and result["stop_reasons"]
+                ):
+                    result["state"] = "complete"
+    except (httpx.DecodingError, UnicodeError):
+        result["state"] = "decode_error"
+    except (ValueError, RecursionError):
+        result["state"] = "malformed"
+    return result
+
+
+@contextmanager
+def record_claude_response_protocol(session, workspace: str) -> Iterator[TuiRequestRecorder]:
+    recorder = TuiRequestRecorder(workspace)
+    failure = None
+    try:
+        with recorder:
+            yield recorder
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        try:
+            session.record("claude-response-protocol.json", recorder._claude_response_protocol())
+        except BaseException:
+            if failure is None:
+                raise
+            failure.add_note("Claude response protocol evidence could not be recorded.")
 
 
 def assert_served(recorder, request, model):
