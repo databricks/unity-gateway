@@ -210,7 +210,7 @@ def get_custom_client_token(
         with _custom_oauth_lock(
             Path(cache.filename).parent,
             config["redirect_url"],
-            timeout=None if allow_consent else 0,
+            timeout=None if allow_consent else 5,
         ):
             # Read only after acquiring the lock: another helper may have just
             # completed login or rotated the refresh token while we waited.

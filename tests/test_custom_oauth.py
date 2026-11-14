@@ -127,6 +127,24 @@ class TestCustomClientToken:
         self.browser.assert_not_called()
         self.refresh.assert_not_called()
 
+    def test_noninteractive_token_waits_for_parallel_refresh(self):
+        self._cache().save(self._credentials("old-token", "old-refresh"))
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with _custom_oauth_lock(Path(self._cache().filename).parent, "http://localhost:8020"):
+                pending = pool.submit(
+                    get_custom_client_token,
+                    WS,
+                    client_id="custom-client",
+                    scopes=TEST_SCOPES,
+                    allow_consent=False,
+                )
+                with pytest.raises(TimeoutError):
+                    pending.result(timeout=0.1)
+                self._cache().save(self._credentials("parallel-token", "parallel-refresh"))
+            assert pending.result(timeout=7) == "parallel-token"
+        self.browser.assert_not_called()
+        self.refresh.assert_not_called()
+
     @pytest.mark.parametrize("allow_consent", [True, False])
     def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self, allow_consent):
         cached = self._credentials("expired", "old-refresh")
@@ -206,7 +224,7 @@ class TestCustomClientToken:
                         WS,
                         force_refresh=cached in {"fresh", "contended"},
                         allow_consent=False,
-                    ).result(timeout=2)
+                    ).result(timeout=7)
         self.browser.assert_not_called()
         assert self.refresh.call_count == (0 if cached in {"missing", "contended"} else 1)
         assert (cache_path.read_bytes() if cache_path.exists() else None) == original

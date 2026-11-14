@@ -490,7 +490,7 @@ class TestTokenCache:
 
         def provider(force):
             try:
-                with _custom_oauth_lock(tmp_path, "http://localhost:8020", timeout=0):
+                with _custom_oauth_lock(tmp_path, "http://localhost:8020", timeout=5):
                     return mint(force)
             except TimeoutError as exc:
                 raise RuntimeError(str(exc)) from exc
@@ -514,7 +514,7 @@ class TestTokenCache:
                 if failure == "oauth-lock"
                 else nullcontext()
             ):
-                assert pool.submit(lambda: cache.token).result(timeout=2) == initial
+                assert pool.submit(lambda: cache.token).result(timeout=7) == initial
         assert cache._fresh_enough(buffer_seconds=0) is (remaining > 0)
         expected = (
             "mint failed" if failure == "provider" else "timed out acquiring exclusive file lock"
