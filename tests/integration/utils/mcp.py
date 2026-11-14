@@ -112,6 +112,7 @@ def open_codex_mcp_inventory(tui, services: dict[str, str]) -> str:
             timeout=remaining(),
             stable_for=0.5,
         )
+        output_start = len(tui.output)
         remaining()
         tui.send("\r", "press Enter after the input has rendered")
         tui.wait_for(
