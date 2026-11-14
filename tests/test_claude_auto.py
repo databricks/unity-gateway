@@ -348,6 +348,7 @@ def test_feature_off_launch_migrates_saved_auto_with_malformed_managed_env(
     ):
         monkeypatch.setenv(key, value)
     launched = []
+    monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
     monkeypatch.setattr(claude, "exec_or_spawn", launched.append)
 
     claude.launch({}, ["--print", "hello"], options=LaunchOptions())
