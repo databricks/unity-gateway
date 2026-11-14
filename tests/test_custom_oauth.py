@@ -113,16 +113,20 @@ class TestCustomClientToken:
         assert query["redirect_uri"] == [redirect_url]
         assert query["scope"][0].split() == list(TEST_SCOPES)
 
-    def test_reuses_cached_token_without_refresh_or_login(self):
+    @pytest.mark.parametrize("allow_consent", [True, False])
+    def test_reuses_cached_token_without_refresh_or_login(self, allow_consent):
         self._cache().save(self._credentials("cached", "refresh"))
         assert (
-            get_custom_client_token(WS + "/", client_id="custom-client", scopes=TEST_SCOPES)
+            get_custom_client_token(
+                WS + "/", client_id="custom-client", scopes=TEST_SCOPES, allow_consent=allow_consent
+            )
             == "cached"
         )
         self.browser.assert_not_called()
         self.refresh.assert_not_called()
 
-    def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self):
+    @pytest.mark.parametrize("allow_consent", [True, False])
+    def test_expired_token_refreshes_with_custom_client_and_saves_rotation(self, allow_consent):
         cached = self._credentials("expired", "old-refresh")
         self._cache().save(cached)
         cache_path = Path(self._cache().filename)
@@ -130,18 +134,25 @@ class TestCustomClientToken:
         payload["token"]["expiry"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
         cache_path.write_text(json.dumps(payload))
         assert (
-            get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
+            get_custom_client_token(
+                WS, client_id="custom-client", scopes=TEST_SCOPES, allow_consent=allow_consent
+            )
             == "refreshed"
         )
         self.refresh.assert_called_once()
         self.browser.assert_not_called()
         assert self._cache().load().token().refresh_token == "rotated-refresh"
 
-    def test_force_refresh_bypasses_fresh_access_token(self):
+    @pytest.mark.parametrize("allow_consent", [True, False])
+    def test_force_refresh_bypasses_fresh_access_token(self, allow_consent):
         self._cache().save(self._credentials("cached", "refresh"))
         assert (
             get_custom_client_token(
-                WS, client_id="custom-client", scopes=TEST_SCOPES, force_refresh=True
+                WS,
+                client_id="custom-client",
+                scopes=TEST_SCOPES,
+                force_refresh=True,
+                allow_consent=allow_consent,
             )
             == "refreshed"
         )

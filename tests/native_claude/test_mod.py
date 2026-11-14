@@ -73,20 +73,21 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("sources", "disable_nonessential", "health_failure"),
+    ("sources", "disable_nonessential", "health_failure", "hint_headers"),
     [
-        ("user", False, "closed"),
-        ("project,local", False, "closed"),
-        ("project,local", True, "closed"),
-        ("project,local", True, "stalled-headers"),
-        ("project,local", True, "stalled-body"),
-        ("project,local", True, "forged-settings"),
-        ("project,local", True, "empty-settings"),
-        ("project,local", True, "malformed-settings"),
+        ("user", False, "closed", "0"),
+        ("user", False, "closed", "1"),
+        ("project,local", False, "closed", "0"),
+        ("project,local", True, "closed", "0"),
+        ("project,local", True, "stalled-headers", "0"),
+        ("project,local", True, "stalled-body", "0"),
+        ("project,local", True, "forged-settings", "0"),
+        ("project,local", True, "empty-settings", "0"),
+        ("project,local", True, "malformed-settings", "0"),
     ],
 )
 def test_language_transport_uses_native_settings_sources(
-    native_binary, tmp_path, sources, disable_nonessential, health_failure
+    native_binary, tmp_path, sources, disable_nonessential, health_failure, hint_headers
 ):
     for path, text in _header_mod_files(tmp_path).items():
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,11 +114,13 @@ export function register(on) {
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "settings.json").write_text(
-        json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "0"}})
+        json.dumps({"env": {"CLAUDE_CODE_GATEWAY_HINT_HEADERS": hint_headers}})
     )
     project_settings = tmp_path / ".claude/settings.json"
     project_settings.parent.mkdir()
-    project_settings.write_text(json.dumps({"language": "English"}))
+    project_settings.write_text(
+        json.dumps({"language": "Chinese" if hint_headers == "1" else "English"})
+    )
     upstream = "http://127.0.0.1:1"
     server, cache, client = start_claude_language_proxy(
         upstream, lambda _force: "fixture-only", session_secret="fixture-session"
@@ -206,9 +209,23 @@ export function register(on) {
     try:
         observed = probe()
         if sources == "user":
-            assert observed["hints"] == "0"
-            assert observed["base"] == upstream
-            assert "x-ug-" not in observed["headers"].lower()
+            assert observed.get("language") is None
+            assert observed["hints"] == hint_headers
+            if hint_headers == "0":
+                assert observed["base"] == upstream
+                assert "x-ug-" not in observed["headers"].lower()
+            else:
+                assert observed["base"] == proxy
+                assert "X-UG-Language-Session: fixture-session" in observed["headers"]
+                assert "X-UG-Response-Language:" not in observed["headers"]
+                event = send("Reply with OK.", expect_error=True)
+                assert event["usage"]["output_tokens"] == 0
+                observed = probe()
+                assert observed.get("language") is None
+                assert observed["hints"] == "1"
+                assert observed["base"] == proxy
+                assert "X-UG-Language-Session: fixture-session" in observed["headers"]
+                assert "X-UG-Response-Language:" not in observed["headers"]
         else:
             assert observed["hints"] == "1"
             assert observed["base"] == proxy
