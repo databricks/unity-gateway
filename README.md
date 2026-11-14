@@ -289,9 +289,10 @@ Nothing is written to a config file.
 
 Available coding agents are `codex`, `claude`, `gemini`, `opencode`,
 `kilo`, `copilot`, `pi`, and `antigravity`. `cursor` can be included in `--agents` for MCP-only setup;
-Cursor models still run through your Cursor account. `vscode` can be included in `--agents` to
-install ug's extension for Copilot Chat in VS Code; it is configure-only, with no `ug vscode`
-launch command.
+Cursor models still run through your Cursor account. By default, configuring `copilot` with
+`ug configure` also sets up Copilot Chat in VS Code by installing ug's extension (a `ug copilot`
+launch does not); pass `--no-vscode` to set up only the Copilot CLI. `vscode` is not an agent name,
+and there is no `ug vscode` launch command.
 
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
@@ -704,7 +705,7 @@ preferences are ignored and their files are left untouched. See the bundled
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
-| VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents vscode`, uninstalled by `ug revert`; your `settings.json` is never edited |
+| VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents copilot`, uninstalled by `ug revert`. On a workspace with a managed config, the extension can also set `chat.defaultModel`, `github.copilot.chat.otel.*` and `chat.agentHost.otel.*` in your VS Code user `settings.json`; `ug revert` removes those values unless you changed them or the file has comments |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 
 Workspace policy is root-owned but readable without sudo. Configure installs it only when the
