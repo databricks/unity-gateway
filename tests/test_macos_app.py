@@ -45,7 +45,7 @@ def test_failed_click_preserves_error_and_redacted_accessibility_evidence(
         return subprocess.CompletedProcess(args, 0, stdout=tree)
 
     def native_click(*args, **kwargs):
-        click_calls.append(args)
+        click_calls.append((args, kwargs))
         raise original
 
     # Native Accessibility is unavailable here; only its process boundaries are controlled.
@@ -60,13 +60,19 @@ def test_failed_click_preserves_error_and_redacted_accessibility_evidence(
 
     assert caught.value is original
     assert caught.value.__cause__ is original_cause
-    assert len(click_calls) == 1
+    assert click_calls == [
+        (
+            ("click", "42", "AXRadioButton", "Engineering", "50"),
+            {"binary": app.client, "timeout": 60},
+        )
+    ]
     if record_failure:
         error_type = "PermissionError" if os.name == "nt" else "IsADirectoryError"
         assert caught.value.__notes__ == [f"click evidence not recorded: {error_type}"]
         return
     evidence = json.loads(artifact.read_text())
     assert evidence["target"] == ["AXRadioButton", "Engineering"]
+    assert evidence["lookup_timeout_seconds"] == 50
     assert evidence["ready_tree"] == [["AXRadioButton", "Engineering", "<redacted>", "1"]]
     if capture_failure:
         assert evidence["capture_error"] == "CalledProcessError"

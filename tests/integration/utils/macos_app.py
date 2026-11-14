@@ -82,12 +82,24 @@ class MacApp:
     def click(self, role: str, label: str | None, timeout: float = 60) -> None:
         """Click the first ``role`` element labelled ``label`` (any label if None)."""
         ready_tree = self.wait_for(role, label, timeout)
+        # Reserve 10s of the existing command timeout for the action and native failure output.
+        lookup_timeout_seconds = 50
         try:
             self.session.run(
-                "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
+                "click",
+                str(self.proc.pid),
+                role,
+                label or "",
+                str(lookup_timeout_seconds),
+                binary=self.client,
+                timeout=60,
             )
         except Exception as click_error:
-            evidence = {"target": [role, label], "ready_tree": ready_tree}
+            evidence = {
+                "target": [role, label],
+                "ready_tree": ready_tree,
+                "lookup_timeout_seconds": lookup_timeout_seconds,
+            }
             try:
                 evidence["failure_tree"] = self.read_tree()
             except Exception as capture_error:

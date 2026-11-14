@@ -81,6 +81,7 @@ def test_macos_missing_click_records_native_accessibility_tree(live_session):
             str(app.proc.pid),
             "AXRadioButton",
             label,
+            "0",
             binary=app.client,
             ok=False,
             timeout=60,
