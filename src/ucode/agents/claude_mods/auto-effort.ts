@@ -17,7 +17,9 @@ export function effortProfile(id: string, layers: readonly (EffortSettings | nul
   const native = status?.match(/currently (low|medium|high|xhigh|max)/i)?.[1]
     ?? status?.match(/effort level(?: to|:)\s*(low|medium|high|xhigh|max)/i)?.[1];
   // An unvisited model keeps its native default; selecting a row never invents one.
-  const level = environment && environment !== 'unset' ? environment : native ?? 'auto';
+  const current = environment && environment !== 'unset' ? environment : native ?? 'auto';
+  const index = EFFORT_LEVELS.indexOf(current.toLowerCase());
+  const level = !environment && index >= 0 ? EFFORT_LEVELS[Math.min(index, cap)] : current;
   return {levels, level, locked: Boolean(environment),
     note: environment ? 'set by environment' : !native ? 'model default' : ''};
 }

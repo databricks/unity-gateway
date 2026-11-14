@@ -79,8 +79,8 @@ for (const row of millionConfig.models) {
 }
 
 function host(on: any, selected = 'ug-auto-opus') {
-  const settings: {modelOverrides?: unknown} = {};
-  const state = {selected, window:1_000_000, rejectModel: false, processExitCode: 0, agents: [] as any[], toasts: [] as string[], modelResult: {text: 'Set model to `model`'} as any, settings, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
+  const settings: {modelOverrides?: unknown; maxEffortLevel?: string} = {};
+  const state = {selected, effortStatus:'Effort level: auto (currently medium)', window:1_000_000, rejectModel: false, processExitCode: 0, agents: [] as any[], toasts: [] as string[], modelResult: {text: 'Set model to `model`'} as any, settings, saved: undefined as unknown, ask: 'Astra 6.0', questions: [] as any[], closed: [] as any[], appendClosed: [] as number[], appended: [] as string[], invalidations: [] as string[], calls: [] as any[], forwarded: [] as any[], tails: [] as any[]};
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0', ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
     ENABLE_SMART_ROUTER_ORCHESTRATOR: '0', UCODE_SMART_ROUTER_PYTHON: '/ug/python',
@@ -95,7 +95,7 @@ function host(on: any, selected = 'ug-auto-opus') {
     if (!state.rejectModel) state.selected = e.args;
     return state.modelResult;
   });
-  on('command.run', {command:'effort'}, () => ({text:'Effort level: auto (currently medium)'}));
+  on('command.run', {command:'effort'}, () => ({text:state.effortStatus}));
   on('settings.read', () => ({value:state.settings}));
   on('session.usage', () => ({value:{context:{window:state.window}}}));
   on('session.model', () => ({value: state.selected}));
@@ -540,6 +540,24 @@ test('rejected main model reopens the pane and shows a retry message', {options}
   await pane.unmount();
 });
 
+for (const direction of ['auto-effort-less','auto-effort-more']) {
+  test(`native max effort capped at high adjusts without wrapping via ${direction}`, {options}, async ($, on) => {
+    const {state, clock} = host(on);
+    state.settings.maxEffortLevel = 'high';
+    state.effortStatus = 'Current effort level: max';
+    await $.command.run({command:'auto'});
+    await clock.advance(0);
+    const pane = await $.ui.mount({plugin:'ug-smart-router', component:'Pane', requestId:'auto-main', surface:'terminal', props:{} as any});
+    expect(JSON.stringify(await pane.drawn())).toContain('High effort');
+    await pane.press({key:direction});
+    expect(JSON.stringify(await pane.drawn())).toContain(direction === 'auto-effort-less' ? 'Medium effort' : 'High effort');
+    await pane.press({key:'auto-main-model-0'});
+    await clock.advance(0);
+    expect(state.saved).toBe('opus');
+    await pane.unmount();
+  });
+}
+
 test('manual models still show the running agent count', {options}, async ($, on) => {
   const {state} = host(on, 'opus');
   await $.session.start(start);
@@ -580,7 +598,8 @@ async function manualFeedbackFlow() {
   }) as any, feedbackOptions);
   const state = {
     model:'ug-auto-astra', calls:[] as any[], panes:[] as string[], logs:[] as string[], toasts:[] as string[],
-    rejectManual:false, rejectRestore:false, failOff:false, failPrepare:false, failUpload:false, deferConfirmations:false,
+    rejectManual:false, rejectRestore:false, failOff:false, failPrepare:false, failUpload:false, failOpen:false, deferConfirmations:false,
+    throwModel:false, silentModel:false,
     controls:{} as Record<string,string>, reason:undefined as any, cancel:undefined as any,
     offWrite:undefined as undefined | (() => Promise<void>), nativeModels:[] as string[],
     deferModel:false, saved:undefined as unknown, transcripts:[] as string[], buttons:{} as Record<string,() => Promise<void>>, efforts:[] as string[],
@@ -602,6 +621,8 @@ async function manualFeedbackFlow() {
         if (index < handlers.length) return handlers[index](engine, event, (nextEvent: any) => invoke(index + 1, nextEvent));
         if (event.command === 'model' && event.args) {
           state.nativeModels.push(event.args);
+          if (state.throwModel) throw new Error('Native model command failed');
+          if (state.silentModel) return {};
           if (state.deferModel) return {ref:1};
           if (!(state.rejectManual && event.args === 'opus') && !(state.rejectRestore && event.args === 'ug-auto-astra')) state.model = event.args;
           const confirmation = async () => append(engine, {door:'command', origin:{kind:'plugin',name:'ug-smart-router'}, message:{content:[{type:'text',text:'<local-command-stdout>Set model to `model`</local-command-stdout>'}]}}, async () => ({}));
@@ -623,7 +644,7 @@ async function manualFeedbackFlow() {
       return {exitCode,stdout:'',stderr:exitCode ? 'controlled failure' : ''};
     }},
     ui:{
-      invalidate:() => {}, open:async (e: any) => {state.panes.push(e.id); return {isPlaced:true};},
+      invalidate:() => {}, open:async (e: any) => {if (state.failOpen) throw new Error('Pane unavailable'); state.panes.push(e.id); return {isPlaced:true};},
       focus:async (e: any) => focusHandler(engine, {element:e.key}, async () => ({})),
       close:async (e: any) => {
         for (const {id, handler} of closeHandlers) {
@@ -699,6 +720,41 @@ for (const accepted of [true,false]) {
     expect(flow.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
     expect(flow.state.efforts.filter(args => args !== 'status')).toEqual(accepted ? ['low'] : []);
     expect(flow.state.toasts).toEqual(accepted ? ['Auto (Opus 5.5) saved'] : []);
+  });
+}
+
+test('a thrown internal model command does not swallow the next model confirmation', async () => {
+  const flow = await manualFeedbackFlow();
+  await flow.run({command:'auto',args:''});
+  await flow.render();
+  flow.state.throwModel = true;
+  await flow.state.buttons['auto-main-model-0']();
+  await flow.flush();
+  expect(flow.state.saved).toBeUndefined();
+  flow.state.throwModel = false;
+  const panes = flow.state.panes.length;
+  flow.state.model = 'ug-auto-opus';
+  await flow.finishModel('Set model to `Opus`');
+  expect(flow.state.panes.length).toBeGreaterThan(panes);
+  expect(flow.state.model).toBe('ug-auto-opus');
+});
+
+for (const accepted of [true,false]) {
+  test(`an empty native model return waits for later ${accepted ? 'acceptance' : 'cancellation'}`, async () => {
+    const flow = await manualFeedbackFlow();
+    await flow.run({command:'auto',args:''});
+    await flow.render();
+    flow.state.silentModel = true;
+    await flow.state.buttons['auto-main-model-0']();
+    await flow.flush();
+    expect(flow.state.saved).toBeUndefined();
+    expect(flow.state.toasts).toEqual([]);
+    if (accepted) flow.state.model = 'ug-auto-opus';
+    await flow.finishModel(`${accepted ? 'Set model to' : 'Kept model as'} \`model\``,
+      accepted ? {kind:'plugin',name:'ug-smart-router'} : {kind:'engine'});
+    expect(flow.state.saved).toBe(accepted ? 'opus' : undefined);
+    expect(flow.state.model).toBe(accepted ? 'ug-auto-opus' : 'ug-auto-astra');
+    expect(flow.state.efforts.filter(args => args !== 'status')).toEqual([]);
   });
 }
 
@@ -840,19 +896,23 @@ test('cancelling feedback leaves the restored Auto and routing on', async () => 
   expect(flow.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
 });
 
-for (const failure of ['failOff','rejectManual','failPrepare'] as const) {
+for (const failure of ['failOff','rejectManual','failPrepare','failOpen'] as const) {
   test(`feedback manual switch preserves Auto ON after ${failure}`, async () => {
     const flow = await manualFeedbackFlow();
     flow.state[failure] = true;
     await flow.select('opus');
-    if (failure !== 'failPrepare') {
+    if (failure !== 'failPrepare' && failure !== 'failOpen') {
       await flow.render();
       await flow.state.reason('The routed model was too slow');
       expect(flow.state.logs).not.toContain('Smart Router is off');
+      expect(flow.state.logs.at(-1)).toContain('retry selecting a model in /model');
+      expect(flow.state.logs.at(-1)).not.toContain('/smart-router off');
     } else {
       expect(flow.state.panes).toEqual([]);
       expect(flow.offCalls()).toEqual([]);
       expect(flow.state.toasts.at(-1)).toContain('Could not open the feedback form');
+      expect(flow.state.toasts.at(-1)).toContain('retry selecting a model in /model');
+      expect(flow.state.toasts.at(-1)).not.toContain('/smart-router off');
     }
     expect(flow.state.model).toBe('ug-auto-astra');
     expect(flow.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');

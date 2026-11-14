@@ -559,8 +559,9 @@ alias because Claude 2.1.290 does not expose a model-name display hook.
 This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
 wrapper. When opted in, configure writes fixed aliases only for UG-owned model
 pickers, preserving foreign administrator pickers and custom model options. It enables
-Claude's native custom-model row (`replaceBuiltInOptions: false`). The mod points
-that one row at the current Auto variant within each process; it never rewrites a
+Claude's native custom-model row (`replaceBuiltInOptions: false`). This also exposes
+native built-in choices when no `availableModels` restriction is configured; existing
+`availableModels` and `deniedModels` policies still apply. The mod points that one row at the current Auto variant within each process; it never rewrites a
 shared capability profile. Launch settings supply the catalog and routing baseline;
 the routing mod resolves the selected variant to its real model before inference. No synthetic model ID is sent to the gateway. Selecting
 an ordinary model switches off routing through UG's existing atomic session

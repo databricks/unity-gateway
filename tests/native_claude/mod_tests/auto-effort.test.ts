@@ -16,3 +16,20 @@ test('settings caps and native unsupported status constrain choices', () => {
   expect(locked.level).toBe('low');
   expect(locked.locked).toBe(true);
 });
+
+for (const status of ['Current effort level: max', 'Effort level: auto (currently xhigh)']) {
+  test(`known native effort is clamped to the allowed cap for ${status}`, () => {
+    const profile = effortProfile('custom', [{maxEffortLevel:'high'}], undefined, status);
+    expect(profile.level).toBe('high');
+    expect(profile.levels).toEqual(['low','medium','high']);
+  });
+}
+test('a cap does not invent the native default for an unvisited model', () => {
+  expect(effortProfile('custom', [{maxEffortLevel:'high'}]).level).toBe('auto');
+});
+
+test('a locked environment effort remains verbatim even above the settings cap', () => {
+  const profile = effortProfile('custom', [{maxEffortLevel:'low'}], 'max', 'Current effort level: high');
+  expect(profile.level).toBe('max');
+  expect(profile.locked).toBe(true);
+});

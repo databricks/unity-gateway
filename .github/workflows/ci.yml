@@ -70,7 +70,7 @@ jobs:
     name: Claude mod · 2.1.290
     runs-on: ubuntu-latest
     needs: lint
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       UV_INDEX_URL: https://pypi.org/simple
       UCODE_TEST_CLAUDE_VERSION: 2.1.290

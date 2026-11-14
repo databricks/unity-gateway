@@ -2377,7 +2377,12 @@ def _reconcile_managed_settings(
     )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     if auto_picker:
-        from ucode.agents.claude_auto import add_picker_entry, is_auto_model, picker_is_configured
+        from ucode.agents.claude_auto import (
+            AUTO_CUSTOM_MODEL_ENV_KEYS,
+            add_picker_entry,
+            is_auto_model,
+            picker_is_configured,
+        )
 
         # The native picker and startup allowlist read their source directly,
         # before the merged settings.read hook. Install the row at configure;
@@ -2388,7 +2393,7 @@ def _reconcile_managed_settings(
             desired_settings = add_picker_entry(desired_settings)
             owned_paths = [
                 *owned_paths,
-                *([["modelPicker"]] if "modelPicker" in picker_keys else []),
+                ["modelPicker"],
                 *[
                     ["modelOverrides", key]
                     for source in (managed_before, desired_settings)
@@ -2397,11 +2402,7 @@ def _reconcile_managed_settings(
                 ],
                 *[
                     ["env", key]
-                    for key in (
-                        "ANTHROPIC_CUSTOM_MODEL_OPTION",
-                        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-                        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-                    )
+                    for key in AUTO_CUSTOM_MODEL_ENV_KEYS
                     if key in managed_before.get("env", {})
                     and key not in desired_settings.get("env", {})
                 ],
@@ -3021,15 +3022,17 @@ def launch(
         else None
     )
     if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) != "1":
-        from ucode.agents.claude_auto import is_auto_model
+        from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, is_auto_model
 
         managed_path = _managed_settings_path()
         managed = read_json_safe(managed_path) if managed_path is not None else {}
+        managed_env = managed.get("env")
+        managed_env = managed_env if isinstance(managed_env, dict) else {}
         saved = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
         if (
             isinstance(saved, str)
             and is_auto_model(saved)
-            and not managed.get("env", {}).get("ANTHROPIC_MODEL")
+            and not managed_env.get("ANTHROPIC_MODEL")
         ):
             for source in (managed, read_json_safe(CLAUDE_SETTINGS_PATH)):
                 overrides = source.get("modelOverrides")
@@ -3038,11 +3041,7 @@ def launch(
                     session_model = session_model or target
                     break
         if is_auto_model(os.environ.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")):
-            for key in (
-                "ANTHROPIC_CUSTOM_MODEL_OPTION",
-                "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-                "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-            ):
+            for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
                 os.environ.pop(key, None)
     routing_setup_failed = False
     if options.launch_smart_routing:

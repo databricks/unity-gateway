@@ -12,6 +12,11 @@ from ucode.databricks import AnthropicModelCatalog
 AUTO_MODEL = "ug-auto"  # Legacy identity, accepted during migration only.
 AUTO_PREFIX = "ug-auto-"
 AUTO_DESCRIPTION = "Delivers frontier-model quality at lower cost through Smart Routing."
+AUTO_CUSTOM_MODEL_ENV_KEYS = (
+    "ANTHROPIC_CUSTOM_MODEL_OPTION",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
+)
 
 
 def is_auto_model(model: str) -> bool:
@@ -49,7 +54,7 @@ def model_available(model: str, settings: dict) -> bool:
     )
 
 
-def add_picker_entry(settings: dict, *, owns_picker: bool = True) -> dict:
+def add_picker_entry(settings: dict) -> dict:
     """Install immutable aliases and one native custom row at explicit configure.
 
     Aliases are not modelPicker rows: identical labels would create duplicate rows.
@@ -57,8 +62,6 @@ def add_picker_entry(settings: dict, *, owns_picker: bool = True) -> dict:
     """
     picker = settings.get("modelPicker")
     if not isinstance(picker, dict) or not isinstance(picker.get("options", []), list):
-        return settings
-    if not owns_picker and picker.get("replaceBuiltInOptions", False):
         return settings
     if not isinstance(settings.get("modelOverrides", {}), dict):
         return settings
@@ -101,11 +104,7 @@ def add_picker_entry(settings: dict, *, owns_picker: bool = True) -> dict:
             allowed[:] = remaining
     env = result.setdefault("env", {})
     if isinstance(custom, str) and is_auto_model(custom):
-        for key in (
-            "ANTHROPIC_CUSTOM_MODEL_OPTION",
-            "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-            "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-        ):
+        for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
             env.pop(key, None)
     result["modelPicker"] = {**picker, "options": rows}
     if not available:

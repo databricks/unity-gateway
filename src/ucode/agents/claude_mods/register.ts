@@ -33,7 +33,7 @@ function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
 }
 
 type Environment = Record<string, string | undefined>;
-type AutoPicker = {
+export type AutoPicker = {
   model: string;
   mainModel: string;
   storeKey: string;
@@ -248,6 +248,17 @@ async function setRouting(
   } catch (error) {
     // Restore earlier successful writes if a later environment write is denied.
     await writeEnvironment($, previous);
+    throw error;
+  }
+}
+
+async function runInternalModel($: EngineInterface, internalModels: string[], model: string) {
+  internalModels.push(model);
+  try {
+    return await $.command.run({command:'model', args:model});
+  } catch (error) {
+    const index = internalModels.indexOf(model);
+    if (index >= 0) internalModels.splice(index, 1);
     throw error;
   }
 }
@@ -481,8 +492,7 @@ export function register(on: On, options: PluginOptions): void {
               // Native /model validates only the current custom option without discovery.
               await customAutoRow($, auto, selected.model);
               if (autoSave !== request) return;
-              internalModels.push(selected.autoModel);
-              const result = await $.command.run({ command: 'model', args: selected.autoModel });
+              const result = await runInternalModel($, internalModels, selected.autoModel);
               if (autoSave !== request) return;
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
@@ -626,8 +636,7 @@ export function register(on: On, options: PluginOptions): void {
           if (!restored) {
             switchingAuto = true;
             try {
-              internalModels.push(request.autoModel);
-              await $.command.run({command:'model', args:request.autoModel});
+              await runInternalModel($, internalModels, request.autoModel);
               if (await $.session.model() !== request.autoModel) throw new Error('Claude did not restore Auto.');
             } catch (error) {
               manualOffRequest = undefined;
@@ -652,8 +661,7 @@ export function register(on: On, options: PluginOptions): void {
                 await setRouting($, options, false, true, sessionControlArgs);
                 disabled = true;
                 if (manualOffRequest !== request) throw new Error('The model selection changed while updating routing.');
-                internalModels.push(request.manualModel);
-                await $.command.run({command:'model', args:request.manualModel});
+                await runInternalModel($, internalModels, request.manualModel);
                 if (manualOffRequest !== request) throw new Error('The model selection changed while selecting the manual model.');
                 if (await $.session.model() !== request.manualModel) throw new Error('Claude did not accept the manual model.');
                 if (manualOffRequest !== request) throw new Error('The model selection changed.');
@@ -666,8 +674,7 @@ export function register(on: On, options: PluginOptions): void {
                   throw error;
                 }
                 try {
-                  internalModels.push(request.autoModel);
-                  await $.command.run({command:'model', args:request.autoModel});
+                  await runInternalModel($, internalModels, request.autoModel);
                   if (await $.session.model() !== request.autoModel) throw new Error('Claude did not restore Auto.');
                 } catch (restoreError) {
                   $.ui.toast(`Could not restore Auto: ${String(restoreError)}. Check /model before continuing.`);
@@ -700,7 +707,7 @@ export function register(on: On, options: PluginOptions): void {
           } catch (error) {
             if (manualOffRequest === request) manualOffRequest = undefined;
             feedback.paneId = undefined;
-            $.ui.toast(`Could not open the feedback form: ${String(error)}.`);
+            $.ui.toast(`Could not open the feedback form: ${String(error)}. Retry selecting a model in /model.`);
           }
           $.ui.invalidate('ui.render');
         });

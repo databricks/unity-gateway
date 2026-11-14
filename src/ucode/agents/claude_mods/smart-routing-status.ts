@@ -1,4 +1,5 @@
 import type { On } from 'claude-code'
+import type { AutoPicker } from './register.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -53,7 +54,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export const registerStatusBand = (on: On, auto?: { model: string; mainModel: string; storeKey: string; models: {model: string; label: string; autoModel: string}[] }): void => {
+export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
@@ -78,7 +79,7 @@ export const registerStatusBand = (on: On, auto?: { model: string; mainModel: st
       const main = auto.models.find((row) => row.autoModel === selected)
       if (main) state = `Auto (${main.label}) · ${state}`
     }
-    const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
+    const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
   })
 

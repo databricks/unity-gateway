@@ -129,6 +129,7 @@ async function submitFeedback(
   state.submitted = true;
   const feedbackId = state.category === 'smart-routing' ? crypto.randomUUID() : '';
   const { turnOff, disableRouting } = state;
+  const offRetry = state.paneId === 'auto-main' ? 'selecting a model in /model' : '/smart-router off';
   let env: Record<string, string> | undefined;
   let promptId: string | null | undefined;
   let args = ['--category', 'other'];
@@ -158,7 +159,7 @@ async function submitFeedback(
       await disableRouting(['--smart-router-feedback', message]);
       $.ui.log(SMART_ROUTER_OFF_REPLY);
     } catch {
-      $.ui.log('Could not turn Smart Router off. Feedback is still being sent; retry /smart-router off or restart through UG.');
+      $.ui.log(`Could not turn Smart Router off. Feedback is still being sent; retry ${offRetry} or restart through UG.`);
     }
   }
   state.submitted = false;
@@ -183,6 +184,7 @@ async function openRoutingOff(
   $: EngineInterface, state: FeedbackState, isaacExecutable: string, isaacFeedbackDirectory: string,
 ): Promise<string | undefined> {
   if (state.submitted) return 'Feedback is being prepared.';
+  const offRetry = state.paneId === 'auto-main' ? 'selecting a model in /model' : '/smart-router off';
   try {
     if (!state.readRoutingEnabled || !state.disableRouting) {
       throw new Error('Smart Router controls are unavailable.');
@@ -196,7 +198,7 @@ async function openRoutingOff(
   } catch {
     // No reason was collected, so leave routing unchanged.
   }
-  return 'Could not open the feedback form. Smart Router is still on; retry /smart-router off.';
+  return `Could not open the feedback form. Smart Router is still on; retry ${offRetry}.`;
 }
 
 export function registerIsaacFeedback(

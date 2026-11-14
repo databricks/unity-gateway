@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ucode.agents.claude_auto import (
+    AUTO_CUSTOM_MODEL_ENV_KEYS,
     AUTO_MODEL,
     add_picker_entry,
     auto_variant,
@@ -94,11 +95,7 @@ def test_native_launch_default_precedence_and_compatibility(
     from ucode import custom_oauth
     from ucode.agents import claude
 
-    for key in (
-        "ANTHROPIC_CUSTOM_MODEL_OPTION",
-        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME",
-        "ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION",
-    ):
+    for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "0")
     monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
@@ -322,6 +319,53 @@ def test_personal_configure_does_not_discover_or_own_picker(tmp_path, monkeypatc
     assert "modelPicker" not in json.loads(path.read_text())
 
 
+@pytest.mark.parametrize(
+    "managed_env", [None, [], "malformed", 7, {}, {"ANTHROPIC_MODEL": "admin-model"}]
+)
+@pytest.mark.parametrize("override_source", ["managed", "ug"])
+def test_feature_off_launch_migrates_saved_auto_with_malformed_managed_env(
+    tmp_path, monkeypatch, managed_env, override_source
+):
+    from ucode.agents import LaunchOptions, claude
+
+    alias = auto_variant({"model": "team-model"})
+    managed = {"env": managed_env}
+    ug = {"env": {"OTHER": "keep"}}
+    (managed if override_source == "managed" else ug)["modelOverrides"] = {alias: "team-model"}
+    paths = [tmp_path / name for name in ("managed.json", "ug.json", "user.json")]
+    for path, settings in zip(paths, (managed, ug, {"model": alias, "theme": "dark"}), strict=True):
+        path.write_text(json.dumps(settings))
+    original = [path.read_bytes() for path in paths]
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: paths[0])
+    monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", paths[1])
+    monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", paths[2])
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    for key, value in (
+        ("ANTHROPIC_CUSTOM_MODEL_OPTION", alias),
+        ("ANTHROPIC_CUSTOM_MODEL_OPTION_NAME", "Auto"),
+        ("ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION", "Auto description"),
+    ):
+        monkeypatch.setenv(key, value)
+    launched = []
+    monkeypatch.setattr(claude, "exec_or_spawn", launched.append)
+
+    claude.launch({}, ["--print", "hello"], options=LaunchOptions())
+
+    assert len(launched) == 1
+    argv = launched[0]
+    if isinstance(managed_env, dict) and managed_env.get("ANTHROPIC_MODEL"):
+        assert "--model" not in argv
+    else:
+        assert argv[argv.index("--model") + 1] == "team-model"
+        assert json.loads(argv[argv.index("--settings") + 1])["env"] == {
+            "OTHER": "keep",
+            "ANTHROPIC_MODEL": "team-model",
+        }
+    assert not any(key.startswith("ANTHROPIC_CUSTOM_MODEL_OPTION") for key in claude.os.environ)
+    assert [path.read_bytes() for path in paths] == original
+
+
 def test_auto_profiles_are_immutable_and_migrate_stale_aliases():
     opus = {"model": "system.ai.claude-opus-5-5"}
     haiku = {"model": "team-fast", "behavesAs": "claude-haiku-4-5"}
@@ -414,7 +458,7 @@ def test_malformed_optional_auto_settings_do_not_crash(field, value):
     assert add_picker_entry(settings) == settings
 
 
-def test_admin_custom_option_and_hidden_builtins_are_preserved():
+def test_admin_custom_option_blocks_auto_until_removed():
     base = {
         "modelPicker": {"options": [{"model": "opus"}], "replaceBuiltInOptions": True},
         "env": {
@@ -425,8 +469,7 @@ def test_admin_custom_option_and_hidden_builtins_are_preserved():
     assert add_picker_entry(base) == base
     assert not picker_is_configured(base)
     base.pop("env")
-    assert add_picker_entry(base, owns_picker=False) == base
-    assert picker_is_configured(add_picker_entry(base, owns_picker=True))
+    assert picker_is_configured(add_picker_entry(base))
 
 
 def test_only_ug_custom_option_is_migrated():
