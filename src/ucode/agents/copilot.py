@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
+from ucode import metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -1292,6 +1293,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
                 start_model,
                 otel=otel_env(proxy_base_url, session_secret) if tracing else None,
             )
+            metrics.agent_handoff()
             proc = subprocess_cross_os.popen(
                 [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
             )

@@ -14,6 +14,7 @@ from pathlib import Path
 
 import questionary
 
+from ucode import metrics
 from ucode.databricks import get_databricks_token, workspace_org_id
 from ucode.mcp import register_schemaless_skills_connection, setup_mcp_clients
 from ucode.skills_api import (
@@ -593,14 +594,23 @@ def refresh_downloaded_skills_on_launch(state: dict) -> None:
             (deleted if _record_dirs_all_missing(record) else present).append(record)
         forget(deleted)
         if present:
-            print_note("Checking Unity Catalog for downloaded skill updates...")
-            token = get_databricks_token(workspace, state.get("profile"))
-            deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
-            pairs = _refs_needing_refresh(workspace, token, present, deadline)
-            updated = _update_stale_skills(workspace, token, pairs, deadline)
-            if updated:
-                print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
+            with metrics.measure(
+                metrics.SKILLS_REFRESH_DURATION_MS,
+                workspace=workspace,
+                operation=metrics.SKILLS_REFRESH_OPERATION,
+                deadline_reached=False,
+                continued_with_fallback=True,
+            ):
+                print_note("Checking Unity Catalog for downloaded skill updates...")
+                token = get_databricks_token(workspace, state.get("profile"))
+                deadline = time.monotonic() + SKILL_UPDATE_BUDGET_SECONDS
+                pairs = _refs_needing_refresh(workspace, token, present, deadline)
+                updated = _update_stale_skills(workspace, token, pairs, deadline)
+                metrics.annotate(deadline_reached=time.monotonic() >= deadline)
+                if updated:
+                    print_success(f"Updated {updated} downloaded skill(s) from Unity Catalog.")
     except Exception as exc:  # noqa: BLE001 - a skill refresh must never block a launch
+        metrics.failure(metrics.SKILLS_REFRESH_OPERATION, exc, continued_with_fallback=True)
         print_note(f"Skipped checking for skill updates: {exc}")
 
 

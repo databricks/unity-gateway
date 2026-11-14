@@ -45,32 +45,54 @@ OTel SDK and uploads OTLP to `/api/2.0/ai-gateway/ug-cli/otel/v1/metrics` in a d
 Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
 
 - Keep `begin`/`finish` at the CLI lifecycle boundary and `start_agent`/`agent_handoff`
-  around agent startup. Individual operations must not create or replace the recorder.
+  around agent startup. The Typer callback uses `set_command()` to attribute observations
+  to the parsed command. Individual operations must not create or replace the recorder.
 - Call `metrics.bind(workspace, token)` where an operation obtains, reuses, or refreshes
   its workspace token. Reuse those credentials; never authenticate solely for telemetry.
   Use the selected workspace key, including its workspace selector. Observations recorded
   before the first binding belong to that first workspace; pass `workspace=` explicitly
   when an operation targets a different workspace.
-- Use `@metrics.timed("<operation>_duration_ms")` for a whole synchronous operation,
-  including its retries. It binds existing `workspace`/`token` arguments and records raised
-  errors. Use `metrics.measure(..., operation="<operation>")` for a smaller code block;
-  `metrics.annotate(...)` adds labels discovered during that measurement. Use
-  `metrics.record(...)` for counters, byte sizes, or durations measured across callbacks.
+- Use metric-name constants from `metrics`, such as
+  `@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS)`, for a whole synchronous
+  operation including its retries. The decorator binds existing `workspace`/`token`
+  arguments and derives the error operation by removing `_duration_ms` from the name.
+  For a smaller block, use `metrics.measure(metrics.DEPENDENCY_INSTALL_DURATION_MS,
+  operation=metrics.DEPENDENCY_INSTALL_OPERATION, dependency=tool, action="install")`.
+  `metrics.annotate(...)` adds labels discovered during that measurement; `metrics.record(...)`
+  handles counters, byte sizes, or durations measured across callbacks.
 - Report handled errors with `metrics.failure(operation, error, ...)`; set
   `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
   (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
   result or exception; telemetry must never rerun an operation or change its exit status.
-- Register new names in `DURATION_METRICS` or `COUNTER_METRICS`, and labels in the typed
+- Define new metric-name constants in `metrics/__init__.py` and register them in
+  `DURATION_METRICS` or `COUNTER_METRICS`; add labels to the typed
   label allowlists. String values must be bounded identifiers; never record tokens, URLs,
   prompts, response bodies, or raw exception messages. A new non-duration histogram also
   needs an entry in `METRICS` and its unit and bucket configuration in `exporter.py`.
-- Keep OTel SDK imports and uploads in the exporter. Recording must not wait for locks,
-  process startup, pipe writes, or networking. The daemon worker drains at most 1,000 queued
-  observations every 60 seconds or on a flush signal, with one uploader at a time. Never
-  join it on the command path; losing telemetry, including the final batch, is acceptable.
+- Keep OTel SDK imports and uploads in the exporter. A daemon starts the detached exporter
+  when recording is enabled; command threads hand off observations through an unbuffered,
+  nonblocking pipe. The exporter holds at most 1,000 observations and uploads every 60 seconds,
+  on a flush signal, or after EOF when the CLI exits or execs an agent. Recording and shutdown
+  must never wait for locks, process startup, pipe capacity, or networking. A bounded startup
+  backlog handles helper startup; contention and backpressure may still drop telemetry.
 - Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
   tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
   recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.
+
+Startup instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `UG_STARTUP_DURATION_MS` | Emitted by `agent_handoff()` or `finish()` from the entrypoint start time; operation code must not emit another startup sample. |
+| `CLI_IMPORT_DURATION_MS` | `record()` in the entrypoint around importing the selected CLI implementation. |
+| `DEPENDENCY_SETUP_DURATION_MS` | `timed()` around the complete bootstrap dependency check, with `agent` and `cli_version_check_skipped`; prompts mark `interactive_wait`. |
+| `DEPENDENCY_INSTALL_DURATION_MS` | `timed()` around one dependency installer, or `measure()` around an install/update/downgrade subprocess with `dependency` and `action`. |
+| `DEPENDENCY_INSTALL_OPERATION` | The matching error operation for a dependency-install `measure()` block; the duration constant is derived from it. |
+| `AGENT_CONFIGURATION_DURATION_MS` | `timed()` around `configure_tool()`, with the selected `agent` and `config_scope`. |
+| `SKILLS_REFRESH_DURATION_MS` | `measure()` around checks and updates for existing downloaded skills, after no-work returns; annotate `deadline_reached` after the bounded refresh. |
+| `SKILLS_REFRESH_OPERATION` | `failure()` for a handled refresh error that lets launch continue; the duration constant is derived from it. |
+| `COMMAND_OPERATION` | `failure()` in CLI exception handlers resolves this to the parsed command name and ignores cancellation and propagated agent exit codes. |
+| `UG_CLI_ERROR` | Emitted by `failure()` with phase and sanitized error labels; call that helper rather than incrementing the counter directly. |
 
 ## Smart-routing configuration
 

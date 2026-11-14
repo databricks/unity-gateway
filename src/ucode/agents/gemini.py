@@ -8,6 +8,7 @@ import signal
 import threading
 from pathlib import Path
 
+from ucode import metrics
 from ucode.agent_updates import latest_version_below
 from ucode.config_io import (
     APP_DIR,
@@ -267,6 +268,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     )
     refresher.start()
 
+    metrics.agent_handoff()
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()
