@@ -14,6 +14,7 @@ MANAGED_PATHS = (
 # Unity Gateway's installed workspace policy. Any `ug configure` may install it (with sudo), so it
 # is not a leaked agent setting; CUJ teardown removes it.
 WORKSPACE_POLICY_PATH = Path("/etc/unitygateway/managed-settings.json")
+ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 INFERENCE_PATHS = {
     CLAUDE: "/ai-gateway/anthropic/v1/messages",
     CODEX: "/ai-gateway/codex/v1/responses",
