@@ -158,7 +158,7 @@ class TestCopilotModelsCheck:
 
         assert check is not None
         assert check.status == "ok"
-        assert check.detail == "2 models (1 dbx-anthropic, 1 dbx-responses)"
+        assert check.detail == "2 models (1 databricks, 1 databricks-responses)"
 
     def test_counts_the_managed_list_launch_registers(self):
         state = {
@@ -178,7 +178,7 @@ class TestCopilotModelsCheck:
             check = doctor_mod._check_copilot_models()
 
         assert check is not None
-        assert check.detail == "1 models (1 dbx-responses)"
+        assert check.detail == "1 models (1 databricks-responses)"
 
     def test_warns_when_nothing_is_usable(self):
         state = {"available_tools": ["copilot"], "copilot_catalog": {"models": []}}

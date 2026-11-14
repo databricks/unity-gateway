@@ -3368,7 +3368,7 @@ class TestRevertMcpConfigs:
 
         assert removed == [("claude", "svc"), ("codex", "svc")]
         assert result == {"claude": True, "codex": True}
-        assert "Could not remove MCP server `svc` from GitHub Copilot CLI" in _unwrap(
+        assert "Could not remove MCP server `svc` from GitHub Copilot (CLI and VS Code)" in _unwrap(
             capsys.readouterr().out
         )
 
@@ -5190,6 +5190,23 @@ def test_setup_mcp_clients_user_messages_name_ug_not_ucode(monkeypatch, capsys):
         mcp.setup_mcp_clients(state, "Add MCP Servers", require_auth=False, agents={"codex"})
     with pytest.raises(RuntimeError, match="Run `ug configure` first"):
         mcp.setup_mcp_clients({}, "Add MCP Servers")
+
+
+def test_setup_mcp_clients_names_vs_code_for_copilot(monkeypatch, capsys):
+    """VS Code reads the MCP file ug writes for Copilot CLI, so registering names both."""
+    monkeypatch.setattr(mcp, "purge_cross_workspace_mcp_residue", lambda *a, **k: None)
+    monkeypatch.setattr(mcp, "available_mcp_clients", lambda: ["claude", "copilot"])
+    monkeypatch.setattr(
+        mcp, "configured_mcp_clients", lambda state, installed: ["claude", "copilot"]
+    )
+
+    mcp.setup_mcp_clients(
+        {"workspace": WS}, "Managed MCP Servers", require_auth=False, action_note="Registering for"
+    )
+
+    assert "Registering for: Claude Code, GitHub Copilot (CLI and VS Code)" in _unwrap(
+        capsys.readouterr().out
+    )
 
 
 class TestSameHostWorkspaceSwitch:
