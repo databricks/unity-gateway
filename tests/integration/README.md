@@ -91,14 +91,13 @@ and parallel calls as cards above the parent's next reply in call order.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
-provider latency or token renewal behavior. Native shared-context component coverage reads
-Claude's effective language and adds context without starting a language proxy. It checks
+provider latency or token renewal behavior. The existing organization mod's shared-context coverage reads
+Claude's effective language and adds context only in routed sessions, without a language proxy. It checks
 English, Chinese, unset and excluded user settings while retaining Auto Mode approvals,
 denials and the routed model. Generated-language compliance remains a live-model check:
 inspect child replies and native progress summaries with foreign-language source files
-and explicit translation requests. The existing smart-routing CUJs and resumed-child
-journey also recognize an empty earlier-session task section without treating running or
-partially rendered task lists as complete.
+and explicit translation requests. A native same-session settings reload check separately
+verifies that parent requests receive the changed preference without repeated instructions.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component

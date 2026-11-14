@@ -43,7 +43,6 @@ import httpx
 
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
-from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
 from ucode.workspace import workspace_headers
 
 # Header we overwrite with the freshly-minted Databricks credential. Any
@@ -92,18 +91,6 @@ def _diagnostics_enabled() -> bool:
     return env_bool(_DIAGNOSTICS_ENV)
 
 
-def _append_proxy_log(path: str | os.PathLike[str], line: str) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a", encoding="utf-8") as log:
-        # Windows append does not make the seek and write atomic.
-        acquire_exclusive_file_lock(log, timeout=1.0)
-        try:
-            log.write(line)
-            log.flush()
-        finally:
-            release_file_lock(log)
-
-
 def log_proxy_diagnostic(event: str, **fields: object) -> None:
     if not _diagnostics_enabled():
         return
@@ -111,7 +98,8 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
     line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
     if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
         try:
-            _append_proxy_log(path, line)
+            with open(path, "a", encoding="utf-8") as log:
+                log.write(line)
             return
         except OSError:
             # Keep diagnostic evidence if the destination becomes unavailable.

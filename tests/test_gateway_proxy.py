@@ -282,33 +282,6 @@ class TestRelayResponseClientDisconnect:
 
 
 class TestProxyDiagnosticFile:
-    def test_held_file_lock_preserves_response_and_diagnostic_evidence(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
-        path = tmp_path / "proxy.log"
-        path.write_text("held\n")
-        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, str(path))
-        output = _Collect()
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            with path.open("a") as holder:
-                gateway_proxy.acquire_exclusive_file_lock(holder, timeout=0)
-                try:
-                    pool.submit(
-                        _relay_handler(output)._relay_response,
-                        _FakeResponse(200, {}, [b"ok"]),
-                    ).result(timeout=5)
-                finally:
-                    gateway_proxy.release_file_lock(holder)
-            assert path.read_text() == "held\n"
-        captured = capsys.readouterr()
-        assert captured.out == ""
-        assert output.data.endswith(b"ok")
-        assert "Could not write proxy diagnostics file; using stderr" in captured.err
-        event = json.loads(captured.err.splitlines()[-1].removeprefix("[ucode-relay] "))
-        assert event["event"] == "response_complete"
-        assert event["status"] == 200
-
     def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
         path = tmp_path / "proxy.log"
         monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")

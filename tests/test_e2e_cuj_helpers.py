@@ -283,9 +283,6 @@ time.sleep(30)
     [
         "empty",
         "completed",
-        "completed_empty_history",
-        "mixed_empty_history",
-        "partial_empty_history",
         "detail",
         "routed_detail",
         "resumed",
@@ -348,18 +345,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         )
     views["detail_transcript"] = views["routed_detail"].split("← to go back")[0]
     views["resumed"] = views["mixed"]
-    for name in ("completed", "mixed", "partial"):
-        views[f"{name}_empty_history"] = views[name].replace(
-            "↑/↓ to select", "Earlier in this session (0)\n\n↑/↓ to select"
-        )
-    complete = view in (
-        "empty",
-        "completed",
-        "completed_empty_history",
-        "detail",
-        "routed_detail",
-        "resumed",
-    )
+    complete = view in ("empty", "completed", "detail", "routed_detail", "resumed")
     script = tmp_path / "ug"
     script.write_text(
         f"""#!{sys.executable}

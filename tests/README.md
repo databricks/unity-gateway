@@ -339,15 +339,15 @@ needing every file, an unreadable mod folder, and non-UTF-8 managed settings. It
 headless configure (installing beside an existing managed file, skipping without one, and a
 terminal hint when sudo needs a password), and the Windows install and removal under Program Files. `native_claude/test_mod.py` validates the mod and runs its merge tests
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
-checked by hand on Claude 2.1.304. Native shared-context coverage reads the effective language
-and adds response-language context without rewriting the Agent call or changing the HTTP transport.
-It preserves other context blocks, translation targets, quotations and code identifiers,
-and follows the assigned task when the language setting is absent. Each submitted prompt refreshes cached context and carries the current preference to the parent. The native Auto Mode cases cover foreground/background
-approved and denied calls, English, Chinese, an unset language, and excluded user settings.
+checked by hand on Claude 2.1.304. The existing organization mod reads the effective language and adds shared context only in routed
+sessions, without rewriting Agent inputs or changing HTTP transport. It preserves other context,
+translation targets, quotations and code identifiers, and follows the assigned task when the
+language setting is absent. Unchanged prompts add no repeated instruction; language changes
+refresh cached child context and the parent's preference. Native tests cover a same-session
+English-to-Chinese settings reload, unchanged-turn deduplication, routing toggles, Chinese,
+unset and excluded user settings, approved foreground/background calls and one denial per mode.
 They require the selected child model, unchanged reviewed inputs and no fallback classifier.
 These controlled-provider checks establish instruction delivery, not generated-language compliance.
-Concurrent diagnostic-file writes use the existing cross-platform lock; the held-lock
-case requires the response and stderr diagnostic fallback to survive.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
