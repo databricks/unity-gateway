@@ -523,6 +523,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       ...e,
       props: { ...e.props, tool: name },
     } : e)
+    // Native ref 0 draws the original props without invoking downstream hooks again.
     if (generation !== explanationState.generation) return renamed ? { type: 'engine', ref: 0 } : original
     if (!record && !pending.has(e.requestId)) return original
 

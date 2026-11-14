@@ -1606,6 +1606,9 @@ tool search, reduced context usage, or native connector consent.
 
 ### Routing explanation coverage
 
+The shared decision-writer checks retain explanations with task-text logging on
+and omit them with it off, while preserving model reconciliation in both modes.
+
 Routing explanation component tests cover opt-in native panes, seven- and eight-digit
 gateway model IDs, request-identity checks, per-model selection, optional numeric
 estimates, malformed metadata, and pane-open feedback. Python rejects explanation shapes

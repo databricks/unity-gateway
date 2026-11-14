@@ -77,7 +77,8 @@ failures also log a diagnostic.
 `/smart-router explain on` adds a **Why this model?** button to routing rows and
 parallel decision cards for the current plugin session. Explanations start off;
 `/smart-router explain off` hides the buttons and closes the pane.
-`/smart-router explain latest` opens the most recent recorded decision directly.
+`/smart-router explain latest` opens the most recent recorded decision once, even
+with explanation buttons off. Turning explanations off does not erase decision history.
 These commands do not change routing, submit feedback, or make model requests.
 
 The native pane shows the selected model, a short explanation, and a model selector

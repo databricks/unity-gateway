@@ -292,6 +292,7 @@ test('the continuation note keeps the fork exception when the host offers forks'
 
 test('explanation commands leave routing and feedback controls untouched', { options: ROUTED }, async ($, on) => {
   const { env, writes } = setup(on);
+  env.ISAAC_SMART_ROUTER_FEEDBACK = '1';
   const initial = { ...env };
   let processes = 0;
   on('process.run', () => { processes++; return { value: { exitCode: 0, stdout: '', stderr: '' } }; });
@@ -308,6 +309,8 @@ test('explanation commands leave routing and feedback controls untouched', { opt
   expect(env).toEqual(initial);
   expect(writes).toEqual([]);
   expect(processes).toBe(0);
+  expect((await $.command.run({ command: 'smart-router', args: 'off' })).text)
+    .toContain('Smart Router is still on');
 });
 
 test('subagent routing guidance preserves the host description and is absent when routing is off', {options: ROUTED}, async ($, on) => {

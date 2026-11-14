@@ -651,7 +651,11 @@ def write_decision_record(
                 {"model": model, "harness": harness} for model, harness in decision.route_options
             ],
             "router_name": decision.router_name,
-            **({"explanation": decision.explanation} if decision.explanation is not None else {}),
+            **(
+                {"explanation": decision.explanation}
+                if include_task_text and decision.explanation is not None
+                else {}
+            ),
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
             "rationale": decision.rationale,
