@@ -727,6 +727,15 @@ then uses it too). Like Claude Desktop, `ug codex --provider` doesn't change the
 app and sign in with ChatGPT. A provider you already set is left alone; `ug revert` removes ug's
 entries.
 
+### Codex CLI ChatGPT relay compatibility
+
+Codex subscription relay CLI launches use a separate `DatabricksCliRelay` provider so saved
+Databricks auth commands and Desktop relay headers cannot merge into the launch. Native Codex
+does not permit changing a saved thread's model provider on resume. Existing `Databricks` relay
+threads therefore cannot continue through the new provider identity; start a new relay session.
+UG preserves existing configuration and session history. Authenticated relay inference and
+cross-provider thread migration remain separate validation and compatibility gaps.
+
 ### Codex desktop tracing
 
 With workspace tracing enabled, run `ug configure --agents codex` on the machine
@@ -814,10 +823,3 @@ authentication and UC permissions, add this step to your workflow:
 The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
 workflows, custom folder mappings, sharing permissions, and verification steps.
 Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.
-
-Codex subscription relay CLI launches use a separate `DatabricksCliRelay` provider so saved
-Databricks auth commands and Desktop relay headers cannot merge into the launch. Native Codex
-does not permit changing a saved thread's model provider on resume. Existing `Databricks` relay
-threads therefore cannot continue through the new provider identity; start a new relay session.
-UG preserves existing configuration and session history. Authenticated relay inference and
-cross-provider thread migration remain separate validation and compatibility gaps.

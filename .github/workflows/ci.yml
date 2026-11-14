@@ -42,6 +42,7 @@ jobs:
   test:
     name: Unit tests · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     needs: lint
     strategy:
       fail-fast: false

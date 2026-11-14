@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import plistlib
@@ -17,9 +18,11 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.integration.utils.harness import process_group_options, stop_process
 from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import codex_routing
 from ucode.telemetry import client_platform
 
@@ -1881,11 +1884,32 @@ class TestCodexLaunch:
         server.shutdown.assert_called_once_with()
 
     @pytest.mark.parametrize("tool_args", [[], ["update"]])
+    @pytest.mark.parametrize("profile", ['model_provider = "Databricks"\n', "[model_providers]\n"])
+    def test_relayed_launch_requires_configured_provider(
+        self, tmp_path, monkeypatch, tool_args, profile
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex.CODEX_CONFIG_PATH.write_text(profile, encoding="utf-8")
+        relay = Mock()
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", relay)
+        monkeypatch.setattr(codex, "_ensure_chatgpt_login", Mock())
+
+        with pytest.raises(RuntimeError, match="ug configure --agents codex"):
+            codex.launch(
+                {"workspace": WS, "codex_relayed": True}, tool_args, options=LaunchOptions()
+            )
+
+        assert launches == []
+        relay.assert_not_called()
+
+    @pytest.mark.parametrize("tool_args", [[], ["update"]])
     def test_relayed_launch_keeps_user_provider_auth_with_native_parser(
         self, tmp_path, monkeypatch, tool_args
     ):
         binary = shutil.which("codex")
         if binary is None:
+            if os.environ.get("CI"):
+                pytest.fail("Native Codex is required for provider config merge validation in CI")
             pytest.skip("Native Codex is required for provider config merge validation")
         self._patch(tmp_path, monkeypatch)
         codex.CODEX_CONFIG_PATH.write_text(
@@ -1930,7 +1954,7 @@ class TestCodexLaunch:
             login.assert_not_called()
             relay.assert_not_called()
         assert 'model_provider="DatabricksCliRelay"' in launches[0]
-        proc = subprocess.Popen(
+        proc = subprocess_cross_os.popen(
             [binary, *launches[0][1:], "app-server"],
             env={**os.environ, "CODEX_HOME": str(tmp_path)},
             stdin=subprocess.PIPE,
@@ -1938,6 +1962,7 @@ class TestCodexLaunch:
             stderr=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            **process_group_options(),
         )
         responses = queue.Queue()
 
@@ -1979,10 +2004,11 @@ class TestCodexLaunch:
             assert block["http_headers"][codex.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
             assert "X-Desktop-Only" not in block["http_headers"]
         finally:
-            proc.terminate()
-            proc.wait(timeout=5)
+            with contextlib.suppress(BrokenPipeError):
+                proc.stdin.close()
+            stop_process(proc)
             reader.join(timeout=5)
-            proc.stdin.close()
+            assert not reader.is_alive(), "Native Codex app-server kept stdout open after cleanup"
             proc.stdout.close()
         assert user_config.read_bytes() == original
 

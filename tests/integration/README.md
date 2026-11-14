@@ -2112,9 +2112,11 @@ wire APIs and Claude limits. These checks use controlled discovery responses.
 Codex relay regression checks use the native Codex parser to verify that a distinct relay provider
 avoids merging a user's auth command into subscription auth and preserves the user's config bytes.
 Native app-server config reads also verify the effective relay block's auth mode, loopback URL,
-MPS target header, and absence of stale Desktop headers. The secret-free unit-test jobs install pinned Codex 0.169.0 and run these checks
-on Linux and Windows, including merge-group runs. These checks do not establish authenticated relay inference
-or migration of saved threads between provider identities.
+MPS target header, and absence of stale Desktop headers. The secret-free unit-test jobs install
+pinned Codex 0.169.0 and run these checks on Linux and Windows, including merge-group runs. A missing native binary fails CI. The parser
+uses the cross-platform launcher and reaps its process group after closing stdin. Missing relay
+provider configuration fails before login or proxy startup with configure guidance. These checks
+do not establish authenticated relay inference or migration of saved threads between provider identities.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering

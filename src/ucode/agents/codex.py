@@ -1920,6 +1920,15 @@ def launch(
             f"Cannot launch Codex with the ucode profile because {CODEX_CONFIG_PATH} "
             "is missing or empty. Run `ug configure --agents codex` first."
         )
+    provider_blocks = profile_doc.get("model_providers")
+    if relayed and (
+        not isinstance(provider_blocks, dict)
+        or not isinstance(provider_blocks.get(CODEX_MODEL_PROVIDER_NAME), dict)
+    ):
+        raise RuntimeError(
+            f"Cannot launch Codex because {CODEX_CONFIG_PATH} is missing the Databricks provider. "
+            "Run `ug configure --agents codex` first."
+        )
     _set_provider_header(profile_doc, provider)
     _set_parent_schema_header(profile_doc, parent_schema if not provider else None)
     _export_launch_routing_headers(profile_doc)
