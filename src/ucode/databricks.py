@@ -28,7 +28,7 @@ from email.message import Message
 from enum import Enum
 from http.client import HTTPException
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
+from typing import Any, Literal, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -60,7 +60,6 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 from ucode.workspace import (
-    WorkspaceSelectionReason,
     response_workspace_mismatch,
     signin_redirect_reason,
     workspace_failure_reason,
@@ -72,7 +71,6 @@ UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
 WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
-UNITY_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
@@ -3981,139 +3979,6 @@ def fetch_codex_models(workspace: str, token: str) -> list[str]:
     return models
 
 
-class GatewayProbe(NamedTuple):
-    reachable: bool
-    detail: str
-    resource_available: bool = False
-    conclusive: bool = True
-
-
-_MODEL_SERVICE_PROBE_PAGE_SIZE = 50
-_MODEL_SERVICE_PROBE_MAX_PAGES = 20
-# The endpoint intermittently returns HTTP 499/504 under load; retry so a transient blip
-# doesn't abort a launch. Two retries add about 1 s then 2 s (plus jitter) before giving up.
-_MODEL_SERVICE_PROBE_MAX_RETRIES = 2
-_MODEL_SERVICE_EMPTY_DETAIL = (
-    "reachable, no accessible model services returned; "
-    "check USE CATALOG on system, and USE SCHEMA and EXECUTE on system.ai"
-)
-
-
-def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
-    page_token: str | None = None
-    for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
-        params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}
-        if page_token:
-            params["page_token"] = page_token
-        payload, reason = _http_get_json(
-            f"{base}?{urlencode(params)}", token, max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES
-        )
-        if payload is None:
-            if page == 0:
-                return GatewayProbe(False, reason or "unknown error")
-            return GatewayProbe(True, "reachable", conclusive=False)
-        if isinstance(payload, dict) and payload.get("model_services"):
-            return GatewayProbe(True, "reachable, accessible model service returned", True)
-        page_token = payload.get("next_page_token") if isinstance(payload, dict) else None
-        if not page_token:
-            return GatewayProbe(True, _MODEL_SERVICE_EMPTY_DETAIL)
-    return GatewayProbe(True, "reachable", conclusive=False)
-
-
-def _raise_unity_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
-    raise RuntimeError(
-        f"Databricks rejected the access token for {workspace} ({reason}). "
-        f"Try:\n"
-        f"  databricks auth logout --host {workspace}\n"
-        f"  databricks auth login --host {workspace}"
-    )
-
-
-def _raise_unity_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
-    raise RuntimeError(
-        f"The access token for {workspace} is missing an OAuth scope required by the "
-        f"Unity Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
-        f"scopes:\n"
-        f"  databricks auth login --host {workspace}"
-    )
-
-
-def _raise_model_service_permission_failure(workspace: str, model_service_reason: str) -> NoReturn:
-    raise RuntimeError(
-        "Databricks Unity Gateway model service access could not be verified on "
-        f"{workspace} ({model_service_reason}). Listing Unity Catalog model services requires "
-        "USE CATALOG on `system`, and USE SCHEMA and EXECUTE on `system.ai`."
-    )
-
-
-# Probes that returned an accessible model service, keyed by (workspace, token) so a re-login or a
-# different credential probes again. `ucode codex` configures once for auto-setup and again on the
-# launch path; re-probing a gateway that just answered only gives the flaky listing another chance
-# to fail. Failures, empty listings, and inconclusive results are never cached.
-_GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
-
-
-def clear_gateway_probe_cache() -> None:
-    """Forget successful gateway probes (used by tests)."""
-    _GATEWAY_PROBE_CACHE.clear()
-
-
-def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
-    """Return the model service probe, raising if model service access can't be verified."""
-    cache_key = (workspace, token)
-    cached = _GATEWAY_PROBE_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    model_service_probe = _probe_model_services(workspace, token)
-    if model_service_probe.resource_available:
-        _GATEWAY_PROBE_CACHE[cache_key] = model_service_probe
-    if model_service_probe.reachable:
-        # resource_available, reachable-but-empty, and inconclusive are all non-fatal: the
-        # caller surfaces the detail as a warning when no accessible model service came back.
-        return model_service_probe
-
-    reason = model_service_probe.detail
-    if isinstance(reason, WorkspaceSelectionReason):
-        raise RuntimeError(reason)
-    if _looks_like_definitive_auth_failure(reason):
-        _raise_unity_gateway_auth_failure(workspace, reason)
-    if _looks_like_scope_failure(reason):
-        _raise_unity_gateway_scope_failure(workspace, reason)
-    if _looks_like_permission_failure(reason):
-        _raise_model_service_permission_failure(workspace, reason)
-
-    if _looks_like_transient_failure(reason):
-        raise RuntimeError(
-            "Could not verify Databricks Unity Gateway on this workspace: the model services "
-            f"request failed ({reason}). This is usually transient; retry the command, or pass "
-            "--skip-preflight to launch without this check."
-        )
-
-    if _is_not_found_reason(reason):
-        raise RuntimeError(
-            "Databricks Unity Gateway is not enabled on this workspace: model services "
-            f"({reason}) are not available. See {UNITY_GATEWAY_DOCS_URL}"
-        )
-    raise RuntimeError(
-        f"Could not verify Databricks Unity Gateway model services on {workspace} "
-        f"({reason}). See {UNITY_GATEWAY_DOCS_URL}"
-    )
-
-
-_HTTP_STATUS_REASON_RE = re.compile(r"^HTTP (\d{3})\b")
-
-
-def _looks_like_transient_failure(reason: str) -> bool:
-    """True when a failure reason is one ``_http_get_bytes`` retries (a status in
-    ``_HTTP_GET_RETRYABLE_STATUS_CODES`` or a network error), rather than a definitive
-    answer about the workspace."""
-    if reason.startswith("network error:"):
-        return True
-    match = _HTTP_STATUS_REASON_RE.match(reason)
-    return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
-
-
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
@@ -4127,21 +3992,6 @@ def _looks_like_definitive_auth_failure(reason: str) -> bool:
     if "http 401" in lowered:
         return True
     return "invalid token" in lowered or "invalid access token" in lowered
-
-
-def _looks_like_scope_failure(reason: str) -> bool:
-    """True for a 403 that reports the OAuth *token* is missing a required scope.
-
-    Matched to the OAuth-token wording so a PAT's permission 403 -- which
-    re-login cannot fix -- is not misrouted to the re-login hint and instead
-    falls through to the grant guidance.
-    """
-    lowered = reason.lower()
-    return "http 403" in lowered and "oauth token" in lowered and "required scopes" in lowered
-
-
-def _looks_like_permission_failure(reason: str) -> bool:
-    return "HTTP 403" in reason
 
 
 def _parse_decimal(value: object) -> Decimal | None:

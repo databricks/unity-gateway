@@ -210,16 +210,6 @@ class TestHttpChokepoints:
         (payload, reason), _ = self._get(url, _Response(b"{}", url, "222"))
         assert payload is None and "222" in (reason or "")
 
-    def test_probe_reports_the_selection_problem(self):
-        reason = workspace_mod.WorkspaceSelectionReason("acme serves several workspaces")
-        with (
-            patch.object(
-                db_mod, "_probe_model_services", return_value=db_mod.GatewayProbe(False, reason)
-            ),
-            pytest.raises(RuntimeError, match="^acme serves several workspaces$"),
-        ):
-            db_mod.probe_unity_gateway_capabilities(SHARED, "tok")
-
 
 class TestHelperArgv:
     def test_mcp_proxy(self, selected):
