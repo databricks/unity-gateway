@@ -16,6 +16,7 @@ from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.managed_resolve import managed_unservable_models, resolve_state
 from ucode.state import (
+    get_managed_model_source_api_types,
     get_managed_model_source_expansions,
     load_state,
     save_state,
@@ -107,6 +108,23 @@ class TestClassifyCopilotModel:
 
 
 class TestBuildCopilotCatalog:
+    @pytest.mark.parametrize(
+        ("target", "apis", "expected"),
+        [
+            ("claude-opus-4-1", ("anthropic/v1/messages",), None),
+            ("gpt-4o", ("openai/v1/responses",), "responses"),
+            ("gpt-4o", ("openai/v1/chat/completions",), "completions"),
+            ("gpt-5.5", ("openai/v1/chat/completions",), None),
+            ("claude-sonnet-5-5", ("openai/v1/responses",), None),
+        ],
+    )
+    def test_managed_native_metadata_preserves_model_restrictions(self, target, apis, expected):
+        model = f"main.default.external.{target}"
+        catalog = copilot.build_copilot_catalog([model], native_api_types={model: apis})
+        assert [(entry.id, entry.wire) for entry in catalog] == (
+            [(model, expected)] if expected else []
+        )
+
     @pytest.mark.parametrize(
         ("provider_type", "target"),
         [
@@ -226,6 +244,50 @@ class TestBuildCopilotCatalog:
         output = " ".join(capsys.readouterr().out.split())
         assert "Could not fully expand managed model source" in output
         assert "Anthropic listing: HTTP 503" in output
+
+    def test_partial_configure_preserves_full_cache_for_offline_launch(self, monkeypatch):
+        service = "main.default.bedrock"
+        source = f"{service}.*"
+        old, fresh = f"{service}.old-model", f"{service}.fresh-model"
+        state = {"workspace": WS}
+        set_managed_model_source_expansions(
+            state,
+            "copilot",
+            {source: [old], "removed.default.service.*": [old]},
+            native_api_types={old: ("openai/v1/chat/completions",)},
+        )
+        managed = {"enabled_agents": {"copilot": {"model_config": {"sources": [source]}}}}
+        monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args: "token")
+        monkeypatch.setattr(
+            model_sources,
+            "_expand_wildcard_source",
+            lambda *args: ([fresh], "Anthropic listing: HTTP 503"),
+        )
+        runtime, cache = cli_mod._expand_managed_model_sources(managed, state, "copilot")
+        assert runtime["enabled_agents"]["copilot"]["model_config"]["sources"] == [fresh]
+        assert cache == {source: [old]}
+        set_managed_model_source_expansions(
+            state,
+            "copilot",
+            cache,
+            native_api_types=runtime[copilot.NATIVE_MODEL_API_TYPES_KEY],
+        )
+        monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *args: ([], "offline"))
+        offline, _ = cli_mod._expand_managed_model_sources(
+            managed,
+            state,
+            "copilot",
+            fallbacks=get_managed_model_source_expansions(state, "copilot"),
+        )
+        models = copilot.copilot_catalog(resolve_state(offline, state, "copilot"))
+        assert [(entry.id, entry.wire, entry.native) for entry in models] == [
+            (old, "completions", True)
+        ]
+        monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *args: ([fresh], None))
+        _, complete = cli_mod._expand_managed_model_sources(managed, state, "copilot")
+        assert complete == {source: [fresh]}
+        set_managed_model_source_expansions(state, "copilot", complete)
+        assert get_managed_model_source_api_types(state, "copilot") == {}
 
     def test_provider_wildcards_reach_the_registry_with_qualified_ids(self, monkeypatch):
         services = {

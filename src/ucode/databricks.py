@@ -3891,7 +3891,13 @@ def native_chat_model_api(
         # Copilot sends temperature=0 on Completions, which GPT 5+ and o-series reject.
         api = API_OPENAI_RESPONSES
     elif gpt:
-        api = API_OPENAI_CHAT_COMPLETIONS
+        api = (
+            API_OPENAI_RESPONSES
+            if declared
+            and API_OPENAI_CHAT_COMPLETIONS not in declared
+            and API_OPENAI_RESPONSES in declared
+            else API_OPENAI_CHAT_COMPLETIONS
+        )
     else:
         api = next(
             (

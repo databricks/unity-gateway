@@ -1122,6 +1122,7 @@ def _expand_managed_model_sources(
         return managed, {}
     token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
     native_api_types: dict[str, tuple[str, ...]] = {}
+    incomplete_sources: set[str] = set()
     expanded, live_expansions = resolve_model_sources(
         sources,
         tool,
@@ -1130,7 +1131,17 @@ def _expand_managed_model_sources(
         fallbacks=fallbacks,
         native_api_types=native_api_types,
         fallback_api_types=get_managed_model_source_api_types(state, tool) if fallbacks else None,
+        incomplete_sources=incomplete_sources,
     )
+    previous = get_managed_model_source_expansions(state, tool)
+    previous_api_types = get_managed_model_source_api_types(state, tool)
+    for source in incomplete_sources:
+        if source in previous:
+            # Partial discovery must not erase the last complete offline catalog.
+            live_expansions[source] = previous[source]
+            for model in previous[source]:
+                if model in previous_api_types:
+                    native_api_types.setdefault(model, previous_api_types[model])
     if not expanded:
         # Every wildcard failed to expand. An empty static list reads as unset, which would
         # silently replace the admin's allow-list with workspace discovery; fail closed instead.

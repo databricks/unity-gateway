@@ -92,6 +92,7 @@ def resolve_model_sources(
     fallbacks: dict[str, list[str]] | None = None,
     native_api_types: dict[str, tuple[str, ...]] | None = None,
     fallback_api_types: dict[str, tuple[str, ...]] | None = None,
+    incomplete_sources: set[str] | None = None,
 ) -> tuple[list[str], dict[str, list[str]]]:
     expanded: list[str] = []
     lookups: dict[str, list[str]] = {}
@@ -110,6 +111,8 @@ def resolve_model_sources(
             if targets:
                 live[source] = list(targets)
                 if reason:
+                    if incomplete_sources is not None:
+                        incomplete_sources.add(source)
                     print_warning(
                         f"Could not fully expand managed model source {source} ({reason}); "
                         "using the models that were discovered."

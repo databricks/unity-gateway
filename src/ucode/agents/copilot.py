@@ -250,6 +250,8 @@ def classify_model(
 
 
 def _classify_native_model(model: str, api_types: Iterable[str]) -> tuple[str | None, str | None]:
+    if reason := _UNSUPPORTED_MODELS.get(bare_model_name(model)):
+        return None, reason
     api, reason = native_chat_model_api(model, api_types)
     return next((wire for wire, route in _NATIVE_WIRE_ROUTES.items() if route == api), None), reason
 
