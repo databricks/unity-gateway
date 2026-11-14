@@ -12,13 +12,14 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import Mock
 
 import pytest
 
-from tests.integration.utils.harness import process_group_options, stop_process
+from tests.integration.utils.harness import clean_environment, process_group_options, stop_process
 from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
@@ -1957,9 +1958,14 @@ class TestCodexLaunch:
             relay.assert_not_called()
         assert 'model_provider="DatabricksCliRelay"' in launches[0]
         monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
+        home = tmp_path / "home"
+        home.mkdir()
+        cwd = tmp_path / "work"
+        cwd.mkdir()
         proc = subprocess_cross_os.popen(
             [binary, *launches[0][1:], "app-server"],
-            env={**os.environ, "CODEX_HOME": str(tmp_path)},
+            env={**clean_environment(home), "CODEX_HOME": str(tmp_path)},
+            cwd=cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -1986,12 +1992,14 @@ class TestCodexLaunch:
                 json.dumps({"id": request_id, "method": method, "params": params}) + "\n"
             )
             proc.stdin.flush()
-            while True:
-                response = responses.get(timeout=20)
+            deadline = time.monotonic() + 20
+            while (remaining := deadline - time.monotonic()) > 0:
+                response = responses.get(timeout=remaining)
                 assert "reader_error" not in response, response.get("reader_error")
                 if response.get("id") == request_id:
                     assert "error" not in response
                     return response["result"]
+            pytest.fail(f"Native Codex app-server timed out waiting for {method}")
 
         try:
             request(1, "initialize", {"clientInfo": {"name": "ug-relay-test", "version": "1"}})
