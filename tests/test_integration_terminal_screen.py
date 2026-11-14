@@ -278,6 +278,23 @@ def test_codex_mcp_inventory_rejects_failed_servers_and_wrong_tools(clock, snaps
     assert _inventory_actions(terminal) == []
 
 
+def test_codex_mcp_inventory_rejects_old_inventory_repainted_during_typing(clock):
+    from tests.integration.utils.mcp import open_codex_mcp_inventory
+
+    pty = _ScriptedCodexPty(clock, [_McpReply(_mcp_snapshot("failed"), not_before=10)])
+    terminal = _McpInventoryTerminal(pty)
+    pty.pending.append((0, "\x1b[2J\x1b[H" + _mcp_snapshot().replace("\n", "\r\n")))
+
+    with pytest.raises(AssertionError, match="did not connect with the expected tools") as error:
+        open_codex_mcp_inventory(terminal, _MCP_SERVICES)
+
+    assert "fixture_metadata: failed (1 tool)" in str(error.value)
+    assert "fixture_metadata: connected (1 tool)" not in str(error.value)
+    assert len(pty.enters) == 1
+    assert clock.elapsed >= 10
+    assert _inventory_actions(terminal) == []
+
+
 def test_codex_mcp_inventory_bounds_permanent_startup(clock):
     from tests.integration.utils.mcp import open_codex_mcp_inventory
 
