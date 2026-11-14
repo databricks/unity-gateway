@@ -1137,8 +1137,10 @@ def _expand_managed_model_sources(
     previous_api_types = get_managed_model_source_api_types(state, tool)
     for source in incomplete_sources:
         if source in previous:
-            # Partial discovery must not erase the last complete offline catalog.
-            live_expansions[source] = previous[source]
+            # Partial discovery cannot prove that previously cached models were removed.
+            live_expansions[source] = list(
+                dict.fromkeys([*previous[source], *live_expansions.get(source, [])])
+            )
             for model in previous[source]:
                 if model in previous_api_types:
                     native_api_types.setdefault(model, previous_api_types[model])

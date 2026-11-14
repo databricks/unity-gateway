@@ -258,14 +258,15 @@ class TestBuildCopilotCatalog:
         )
         managed = {"enabled_agents": {"copilot": {"model_config": {"sources": [source]}}}}
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *args: "token")
-        monkeypatch.setattr(
-            model_sources,
-            "_expand_wildcard_source",
-            lambda *args: ([fresh], "Anthropic listing: HTTP 503"),
-        )
+
+        def partial_listing(source, tool, workspace, token, native_api_types):
+            native_api_types[fresh] = ("openai/v1/responses",)
+            return [fresh], "Anthropic listing: HTTP 503"
+
+        monkeypatch.setattr(model_sources, "_expand_wildcard_source", partial_listing)
         runtime, cache = cli_mod._expand_managed_model_sources(managed, state, "copilot")
         assert runtime["enabled_agents"]["copilot"]["model_config"]["sources"] == [fresh]
-        assert cache == {source: [old]}
+        assert cache == {source: [old, fresh]}
         set_managed_model_source_expansions(
             state,
             "copilot",
@@ -281,7 +282,8 @@ class TestBuildCopilotCatalog:
         )
         models = copilot.copilot_catalog(resolve_state(offline, state, "copilot"))
         assert [(entry.id, entry.wire, entry.native) for entry in models] == [
-            (old, "completions", True)
+            (fresh, "responses", True),
+            (old, "completions", True),
         ]
         monkeypatch.setattr(model_sources, "_expand_wildcard_source", lambda *args: ([fresh], None))
         _, complete = cli_mod._expand_managed_model_sources(managed, state, "copilot")
