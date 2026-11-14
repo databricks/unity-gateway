@@ -16,10 +16,11 @@ export function effortProfile(id: string, layers: readonly (EffortSettings | nul
   const levels = unsupported ? [] : EFFORT_LEVELS.slice(0, cap + 1);
   const native = status?.match(/currently (low|medium|high|xhigh|max)/i)?.[1]
     ?? status?.match(/effort level(?: to|:)\s*(low|medium|high|xhigh|max)/i)?.[1];
+  const override = environment && environment !== 'unset' ? environment : undefined;
   // An unvisited model keeps its native default; selecting a row never invents one.
-  const current = environment && environment !== 'unset' ? environment : native ?? 'auto';
+  const current = override ?? native ?? 'auto';
   const index = EFFORT_LEVELS.indexOf(current.toLowerCase());
-  const level = !environment && index >= 0 ? EFFORT_LEVELS[Math.min(index, cap)] : current;
-  return {levels, level, locked: Boolean(environment),
-    note: environment ? 'set by environment' : !native ? 'model default' : ''};
+  const level = !override && index >= 0 ? EFFORT_LEVELS[Math.min(index, cap)] : current;
+  return {levels, level, locked: Boolean(override),
+    note: override ? 'set by environment' : !native ? 'model default' : ''};
 }

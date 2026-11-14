@@ -2383,6 +2383,10 @@ def _reconcile_managed_settings(
             _explicit_configure or picker_is_configured(managed_before)
         ):
             desired_settings = add_picker_entry(desired_settings)
+            before_env = managed_before.get("env")
+            before_env = before_env if isinstance(before_env, dict) else {}
+            desired_env = desired_settings.get("env")
+            desired_env = desired_env if isinstance(desired_env, dict) else {}
             owned_paths = [
                 *owned_paths,
                 ["modelPicker"],
@@ -2395,8 +2399,7 @@ def _reconcile_managed_settings(
                 *[
                     ["env", key]
                     for key in AUTO_CUSTOM_MODEL_ENV_KEYS
-                    if key in managed_before.get("env", {})
-                    and key not in desired_settings.get("env", {})
+                    if key in before_env and key not in desired_env
                 ],
             ]
     # Only the explicit `ug configure` path adds the blanks.
