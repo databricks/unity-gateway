@@ -1449,6 +1449,8 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
   HTTP status, parse state, and allowlisted content block types and stop reasons.
   It excludes request and response text and tool names or arguments. A `tool_use` block does not
   identify a named tool or establish which service caused a protocol failure.
+  It reports recorder status, including the existing synthetic 502 for interrupted upstreams,
+  and cannot diagnose truncated protocol bodies because their partial structure is discarded.
 - `wheels/`: the tested wheel when built from the checkout; replay it with
   `--ug-wheel`. For release installations, `installed.txt` records the resolution.
 
