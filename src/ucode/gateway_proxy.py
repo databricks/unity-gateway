@@ -41,6 +41,7 @@ from urllib.parse import unquote
 
 import httpx
 
+from ucode import metrics
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX
 from ucode.env import env_bool
 from ucode.workspace import workspace_headers
@@ -274,6 +275,9 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     token_header = AI_GATEWAY_TOKEN_HEADER
     # Applied last so neither the agent nor an admin header can select another workspace.
     workspace_selector: Mapping[str, str] = {}
+    _metric_labels: dict[str, object] = {}
+    metrics_workspace = ""
+    metrics_proxy_mode = "gateway_auth"
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -302,6 +306,55 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         return False
 
     def _handle(self) -> None:
+        self._metric_started = time.monotonic()
+        self._metric_labels: dict[str, object] = {
+            "proxy_mode": self.metrics_proxy_mode,
+            "api_operation": metrics.api_operation(self.path),
+            "http_method": self.command,
+        }
+        self._metric_bytes = 0
+        self._metric_disconnected = False
+        self._metric_error = None
+        try:
+            self._forward()
+        except Exception as exc:
+            self._metric_error = exc
+            raise
+        finally:
+            metrics.record(
+                "proxy_request_duration_ms",
+                (time.monotonic() - self._metric_started) * 1000,
+                workspace=self.metrics_workspace,
+                **self._metric_labels,
+                client_disconnected=self._metric_disconnected,
+            )
+            metrics.record(
+                "proxy_response_bytes",
+                self._metric_bytes,
+                workspace=self.metrics_workspace,
+                **self._metric_labels,
+            )
+            if self._metric_error is not None:
+                metrics.failure(
+                    "proxy_request",
+                    self._metric_error,
+                    workspace=self.metrics_workspace,
+                    phase="agent_session",
+                    continued_with_fallback=False,
+                    **self._metric_labels,
+                )
+
+    def _metric_headers(self, status: int, attempt: int, started: float) -> None:
+        self._metric_labels["http_status_code"] = status
+        metrics.record(
+            "proxy_upstream_headers_duration_ms",
+            (time.monotonic() - started) * 1000,
+            workspace=self.metrics_workspace,
+            **self._metric_labels,
+            attempt=attempt,
+        )
+
+    def _forward(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
         started = time.monotonic()
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -332,8 +385,10 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         try:
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
+            metrics.bind(self.metrics_workspace, token)
             headers = request_headers(token)
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+                self._metric_headers(resp.status_code, 1, started)
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
@@ -362,9 +417,20 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 # which otherwise reads as an Anthropic `/login` prompt and sends the
                 # user to the wrong re-auth. Still retry + relay with the existing token.
                 if self._on_refresh_failure(exc):
+                    self._metric_error = exc
+                    self._metric_labels["http_status_code"] = 401
                     return
-            headers = request_headers(self.cache.token)
+            token = self.cache.token
+            metrics.bind(self.metrics_workspace, token)
+            headers = request_headers(token)
+            metrics.record(
+                "proxy_auth_retry_count",
+                1,
+                workspace=self.metrics_workspace,
+                **{k: v for k, v in self._metric_labels.items() if k != "http_status_code"},
+            )
             with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+                self._metric_headers(resp.status_code, 2, started)
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
@@ -374,6 +440,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 )
                 self._relay_response(resp, diagnostic_id=diagnostic_id, started=started)
         except (BrokenPipeError, ConnectionResetError):
+            self._metric_disconnected = True
             # Client closed before/while we relayed headers — routine on cancel.
             log_proxy_diagnostic(
                 "client_disconnect",
@@ -383,6 +450,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             )
             return
         except httpx.HTTPError as exc:
+            self._metric_error = exc
             # Upstream failed before any bytes reached the client; a 502 is still
             # sendable. (An HTTP *status* like 429 is not an error here — httpx
             # only raises for transport failures — so real gateway errors are
@@ -407,6 +475,8 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         started: float | None = None,
     ) -> None:
         started = started if started is not None else time.monotonic()
+        if resp.status_code >= 400:
+            self._metric_error = f"HTTP {resp.status_code}"
         chunks = 0
         bytes_relayed = 0
         first_byte_ms: int | None = None
@@ -426,10 +496,17 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if chunk:
                     if first_byte_ms is None:
                         first_byte_ms = round((time.monotonic() - started) * 1000)
+                        metrics.record(
+                            "proxy_first_byte_duration_ms",
+                            first_byte_ms,
+                            workspace=self.metrics_workspace,
+                            **self._metric_labels,
+                        )
                     self.wfile.write(chunk)
                     self.wfile.flush()
                     chunks += 1
                     bytes_relayed += len(chunk)
+                    self._metric_bytes = bytes_relayed
             log_proxy_diagnostic(
                 "response_complete",
                 request_id=diagnostic_id,
@@ -440,6 +517,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
         except (BrokenPipeError, ConnectionResetError):
+            self._metric_disconnected = True
             # Client (Claude Code) closed the connection mid-response — routine on
             # cancelled turns / SSE teardown. Nothing left to relay to, so stop
             # quietly rather than crashing the handler thread.
@@ -453,6 +531,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             )
             return
         except httpx.HTTPError as exc:
+            self._metric_error = exc
             # Upstream dropped mid-stream. Headers (and status) may already be
             # sent, so we can't reliably signal a fresh error — stop and let the
             # client see a truncated stream rather than corrupt the framing.
@@ -658,6 +737,7 @@ def _start_proxy(
     force_refresh_near_expiry: bool,
     fallback_on_bind_error: bool = True,
     handler_attrs: Mapping[str, object] | None = None,
+    metrics_proxy_mode: str = "gateway_auth",
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the loopback refresh proxy + its background token refresher.
@@ -693,6 +773,8 @@ def _start_proxy(
                 "client": client,
                 "token_header": token_header,
                 "workspace_selector": workspace_headers(workspace),
+                "metrics_workspace": workspace,
+                "metrics_proxy_mode": metrics_proxy_mode,
                 **(handler_attrs or {}),
             },
         ),
@@ -708,6 +790,7 @@ def _start_proxy(
         # the OS pick any free port; the caller reconciles the base URL to it.
         server = _LoopbackHTTPServer(("127.0.0.1", 0), handler)
 
+    metrics.start_periodic()
     refresher = threading.Thread(target=cache.run_refresher, daemon=True)
     refresher.start()
     return server, cache, client
@@ -741,6 +824,7 @@ def start_relay_proxy(
         handler_type=handler_type,
         force_refresh_near_expiry=False,
         fallback_on_bind_error=fallback_on_bind_error,
+        metrics_proxy_mode="relay",
     )
 
 
@@ -756,6 +840,7 @@ def start_otel_proxy(
         token_provider,
         port,
         upstream_path="ai-gateway/otel/",
+        metrics_proxy_mode="otel",
         token_header=AUTHORIZATION_HEADER,
         handler_type=_ProxyHandler,
         force_refresh_near_expiry=True,
