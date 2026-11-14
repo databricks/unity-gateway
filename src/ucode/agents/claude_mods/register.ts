@@ -617,11 +617,12 @@ export function register(on: On, options: PluginOptions): void {
         || (!e.agentId && e.origin.kind === 'engine' && autoSave?.model === echo[2]))
         && auto.models.some((row) => row.autoModel === echo[2]);
       if (pendingEcho) publicAutoEcho = undefined;
-      const autoConfirmation = (setModel || keptModel) && await autoSelected($, auto);
+      const autoConfirmation = setModel || keptModel ? auto.models.find(row => row.autoModel === selectedModel) : undefined;
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : block.text.replace(MODEL_CONFIRMATION, '$1`Auto`'),
+            : autoConfirmation ? block.text.replace(MODEL_CONFIRMATION, (_match, before) =>
+              `${before}\`Auto (main model: ${autoConfirmation.model.replace(/^system\.ai\./, '')})\``) : block.text,
         } : block) },
       } : e;
       const result = await next(confirmation);

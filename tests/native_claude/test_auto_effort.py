@@ -90,8 +90,8 @@ def test_auto_model_selection_and_native_effort(native_binary, tmp_path, dimensi
             lambda s: heading not in s and "Auto (Opus 5.5) saved" in s, "saved Auto effort"
         )
         tui.wait_for(
-            lambda s: s.count("Set model to Auto") == 2,
-            "Auto confirmations from the picker and main-model selection",
+            lambda s: s.count("Set model to Auto (main model: claude-opus-5-5)") == 2,
+            "Auto confirmations name the main model after picker and main-model selection",
         )
         current = observe(tui, "selected")
         assert current["model"] == catalog["models"][0]["autoModel"], current

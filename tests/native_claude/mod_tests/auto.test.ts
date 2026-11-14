@@ -122,13 +122,13 @@ function host(on: any, selected = 'ug-auto-opus') {
 // Claude 2.1.290 has no mock.session host implementation. Exercise the real
 // append middleware with an explicit continuation; the terminal integration
 // journey covers native transcript dispatch as well as the resulting UI.
-function commandTranscript({state, env}: ReturnType<typeof host>) {
+function commandTranscript({state, env}: ReturnType<typeof host>, pluginOptions = options) {
   let append: any;
   let model: any;
   register(((event: string, ...args: any[]) => {
     if (event === 'session.append' && args[0]?.door === 'command' && !append) append = args.at(-1);
     if (event === 'command.run' && args[0]?.command === 'model' && !model) model = args.at(-1);
-  }) as any, options);
+  }) as any, pluginOptions);
   return async (text: string, metadata: {raw?: boolean; origin?: {kind: string; name?: string}; selectAuto?: boolean} = {}) => {
     const pending: Array<() => Promise<void>> = [];
     const engine = {
@@ -325,15 +325,28 @@ test('Auto confirmations preserve native save details and warnings', {options}, 
   const confirm = commandTranscript(context);
   const details = ' and saved as your default for new sessions with `high` effort\nA native warning';
   await confirm('Set model to `Opus 5.5`' + details);
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Auto`' + details + '</local-command-stdout>');
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Auto (main model: opus)`' + details + '</local-command-stdout>');
   expect(context.state.selected).toBe('ug-auto-opus');
   context.state.selected = 'opus';
   await confirm('Set model to `Opus 5.5`' + details);
   expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Opus 5.5`' + details + '</local-command-stdout>');
   context.state.selected = 'ug-auto-opus';
   await confirm('Kept model as `Opus 5.5`');
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept model as `Auto`</local-command-stdout>');
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept model as `Auto (main model: opus)`</local-command-stdout>');
 });
+
+for (const row of millionConfig.models) {
+  test(`Auto confirmations name the active ${row.label} deployment`,
+    {options:{...options,autoPicker:JSON.stringify(millionConfig)}}, async ($, on) => {
+      const context = host(on, row.autoModel);
+      const confirm = commandTranscript(context, {...options,autoPicker:JSON.stringify(millionConfig)});
+      for (const action of ['Set model to', 'Kept model as']) {
+        await confirm(`${action} \`${row.autoModel}\``);
+        expect(context.state.appended.at(-1)).toBe(
+          `<local-command-stdout>${action} \`Auto (main model: ${row.model.replace(/^system\.ai\./, '')})\`</local-command-stdout>`);
+      }
+    });
+}
 
 test('only UG internal model-command echoes relabel configured Auto aliases', {options}, async ($, on) => {
   const context = host(on, 'ug-auto-opus');
