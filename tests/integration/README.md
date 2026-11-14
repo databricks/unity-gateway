@@ -1443,6 +1443,14 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
 - `artifacts/`: command arguments, exit codes, timeout status, redacted output,
   app-server protocol diagnostics, and TUI transcripts/rendered screens plus
   keystroke actions and routing logs. No credential files are archived.
+  Claude subagent launch/off/back-on journeys also write `claude-response-protocol.json`
+  on success and failure, after the recorder's existing bounded drain. It includes the
+  metadata for the full inference history, including pending responses, with request sequence,
+  HTTP status, parse state, and allowlisted content block types and stop reasons.
+  It excludes request and response text and tool names or arguments. A `tool_use` block does not
+  identify a named tool or establish which service caused a protocol failure.
+  It reports recorder status, including the existing synthetic 502 for interrupted upstreams,
+  and cannot diagnose truncated protocol bodies because their partial structure is discarded.
 - `wheels/`: the tested wheel when built from the checkout; replay it with
   `--ug-wheel`. For release installations, `installed.txt` records the resolution.
 
