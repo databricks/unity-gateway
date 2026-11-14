@@ -984,3 +984,18 @@ def test_vscode_is_not_an_agent_of_its_own(monkeypatch):
 
     assert result.exit_code != 0
     assert "Unsupported tool 'vscode'" in " ".join(result.output.split())
+
+
+def test_managed_native_model_marker_reaches_extension_config():
+    native = "main.default.mantle.openai.gpt-5.6-luna"
+    hosted = "system.ai.gpt-5-4"
+    entries = vscode.model_entries(
+        {
+            "copilot_static_models": [native, hosted],
+            copilot.NATIVE_MODEL_API_TYPES_KEY: {native: ("openai/v1/responses",)},
+        }
+    )
+    by_id = {entry["id"]: entry for entry in entries}
+    assert by_id[native]["native"] is True
+    assert by_id[native]["api"] == "responses"
+    assert "native" not in by_id[hosted]

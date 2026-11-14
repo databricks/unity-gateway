@@ -1620,12 +1620,20 @@ wire APIs and Claude limits. These checks use controlled discovery responses.
 Bedrock and Mantle component checks cover mixed Claude/GPT catalogs for Copilot CLI and VS Code,
 GPT-OSS on its declared native OpenAI API, incompatible API exclusion, and allow-all discovery
 from both catalogs. Partial failures preserve discovered IDs and warn, including managed provider
-wildcards. Claude/Codex discovery retains its existing catalog selection. These checks do not
-establish live inference through Bedrock or Mantle.
+wildcards. Unknown models declaring both OpenAI APIs prefer Chat Completions, while GPT 5+
+keeps Responses. A managed wildcard roundtrip preserves native API metadata in the workspace's
+last-configure cache and keeps GPT-OSS available when live discovery fails. Removed targets'
+metadata is pruned. Overlapping catalog IDs retain both API capabilities, while explicit target
+restrictions still win. Mixed managed catalogs keep native MPS OpenAI routes separate from hosted
+MLflow routes, including selection refs and the VS Code model configuration. Extension request
+checks cover both paths and exact qualified model IDs. OpenAI and Azure provider wildcard
+controls retain native Responses routing, including an opaque Azure deployment ID.
+Claude/Codex discovery retains its existing catalog selection. These checks do not establish live
+inference through Bedrock or Mantle.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
-Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+Workspace-cache isolation and wildcard configure failures lack dedicated component coverage.
+No installed-agent journey currently covers mixed wildcard sources or proves inference with
+qualified MPS models.

@@ -75,6 +75,7 @@ from ucode.databricks import (
     list_anthropic_model_catalog,
     list_provider_service_models,
     model_version_sort_key,
+    native_chat_model_api,
     resolve_provider_service,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -144,6 +145,10 @@ PROVIDER_NAMES: dict[str, str] = {
     WIRE_RESPONSES: "dbx-responses",
     WIRE_COMPLETIONS: "dbx-completions",
 }
+NATIVE_PROVIDER_NAMES = {
+    WIRE_RESPONSES: "dbx-native-responses",
+    WIRE_COMPLETIONS: "dbx-native-completions",
+}
 _WIRE_ROUTES: dict[str, tuple[str, ...]] = {
     WIRE_ANTHROPIC: (API_ANTHROPIC_MESSAGES,),
     WIRE_RESPONSES: (API_MLFLOW_RESPONSES, API_OPENAI_RESPONSES, API_CODEX_RESPONSES),
@@ -158,7 +163,6 @@ _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",
 }
 _GATEWAY_ALIAS_PREFIX = "anthropic-aigw-"
-_GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)o?(?=$|[.-])")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 # Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
 # `-20250929-v1:0`.
@@ -246,32 +250,12 @@ def classify_model(
 
 
 def _classify_native_model(model: str, api_types: Iterable[str]) -> tuple[str | None, str | None]:
-    declared = tuple(api_types)
-    wire = _wire_from_name(bare_model_name(model))
-    if wire is None:
-        wire = next(
-            (
-                candidate
-                for candidate in (WIRE_RESPONSES, WIRE_COMPLETIONS)
-                if _NATIVE_WIRE_ROUTES[candidate] in declared
-            ),
-            None,
-        )
-    if wire is None:
-        return None, "no supported native chat API is declared"
-    if declared and _NATIVE_WIRE_ROUTES[wire] not in declared:
-        return None, f"it isn't served on {_NATIVE_WIRE_ROUTES[wire]}"
-    return wire, None
+    api, reason = native_chat_model_api(model, api_types)
+    return next((wire for wire, route in _NATIVE_WIRE_ROUTES.items() if route == api), None), reason
 
 
 def _wire_from_name(name: str) -> str | None:
-    if name.startswith("claude-"):
-        return WIRE_ANTHROPIC
-    gpt = _GPT_MODEL_MAJOR_PATTERN.match(name)
-    # Copilot sends `temperature: 0` on Chat Completions, which GPT 5+ and o-series models reject.
-    if (gpt and int(gpt.group(1)) >= 5) or _O_SERIES_PATTERN.match(name):
-        return WIRE_RESPONSES
-    return WIRE_COMPLETIONS if gpt else None
+    return _classify_native_model(name, ())[0]
 
 
 def is_open_model(model: str) -> bool:
@@ -347,10 +331,15 @@ class CopilotModel:
     wire: str
     # (max_input_tokens, max_tokens) the gateway listed for the model.
     listed_limits: tuple[int, int] | None = field(default=None, compare=False)
+    native: bool = False
 
     @property
     def provider(self) -> str:
-        return PROVIDER_NAMES[self.wire]
+        return (
+            NATIVE_PROVIDER_NAMES[self.wire]
+            if self.native and self.wire != WIRE_ANTHROPIC
+            else PROVIDER_NAMES[self.wire]
+        )
 
     @property
     def ref(self) -> str:
@@ -396,7 +385,12 @@ def build_catalog(
         if wire is None and fallback_wire and bare_model_name(model) not in _UNSUPPORTED_MODELS:
             wire = fallback_wire
         if wire is not None:
-            usable.setdefault(model, CopilotModel(model, wire))
+            usable.setdefault(
+                model,
+                CopilotModel(
+                    model, wire, native=bool(native_api_types and model in native_api_types)
+                ),
+            )
         elif reason is not None:
             skipped.setdefault(model, reason)
     return sorted(usable.values(), key=_catalog_sort_key), list(skipped.items())
@@ -405,14 +399,14 @@ def build_catalog(
 def build_copilot_catalog(
     entries: Iterable[ModelServiceEntry | str],
     *,
-    native_api_types: object = None,
+    native_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> list[CopilotModel]:
     """The Databricks models Copilot can use (see :func:`build_catalog`)."""
     pairs = ((e, ()) if isinstance(e, str) else (e.id, e.api_types) for e in entries)
-    return build_catalog(pairs, native_api_types=_native_model_api_types(native_api_types))[0]
+    return build_catalog(pairs, native_api_types=native_api_types)[0]
 
 
-def _native_model_api_types(value: object) -> dict[str, tuple[str, ...]]:
+def native_model_api_types(value: object) -> dict[str, tuple[str, ...]]:
     if not isinstance(value, dict):
         return {}
     return {
@@ -427,7 +421,11 @@ def _native_model_api_types(value: object) -> dict[str, tuple[str, ...]]:
 def _without_registry_prefix(model: str) -> str:
     """``model`` without a Copilot registry provider prefix: ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
     name, separator, rest = model.partition("/")
-    return rest if separator and name in PROVIDER_NAMES.values() else model
+    return (
+        rest
+        if separator and name in (*PROVIDER_NAMES.values(), *NATIVE_PROVIDER_NAMES.values())
+        else model
+    )
 
 
 def provider_service_catalog(
@@ -599,7 +597,7 @@ def copilot_catalog(state: dict) -> list[CopilotModel]:
     limits = _saved_limits(saved.get("limits")) if isinstance(saved, dict) else {}
     static = build_copilot_catalog(
         _string_list(state.get("copilot_static_models")),
-        native_api_types=state.get(NATIVE_MODEL_API_TYPES_KEY),
+        native_api_types=native_model_api_types(state.get(NATIVE_MODEL_API_TYPES_KEY)),
     )
     if static:
         return [replace(model, listed_limits=limits.get(model.id)) for model in static]
@@ -619,19 +617,11 @@ def unservable_static_models(state: dict) -> list[tuple[str, str]]:
     Empty when none of the list is usable: the launch then reports that the whole list was
     ignored instead."""
     static = _string_list(state.get("copilot_static_models"))
-    native_api_types = _native_model_api_types(state.get(NATIVE_MODEL_API_TYPES_KEY))
-    if not build_copilot_catalog(static, native_api_types=native_api_types):
-        return []
-    skipped = []
-    for model in static:
-        reason = (
-            _classify_native_model(model, native_api_types[model])[1]
-            if native_api_types and model in native_api_types
-            else copilot_exclusion_reason(model)
-        )
-        if reason is not None:
-            skipped.append((model, reason))
-    return skipped
+    usable, skipped = build_catalog(
+        ((model, ()) for model in static),
+        native_api_types=native_model_api_types(state.get(NATIVE_MODEL_API_TYPES_KEY)),
+    )
+    return skipped if usable else []
 
 
 def _normalized(model: str) -> str:
@@ -656,7 +646,7 @@ def resolve_copilot_model(requested: str, catalog: list[CopilotModel]) -> Copilo
     detail = f" ({reason})" if reason else ""
     available = "\n".join(
         f"  {provider}: {', '.join(m.id for m in catalog if m.provider == provider)}"
-        for provider in PROVIDER_NAMES.values()
+        for provider in (*PROVIDER_NAMES.values(), *NATIVE_PROVIDER_NAMES.values())
         if any(m.provider == provider for m in catalog)
     )
     raise RuntimeError(
@@ -760,15 +750,16 @@ def render_providers_config(
     *,
     provider_service: str | None = None,
 ) -> dict:
-    """Copilot's providers.json for ``catalog``: one provider per wire, all on the session proxy.
+    """Copilot's providers.json for ``catalog``, grouped by wire and gateway route.
 
     A provider with no models makes Copilot probe ``GET <baseUrl>/models``, so only used wires are
     listed. With ``provider_service`` (a Model Provider Service), every registry provider carries its
     routing header and OpenAI wires use the gateway's native OpenAI route, which serves Model
-    Provider Services untranslated."""
+    Provider Services untranslated. Managed native models use separate providers so a mixed catalog
+    can retain the hosted models' MLflow route."""
     providers = []
-    for wire, name in PROVIDER_NAMES.items():
-        if not any(model.wire == wire for model in catalog):
+    for wire, name in (*PROVIDER_NAMES.items(), *NATIVE_PROVIDER_NAMES.items()):
+        if not any(model.provider == name for model in catalog):
             continue
         provider: dict[str, Any]
         if wire == WIRE_ANTHROPIC:
@@ -784,7 +775,7 @@ def render_providers_config(
                 "wireApi": wire,
                 "baseUrl": (
                     f"{proxy_base_url}/ai-gateway/openai/v1"
-                    if provider_service
+                    if provider_service or name in NATIVE_PROVIDER_NAMES.values()
                     else build_copilot_base_url(proxy_base_url)
                 ),
             }

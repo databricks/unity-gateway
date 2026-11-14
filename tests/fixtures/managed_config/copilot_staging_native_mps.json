@@ -1,0 +1,24 @@
+{
+  "spec_version": 1,
+  "default_agent": "CODING_AGENT_GITHUB_COPILOT",
+  "enabled_agents": [
+    {
+      "agent": "CODING_AGENT_GITHUB_COPILOT",
+      "config": {
+        "models": {
+          "sources": [
+            "main.max-rozen.test_bedrock_mantle_endpoint.*",
+            "main.max-rozen.bedrock.*",
+            "system.ai.*"
+          ]
+        },
+        "default_models": {
+          "default_model": "main.max-rozen.test_bedrock_mantle_endpoint.openai.gpt-5.6-luna"
+        },
+        "vscode_integration": {
+          "enabled": false
+        }
+      }
+    }
+  ]
+}

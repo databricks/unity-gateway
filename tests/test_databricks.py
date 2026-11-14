@@ -1569,7 +1569,10 @@ class TestListProviderServiceModels:
         assert reason is None
         assert models == [claude, gpt]
         assert len(calls) == 2
-        assert api_types == {gpt: ("openai/v1/responses",)}
+        assert api_types == {
+            claude: ("anthropic/v1/messages",),
+            gpt: ("openai/v1/responses",),
+        }
 
     @pytest.mark.parametrize("failed_api", ["anthropic", "codex", "both"])
     def test_mixed_bedrock_listing_retains_partial_results_and_errors(

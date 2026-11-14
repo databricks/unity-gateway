@@ -619,3 +619,24 @@ class TestLegacyWorkspaceKeys:
         assert list(raw["workspaces"]) == [legacy]
         assert "workspace_id" not in raw["workspaces"][legacy]
         assert raw["current_workspace"] == legacy
+
+
+class TestManagedModelSourceMetadata:
+    def test_roundtrip_prunes_removed_targets_and_clears_metadata(self):
+        source = "main.default.bedrock.*"
+        model = "main.default.bedrock.openai.gpt-oss-20b"
+        state = {"workspace": FAKE_WS}
+        state_mod.set_managed_model_source_expansions(
+            state,
+            "copilot",
+            {source: [model]},
+            native_api_types={model: ("openai/v1/responses",), "removed": ("openai/v1/responses",)},
+        )
+        save_state(state)
+        saved = load_state()
+        assert state_mod.get_managed_model_source_expansions(saved, "copilot") == {source: [model]}
+        assert state_mod.get_managed_model_source_api_types(saved, "copilot") == {
+            model: ("openai/v1/responses",)
+        }
+        state_mod.set_managed_model_source_expansions(saved, "copilot", {})
+        assert state_mod.get_managed_model_source_api_types(saved, "copilot") == {}

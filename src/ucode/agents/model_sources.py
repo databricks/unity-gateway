@@ -69,21 +69,18 @@ def _expand_wildcard_source(
         discovered_api_types=discovered_api_types,
     )
     discovered_api_types.update(service.get("target_api_types") or {})
-    if (
-        native_api_types is not None
-        and tool == "copilot"
-        and provider_type in BEDROCK_PROVIDER_TYPES
-    ):
-        for target in targets:
-            if target in discovered_api_types:
-                qualified = (
-                    target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
-                )
-                native_api_types[qualified] = discovered_api_types[target]
-    return [
-        target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
-        for target in targets
-    ], reason
+    qualified_targets = []
+    for target in targets:
+        qualified = target if target.startswith(f"{source_name}.") else f"{source_name}.{target}"
+        qualified_targets.append(qualified)
+        if (
+            native_api_types is not None
+            and tool == "copilot"
+            and provider_type in (*BEDROCK_PROVIDER_TYPES, "openai", "azure_openai")
+            and target in discovered_api_types
+        ):
+            native_api_types[qualified] = discovered_api_types[target]
+    return qualified_targets, reason
 
 
 def resolve_model_sources(
@@ -94,6 +91,7 @@ def resolve_model_sources(
     *,
     fallbacks: dict[str, list[str]] | None = None,
     native_api_types: dict[str, tuple[str, ...]] | None = None,
+    fallback_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> tuple[list[str], dict[str, list[str]]]:
     expanded: list[str] = []
     lookups: dict[str, list[str]] = {}
@@ -122,6 +120,12 @@ def resolve_model_sources(
                 fallback = (fallbacks or {}).get(source)
                 if fallback:
                     targets = fallback
+                    if native_api_types is not None:
+                        native_api_types.update(
+                            (target, api_types)
+                            for target, api_types in (fallback_api_types or {}).items()
+                            if target in targets
+                        )
                     print_warning(prefix + "using the list from the last configure.")
                 else:
                     print_warning(

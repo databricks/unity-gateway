@@ -134,13 +134,18 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
     valid model FQN it cannot route, and copilot serves only Claude and GPT.
     """
     if tool == "copilot":
-        from ucode.agents.copilot import NATIVE_MODEL_API_TYPES_KEY, build_copilot_catalog
+        from ucode.agents.copilot import (
+            NATIVE_MODEL_API_TYPES_KEY,
+            build_copilot_catalog,
+            native_model_api_types,
+        )
 
         listed = managed_static_models(managed, tool) or []
         return (
             []
             if build_copilot_catalog(
-                listed, native_api_types=_as_dict(managed.get(NATIVE_MODEL_API_TYPES_KEY))
+                listed,
+                native_api_types=native_model_api_types(managed.get(NATIVE_MODEL_API_TYPES_KEY)),
             )
             else listed
         )

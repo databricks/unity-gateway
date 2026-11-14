@@ -464,14 +464,40 @@ def get_managed_model_source_expansions(state: dict, tool: str) -> dict[str, lis
     }
 
 
+def get_managed_model_source_api_types(state: dict, tool: str) -> dict[str, tuple[str, ...]]:
+    """Read native API metadata saved with the last-configure wildcard IDs."""
+    saved = state.get(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY)
+    by_tool = saved.get(tool) if isinstance(saved, dict) else None
+    metadata = by_tool.get("_native_api_types") if isinstance(by_tool, dict) else None
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        model: tuple(api_types)
+        for model, api_types in metadata.items()
+        if isinstance(model, str)
+        and isinstance(api_types, (list, tuple))
+        and all(isinstance(api_type, str) for api_type in api_types)
+    }
+
+
 def set_managed_model_source_expansions(
-    state: dict, tool: str, expansions: dict[str, list[str]]
+    state: dict,
+    tool: str,
+    expansions: dict[str, list[str]],
+    *,
+    native_api_types: dict[str, tuple[str, ...]] | None = None,
 ) -> dict:
     """Record or clear an agent's last successful live wildcard expansions."""
     saved = state.get(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY)
     saved = dict(saved) if isinstance(saved, dict) else {}
     if expansions:
-        saved[tool] = expansions
+        saved[tool] = dict(expansions)
+        if native_api_types:
+            saved[tool]["_native_api_types"] = {
+                model: api_types
+                for model, api_types in native_api_types.items()
+                if any(model in targets for targets in expansions.values())
+            }
     else:
         saved.pop(tool, None)
     if saved:

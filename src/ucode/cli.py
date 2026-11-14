@@ -221,6 +221,7 @@ from ucode.state import (
     aliased_workspace_key,
     clear_state,
     current_workspace_key,
+    get_managed_model_source_api_types,
     get_managed_model_source_expansions,
     get_model_location,
     get_provider_service,
@@ -1128,6 +1129,7 @@ def _expand_managed_model_sources(
         token,
         fallbacks=fallbacks,
         native_api_types=native_api_types,
+        fallback_api_types=get_managed_model_source_api_types(state, tool) if fallbacks else None,
     )
     if not expanded:
         # Every wildcard failed to expand. An empty static list reads as unset, which would
@@ -1211,7 +1213,14 @@ def _setup_single_agent(
         tool, state, parent_schema=parent_schema, provider=provider, with_vscode=True
     )
     if live_expansions is not None:
-        set_managed_model_source_expansions(state, tool, live_expansions)
+        set_managed_model_source_expansions(
+            state,
+            tool,
+            live_expansions,
+            native_api_types=copilot_agent.native_model_api_types(
+                (managed or {}).get(copilot_agent.NATIVE_MODEL_API_TYPES_KEY)
+            ),
+        )
         persisted = dict(state)
         persisted.pop("last_configured_tools", None)
         save_state(persisted)
@@ -1561,7 +1570,14 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
-                    set_managed_model_source_expansions(state, tool_name, live_expansions)
+                    set_managed_model_source_expansions(
+                        state,
+                        tool_name,
+                        live_expansions,
+                        native_api_types=copilot_agent.native_model_api_types(
+                            expanded_managed.get(copilot_agent.NATIVE_MODEL_API_TYPES_KEY)
+                        ),
+                    )
                     if tool_name == "claude":
                         from ucode.agents.desktop.setup import configure_claude_desktop
 

@@ -25,6 +25,7 @@ export interface ModelSetting {
   readonly name?: string;
   readonly family?: string;
   readonly api: (typeof APIS)[number];
+  readonly native?: boolean;
   readonly maxInputTokens?: number;
   readonly maxOutputTokens?: number;
 }
@@ -98,6 +99,7 @@ export const readConfig = (text: string | undefined): Settings => {
       ...(typeof model.name === "string" && model.name.trim() ? { name: model.name.trim() } : {}),
       ...(typeof model.family === "string" && model.family ? { family: model.family } : {}),
       api: model.api,
+      ...(model.native === true ? { native: true } : {}),
       ...tokenLimits(model),
     }));
   return {
@@ -125,7 +127,7 @@ export const requestHeaders = (copilotChatVersion: unknown, managed: Readonly<Re
   };
 };
 
-type Model = vscode.LanguageModelChatInformation & { readonly api: ModelSetting["api"] };
+type Model = vscode.LanguageModelChatInformation & Pick<ModelSetting, "api" | "native">;
 
 export class DatabricksModels implements vscode.LanguageModelChatProvider<Model> {
   private tokens: Tokens | undefined;
@@ -142,9 +144,10 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
       this.log("No Databricks models: run `ug configure --agents copilot` to set them up.");
       return [];
     }
-    return models.map(({ id, name, family, api, maxInputTokens, maxOutputTokens }) => ({
+    return models.map(({ id, name, family, api, native, maxInputTokens, maxOutputTokens }) => ({
       id,
       api,
+      ...(native ? { native: true } : {}),
       name: name ?? id,
       // Copilot Chat tunes its prompts and tools by family, so this is the model's own name.
       family: family ?? id.split(".").pop() ?? id,
@@ -174,7 +177,7 @@ export class DatabricksModels implements vscode.LanguageModelChatProvider<Model>
     const stream = (path: string, body: object, extra: Record<string, string> = {}) =>
       streamEvents(workspace, path, body, tokens, { ...headers, ...extra }, abort.signal);
     // The gateway serves a Model Provider Service's OpenAI models only on its OpenAI route.
-    const openai = provider ? "/ai-gateway/openai/v1" : "/ai-gateway/mlflow/v1";
+    const openai = provider || model.native ? "/ai-gateway/openai/v1" : "/ai-gateway/mlflow/v1";
     const apis: Record<ModelSetting["api"], () => AsyncIterable<Reply>> = {
       anthropic: () =>
         anthropicMessagesReplies(

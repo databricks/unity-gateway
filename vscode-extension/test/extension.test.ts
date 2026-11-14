@@ -248,6 +248,26 @@ describe("DatabricksModels", () => {
     return reported;
   };
 
+  it("routes a mixed managed catalog by each model's native API marker", async () => {
+    const requests = stubFetch(answers[1]!, answers[1]!, answers[2]!, answers[2]!);
+    const configured = readConfig(JSON.stringify({
+      ...settings(tokenCommand(["t"]).command),
+      models: [
+        { id: "system.ai.gpt-6-luna", api: "responses" },
+        { id: "main.default.mantle.openai.gpt-5.6-luna", api: "responses", native: true },
+        { id: "system.ai.kimi-k3", api: "completions", native: "true" },
+        { id: "main.default.bedrock.openai.gpt-oss-20b-1:0", api: "completions", native: true },
+      ],
+    }));
+    await askEach(new DatabricksModels(() => configured, () => {}));
+    assert.deepEqual(requests.map(({ url, body, provider }) => [url, body.model, provider]), [
+      ["https://ws/ai-gateway/mlflow/v1/responses", "system.ai.gpt-6-luna", null],
+      ["https://ws/ai-gateway/openai/v1/responses", "main.default.mantle.openai.gpt-5.6-luna", null],
+      ["https://ws/ai-gateway/mlflow/v1/chat/completions", "system.ai.kimi-k3", null],
+      ["https://ws/ai-gateway/openai/v1/chat/completions", "main.default.bedrock.openai.gpt-oss-20b-1:0", null],
+    ]);
+  });
+
   it("sends each model's turns to its API with the User-Agent and its output limit", async () => {
     const requests = stubFetch(...answers);
     const provider = new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}, () => ({ "User-Agent": "ucode/0 githubcopilotchat" }));
