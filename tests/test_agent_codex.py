@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import Mock
@@ -1868,8 +1870,10 @@ class TestCodexLaunch:
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
-        assert 'model_provider="DatabricksRelay"' in argv
-        relay_arg = next(arg for arg in argv if arg.startswith("model_providers.DatabricksRelay="))
+        assert 'model_provider="DatabricksCliRelay"' in argv
+        relay_arg = next(
+            arg for arg in argv if arg.startswith("model_providers.DatabricksCliRelay=")
+        )
         assert 'Databricks-Model-Provider-Service = "cat.s.mps"' in relay_arg
         assert not any(arg.startswith("model_providers.Databricks=") for arg in argv)
         assert argv[-2:] == ["exec", "hi"]
@@ -1903,8 +1907,9 @@ class TestCodexLaunch:
         )
         if desktop_relay:
             doc = read_toml_safe(user_config)
-            block = codex._provider_block(WS, None, provider="cat.s.mps", relayed=True)
+            block = codex._provider_block(WS, None, provider="desktop.s.mps", relayed=True)
             block["base_url"] = "http://127.0.0.1:54320/v1"
+            block["http_headers"]["X-Desktop-Only"] = "stale-desktop"
             doc["model_providers"][codex.CODEX_APP_RELAY_PROVIDER_NAME] = block
             codex.write_toml_file(user_config, doc)
         original = user_config.read_bytes()
@@ -1936,6 +1941,55 @@ class TestCodexLaunch:
         )
 
         assert result.returncode == 0, result.stderr
+        assert 'model_provider="DatabricksCliRelay"' in launches[0]
+        proc = subprocess.Popen(
+            [binary, *launches[0][1:], "app-server"],
+            env={**os.environ, "CODEX_HOME": str(tmp_path)},
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
+        responses = queue.Queue()
+
+        def read_responses():
+            for line in proc.stdout:
+                responses.put(json.loads(line))
+
+        reader = threading.Thread(target=read_responses, daemon=True)
+        reader.start()
+
+        def request(request_id, method, params):
+            proc.stdin.write(
+                json.dumps({"id": request_id, "method": method, "params": params}) + "\n"
+            )
+            proc.stdin.flush()
+            while True:
+                response = responses.get(timeout=20)
+                if response.get("id") == request_id:
+                    assert "error" not in response
+                    return response["result"]
+
+        try:
+            request(1, "initialize", {"clientInfo": {"name": "ug-relay-test", "version": "1"}})
+            proc.stdin.write('{"method":"initialized","params":{}}\n')
+            proc.stdin.flush()
+            effective = request(2, "config/read", {"includeLayers": False})
+            block = effective["config"]["model_providers"][codex.CODEX_CLI_RELAY_PROVIDER_NAME]
+            assert block["auth"] is None
+            assert block["requires_openai_auth"] is True
+            assert block["base_url"] == (
+                "http://127.0.0.1/v1" if tool_args == ["update"] else "http://127.0.0.1:54321/v1"
+            )
+            assert block["http_headers"][codex.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+            assert "X-Desktop-Only" not in block["http_headers"]
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+            reader.join(timeout=5)
+            proc.stdin.close()
+            proc.stdout.close()
         assert user_config.read_bytes() == original
 
     def test_relayed_launch_logs_in_when_not_chatgpt(self, tmp_path, monkeypatch):
@@ -2187,7 +2241,9 @@ class TestCodexManagedConfig:
         assert "auth" in provider
         assert "codex_relayed" not in state
 
-    @pytest.mark.parametrize("provider_name", ["Databricks", "DatabricksRelay"])
+    @pytest.mark.parametrize(
+        "provider_name", ["Databricks", "DatabricksRelay", "DatabricksCliRelay"]
+    )
     def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch, provider_name):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True)

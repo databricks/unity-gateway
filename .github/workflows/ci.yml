@@ -198,6 +198,11 @@ jobs:
           uv lock
           uv tool install .
           uv sync
+      - name: Validate native Codex relay configuration
+        if: ${{ matrix.group == 'codex' }}
+        run: |
+          codex --version
+          uv run --no-sync pytest tests/test_agent_codex.py -q -k test_relayed_launch_keeps_user_provider_auth_with_native_parser
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety
