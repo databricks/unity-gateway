@@ -60,6 +60,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+      - name: Install pinned native Codex for config validation
+        run: npm install -g @openai/codex@0.169.0
       - name: Install dependencies
         run: |
           uv lock
@@ -198,11 +203,6 @@ jobs:
           uv lock
           uv tool install .
           uv sync
-      - name: Validate native Codex relay configuration
-        if: ${{ matrix.group == 'codex' }}
-        run: |
-          codex --version
-          uv run --no-sync pytest tests/test_agent_codex.py -q -k test_relayed_launch_keeps_user_provider_auth_with_native_parser
       # Redirect stdin so any interactive `databricks auth login --no-browser`
       # fallback EOFs instead of hanging the runner. With DATABRICKS_BEARER
       # set, the auth code path doesn't shell out at all — this is a safety

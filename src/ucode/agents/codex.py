@@ -1120,7 +1120,6 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
         ) from exc
     conflicts = ["model_provider"] if "model_provider" in doc else []
     for name in (
-        CODEX_MODEL_PROVIDER_NAME,
         CODEX_APP_RELAY_PROVIDER_NAME,
         CODEX_CLI_RELAY_PROVIDER_NAME,
     ):

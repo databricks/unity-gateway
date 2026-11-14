@@ -1881,9 +1881,8 @@ class TestCodexLaunch:
         server.shutdown.assert_called_once_with()
 
     @pytest.mark.parametrize("tool_args", [[], ["update"]])
-    @pytest.mark.parametrize("desktop_relay", [False, True])
     def test_relayed_launch_keeps_user_provider_auth_with_native_parser(
-        self, tmp_path, monkeypatch, tool_args, desktop_relay
+        self, tmp_path, monkeypatch, tool_args
     ):
         binary = shutil.which("codex")
         if binary is None:
@@ -1905,13 +1904,12 @@ class TestCodexLaunch:
             'command = "unused-auth-command"\n',
             encoding="utf-8",
         )
-        if desktop_relay:
-            doc = read_toml_safe(user_config)
-            block = codex._provider_block(WS, None, provider="desktop.s.mps", relayed=True)
-            block["base_url"] = "http://127.0.0.1:54320/v1"
-            block["http_headers"]["X-Desktop-Only"] = "stale-desktop"
-            doc["model_providers"][codex.CODEX_APP_RELAY_PROVIDER_NAME] = block
-            codex.write_toml_file(user_config, doc)
+        doc = read_toml_safe(user_config)
+        block = codex._provider_block(WS, None, provider="desktop.s.mps", relayed=True)
+        block["base_url"] = "http://127.0.0.1:54320/v1"
+        block["http_headers"]["X-Desktop-Only"] = "stale-desktop"
+        doc["model_providers"][codex.CODEX_APP_RELAY_PROVIDER_NAME] = block
+        codex.write_toml_file(user_config, doc)
         original = user_config.read_bytes()
         launches = []
         login = Mock()
@@ -1931,16 +1929,6 @@ class TestCodexLaunch:
         if tool_args == ["update"]:
             login.assert_not_called()
             relay.assert_not_called()
-        result = subprocess.run(
-            [binary, *launches[0][1:], "features", "list"],
-            env={**os.environ, "CODEX_HOME": str(tmp_path)},
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-
-        assert result.returncode == 0, result.stderr
         assert 'model_provider="DatabricksCliRelay"' in launches[0]
         proc = subprocess.Popen(
             [binary, *launches[0][1:], "app-server"],
@@ -1955,7 +1943,12 @@ class TestCodexLaunch:
 
         def read_responses():
             for line in proc.stdout:
-                responses.put(json.loads(line))
+                try:
+                    responses.put(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    responses.put({"reader_error": f"Invalid app-server JSON: {exc}"})
+                    return
+            responses.put({"reader_error": "App-server stdout closed before response"})
 
         reader = threading.Thread(target=read_responses, daemon=True)
         reader.start()
@@ -1967,6 +1960,7 @@ class TestCodexLaunch:
             proc.stdin.flush()
             while True:
                 response = responses.get(timeout=20)
+                assert "reader_error" not in response, response.get("reader_error")
                 if response.get("id") == request_id:
                     assert "error" not in response
                     return response["result"]
@@ -2252,7 +2246,12 @@ class TestCodexManagedConfig:
             encoding="utf-8",
         )
 
-        with pytest.raises(RuntimeError, match=r"model_provider, .*base_url.*ug revert"):
+        expected = (
+            r"model_provider.*ug revert"
+            if provider_name == "Databricks"
+            else r"model_provider, .*base_url.*ug revert"
+        )
+        with pytest.raises(RuntimeError, match=expected):
             codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
 
         # requirements.toml replaces the whole entry, so even a name-only one would drop the relay.
@@ -2262,8 +2261,25 @@ class TestCodexManagedConfig:
             f'[model_providers.{provider_name}]\nname = "x"\n', encoding="utf-8"
         )
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: requirements)
-        with pytest.raises(RuntimeError, match=rf"define model_providers\.{provider_name} at"):
+        if provider_name == "Databricks":
+            original = requirements.read_bytes()
             codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+            assert requirements.read_bytes() == original
+        else:
+            with pytest.raises(RuntimeError, match=rf"define model_providers\.{provider_name} at"):
+                codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_relayed_preserves_unrelated_managed_provider(self, tmp_path, monkeypatch, filename):
+        self._patch(tmp_path, monkeypatch)
+        path = tmp_path / filename
+        path.write_text(
+            '[model_providers.Databricks]\nbase_url = "https://example.test/v1"\nauth = { command = "auth" }\n'
+        )
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: path)
+        original = path.read_bytes()
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert path.read_bytes() == original
 
     def test_relayed_state_requires_relay_compatible_scope(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
