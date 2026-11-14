@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from ucode import databricks
 from ucode.constants import AGENT_CLAUDE, SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing import config, v2
 
@@ -33,6 +34,8 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert {path.name for path in (tmp_path / "hooks").iterdir()} == {*filenames, "hooks.json"}
+    routing_source = (mods / "subagent-routing.ts").read_text()
+    assert f"/{databricks._GPT_1M_MODEL_RE.pattern}/.test(selectedModel)" in routing_source
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings == {
         "subagentStatusLine": {

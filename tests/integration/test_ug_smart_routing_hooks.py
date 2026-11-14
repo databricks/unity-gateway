@@ -335,7 +335,8 @@ def test_smart_routing_claude_route_subagent_hook(
     subagent routing or each supported selector.
 
     Expected: the shared Python client calls the real router and returns only the
-    spawn-ready model, rationale and optional explanation, leaving the mod's reviewed tool input intact.
+    spawn-ready model, rationale and optional selected-model/explanation pair, leaving the mod's
+    reviewed tool input intact.
     One decision is audited for the session. This checks the mod's CLI protocol;
     no native mod or agent decides to spawn.
     """
@@ -367,10 +368,19 @@ def test_smart_routing_claude_route_subagent_hook(
     output = json.loads(result.stdout)
     assert output["model"] in CLAUDE_MODELS, output
     assert isinstance(output["rationale"], str), output
-    assert {"model", "rationale"} <= set(output) <= {"model", "rationale", "explanation"}, output
+    assert (
+        {"model", "rationale"}
+        <= set(output)
+        <= {"model", "rationale", "selected_model", "explanation"}
+    ), output
+    assert ("explanation" in output) == ("selected_model" in output), output
     if "explanation" in output:
+        assert output["selected_model"] == output["model"], output
         explanation = output["explanation"]
         assert isinstance(explanation, dict), output
+        assert explanation["selected_model"] == output["selected_model"].removeprefix(
+            "system.ai."
+        ).removesuffix("[1m]"), output
         assert {model["id"] for model in explanation["models"]} == {
             model.removeprefix("system.ai.").removesuffix("[1m]") for model in CLAUDE_MODELS
         }, explanation

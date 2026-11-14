@@ -537,6 +537,22 @@ def test_explanation_sanitizes_allowlisted_fields_without_mutating_input():
             "model-b",
         ),
         ("gpt-5.4.1", "gpt-5.4.1[1m]", "gpt-5.4.1"),
+        (
+            "anthropic-aigw-c442a48-gpt-5.4.1",
+            "anthropic-aigw-c442a48-gpt-5.4.1",
+            "gpt-5.4.1",
+        ),
+        ("system.ai.gpt-5.4.1", "system.ai.gpt-5.4.1[1m]", "gpt-5.4.1"),
+        (
+            "anthropic-aigw-01234567-system.ai.gpt-5.4.1",
+            "anthropic-aigw-01234567-system.ai.gpt-5.4.1[1m]",
+            "gpt-5.4.1",
+        ),
+        (
+            "anthropic-aigw-c442a48-system.ai.gpt-5.4.1",
+            "anthropic-aigw-c442a48-system.ai.gpt-5.4.1",
+            "gpt-5.4.1",
+        ),
         ("databricks-gpt-5.4.1", "databricks-gpt-5.4.1[1m]", "databricks-gpt-5.4.1"),
         ("anthropic-aigw-01234567-gpt-5.4.1", "anthropic-aigw-01234567-gpt-5.4.1[1m]", "gpt-5.4.1"),
         ("gpt-5.4.1[1m]", "gpt-5.4.1[1m]", "gpt-5.4.1[1m]"),

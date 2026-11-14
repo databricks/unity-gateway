@@ -170,7 +170,7 @@ const shortModel = (model: string): string => {
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }
 
-async function openExplanation($: any, state: ExplanationState, record: RoutingRecord): Promise<boolean> {
+async function openExplanation($: any, state: ExplanationState, record: RoutingRecord): Promise<boolean | undefined> {
   const attempt = ++state.openAttempt
   state.showNumbers = false
   state.paneRecord = record
@@ -183,7 +183,7 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
     if (state.paneRecord && (state.openAttempt !== attempt || opened.isPlaced)) return true
     await $.ui.close({ id: EXPLANATION_PANE })
   } catch {}
-  if (state.openAttempt !== attempt) return Boolean(state.paneRecord)
+  if (state.openAttempt !== attempt) return state.paneRecord ? true : undefined
   if (state.paneRecord === record) {
     state.paneRecord = undefined
     state.modelId = undefined
@@ -194,7 +194,7 @@ async function openExplanation($: any, state: ExplanationState, record: RoutingR
 
 const whyHandler = ($: any, state: ExplanationState, record: RoutingRecord) => async () => {
   if (!state.enabled || record.generation !== state.generation) return
-  if (!await openExplanation($, state, record)) $.ui.toast(EXPLANATION_OPEN_FAILURE)
+  if (await openExplanation($, state, record) === false) $.ui.toast(EXPLANATION_OPEN_FAILURE)
 }
 
 // Claude's own spinner glyphs, played forwards then back as Claude does.
@@ -300,6 +300,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       return { text: 'Routing explanations are on.' }
     }
     if (action === 'off') {
+      explanationState.openAttempt++
       explanationState.enabled = false
       explanationState.paneRecord = undefined
       explanationState.modelId = undefined
@@ -308,9 +309,9 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       return { text: 'Routing explanations are off.' }
     }
     if (!explanationState.latest) return { text: 'No completed routing decision is available in this session.' }
-    return await openExplanation($, explanationState, explanationState.latest)
-      ? { text: 'Showing the latest routing explanation.' }
-      : { text: EXPLANATION_OPEN_FAILURE }
+    const opened = await openExplanation($, explanationState, explanationState.latest)
+    return { text: opened === undefined ? 'Routing explanation opening cancelled.'
+      : opened ? 'Showing the latest routing explanation.' : EXPLANATION_OPEN_FAILURE }
   })
 
   on('ui.render', { component: 'Pane' }, ($, e, next) => {
@@ -522,14 +523,14 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       ...e,
       props: { ...e.props, tool: name },
     } : e)
-    if (generation !== explanationState.generation) return renamed ? next(e) : original
+    if (generation !== explanationState.generation) return renamed ? { type: 'engine', ref: 0 } : original
     if (!record && !pending.has(e.requestId)) return original
 
     const { Box, Text } = $.ui.resolve(e)
     if (!record) {
       const glyph = SPINNER[Math.floor(((await now($)) ?? 0) / SPINNER_INTERVAL_MS) % SPINNER.length]
       const seconds = await secondsSince($, pending.get(e.requestId))
-      if (generation !== explanationState.generation) return renamed ? next(e) : original
+      if (generation !== explanationState.generation) return renamed ? { type: 'engine', ref: 0 } : original
       const elapsed = seconds === undefined ? '' : ` ${Math.floor(seconds)}s`
       return Box({ flexDirection: 'column', children: [original, Box({
         flexDirection: 'row',
@@ -580,6 +581,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     explanationState.generation++
+    explanationState.openAttempt++
     pending.clear()
     records.clear()
     names.clear()

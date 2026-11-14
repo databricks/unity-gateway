@@ -776,6 +776,12 @@ test('explanation costs use decimal notation without rounding small costs to zer
 
 for (const [selectedModel, routedModel, explanationId, accepted] of [
   ['gpt-5.4.1', 'gpt-5.4.1[1m]', 'gpt-5.4.1', true],
+  ['anthropic-aigw-c442a48-gpt-5.4.1', 'anthropic-aigw-c442a48-gpt-5.4.1', 'gpt-5.4.1', true],
+  ['system.ai.gpt-5.4.1', 'system.ai.gpt-5.4.1[1m]', 'gpt-5.4.1', true],
+  ['anthropic-aigw-01234567-system.ai.gpt-5.4.1', 'anthropic-aigw-01234567-system.ai.gpt-5.4.1[1m]', 'gpt-5.4.1', true],
+  ['anthropic-aigw-c442a48-system.ai.gpt-5.4.1', 'anthropic-aigw-c442a48-system.ai.gpt-5.4.1', 'gpt-5.4.1', true],
+  [undefined, 'gpt-5.4.1[1m]', 'gpt-5.4.1', false],
+  ['gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', 'gpt-5.4.1', false],
   ['databricks-gpt-5.4.1', 'databricks-gpt-5.4.1[1m]', 'databricks-gpt-5.4.1', true],
   ['anthropic-aigw-01234567-gpt-5.4.1', 'anthropic-aigw-01234567-gpt-5.4.1[1m]', 'gpt-5.4.1', true],
   ['gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', 'gpt-5.4.1[1m]', true],
@@ -933,11 +939,10 @@ test(`session ${reason} during native ToolUse rendering restores the original to
   await $.session.end({ reason });
   finishRender();
   const rendered = await rendering;
-  expect(renderCalls).toBe(2);
+  expect(renderCalls).toBe(1);
   expect(renderedTools[0]).not.toBe('Agent');
-  expect(renderedTools[1]).toBe('Agent');
+  expect(rendered).toEqual({ type: 'engine', ref: 0 });
   const tree = JSON.stringify(rendered);
-  expect(tree).toContain('original Agent row');
   expect(tree).not.toContain('Selected Model');
   expect(tree).not.toContain('Why this model?');
   expect(tree).not.toContain('Selecting a model');
@@ -1176,7 +1181,7 @@ test(`a late pane-opening ${outcome} respects a newer open followed by ${cancell
   else if (cancellation !== 'none') await $.session.end({ reason: cancellation });
   finishFirst();
   expect((await first).text).toBe(cancellation === 'none'
-    ? 'Showing the latest routing explanation.' : 'Could not open the native routing explanation pane.');
+    ? 'Showing the latest routing explanation.' : 'Routing explanation opening cancelled.');
   const pane = await $.ui.mount({ ...panel, component: 'Pane' as const, requestId: 'smart-router-explanation' });
   expect(JSON.stringify(await pane.drawn())).toContain(cancellation === 'none'
     ? 'Selected for the task' : 'original Agent row');
@@ -1187,12 +1192,17 @@ test(`a late pane-opening ${outcome} respects a newer open followed by ${cancell
 }
 }
 
-test('turning explanations off closes a pane that is still opening', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
+for (const entry of ['command', 'button'] as const) {
+for (const outcome of ['success', 'failure'] as const) {
+test(`turning explanations off cancels an opening ${entry} before ${outcome}`, { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let finishOpen!: () => void;
   let startedOpen!: () => void;
   const started = new Promise<void>((resolve) => { startedOpen = resolve; });
   const ready = new Promise<void>((resolve) => { finishOpen = resolve; });
   let placed = false;
+  const toasts: string[] = [];
+  on('ui.toast', ($, e) => { toasts.push(e.text); return { value: undefined }; });
+  on('ui.render', () => ({ type: 'Text', props: {}, children: ['original Agent row'] }));
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout:
     '{"model":"model-b","rationale":"Selected for the task"}',
@@ -1201,19 +1211,29 @@ test('turning explanations off closes a pane that is still opening', { options: 
   on('ui.open', async () => {
     startedOpen();
     await ready;
+    if (outcome === 'failure') throw new Error('Cancelled opening failed');
     placed = true;
     return { value: { isPlaced: true } };
   });
 
   on('ui.close', () => { placed = false; return { value: undefined }; });
+  await $.command.run({ command: 'smart-router', args: 'explain on' });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'pane-opening', ...originalInput });
-  const opening = $.command.run({ command: 'smart-router', args: 'explain latest' });
+  const shown = await $.ui.mount(row('pane-opening'));
+  const opening = entry === 'command'
+    ? $.command.run({ command: 'smart-router', args: 'explain latest' })
+    : shown.press({ key: 'why-this-model-pane-opening' });
   await started;
   await $.command.run({ command: 'smart-router', args: 'explain off' });
   finishOpen();
-  expect((await opening).text).toBe('Could not open the native routing explanation pane.');
+  const result = await opening;
+  if (entry === 'command') expect((result as { text: string }).text).toBe('Routing explanation opening cancelled.');
+  expect(toasts).toEqual([]);
   expect(placed).toBe(false);
+  await shown.unmount();
 });
+}
+}
 
 test('an unplaced pane is rejected even when open returns normally', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1' } }, async ($, on) => {
   let closes = 0;
