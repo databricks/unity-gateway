@@ -769,12 +769,16 @@ The contributor skill `/pr-demo` (also `$pr-demo` in Codex; see
 merge-base with `origin/main` and the PR head with a built-in pty recorder
 (pyte + Pillow; no extra tool installs beyond `uv run --with pyte --with pillow`),
 publishes the gifs to the PR description from the orphan `pr-demo-assets`
-branch, and adds the `pr-demo-recorded` label:
+branch, and adds the `pr-demo-recorded` label without an approval pause. A nonempty
+committed branch diff containing only test files and `.yml`/`.yaml` files skips the
+recording and adds `no-pr-demo-needed` instead. Each run writes to a new temporary
+directory outside the checkout; both recordings share a cropped frame height:
 
 ```bash
 uv run --with pyte --with pillow python scripts/pr_demo/record.py \
-  --command "ug --help" --out pr-demo-out
-uv run python scripts/pr_demo/publish.py --out pr-demo-out --dry-run
+  --command "ug --help"
+# Set OUT to the printed Output directory, then preview.
+uv run python scripts/pr_demo/publish.py --out "$OUT" --dry-run
 ```
 Desktop-app adapters live separately in `src/ucode/agents/desktop/`.
 Desktop rendering consumes model IDs and headers from shared discovery/managed-config

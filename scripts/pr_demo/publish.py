@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import fnmatch
 import json
 import os
 import re
@@ -40,7 +41,7 @@ PNG_NAMES = ("before.png", "after.png")
 
 
 def run(cmd: list[str], *, check: bool = True, env: dict[str, str] | None = None):
-    return subprocess.run(cmd, check=check, capture_output=True, text=True, env=env)
+    return subprocess.run(cmd, check=check, capture_output=True, text=True, env=env)  # noqa: TID251 - runs before ug is installed
 
 
 def git(*args: str, check: bool = True) -> str:
@@ -219,14 +220,83 @@ def load_manifest(out_dir: Path) -> dict:
     return json.loads(manifest_path.read_text())
 
 
+def classify_skip(paths: list[str]) -> tuple[bool, list[str]]:
+    """Only a nonempty diff entirely of test files and YAML needs no demo."""
+    blockers = []
+    for path in paths:
+        name = Path(path).name
+        is_test = (
+            path.startswith("tests/")
+            or name == "conftest.py"
+            or any(fnmatch.fnmatchcase(name, pattern) for pattern in ("test_*.py", "*_test.py"))
+        )
+        if not is_test and not name.endswith((".yml", ".yaml")):
+            blockers.append(path)
+    return bool(paths) and not blockers, blockers
+
+
+def branch_changes() -> list[str]:
+    base = git("merge-base", "origin/main", "HEAD")
+    # Disabling rename detection lists both old and new paths, preventing a
+    # source-to-test rename from hiding the source deletion.
+    git_path = shutil.which("git")
+    if not git_path:
+        raise SystemExit("git was not found on PATH")
+    result = run([git_path, "diff", "--name-only", "--no-renames", "-z", f"{base}...HEAD"])
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def check_skip() -> tuple[bool, list[str]]:
+    paths = branch_changes()
+    skip, blockers = classify_skip(paths)
+    if skip:
+        print("skip: all committed changes are tests or YAML files")
+    elif not paths:
+        print("record: the branch has no committed changes")
+    else:
+        print("record: non-test, non-YAML changes require a demo:")
+        for path in blockers:
+            print(f"  {path}")
+    return skip, blockers
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--out", required=True, help="record.py output directory")
+    parser.add_argument("--out", help="record.py output directory")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--check-skip", action="store_true", help="classify committed branch changes")
+    mode.add_argument(
+        "--mark-no-demo-needed",
+        action="store_true",
+        help="label a qualifying PR without editing its body",
+    )
     parser.add_argument("--pr", type=int, help="pull request number (default: gh pr view)")
     parser.add_argument(
         "--dry-run", action="store_true", help="print the new PR body block without network writes"
     )
     args = parser.parse_args(argv)
+
+    if args.check_skip:
+        check_skip()
+        return 0
+    if args.mark_no_demo_needed:
+        if not args.pr:
+            parser.error("--mark-no-demo-needed requires --pr")
+        skip, _ = check_skip()
+        if not skip:
+            return 1
+        try:
+            gh("pr", "edit", str(args.pr), "--add-label", "no-pr-demo-needed")
+        except subprocess.CalledProcessError as error:
+            print(
+                f"warning: could not add the no-pr-demo-needed label ({error.stderr.strip()})",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"PR #{args.pr} labeled no-pr-demo-needed; body unchanged")
+        return 0
+    if not args.out:
+        parser.error("--out is required when publishing")
 
     out_dir = Path(args.out).resolve()
     manifest = load_manifest(out_dir)
@@ -251,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             f"{listing}\nRe-run record.py with --redact-host for workspace-hostname matches."
         )
 
+    record.check_commands_for_secrets(commands, redact_host=False)
     repo_slug = repo_slug_from_remote(git("remote", "get-url", "origin"))
 
     if args.pr:
@@ -280,7 +351,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if not args.pr:
-        head_oid = json.loads(gh("pr", "view", str(pr), "--json", "headRefOid").stdout)["headRefOid"]
+        head_oid = json.loads(gh("pr", "view", str(pr), "--json", "headRefOid").stdout)[
+            "headRefOid"
+        ]
         if head_oid != head_sha:
             print(
                 f"warning: PR head is {head_oid[:7]} but the recordings were made at "

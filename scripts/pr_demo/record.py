@@ -11,7 +11,7 @@ Run it with the two recorder-only dependencies (they are NOT project
 dependencies and never touch the lock file):
 
     uv run --with pyte --with pillow python scripts/pr_demo/record.py \
-        --command "ug --help" --command "ug doctor --help" --out pr-demo-out
+        --command "ug --help" --command "ug doctor --help"
 
 Like the other scripts in this directory, this file runs before ug is installed
 and uses the stdlib subprocess module directly. Interactive flows are recorded
@@ -110,7 +110,7 @@ def run(
     cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command as an argument list with text streams and a timeout."""
-    return subprocess.run(
+    return subprocess.run(  # noqa: TID251 - runs before ug is installed
         cmd, check=check, timeout=timeout, cwd=cwd, capture_output=True, text=True
     )
 
@@ -172,7 +172,9 @@ def build_sandbox_env(
     return env
 
 
-def typing_chunks(command: str, *, cadence: float = TYPE_CADENCE_SECONDS) -> list[tuple[float, bytes]]:
+def typing_chunks(
+    command: str, *, cadence: float = TYPE_CADENCE_SECONDS
+) -> list[tuple[float, bytes]]:
     """Synthetic keystroke chunks for the prompt line, at a fixed cadence.
 
     Both sides type the same line at the same speed so BEFORE/AFTER differ only
@@ -281,7 +283,9 @@ def capture_pty(
     return chunks
 
 
-def capture_pipe(argv: list[str], env: dict[str, str], *, timeout: float) -> list[tuple[float, bytes]]:
+def capture_pipe(
+    argv: list[str], env: dict[str, str], *, timeout: float
+) -> list[tuple[float, bytes]]:
     """Non-pty fallback (e.g. Windows): merged output as a single chunk."""
     merged_env = {**env, "COLUMNS": "1000", "LINES": "1000"}
     proc = subprocess.Popen(  # noqa: TID251 - scripts/ runs before ug is installed
@@ -352,7 +356,9 @@ def freeze_screen(screen) -> tuple[tuple[tuple[str, str | None, str | None, bool
     return tuple(rows)
 
 
-def frozen_display(frozen: tuple[tuple[tuple[str, str | None, str | None, bool, bool], ...], ...]) -> str:
+def frozen_display(
+    frozen: tuple[tuple[tuple[str, str | None, str | None, bool, bool], ...], ...],
+) -> str:
     """The plain text of a frozen screen snapshot."""
     return "\n".join("".join(cell[0] for cell in row) for row in frozen)
 
@@ -394,9 +400,7 @@ def subsample(times: list[float], max_frames: int = MAX_FRAMES) -> list[int]:
     """Indices of snapshots to keep: evenly spread, always including the last."""
     if len(times) <= max_frames:
         return list(range(len(times)))
-    keep = set(
-        round(i * (len(times) - 1) / (max_frames - 1)) for i in range(max_frames - 1)
-    )
+    keep = {round(i * (len(times) - 1) / (max_frames - 1)) for i in range(max_frames - 1)}
     keep.add(len(times) - 1)
     return sorted(keep)
 
@@ -440,7 +444,7 @@ def render_screen(frozen, *, font, char_w: int, line_h: int, cols: int, rows: in
 
     image = Image.new("RGB", (cols * char_w, rows * line_h), BG_DEFAULT)
     draw = ImageDraw.Draw(image)
-    for y, row in enumerate(frozen):
+    for y, row in enumerate(frozen[:rows]):
         x = 0
         while x < cols:
             data, fg_value, bg_value, bold, reverse = row[x]
@@ -482,6 +486,7 @@ def render_and_save(
     png_path: Path,
     rows: int,
     cols: int,
+    render_rows: int | None = None,
 ) -> int:
     """Render the captured chunks to a GIF and final-frame PNG; return frame count."""
     snapshots = list(screen_snapshots(chunks, rows=rows, cols=cols))
@@ -491,7 +496,9 @@ def render_and_save(
     font = load_font()
     char_w, line_h = cell_metrics(font)
     images = [
-        render_screen(screen, font=font, char_w=char_w, line_h=line_h, cols=cols, rows=rows)
+        render_screen(
+            screen, font=font, char_w=char_w, line_h=line_h, cols=cols, rows=render_rows or rows
+        )
         for _, screen in kept
     ]
     images[0].save(
@@ -504,6 +511,40 @@ def render_and_save(
     )
     images[-1].save(png_path)
     return len(images)
+
+
+def shared_render_rows(recordings: list[list[tuple[float, bytes]]], *, rows: int, cols: int) -> int:
+    """Fit all visible screen states, with one padding row and a six-row minimum."""
+    used = 0
+    for chunks in recordings:
+        for _, screen in screen_snapshots(chunks, rows=rows, cols=cols):
+            for y, row in enumerate(screen):
+                if any(
+                    data.strip() or bg not in (None, "default") or reverse
+                    for data, _, bg, _, reverse in row
+                ):
+                    used = max(used, y + 1)
+    return min(rows, max(6, used + 1))
+
+
+def check_recording_for_secrets(chunks: list[tuple[float, bytes]], *, rows: int, cols: int) -> None:
+    """Reject secrets in the raw capture or any screen that could be rendered.
+
+    Host redaction applies to text only, so it must never exempt image content.
+    """
+    raw = b"".join(data for _, data in chunks).decode("utf-8", errors="replace")
+    raw = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
+    texts = [raw]
+    for _, screen in screen_snapshots(chunks, rows=rows, cols=cols):
+        lines = frozen_display(screen).splitlines()
+        texts.extend(("\n".join(lines), "".join(line.rstrip() for line in lines)))
+    kinds = sorted({kind for text in texts for kind, _ in find_secrets(text)})
+    if kinds:
+        raise SystemExit(
+            "recording looks like it contains secrets; no images were rendered or published "
+            f"(detected: {', '.join(kinds)}). Change the command and retry. "
+            "--redact-host does not redact images."
+        )
 
 
 def final_display(chunks: list[tuple[float, bytes]], *, rows: int, cols: int) -> str:
@@ -644,7 +685,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commands-file", help="file with one command per line")
     parser.add_argument("--base", help="BEFORE ref (default: merge-base origin/main HEAD)")
     parser.add_argument("--head", help="AFTER ref (default: HEAD)")
-    parser.add_argument("--out", required=True, help="output directory for gif/png/txt/manifest")
+    parser.add_argument(
+        "--out", help="output directory (default: a new temporary directory outside the checkout)"
+    )
     parser.add_argument(
         "--workspace",
         action="store_true",
@@ -674,8 +717,16 @@ def main(argv: list[str] | None = None) -> int:
     for note in notes:
         warn(note)
 
-    out_dir = Path(args.out).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out:
+        out_dir = Path(args.out).resolve()
+        if out_dir.is_relative_to(REPO_ROOT):
+            warn(f"output directory {out_dir} is inside the checkout and may be committed")
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        if temp_root.is_relative_to(REPO_ROOT):
+            temp_root = REPO_ROOT.parent
+        out_dir = Path(tempfile.mkdtemp(prefix="ug-pr-demo-", dir=temp_root)).resolve()
 
     workspace_config = None
     if args.workspace:
@@ -694,11 +745,16 @@ def main(argv: list[str] | None = None) -> int:
     env_home, sandbox_bin = make_sandbox(sandbox_dir)
 
     results: dict[str, dict[str, object]] = {}
+    recordings: dict[
+        str, tuple[Path, list[tuple[float, bytes]], list[list[tuple[float, bytes]]]]
+    ] = {}
     for side, sha in (("before", base_sha), ("after", head_sha)):
         side_start = time.monotonic()
         venv_bin, cached = venv_for_sha(sha, cache)
-        print(f"  {side}: {'reused' if cached else 'built'} venv for {sha[:7]} "
-              f"({time.monotonic() - side_start:.1f}s)")
+        print(
+            f"  {side}: {'reused' if cached else 'built'} venv for {sha[:7]} "
+            f"({time.monotonic() - side_start:.1f}s)"
+        )
 
         env = build_sandbox_env(
             sandbox_bin=sandbox_bin,
@@ -711,7 +767,11 @@ def main(argv: list[str] | None = None) -> int:
         segments: list[list[tuple[float, bytes]]] = []
         if setup:
             setup_chunks = capture_command(
-                setup, env, rows=args.rows, cols=args.cols, timeout=SETUP_SLEEP_SECONDS * 4,
+                setup,
+                env,
+                rows=args.rows,
+                cols=args.cols,
+                timeout=SETUP_SLEEP_SECONDS * 4,
                 typed=False,
             )
             setup_chunks += [(setup_chunks[-1][0] + 0.1, b"\r\n")]
@@ -729,11 +789,27 @@ def main(argv: list[str] | None = None) -> int:
             chunks += command_chunks
         print(f"  {side}: captured in {time.monotonic() - side_start:.1f}s")
 
+        recordings[side] = (venv_bin, chunks, segments)
+
+    for _, chunks, _ in recordings.values():
+        check_recording_for_secrets(chunks, rows=args.rows, cols=args.cols)
+
+    render_rows = shared_render_rows(
+        [chunks for _, chunks, _ in recordings.values()], rows=args.rows, cols=args.cols
+    )
+    for side, sha in (("before", base_sha), ("after", head_sha)):
+        venv_bin, chunks, segments = recordings[side]
         side_start = time.monotonic()
         gif_path = out_dir / f"{side}.gif"
         png_path = out_dir / f"{side}.png"
-        frames = render_and_save(chunks, gif_path=gif_path, png_path=png_path, rows=args.rows,
-                                 cols=args.cols)
+        frames = render_and_save(
+            chunks,
+            gif_path=gif_path,
+            png_path=png_path,
+            rows=args.rows,
+            cols=args.cols,
+            render_rows=render_rows,
+        )
         capture = screen_text(segments, rows=args.rows, cols=args.cols)
         capture, remaining = sanitize_capture(capture, redact_host=args.redact_host)
         if remaining:
@@ -752,8 +828,10 @@ def main(argv: list[str] | None = None) -> int:
             "png": str(png_path),
             "txt": str(out_dir / f"{side}.txt"),
         }
-        print(f"  {side}: {frames} frames rendered ({time.monotonic() - side_start:.1f}s), "
-              f"ug {version}")
+        print(
+            f"  {side}: {frames} frames rendered ({time.monotonic() - side_start:.1f}s), "
+            f"ug {version}"
+        )
 
     write_manifest(
         out_dir,
@@ -764,14 +842,16 @@ def main(argv: list[str] | None = None) -> int:
             "mode": "workspace" if args.workspace else "offline",
             "redact_host": args.redact_host,
             "rows": args.rows,
+            "render_rows": render_rows,
             "cols": args.cols,
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds"),
             "recorder": "built-in pty + pyte + pillow",
             "results": results,
         },
     )
-    print(f"done in {time.monotonic() - stage_start:.1f}s; outputs in {out_dir}")
-    print("review the .gif/.png/.txt files, then publish with scripts/pr_demo/publish.py")
+    print(f"done in {time.monotonic() - stage_start:.1f}s")
+    print(f"Output directory: {out_dir}")
+    print("publish with scripts/pr_demo/publish.py --out <output directory>")
     return 0
 
 

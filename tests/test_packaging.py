@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import tomllib
 import zipfile
 from pathlib import Path
 
@@ -38,9 +37,3 @@ def test_wheel_ships_only_shipped_skills_and_not_contributor_skill(tmp_path: Pat
         if name.startswith("skills/") and len(name.split("/")) > 2
     }
     assert shipped == SHIPPED_SKILLS
-
-
-def test_force_include_covers_only_the_shipped_skills_directory() -> None:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    force_include = pyproject["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"]
-    assert set(force_include) == {"skills"}

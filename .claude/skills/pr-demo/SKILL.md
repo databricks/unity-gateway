@@ -33,60 +33,74 @@ Work from the repository root:
 ROOT=$(git rev-parse --show-toplevel)
 ```
 
-1. **Verify the branch is pushed and has an open PR.** Run
-   `gh pr view --json number,headRefOid` and confirm it returns the PR number and
-   the head commit the developer expects. If there is no PR yet, stop and ask the
-   developer to push and open one first; recordings must map to a PR.
-2. **Read the diff and propose commands.** Run
+1. **Check whether a demo is needed.** Run:
+
+   ```bash
+   uv run python "$ROOT/scripts/pr_demo/publish.py" --check-skip
+   ```
+
+   A nonempty committed diff from the merge-base with `origin/main` that contains
+   only files under `tests/`, files named `test_*.py`, `*_test.py`, or
+   `conftest.py`, and `.yml`/`.yaml` files needs no demo. This includes YAML
+   anywhere, even under `src/`. Renames and deletions are included; uncommitted
+   changes are not. If it prints `skip`, obtain the PR number with
+   `gh pr view --json number`, then run:
+
+   ```bash
+   uv run python "$ROOT/scripts/pr_demo/publish.py" --mark-no-demo-needed --pr <number>
+   ```
+
+   Report the label result and stop. The PR body is not edited. On a label failure,
+   report the warning and stop. An empty or mixed diff prints `record`.
+2. **Verify the branch is pushed and has an open PR.** Run
+   `gh pr view --json number,headRefOid` and check that the PR head matches the
+   branch. If no PR exists, report that and stop.
+3. **Read the diff and select commands.** Run
    `git diff "$(git merge-base origin/main HEAD)"..HEAD` and skim the changed
-   files. Propose a short list of `ug` commands whose output visibly changes —
-   prefer offline commands that need no workspace (`ug --help`, a subcommand's
-   `--help`, `ug --version`, an argument error) because they are deterministic;
-   real-workspace commands are also allowed. Keep the list short (2-4 commands)
-   so each gif stays readable.
-3. **Confirm the command list with the developer** before recording. Do not pick
-   commands unilaterally.
-4. **Record.** Run:
+   files. Pick 2–4 short `ug` commands whose output visibly changes. Prefer
+   deterministic offline commands (`ug --help`, a subcommand's `--help`,
+   `ug --version`, or an argument error). Use workspace mode only if the change
+   cannot be shown offline.
+4. **Record.** For example:
 
    ```bash
    uv run --with pyte --with pillow python "$ROOT/scripts/pr_demo/record.py" \
      --command "ug --help" \
-     --command "ug doctor --help" \
-     --out "$ROOT/pr-demo-out"
+     --command "ug doctor --help"
    ```
 
    Useful flags:
    - `--commands-file <file>` (one command per line) instead of repeated
      `--command`.
    - `--base <sha>` / `--head <sha>` to override the merge-base/HEAD defaults.
-   - `--workspace --profile <name>` to opt in to real-workspace mode: the
-     recorder runs a hidden `ug configure --profile <name> --use-pat` setup
-     inside the sandbox per version, using the developer's real
-     `~/.databrickscfg`. `--redact-host` replaces workspace hostnames in the
-     published text captures.
+   - `--workspace --profile <name>` opts in to workspace mode when offline
+     commands cannot show the change. The recorder runs a hidden
+     `ug configure --profile <name> --use-pat` setup inside the sandbox per
+     version, using the developer's real `~/.databrickscfg`. `--redact-host`
+     redacts text only, not images; a host in the recording blocks the run.
    - `--rows` / `--cols` to resize the terminal (default 30x100).
 
-   The script warns if the working tree is dirty or HEAD is not on a remote
-   branch — pass those warnings on to the developer. Per-commit virtualenvs are
-   cached under `~/.cache/ug-pr-demo/<sha>`, so a rerun is fast.
-5. **Show the local outputs and get explicit confirmation before publishing.**
-   The outputs are `$ROOT/pr-demo-out/{before,after}.gif`, their final-frame
-   `.png` stills, and the `.txt` text captures. This is a public repository:
-   point the developer at the files and wait for a yes before any network write.
-   If the secret scan fails, show the listed matches and stop.
-6. **Publish.** Run:
+   Set `OUT` to the printed `Output directory:` path for publishing. Each run
+   creates a new temporary directory outside the checkout, which the OS may
+   clean up; pass `--out <directory>` to choose another location. Frames retain
+   the terminal width and share a cropped height across both recordings.
+
+   Pass working-tree and unpushed-HEAD warnings on to the developer. Per-commit
+   virtualenvs are cached under `~/.cache/ug-pr-demo/<sha>`.
+5. **Publish.** Run:
 
    ```bash
-   uv run python "$ROOT/scripts/pr_demo/publish.py" --out "$ROOT/pr-demo-out"
+   uv run python "$ROOT/scripts/pr_demo/publish.py" --out "$OUT"
    ```
 
-   Add `--dry-run` to preview the new PR body without any network write.
-   publish.py pushes the gifs and PNGs to the `pr-demo-assets` orphan branch at
-   `<pr>/<short-sha>/{before,after}.{gif,png}`, edits the PR body between the
-   `<!-- pr-demo:start ... -->` / `<!-- pr-demo:end -->` markers (idempotent),
-   and adds the `pr-demo-recorded` label.
-7. **Report the resulting URLs** to the developer (the raw github.com image
-   links and the PR link).
+   Use `--dry-run` to preview without a network write. A secret scan hit blocks
+   recording or publishing; change the offending command and retry, or report the
+   failure and stop. Never bypass the scan. The scanner is pattern-based, not a
+   guarantee that arbitrary sensitive data is absent. The publisher pushes the
+   gifs and PNGs to `pr-demo-assets` at `<pr>/<short-sha>/{before,after}.{gif,png}`,
+   replaces the PR body block between `<!-- pr-demo:start ... -->` and
+   `<!-- pr-demo:end -->`, and adds `pr-demo-recorded`.
+6. **Report the result** (image links and PR link, or the skip label).
 
 ## Failure handling
 

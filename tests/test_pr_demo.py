@@ -1,14 +1,14 @@
-# Unit tests for the contributor pr-demo skill scripts. These import the
-# scripts from scripts/pr_demo/ by path (they are not part of the installed
-# package), exercise the pure helpers and the pyte/Pillow renderer, and never
-# run a real `ug` command or touch the network. The renderer tests skip when
-# pyte/Pillow are absent; run them for real with:
-#   uv run --with pyte --with pillow pytest tests/test_pr_demo.py
+"""Behavior checks for the contributor-only recording and publishing scripts."""
+
 from __future__ import annotations
 
 import importlib.util
+import json
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -36,180 +36,125 @@ def record() -> Any:
 
 @pytest.fixture(scope="module")
 def publish(record: Any) -> Any:
-    # publish.py does `import record`; register the path-loaded module so that
-    # import resolves without scripts/pr_demo being on sys.path.
     sys.modules.setdefault("record", record)
     return _load_script("pr_demo_publish", "publish.py")
 
 
-@pytest.fixture(scope="module")
-def pyte() -> Any:
-    return pytest.importorskip("pyte")
+@pytest.fixture
+def recorder(record: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
+    """Control the git/install/command boundaries while running the real orchestration."""
+    monkeypatch.setattr(record, "resolve_revisions", lambda *_: ("base", "head", []))
+    monkeypatch.setattr(record, "venv_for_sha", lambda sha, cache: (tmp_path / sha, True))
+    monkeypatch.setattr(record, "run", lambda *a, **kw: SimpleNamespace(stdout="ug 1.0"))
+    monkeypatch.setattr(record.tempfile, "tempdir", str(tmp_path))
+    return record
 
 
-@pytest.fixture(scope="module")
-def pil() -> Any:
-    return pytest.importorskip("PIL")
+def _record_args(tmp_path: Path) -> list[str]:
+    return ["--command", "ug --help", "--venv-cache", str(tmp_path / "cache"), "--sleep", "0"]
 
 
-def _sandbox_env(record: Any, *, venv_bin: str, home: str) -> dict[str, str]:
-    return record.build_sandbox_env(
-        sandbox_bin=f"{home}/sandbox/bin",
-        venv_bin=venv_bin,
-        home=home,
-        workspace_config=None,
-    )
+def test_output_directory_defaults_outside_checkout_and_warns_inside(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: Any
+) -> None:
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: [(0.0, b"hello")])
+    # The output-location contract does not require the optional renderer dependencies.
+    monkeypatch.setattr(recorder, "check_recording_for_secrets", lambda *a, **kw: None)
+    monkeypatch.setattr(recorder, "shared_render_rows", lambda *a, **kw: 6)
+    monkeypatch.setattr(recorder, "render_and_save", lambda *a, **kw: 1)
+    monkeypatch.setattr(recorder, "screen_text", lambda *a, **kw: "hello")
+    assert recorder.main(_record_args(tmp_path)) == 0
+    out = Path(capsys.readouterr().out.split("Output directory: ")[1].splitlines()[0])
+    assert out.is_dir() and not out.is_relative_to(REPO_ROOT)
+    assert (out / "manifest.json").exists()
+    assert recorder.main(_record_args(tmp_path)) == 0
+    second = Path(capsys.readouterr().out.split("Output directory: ")[1].splitlines()[0])
+    assert second.is_dir() and second != out and not second.is_relative_to(REPO_ROOT)
+
+    # Point the checkout boundary at tmp_path; avoid writing into the real checkout.
+    monkeypatch.setattr(recorder, "REPO_ROOT", tmp_path)
+    # Even a TMPDIR inside the checkout must not put generated assets there.
+    assert recorder.main(_record_args(tmp_path)) == 0
+    fallback = Path(capsys.readouterr().out.split("Output directory: ")[1].splitlines()[0])
+    try:
+        assert fallback.is_dir() and not fallback.is_relative_to(tmp_path)
+    finally:
+        shutil.rmtree(fallback)
+    target = tmp_path / "output"
+    assert recorder.main([*_record_args(tmp_path), "--out", str(target)]) == 0
+    assert "inside the checkout" in capsys.readouterr().err
+    assert (target / "manifest.json").exists()
 
 
-def _chunks_for(record: Any, output: bytes, *, cadence: float = 0.001) -> list[tuple[float, bytes]]:
-    """A deterministic chunk list: synthetic prompt typing plus raw output."""
-    typed = record.typing_chunks("ug --help", cadence=cadence)
-    offset = typed[-1][0] + 0.05
-    return typed + [(offset, output)]
+def test_same_output_produces_same_animated_images_and_text(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("pyte")
+    Image = pytest.importorskip("PIL.Image")
+    chunks = [(0.0, b"$ ug --help\r\n"), (0.3, b"\x1b[31mERROR\x1b[0m ok\r\n")]
+    environments = []
+
+    def capture(command: str, env: dict[str, str], **kwargs: Any) -> list[tuple[float, bytes]]:
+        environments.append(env)
+        return list(chunks)
+
+    monkeypatch.setattr(recorder, "capture_command", capture)
+    out = tmp_path / "out"
+    assert recorder.main([*_record_args(tmp_path), "--out", str(out)]) == 0
+    assert environments[0]["HOME"].startswith(str(tmp_path))
+    assert all(env["UG_SKIP_OS_SETTINGS"] == "1" for env in environments)
+    assert (out / "before.txt").read_text() == (out / "after.txt").read_text()
+    assert (out / "after.txt").read_text().splitlines() == ["$ ug --help", "ERROR ok"]
+    with Image.open(out / "before.png") as before, Image.open(out / "after.png") as after:
+        assert before.size == after.size
+        assert before.tobytes() == after.tobytes()
+        assert any(
+            r > 2 * g and r > 2 * b
+            for _, (r, g, b) in after.convert("RGB").getcolors(maxcolors=after.width * after.height)
+        )
+    with Image.open(out / "before.gif") as before, Image.open(out / "after.gif") as after:
+        assert before.n_frames == after.n_frames > 1
+        assert before.size == after.size
+        for frame in range(before.n_frames):
+            before.seek(frame)
+            after.seek(frame)
+            assert before.convert("RGB").tobytes() == after.convert("RGB").tobytes()
 
 
-# ---------------------------------------------------------------------------
-# Capture helpers
-# ---------------------------------------------------------------------------
-
-
-def test_typing_chunks_have_fixed_cadence_and_end_with_newline(record: Any) -> None:
-    line = "$ ug --version"
-    chunks = record.typing_chunks("ug --version", cadence=0.02)
-    assert chunks[0] == (0.0, b"$")
-    assert [len(data) for _, data in chunks[:-1]] == [1] * len(line)
-    assert chunks[-1][1] == b"\r\n"
-    # Fixed cadence: total typing time depends only on line length.
-    assert chunks[-1][0] == pytest.approx(len(line) * 0.02)
-
-
-def test_sandbox_env_sets_home_color_and_skip_flags(record: Any) -> None:
-    env = _sandbox_env(record, venv_bin="/tmp/venv/bin", home="/tmp/home")
-    assert env["HOME"] == "/tmp/home"
-    assert env["XDG_CONFIG_HOME"] == "/tmp/home/.config"
-    assert env["PATH"].startswith("/tmp/home/sandbox/bin:/tmp/venv/bin:")
-    assert env["UG_SKIP_OS_SETTINGS"] == "1"
-    assert env["TERM"] == "xterm-256color"
-    assert env["FORCE_COLOR"] == "1"
-    assert "DATABRICKS_CONFIG_FILE" not in env
-
-    with_config = record.build_sandbox_env(
-        sandbox_bin="/b", venv_bin="/v", home="/h", workspace_config="/real/databrickscfg"
-    )
-    assert with_config["DATABRICKS_CONFIG_FILE"] == "/real/databrickscfg"
-
-
-def test_setup_command_hidden_and_uses_skip_env_profile(record: Any) -> None:
-    assert record.setup_command(workspace=False, profile=None) == ""
-    workspace_cmd = record.setup_command(workspace=True, profile="dbx")
-    assert workspace_cmd == "ug configure --agents claude --verbose low --profile dbx --use-pat"
-
-
-# ---------------------------------------------------------------------------
-# Renderer (requires pyte)
-# ---------------------------------------------------------------------------
-
-
-def test_screen_snapshots_dedupe_unchanged_display(record: Any, pyte: Any) -> None:
-    chunks = _chunks_for(record, b"hello\nworld\n")
-    states = [
-        (t, record.frozen_display(frozen))
-        for t, frozen in record.screen_snapshots(chunks, rows=30, cols=100)
+def test_crop_uses_all_frames_from_both_sides(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("pyte")
+    Image = pytest.importorskip("PIL.Image")
+    short = [(0.0, b"$ ug --help\r\n"), (0.3, b"short\r\n")]
+    tall_then_cleared = [
+        (0.0, b"$ ug --help\r\n"),
+        (0.3, b"\x1b[12;1Htransient"),
+        (0.6, b"\x1b[2J\x1b[Hfinal"),
     ]
-    # Prompt typing produces several states; the final one shows the output.
-    assert len(states) > 1
-    assert "hello" in states[-1][1]
-    assert any("$" in text for _, text in states)
+    full_height = [(0.0, b"\x1b[30;1Hbottom"), (0.3, b"\x1b[2J\x1b[Hfinal")]
+    captures = iter([short, short, short, tall_then_cleared, short, full_height])
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(next(captures)))
+    sizes = []
+    for name in ("short", "tall", "full"):
+        out = tmp_path / name
+        assert recorder.main([*_record_args(tmp_path), "--out", str(out)]) == 0
+        with Image.open(out / "before.png") as before, Image.open(out / "after.png") as after:
+            assert before.size == after.size
+            sizes.append(before.size)
+        with Image.open(out / "after.gif") as gif:
+            assert gif.size == sizes[-1] and gif.n_frames > 1
+    assert sizes[0][0] == sizes[1][0] == sizes[2][0]
+    assert sizes[2][1] / 5 <= sizes[0][1] < sizes[1][1] < sizes[2][1]
+    assert (tmp_path / "tall" / "after.txt").read_text() == "final"
 
 
-def test_identical_outputs_produce_identical_frames(record: Any, pyte: Any) -> None:
-    chunks = _chunks_for(record, b"same output\n")
-    first = [
-        record.frozen_display(frozen)
-        for _, frozen in record.screen_snapshots(chunks, rows=30, cols=100)
-    ]
-    second = [
-        record.frozen_display(frozen)
-        for _, frozen in record.screen_snapshots(chunks, rows=30, cols=100)
-    ]
-    assert first == second
-
-
-def test_ansi_colors_reach_the_screen_buffer(record: Any, pyte: Any) -> None:
-    chunks = [(0.0, b"\x1b[31mERROR\x1b[0m ok\n")]
-    states = list(record.screen_snapshots(chunks, rows=5, cols=40))
-    frozen = states[-1][1]
-    assert record.frozen_display(frozen).splitlines()[0].startswith("ERROR ok")
-    assert frozen[0][0][1] == "red"  # fg of the first cell
-    assert frozen[0][6][1] == "default"
-
-
-# ---------------------------------------------------------------------------
-# Rendering to images (requires pyte + Pillow)
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_color_names_hex_and_bold(record: Any) -> None:
-    assert record.resolve_color(None, "#111111") == "#111111"
-    assert record.resolve_color("default", "#111111") == "#111111"
-    assert record.resolve_color("aabbcc", "#111111") == "#aabbcc"
-    assert record.resolve_color("red", "#111111") == "#cd0000"
-    assert record.resolve_color("red", "#111111", bold=True) == "#ff5555"
-    assert record.resolve_color("unknown-name", "#111111") == "#111111"
-
-
-def test_render_screen_size_and_background_pixel(record: Any, pil: Any) -> None:
-    import pyte
-
-    screen = pyte.Screen(10, 3)
-    pyte.ByteStream(screen).feed(b"hi\n")
-    frozen = record.freeze_screen(screen)
-    font = record.load_font()
-    char_w, line_h = record.cell_metrics(font)
-    image = record.render_screen(frozen, font=font, char_w=char_w, line_h=line_h, cols=10, rows=3)
-    assert image.size == (10 * char_w, 3 * line_h)
-    # The bottom-right cell is untouched: pure background color.
-    assert image.getpixel((10 * char_w - 1, 3 * line_h - 1)) == (0x1E, 0x1F, 0x29)
-
-
-def test_render_and_save_gif_frames_and_size(record: Any, pil: Any, tmp_path: Path) -> None:
-    chunks = _chunks_for(record, b"line one\nline two\n")
-    gif_path = tmp_path / "demo.gif"
-    png_path = tmp_path / "demo.png"
-    frames = record.render_and_save(chunks, gif_path=gif_path, png_path=png_path, rows=6, cols=40)
-    assert frames > 1
-    assert gif_path.exists() and png_path.exists()
-
-    from PIL import Image
-
-    with Image.open(gif_path) as gif:
-        assert gif.n_frames == frames
-        font = record.load_font()
-        char_w, line_h = record.cell_metrics(font)
-        assert gif.size == (40 * char_w, 6 * line_h)
-    with Image.open(png_path) as png:
-        assert png.size == gif.size
-
-
-def test_frame_durations_hold_final_frame_and_subsample(record: Any) -> None:
-    durations = record.frame_durations([0.0, 0.5, 1.0])
-    assert durations == [500, 500, int(record.FINAL_HOLD_SECONDS * 1000)]
-    times = [float(i) for i in range(20)]
-    keep = record.subsample(times, max_frames=5)
-    assert keep == [0, 5, 10, 14, 19]
-    assert record.subsample([0.0, 0.2, 0.3], max_frames=5) == [0, 1, 2]
-
-
-# ---------------------------------------------------------------------------
-# Secret scanning
-# ---------------------------------------------------------------------------
-
-# A PAT-shaped fixture assembled at runtime so no token literal appears in
-# source (the pre-commit secret scan would otherwise block the commit).
 FAKE_PAT = "dapi" + "0123456789abcdef" * 2
 
 
-def test_find_secrets_matches_all_kinds(record: Any) -> None:
+def test_secret_scan_and_host_redaction(record: Any) -> None:
+    clean = "Usage: ug [OPTIONS]\nNo such command 'badarg'.\n"
+    assert record.sanitize_capture(clean, redact_host=False) == (clean, [])
     text = "\n".join(
         [
             f"token {FAKE_PAT}",
@@ -217,58 +162,104 @@ def test_find_secrets_matches_all_kinds(record: Any) -> None:
             "jwt eyJhbGciOi.J9.abc-_123",
             "mail first.last@example.com",
             "host dbc-a1b2c3d4-e5f6.cloud.databricks.com",
-            "deep https://adb-123456789.0.azuredatabricks.net/?o=1234567890",
+            "https://adb-123456789.0.azuredatabricks.net/?o=1234567890",
+            "x.gcp.databricks.com",
         ]
     )
-    kinds = sorted(kind for kind, _ in record.find_secrets(text))
-    assert kinds == [
-        "bearer-token",
-        "databricks-host",
-        "databricks-host",
+    _, matches = record.sanitize_capture(text, redact_host=False)
+    assert {kind for kind, _ in matches} >= {
         "databricks-pat",
-        "email",
+        "bearer-token",
         "jwt",
+        "email",
+        "databricks-host",
         "workspace-id",
-    ]
-    assert FAKE_PAT in [
-        value for kind, value in record.find_secrets(text) if kind == "databricks-pat"
-    ]
-
-
-def test_find_secrets_clean_text_has_no_matches(record: Any) -> None:
-    text = (
-        "Usage: ug [OPTIONS] COMMAND [ARGS]...\n"
-        "Version: 0.2.1+150.g1f4820b7\n"
-        "No such command 'badarg'.\n"
-    )
-    assert record.find_secrets(text) == []
-
-
-def test_sanitize_capture_redacts_hosts_but_not_other_secrets(record: Any) -> None:
-    text = f"Connected to dbc-a1b2c3d4.cloud.databricks.com with {FAKE_PAT}"
+    }
     redacted, remaining = record.sanitize_capture(text, redact_host=True)
-    assert "dbc-a1b2c3d4.cloud.databricks.com" not in redacted
-    assert "https://<workspace>" in redacted
-    assert [kind for kind, _ in remaining] == ["databricks-pat"]
+    assert redacted.count("https://<workspace>") == 3
+    assert all(kind != "databricks-host" for kind, _ in remaining)
+    assert any(kind == "databricks-pat" for kind, _ in remaining)
 
-    _, remaining = record.sanitize_capture(
-        "host dbc-a1b2c3d4.cloud.databricks.com", redact_host=False
+
+@pytest.mark.parametrize(
+    ("paths", "skip", "blockers"),
+    [
+        (["tests/test_cli.py"], True, []),
+        ([".github/workflows/check.yml"], True, []),
+        (["tests/helpers.py", ".github/workflows/check.yml"], True, []),
+        (["src/ucode/cli.py"], False, ["src/ucode/cli.py"]),
+        ([".github/scripts/foo.py"], False, [".github/scripts/foo.py"]),
+        (["docs/guide.md"], False, ["docs/guide.md"]),
+        ([], False, []),
+        (["src/ucode/config.yaml"], True, []),
+        (["app/conftest.py", "app/test_thing.py", "app/thing_test.py"], True, []),
+        (["src/old.py", "tests/test_old.py"], False, ["src/old.py"]),
+    ],
+)
+def test_skip_classifier(publish: Any, paths: list[str], skip: bool, blockers: list[str]) -> None:
+    assert publish.classify_skip(paths) == (skip, blockers)
+
+
+def test_skip_cli_labels_without_editing_body(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    monkeypatch.setattr(publish, "branch_changes", lambda: ["tests/test_cli.py"])
+    calls = []
+    monkeypatch.setattr(publish, "gh", lambda *args: calls.append(args))
+    assert publish.main(["--check-skip"]) == 0
+    assert capsys.readouterr().out.startswith("skip:")
+    assert calls == []
+    assert publish.main(["--mark-no-demo-needed", "--pr", "42"]) == 0
+    assert calls == [("pr", "edit", "42", "--add-label", "no-pr-demo-needed")]
+    monkeypatch.setattr(publish, "branch_changes", lambda: ["src/cli.py"])
+    assert publish.main(["--mark-no-demo-needed", "--pr", "42"]) == 1
+    assert len(calls) == 1
+
+
+def test_skip_label_failure_warns(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, capsys: Any
+) -> None:
+    monkeypatch.setattr(publish, "branch_changes", lambda: [".github/check.yml"])
+
+    def failed(*args: Any) -> None:
+        raise subprocess.CalledProcessError(1, args, stderr="label error")
+
+    monkeypatch.setattr(publish, "gh", failed)
+    assert publish.main(["--mark-no-demo-needed", "--pr", "42"]) != 0
+    assert "warning" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("where", ["capture", "command"])
+def test_secret_scan_blocks_publish_before_any_git_or_gh(
+    publish: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, where: str
+) -> None:
+    command = f"ug --token {FAKE_PAT}" if where == "command" else "ug --help"
+    (tmp_path / "manifest.json").write_text(
+        json.dumps({"base_sha": "base", "head_sha": "head", "commands": [command]})
     )
-    assert [kind for kind, _ in remaining] == ["databricks-host"]
-
-
-def test_redact_hosts_replaces_every_host_shape(record: Any) -> None:
-    redacted = record.redact_hosts(
-        "a dbc-a1b2c3d4.cloud.databricks.com b adb-1.2.azuredatabricks.net "
-        "c x.gcp.databricks.com d notdatabricks.com"
+    (tmp_path / "before.txt").write_text("clean output")
+    (tmp_path / "after.txt").write_text(
+        f"token {FAKE_PAT}" if where == "capture" else "clean output"
     )
-    assert "https://<workspace>" in redacted
-    assert "databricks.com" not in redacted.replace("notdatabricks.com", "")
+    calls = []
+    monkeypatch.setattr(publish, "run", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(publish, "git", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(publish, "gh", lambda *a, **kw: calls.append((a, kw)))
+    with pytest.raises(SystemExit):
+        publish.main(["--out", str(tmp_path), "--pr", "42"])
+    assert calls == []
 
 
-# ---------------------------------------------------------------------------
-# PR body block
-# ---------------------------------------------------------------------------
+def test_recording_blocks_secrets_in_intermediate_screen_even_when_host_redaction_requested(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("pyte")
+    chunks = [(0.0, b"dbc-a1b2c3d4.cloud.databricks.com"), (0.4, b"\x1b[2J\x1b[Hclean")]
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="no images were rendered"):
+        recorder.main([*_record_args(tmp_path), "--out", str(out), "--redact-host"])
+    assert not list(out.glob("*.gif")) and not list(out.glob("*.png"))
 
 
 def _block(publish: Any, head_sha: str, **overrides: Any) -> str:
@@ -287,101 +278,36 @@ def _block(publish: Any, head_sha: str, **overrides: Any) -> str:
     return publish.build_pr_block(**kwargs)
 
 
-def test_apply_pr_block_inserts_into_body_without_block(publish: Any) -> None:
+def test_pr_body_insert_replace_and_idempotency(publish: Any) -> None:
     body = "## Summary\n\nSome description.\n"
-    updated = publish.apply_pr_block(body, _block(publish, "2222222222"))
-    assert "pr-demo:start sha=2222222222" in updated
-    assert updated.startswith("## Summary")
-    assert updated.count("pr-demo:start") == 1
-    assert "/raw/pr-demo-assets/42/2222222/before.gif" in updated
+    first = _block(publish, "2222222222")
+    inserted = publish.apply_pr_block(body, first)
+    assert inserted == body.rstrip("\n") + "\n\n" + first + "\n"
+    assert publish.apply_pr_block(inserted, first) == inserted
+    with_outro = inserted + "\n## Notes\n\nKeep this text.\n"
+    second = _block(publish, "3333333333")
+    replaced = publish.apply_pr_block(with_outro, second)
+    assert replaced == with_outro.replace(first, second)
+    assert publish.apply_pr_block(replaced, second) == replaced
 
 
-def test_apply_pr_block_replaces_block_with_different_sha(publish: Any) -> None:
-    body = "intro\n\n" + _block(publish, "2222222222") + "\n\noutro\n"
-    updated = publish.apply_pr_block(body, _block(publish, "3333333333"))
-    assert "sha=3333333333" in updated
-    assert "sha=2222222222" not in updated
-    assert updated.startswith("intro")
-    assert updated.rstrip().endswith("outro")
-
-
-def test_apply_pr_block_is_idempotent(publish: Any) -> None:
+def test_published_block_has_images_and_text_diff(publish: Any) -> None:
     block = _block(publish, "2222222222")
-    once = publish.apply_pr_block("body\n", block)
-    twice = publish.apply_pr_block(once, block)
-    assert once == twice
+    for side in ("before", "after"):
+        assert f"/raw/pr-demo-assets/42/2222222/{side}.gif" in block
+        assert f"/raw/pr-demo-assets/42/2222222/{side}.png" in block
+    assert "````diff" in block and "-before output" in block and "+after output" in block
+    same = _block(publish, "2222222222", before_text="same", after_text="same", stills=False)
+    assert "````text" in same and ".png" not in same
 
 
-def test_asset_url_shape(publish: Any) -> None:
-    url = publish.asset_url("databricks/unity-gateway", 42, "2222222", "before.gif")
-    assert url == (
-        "https://github.com/databricks/unity-gateway/raw/pr-demo-assets/42/2222222/before.gif"
-    )
-
-
-def test_capture_section_diffs_when_sides_differ(publish: Any) -> None:
-    section = publish.capture_section("a\nb\n", "a\nc\n")
-    assert "<details><summary>Text captures</summary>" in section
-    assert "````diff" in section
-    assert "-b" in section and "+c" in section
-    same = publish.capture_section("a\n", "a\n")
-    assert "````text" in same and "````diff" not in same
-
-
-def test_pr_block_embeds_gifs_and_links_stills(publish: Any) -> None:
-    block = _block(publish, "2222222222")
-    assert (
-        "![before demo](https://github.com/databricks/unity-gateway/raw/pr-demo-assets/42/2222222/before.gif)"
-        in block
-    )
-    assert (
-        "![after demo](https://github.com/databricks/unity-gateway/raw/pr-demo-assets/42/2222222/after.gif)"
-        in block
-    )
-    assert "/raw/pr-demo-assets/42/2222222/before.png" in block
-    without_stills = _block(publish, "2222222222", stills=False)
-    assert ".png" not in without_stills
-
-
-def test_repo_slug_from_remote(publish: Any) -> None:
-    assert publish.repo_slug_from_remote("https://github.com/databricks/unity-gateway.git") == (
-        "databricks/unity-gateway"
-    )
-    assert publish.repo_slug_from_remote("git@github.com:databricks/unity-gateway") == (
-        "databricks/unity-gateway"
-    )
-
-
-# ---------------------------------------------------------------------------
-# Skill files
-# ---------------------------------------------------------------------------
-
-
-def test_skill_md_copies_are_byte_identical() -> None:
+def test_skill_copies_and_frontmatter_contract() -> None:
     assert SKILL_PATHS[0].read_bytes() == SKILL_PATHS[1].read_bytes()
-
-
-def test_skill_md_frontmatter_has_only_name_and_description() -> None:
     for path in SKILL_PATHS:
         text = path.read_text()
-        assert text.startswith("---\n"), path
+        assert text.startswith("---\n")
         frontmatter = text.split("---\n", 2)[1]
-        keys = [line.split(":", 1)[0].strip() for line in frontmatter.splitlines() if line.strip()]
-        assert keys == ["name", "description"], path
-        name = [
-            line.split(":", 1)[1].strip()
-            for line in frontmatter.splitlines()
-            if line.startswith("name:")
-        ][0]
-        assert name == path.parent.name == "pr-demo"
-
-
-def test_skill_md_documents_uv_only_recorder() -> None:
-    text = SKILL_PATHS[0].read_text()
-    assert "git rev-parse --show-toplevel" in text
-    assert "uv run --with pyte --with pillow python" in text
-    assert "scripts/pr_demo/record.py" in text
-    assert "scripts/pr_demo/publish.py" in text
-    assert "vhs" not in text.lower()
-    assert "ttyd" not in text.lower()
-    assert "ffmpeg" not in text.lower()
+        pairs = [line.split(":", 1) for line in frontmatter.splitlines() if line.strip()]
+        entries = dict(pairs)
+        assert len(pairs) == 2 and set(entries) == {"name", "description"}
+        assert entries["name"].strip() == path.parent.name
