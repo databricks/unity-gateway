@@ -899,6 +899,41 @@ class TestCopilotModelLimits:
 
 
 class TestRenderProvidersConfig:
+    def test_readable_labels_preserve_model_and_wire_identity(self):
+        models = catalog("main.team.provider.anthropic.claude-sonnet-5", GPT)
+
+        entries = copilot.render_providers_config(models, PROXY, "secret")["models"]
+
+        assert {entry["id"]: entry["name"] for entry in entries} == {
+            "main.team.provider.anthropic.claude-sonnet-5": "Claude Sonnet 5",
+            GPT: "GPT 5.4",
+        }
+        assert all(entry["wireModel"] == entry["id"] for entry in entries)
+        assert (
+            next(entry for entry in entries if entry["id"] != GPT)["modelId"] == "claude-sonnet-5"
+        )
+
+    def test_direct_provider_retains_raw_region_distinctions(self):
+        ids = ["us.anthropic.claude-sonnet-5", "eu.anthropic.claude-sonnet-5"]
+        models = [copilot.CopilotModel(model_id, "anthropic") for model_id in ids]
+
+        entries = copilot.render_providers_config(models, PROXY, "secret", provider_service=MPS)[
+            "models"
+        ]
+
+        assert [entry["name"] for entry in entries] == ids
+        assert [entry["wireModel"] for entry in entries] == ids
+
+    def test_duplicate_labels_keep_distinct_exact_ids(self):
+        ids = ["main.team_a.provider.openai.gpt-5.5", "main.team_b.provider.openai.gpt-5.5"]
+        models = [copilot.CopilotModel(model_id, "responses") for model_id in ids]
+
+        entries = copilot.render_providers_config(models, PROXY, "secret")["models"]
+
+        assert [entry["name"] for entry in entries] == ids
+        assert [entry["id"] for entry in entries] == ids
+        assert [entry["wireModel"] for entry in entries] == ids
+
     def test_one_provider_per_wire_in_use_on_the_proxy(self):
         config = copilot.render_providers_config(catalog(SONNET, GPT), PROXY, "secret")
 
@@ -932,12 +967,12 @@ class TestRenderProvidersConfig:
                 "id": SONNET,
                 "provider": "dbx-anthropic",
                 "wireModel": SONNET,
-                "name": SONNET,
+                "name": "Claude Sonnet 5.5",
                 "modelId": "claude-sonnet-5.5",
                 "maxPromptTokens": 872_000,
                 "maxOutputTokens": 128_000,
             },
-            {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": GPT},
+            {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": "GPT 5.4"},
         ]
 
     def test_open_models_get_limits_and_no_catalog_id(self):
@@ -948,7 +983,7 @@ class TestRenderProvidersConfig:
                 "id": "system.ai.kimi-k3",
                 "provider": "dbx-completions",
                 "wireModel": "system.ai.kimi-k3",
-                "name": "system.ai.kimi-k3",
+                "name": "Kimi K3",
                 "maxPromptTokens": 687_000,
                 "maxOutputTokens": 32_000,
             }
