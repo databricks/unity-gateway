@@ -6,7 +6,7 @@ func attribute(_ element: AXUIElement, _ name: String) -> String {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success, let value else { return "" }
     let text = (value as? String) ?? String(describing: value)
-    return text.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ")
+    return text.replacingOccurrences(of: "\t", with: " ").replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\r", with: " ")
 }
 
 func elements(_ element: AXUIElement, depth: Int = 0) -> [AXUIElement] {
@@ -30,7 +30,13 @@ case "click" where arguments.count == 5:
     guard let target = all.first(where: { element in
         attribute(element, kAXRoleAttribute) == arguments[3]
             && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
-    }) else { fatalError("No \(arguments[3]) labelled \(arguments[4])") }
+    }) else {
+        let tree = all.map { element in
+            ([kAXRoleAttribute] + labels).map { attribute(element, $0) }.joined(separator: "\t")
+        }.joined(separator: "\n")
+        FileHandle.standardError.write(Data("Accessibility tree at failed click (PID \(pid)):\n\(tree)\n".utf8))
+        fatalError("No \(arguments[3]) labelled \(arguments[4])")
+    }
     var position = CGPoint.zero, size = CGSize.zero
     var value: CFTypeRef?
     AXUIElementCopyAttributeValue(target, kAXPositionAttribute as CFString, &value)
