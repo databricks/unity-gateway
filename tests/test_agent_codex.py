@@ -1954,6 +1954,7 @@ class TestCodexLaunch:
             login.assert_not_called()
             relay.assert_not_called()
         assert 'model_provider="DatabricksCliRelay"' in launches[0]
+        monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
         proc = subprocess_cross_os.popen(
             [binary, *launches[0][1:], "app-server"],
             env={**os.environ, "CODEX_HOME": str(tmp_path)},

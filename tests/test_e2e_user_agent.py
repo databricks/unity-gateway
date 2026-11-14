@@ -120,7 +120,11 @@ class _CaptureServer:
 
 
 @pytest.fixture
-def capture_server():
+def capture_server(monkeypatch):
+    from ucode.os_compatibility import subprocess_cross_os
+
+    # Native launches need the real PATH lookup suppressed by the global unit fixture.
+    monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
     server = _CaptureServer()
     server.start()
     yield server
