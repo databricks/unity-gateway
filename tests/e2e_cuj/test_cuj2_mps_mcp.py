@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
-from tests.integration.utils.evidence import fresh_id
+from tests.integration.utils.evidence import FileTask, fresh_id
 
 from .base import BaseCujTest
 from .helpers.constants import (
@@ -33,6 +33,7 @@ from .helpers.terminal import Terminal
 from .helpers.workspace import Workspace
 
 CUJ_NAME = "CUJ 2 · MPS and named MCP"
+ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 
 WORKSPACE_URL = "https://dbc-0dcf95cf-e357.cloud.databricks.com"
 # One budget for the inference request to appear and for its response to complete.
@@ -305,6 +306,82 @@ class TestCuj2CodexInference(_Cuj2Base):
         turn = evidence.completed(task)
         assert turn is not None, "No completed Codex answer matched the greeting prompt"
         session.record("cuj2-codex-evidence", {"marker": marker, **asdict(turn)})
+
+
+class TestCuj2ClaudeSmartRouting(_Cuj2Base):
+    def test_cuj_claude_mps_smart_routing_header(self, cuj):
+        """A managed MPS reaches the real router during a Claude TUI first prompt."""
+        session, workspace, recorder = cuj
+        _assert_cuj2_config(workspace.config())
+        recorder.configure_session(
+            session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
+        )
+        _assert_configured_files(session, workspace.url)
+        settings = {
+            "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS": "1",
+            "SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0",
+        }
+        previous = {key: session.env.get(key) for key in settings}
+        session.env.update(settings)
+        try:
+            recorder.prepare_launch()
+            marker = f"CUJ2-CLAUDE-ROUTER-{fresh_id()}"
+            task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+            evidence = SessionEvidence(session.home, CLAUDE)
+            checkpoint = recorder.checkpoint()
+            with Terminal(
+                session,
+                "cuj2-claude-router",
+                [CLAUDE, "--", "--disallowedTools", "ScheduleWakeup,CronCreate"],
+            ) as tui:
+                tui.boot(timeout=150)
+                tui.submit(task.prompt)
+                tui.wait_until(lambda: evidence.completed(task), "completed Claude task")
+                route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
+                assert route.payload["task"]["prompt"] == task.prompt
+                assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
+                assert recorder.response_for(route).status_code == 200
+                request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
+                _assert_inference_request(
+                    recorder,
+                    request,
+                    provider=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0],
+                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
+                    marker=marker,
+                )
+
+                child = FileTask(session)
+                child.prompt = child.delegate_prompt
+                checkpoint = recorder.checkpoint()
+                tui.submit(child.prompt)
+                tui.wait_until(
+                    lambda: (
+                        child.completed(session, CLAUDE, child=True)
+                        and child.completed(session, CLAUDE)
+                    ),
+                    "completed native subagent task and parent reply",
+                )
+                routes = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.method == "POST"
+                    and request.path == ROUTING_PATH
+                    and child.filename in request.payload.get("task", {}).get("prompt", "")
+                ]
+                assert routes, "No route request matched the delegated task"
+                for route in routes:
+                    assert (
+                        route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
+                    )
+                    assert recorder.response_for(route).status_code == 200
+                tui.wait_for_background_tasks()
+                tui.exit_normally()
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    session.env.pop(key, None)
+                else:
+                    session.env[key] = value
 
 
 class TestCuj2ClaudeInference(_Cuj2Base):

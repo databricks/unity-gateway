@@ -3393,6 +3393,7 @@ def claude_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
@@ -3473,6 +3474,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
+        **({"provider": provider} if provider else {}),
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
