@@ -2268,6 +2268,56 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
     return None
 
 
+def canonical_model_name(model_id: str) -> str:
+    """``bare_model_name`` with dotted versions dashed: ``system.ai.gpt-5.5`` -> ``gpt-5-5``."""
+    return bare_model_name(model_id).replace(".", "-")
+
+
+# Upstream context and output limits of GPT models on the Responses route, for agents that size
+# their context from client-side metadata (gateway ids are not in their built-in catalogs). Keyed
+# by canonical name and ordered most specific first; a key matches the name or a `<key>-` prefix.
+# GPT-6 and GPT-5.6 Sol/Terra/Luna have the 1.05M window (922K input plus 128K output); the bare
+# `gpt-6` floor keeps a new GPT-6 variant off the 128K fallback.
+_GPT_TOKEN_LIMITS: tuple[tuple[str, dict[str, int]], ...] = (
+    ("gpt-6", {"context": 1_050_000, "output": 128_000}),
+    ("gpt-5-6-sol", {"context": 1_050_000, "output": 128_000}),
+    ("gpt-5-6-terra", {"context": 1_050_000, "output": 128_000}),
+    ("gpt-5-6-luna", {"context": 1_050_000, "output": 128_000}),
+    ("gpt-5-5-pro", {"context": 1_050_000, "output": 128_000}),
+    ("gpt-5-4-pro", {"context": 1_050_000, "output": 128_000}),
+    ("gpt-5-5", {"context": 272_000, "output": 128_000}),
+    ("gpt-5-4-mini", {"context": 400_000, "output": 128_000}),
+    ("gpt-5-4-nano", {"context": 400_000, "output": 128_000}),
+    ("gpt-5-4", {"context": 272_000, "output": 128_000}),
+    ("gpt-5-3-codex-spark", {"context": 128_000, "output": 32_000}),
+    ("gpt-5", {"context": 400_000, "output": 128_000}),
+    ("gpt-4-1", {"context": 1_047_576, "output": 32_768}),
+    ("gpt-4o", {"context": 128_000, "output": 16_384}),
+)
+_GPT_FALLBACK_LIMITS = {"context": 128_000, "output": 16_384}
+
+
+def gpt_model_token_limits(model_id: str) -> dict[str, int]:
+    """``{"context": ..., "output": ...}`` for a GPT model, else a conservative 128K/16K."""
+    name = canonical_model_name(model_id)
+    for family, limits in _GPT_TOKEN_LIMITS:
+        if name == family or name.startswith(f"{family}-"):
+            return dict(limits)
+    return dict(_GPT_FALLBACK_LIMITS)
+
+
+# Gemini 2.5+ text models share a 1M context and 64K output. Image-generation variants (`-image`)
+# have a 64K context and 32K output.
+_GEMINI_TEXT_LIMITS = {"context": 1_048_576, "output": 65_536}
+_GEMINI_IMAGE_LIMITS = {"context": 65_536, "output": 32_768}
+
+
+def gemini_model_token_limits(model_id: str) -> dict[str, int]:
+    """``{"context": ..., "output": ...}`` for a Gemini model."""
+    image = "-image" in canonical_model_name(model_id)
+    return dict(_GEMINI_IMAGE_LIMITS if image else _GEMINI_TEXT_LIMITS)
+
+
 @dataclass(frozen=True)
 class ModelServiceEntry:
     """One Unity Catalog model service and the API types it advertises.
@@ -3870,6 +3920,42 @@ def bare_model_name(model: str) -> str:
     name = unqualified_model_name(model.lower().split("[", 1)[0])
     match = _BARE_MODEL_NAME_PATTERN.match(name)
     return match.group("name") if match else ""
+
+
+# Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
+# `-20250929-v1:0`.
+_CLAUDE_RELEASE_SUFFIX_PATTERN = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
+_CLAUDE_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:-(\d+))?$")
+# (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
+_CLAUDE_1M_TOKENS = (1_000_000, 128_000)
+_CLAUDE_200K_TOKENS = (200_000, 32_000)
+
+
+def claude_model_name(model: str) -> str:
+    """A Claude model's own name, without its catalog/schema and release suffix:
+    ``us.anthropic.claude-sonnet-4-5-20250929-v1:0`` -> ``claude-sonnet-4-5``.
+
+    Other models keep their bare name."""
+    name = bare_model_name(model)
+    if not name.startswith("claude-"):
+        return name
+    return _CLAUDE_RELEASE_SUFFIX_PATTERN.sub("", name, count=1)
+
+
+def claude_token_limits(model: str) -> tuple[int, int] | None:
+    """``(max_input_tokens, max_tokens)`` of a Claude model by its name, or None for other models.
+
+    Opus and Sonnet 4.6+ and every Claude 5+ model have the 1M window; the rest 200K."""
+    name = claude_model_name(model)
+    if not name.startswith("claude-"):
+        return None
+    version = _CLAUDE_VERSION_PATTERN.match(name.replace(".", "-"))
+    if version is None:
+        return _CLAUDE_200K_TOKENS
+    family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
+    if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
+        return _CLAUDE_1M_TOKENS
+    return _CLAUDE_200K_TOKENS
 
 
 def model_version_sort_key(name: str) -> tuple:
