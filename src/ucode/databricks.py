@@ -985,7 +985,9 @@ def _refresh_windows_path() -> None:
     clear_databricks_cli_cache()
 
 
+@metrics.timed(metrics.DEPENDENCY_INSTALL_DURATION_MS, dependency="databricks_cli")
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
+    metrics.annotate(action="update" if brew_subcommand == "upgrade" else "install")
     system = platform.system()
     try:
         if system == "Windows":
@@ -1294,9 +1296,13 @@ def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | 
 
 def list_profile_entries() -> list[dict]:
     """Return raw profile dicts ({"name", "host", "auth_type", ...}) from
-    `databricks auth profiles`.
+    `databricks auth profiles --skip-validate`.
 
-    Each non-PAT profile is returned individually — duplicate hosts (multiple
+    Only local metadata is needed here. Validating every profile would contact unrelated
+    workspaces and refresh their credentials before ug checks the selected workspace's auth.
+    The returned ``valid`` field is not an authentication result and must not be used as one.
+
+    Each profile is returned individually — duplicate hosts (multiple
     profiles pointing at the same workspace) appear as separate entries so the
     workspace picker can offer each profile by name. Order matches the CLI's
     own ordering.
@@ -1308,7 +1314,7 @@ def list_profile_entries() -> list[dict]:
     """
     try:
         result = run(
-            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--skip-validate", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -1325,7 +1331,17 @@ def list_profile_entries() -> list[dict]:
     except json.JSONDecodeError as exc:
         _debug("list_profile_entries", f"json decode error: {exc.msg}")
         return []
-    return [p for p in profiles if isinstance(p, dict)]
+    entries = [p for p in profiles if isinstance(p, dict)]
+    # The CLI infers implicit PAT auth only during validation. Retain ug's PAT
+    # filtering and explicit --use-pat support without contacting those hosts.
+    missing_auth_type = [p for p in entries if not p.get("auth_type")]
+    if missing_auth_type and (config := _read_databrickscfg()) is not None:
+        for entry in missing_auth_type:
+            name = entry.get("name")
+            if isinstance(name, str) and config.has_section(name):
+                if config.get(name, "token", fallback="").strip():
+                    entry["auth_type"] = "pat"
+    return entries
 
 
 def get_databricks_profiles() -> list[tuple[str, str]]:
@@ -1404,21 +1420,26 @@ def profile_auth_type(profile: str) -> str | None:
     return None
 
 
-def _read_databrickscfg_token(profile: str) -> str | None:
-    """Read the static ``token`` value for a profile from ``~/.databrickscfg``.
-
-    `databricks auth token` only knows OAuth caches; for PAT profiles the PAT
-    itself is the credential, stored in the config file. The parser's default
-    section is pointed at a name that never appears in the file so a token in
-    ``[DEFAULT]`` does not leak into every named profile."""
+def _read_databrickscfg() -> configparser.ConfigParser | None:
+    """Read profiles without inheriting credentials from the ``[DEFAULT]`` profile."""
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
     try:
         if not parser.read(cfg_path, encoding="utf-8"):
             return None
-    except (configparser.Error, OSError):
+    except (configparser.Error, OSError, UnicodeError):
         return None
-    if not parser.has_section(profile):
+    return parser
+
+
+def _read_databrickscfg_token(profile: str) -> str | None:
+    """Read the static PAT from its own profile, including ``[DEFAULT]`` when selected.
+
+    `databricks auth token` only knows OAuth caches; for PAT profiles the PAT
+    itself is the credential, stored in the config file.
+    """
+    parser = _read_databrickscfg()
+    if parser is None or not parser.has_section(profile):
         return None
     token = (parser.get(profile, "token", fallback="") or "").strip()
     return token or None

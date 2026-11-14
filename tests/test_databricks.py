@@ -4047,6 +4047,100 @@ class TestGetDatabricksProfiles:
         self._patched_run(monkeypatch, {"profiles": []}, returncode=1)
         assert get_databricks_profiles() == []
 
+    def test_lists_metadata_without_validating_other_workspaces(self, monkeypatch):
+        entries = [
+            {"name": "mine", "host": WS, "auth_type": "databricks-cli", "valid": False},
+            {
+                "name": "unreachable",
+                "host": "https://unreachable.example.com",
+                "auth_type": "databricks-cli",
+                "valid": False,
+            },
+            {"name": "pat", "host": WS, "auth_type": "pat", "valid": False},
+        ]
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            # Without this flag the CLI authenticates against every profile's host,
+            # even though ug only needs local metadata for selection and PAT filtering.
+            assert "--skip-validate" in args
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps({"profiles": entries}))
+
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+
+        assert get_databricks_profiles() == [
+            (WS, "mine"),
+            ("https://unreachable.example.com", "unreachable"),
+        ]
+        assert db_mod.profile_auth_type("pat") == "pat"
+        assert all(args[:3] == ["databricks", "auth", "profiles"] for args in calls)
+
+    @pytest.mark.parametrize("missing_auth_type", [None, ""])
+    def test_infers_implicit_pat_locally_without_default_inheritance(
+        self, monkeypatch, tmp_path, missing_auth_type
+    ):
+        config = tmp_path / "databrickscfg"
+        config.write_text(
+            f"[DEFAULT]\nhost = {WS}\ntoken = default-pat\n"
+            f"[implicit-pat]\nhost = {WS}\ntoken = named-pat\n"
+            f"[implicit-oauth]\nhost = {WS}\n"
+            f"[explicit-oauth]\nhost = {WS}\nauth_type = databricks-cli\ntoken = stale-pat\n"
+        )
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        entries = [
+            {"name": name, "host": WS, "auth_type": missing_auth_type, "valid": False}
+            for name in ("DEFAULT", "implicit-pat", "implicit-oauth")
+        ]
+        entries.append({"name": "explicit-oauth", "host": WS, "auth_type": "databricks-cli"})
+        self._patched_run(monkeypatch, {"profiles": entries})
+
+        assert get_databricks_profiles() == [(WS, "implicit-oauth"), (WS, "explicit-oauth")]
+        assert db_mod.resolve_pat_token("implicit-pat") == "named-pat"
+        assert db_mod.resolve_pat_token("DEFAULT") == "default-pat"
+        assert db_mod.resolve_pat_token("explicit-oauth") is None
+
+    @pytest.mark.parametrize("contents", [b"[malformed", b"# invalid comment: \xff\n"])
+    def test_optional_local_inference_failure_keeps_cli_metadata(
+        self, monkeypatch, tmp_path, contents
+    ):
+        config = tmp_path / "databrickscfg"
+        config.write_bytes(contents)
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        self._patched_run(monkeypatch, {"profiles": [{"name": "mine", "host": WS}]})
+
+        assert get_databricks_profiles() == [(WS, "mine")]
+
+    @pytest.mark.parametrize("authenticated", [True, False])
+    def test_unvalidated_metadata_still_checks_selected_profile(self, monkeypatch, authenticated):
+        calls = []
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if args[1:3] == ["auth", "profiles"]:
+                payload = {
+                    "profiles": [
+                        {"name": "mine", "host": WS, "auth_type": "databricks-cli", "valid": False},
+                        {"name": "other", "host": "https://other.example.com", "valid": False},
+                    ]
+                }
+                return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+            assert args[1:3] == ["auth", "token"]
+            assert args[args.index("--host") + 1] == WS
+            assert args[args.index("--profile") + 1] == "mine"
+            payload = {"access_token": "selected-workspace-token"} if authenticated else {}
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload))
+
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+        monkeypatch.setattr(db_mod, "run", fake_run)
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "_log_auth_diagnostics", lambda: None)
+
+        assert db_mod.check_databricks_auth(WS) is authenticated
+        assert [args[1:3] for args in calls] == [["auth", "profiles"], ["auth", "token"]]
+
 
 class TestListDatabricksApps:
     @pytest.fixture(autouse=True)

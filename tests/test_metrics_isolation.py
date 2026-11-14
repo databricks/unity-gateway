@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import io
-import json
+import os
 import subprocess
 import sys
 import threading
+import time
 from unittest.mock import Mock
 
 import pytest
 
 from ucode import metrics
 from ucode.metrics import exporter
-from ucode.metrics.exporter import send_in_background
+from ucode.metrics.exporter import start_exporter
 from ucode.os_compatibility import subprocess_cross_os
 
 HOST = "https://workspace.example.invalid"
@@ -49,43 +49,37 @@ def test_stalled_uploader_does_not_block_handoff_or_exit(metrics_recorder, monke
     entered = threading.Event()
     release = threading.Event()
     finished = threading.Event()
-    results = []
-    export_threads = []
-
-    def stall():
-        export_threads.append(threading.current_thread())
-        entered.set()
-        assert release.wait(5), "test did not release the uploader"
-
-    class Pipe(io.BytesIO):
-        def write(self, payload):
-            if stalled_at == "pipe":
-                stall()
-            return super().write(payload)
-
-    child = Mock(stdin=Pipe())
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    child = Mock(stdin=os.fdopen(write_fd, "wb", buffering=0))
     child.poll.return_value = None
+    spawn_threads = []
 
     def spawn(*args, **kwargs):
+        spawn_threads.append(threading.current_thread())
+        if stalled_at == "pipe":
+            while True:
+                try:
+                    os.write(write_fd, b"x" * 4096)
+                except BlockingIOError:
+                    break
+        entered.set()
         if stalled_at == "spawn":
-            stall()
+            assert release.wait(5), "test did not release the uploader"
         return child
 
-    # Only the OS process/pipe boundary is controlled; serialization and recorder run normally.
-    monkeypatch.setattr(exporter, "send_in_background", send_in_background)
+    monkeypatch.setattr(exporter, "start_exporter", start_exporter)
     monkeypatch.setattr(subprocess_cross_os, "popen", Mock(side_effect=spawn))
-    metrics.bind(HOST, "unused-token")
-    metrics.record("ug_usage_duration_ms", 12)
-    metrics.flush()
+    metrics_recorder.start_periodic()
 
     def command():
+        metrics.bind(HOST, "unused-token")
         metrics.start_agent("claude")
         for n in range(1500):
             metrics.record("proxy_response_bytes", n)
             metrics.flush()
         metrics.agent_handoff()
         metrics.finish()
-        results.append("command completed")
         finished.set()
 
     caller = threading.Thread(target=command, daemon=True)
@@ -93,18 +87,18 @@ def test_stalled_uploader_does_not_block_handoff_or_exit(metrics_recorder, monke
         assert entered.wait(2)
         caller.start()
         assert finished.wait(2), "command waited for the uploader"
-        assert results == ["command completed"]
-        assert len(metrics_recorder.pending) == 1000
-        assert export_threads == [metrics_recorder.thread]
+        assert len(metrics_recorder.pending) <= 1000
+        assert spawn_threads == [metrics_recorder.thread]
         assert metrics_recorder.thread.daemon
         assert subprocess_cross_os.popen.call_count == 1
     finally:
         release.set()
-        metrics_recorder.stop.set()
-        metrics_recorder.wake.set()
+        metrics_recorder.close()
         metrics_recorder.thread.join(timeout=2)
         if caller.ident is not None:
             caller.join(timeout=2)
+        child.stdin.close()
+        os.close(read_fd)
     assert not metrics_recorder.thread.is_alive()
 
 
@@ -113,6 +107,7 @@ def test_process_exits_while_export_worker_is_stalled():
     code = """
 import os
 import threading
+import time
 from ucode import metrics
 from ucode.metrics import exporter
 entered = threading.Event()
@@ -120,7 +115,7 @@ stalled = threading.Event()
 def upload(*args):
     entered.set()
     stalled.wait()
-exporter.send_in_background = upload
+exporter.start_exporter = upload
 os.environ['UG_ENABLE_METRICS_EXPORT'] = '1'
 metrics.begin('usage')
 metrics.record('ug_usage_duration_ms', 12)
@@ -190,16 +185,9 @@ def test_failed_process_creation_is_isolated_and_worker_can_export_again(
     metrics_recorder, monkeypatch
 ):
     attempted = threading.Event()
-    delivered = threading.Event()
-
-    class Pipe(io.BytesIO):
-        def close(self):
-            self.payload = self.getvalue()
-            super().close()
-            delivered.set()
-
-    child = Mock(stdin=Pipe())
-    child.poll.return_value = 0
+    read_fd, write_fd = os.pipe()
+    child = Mock(stdin=os.fdopen(write_fd, "wb", buffering=0))
+    child.poll.return_value = None
     attempts = []
 
     def spawn(*args, **kwargs):
@@ -209,16 +197,27 @@ def test_failed_process_creation_is_isolated_and_worker_can_export_again(
             raise OSError("process creation failed")
         return child
 
-    monkeypatch.setattr(exporter, "send_in_background", send_in_background)
+    monkeypatch.setattr(exporter, "start_exporter", start_exporter)
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
-    metrics.bind(HOST, "unused-token")
-    metrics.record("ug_usage_duration_ms", 12)
-    metrics.flush()
-    assert attempted.wait(2)
-    metrics.record("ug_usage_duration_ms", 24)
-    metrics.flush()
-    assert delivered.wait(2)
-    assert all(t is metrics_recorder.thread for t in attempts)
-    assert json.loads(child.stdin.payload)[0]["observations"] == [
-        ["ug_usage_duration_ms", 24, {"command": "claude"}]
+    try:
+        metrics.bind(HOST, "unused-token")
+        metrics.record("ug_usage_duration_ms", 12)
+        metrics_recorder.start_periodic()
+        assert attempted.wait(2)
+        metrics.record("ug_usage_duration_ms", 24)
+        deadline = time.monotonic() + 2
+        while metrics_recorder.pending and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not metrics_recorder.pending
+        assert all(t is metrics_recorder.thread for t in attempts)
+    finally:
+        metrics_recorder.close()
+        metrics_recorder.thread.join(timeout=2)
+        child.stdin.close()
+    with os.fdopen(read_fd, "rb") as reader:
+        buffer = exporter.ExportBuffer()
+        buffer.read(reader)
+    assert buffer.drain()[0]["observations"] == [
+        ("ug_usage_duration_ms", 12, {"command": "claude"}),
+        ("ug_usage_duration_ms", 24, {"command": "claude"}),
     ]

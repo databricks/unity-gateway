@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
+import os
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
@@ -15,6 +18,7 @@ from opentelemetry.sdk.metrics.export import AggregationTemporality
 
 from ucode import databricks, metrics, workspace
 from ucode.metrics import exporter
+from ucode.metrics.exporter import start_exporter
 
 HOST = "https://dbc-test.cloud.databricks.com"
 
@@ -69,14 +73,13 @@ def test_workspace_handoffs_do_not_mix_tokens_or_selected_ids(metrics_recorder, 
 
 
 def test_no_credentials_means_no_upload_or_login(monkeypatch):
-    from ucode.os_compatibility import subprocess_cross_os
-
-    spawn = Mock()
+    upload = Mock(side_effect=AssertionError("unbound telemetry must not upload"))
     login = Mock(side_effect=AssertionError("telemetry must not acquire credentials"))
-    monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
+    monkeypatch.setattr(exporter, "export_batch", upload)
     monkeypatch.setattr(databricks, "get_databricks_token", login)
-    assert exporter.send_in_background([(None, "dependency_setup_duration_ms", 12, {})], {}) is None
-    spawn.assert_not_called()
+    message = {"observations": [[None, "dependency_setup_duration_ms", 12, {}]]}
+    exporter.ExportBuffer().run(io.BytesIO(json.dumps(message).encode() + b"\n"))
+    upload.assert_not_called()
     login.assert_not_called()
 
 
@@ -115,43 +118,69 @@ def test_failed_startup_is_flushed_with_its_duration(metrics_recorder, monkeypat
     assert errors[0]["operation"] == "databricks_token_fetch"
 
 
-def test_periodic_export_uses_60_seconds_and_stops(metrics_recorder, monkeypatch):
-    flushed = threading.Event()
-    metrics.record("ug_usage_duration_ms", 12)
-    monkeypatch.setattr(exporter, "send_in_background", Mock(side_effect=lambda *_: flushed.set()))
+def test_periodic_export_uses_60_seconds_and_stops(monkeypatch):
+    buffer = exporter.ExportBuffer()
+    buffer.receive(
+        {
+            "workspace": HOST,
+            "credentials": {HOST: ("fake-token", {})},
+            "observations": [[HOST, "ug_usage_duration_ms", 12, {}]],
+        }
+    )
+    uploaded = []
+    monkeypatch.setattr(exporter, "export_batch", uploaded.append)
     waits = []
 
     def wait(seconds):
         waits.append(seconds)
-        if len(waits) > 1:
-            metrics_recorder.stop.set()
-        return False
+        buffer.closed.set()
 
-    monkeypatch.setattr(metrics_recorder.wake, "wait", wait)
-    metrics_recorder.start_periodic()
-    assert flushed.wait(2)
-    metrics_recorder.thread.join(timeout=2)
-    assert waits == [60, 60]
+    monkeypatch.setattr(buffer.wake, "wait", wait)
+    buffer.run(io.BytesIO())
+    assert waits == [60]
+    assert uploaded[0]["observations"] == [("ug_usage_duration_ms", 12, {})]
 
 
-def test_busy_reporter_keeps_queue_bounded_without_more_children(metrics_recorder):
-    metrics_recorder.reporter = Mock()
-    metrics_recorder.reporter.poll.return_value = None
+@pytest.fixture
+def reporter_pipe():
+    read_fd, write_fd = os.pipe()
+    os.set_blocking(write_fd, False)
+    child = Mock(stdin=os.fdopen(write_fd, "wb", buffering=0))
+    child.poll.return_value = None
+    with os.fdopen(read_fd, "rb", buffering=0) as reader:
+        try:
+            yield child, reader
+        finally:
+            child.stdin.close()
+
+
+def fill_pipe(child):
+    while True:
+        try:
+            os.write(child.stdin.fileno(), b"x" * 4096)
+        except BlockingIOError:
+            return
+
+
+def test_busy_reporter_keeps_queue_bounded_without_more_children(metrics_recorder, reporter_pipe):
+    child, _ = reporter_pipe
+    fill_pipe(child)
+    metrics_recorder.reporter = child
     for n in range(1100):
         metrics.record("proxy_response_bytes", n)
     metrics.flush()
-    exporter.send_in_background.assert_not_called()
+    exporter.start_exporter.assert_not_called()
     assert len(metrics_recorder.pending) == 1000
 
 
-@pytest.mark.parametrize("busy", ["reporter", "export_lock"])
-def test_shutdown_drops_tail_without_waiting_for_busy_export(metrics_recorder, busy):
+@pytest.mark.parametrize("busy", ["pipe", "lock"])
+def test_shutdown_drops_tail_without_waiting_for_busy_export(metrics_recorder, reporter_pipe, busy):
+    child, _ = reporter_pipe
+    fill_pipe(child)
+    metrics_recorder.reporter = child
     metrics.record("ug_usage_duration_ms", 12)
-    if busy == "reporter":
-        metrics_recorder.reporter = Mock()
-        metrics_recorder.reporter.poll.return_value = None
-    else:
-        metrics_recorder.export_lock.acquire()
+    if busy == "lock":
+        metrics_recorder.lock.acquire()
     finished = threading.Event()
 
     def shutdown():
@@ -164,12 +193,11 @@ def test_shutdown_drops_tail_without_waiting_for_busy_export(metrics_recorder, b
         assert finished.wait(2), "shutdown waited for the busy exporter"
         assert metrics._runtime is None
         assert metrics_recorder.stop.is_set()
-        exporter.send_in_background.assert_not_called()
-        if busy == "reporter":
-            metrics_recorder.reporter.wait.assert_not_called()
+        exporter.start_exporter.assert_not_called()
+        child.wait.assert_not_called()
     finally:
-        if busy == "export_lock":
-            metrics_recorder.export_lock.release()
+        if busy == "lock":
+            metrics_recorder.lock.release()
         worker.join(timeout=2)
 
 
@@ -178,7 +206,7 @@ def test_shutdown_failure_preserves_command_exception(metrics_recorder, monkeypa
     original = RuntimeError("command failed")
     # Fault the clock and upload boundaries, not the cleanup method under test.
     monkeypatch.setattr(metrics.time, "perf_counter", Mock(side_effect=OSError("clock failed")))
-    monkeypatch.setattr(exporter, "send_in_background", Mock(side_effect=OSError("spawn failed")))
+    monkeypatch.setattr(exporter, "start_exporter", Mock(side_effect=OSError("spawn failed")))
 
     with pytest.raises(RuntimeError) as raised:
         try:
@@ -200,10 +228,10 @@ def test_export_failure_does_not_change_command_result(metrics_recorder, monkeyp
         attempted.set()
         raise OSError("full")
 
-    monkeypatch.setattr(exporter, "send_in_background", fail_upload)
+    monkeypatch.setattr(exporter, "start_exporter", fail_upload)
     metrics.flush()
     assert attempted.wait(2)
-    assert not metrics_recorder.pending
+    assert observations(metrics_recorder, "ug_usage_duration_ms")[0][0] == 10
 
 
 @pytest.mark.parametrize(
@@ -452,7 +480,7 @@ def test_exporter_stops_after_disabled_endpoint(monkeypatch):
 
 def test_recording_does_not_import_sdk_or_http_client(monkeypatch):
     monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", "1")
-    code = "from ucode import metrics; metrics.begin('usage'); metrics.record('ug_usage_duration_ms', 1); assert len(metrics._runtime.pending) == 1; import sys; print('opentelemetry.sdk' in sys.modules); print('requests' in sys.modules)"
+    code = "from ucode import metrics; metrics.begin('usage'); metrics.record('ug_usage_duration_ms', 1); import sys; print('opentelemetry.sdk' in sys.modules); print('requests' in sys.modules)"
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, timeout=10
     )
@@ -467,24 +495,23 @@ def test_subagent_trigger_is_scoped(metrics_recorder):
     assert metrics.routing_trigger() == "first_prompt"
 
 
-def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(monkeypatch):
-    import io
-
+def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(
+    metrics_recorder, monkeypatch, reporter_pipe
+):
     from ucode.os_compatibility import subprocess_cross_os
 
-    class Pipe(io.BytesIO):
-        def close(self):
-            self.handoff = self.getvalue()
-            super().close()
-
-    child = Mock(stdin=Pipe())
+    child, reader = reporter_pipe
     spawn = Mock(return_value=child)
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
-    returned = exporter.send_in_background(
-        [(HOST, "ug_usage_duration_ms", 10, {"command": "usage"})],
-        {HOST: ("fake-workspace-token", {"X-Databricks-Workspace-Id": "111"})},
-    )
+    # Exercise the actual process setup, with only OS process creation substituted.
+    returned = start_exporter()
     assert returned is child
+    assert not os.get_blocking(child.stdin.fileno())
+    assert not os.get_inheritable(child.stdin.fileno())
+    metrics_recorder.reporter = child
+    metrics_recorder.bind(HOST, "fake-workspace-token")
+    metrics_recorder.record("ug_usage_duration_ms", 10, HOST, {"command": "usage"})
+    metrics_recorder.close()
     child.wait.assert_not_called()
     child.communicate.assert_not_called()
     args, kwargs = spawn.call_args
@@ -493,12 +520,11 @@ def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(monkeypatch):
     assert kwargs["stdout"] == subprocess.DEVNULL
     assert kwargs["stderr"] == subprocess.DEVNULL
     assert kwargs.get("start_new_session") or kwargs.get("creationflags")
-    assert json.loads(child.stdin.handoff)[0] == {
-        "workspace": HOST,
-        "token": "fake-workspace-token",
-        "headers": {"X-Databricks-Workspace-Id": "111"},
-        "observations": [["ug_usage_duration_ms", 10, {"command": "usage"}]],
-    }
+    buffer = exporter.ExportBuffer()
+    buffer.read(reader)
+    batch = buffer.drain()[0]
+    assert batch["token"] == "fake-workspace-token"
+    assert batch["observations"] == [("ug_usage_duration_ms", 10, {"command": "usage"})]
 
 
 @pytest.mark.parametrize("value", [None, "0", "false", "invalid"])
@@ -511,7 +537,7 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
     thread = Mock()
     upload = Mock()
     monkeypatch.setattr(metrics.threading, "Thread", thread)
-    monkeypatch.setattr(exporter, "send_in_background", upload)
+    monkeypatch.setattr(exporter, "start_exporter", upload)
 
     metrics.begin("claude")
     metrics.start_agent("claude")
@@ -527,28 +553,42 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
 
 
 @pytest.mark.parametrize("value", ["1", "true"])
-def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, value):
+def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, reporter_pipe, value):
     monkeypatch.setattr(metrics, "_runtime", None)
     monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
-    handed_off = threading.Event()
-    upload = Mock(side_effect=lambda *_: handed_off.set())
-    monkeypatch.setattr(exporter, "send_in_background", upload)
-
+    child, reader = reporter_pipe
+    spawn = Mock(return_value=child)
+    monkeypatch.setattr(exporter, "start_exporter", spawn)
     metrics.begin("usage")
     runtime = metrics._runtime
     try:
+        deadline = time.monotonic() + 2
+        while runtime.reporter is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert runtime.reporter is child
+        # Synchronize only the test with startup; contention drops are covered separately.
+        with runtime.lock:
+            pass
         metrics.bind(HOST, "fake-token")
         metrics.record("ug_usage_duration_ms", 12)
-        metrics.flush()
-        assert handed_off.wait(2)
-        upload.assert_called_once_with(
-            [(HOST, "ug_usage_duration_ms", 12, {"command": "usage"})],
-            {HOST: ("fake-token", {})},
-        )
-        assert not metrics._runtime.pending
+        deadline = time.monotonic() + 2
+        while runtime.pending and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert not runtime.pending
     finally:
         metrics.finish()
         runtime.thread.join(timeout=2)
+    spawn.assert_called_once_with()
+    buffer = exporter.ExportBuffer()
+    buffer.read(reader)
+    assert buffer.drain() == [
+        {
+            "workspace": HOST,
+            "token": "fake-token",
+            "headers": {},
+            "observations": [("ug_usage_duration_ms", 12, {"command": "usage"})],
+        }
+    ]
 
 
 def test_collection_uses_ug_flag_independently_of_global_otel_setting(monkeypatch):
@@ -556,7 +596,7 @@ def test_collection_uses_ug_flag_independently_of_global_otel_setting(monkeypatc
     monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", "1")
     monkeypatch.setenv("OTEL_SDK_DISABLED", "true")
     upload = Mock(return_value=None)
-    monkeypatch.setattr(exporter, "send_in_background", upload)
+    monkeypatch.setattr(exporter, "start_exporter", upload)
     metrics.begin("usage")
     runtime = metrics._runtime
     try:
@@ -572,3 +612,28 @@ def test_interactive_dependency_prompt_is_visible_through_nested_installer(metri
         with metrics.measure("dependency_install_duration_ms", dependency="codex"):
             metrics.mark_interactive_wait()
     assert observations(metrics_recorder, "dependency_setup_duration_ms")[0][1]["interactive_wait"]
+
+
+def test_partial_pipe_writes_preserve_complete_batches(metrics_recorder, reporter_pipe):
+    child, reader = reporter_pipe
+    for n in range(1000):
+        metrics.record("ug_usage_duration_ms", n)
+    metrics_recorder.reporter = child
+    metrics.bind(HOST, "fake-token")
+    assert metrics_recorder.unsent, "batch should exceed the OS pipe capacity"
+    buffer = exporter.ExportBuffer()
+    receiver = threading.Thread(target=buffer.read, args=(reader,), daemon=True)
+    receiver.start()
+    try:
+        deadline = time.monotonic() + 3
+        while metrics_recorder.unsent and time.monotonic() < deadline:
+            metrics.flush()
+            time.sleep(0.001)
+        assert not metrics_recorder.unsent
+    finally:
+        metrics.finish()
+        receiver.join(timeout=2)
+    assert not receiver.is_alive()
+    batch = buffer.drain()[0]
+    assert batch["token"] == "fake-token"
+    assert [row[1] for row in batch["observations"]] == list(range(1000))

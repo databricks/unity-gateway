@@ -376,6 +376,22 @@ class TestGetManagedConfig:
         assert reason is None
         assert cfg == RAW_MANIFEST
 
+    def test_spec_version_2_with_mcp_sources_is_read(self, monkeypatch):
+        # The server serves a config that uses mcp_servers.sources as spec_version 2.
+        raw = {
+            **RAW_MANIFEST,
+            "spec_version": 2,
+            "mcp_servers": {"sources": ["system.ai.*", "main.exa.*"]},
+        }
+        monkeypatch.setattr(
+            mc_mod, "fetch_managed_coding_agent_configs", lambda ws, tok: ([raw], None)
+        )
+        cfg, reason = get_managed_config("https://ws", "tok")
+        assert reason is None
+        assert normalize_managed_config(cfg)["mcp_servers"] == {
+            "sources": ["system.ai.*", "main.exa.*"]
+        }
+
     def test_spec_version_newer_than_supported_is_refused(self, monkeypatch):
         raw = {**RAW_MANIFEST, "spec_version": mc_mod.MAX_SPEC_VERSION + 1}
         monkeypatch.setattr(
