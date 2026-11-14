@@ -99,9 +99,8 @@ present; shorter IDs drop that suffix. The client requires one explanation row p
 offered model and rejects missing, repeated, or extra rows. Optional `quality_estimate`, `estimated_cost_usd`, `routing_score`, `components`,
 and `difference_from_winner` supply the numeric view. An optional `formula`
 explains the scoring policy. Any supplied `session_id` or `tool_use_id`, including
-inside `evidence`, must match the recorded call. When task-text logging is disabled,
-the session log omits the prompt preview and explanation while retaining the same
-task digest and length used by the decision audit. The service must describe the same
+inside `evidence`, must match the recorded call. Claude's session log retains its
+existing bounded prompt preview, task digest and length. The service must describe the same
 decision and offered alternatives, including reasons for excluded models, without
 running another classifier or changing its selection policy.
 

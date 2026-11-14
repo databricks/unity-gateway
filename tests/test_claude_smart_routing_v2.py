@@ -124,7 +124,6 @@ def test_explanation_roundtrip_does_not_change_subagent_selection(
 
     monkeypatch.setattr(routing.urllib.request, "urlopen", reply)
     monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
-    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
     result = v2.route_claude_subagent(
         payload,
         workspace="https://example.com",
@@ -611,9 +610,13 @@ def test_gateway_wrappers_and_context_hint_preserve_valid_explanation(
         workspace="https://example.com",
         token="token",
         available_models=[selected, "system.ai.alternative"],
+        audit_decision=True,
     )
 
     assert result == {"model": execution_model, "rationale": "Selected by router."}
+    records = session_log.read_decisions("claude", "wrapped-session")
+    assert len(records) == 1
+    assert records[0]["explanation"] == explanation
 
 
 @pytest.mark.parametrize("wrapped", [False, True])

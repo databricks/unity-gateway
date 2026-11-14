@@ -230,6 +230,17 @@ async function refreshOpenPane($: any, options: PluginOptions): Promise<void> {
   await load($, options);
 }
 
+function estimatedCostText(value: number | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const amount = value > 0 && value < 1e-6 ? '<0.000001' : value.toFixed(6).replace(/\.?0+$/, '');
+  return `Est. cost: ${amount} USD`;
+}
+
+function breakdownText(label: string, values: Record<string, number> | undefined): string | undefined {
+  if (!values || !Object.keys(values).length) return undefined;
+  return `${label}: ${Object.entries(values).map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`;
+}
+
 function explanationSection(
   $: any, e: any, current: Detail,
   onCompare: (id: string) => void, onToggleNumbers: () => void,
@@ -240,27 +251,23 @@ function explanationSection(
     children.push(Text({ children: ['No detailed routing explanation was recorded.'] }));
   } else {
     const explanation = current.explanation;
+    const chosen = explanation.models.find((model) => model.selected)!;
     const compared = explanation.models.find((model) => model.id === current.explanationModel)
-      ?? explanation.models.find((model) => model.selected)!;
+      ?? chosen;
     const numberText = (label: string, value: number | undefined) => value === undefined
       ? undefined : Text({ children: [`${label}: ${value.toFixed(3)}`] });
-    const costText = compared.estimatedCostUsd === undefined ? undefined
-      : Text({ children: [`Est. cost: ${compared.estimatedCostUsd > 0 && compared.estimatedCostUsd < 1e-6
-        ? '<0.000001' : compared.estimatedCostUsd.toFixed(6).replace(/\.?0+$/, '')} USD`] });
-    const breakdown = (label: string, values: Record<string, number> | undefined) =>
-      values && Object.keys(values).length
-        ? Text({ dimColor: true, children: [`${label}: ${Object.entries(values)
-          .map(([key, value]) => `${key} ${value.toFixed(3)}`).join(' · ')}`] })
-        : undefined;
+    const cost = estimatedCostText(compared.estimatedCostUsd);
     const detailLines = [
       numberText('Quality estimate', compared.qualityEstimate),
-      costText,
+      cost === undefined ? undefined : Text({ children: [cost] }),
       numberText('Routing score', compared.routingScore),
-      breakdown('Components', compared.components),
-      breakdown('Vs. routed', compared.differenceFromWinner),
+      ...[
+        breakdownText('Components', compared.components),
+        breakdownText('Vs. routed', compared.differenceFromWinner),
+      ].filter((text) => text !== undefined).map((text) => Text({ dimColor: true, children: [text] })),
     ].filter(Boolean);
     children.push(Text({ color: 'green', bold: true, children: [
-      `Chosen: ${explanation.models.find((model) => model.selected)!.name}`,
+      `Chosen: ${chosen.name}`,
     ] }));
     children.push(Text({ children: [explanation.summary] }));
     if (explanation.taskUnderstanding.length) {

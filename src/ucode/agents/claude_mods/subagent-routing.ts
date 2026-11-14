@@ -53,7 +53,7 @@ const explanationModelId = (model: string): string => {
 }
 
 const canonicalModel = (model: string): string => {
-  const original = unwrapGatewayModel(model)
+  const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
 }

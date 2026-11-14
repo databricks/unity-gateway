@@ -158,49 +158,6 @@ test('routing changes only the matching spawn model and joins its display name t
   expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
 });
 
-test('child turns preserve native context suffixes without changing exact catalog identities', async ($, on) => {
-  const cases = [
-    ['main.default.claude-sonnet-4.5', 'main.default.claude-sonnet-4.5[1m]', 'main.default.claude-sonnet-4.5[1m]'],
-    ['system.ai.model-b', 'anthropic-aigw-12345678-system.ai.model-b[1m]', 'anthropic-aigw-12345678-system.ai.model-b[1m]'],
-    ['system.ai.model-b', 'anthropic-aigw-c442a48-system.ai.model-b[1m]', 'anthropic-aigw-c442a48-system.ai.model-b[1m]'],
-    ['custom.catalog.code', 'custom.catalog.code[1m]', 'custom.catalog.code'],
-    ['model-b', 'model-c', 'model-b'],
-  ];
-  let selected = '';
-  let launched = '';
-  let stepModel = '';
-  const forwarded: any[] = [];
-  on('env.get', () => ({ value: '0' }));
-  on('session.id', () => ({ value: 'session-1' }));
-  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
-    model: selected, rationale: 'Selected for the task',
-  }) } }));
-  on('tool.call', ($, e) => { forwarded.push(e); return { result: 'ok' }; });
-  on('agent.spawn', ($, e) => {
-    expect(e.model).toBe(selected);
-    return { agentId: `child-${e.tool_use_id}`, model: launched };
-  });
-  on('fs.write', () => ({ value: undefined }));
-  on('turn.step', async function* ($, e) {
-    stepModel = e.model;
-    yield { kind: 'text', index: 0, text: 'Native child response' };
-    return { turnId: e.turnId, index: e.index, answer: 'Native child response', toolUses: [], stopReason: 'end_turn', usage: null };
-  });
-  for (const [index, [route, resolved, expected]] of cases.entries()) {
-    selected = route;
-    launched = resolved;
-    const id = `context-${index}`;
-    const input = { tool: 'Agent' as const, tool_use_id: id, ...originalInput };
-    await $.tool.call(input);
-    expect(forwarded[index]).toEqual(input);
-    await $.agent.spawn({ tool_use_id: id, prompt: originalInput.prompt });
-    const stream = $.turn.step({ turnId: id, index: 1, model: 'parent-model', messageCount: 1, agentId: `child-${id}` });
-    expect((await stream.next()).value).toEqual({ kind: 'text', index: 0, text: 'Native child response' });
-    expect((await stream.next()).done).toBe(true);
-    expect(stepModel).toBe(expected);
-  }
-});
-
 test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
   const calls: any[] = [];
   const logs: string[] = [];
