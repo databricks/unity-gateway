@@ -34,6 +34,7 @@ Tests live in `tests/`.
   - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
+- Contributor agent skills live in `.agents/skills/<name>/SKILL.md` with a byte-identical copy in `.claude/skills/<name>/SKILL.md`; they ship to contributors only and must never be added to the packaged repo-root `skills/` directory (see `tests/test_packaging.py`). `pr-demo` records before/after terminal demos for a PR via `scripts/pr_demo/`.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
