@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import textwrap
@@ -20,7 +21,7 @@ import urllib.error
 import urllib.request
 import uuid
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ SUBAGENT_ROUTING_DISCLAIMER = (
 ROUTING_BOX_WIDTH = 73
 _ANTHROPIC_AIGW_MODEL_RE = re.compile(r"^anthropic-aigw-[0-9a-fA-F]{7,8}-(.+)$")
 _FERNET_TOKEN_RE = re.compile(r"^gAAAAA[A-Za-z0-9_-]+={0,2}$")
+_EXPLANATION_MODEL_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}")
 
 
 def format_switch_message(model: str, reason: str | None) -> str:
@@ -99,6 +101,7 @@ class RoutingDecision:
     route_options: tuple[tuple[str, str | None], ...] = ()
     router_name: str = ""
     raw_rationale: str | None = None
+    explanation: dict[str, Any] | None = None
 
     def display_message(
         self,
@@ -191,6 +194,209 @@ def unwrap_anthropic_gateway_model(model: str) -> str:
     return model
 
 
+def _explanation_model_id(model: str) -> str:
+    model = unwrap_anthropic_gateway_model(model)
+    if model.startswith("system.ai."):
+        return model.removeprefix("system.ai.").removesuffix("[1m]")
+    # Brackets can be part of a catalog-qualified custom service name.
+    return model if len(model.split(".")) >= 3 else model.removesuffix("[1m]")
+
+
+def _safe_explanation_text(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
+    clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()[:limit]
+    return clean or None
+
+
+def _valid_explanation_number(value: Any, *, non_negative: bool = False) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and abs(value) <= 1e12
+        and math.isfinite(value)
+        and (not non_negative or value >= 0)
+    )
+
+
+def _valid_explanation_details(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and len(value) <= 8
+        and all(
+            isinstance(key, str)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_. -]{0,63}", key)
+            and _valid_explanation_number(number)
+            for key, number in value.items()
+        )
+    )
+
+
+def _parse_routing_explanation(
+    value: Any,
+    routed_model: str,
+    offered_routes: tuple[tuple[str, str | None], ...],
+) -> dict[str, Any] | None:
+    if isinstance(value, str):
+        try:
+            if len(value.encode("utf-8")) > 65536:
+                return None
+            value = json.loads(value)
+        except (UnicodeEncodeError, ValueError, RecursionError):
+            return None
+    if not isinstance(value, dict) or len(value) > 32:
+        return None
+    try:
+        if len(json.dumps(value, allow_nan=False).encode("utf-8")) > 65536:
+            return None
+    except (TypeError, ValueError, UnicodeEncodeError, RecursionError):
+        return None
+
+    selected_model = value.get("selected_model")
+    summary = _safe_explanation_text(value.get("summary"), 2000)
+    task_understanding = value.get("task_understanding")
+    models = value.get("models")
+    if not isinstance(task_understanding, list) or len(task_understanding) > 8:
+        return None
+    normalized_task_understanding = []
+    for item in task_understanding:
+        text = _safe_explanation_text(item, 240)
+        if not text:
+            return None
+        normalized_task_understanding.append(text)
+    if (
+        not isinstance(selected_model, str)
+        or not _EXPLANATION_MODEL_ID_RE.fullmatch(selected_model)
+        or selected_model != _explanation_model_id(routed_model)
+        or not summary
+        or not isinstance(models, list)
+        or len(models) < 1
+    ):
+        return None
+
+    offered_models = {_explanation_model_id(model) for model, _ in offered_routes}
+    model_ids: list[str] = []
+    selected_ids: list[str] = []
+    numeric_fields = {
+        "quality_estimate": False,
+        "estimated_cost_usd": True,
+        "routing_score": False,
+    }
+    detail_fields = ("components", "difference_from_winner")
+    normalized_models = []
+    for candidate in models:
+        if not isinstance(candidate, dict):
+            return None
+        model_id = candidate.get("id")
+        name = _safe_explanation_text(candidate.get("name"), 128)
+        reason = _safe_explanation_text(candidate.get("reason"), 1200)
+        selected = candidate.get("selected")
+        considered = candidate.get("considered")
+        if (
+            not isinstance(model_id, str)
+            or not _EXPLANATION_MODEL_ID_RE.fullmatch(model_id)
+            or not name
+            or not reason
+            or not isinstance(selected, bool)
+            or not isinstance(considered, bool)
+            or (selected and not considered)
+        ):
+            return None
+        model_ids.append(model_id)
+        if selected:
+            selected_ids.append(model_id)
+        if any(
+            field in candidate
+            and not _valid_explanation_number(candidate[field], non_negative=non_negative)
+            for field, non_negative in numeric_fields.items()
+        ):
+            return None
+        if any(
+            field in candidate and not _valid_explanation_details(candidate[field])
+            for field in detail_fields
+        ):
+            return None
+        normalized_candidate = {
+            "id": model_id,
+            "name": name,
+            "selected": selected,
+            "considered": considered,
+            "reason": reason,
+        }
+        normalized_candidate.update(
+            {field: candidate[field] for field in numeric_fields if field in candidate}
+        )
+        normalized_candidate.update(
+            {field: dict(candidate[field]) for field in detail_fields if field in candidate}
+        )
+        normalized_models.append(normalized_candidate)
+
+    if (
+        len(model_ids) != len(offered_models)
+        or set(model_ids) != offered_models
+        or len(model_ids) != len(set(model_ids))
+        or selected_ids != [selected_model]
+    ):
+        return None
+    normalized = {
+        "selected_model": selected_model,
+        "summary": summary,
+        "task_understanding": normalized_task_understanding,
+        "models": normalized_models,
+    }
+    if "formula" in value:
+        formula = _safe_explanation_text(value["formula"], 500)
+        if not formula:
+            return None
+        normalized["formula"] = formula
+
+    identity_fields = ("session_id", "tool_use_id")
+    evidence = value.get("evidence")
+    normalized_evidence = {}
+    for source, destination in ((value, normalized), (evidence, normalized_evidence)):
+        if not isinstance(source, dict):
+            continue
+        for field in identity_fields:
+            if field not in source:
+                continue
+            identity = source[field]
+            if identity is None:
+                destination[field] = None
+                continue
+            if (
+                not isinstance(identity, str)
+                or len(identity.encode("utf-16-le", errors="surrogatepass")) // 2 > 256
+                or re.search(r"[\x00-\x1f\x7f-\x9f]", identity)
+            ):
+                return None
+            destination[field] = identity
+    if normalized_evidence:
+        normalized["evidence"] = normalized_evidence
+    return normalized
+
+
+def _explanation_matches_request_ids(explanation: dict[str, Any], payload: dict[str, Any]) -> bool:
+    """Reject explanation identities that do not describe this spawn request."""
+    evidence = explanation.get("evidence")
+    sources = (explanation, evidence) if isinstance(evidence, dict) else (explanation,)
+    for field in ("session_id", "tool_use_id"):
+        identities = [
+            source[field] for source in sources if field in source and source[field] is not None
+        ]
+        if not identities:
+            continue
+        expected = payload.get(field)
+        if (
+            not isinstance(expected, str)
+            or not expected
+            or any(identity != expected for identity in identities)
+        ):
+            return False
+    return True
+
+
 def configured_router_name() -> str:
     """Return the environment-selected router, falling back to ``stable``."""
     return os.environ.get(ROUTER_NAME_ENV_VAR, "").strip() or ROUTER_NAME
@@ -260,6 +466,13 @@ def select_route(
     raw_rationale = payload.get("rationale")
     raw_rationale = raw_rationale if isinstance(raw_rationale, str) else ""
     rationale = format_rationale(payload["route_selection"][0], raw_rationale)
+    params = payload["route_selection"][0].get("params")
+    raw_explanation = params.get("routing_explanation") if isinstance(params, dict) else None
+    explanation = _parse_routing_explanation(raw_explanation, model, offered_routes)
+    if raw_explanation is not None and explanation is None:
+        logging.getLogger(__name__).debug(
+            "Discarded routing explanation: invalid schema or offered-model identities"
+        )
     return (
         RoutingDecision(
             model=model,
@@ -267,6 +480,7 @@ def select_route(
             route_options=offered_routes,
             router_name=router_name,
             raw_rationale=raw_rationale if rationale != raw_rationale else None,
+            explanation=explanation,
         ),
         None,
     )
@@ -304,6 +518,13 @@ def resolve_spawn_route(
             "Smart Router could not route subagent: %s", reason or "no routing decision"
         )
         return None
+    if decision.explanation is not None and not _explanation_matches_request_ids(
+        decision.explanation, payload
+    ):
+        logging.getLogger(__name__).debug(
+            "Discarded routing explanation: session or tool-call identity does not match request"
+        )
+        decision = replace(decision, explanation=None)
     routed_model = model_id_mapper(decision.model)
     return SpawnRoute(tool_input, task, decision, routed_model)
 
@@ -429,6 +650,11 @@ def write_decision_record(
                 {"model": model, "harness": harness} for model, harness in decision.route_options
             ],
             "router_name": decision.router_name,
+            **(
+                {"explanation": decision.explanation}
+                if include_task_text and decision.explanation is not None
+                else {}
+            ),
             # Persisted for diagnosis: an empty value means the gateway returned
             # no rationale (vs. a placement bug in how we surface it).
             "rationale": decision.rationale,

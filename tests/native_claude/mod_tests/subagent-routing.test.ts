@@ -260,6 +260,7 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   expect(tree.indexOf('Compute 1+1 (agent A)')).toBeLessThan(tree.indexOf('Compute 1+1 (agent B)'));
   expect(tree.indexOf('Compute 1+1 (agent B)')).toBeLessThan(tree.indexOf('other row'));
   expect(tree).not.toContain('agent C');
+  expect(tree).not.toContain('Why this model?');
   expect(await cards.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
   expect(await cards.find({ type: 'Text', text: 'claude-opus-4-8' })).toBeDefined();
   await cards.unmount();

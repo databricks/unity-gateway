@@ -1,10 +1,23 @@
 import type { On, PluginOptions } from 'claude-code'
 
+type NumericDetails = Record<string, number>
+export type ExplanationModel = {
+  id: string; name: string; selected: boolean; considered: boolean; reason: string
+  qualityEstimate?: number; estimatedCostUsd?: number; routingScore?: number
+  components?: NumericDetails; differenceFromWinner?: NumericDetails
+}
+export type RoutingExplanation = {
+  selectedModel: string; summary: string; taskUnderstanding: string[]; models: ExplanationModel[]
+  formula?: string
+}
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
   spawned?: { agentId: string; model?: string; background: boolean }
 }
 
+const MAX_EXPLANATION_BYTES = 64 * 1024
+const isObject = (value: unknown): value is Record<string, any> =>
+  Boolean(value && typeof value === 'object' && !Array.isArray(value))
 const safeText = (value: unknown, limit: number): string | undefined => {
   if (typeof value !== 'string') return undefined
   const clean = value
@@ -16,13 +29,101 @@ const safeText = (value: unknown, limit: number): string | undefined => {
   return clean || undefined
 }
 
+const safeNumber = (value: unknown, nonNegative = false): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 && (!nonNegative || value >= 0)
+    ? value : undefined
+
+function numericDetails(value: unknown): NumericDetails | undefined {
+  if (!isObject(value) || Object.keys(value).length > 8) return undefined
+  const entries = Object.entries(value)
+  if (entries.some(([key, number]) => !/^[A-Za-z][A-Za-z0-9_. -]{0,63}$/.test(key)
+      || safeNumber(number) === undefined)) return undefined
+  return Object.fromEntries(entries as [string, number][])
+}
+
 const unwrapGatewayModel = (model: string): string =>
   model.replace(/^anthropic-aigw-[0-9a-fA-F]{7,8}-(?=.)/, '')
+
+const explanationModelId = (model: string): string => {
+  const original = unwrapGatewayModel(model)
+  if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
+  // Explanation IDs preserve every catalog suffix; execution matching below also accepts
+  // native [1m] expansion on dotted model versions such as main.default.claude-sonnet-4.5.
+  return original.split('.').length >= 3 ? original : original.replace(/\[1m\]$/, '')
+}
 
 const canonicalModel = (model: string): string => {
   const original = model.replace(/^anthropic-aigw-[0-9a-fA-F]{8}-/, '')
   if (original.startsWith('system.ai.')) return original.slice('system.ai.'.length).replace(/\[1m\]$/, '')
   return original.split('.').length === 3 ? original : original.replace(/\[1m\]$/, '')
+}
+
+function matchesIdentityFields(value: Record<string, any>, sessionId?: string, toolUseId?: string): boolean {
+  for (const [field, expected] of [['session_id', sessionId], ['tool_use_id', toolUseId]] as const) {
+    const actual = value[field]
+    if (actual != null && (typeof actual !== 'string' || actual.length > 256 || actual !== expected)) return false
+  }
+  return true
+}
+
+function matchesRequestIdentity(value: unknown, sessionId?: string, toolUseId?: string): boolean {
+  if (!isObject(value)) return true
+  return [value, value.evidence].every((source) => !isObject(source)
+    || matchesIdentityFields(source, sessionId, toolUseId))
+}
+
+export function parseRoutingExplanation(
+  value: unknown, routedModel: string, sessionId?: string, toolUseId?: string, offeredModels?: readonly string[],
+): RoutingExplanation | undefined {
+  if (!isObject(value)) return undefined
+  const serialized = JSON.stringify(value)
+  if (Object.keys(value).length > 32 || new TextEncoder().encode(serialized).byteLength > MAX_EXPLANATION_BYTES
+      || !matchesRequestIdentity(value, sessionId, toolUseId)) return undefined
+  const selectedModel = value.selected_model
+  const summary = safeText(value.summary, 2000)
+  if (typeof selectedModel !== 'string' || selectedModel.trim() !== selectedModel
+      || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(selectedModel)
+      || selectedModel !== explanationModelId(routedModel) || !summary
+      || !Array.isArray(value.models) || value.models.length < 1
+      || !Array.isArray(value.task_understanding) || value.task_understanding.length > 8) return undefined
+
+  const taskUnderstanding = value.task_understanding.map((item: unknown) => safeText(item, 240))
+  if (taskUnderstanding.some((item: string | undefined) => !item)) return undefined
+  const ids = new Set<string>()
+  const models: ExplanationModel[] = []
+  for (const candidate of value.models) {
+    if (!isObject(candidate)) return undefined
+    const id = candidate.id
+    const name = safeText(candidate.name, 128)
+    const reason = safeText(candidate.reason, 1200)
+    if (typeof id !== 'string' || id.trim() !== id
+        || !/^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,159}$/.test(id) || ids.has(id)
+        || !name || !reason || typeof candidate.selected !== 'boolean'
+        || typeof candidate.considered !== 'boolean' || (candidate.selected && !candidate.considered)) return undefined
+    ids.add(id)
+    const qualityEstimate = candidate.quality_estimate === undefined ? undefined : safeNumber(candidate.quality_estimate)
+    const estimatedCostUsd = candidate.estimated_cost_usd === undefined ? undefined : safeNumber(candidate.estimated_cost_usd, true)
+    const routingScore = candidate.routing_score === undefined ? undefined : safeNumber(candidate.routing_score)
+    const components = candidate.components === undefined ? undefined : numericDetails(candidate.components)
+    const differenceFromWinner = candidate.difference_from_winner === undefined
+      ? undefined : numericDetails(candidate.difference_from_winner)
+    if ((candidate.quality_estimate !== undefined && qualityEstimate === undefined)
+        || (candidate.estimated_cost_usd !== undefined && estimatedCostUsd === undefined)
+        || (candidate.routing_score !== undefined && routingScore === undefined)
+        || (candidate.components !== undefined && components === undefined)
+        || (candidate.difference_from_winner !== undefined && differenceFromWinner === undefined)) return undefined
+    models.push({ id, name, reason, selected: candidate.selected, considered: candidate.considered,
+      qualityEstimate, estimatedCostUsd, routingScore, components, differenceFromWinner })
+  }
+  if (models.filter((model) => model.selected).length !== 1
+      || !models.some((model) => model.id === selectedModel && model.selected)) return undefined
+  if (offeredModels) {
+    const offeredIds = new Set(offeredModels.map(explanationModelId))
+    if (ids.size !== offeredIds.size || [...offeredIds].some((id) => !ids.has(id))) return undefined
+  }
+  const formula = value.formula === undefined ? undefined : safeText(value.formula, 500)
+  if (value.formula !== undefined && !formula) return undefined
+  return { selectedModel, summary, taskUnderstanding: taskUnderstanding as string[], models, formula }
 }
 
 const children = new Map<string, RoutingRecord>()
@@ -57,6 +158,7 @@ const shortModel = (model: string): string => {
     : parts.length === 3 ? parts[2] : unwrapped
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }
+
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -141,8 +243,8 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   const seen = new Set<string>()
 
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
-    const command = options.routeCommand as readonly string[]
-    if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    const command = options.routeCommand as readonly string[] | undefined
+    if (!command?.length || e.subagent_type === 'fork' || e.resume) return next(e)
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined

@@ -226,7 +226,7 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
   registerIsaacFeedback(on, feedback, options.isaacExecutable as string, options.isaacFeedbackDirectory as string);
-  // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
+  // External integrations match the "smart-router" command name exactly.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
     try {

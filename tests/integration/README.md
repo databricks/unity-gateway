@@ -2093,6 +2093,9 @@ Installed-CLI Desktop journeys read MCP commands from `managedMcpServers` and re
 installed plugin to contain no duplicate servers. These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
+See [routing explanation component coverage](../README.md#routing-explanation-coverage)
+for the native pane and optional service-response checks.
+
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed
 spawns, and native role menus. Native auto-mode tests verify both foreground and

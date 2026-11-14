@@ -1605,6 +1605,20 @@ added through `ug mcp add`, while retaining the original model/authentication-fi
 These checks do not prove Desktop GUI
 tool search, reduced context usage, or native connector consent.
 
+### Routing explanation coverage
+
+The decision-audit writer omits task text and explanations when task-text logging is
+disabled, retaining the task digest and length. Codex passes that privacy setting;
+Claude's session log retains its existing bounded preview. These choices never
+change the selected model. The existing `/smart-router logs`
+detail validates session and tool-call identity, the routed model, and the exact offered
+catalog before displaying comparisons. Native tests cover malformed and oversized
+metadata, dotted and gateway-wrapped model IDs, per-model selection, optional numeric
+estimates, and the default-hidden estimates control. Invalid explanation data leaves the
+selected route and rationale visible. These checks do not establish deployed-service
+explanation availability. See the Claude mod guide for the optional service response
+contract.
+
 Routed child identity regressions cover model-visible launch context, original-result
 preservation, reversed parallel completion, missing model information, denied/failed
 spawns, and native role menus. Native auto-mode tests verify both foreground and

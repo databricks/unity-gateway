@@ -80,6 +80,7 @@ def append_decision(
                 {"model": model, "harness": candidate_harness}
                 for model, candidate_harness in decision.route_options
             ],
+            **({"explanation": decision.explanation} if decision.explanation is not None else {}),
             "router_name": decision.router_name,
             "routing_ms": routing_ms,
             "rationale": decision.rationale,
