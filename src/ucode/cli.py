@@ -5289,7 +5289,7 @@ def configure(
     if ctx.invoked_subcommand is not None:
         return
     if verbose not in ("normal", "low"):
-        print_err("--verbose must be one of: normal, low.")
+        print_err("--verbose must be one of: normal, low. Example: ug configure --verbose low.")
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
