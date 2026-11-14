@@ -905,14 +905,21 @@ profile/token preservation, and replay without refreshing workspace credentials.
 PAT and non-401 errors retain their behavior.
 These checks do not establish live login or launch-time savings.
 
-`TestConfigureSharedStateOverlapsProbeAndListing` in `test_cli.py` checks that the
-model-service listing starts on a daemon thread before the gateway probe returns, that a
-probe failure raises its own error while the listing is still blocked, that a listing error
-propagates without saving state, that `skip_model_discovery` never starts the listing but
-keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
-caches. The skip-preflight tests also reject starting a background worker. These component
-checks control the HTTP boundary with events; they do not establish live gateway timing,
-agent launch, or launch-time savings.
+`TestConfigureSharedStateDiscovery` in `test_cli.py` checks one scoped model-service
+request with preserved OpenCode, Kilo, and Pi model catalogs, reuse of its process cache,
+token and workspace-selection errors without saving state, and per-family fallbacks
+for empty, unavailable, denied, and transient UC results. Discovery request failures
+preserve the selected workspace's saved family catalogs, including OSS and Copilot's
+open models; confirmed empty results clear stale inventories. Token changes and
+same-host workspace selections fetch separate model and provider-service catalogs;
+provider-service parent scopes also remain separate. Workspace switches never
+reuse the source workspace's saved models. Failed UC listings show OAuth-scope,
+grant, or workspace-availability guidance even without a saved catalog.
+Provider mode skips the UC listing and
+retains Claude's web-search lookup; skip-preflight
+skips authentication and discovery. Probe-only pagination, cache, and overlap tests
+were removed with the redundant gateway probe. These controlled HTTP checks do not
+establish live gateway timing, agent launch, or launch-time savings.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

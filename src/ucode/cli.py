@@ -11,8 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator
-from concurrent.futures import Future
+from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
@@ -86,6 +85,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    ModelDiscoveryFailureReason,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -107,8 +107,8 @@ from ucode.databricks import (
     list_tool_provider_services,
     map_claude_family_models,
     normalize_workspace_url,
-    probe_unity_gateway_capabilities,
     profile_choices,
+    raise_for_invalid_access_token,
     resolve_pat_token,
     resolve_provider_launch_model,
     resolve_provider_service,
@@ -263,6 +263,7 @@ from ucode.ui import (
 )
 from ucode.usage import usage as usage_report
 from ucode.workspace import (
+    WorkspaceSelectionReason,
     activate,
     pin,
     resolve_workspace,
@@ -569,24 +570,6 @@ def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
     return find_profile_name_for_host(workspace)
 
 
-def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
-    """Run ``fn(*args)`` on a daemon thread; the returned future carries its result or exception.
-
-    Not a ``ThreadPoolExecutor`` worker, which interpreter exit joins: a caller that raises before
-    reading the result must exit without waiting out the abandoned call's network retries.
-    """
-    future: Future[T] = Future()
-
-    def run() -> None:
-        try:
-            future.set_result(fn(*args))
-        except BaseException as exc:
-            future.set_exception(exc)
-
-    threading.Thread(target=run, daemon=True).start()
-    return future
-
-
 def configure_shared_state(
     workspace: str,
     profile: str | None = None,
@@ -600,7 +583,7 @@ def configure_shared_state(
     clear_custom_oauth: bool = False,
     claude_server_side_web_search: bool | None = None,
 ) -> dict:
-    """Log into Databricks, verify Unity Gateway, fetch model lists, persist state.
+    """Log into Databricks, fetch model lists, and persist state.
 
     If tools is provided, only fetch models for those tools. Otherwise fetch all.
     If force_login is True, always run databricks auth login (used by explicit configure).
@@ -613,9 +596,9 @@ def configure_shared_state(
     entries (e.g. DEFAULT and a named profile both pointing at the same host)
     don't error out. If ``None``, we resolve it from the host after login.
     If skip_preflight is True, skip the entire preflight block below — auth
-    validation, the Unity Gateway probe, and model discovery — trusting a prior
-    ``ug configure``. The PAT/bearer is already exported (``apply_pat_environment``
-    in ``_launch_tool``) and the gateway was verified by that earlier configure.
+    validation and model discovery — trusting a prior ``ug configure``.
+    The PAT/bearer is already exported (``apply_pat_environment``
+    in ``_launch_tool``) and the model lists were fetched by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
     the saved model lists are preserved.
     """
@@ -633,6 +616,9 @@ def configure_shared_state(
             workspace_id = split_workspace_key(aliased_workspace_key(workspace) or workspace)[1]
     key = workspace_key(workspace, workspace_id)
     previous_key = state_workspace_key(prior_state)
+    saved_models = (
+        prior_state if previous_key == key else load_full_state().get("workspaces", {}).get(key, {})
+    )
     if use_pat is None:
         use_pat = bool(prior_state.get("use_pat")) and previous_key == key
     if databricks_ai_tools_enabled is None:
@@ -646,7 +632,7 @@ def configure_shared_state(
     # each path below resolves it once, where a host->profile lookup is reliable
     # (the skip branch trusts the prior configure; the preflight resolves after
     # login). --skip-preflight persists exactly this and returns, trusting a prior
-    # `ug configure` — it already validated auth + the Unity Gateway and saved the
+    # `ug configure` — it already authenticated and fetched the
     # model lists (carried over by load_state, left untouched).
     state = load_state()
     state["workspace"] = workspace
@@ -666,6 +652,12 @@ def configure_shared_state(
         for field in (
             "mcp_servers",
             "mcp_clients",
+            "claude_models",
+            "codex_models",
+            "gemini_models",
+            "oss_models",
+            "opencode_models",
+            "web_search_model",
             CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
             MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
         ):
@@ -733,8 +725,6 @@ def configure_shared_state(
         return state
 
     login_kwargs = {"workspace_id": workspace_id} if workspace_id else {}
-    # ── Preflight (bypassed above under --skip-preflight): validate Databricks
-    #    auth + the Unity Gateway, then discover the available models. ──
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
     elif use_pat:
@@ -766,21 +756,8 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity Gateway..."):
-        if not cli_custom_oauth:
-            token = get_databricks_token(workspace, profile)
-        # The listing is independent of the probe, so overlap the two round trips. The probe still
-        # gates the launch; its failure abandons the listing rather than waiting for it.
-        model_services_discovery = (
-            None
-            if skip_model_discovery
-            else _start_in_background(discover_model_services, workspace, token)
-        )
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
-    if model_service_probe.resource_available:
-        print_success("Unity Gateway connected")
-    else:
-        print_warning(f"Model service: {model_service_probe.detail}")
+    if not cli_custom_oauth:
+        token = get_databricks_token(workspace, profile)
 
     want_claude = (
         fetch_all
@@ -807,6 +784,19 @@ def configure_shared_state(
     want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
     want_copilot = fetch_all or "copilot" in tools
 
+    def raise_for_discovery_reason(reason: str | None) -> None:
+        if isinstance(reason, WorkspaceSelectionReason):
+            raise RuntimeError(reason)
+        raise_for_invalid_access_token(workspace, reason)
+
+    def preserve_on_failure[T](models: T, reason: str | None, field: str) -> T:
+        if isinstance(reason, ModelDiscoveryFailureReason) and saved_models.get(field):
+            print_warning(
+                f"Could not refresh {field.replace('_', ' ')} ({reason}); using saved models."
+            )
+            return saved_models[field]
+        return models
+
     claude_reason: str | None = None
     gemini_reason: str | None = None
     codex_reason: str | None = None
@@ -826,7 +816,7 @@ def configure_shared_state(
         # just that with a single call.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models, _ = discover_codex_models(workspace, token)
+                ws_models, codex_reason = discover_codex_models(workspace, token)
             if ws_models:
                 web_search_model = ws_models[0]
     else:
@@ -835,9 +825,33 @@ def configure_shared_state(
         # back empty (workspace without UC model-services, or the listing
         # failed), fall back to the per-family Unity Gateway listing for that
         # family only.
-        assert model_services_discovery is not None
         with spinner("Fetching available models..."):
-            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
+            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = discover_model_services(
+                workspace, token
+            )
+            raise_for_discovery_reason(ms_reason)
+            if isinstance(ms_reason, ModelDiscoveryFailureReason):
+                lowered = ms_reason.lower()
+                guidance = ""
+                if "http 403" in lowered:
+                    if "oauth token" in lowered and "required scopes" in lowered:
+                        guidance = (
+                            "Re-authenticate with the required OAuth scopes using "
+                            f"databricks auth login --host {workspace}."
+                        )
+                    else:
+                        guidance = (
+                            "Listing requires USE CATALOG on `system`, "
+                            "and USE SCHEMA and EXECUTE on `system.ai`."
+                        )
+                elif "http 404" in lowered:
+                    guidance = (
+                        "Unity Catalog model services are unavailable; "
+                        "check workspace support and access with your administrator."
+                    )
+                print_warning(
+                    f"Could not list Unity Catalog model services ({ms_reason}). {guidance}".rstrip()
+                )
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
@@ -852,19 +866,35 @@ def configure_shared_state(
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
                 oss_models, oss_reason = ms_oss, ms_reason
+            for reason in (claude_reason, gemini_reason, codex_reason):
+                raise_for_discovery_reason(reason)
+            claude_models = preserve_on_failure(claude_models, claude_reason, "claude_models")
+            gemini_models = preserve_on_failure(gemini_models, gemini_reason, "gemini_models")
+            codex_models = preserve_on_failure(codex_models, codex_reason, "codex_models")
+            oss_models = preserve_on_failure(oss_models, oss_reason, "oss_models")
             if want_copilot:
+                catalog = list_anthropic_model_catalog(workspace, token)
+                raise_for_discovery_reason(catalog.error_msg)
                 copilot_models = copilot_agent.catalog_from_listings(
-                    cached_model_service_entries(workspace),
+                    cached_model_service_entries(workspace, token),
                     [*claude_models.values(), *codex_models],
-                    list_anthropic_model_catalog(workspace, token),
+                    catalog,
                 )
-                copilot_reason = ms_reason or claude_reason or codex_reason
+                copilot_reason = catalog.error_msg or ms_reason or claude_reason or codex_reason
+                if isinstance(ms_reason, ModelDiscoveryFailureReason) and saved_models.get(
+                    copilot_agent.CATALOG_STATE_KEY
+                ):
+                    copilot_models = None
+                    copilot_reason = ms_reason
         if claude_models:
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
             opencode_models["gemini"] = gemini_models
         if oss_models:
             opencode_models["oss"] = oss_models
+
+    for reason in (claude_reason, gemini_reason, codex_reason, copilot_reason):
+        raise_for_discovery_reason(reason)
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -1868,7 +1898,7 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(
-            cached_model_service_entries(workspace),
+            cached_model_service_entries(workspace, token),
             [*claude_models.values(), *codex_models],
             gateway_listing,
         )

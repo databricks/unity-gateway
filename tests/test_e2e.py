@@ -38,7 +38,6 @@ from ucode.databricks import (
     is_model_provider_feature_unavailable,
     list_model_provider_services,
     list_tool_provider_services,
-    probe_unity_gateway_capabilities,
     service_usable_for_tool,
     workspace_hostname,
 )
@@ -159,14 +158,11 @@ class TestDatabricksAuth:
         assert isinstance(e2e_token, str) and len(e2e_token) > 10
 
 
-# ---------------------------------------------------------------------------
-# Unity Gateway probe
-# ---------------------------------------------------------------------------
-
-
 class TestUnityGateway:
-    def test_probe_unity_gateway_capabilities_does_not_raise(self, e2e_workspace, e2e_token):
-        probe_unity_gateway_capabilities(e2e_workspace, e2e_token)
+    def test_model_services_are_accessible(self, e2e_workspace, e2e_token):
+        *families, reason = discover_model_services(e2e_workspace, e2e_token)
+        assert reason is None, reason
+        assert any(families), "No model services were discovered"
 
     def test_workspace_hostname_resolves(self, e2e_workspace):
         hostname = workspace_hostname(e2e_workspace)

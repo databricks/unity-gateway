@@ -11,7 +11,6 @@ import pytest
 from ucode import cli
 from ucode import state as state_module
 from ucode.agents import claude
-from ucode.databricks import GatewayProbe
 from ucode.mcp_web_search import PROVIDER_ENV
 from ucode.os_compatibility import subprocess_cross_os
 
@@ -39,11 +38,6 @@ def search_setup(tmp_path, monkeypatch):
     # are replaced. UG's state persistence and search registration stay real.
     monkeypatch.setattr(cli, "ensure_databricks_auth", lambda *_: None)
     monkeypatch.setattr(cli, "get_databricks_token", lambda *_: "test-token")
-    monkeypatch.setattr(
-        cli,
-        "probe_unity_gateway_capabilities",
-        lambda *_: GatewayProbe(True, "reachable", True),
-    )
     monkeypatch.setattr(
         cli,
         "discover_model_services",

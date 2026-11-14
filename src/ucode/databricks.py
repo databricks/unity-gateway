@@ -28,7 +28,7 @@ from email.message import Message
 from enum import Enum
 from http.client import HTTPException
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
+from typing import Any, Literal, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
@@ -72,7 +72,6 @@ UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
 WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
-UNITY_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
@@ -2333,24 +2332,43 @@ def _get_model_services_page(
     return payload, reason
 
 
-# Successful model-service listings for this process, keyed by workspace. The listing is a paginated
-# walk of the whole metastore catalog, and several callers want different views of the same result
+# Successful model-service listings for this process, keyed by workspace, selection, and token.
+# Several callers want different views of the same paginated catalog
 # (`discover_model_services` buckets it per family, `discover_claude_models_unbucketed` keeps the raw
 # Claude ids), so a single `ucode setup` run would otherwise page it twice. Cached per process, not
 # persisted: a long-lived process is not a thing here, and a new model appearing mid-command is not
 # worth a second walk. Failures are never cached, so a transient error still retries.
-_MODEL_SERVICES_CACHE: dict[str, list[ModelServiceEntry]] = {}
+_MODEL_SERVICES_CACHE: dict[
+    tuple[str, tuple[tuple[str, str], ...], str], list[ModelServiceEntry]
+] = {}
 
 # Same idea for the Model Provider Service listing (a different endpoint). It is workspace-wide and
 # filtered per agent afterwards, so `ucode setup` would otherwise re-list it once per MPS-capable
-# agent. Keyed by ``(workspace, parent)`` — a schema-scoped listing is a different result set than
-# the metastore-wide one, so they must not share an entry.
-_MODEL_PROVIDER_SERVICES_CACHE: dict[tuple[str, str], list[dict]] = {}
+# agent. The parent schema also separates scoped listings from the metastore-wide result.
+_MODEL_PROVIDER_SERVICES_CACHE: dict[
+    tuple[str, tuple[tuple[str, str], ...], str, str], list[dict]
+] = {}
 
 
-def cached_model_service_entries(workspace: str) -> list[ModelServiceEntry] | None:
-    """The model services this process already listed for ``workspace``, without a request."""
-    cached = _MODEL_SERVICES_CACHE.get(workspace)
+class ModelDiscoveryFailureReason(str):
+    """A failed request, rather than a successful discovery with no compatible models."""
+
+
+def _model_discovery_failure(reason: str | None) -> str:
+    if isinstance(reason, WorkspaceSelectionReason):
+        return reason
+    return ModelDiscoveryFailureReason(reason or "Model discovery request failed")
+
+
+def _model_listing_cache_key(
+    workspace: str, token: str
+) -> tuple[str, tuple[tuple[str, str], ...], str]:
+    return workspace_origin(workspace), tuple(sorted(workspace_headers(workspace).items())), token
+
+
+def cached_model_service_entries(workspace: str, token: str) -> list[ModelServiceEntry] | None:
+    """The model services already listed with these credentials and workspace selection."""
+    cached = _MODEL_SERVICES_CACHE.get(_model_listing_cache_key(workspace, token))
     return list(cached) if cached is not None else None
 
 
@@ -2358,16 +2376,6 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
-
-
-def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
-    """True when :func:`list_model_provider_services` will answer from cache.
-
-    Lets a caller skip a progress spinner it doesn't need: the cold listing takes over a second, so
-    it deserves one, but repeating it per agent on an instant cache hit is just noise. Takes
-    ``parent`` for the same reason the cache is keyed on it — a scoped listing is a separate entry.
-    """
-    return (workspace, parent or "") in _MODEL_PROVIDER_SERVICES_CACHE
 
 
 def list_model_services(
@@ -2406,15 +2414,16 @@ def list_model_service_entries(
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
     requested schema's subset.
 
-    Successful default-schema results are memoized per workspace for the life of the process;
+    Successful default-schema results are memoized per workspace, selection, and token;
     pass ``use_cache=False`` to force a fresh walk. Other schemas bypass that cache.
     """
     parent = (
         f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
     )
     use_cache = use_cache and parent == _MODEL_SERVICE_PARENT_SCHEMA
+    cache_key = _model_listing_cache_key(workspace, token)
     if use_cache:
-        cached = _MODEL_SERVICES_CACHE.get(workspace)
+        cached = _MODEL_SERVICES_CACHE.get(cache_key)
         if cached is not None:
             return list(cached), None
 
@@ -2435,7 +2444,7 @@ def list_model_service_entries(
         if payload is None:
             # Surface the failure only if we have nothing yet; a mid-pagination
             # blip still returns whatever we collected.
-            last_reason = reason
+            last_reason = _model_discovery_failure(reason)
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
@@ -2456,7 +2465,7 @@ def list_model_service_entries(
     listed = [entries[model_id] for model_id in sorted(entries)]
     if listed:
         if use_cache:
-            _MODEL_SERVICES_CACHE[workspace] = list(listed)
+            _MODEL_SERVICES_CACHE[cache_key] = list(listed)
         return listed, None
     return [], last_reason or "model-services listing returned no models"
 
@@ -3079,16 +3088,12 @@ def list_model_provider_services(
     the listing to one ``catalog.schema`` — the metastore-wide default is documented as an internal,
     likely-to-be-deprecated scope, so prefer passing it when the schema is known.
 
-    A successful result is memoized per workspace for the life of the process, like the
+    A successful result is memoized per workspace, selection, token, and parent, like the
     model-services listing: the listing is workspace-wide (filtered per agent afterwards by
     :func:`service_usable_for_tool`), so without the memo `ucode setup` re-lists it once per
     MPS-capable agent. Pass ``use_cache=False`` to force a fresh call.
     """
-    # Keyed by workspace *and* parent: a `parent`-scoped listing holds only that schema's services,
-    # so caching it under the workspace alone would serve a partial list to an unscoped caller (and
-    # vice versa) — a service that plainly exists would look absent, the same failure pagination was
-    # added to fix.
-    cache_key = (workspace, parent or "")
+    cache_key = (*_model_listing_cache_key(workspace, token), parent or "")
     if use_cache:
         cached = _MODEL_PROVIDER_SERVICES_CACHE.get(cache_key)
         if cached is not None:
@@ -3814,7 +3819,7 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
     """
     payload, reason = _get_anthropic_models_json(workspace, token)
     if payload is None:
-        return {}, reason
+        return {}, _model_discovery_failure(reason)
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
     raw_ids = [
@@ -3917,7 +3922,7 @@ def discover_endpoints_with_api_type(
         f"https://{hostname}/api/2.0/serving-endpoints:foundation-models", token
     )
     if payload is None:
-        return [], reason
+        return [], _model_discovery_failure(reason)
 
     data = cast(dict, payload) if isinstance(payload, dict) else {}
     endpoints = data.get("endpoints", [])
@@ -3981,139 +3986,6 @@ def fetch_codex_models(workspace: str, token: str) -> list[str]:
     return models
 
 
-class GatewayProbe(NamedTuple):
-    reachable: bool
-    detail: str
-    resource_available: bool = False
-    conclusive: bool = True
-
-
-_MODEL_SERVICE_PROBE_PAGE_SIZE = 50
-_MODEL_SERVICE_PROBE_MAX_PAGES = 20
-# The endpoint intermittently returns HTTP 499/504 under load; retry so a transient blip
-# doesn't abort a launch. Two retries add about 1 s then 2 s (plus jitter) before giving up.
-_MODEL_SERVICE_PROBE_MAX_RETRIES = 2
-_MODEL_SERVICE_EMPTY_DETAIL = (
-    "reachable, no accessible model services returned; "
-    "check USE CATALOG on system, and USE SCHEMA and EXECUTE on system.ai"
-)
-
-
-def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
-    base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
-    page_token: str | None = None
-    for page in range(_MODEL_SERVICE_PROBE_MAX_PAGES):
-        params: dict[str, object] = {"page_size": _MODEL_SERVICE_PROBE_PAGE_SIZE}
-        if page_token:
-            params["page_token"] = page_token
-        payload, reason = _http_get_json(
-            f"{base}?{urlencode(params)}", token, max_retries=_MODEL_SERVICE_PROBE_MAX_RETRIES
-        )
-        if payload is None:
-            if page == 0:
-                return GatewayProbe(False, reason or "unknown error")
-            return GatewayProbe(True, "reachable", conclusive=False)
-        if isinstance(payload, dict) and payload.get("model_services"):
-            return GatewayProbe(True, "reachable, accessible model service returned", True)
-        page_token = payload.get("next_page_token") if isinstance(payload, dict) else None
-        if not page_token:
-            return GatewayProbe(True, _MODEL_SERVICE_EMPTY_DETAIL)
-    return GatewayProbe(True, "reachable", conclusive=False)
-
-
-def _raise_unity_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
-    raise RuntimeError(
-        f"Databricks rejected the access token for {workspace} ({reason}). "
-        f"Try:\n"
-        f"  databricks auth logout --host {workspace}\n"
-        f"  databricks auth login --host {workspace}"
-    )
-
-
-def _raise_unity_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
-    raise RuntimeError(
-        f"The access token for {workspace} is missing an OAuth scope required by the "
-        f"Unity Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
-        f"scopes:\n"
-        f"  databricks auth login --host {workspace}"
-    )
-
-
-def _raise_model_service_permission_failure(workspace: str, model_service_reason: str) -> NoReturn:
-    raise RuntimeError(
-        "Databricks Unity Gateway model service access could not be verified on "
-        f"{workspace} ({model_service_reason}). Listing Unity Catalog model services requires "
-        "USE CATALOG on `system`, and USE SCHEMA and EXECUTE on `system.ai`."
-    )
-
-
-# Probes that returned an accessible model service, keyed by (workspace, token) so a re-login or a
-# different credential probes again. `ucode codex` configures once for auto-setup and again on the
-# launch path; re-probing a gateway that just answered only gives the flaky listing another chance
-# to fail. Failures, empty listings, and inconclusive results are never cached.
-_GATEWAY_PROBE_CACHE: dict[tuple[str, str], GatewayProbe] = {}
-
-
-def clear_gateway_probe_cache() -> None:
-    """Forget successful gateway probes (used by tests)."""
-    _GATEWAY_PROBE_CACHE.clear()
-
-
-def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe:
-    """Return the model service probe, raising if model service access can't be verified."""
-    cache_key = (workspace, token)
-    cached = _GATEWAY_PROBE_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    model_service_probe = _probe_model_services(workspace, token)
-    if model_service_probe.resource_available:
-        _GATEWAY_PROBE_CACHE[cache_key] = model_service_probe
-    if model_service_probe.reachable:
-        # resource_available, reachable-but-empty, and inconclusive are all non-fatal: the
-        # caller surfaces the detail as a warning when no accessible model service came back.
-        return model_service_probe
-
-    reason = model_service_probe.detail
-    if isinstance(reason, WorkspaceSelectionReason):
-        raise RuntimeError(reason)
-    if _looks_like_definitive_auth_failure(reason):
-        _raise_unity_gateway_auth_failure(workspace, reason)
-    if _looks_like_scope_failure(reason):
-        _raise_unity_gateway_scope_failure(workspace, reason)
-    if _looks_like_permission_failure(reason):
-        _raise_model_service_permission_failure(workspace, reason)
-
-    if _looks_like_transient_failure(reason):
-        raise RuntimeError(
-            "Could not verify Databricks Unity Gateway on this workspace: the model services "
-            f"request failed ({reason}). This is usually transient; retry the command, or pass "
-            "--skip-preflight to launch without this check."
-        )
-
-    if _is_not_found_reason(reason):
-        raise RuntimeError(
-            "Databricks Unity Gateway is not enabled on this workspace: model services "
-            f"({reason}) are not available. See {UNITY_GATEWAY_DOCS_URL}"
-        )
-    raise RuntimeError(
-        f"Could not verify Databricks Unity Gateway model services on {workspace} "
-        f"({reason}). See {UNITY_GATEWAY_DOCS_URL}"
-    )
-
-
-_HTTP_STATUS_REASON_RE = re.compile(r"^HTTP (\d{3})\b")
-
-
-def _looks_like_transient_failure(reason: str) -> bool:
-    """True when a failure reason is one ``_http_get_bytes`` retries (a status in
-    ``_HTTP_GET_RETRYABLE_STATUS_CODES`` or a network error), rather than a definitive
-    answer about the workspace."""
-    if reason.startswith("network error:"):
-        return True
-    match = _HTTP_STATUS_REASON_RE.match(reason)
-    return match is not None and int(match.group(1)) in _HTTP_GET_RETRYABLE_STATUS_CODES
-
-
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
@@ -4127,21 +3999,6 @@ def _looks_like_definitive_auth_failure(reason: str) -> bool:
     if "http 401" in lowered:
         return True
     return "invalid token" in lowered or "invalid access token" in lowered
-
-
-def _looks_like_scope_failure(reason: str) -> bool:
-    """True for a 403 that reports the OAuth *token* is missing a required scope.
-
-    Matched to the OAuth-token wording so a PAT's permission 403 -- which
-    re-login cannot fix -- is not misrouted to the re-login hint and instead
-    falls through to the grant guidance.
-    """
-    lowered = reason.lower()
-    return "http 403" in lowered and "oauth token" in lowered and "required scopes" in lowered
-
-
-def _looks_like_permission_failure(reason: str) -> bool:
-    return "HTTP 403" in reason
 
 
 def _parse_decimal(value: object) -> Decimal | None:

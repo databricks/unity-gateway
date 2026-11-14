@@ -9,7 +9,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
 import time
 import tomllib
 from importlib import metadata
@@ -28,10 +27,10 @@ import ucode.managed_files as managed_files
 from ucode import agents
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
-from ucode.databricks import GatewayProbe
 from ucode.managed_config import ManagedConfigResult, normalize_managed_config
 from ucode.smart_routing import config as smart_routing_config
 from ucode.state import save_state as real_save_state
+from ucode.workspace import WorkspaceSelectionReason
 
 # Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
 _REAL_REQUIRE_SHARED = cli_mod._require_shared_installation
@@ -49,8 +48,6 @@ def _strip_ansi(text: str) -> str:
 runner = CliRunner()
 
 TOOLS = ["codex", "claude", "gemini", "opencode"]
-
-MODEL_SERVICE_PROBE = GatewayProbe(True, "reachable, accessible model service returned", True)
 
 
 def _jwt(expires_at: float) -> str:
@@ -7098,9 +7095,6 @@ class TestConfigureSharedStateUsePat:
         monkeypatch.setattr(cli_mod, "resolve_pat_token", lambda p: pat_token)
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: None)
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda w, p: "token")
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
-        )
         monkeypatch.setattr(cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], None))
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
@@ -7126,116 +7120,6 @@ class TestConfigureSharedStateUsePat:
         assert os_mod.environ["DATABRICKS_BEARER"] == "dapi-pat"
         assert state["use_pat"] is True
         assert saved and saved[-1]["use_pat"] is True
-
-    def test_happy_path_prints_success_without_model_service_detail(self, monkeypatch, capsys):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
-
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-
-        output = _strip_ansi(capsys.readouterr().out)
-        assert "Unity Gateway connected" in output
-        assert "Model service:" not in output
-
-    @pytest.mark.parametrize(
-        ("responses", "expected_model_service"),
-        [
-            (
-                [({}, None)],
-                "reachable, no accessible model services returned; check USE CATALOG on system, "
-                "and USE SCHEMA and EXECUTE on system.ai",
-            ),
-            (
-                [({"next_page_token": "more"}, None)] * db_mod._MODEL_SERVICE_PROBE_MAX_PAGES,
-                "reachable",
-            ),
-        ],
-        ids=[
-            "model-service-empty",
-            "model-service-inconclusive",
-        ],
-    )
-    def test_prints_warning_when_model_service_not_detected(
-        self,
-        monkeypatch,
-        capsys,
-        responses,
-        expected_model_service,
-    ):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
-        response_iter = iter(responses)
-        monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
-        )
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-
-        output = " ".join(_strip_ansi(capsys.readouterr().out).split())
-        assert f"Model service: {expected_model_service}" in output
-        assert "Unity Gateway connected" not in output
-        assert "(Legacy) endpoints:" not in output
-        assert "V2" not in output
-        assert "V3" not in output
-
-    @pytest.mark.parametrize(
-        ("responses", "error_match"),
-        [
-            (
-                [(None, "HTTP 404 Not Found: model service unavailable")],
-                "not enabled",
-            ),
-            (
-                [(None, "HTTP 403 Forbidden: Missing Unity Catalog grants")],
-                "model service access could not be verified",
-            ),
-            ([(None, "HTTP 401 Unauthorized")], "rejected the access token"),
-        ],
-        ids=[
-            "model-service-unavailable",
-            "model-service-forbidden",
-            "invalid-token",
-        ],
-    )
-    def test_local_gateway_probe_failures_do_not_print_success(
-        self, monkeypatch, capsys, responses, error_match
-    ):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
-        response_iter = iter(responses)
-        monkeypatch.setattr(
-            db_mod, "_http_get_json", lambda url, token, **kwargs: next(response_iter)
-        )
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        with pytest.raises(RuntimeError, match=error_match) as excinfo:
-            cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-
-        output = _strip_ansi(capsys.readouterr().out)
-        assert "Unity Gateway connected" not in output
-        message = str(excinfo.value)
-        assert "v2" not in message.lower()
-        assert "v3" not in message.lower()
-
-    def test_second_configure_in_process_does_not_reprobe_the_gateway(self, monkeypatch):
-        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
-        calls: list[str] = []
-
-        def fake_get(url, token, **kwargs):
-            calls.append(url)
-            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-        cli_mod.configure_shared_state(self.WS, profile="DEFAULT")
-
-        assert len(calls) == 1
 
     def test_use_pat_without_pat_profile_raises(self, monkeypatch):
         cli_mod, logins, _, _ = self._stub_deps(monkeypatch, pat_token=None)
@@ -7495,78 +7379,106 @@ class TestConfigureSharedStateUsePat:
         }
 
 
-class TestConfigureSharedStateOverlapsProbeAndListing:
-    """The model-service listing runs on a daemon thread while the gateway probe is in flight; the
-    probe still gates configure."""
-
+class TestConfigureSharedStateDiscovery:
     WS = "https://example.databricks.com"
-    # Bounds every wait so a regression fails the test instead of hanging the suite.
-    WAIT_SECONDS = 5
 
-    def test_listing_runs_while_probe_is_in_flight(self, monkeypatch):
+    @pytest.mark.parametrize("tool", ["claude", "opencode", "kilo", "pi"])
+    def test_discovers_models_with_one_scoped_request(self, monkeypatch, tool):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        listing_started = threading.Event()
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        requests = []
 
-        def discover(workspace, token):
-            assert (workspace, token) == (self.WS, "token")
-            listing_started.set()
-            return {"opus": "system.ai.claude-opus-4-8"}, ["system.ai.gpt-5"], [], [], None
+        def get_models(url, token, **kwargs):
+            requests.append(url)
+            return {
+                "model_services": [
+                    {"name": "model-services/system.ai.claude-opus-4-8"},
+                    {"name": "model-services/system.ai.gpt-5"},
+                    {"name": "model-services/system.ai.gemini-3-pro"},
+                    {"name": "model-services/system.ai.glm-5-2"},
+                ]
+            }, None
 
-        def probe(workspace, token):
-            # Returns only once the listing has started, so a sequential implementation fails.
-            assert listing_started.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
-            return MODEL_SERVICE_PROBE
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
 
-        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
-        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", probe)
+        for _ in range(2):
+            state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=[tool])
+            assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
+            if tool in {"claude", "pi"}:
+                assert state["codex_models"] == ["system.ai.gpt-5"]
+            if tool in {"opencode", "kilo", "pi"}:
+                assert state["gemini_models"] == ["system.ai.gemini-3-pro"]
+            if tool in {"opencode", "kilo"}:
+                assert state["opencode_models"] == {
+                    "anthropic": ["system.ai.claude-opus-4-8"],
+                    "gemini": ["system.ai.gemini-3-pro"],
+                    "oss": ["system.ai.glm-5-2"],
+                }
+        assert requests == [
+            f"{self.WS}/api/2.1/unity-catalog/model-services?parent=schemas%2Fsystem.ai&page_size=100"
+        ]
+
+    @pytest.mark.parametrize(
+        ("reason", "message"),
+        [
+            ("HTTP 401 Unauthorized", "expired or invalid"),
+            ("HTTP 400 Bad Request: Invalid Token", "expired or invalid"),
+            ("HTTP 403 Forbidden: Invalid access token.", "expired or invalid"),
+            (WorkspaceSelectionReason("Select the workspace first"), "Select the workspace"),
+        ],
+    )
+    def test_discovery_access_failure_prevents_fallback_and_save(
+        self, monkeypatch, reason, message
+    ):
+        cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, reason))
+
+        def unexpected_fallback(*args):
+            pytest.fail("a definitive access failure must not fall back")
+
+        monkeypatch.setattr(cli_mod, "discover_claude_models", unexpected_fallback)
+
+        with pytest.raises(RuntimeError, match=message):
+            cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        assert saved == []
+
+    @pytest.mark.parametrize(
+        "reason",
+        [
+            None,
+            "HTTP 404 Not Found",
+            "HTTP 503 Service Unavailable",
+            "HTTP 403 Forbidden: Missing Unity Catalog grants",
+            "HTTP 403 Forbidden: Provided OAuth token does not have required scopes: unity-catalog",
+        ],
+    )
+    def test_empty_or_unavailable_uc_listing_keeps_family_fallbacks(self, monkeypatch, reason):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        monkeypatch.setattr(
+            db_mod, "_http_get_json", lambda *a, **k: (None, reason) if reason else ({}, None)
+        )
+        monkeypatch.setattr(
+            cli_mod, "discover_claude_models", lambda *_: ({"opus": "databricks-claude-opus"}, None)
+        )
+        monkeypatch.setattr(
+            cli_mod, "discover_codex_models", lambda *_: (["databricks-gpt-5"], None)
+        )
 
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
 
-        assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
-        assert state["codex_models"] == ["system.ai.gpt-5"]
+        assert state["claude_models"] == {"opus": "databricks-claude-opus"}
+        assert state["codex_models"] == ["databricks-gpt-5"]
 
-    def test_probe_failure_raises_without_waiting_for_listing(self, monkeypatch):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        listing_started = threading.Event()
-        release_listing = threading.Event()
-        listing_finished = threading.Event()
-        listing_threads: list[threading.Thread] = []
-
-        def discover(workspace, token):
-            listing_threads.append(threading.current_thread())
-            listing_started.set()
-            release_listing.wait(self.WAIT_SECONDS)
-            listing_finished.set()
-            return {}, [], [], [], None
-
-        def probe_get(url, token, **kwargs):
-            assert listing_started.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
-            return None, "HTTP 404 Not Found: model service unavailable"
-
-        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
-        monkeypatch.setattr(db_mod, "_http_get_json", probe_get)
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-
-        try:
-            with pytest.raises(RuntimeError, match="not enabled"):
-                cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
-            # The listing is still blocked, so the probe's error did not wait for it.
-            assert not listing_finished.is_set()
-            # Interpreter exit does not wait for a daemon thread either.
-            assert [thread.daemon for thread in listing_threads] == [True]
-        finally:
-            release_listing.set()
-            for thread in listing_threads:
-                thread.join(self.WAIT_SECONDS)
-
-    def test_listing_error_propagates_after_successful_probe(self, monkeypatch):
+    def test_listing_error_propagates_without_saving(self, monkeypatch):
         cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
             monkeypatch, pat_token=None
         )
 
-        def discover(workspace, token):
+        def discover(*args):
             raise RuntimeError("listing exploded")
 
         monkeypatch.setattr(cli_mod, "discover_model_services", discover)
@@ -7575,62 +7487,228 @@ class TestConfigureSharedStateOverlapsProbeAndListing:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
-    def test_skip_model_discovery_never_starts_the_listing(self, monkeypatch):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        started: list[object] = []
-        listings: list[str] = []
-        monkeypatch.setattr(cli_mod, "_start_in_background", lambda fn, *args: started.append(fn))
-        monkeypatch.setattr(
-            cli_mod,
+    @pytest.mark.parametrize("skip_model_discovery", [False, True])
+    @pytest.mark.parametrize(
+        "reason",
+        ["HTTP 401 Unauthorized", WorkspaceSelectionReason("Select the workspace first")],
+    )
+    def test_gateway_listing_access_failure_prevents_save(
+        self, monkeypatch, skip_model_discovery, reason
+    ):
+        cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch, pat_token=None
+        )
+        monkeypatch.setattr(cli_mod, "discover_claude_models", lambda *_: ({}, reason))
+        monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *_: ([], reason))
+
+        with pytest.raises(RuntimeError, match="expired or invalid|Select the workspace first"):
+            cli_mod.configure_shared_state(
+                self.WS,
+                profile="DEFAULT",
+                tools=["claude"],
+                skip_model_discovery=skip_model_discovery,
+            )
+        assert saved == []
+
+
+class TestConfigureSharedStateDiscoveryFailures:
+    WS = "https://example.databricks.com"
+    SAVED_MODELS = {
+        "claude_models": {"opus": "system.ai.claude-opus-4-7"},
+        "codex_models": ["system.ai.gpt-5"],
+        "gemini_models": ["system.ai.gemini-3-pro"],
+        "oss_models": ["system.ai.glm-5-2"],
+        "opencode_models": {
+            "anthropic": ["system.ai.claude-opus-4-7"],
+            "gemini": ["system.ai.gemini-3-pro"],
+            "oss": ["system.ai.glm-5-2"],
+        },
+    }
+
+    def _setup(self, monkeypatch, *, previous_workspace=None):
+        cli, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch,
+            pat_token=None,
+            existing_state={"workspace": previous_workspace or self.WS, **self.SAVED_MODELS},
+        )
+        for name in (
             "discover_model_services",
-            lambda w, t: listings.append(w) or ({}, [], [], [], None),
-        )
-        monkeypatch.setattr(
-            cli_mod, "discover_codex_models", lambda w, t: (["system.ai.gpt-5"], None)
-        )
+            "discover_claude_models",
+            "discover_codex_models",
+            "discover_gemini_models",
+        ):
+            monkeypatch.setattr(cli, name, getattr(db_mod, name))
+        return cli, saved
 
-        state = cli_mod.configure_shared_state(
-            self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
-        )
+    @pytest.mark.parametrize("tool", ["opencode", "kilo", "pi", "codex"])
+    @pytest.mark.parametrize(
+        "reason",
+        ["HTTP 503 Service Unavailable", "network error: timed out", "response was not valid JSON"],
+    )
+    def test_failed_refresh_preserves_saved_models(self, monkeypatch, tool, reason):
+        cli, saved = self._setup(monkeypatch)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, reason))
 
-        assert started == []
-        assert listings == []
-        # Provider mode keeps its separate single-call web-search lookup.
-        assert state["web_search_model"] == "system.ai.gpt-5"
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=[tool])
 
-    def test_overlapped_listing_composes_with_process_caches(self, monkeypatch):
-        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-        )
-        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
-        listing_requested = threading.Event()
-        requests: list[str] = []
-        listing_page = {
-            "model_services": [
-                {"name": "model-services/system.ai.claude-opus-4-8"},
-                {"name": "model-services/system.ai.gpt-5"},
-            ]
+        for field in ("claude_models", "codex_models", "gemini_models", "oss_models"):
+            assert state[field] == self.SAVED_MODELS[field]
+        assert saved[-1]["opencode_models"] == self.SAVED_MODELS["opencode_models"]
+        assert cli.check_gateway_endpoint(state, tool)
+
+    def test_healthy_family_fallbacks_keep_oss_when_uc_fails(self, monkeypatch):
+        cli, _ = self._setup(monkeypatch)
+
+        def get_models(url, token, **kwargs):
+            if "model-services" in url:
+                return None, "HTTP 403 Forbidden: Missing Unity Catalog grants"
+            if "anthropic" in url:
+                return {"data": [{"id": "databricks-claude-opus-4-8"}]}, None
+            return {
+                "endpoints": [
+                    {
+                        "name": "databricks-gemini-3-pro",
+                        "config": {
+                            "served_entities": [
+                                {
+                                    "foundation_model": {
+                                        "ai_gateway_v2_supported": True,
+                                        "api_types": [db_mod.API_GEMINI_GENERATE_CONTENT],
+                                    }
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["opencode_models"] == {
+            "anthropic": ["databricks-claude-opus-4-8"],
+            "gemini": ["databricks-gemini-3-pro"],
+            "oss": ["system.ai.glm-5-2"],
         }
 
-        def fake_get(url, token, **kwargs):
-            requests.append(url)
-            if "parent=" in url:
-                listing_requested.set()
-                return listing_page, None
-            assert listing_requested.wait(self.WAIT_SECONDS), "listing did not overlap the probe"
-            return {"model_services": [{"name": "model-services/system.ai.gpt-5"}]}, None
+    def test_successful_empty_refresh_removes_stale_models(self, monkeypatch):
+        cli, _ = self._setup(monkeypatch)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: ({}, None))
 
-        monkeypatch.setattr(db_mod, "_http_get_json", fake_get)
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT")
 
-        first = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
-        second = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        assert state["claude_models"] == {}
+        assert state["codex_models"] == []
+        assert state["gemini_models"] == []
+        assert state["oss_models"] == []
+        assert state["opencode_models"] == {}
 
-        for state in (first, second):
-            assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
-            assert state["codex_models"] == ["system.ai.gpt-5"]
-        # One probe and one listing page; the second configure answers from both process caches.
-        assert len(requests) == 2
+    @pytest.mark.parametrize(
+        ("reason", "guidance"),
+        [
+            ("HTTP 403 Forbidden: Missing Unity Catalog grants", "USE CATALOG"),
+            (
+                "HTTP 403 Forbidden: OAuth token does not have required scopes",
+                "databricks auth login --host https://example.databricks.com",
+            ),
+            ("HTTP 404 Not Found", "model services are unavailable"),
+        ],
+    )
+    def test_failed_uc_listing_warns_without_saved_models(self, monkeypatch, reason, guidance):
+        cli, _ = self._setup(monkeypatch)
+        warnings = []
+        monkeypatch.setattr(cli, "load_state", lambda: {"workspace": self.WS})
+        monkeypatch.setattr(cli, "print_warning", warnings.append)
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, reason))
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["opencode_models"] == {}
+        assert any(reason in warning and guidance in warning for warning in warnings)
+
+    @pytest.mark.parametrize("destination_exists", [False, True])
+    def test_workspace_switch_preserves_only_the_destination_models(
+        self, monkeypatch, destination_exists
+    ):
+        cli, _ = self._setup(monkeypatch, previous_workspace="https://other.databricks.com")
+        destination = {"claude_models": {"sonnet": "system.ai.claude-sonnet-4-6"}}
+        monkeypatch.setattr(
+            cli,
+            "load_full_state",
+            lambda: {"workspaces": {self.WS: destination} if destination_exists else {}},
+        )
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, "HTTP 503"))
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["opencode"])
+
+        assert state["claude_models"] == (
+            destination["claude_models"] if destination_exists else {}
+        )
+        assert state["gemini_models"] == []
+        assert state["oss_models"] == []
+        assert "codex_models" not in state
+        assert state["opencode_models"] == (
+            {"anthropic": ["system.ai.claude-sonnet-4-6"]} if destination_exists else {}
+        )
+
+    def test_changed_token_does_not_reuse_successful_discovery(self, monkeypatch):
+        cli, saved = self._setup(monkeypatch)
+        tokens = []
+
+        def get_models(url, token, **kwargs):
+            tokens.append(token)
+            if token == "invalid-token":
+                return None, "HTTP 401 Unauthorized"
+            return {
+                "model_services": [
+                    {"name": "system.ai.claude-opus-4-8"},
+                    {"name": "system.ai.gpt-5"},
+                ]
+            }, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get_models)
+        cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        monkeypatch.setattr(cli, "get_databricks_token", lambda *a: "invalid-token")
+
+        with pytest.raises(RuntimeError, match="expired or invalid"):
+            cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        assert len(saved) == 1
+        assert "invalid-token" in tokens
+
+    def test_failed_uc_refresh_preserves_copilot_open_models(self, monkeypatch):
+        cli, _ = self._setup(monkeypatch)
+        catalog = {"models": ["system.ai.claude-opus-4-7", "system.ai.glm-5-2"], "limits": {}}
+        prior = {"workspace": self.WS, **self.SAVED_MODELS, "copilot_catalog": catalog}
+        monkeypatch.setattr(cli, "load_state", lambda: dict(prior))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, "HTTP 503"))
+        monkeypatch.setattr(
+            cli,
+            "list_anthropic_model_catalog",
+            lambda *a: db_mod.AnthropicModelCatalog(
+                model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
+            ),
+        )
+
+        state = cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["copilot"])
+
+        assert state["copilot_catalog"] == catalog
+
+    def test_saved_copilot_catalog_does_not_hide_supplemental_auth_failure(self, monkeypatch):
+        cli, saved = self._setup(monkeypatch)
+        prior = {"workspace": self.WS, "copilot_catalog": {"models": ["system.ai.glm-5-2"]}}
+        monkeypatch.setattr(cli, "load_state", lambda: dict(prior))
+        monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **k: (None, "HTTP 503"))
+        monkeypatch.setattr(
+            cli,
+            "list_anthropic_model_catalog",
+            lambda *a: db_mod.AnthropicModelCatalog(
+                model_ids=[], model_id_to_display_name={}, error_msg="HTTP 401 Unauthorized"
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="expired or invalid"):
+            cli.configure_shared_state(self.WS, profile="DEFAULT", tools=["copilot"])
+        assert saved == []
 
 
 class TestConfigureNoLongerValidates:
@@ -7675,9 +7753,6 @@ class TestConfigureSharedStateMcpCleanup:
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: None)
         monkeypatch.setattr(cli_mod, "find_profile_name_for_workspace", lambda w, i: None)
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda w, p: "token")
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
-        )
         monkeypatch.setattr(cli_mod, "discover_model_services", lambda w, t: ({}, [], [], [], None))
         monkeypatch.setattr(cli_mod, "discover_claude_models", lambda w, t: ({}, None))
         monkeypatch.setattr(cli_mod, "discover_gemini_models", lambda w, t: ([], None))
@@ -7878,7 +7953,6 @@ class TestConfigureSharedStateMcpCleanup:
         # its configured servers.
         assert full["workspaces"][old_workspace]["mcp_servers"] == [entry]
         output = " ".join(_strip_ansi(capsys.readouterr().out).split())
-        assert "Unity Gateway connected" in output
         assert "Dropping 1 stale MCP entry" not in output
         assert "Failed to remove stale MCP entries from Claude Code" in output
         assert "left over from previously-configured workspaces" not in output
@@ -7936,13 +8010,11 @@ class TestConfigureSharedStateSkipDiscovery:
         monkeypatch.setattr(cli_mod, "run_databricks_login", lambda w, p: None)
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: None)
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda w, p: "token")
-        monkeypatch.setattr(
-            cli_mod, "probe_unity_gateway_capabilities", lambda w, t: MODEL_SERVICE_PROBE
-        )
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {})
         monkeypatch.setattr(cli_mod, "save_state", lambda s: None)
 
-    def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch):
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_skips_family_discovery_and_fetches_web_search_model(self, monkeypatch, tool):
         import ucode.cli as cli_mod
 
         ws = "https://prov.databricks.com"
@@ -7965,10 +8037,11 @@ class TestConfigureSharedStateSkipDiscovery:
             lambda w, t: codex_calls.append((w, t)) or (["databricks-gpt-5"], None),
         )
 
-        state = cli_mod.configure_shared_state(ws, tools=["claude"], skip_model_discovery=True)
+        state = cli_mod.configure_shared_state(ws, tools=[tool], skip_model_discovery=True)
 
-        assert codex_calls == [(ws, "token")]
-        assert state["web_search_model"] == "databricks-gpt-5"
+        assert codex_calls == ([(ws, "token")] if tool == "claude" else [])
+        if tool == "claude":
+            assert state["web_search_model"] == "databricks-gpt-5"
         # Existing model list preserved, not overwritten to {}.
         assert state["claude_models"] == {"opus": "databricks-claude-opus-4-8"}
 
@@ -7992,7 +8065,9 @@ class TestConfigureSharedStateCopilotCatalog:
             cli_mod, "load_full_state", lambda: {"workspaces": {self.WS: dest_block}}
         )
         if listed is not None:
-            db_mod._MODEL_SERVICES_CACHE[self.WS] = [db_mod.ModelServiceEntry(m) for m in listed]
+            db_mod._MODEL_SERVICES_CACHE[db_mod._model_listing_cache_key(self.WS, "token")] = [
+                db_mod.ModelServiceEntry(m) for m in listed
+            ]
         reason = None if listed else "HTTP 503"
         sonnet = "system.ai.claude-sonnet-4-6"
         monkeypatch.setattr(
@@ -8085,7 +8160,7 @@ class TestConfigureSharedStateCopilotCatalog:
 
 class TestConfigureSharedStateSkipPreflight:
     """With skip_preflight (--skip-preflight), a prior configure is trusted:
-    no auth login, token fetch, gateway probe, or model discovery runs — but the
+    no auth login, token fetch, or model discovery runs — but the
     profile and base URLs are still resolved and state is persisted."""
 
     WS = "https://cfg.databricks.com"
@@ -8106,13 +8181,7 @@ class TestConfigureSharedStateSkipPreflight:
         monkeypatch.setattr(cli_mod, "run_databricks_login", _boom("run_databricks_login"))
         monkeypatch.setattr(cli_mod, "ensure_pat_bearer", _boom("ensure_pat_bearer"))
         monkeypatch.setattr(cli_mod, "get_databricks_token", _boom("get_databricks_token"))
-        monkeypatch.setattr(
-            cli_mod,
-            "probe_unity_gateway_capabilities",
-            _boom("probe_unity_gateway_capabilities"),
-        )
         monkeypatch.setattr(cli_mod, "discover_model_services", _boom("discover_model_services"))
-        monkeypatch.setattr(cli_mod, "_start_in_background", _boom("_start_in_background"))
         monkeypatch.setattr(cli_mod, "discover_codex_models", _boom("discover_codex_models"))
         monkeypatch.setattr(cli_mod, "find_profile_name_for_host", lambda w: "resolved")
         monkeypatch.setattr(cli_mod, "build_shared_base_urls", lambda w: {"codex": "u/codex"})
