@@ -165,7 +165,7 @@ test('disabled identity headers skip language inheritance and restore the upstre
   expect(warnings.length).toBe(1);
 });
 
-for (const failure of ['settings', 'env-get', 'env-set'] as const) {
+for (const failure of ['settings', 'env-get', 'env-set', 'env-denied'] as const) {
   test(`optional ${failure} failure restores the upstream and lets the turn proceed`, async ($, on) => {
     const upstream = 'https://workspace.example/ai-gateway/anthropic';
     const url = 'http://127.0.0.1:12345/ai-gateway/anthropic';
@@ -191,6 +191,9 @@ for (const failure of ['settings', 'env-get', 'env-set'] as const) {
     on('env.set', ($, e) => {
       if (fail && failure === 'env-set' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
         throw new Error('environment write unavailable');
+      }
+      if (fail && failure === 'env-denied' && e.name === 'CLAUDE_CODE_GATEWAY_HINT_HEADERS') {
+        return { deny: 'environment write denied by policy' };
       }
       env[e.name] = e.value;
       return { value: undefined };

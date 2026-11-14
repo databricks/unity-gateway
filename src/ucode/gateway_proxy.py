@@ -93,21 +93,25 @@ def _diagnostics_enabled() -> bool:
     return env_bool(_DIAGNOSTICS_ENV)
 
 
+def _append_proxy_log(path: str | os.PathLike[str], line: str) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as log:
+        # Windows append does not make the seek and write atomic.
+        acquire_exclusive_file_lock(log, timeout=1.0)
+        try:
+            log.write(line)
+            log.flush()
+        finally:
+            release_file_lock(log)
+
+
 def _write_proxy_log(line: str) -> None:
     if sys.stderr.isatty():
         # Background writes corrupt the agent's cursor-controlled terminal rendering.
         try:
             path = APP_DIR / "logs" / "gateway-proxy.log"
             path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as log:
-                # Windows append does not make the seek and write atomic.
-                acquire_exclusive_file_lock(log, timeout=1.0)
-                try:
-                    log.write(line)
-                    log.flush()
-                finally:
-                    release_file_lock(log)
+            _append_proxy_log(path, line)
         except OSError:
             pass
         return
@@ -122,14 +126,7 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
     line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
     if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
         try:
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as log:
-                acquire_exclusive_file_lock(log, timeout=1.0)
-                try:
-                    log.write(line)
-                    log.flush()
-                finally:
-                    release_file_lock(log)
+            _append_proxy_log(path, line)
             return
         except OSError:
             sys.stderr.write(

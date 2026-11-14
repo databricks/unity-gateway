@@ -117,7 +117,9 @@ def build_custom_auth_shell_command(workspace: str, config: CustomOAuthConfig) -
 
 
 @contextmanager
-def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
+def _custom_oauth_lock(
+    cache_dir: Path, redirect_url: str, *, timeout: float | None = None
+) -> Iterator[None]:
     """Serialize helpers sharing a callback port with an OS file lock.
 
     Keep the lock file in place: unlinking it could let waiters lock different
@@ -126,7 +128,7 @@ def _custom_oauth_lock(cache_dir: Path, redirect_url: str) -> Iterator[None]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     port = urlparse(redirect_url).port
     with (cache_dir / f"ug-oauth-{port}.lock").open("a+b") as lock_file:
-        acquire_exclusive_file_lock(lock_file)
+        acquire_exclusive_file_lock(lock_file, timeout=timeout)
         try:
             yield
         finally:
@@ -205,7 +207,11 @@ def get_custom_client_token(
             redirect_url=config["redirect_url"],
             scopes=config["scopes"],
         )
-        with _custom_oauth_lock(Path(cache.filename).parent, config["redirect_url"]):
+        with _custom_oauth_lock(
+            Path(cache.filename).parent,
+            config["redirect_url"],
+            timeout=None if allow_consent else 0,
+        ):
             # Read only after acquiring the lock: another helper may have just
             # completed login or rotated the refresh token while we waited.
             credentials = cache.load()

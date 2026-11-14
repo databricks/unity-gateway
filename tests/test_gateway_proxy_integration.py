@@ -744,6 +744,12 @@ class TestClaudeLanguageProxyEndToEnd:
                 content=b'{"model":"routed-child-model"}',
                 timeout=10,
             )
+            authorization_only = httpx.post(
+                proxy_url + "/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_LANGUAGE_SESSION_SECRET}"},
+                content=b'{"model":"routed-child-model"}',
+                timeout=10,
+            )
             bad_path = httpx.post(
                 proxy_url + "/not-allowlisted",
                 headers={"X-UG-Language-Session": _LANGUAGE_SESSION_SECRET},
@@ -752,5 +758,6 @@ class TestClaudeLanguageProxyEndToEnd:
             )
 
         assert bad_secret.status_code == 401
+        assert authorization_only.status_code == 401
         assert bad_path.status_code == 404
         assert gw.requests == []

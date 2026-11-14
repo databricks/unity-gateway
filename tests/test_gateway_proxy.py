@@ -10,6 +10,7 @@ import socket
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from unittest.mock import Mock
 from urllib.parse import quote
 
@@ -17,6 +18,7 @@ import httpx
 import pytest
 
 from ucode import gateway_proxy
+from ucode.custom_oauth import _custom_oauth_lock
 
 
 def _make_jwt(exp: float | None) -> str:
@@ -479,8 +481,20 @@ class TestTokenCache:
         _ = cache.token
         assert state["forces"] == [False]  # no extra mint while fresh
 
-    def test_seeded_token_survives_failed_renewal_then_refreshes(self):
-        state, provider = _fake_token_provider([5000])
+    @pytest.mark.parametrize("failure", ["provider", "oauth-lock"])
+    @pytest.mark.parametrize("remaining", [-1, 60])
+    def test_seeded_token_survives_failed_renewal_then_refreshes(
+        self, tmp_path, failure, remaining
+    ):
+        state, mint = _fake_token_provider([5000])
+
+        def provider(force):
+            try:
+                with _custom_oauth_lock(tmp_path, "http://localhost:8020", timeout=0):
+                    return mint(force)
+            except TimeoutError as exc:
+                raise RuntimeError(str(exc)) from exc
+
         initial = _make_jwt(time.time() + 3600)
         failures = []
         cache = gateway_proxy.TokenCache(
@@ -492,11 +506,20 @@ class TestTokenCache:
         assert cache.token == initial
         assert state["forces"] == []
 
-        state["raise"] = True
-        cache._expiry = time.time() - 1
-        assert cache.token == initial
-        assert not cache._fresh_enough(buffer_seconds=0)
-        assert failures == ["mint failed"]
+        state["raise"] = failure == "provider"
+        cache._expiry = time.time() + remaining
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with (
+                _custom_oauth_lock(tmp_path, "http://localhost:8020")
+                if failure == "oauth-lock"
+                else nullcontext()
+            ):
+                assert pool.submit(lambda: cache.token).result(timeout=2) == initial
+        assert cache._fresh_enough(buffer_seconds=0) is (remaining > 0)
+        expected = (
+            "mint failed" if failure == "provider" else "timed out acquiring exclusive file lock"
+        )
+        assert failures == [expected]
 
         state["raise"] = False
         assert cache.token != initial

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -173,7 +175,7 @@ class TestCustomClientToken:
         assert "Sign in again" in output.err
         assert "sensitive server response" not in output.err
 
-    @pytest.mark.parametrize("cached", ["missing", "expired", "fresh"])
+    @pytest.mark.parametrize("cached", ["missing", "expired", "fresh", "contended"])
     def test_noninteractive_launch_token_failure_does_not_start_consent(self, capsys, cached):
         cache_path = Path(self._cache().filename)
         if cached != "missing":
@@ -191,10 +193,22 @@ class TestCustomClientToken:
                 "scopes": TEST_SCOPES,
             }
         }
-        with pytest.raises(RuntimeError, match="Custom-client OAuth failed") as error:
-            launch_token(state, WS, force_refresh=cached == "fresh", allow_consent=False)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with (
+                _custom_oauth_lock(cache_path.parent, "http://localhost:8020")
+                if cached == "contended"
+                else nullcontext()
+            ):
+                with pytest.raises(RuntimeError, match="Custom-client OAuth failed") as error:
+                    pool.submit(
+                        launch_token,
+                        state,
+                        WS,
+                        force_refresh=cached in {"fresh", "contended"},
+                        allow_consent=False,
+                    ).result(timeout=2)
         self.browser.assert_not_called()
-        assert self.refresh.call_count == (0 if cached == "missing" else 1)
+        assert self.refresh.call_count == (0 if cached in {"missing", "contended"} else 1)
         assert (cache_path.read_bytes() if cache_path.exists() else None) == original
         output = capsys.readouterr()
         assert output.out == output.err == ""
