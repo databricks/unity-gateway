@@ -82,7 +82,7 @@ class MacApp:
     def click(self, role: str, label: str | None, timeout: float = 60) -> None:
         """Click the first ``role`` element labelled ``label`` (any label if None)."""
         ready_tree = self.wait_for(role, label, timeout)
-        # Reserve 10s of the existing command timeout for the action and native failure output.
+        # Aim to leave 10s for action/output; an in-flight AX scan can overrun its budget.
         lookup_timeout_seconds = 50
         try:
             self.session.run(

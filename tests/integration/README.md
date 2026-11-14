@@ -1495,8 +1495,9 @@ Accessibility to the runner's shell, so no permission prompt is needed. It uploa
 `integration-codex-desktop-macos` evidence.
 On a failed click, `chatgpt-click-failure.json` records the target, the readiness tree and a
 fresh failure tree (or capture-error class), plus the native lookup budget. The native helper
-reacquires a missing target for up to 50s inside the existing 60s command timeout, reserving
-10s for the action and native failure output. Mouse events occur only after a target is found,
+stops starting further lookup scans after 50s, aiming to leave 10s for action/output.
+An in-flight synchronous AX read can overrun that lookup deadline; the existing 60s
+subprocess timeout remains the outer guard. Mouse events occur only after a target is found,
 so the action is never replayed. A missing-control command also prints its final lookup
 tree in `command-*.json`; the original click error remains the test failure.
 A separate native macOS case requests a unique nonexistent label and verifies that the helper
