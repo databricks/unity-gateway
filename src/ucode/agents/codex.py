@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import os
 import plistlib
 import re
@@ -86,6 +87,7 @@ from ucode.managed_files import (
     mark_managed_file_verified,
     read_managed_file,
     reconcile_managed_file,
+    reconcile_privileged_files,
     revert_managed_file,
     warn_managed_write_skipped,
 )
@@ -113,6 +115,8 @@ CODEX_PROFILE_NAME = "ucode"
 CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / f"{CODEX_PROFILE_NAME}.config.toml"
 CODEX_BACKUP_PATH = APP_DIR / "codex-ucode-config.backup.toml"
 CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
+# The static catalog `ug configure` enforces for every user, beside managed_config.toml.
+MANAGED_MODEL_CATALOG_NAME = "ug-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
 CODEX_MODEL_PROVIDER_NAME = "Databricks"
@@ -497,6 +501,11 @@ def write_tool_config(
     databricks_profile = state.get("profile")
     static_models = state.get("codex_static_models")
     static_models = static_models if isinstance(static_models, list) and static_models else None
+    # A launch on a provider or UC location discovers its own catalog, which a managed one would
+    # override, so only a plain static list is enforced machine-wide.
+    managed_catalog_path = (
+        _managed_catalog_path() if static_models and not provider and not parent_schema else None
+    )
 
     if machine_wide_only():
         if relayed:
@@ -510,8 +519,8 @@ def write_tool_config(
                 f"`ug configure --global` needs Codex {LEGACY_LAYOUT_CODEX_VERSION_TEXT} or "
                 "newer: earlier versions read only per-user settings. Upgrade Codex and retry."
             )
-        if static_models and not provider:
-            # The static model list reaches Codex only through a per-user catalog reference.
+        if static_models and not provider and managed_catalog_path is None:
+            # Without a managed catalog the list reaches Codex only through a per-user reference.
             print_warning_err(
                 "Skipped your workspace's Codex model list: `ug configure --global` writes only "
                 "machine-wide settings, and Codex reads that list from per-user settings."
@@ -632,8 +641,20 @@ def write_tool_config(
             enabled=False,
         )
         write_toml_file(CODEX_CONFIG_PATH, doc)
+
+    def compose_managed(base: dict) -> dict:
+        compose(base, include_catalog=False)
+        if managed_catalog_path is not None:
+            base["model_catalog_json"] = str(managed_catalog_path)
+        elif _named_managed_catalog(base):
+            base.pop("model_catalog_json")
+        return base
+
     _reconcile_managed_config(
-        state, lambda base: compose(base, include_catalog=False), relayed=relayed
+        state,
+        compose_managed,
+        relayed=relayed,
+        catalog=catalog if managed_catalog_path is not None else None,
     )
     # Persisted so launch() wires the relay proxy and ChatGPT login; cleared on a non-relayed run.
     if relayed:
@@ -713,12 +734,14 @@ def managed_config_status(state: dict) -> tuple[Path | None, str, str]:
 
 
 def revert_managed_config() -> str:
-    return revert_managed_file(
+    result = revert_managed_file(
         "codex",
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
     )
+    _remove_managed_catalog()
+    return result
 
 
 def _otel_service_path() -> Path:
@@ -1130,7 +1153,10 @@ def _managed_relayed_conflicts(path: Path) -> list[str]:
 
 
 def _reconcile_managed_config(
-    state: dict, compose: Callable[[dict], dict], relayed: bool = False
+    state: dict,
+    compose: Callable[[dict], dict],
+    relayed: bool = False,
+    catalog: dict | None = None,
 ) -> None:
     """Reconcile Codex's highest-precedence config while preserving unrelated policy."""
     path = codex_managed_config_path()
@@ -1178,17 +1204,26 @@ def _reconcile_managed_config(
     managed_before = copy.deepcopy(existing)
     desired_doc = compose(existing)
     conflicts = managed_file_conflicts(managed_before, desired_doc, MANAGED_KEYS)
+    named = _named_managed_catalog(managed_before)
+    # ug's enforced list outranks the local one, so a dropped or changed list must be written.
+    if named and (
+        catalog is None or catalog_slugs(read_json_safe(named)) != catalog_slugs(catalog)
+    ):
+        conflicts.append("model_catalog_json")
     if not managed_writes_allowed() and not conflicts:
         warn_managed_write_skipped(path, managed_before, desired_doc)
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
+        if catalog is not None:
+            # Before the reference, so Codex never reads a missing or stale catalog.
+            _write_managed_catalog(catalog)
         reconcile_managed_file(
             path,
             tomlkit.dumps(desired_doc),
             tool="codex",
             display="Codex",
-            owned_paths=MANAGED_KEYS,
+            owned_paths=[*MANAGED_KEYS, ["model_catalog_json"]],
             parser=_parse_managed_config,
         )
     except ManagedFileWriteUnavailable:
@@ -1201,7 +1236,55 @@ def _reconcile_managed_config(
         )
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
+    if catalog is None:
+        _remove_managed_catalog()
     mark_managed_file_verified(state, "codex", path)
+
+
+def _managed_catalog_path() -> Path | None:
+    """ug's root-owned model catalog beside ``managed_config.toml``; None on Windows, whose
+    ``requirements.toml`` can't name one."""
+    path = codex_managed_config_path()
+    if path is None or path.name == CODEX_REQUIREMENTS_FILE:
+        return None
+    return path.parent / MANAGED_MODEL_CATALOG_NAME
+
+
+def _named_managed_catalog(doc: dict) -> Path | None:
+    """ug's machine-wide catalog, when ``doc`` points Codex at it."""
+    ours = _managed_catalog_path()
+    return ours if ours is not None and doc.get("model_catalog_json") == str(ours) else None
+
+
+def _write_managed_catalog(catalog: dict | None) -> None:
+    """Write (or, for None, remove) ug's machine-wide catalog through the privileged writer."""
+    path = _managed_catalog_path()
+    if path is None or is_dry_run():
+        return
+    text = json.dumps(catalog, indent=2) + "\n" if catalog is not None else None
+    try:
+        reconcile_privileged_files({path: text}, display="Codex")
+    except (OSError, CalledProcessError) as exc:
+        detail = str(getattr(exc, "stderr", None) or exc).strip()
+        raise ManagedFileWriteUnavailable(
+            f"Could not update the Codex model catalog at {path}: {detail}"
+        ) from exc
+
+
+def _remove_managed_catalog() -> None:
+    """Remove ug's machine-wide catalog unless the managed file still names it; a failure only
+    warns."""
+    path = codex_managed_config_path()
+    try:
+        text = read_managed_file(path) if path is not None else None
+        if text is not None and _named_managed_catalog(_parse_managed_config(text)):
+            return
+    except RuntimeError:
+        return  # An unreadable managed file may still name it.
+    try:
+        _write_managed_catalog(None)
+    except ManagedFileWriteUnavailable as exc:
+        print_warning_err(str(exc))
 
 
 def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:

@@ -278,7 +278,8 @@ skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the pic
 Claude/Codex, skills, MCP restore, Desktop and Cowork are skipped, and an installation in a
 user's home folder is rejected, an agent failure fails the run only after the other agents and MCP setup; `TestPerUserPaths` in `test_managed_files.py` and
 `test_user_profiles_dir` in `test_system_cross_os.py` cover the location check), the `global_flag` tests in `test_agent_claude.py` and `test_agent_codex.py` (only the
-managed file is written; relay, legacy Codex and platforms without one fail), and
+managed file is written, plus Codex's machine-wide model catalog for a static list; relay, legacy
+Codex and platforms without one fail), and
 `test_mcp.py` (no user-scope MCP fallback).
 `TestConfigureSharedStateMcpCleanup::test_explicit_configure_switch_restores_saved_mcp_entries` covers
 a `--global` workspace switch followed by a normal configure of the same workspace; these
@@ -939,6 +940,14 @@ conflicting managed settings, compatible/absent no-ops, policy and backup preser
 authorization, and one-shot `sudo -n` with disconnected stdin. These are component regressions with
 privileged writes replaced by temporary-file operations, not automated Isaac, real sudo-policy, or
 live telemetry-export coverage.
+
+`TestCodexManagedConfig` in `test_agent_codex.py` covers Codex's machine-wide model catalog: a
+static list writes `/etc/codex/ug-model-catalog.json` and names it in the managed file; dropping the
+list or adding a provider or UC location removes both; a failed catalog write leaves the managed
+file unchanged; revert keeps the catalog while the managed file still names it; and a launch with
+no terminal rewrites a changed or dropped list but leaves a metadata-only change alone. Privileged
+writes are replaced by temporary-file operations, so real sudo and Codex reading the catalog are not
+covered here.
 
 `test_configure_managed_writes.py` covers a headless `ug configure` writing Claude's managed
 `apiKeyHelper`, `ANTHROPIC_BASE_URL`, and custom headers (new and existing file) and installing the
