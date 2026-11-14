@@ -22,7 +22,7 @@ import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
-const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2/;
+const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2([^\n<]*)/;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
@@ -496,8 +496,8 @@ export function register(on: On, options: PluginOptions): void {
               if (autoSave !== request) return;
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
-              if (confirmation?.startsWith('Set model to ')) request.confirmation = 'accepted';
-              else if (confirmation && (confirmation.startsWith('Kept model as ') || MODEL_SWITCH_CANCELLED.test(confirmation))) request.confirmation = 'cancelled';
+              if (confirmation && /^(?:Set model to |Set to Auto mode )/.test(confirmation)) request.confirmation = 'accepted';
+              else if (confirmation && (/^(?:Kept model as |Kept Auto mode )/.test(confirmation) || MODEL_SWITCH_CANCELLED.test(confirmation))) request.confirmation = 'cancelled';
               else if (confirmation) throw new Error(confirmation);
               request.phase = 'waiting';
               if (!request.confirmation) return;
@@ -621,8 +621,12 @@ export function register(on: On, options: PluginOptions): void {
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? block.text.replace(MODEL_CONFIRMATION, (_match, before) =>
-              `${before}\`Auto (main model: ${autoConfirmation.model.replace(/^system\.ai\./, '')})\``) : block.text,
+            : autoConfirmation ? block.text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
+              const model = autoConfirmation.model.replace(/^system\.ai\./, '');
+              const suffix = details.trim().replace(/^and /, '');
+              return `<local-command-stdout>${setModel ? 'Set to' : 'Kept'} Auto mode with main model \`${model}\`. Subagents are smart routed.`
+                + (suffix ? `\n${suffix[0].toUpperCase()}${suffix.slice(1)}` : '');
+            }) : block.text,
         } : block) },
       } : e;
       const result = await next(confirmation);

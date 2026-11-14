@@ -325,14 +325,14 @@ test('Auto confirmations preserve native save details and warnings', {options}, 
   const confirm = commandTranscript(context);
   const details = ' and saved as your default for new sessions with `high` effort\nA native warning';
   await confirm('Set model to `Opus 5.5`' + details);
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Auto (main model: opus)`' + details + '</local-command-stdout>');
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set to Auto mode with main model `opus`. Subagents are smart routed.\nSaved as your default for new sessions with `high` effort\nA native warning</local-command-stdout>');
   expect(context.state.selected).toBe('ug-auto-opus');
   context.state.selected = 'opus';
   await confirm('Set model to `Opus 5.5`' + details);
   expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Set model to `Opus 5.5`' + details + '</local-command-stdout>');
   context.state.selected = 'ug-auto-opus';
   await confirm('Kept model as `Opus 5.5`');
-  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept model as `Auto (main model: opus)`</local-command-stdout>');
+  expect(context.state.appended.at(-1)).toBe('<local-command-stdout>Kept Auto mode with main model `opus`. Subagents are smart routed.</local-command-stdout>');
 });
 
 for (const row of millionConfig.models) {
@@ -343,7 +343,7 @@ for (const row of millionConfig.models) {
       for (const action of ['Set model to', 'Kept model as']) {
         await confirm(`${action} \`${row.autoModel}\``);
         expect(context.state.appended.at(-1)).toBe(
-          `<local-command-stdout>${action} \`Auto (main model: ${row.model.replace(/^system\.ai\./, '')})\`</local-command-stdout>`);
+          `<local-command-stdout>${action === 'Set model to' ? 'Set to' : 'Kept'} Auto mode with main model \`${row.model.replace(/^system\.ai\./, '')}\`. Subagents are smart routed.</local-command-stdout>`);
       }
     });
 }
@@ -420,26 +420,29 @@ test('direct model commands open the main selector only for Auto', {options}, as
 });
 
 
-test('/auto switches the native identity while Auto is selected', {options}, async ($, on) => {
-  const {state, env, clock} = host(on, 'ug-auto-opus');
-  await $.session.start(start);
-  await $.command.run({command: 'auto'});
-  const pane = await $.ui.mount({plugin: 'ug-smart-router', component: 'Pane', requestId: 'auto-main', surface: 'terminal', props: {} as any});
-  await pane.press({key:'auto-main-model-3'});
-  await clock.advance(0);
-  await pane.unmount();
-  expect(state.selected).toBe('ug-auto-astra');
-  expect(state.saved).toBe('astra');
-  expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('ug-auto-astra');
-  expect(state.questions.length).toBe(1);
-  await step($);
-  expect(state.forwarded[0].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
-  state.saved = 'opus'; // Another session's persisted preference cannot change this profile.
-  await step($);
-  expect(state.forwarded[1].model).toBe('astra');
-  expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
-});
+for (const confirmation of ['Set model to `model`', 'Set to Auto mode with main model `astra`. Subagents are smart routed.']) {
+  test(`/auto saves after the native confirmation: ${confirmation}`, {options}, async ($, on) => {
+    const {state, env, clock} = host(on, 'ug-auto-opus');
+    state.modelResult = {text:confirmation};
+    await $.session.start(start);
+    await $.command.run({command: 'auto'});
+    const pane = await $.ui.mount({plugin: 'ug-smart-router', component: 'Pane', requestId: 'auto-main', surface: 'terminal', props: {} as any});
+    await pane.press({key:'auto-main-model-3'});
+    await clock.advance(0);
+    await pane.unmount();
+    expect(state.selected).toBe('ug-auto-astra');
+    expect(state.saved).toBe('astra');
+    expect(env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('ug-auto-astra');
+    expect(state.questions.length).toBe(1);
+    await step($);
+    expect(state.forwarded[0].model).toBe('astra');
+    expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
+    state.saved = 'opus'; // Another session's persisted preference cannot change this profile.
+    await step($);
+    expect(state.forwarded[1].model).toBe('astra');
+    expect(await hint($, state)).toBe('native · Auto (Astra 6.0) · smart router ON');
+  });
+}
 
 
 test('manual selection and cancellation close Auto before the native picker confirmation renders', {options}, async ($, on) => {
