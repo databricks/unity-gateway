@@ -5711,6 +5711,7 @@ def doctor_cmd() -> None:
 
 
 @app.command("usage", rich_help_panel="Usage")
+@metrics.timed("ug_usage_duration_ms", label_args={"show_all": "show_all"})
 def usage_cmd(
     show_all: Annotated[
         bool, typer.Option("--all", help="Show all applicable budget limits.")
