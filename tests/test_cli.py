@@ -1088,7 +1088,7 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
-    @pytest.mark.parametrize("installed_version", ["0.145.0", "0.163.0"])
+    @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
     @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
     def test_codex_routing_version_requires_upgrade_or_explicit_disable(
         self, tmp_path, monkeypatch, installed_version, recovery

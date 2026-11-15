@@ -368,14 +368,15 @@ def auth_command(state: dict) -> str:
 def next_steps() -> list[str]:
     """What to do in VS Code once the extension is installed, for this OS."""
     restart = (
-        "quit it (Cmd+Q) and open it again"
+        # Closing every window leaves VS Code running on macOS.
+        "Quit VS Code with Cmd+Q, even if no window is open, and open it again."
         if current_os() is OS.MACOS
-        else "close every VS Code window and open it again"
+        else "Close every VS Code window and open VS Code again."
     )
     return [
-        # An open window keeps running the extension build it loaded, and configure reinstalls
-        # every time. A restart covers every open window at once.
-        f"1. If VS Code is open, {restart}.",
+        # A running VS Code keeps the extension build it loaded, even in a new window, and
+        # configure reinstalls every time.
+        f"1. {restart}",
         "2. Open Chat, click the model picker, and choose a Databricks model.",
     ]
 

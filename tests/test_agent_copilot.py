@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import uuid
 from pathlib import Path
 
 import httpx
@@ -1599,6 +1600,8 @@ class TestLaunch:
         assert seen["argv"] == [
             "copilot",
             "--allow-all-mcp-server-instructions",
+            "--session-id",
+            seen["argv"][3],
             "-p",
             "hi",
             "--model",
@@ -1627,6 +1630,32 @@ class TestLaunch:
 
         assert seen["bad_request_rewriter"] is copilot.recognizable_context_overflow
         assert tuple(seen["dropped_chat_completions_fields"]) == ("reasoning_effort",)
+
+    def test_the_proxy_sends_the_session_id_and_marks_subagents(self, tmp_path, monkeypatch):
+        from ucode import gateway_proxy
+
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        start = gateway_proxy.start_gateway_auth_proxy
+        proxy = {}
+
+        def start_proxy(*args, **kwargs):
+            proxy.update(kwargs)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(gateway_proxy, "start_gateway_auth_proxy", start_proxy)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), ["-p", "hi"], options=copilot.LaunchOptions())
+
+        session_id = seen["argv"][seen["argv"].index("--session-id") + 1]
+        assert str(uuid.UUID(session_id)) == session_id
+        assert proxy["added_headers"]["session-id"] == session_id
+        subagent = {"x-interaction-type": "conversation-subagent"}
+        body = json.dumps({"messages": [{"role": "user", "content": "find the tests"}]}).encode()
+        assert proxy["request_headers_adder"](subagent, body)["thread-id"].startswith(
+            f"{session_id}-"
+        )
 
     def test_starts_on_the_requested_launch_model(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -1830,3 +1859,135 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcpServers"]
         assert doc["mcpServers"]["mine"] == {"type": "local"}
         assert doc["mcpServers"]["svc"]["command"] == "ug"
+
+
+SESSION = "0b6f3a52-2c5e-4d1e-9a51-1f2b8e4c7d90"
+
+
+class TestSessionArgs:
+    def test_a_new_session_gets_a_new_id_that_copilot_uses_too(self):
+        args, session_id = copilot.session_args(["-p", "hi"])
+
+        assert args == ["--session-id", session_id, "-p", "hi"]
+        assert str(uuid.UUID(session_id)) == session_id
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--session-id", SESSION],
+            [f"--session-id={SESSION}"],
+            ["--resume", SESSION.upper()],
+            ["-r", SESSION, "-p", "hi"],
+            [f"--resume={SESSION}"],
+        ],
+    )
+    def test_a_session_named_by_uuid_keeps_its_id(self, args):
+        assert copilot.session_args(args) == (args, SESSION)
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--continue"], ["--resume"], ["-r", "-p", "hi"], ["--resume=my-session"], ["sessions"]],
+    )
+    def test_a_session_picked_otherwise_gets_an_id_of_this_launch(self, args):
+        new_args, session_id = copilot.session_args(args)
+
+        assert new_args == args
+        assert str(uuid.UUID(session_id)) == session_id
+        assert copilot.session_args(args)[1] != session_id
+
+
+class TestSubagentHeaders:
+    SUBAGENT = {"x-interaction-type": "conversation-subagent"}
+
+    def setup_method(self):
+        self.adder = copilot.subagent_headers(SESSION)
+
+    def _id(self, body, headers=SUBAGENT):
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+        return self.adder(headers, raw).get("thread-id")
+
+    def test_each_subagent_keeps_one_id_over_its_turns(self):
+        first = {
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "find tests"}]}]
+        }
+        later = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "find tests",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t"}]},
+            ]
+        }
+        other = {"messages": [{"role": "user", "content": "read the docs"}]}
+
+        assert self._id(first) == self._id(later)
+        assert self._id(first).startswith(f"{SESSION}-")
+        assert self._id(other) != self._id(first)
+
+    def test_reads_the_first_user_message_of_each_api(self):
+        prompt = "find tests"
+        anthropic = {"system": "s", "messages": [{"role": "user", "content": prompt}]}
+        completions = {
+            "messages": [
+                {"role": "system", "content": "the same for every subagent"},
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            ]
+        }
+        responses = {
+            "instructions": "s",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
+        }
+
+        assert self._id(anthropic) == self._id(completions) == self._id(responses)
+        assert self._id({"input": prompt}) == self._id(anthropic)
+
+    @pytest.mark.parametrize(
+        ("headers", "body"),
+        [
+            (
+                {"x-interaction-type": "conversation-user"},
+                {"messages": [{"role": "user", "content": "hi"}]},
+            ),
+            ({}, {"messages": [{"role": "user", "content": "hi"}]}),
+            (SUBAGENT, b"not json"),
+            (SUBAGENT, {"messages": [{"role": "assistant", "content": "hi"}]}),
+            (SUBAGENT, ["not", "an", "object"]),
+        ],
+    )
+    def test_no_id_for_the_main_agent_or_a_body_it_cannot_read(self, headers, body):
+        assert self._id(body, headers) is None
+
+    def test_a_lone_surrogate_still_gets_an_id(self):
+        body = b'{"messages": [{"role": "user", "content": "cut \\ud83d"}]}'
+
+        assert self._id(body).startswith(f"{SESSION}-")
+
+    def test_the_id_is_keyed_for_the_launch(self):
+        body = json.dumps({"messages": [{"role": "user", "content": "find tests"}]}).encode()
+        one, other = copilot.subagent_headers(SESSION), copilot.subagent_headers(SESSION)
+
+        assert one(self.SUBAGENT, body) == one(self.SUBAGENT, body)
+        assert one(self.SUBAGENT, body) != other(self.SUBAGENT, body)
+
+
+class TestWithSessionId:
+    def test_adds_the_session_id_unless_an_admin_header_sets_it(self):
+        assert copilot.with_session_id({"User-Agent": "u"}, SESSION) == {
+            "session-id": SESSION,
+            "User-Agent": "u",
+        }
+        assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}

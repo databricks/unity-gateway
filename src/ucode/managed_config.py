@@ -93,7 +93,9 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
     enum[len(_AGENT_ENUM_PREFIX) :].lower(): tool for enum, tool in AGENT_ENUM_TO_TOOL.items()
 }
 
-MAX_SPEC_VERSION = 1
+# The newest managed-config ``spec_version`` this build reads. The server stamps 2 on a config that
+# uses ``mcp_servers.sources``, so builds that can't read ``sources`` refuse it and keep their cache.
+MAX_SPEC_VERSION = 2
 
 # The last authoritative read's outcome, persisted alongside the config so a launch can replay it
 # without a GET. "none" and "feature_disabled" both persist an empty config, so the outcome is what

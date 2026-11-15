@@ -263,6 +263,10 @@ def e2e_state(e2e_workspace):
     return dict(e2e_state_for(e2e_workspace))
 
 
+def metric_observations(recorder, name):
+    return [(value, labels) for _, metric, value, labels in recorder.pending if metric == name]
+
+
 @pytest.fixture
 def metrics_recorder(monkeypatch):
     from unittest.mock import Mock
@@ -273,7 +277,7 @@ def metrics_recorder(monkeypatch):
     # Tests exercise collection and real SDK aggregation without sending developer telemetry.
     runtime = metrics.Recorder("claude", metrics.time.perf_counter())
     monkeypatch.setattr(metrics, "_runtime", runtime)
-    monkeypatch.setattr(exporter, "send_in_background", Mock(return_value=None))
+    monkeypatch.setattr(exporter, "start_exporter", Mock(return_value=None))
     yield runtime
     runtime.stop.set()
     runtime.wake.set()
