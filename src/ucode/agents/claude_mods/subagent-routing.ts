@@ -161,6 +161,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     const { tool, tool_use_id, agentId: _agentId, ...input } = e
     let route
     let denial: string | undefined
+    let cooldownDenial = false
     let routingDisabled = false
     let routingFailed = false
     const timestamp = await now($)
@@ -204,8 +205,10 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')
       const response = result.stdout.trim() ? JSON.parse(result.stdout) : undefined
-      if (typeof response?.deny === 'string' && response.deny) denial = response.deny
-      else {
+      if (typeof response?.deny === 'string' && response.deny) {
+        denial = response.deny
+        cooldownDenial = response.rate_limit_cooldown === true
+      } else {
         routingDisabled = response?.disabled === true
         if (!routingDisabled) route = response
       }
@@ -234,12 +237,19 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
       }
       $.ui.invalidate('ui.render')
     }
-    if (!route && !denial && !routingDisabled) {
+    if (!route && !routingDisabled && (!denial || cooldownDenial)) {
       const current = await now($)
-      if (excluded_models.length || [...rateLimitedUntil.values()].some(until => current !== undefined && until > current)) {
-        denial = 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
-      } else if (routingFailed) {
-        $.ui.log('Smart Router could not route this subagent; using its original settings.')
+      // The request's exclusions may expire while the routing process is running.
+      const coolingDown = current === undefined
+        ? excluded_models.length > 0 || cooldownDenial
+        : [...rateLimitedUntil.values()].some(until => until > current)
+      if (coolingDown) {
+        denial ??= 'Smart Router could not select an available model during rate-limit cooldown. Try again later.'
+      } else {
+        denial = undefined
+        if (routingFailed) {
+          $.ui.log('Smart Router could not route this subagent; using its original settings.')
+        }
       }
     }
     if (denial) return { deny: denial }
