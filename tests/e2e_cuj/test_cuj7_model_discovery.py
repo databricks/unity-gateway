@@ -4,11 +4,12 @@ import json
 import os
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from databricks.sdk.errors import DatabricksError, NotFound
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, assert_subagent_routed, fresh_id, read_jsonl
 from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
@@ -24,14 +25,19 @@ from .helpers.constants import (
     CODEX,
     CODEX_LUNA_MODEL_SERVICE,
     MANAGED_PATHS,
+    MODEL_PROVIDER_SERVICE_FIXTURES,
     MODEL_SERVICE_SCHEMA,
+    PROVIDER_HEADER,
+    ROUTING_PATH,
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
+    assert_served,
     claude_file_task,
+    served_marker_request,
 )
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
@@ -188,6 +194,105 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         )
         models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
         assert_codex_default_models(session, models)
+
+    @pytest.mark.claude
+    @pytest.mark.tui
+    def test_ug_claude_mps_smart_routing_without_managed_config(
+        self, live_session, request_recorder
+    ):
+        """Scenario: explicitly enable Claude routing with a provider in an unmanaged workspace.
+
+        Expected: without the external-models gate, the first prompt and a native child
+        route through the selected MPS and complete a file task with HTTP 200 responses.
+        """
+        session = live_session
+        provider, model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        assert "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS" not in session.env
+        session.env["SMART_ROUTER_CONFIG_VERSION"] = "first_prompt_and_subagent_no_orch_v0"
+        request_recorder.configure_session(
+            session,
+            [
+                "configure",
+                "--agents",
+                CLAUDE,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ],
+        )
+        greeting = SimpleNamespace(
+            prompt=f"Reply with a short greeting. Do not use tools. Request ID: {fresh_id()}.",
+            value=None,
+        )
+        evidence = SessionEvidence(session.home, CLAUDE)
+        checkpoint = request_recorder.checkpoint()
+        with Terminal(
+            session,
+            "unmanaged-claude-provider-routing",
+            [
+                CLAUDE,
+                "--provider",
+                provider,
+                "--enable-smart-routing",
+                "--",
+                "--disallowedTools",
+                "ScheduleWakeup,CronCreate",
+            ],
+        ) as tui:
+            tui.boot(timeout=150)
+            tui.submit(greeting.prompt)
+            tui.wait_until(lambda: evidence.completed(greeting), "completed routed greeting")
+            first_route = request_recorder.expect_request(
+                method="POST", path=ROUTING_PATH, after=checkpoint
+            )
+            assert first_route.payload["task"]["prompt"] == greeting.prompt
+            assert first_route.headers[PROVIDER_HEADER] == provider
+            assert request_recorder.response_for(first_route).status_code == 200
+            evidence.assert_models(greeting, model)
+            greeting_request = served_marker_request(
+                request_recorder, checkpoint, CLAUDE, greeting.prompt
+            )
+            assert greeting_request.headers[PROVIDER_HEADER] == provider
+            assert_served(request_recorder, greeting_request, model)
+
+            task = FileTask(session)
+            task.prompt = task.delegate_prompt
+            decisions_path = session.home / ".ucode" / "claude-smart-routing-decisions.jsonl"
+            decision_count = len(read_jsonl(decisions_path))
+            child_checkpoint = request_recorder.checkpoint()
+            tui.submit(task.prompt)
+            tui.wait_until(
+                lambda: (
+                    task.completed(session, CLAUDE) and task.completed(session, CLAUDE, child=True)
+                ),
+                "completed routed parent and native child file task",
+            )
+            decisions = read_jsonl(decisions_path)[decision_count:]
+            decision_tasks = {decision["task_name"] for decision in decisions}
+            assert decision_tasks, "No native child routing decision was recorded"
+            routes = [
+                request
+                for request in request_recorder.requests_after(child_checkpoint)
+                if request.method == "POST"
+                and request.path == ROUTING_PATH
+                and isinstance(request.payload.get("task", {}).get("prompt"), str)
+                and request.payload["task"]["prompt"] in decision_tasks
+            ]
+            assert routes, "No route request matched the delegated file task"
+            for route in routes:
+                assert route.headers[PROVIDER_HEADER] == provider
+                assert request_recorder.response_for(route).status_code == 200
+            assert {route.payload["task"]["prompt"] for route in routes} == decision_tasks
+            for prompt in (task.prompt, *decision_tasks):
+                request = served_marker_request(request_recorder, child_checkpoint, CLAUDE, prompt)
+                assert request.headers[PROVIDER_HEADER] == provider
+                assert_served(request_recorder, request, model)
+            assert_subagent_routed(
+                session,
+                CLAUDE,
+                task,
+                decision_ids={decision["decision_id"] for decision in decisions},
+            )
+            tui.exit_normally()
 
     @pytest.mark.claude
     @pytest.mark.parametrize("model_owner", ["ug", "claude"])

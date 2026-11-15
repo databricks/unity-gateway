@@ -74,6 +74,29 @@ def _request_contains_task(request, agent, task):
     return False
 
 
+def served_marker_request(recorder, checkpoint: int, agent: str, marker: str):
+    """The marker-bearing inference request the gateway answered with HTTP 200.
+
+    Claude retries a request whose proxy-to-gateway connection failed (the recorder then
+    records a 502 for the first attempt), so the first marker request is not always the
+    one that was served. With no 200, return the first so its failure is asserted.
+    """
+    candidates = [
+        request
+        for request in recorder.requests_after(checkpoint)
+        if request.method == "POST"
+        and request.path == INFERENCE_PATHS[agent]
+        and (marker.encode() in request.body or json.dumps(marker)[1:-1].encode() in request.body)
+    ]
+    assert candidates, f"No {agent} inference request carried marker {marker}"
+    # Stop at the first success: later requests resend the history (and so the marker),
+    # and one the agent abandoned at exit never records a response to wait for.
+    for request in candidates:
+        if recorder.response_for(request, timeout=240).status_code == 200:
+            return request
+    return candidates[0]
+
+
 def assert_inference_evidence(recorder, checkpoint, agent, task, expected, *, parent_schema=None):
     expected_wire_model = claude_discovery_model_id(expected) if agent == CLAUDE else expected
     requests = recorder.requests_after(checkpoint)

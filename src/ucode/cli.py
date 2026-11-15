@@ -3401,6 +3401,7 @@ def claude_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
@@ -3481,6 +3482,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
+        provider=provider,
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
@@ -3853,10 +3855,16 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     return tool == "claude" and tool_args[0].startswith("-")
 
 
-def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
+def _smart_routing_supported(
+    tool: str, provider: str | None, *, allow_external_models: bool = False
+) -> bool:
+    """Allow Claude provider routing through an explicit opt-in or the external-models gate."""
     return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+        tool == "claude"
+        and (
+            allow_external_models
+            or os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
+        )
     )
 
 
@@ -3868,6 +3876,7 @@ def _routes_launch(
     explicit_prompt: bool,
     model: str | None,
     provider: str | None,
+    allow_external_models: bool = False,
 ) -> bool:
     """Whether this launch is smart-routed."""
     return (
@@ -3875,8 +3884,7 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services require the external-models gate.
-        and _smart_routing_supported(tool, provider)
+        and _smart_routing_supported(tool, provider, allow_external_models=allow_external_models)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
             tool, tool_args, explicit_prompt=explicit_prompt, model=model
@@ -3893,6 +3901,7 @@ def _launch_options(
     user_pinned_model: str | None,
     provider: str | None,
     launch_model: str | None = None,
+    allow_external_models: bool = False,
 ) -> LaunchOptions:
     return LaunchOptions(
         launch_model=launch_model,
@@ -3905,6 +3914,7 @@ def _launch_options(
             explicit_prompt=explicit_prompt,
             model=user_pinned_model,
             provider=provider,
+            allow_external_models=allow_external_models,
         ),
     )
 
@@ -3974,6 +3984,7 @@ def _launch_tool(
     routing_already_chosen: bool = False,
     routing_unsupported: bool = False,
     recommendation_fetched: bool = False,
+    allow_external_models: bool = False,
 ) -> None:
     previous = {}
     try:
@@ -4212,7 +4223,9 @@ def _launch_tool(
         if (
             tool in CAN_USE_CACHED_CONFIG_AGENTS
             and smart_routing_enabled
-            and not _smart_routing_supported(tool, provider)
+            and not _smart_routing_supported(
+                tool, provider, allow_external_models=allow_external_models
+            )
         ):
             raise RuntimeError(
                 f"{TOOL_SPECS[tool]['display']} smart routing cannot be enabled with "
@@ -4272,6 +4285,7 @@ def _launch_tool(
                         explicit_prompt=explicit_prompt,
                         model=model or forwarded_model,
                         provider=provider,
+                        allow_external_models=allow_external_models,
                     )
                 )
             )
@@ -4465,7 +4479,9 @@ def _launch_tool(
         if (
             tool in CAN_USE_CACHED_CONFIG_AGENTS
             and smart_routing_enabled
-            and _smart_routing_supported(tool, provider)
+            and _smart_routing_supported(
+                tool, provider, allow_external_models=allow_external_models
+            )
         ):
             print_note(
                 f"{TOOL_SPECS[tool]['display']} may require one-time hook review. Open "
@@ -4502,6 +4518,7 @@ def _launch_tool(
             # the initial/fallback model and still participates in a routed session.
             user_pinned_model=model or forwarded_model,
             provider=provider,
+            allow_external_models=allow_external_models,
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
             # session_model is set for claude only.
             launch_model=managed_model if tool == "copilot" else session_model,
@@ -4895,6 +4912,7 @@ def claude_cmd(
                 "claude",
                 ctx,
                 routing_already_chosen=routing_already_chosen,
+                allow_external_models=enable_smart_routing_flag is True,
                 provider=provider,
                 model=model,
                 refresh=refresh,

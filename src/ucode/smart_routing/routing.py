@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.smart_routing.rationale import format_rationale
 from ucode.ug_headers import ug_headers
 from ucode.workspace import workspace_headers
@@ -208,6 +209,7 @@ def select_route(
     route_options: Iterable[tuple[str, str | None]],
     *,
     router_name: str,
+    provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
 ) -> tuple[RoutingDecision | None, str | None]:
     """POST one ``routes:select`` request and return the router's pick.
@@ -231,6 +233,7 @@ def select_route(
         headers={
             **ug_headers(),
             **workspace_headers(workspace),
+            **({MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else {}),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },

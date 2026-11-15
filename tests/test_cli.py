@@ -1358,6 +1358,64 @@ class TestSubcommandRouting:
         calls["resolve_model"].assert_not_called()
         calls["launch"].assert_called_once()
 
+    @pytest.mark.parametrize("external_gate", [None, "0", "1"])
+    @pytest.mark.parametrize("saved_provider", [False, True])
+    def test_explicit_smart_routing_enables_unmanaged_provider(
+        self, monkeypatch, external_gate, saved_provider
+    ):
+        gate = "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS"
+        if external_gate is None:
+            monkeypatch.delenv(gate, raising=False)
+        else:
+            monkeypatch.setenv(gate, external_gate)
+        provider = "main.default.anthropic"
+        provider_args = [] if saved_provider else ["--provider", provider]
+
+        def launch_with_inherited_gate(*args, **kwargs):
+            assert os.environ.get(gate) == external_gate
+
+        with _launch_policy_patches(
+            None, persisted_provider=provider if saved_provider else None
+        ) as calls:
+            calls["launch"].side_effect = launch_with_inherited_gate
+            result = runner.invoke(app, ["claude", *provider_args, "--enable-smart-routing"])
+
+        assert result.exit_code == 0, result.output
+        options = calls["launch"].call_args.kwargs["options"]
+        assert options.launch_smart_routing is True
+        assert calls["launch"].call_args.args[1]["_claude_launch_provider"] == provider
+        assert calls["launch"].call_args.args[1]["_claude_launch_picker_models"] == [
+            "main.default.claude-sonnet-5"
+        ]
+        assert os.environ.get(gate) == external_gate
+
+    @pytest.mark.parametrize("managed_routing", [False, True])
+    def test_implicit_provider_routing_still_requires_external_gate(
+        self, monkeypatch, managed_routing
+    ):
+        monkeypatch.delenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        provider = "main.default.anthropic"
+        managed = (
+            {
+                "enabled_agents": {
+                    "claude": {
+                        "smart_routing_enabled": True,
+                        "model_config": {"model_provider_service": provider},
+                    }
+                }
+            }
+            if managed_routing
+            else None
+        )
+        with _launch_policy_patches(managed, persisted_provider=provider) as calls:
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 1
+        assert "smart routing cannot be enabled with" in _strip_ansi(result.output)
+        calls["launch"].assert_not_called()
+        assert "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS" not in os.environ
+
     def test_unmanaged_claude_launch_lists_gateway_catalog(self):
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(app, ["claude"])
@@ -1762,7 +1820,8 @@ class TestSubcommandRouting:
         mock_token.assert_not_called()
         assert mock_route.call_args.kwargs["token"] == "pat-token"
 
-    def test_claude_v2_subagent_hook_uses_v2_router(self, monkeypatch):
+    @pytest.mark.parametrize("provider", [None, "main.default.anthropic"])
+    def test_claude_v2_subagent_hook_uses_v2_router(self, monkeypatch, provider):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         routed = {
             "systemMessage": "Smart Router notice",
@@ -1788,6 +1847,7 @@ class TestSubcommandRouting:
                     "https://example.com",
                     "--model",
                     "system.ai.claude-opus-4-8",
+                    *(["--provider", provider] if provider else []),
                 ],
                 input='{"tool_name":"Agent","tool_input":{"prompt":"fix it"}}',
                 env={"OAUTH_TOKEN": _jwt(time.time() + 300)},
@@ -1798,6 +1858,7 @@ class TestSubcommandRouting:
         # A hook persisted by an earlier UG version gets its PreToolUse response and notice.
         mock_v2_route.assert_called_once()
         assert mock_v2_route.call_args.kwargs["hook_output"] is True
+        assert mock_v2_route.call_args.kwargs["provider"] == provider
 
     @pytest.mark.parametrize("enabled", [False, True])
     def test_claude_mod_route_respects_session_controls(self, tmp_path, monkeypatch, enabled):
@@ -1843,6 +1904,7 @@ class TestSubcommandRouting:
                 workspace="https://example.com",
                 token=launch_token,
                 available_models=["system.ai.claude-opus-4-8"],
+                provider=None,
                 audit_decision=True,
                 hook_output=False,
             )
