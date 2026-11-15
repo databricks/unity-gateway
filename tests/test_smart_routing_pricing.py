@@ -37,6 +37,8 @@ class TestModelKey:
             "system.ai.claude-opus-4-8[1m]",
             "databricks-claude-opus-4-8",
             "anthropic-aigw-1a2b3c4d-claude-opus-4-8",
+            "anthropic-aigw-1a2b3c4-claude-opus-4-8",
+            "anthropic-aigw-1A2B3C4-claude-opus-4-8[1m]",
             "SYSTEM.AI.Claude-Opus-4-8",
             "anthropic.claude-opus-4-8",
             "global.anthropic.claude-opus-4-8",
@@ -47,8 +49,9 @@ class TestModelKey:
     def test_collapses_gateway_spellings(self, model):
         assert pricing.model_key(model) == "claude-opus-4-8"
 
-    def test_unwraps_non_claude_gateway_models(self):
-        assert pricing.model_key("anthropic-aigw-73ea02b2-system.ai.glm-5-2") == "glm-5-2"
+    @pytest.mark.parametrize("prefix", ["73ea02b", "73ea02b2"])
+    def test_unwraps_non_claude_gateway_models(self, prefix):
+        assert pricing.model_key(f"anthropic-aigw-{prefix}-system.ai.glm-5-2") == "glm-5-2"
 
     @pytest.mark.parametrize(
         ("served", "requested"),

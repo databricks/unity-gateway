@@ -371,7 +371,8 @@ Under first-prompt routing, requests before the user changes the main model are 
 against the model selected when the first prompt was submitted, before the router's
 `/model` command. A manual selection before that prompt becomes the baseline. Later
 model changes affect only subsequent usage, including changes made during a turn with
-savings disabled. Request-specific model overrides leave the selected main model unchanged.
+savings disabled. Child requests observe those changes even before the next parent request.
+Request-specific model overrides leave the selected main model unchanged.
 Claude's native `$.session.model()` returns
 the resolved model ID, including for configured family aliases such as `sonnet`.
 
@@ -394,7 +395,8 @@ persisted with the totals so a mod reload does not replace it with the routed mo
 Savings failures, including denied reads of its environment flag, leave model requests
 running. Savings handlers are registered only when the launch options explicitly enable
 the feature. A failed usage-file write hides the estimate and retains the in-memory
-totals for the next turn's write.
+totals for the next turn's write. If a completed tracked request has no usage, the estimate
+stays hidden for that session, including after a mod reload, because its totals are incomplete.
 
 The entire savings mod requires `ENABLE_SMART_ROUTING_SAVINGS=1`. Otherwise no usage
 is tracked or written, no endpoint rates are fetched, no pricer runs, and no savings row is
