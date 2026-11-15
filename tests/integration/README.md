@@ -2062,7 +2062,11 @@ and preserve prior usage after later model changes, including switching away and
 while accounting is off. Request-specific model overrides retain the selected main/child
 baseline in native SDK tests. CLI off/on excludes disabled turns from native usage totals.
 Native UI component tests cover mounted-row updates after
-CLI toggles and hiding stale estimates on failed usage writes. Pricer subprocesses read
+CLI toggles and hiding stale estimates on failed usage writes. Missing usage stays hidden
+across later flushes and module initialization, including an in-flight price response.
+Child steps observe model switches without another parent request, including with accounting
+off. Pricing accepts seven- and eight-digit gateway alias prefixes. These are offline component
+checks. Pricer subprocesses read
 the saved session controls, fall back without stderr output for malformed controls, and validate
 snapshot persistence/rejection. Pricing tests keep
 shared-host workspace cache paths and concurrently refreshed model sets distinct, reject

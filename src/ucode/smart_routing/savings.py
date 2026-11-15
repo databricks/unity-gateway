@@ -84,6 +84,8 @@ def usage_savings(
     entries = document.get("entries")
     if not isinstance(entries, list):
         raise ValueError(f"unsupported savings usage file: {usage_path}")
+    if document.get("incomplete_usage") is True:
+        return None
     fixed_baseline = None
     if baseline_session_start:
         start = document.get("start_model")

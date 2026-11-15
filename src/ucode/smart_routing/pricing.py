@@ -34,7 +34,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
 _PRICE_CACHE_VERSION = 1
 _MILLION = Decimal(1_000_000)
 _CONTEXT_SUFFIX_RE = re.compile(r"\[[^\]]*\]$")
-_ANTHROPIC_AIGW_PREFIX_RE = re.compile(r"^anthropic-aigw-[0-9a-f]{8}-")
+_ANTHROPIC_AIGW_PREFIX_RE = re.compile(r"^anthropic-aigw-[0-9a-f]{7,8}-")
 # The gateway reports some served models by their provider id, e.g. Bedrock's
 # `anthropic.claude-haiku-4-5-20251001-v1:0` for a request to `system.ai.claude-haiku-4-5`.
 _PROVIDER_PREFIX_RE = re.compile(r"^(?:(?:us|eu|apac|au|jp|global)\.)?anthropic\.")

@@ -170,13 +170,16 @@ export function register(on: On, options: PluginOptions): void {
         // model without changing the user's selection for later main/child work.
         if (enabled) {
           const selected = await mainModel($);
-          if (agent === null && selected) {
+          if (selected) {
             lastMainModel = selected;
-            firstMainModel ??= lastMainModel;
-            firstPromptSeen = true;
-            userSwitched ||= lastMainModel !== firstMainModel;
+            if (agent === null) {
+              firstMainModel ??= selected;
+              firstPromptSeen = true;
+            }
+            userSwitched ||= firstMainModel !== null && selected !== firstMainModel;
             dirty = true;
-          } else baseline = selected ?? lastMainModel;
+          }
+          if (agent !== null) baseline = selected ?? lastMainModel;
         }
       } catch {
         trackSavings = false;
@@ -187,9 +190,15 @@ export function register(on: On, options: PluginOptions): void {
         const usage = (result as any)?.usage;
         const served = str(request.model) ?? str(usage?.model);
         const base = agent === null ? served : baseline;
-        if (trackSavings && await ready($) && usage && served && base) {
-          accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage);
-          dirty = true;
+        if (trackSavings && await ready($)) {
+          if (!usage) {
+            incompleteUsage = true;
+            dirty = true;
+            setEstimate($, null);
+          } else if (served && base) {
+            accumulate(agent ?? 'main', base, served, beforeUserSwitch, usage);
+            dirty = true;
+          }
         }
       } catch {}
       return result;
@@ -311,6 +320,8 @@ let lastMainModel: string | null = null;
 let firstMainModel: string | null = null;
 // Whether the selected main model has changed since the first request.
 let userSwitched = false;
+// Missing usage cannot be recovered by repricing the later session totals.
+let incompleteUsage = false;
 let seeding: Promise<void> | undefined;
 let estimate: Estimate | null = null;
 // Whether the current render draws the row, which hides the status band.
@@ -382,6 +393,7 @@ async function loadUsage($: any): Promise<void> {
     firstMainModel ??= str(saved.first_main_model);
     firstPromptSeen ||= saved.first_prompt_seen === true || firstMainModel !== null;
     userSwitched ||= saved.user_switched === true;
+    incompleteUsage ||= saved.incomplete_usage === true;
   } catch {}
 }
 
@@ -447,12 +459,13 @@ async function writeAndPrice($: any): Promise<void> {
         first_main_model: firstMainModel,
         first_prompt_seen: firstPromptSeen,
         user_switched: userSwitched,
+        incomplete_usage: incompleteUsage,
         entries: Array.from(entries.values()),
       }),
     });
     if (run?.exitCode !== 0) throw new Error('Could not persist savings usage.');
     const out = JSON.parse(String(run.stdout ?? '').trim().split('\n').pop() ?? '');
-    setEstimate($, estimateOf(out?.savings));
+    setEstimate($, incompleteUsage ? null : estimateOf(out?.savings));
   } catch (error) {
     // Retry at the next turn.complete rather than pricing a file that is not there.
     dirty = true;

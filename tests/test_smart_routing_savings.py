@@ -224,6 +224,26 @@ class TestUsageSavings:
 
         assert priced(write_usage(tmp_path, entries), price_cache) is None
 
+    @pytest.mark.parametrize("first_prompt", [False, True])
+    def test_incomplete_usage_hides_previously_positive_totals(
+        self, tmp_path, price_cache, first_prompt
+    ):
+        usage = write_usage(tmp_path, [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)])
+        assert priced(usage, price_cache, first_prompt=first_prompt) == saved("$0.18", "60%")
+        document = json.loads(usage.read_text(encoding="utf-8"))
+        document["incomplete_usage"] = True
+        usage.write_text(json.dumps(document), encoding="utf-8")
+
+        assert priced(usage, price_cache, first_prompt=first_prompt) is None
+
+    def test_prices_a_seven_digit_gateway_alias(self, tmp_path, price_cache):
+        usage = write_usage(
+            tmp_path,
+            [entry("a1", OPUS_ID, "anthropic-aigw-1a2b3c4-claude-sonnet-5", SUBAGENT_USAGE)],
+        )
+
+        assert priced(usage, price_cache) == saved("$0.18", "60%")
+
     def test_without_prices_there_is_no_estimate(self, tmp_path, price_cache):
         price_cache.unlink()
         entries = [entry("a1", OPUS_ID, SONNET_ID, SUBAGENT_USAGE)]

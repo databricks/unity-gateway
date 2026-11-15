@@ -437,7 +437,8 @@ Savings estimate coverage: `test_smart_routing_savings.py` prices the mod's toke
 (per-entry and first-prompt baselines, unpriced or malformed entries, the pricer's single
 JSON line, snapshot persistence/rejection and zero-dollar display). `test_smart_routing_pricing.py`
 covers endpoint rates, concurrent refreshes of distinct model sets, empty-price rejection,
-and distinct price-cache paths for workspaces sharing a host.
+and distinct price-cache paths for workspaces sharing a host. Seven- and eight-digit gateway
+alias prefixes resolve to the same prices. Incomplete usage snapshots produce no estimate.
 `test_workspace_selection.py::TestEndpointRatesTransport` exercises the real HTTPS client
 through a loopback CONNECT/TLS fixture, with child-only CA trust and certificate/hostname
 verification. It checks repeated sorted model names, empty eligible input, both workspace
@@ -466,7 +467,10 @@ CLI off/on controls exclude disabled turns from the totals; pricer
 subprocesses honor the saved
 controls and fall back to inherited settings without writing to stderr when the file is malformed. Native UI
 component tests check that off/on hides/restores a mounted row and failed usage writes
-hide stale estimates until a successful write. Capability tests deny the savings flag
+hide stale estimates until a successful write. Missing usage hides the row immediately and
+across later flushes, off/on controls and module initialization; an in-flight price result
+cannot restore it. Child-only model switches update subsequent baselines, including while
+accounting is off. Capability tests deny the savings flag
 read and verify that startup and requests still run.
 These are native component checks, not live gateway/model or TUI coverage.
 Live endpoint compatibility and interactive orchestrator-version display remain unverified.

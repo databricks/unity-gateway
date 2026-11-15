@@ -148,6 +148,7 @@ def test_savings_mod_records_the_start_model(native_binary, tmp_path):
         "first_main_model": None,
         "first_prompt_seen": False,
         "user_switched": False,
+        "incomplete_usage": False,
         "entries": [],
     }
 
