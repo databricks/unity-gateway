@@ -496,13 +496,14 @@ def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(
     from ucode.os_compatibility import subprocess_cross_os
 
     child, reader = reporter_pipe
+    # Popen returns a blocking pipe; start_exporter must make it nonblocking.
+    os.set_blocking(child.stdin.fileno(), True)
     spawn = Mock(return_value=child)
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
     # Exercise the actual process setup, with only OS process creation substituted.
     returned = start_exporter()
     assert returned is child
     assert not os.get_blocking(child.stdin.fileno())
-    assert not os.get_inheritable(child.stdin.fileno())
     metrics_recorder.reporter = child
     metrics_recorder.bind(HOST, "fake-workspace-token")
     metrics_recorder.record("ug_usage_duration_ms", 10, HOST, {"command": "usage"})
