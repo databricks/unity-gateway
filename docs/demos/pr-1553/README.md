@@ -1,8 +1,14 @@
-# Historical fixture recording
+# PR 1553 recordings
+
+The [live routed background task](live-picker/README.md) shows the router selecting
+GLM Flash, the native child completing a document read, and the parent receiving
+its result. Full-catalog routing and genuine 429/cooldown acceptance remain pending.
+
+## Historical fixture recording
 
 This recording uses prepared responses and does not satisfy live E2E acceptance.
-See the [live background-task recording](live/README.md) for the current evidence
-and its remaining cooldown coverage gap.
+The [earlier live background task](live/README.md) is also retained; that session
+did not record a successful router selection.
 
 [![Native rate-limit failure and replacement model](cooldown-poster.png)](native-cooldown.mp4)
 
