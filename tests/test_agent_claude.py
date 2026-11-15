@@ -1608,23 +1608,42 @@ class TestWriteToolConfigManagedSettings:
         return managed_path, sudo_writes
 
     @pytest.mark.parametrize("can_write", [False, True])
-    def test_auto_picker_survives_ordinary_launch(self, tmp_path, monkeypatch, can_write):
+    @pytest.mark.parametrize(
+        ("managed_routing", "configure_auto"), [(True, False), (False, False), (False, True)]
+    )
+    def test_auto_picker_survives_ordinary_launch(
+        self, tmp_path, monkeypatch, can_write, managed_routing, configure_auto
+    ):
         from ucode.agents.claude_auto import picker_is_configured
 
         path, writes = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result(
+                {"enabled_agents": {"claude": {"smart_routing_enabled": managed_routing}}}
+            ),
+        )
         state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
-        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        ordinary_version = "subagent_orch_v0_claude_only"
+        auto_version = "subagent_auto_v0_claude_only"
+        monkeypatch.setenv(
+            "SMART_ROUTER_CONFIG_VERSION", auto_version if configure_auto else ordinary_version
+        )
         monkeypatch.setattr(claude, "_explicit_configure", True)
         claude.write_tool_config(state, state["claude_static_models"][0])
-        assert picker_is_configured(json.loads(path.read_text()))
+        configured_auto = managed_routing or configure_auto
+        managed = json.loads(path.read_text())
+        assert picker_is_configured(managed) is configured_auto
+        assert managed["modelPicker"]["replaceBuiltInOptions"] is (not configured_auto)
         installed = path.read_bytes()
         write_count = len(writes)
         monkeypatch.setattr(claude, "_explicit_configure", False)
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: can_write)
-        for auto_enabled in ("0", "1"):
-            monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", auto_enabled)
+        for version in (ordinary_version, auto_version):
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
             claude.write_tool_config(state, state["claude_static_models"][0])
-            assert picker_is_configured(json.loads(path.read_text()))
+            assert picker_is_configured(json.loads(path.read_text())) is configured_auto
             assert path.read_bytes() == installed
             assert len(writes) == write_count
 
@@ -3704,20 +3723,31 @@ class TestClaudeLaunch:
         assert calls[0][-2:] == ["--model", custom_model]
 
     @pytest.mark.parametrize(
-        "target", ["system.ai.claude-sonnet-5-5", "claude-haiku-4-5", "team.models.custom"]
+        ("target", "behaves_as"),
+        [
+            ("system.ai.claude-sonnet-5-5", None),
+            ("claude-haiku-4-5", None),
+            ("team.models.custom", None),
+            ("system.ai.claude-sonnet-5-5[1m]", None),
+            ("team.models.admin", "claude-sonnet-5-5[1m]"),
+        ],
     )
-    def test_personal_auto_alias_restarts_on_real_model(self, monkeypatch, tmp_path, target):
+    def test_auto_alias_restarts_on_real_model(self, monkeypatch, tmp_path, target, behaves_as):
         from ucode.agents.claude_auto import auto_variant
 
         calls = []
-        saved = auto_variant({"model": target})
+        configured = auto_variant({"model": target, "behavesAs": behaves_as})
+        saved = configured.removesuffix("[1m]")
         user_path = tmp_path / "settings.json"
         user_path.write_text(json.dumps({"model": saved}))
         settings_path = tmp_path / "ucode-settings.json"
         settings_path.write_text("{}")
+        managed_path = tmp_path / "managed-settings.json"
+        if behaves_as:
+            managed_path.write_text(json.dumps({"modelOverrides": {configured: target}}))
         monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_path)
         monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", settings_path)
-        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "absent")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
         monkeypatch.setattr(
             claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)

@@ -6,7 +6,18 @@ export type AutoPicker = {
   models: { model: string; label: string; autoModel: string }[];
 };
 
+export function matchesAutoModel(configured: string, selected: string): boolean {
+  // Native 2.1.323 strips the context suffix from selected Auto aliases.
+  return selected === configured || (configured.endsWith('[1m]') && selected === configured.slice(0, -4));
+}
+
+export function resolveAutoModel(auto: AutoPicker, selected: string): string {
+  return auto.models.find(row => matchesAutoModel(row.autoModel, selected))?.autoModel ?? selected;
+}
+
 export function sameAutoTarget(auto: AutoPicker, from: string, to: string, overrides: unknown, window?: number): boolean {
+  from = resolveAutoModel(auto, from);
+  to = resolveAutoModel(auto, to);
   const row = auto.models.find(row => row.autoModel === to);
   if (!row || !overrides || typeof overrides !== 'object' || Array.isArray(overrides)) return false;
   const targets = new Map<string, unknown>(Object.entries(overrides));

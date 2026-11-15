@@ -1884,8 +1884,15 @@ def write_tool_config(
         passthrough_leaves=passthrough.record(),
         auto_picker=(
             not (provider or parent_schema or relayed)
-            and resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
-            == "1"
+            and (
+                resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
+                == "1"
+                or (managed_manifest or {})
+                .get("enabled_agents", {})
+                .get(AGENT_CLAUDE, {})
+                .get("smart_routing_enabled")
+                is True
+            )
         ),
     )
 
@@ -2207,24 +2214,6 @@ def header_mod_active() -> bool:
     except (OSError, RuntimeError, ValueError):  # ValueError: a file that isn't UTF-8
         return False
     return True
-
-
-def auto_picker_available() -> bool:
-    """A managed picker/allowlist must admit Auto before native startup."""
-    from ucode.agents.claude_auto import (
-        AUTO_MODEL,
-        model_available,
-        picker_is_configured,
-    )
-
-    path = _managed_settings_path()
-    settings = read_json_safe(path) if path is not None else {}
-    if "modelPicker" in settings:
-        return picker_is_configured(settings)
-    env = settings.get("env", {})
-    if not isinstance(env, dict) or env.get("ANTHROPIC_CUSTOM_MODEL_OPTION"):
-        return False
-    return model_available(AUTO_MODEL, settings)
 
 
 def _settle_credential_blanks(desired: dict, existing: dict, *, add: bool) -> None:
@@ -3038,7 +3027,11 @@ def launch(
         ):
             for source in (managed, read_json_safe(CLAUDE_SETTINGS_PATH)):
                 overrides = source.get("modelOverrides")
-                target = overrides.get(saved) if isinstance(overrides, dict) else None
+                target = (
+                    overrides.get(saved, overrides.get(saved + "[1m]"))
+                    if isinstance(overrides, dict)
+                    else None
+                )
                 if isinstance(target, str) and not is_auto_model(target):
                     session_model = session_model or target
                     break

@@ -1,5 +1,5 @@
 import type { On } from 'claude-code'
-import type { AutoPicker } from './auto-model.ts'
+import { matchesAutoModel, type AutoPicker } from './auto-model.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -76,7 +76,7 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
     let state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
     if (auto) {
       const selected = await $.session.model()
-      const main = auto.models.find((row) => row.autoModel === selected)
+      const main = auto.models.find((row) => matchesAutoModel(row.autoModel, selected))
       if (main) state = `Auto (${main.label}) · ${state}`
     }
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state

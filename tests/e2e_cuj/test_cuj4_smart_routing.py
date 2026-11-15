@@ -336,10 +336,11 @@ class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
-        """Scenario: select the Auto preset, launch Claude, switch to manual, then back to Auto.
+        """Scenario: select the Auto preset, launch Claude, switch to manual, then back.
 
         Expected: Auto starts with the managed default and ON in its band and footer.
         Both show OFF for a regular model and ON after selecting a different Auto main model.
+        Launch and model selections preserve the configured managed settings.
         The selected alternate main model then completes real inference. The existing
         preset journey also exercises Auto main/subagent inference and routing decisions.
         """
@@ -351,6 +352,8 @@ class TestCujSmartRouting(BaseCujTest):
         ):
             default = configs[CLAUDE]["default_models"]["default_model"]
             settings = json.loads(MANAGED_PATHS[0].read_text())
+            assert settings["modelPicker"]["replaceBuiltInOptions"] is False
+            managed_before = MANAGED_PATHS[0].read_bytes()
             rows = settings["modelPicker"]["options"]
             row = next(row for row in rows if row["model"] == default)
             label = row["label"].removeprefix("Claude ")
@@ -430,7 +433,30 @@ class TestCujSmartRouting(BaseCujTest):
                 evidence.assert_applied(
                     task, workspace.model_ids(CLAUDE), expected=alternate["model"]
                 )
+                tui.submit("/model auto")
+                tui.wait_for(
+                    lambda s: (
+                        "Choose your main model" in s and main_model_focused(s, alternate_label)
+                    ),
+                    "the current Auto main model",
+                )
+                back = "\x1b[A" if direction == 1 else "\x1b[B"
+                tui.send(back, "focus the previous main model")
+                tui.wait_for(lambda s: main_model_focused(s, label), "main picker keyboard focus")
+                tui.send(arrow, "return to the unchanged Auto main model")
+                tui.wait_for(
+                    lambda s: main_model_focused(s, alternate_label), "the unchanged model"
+                )
+                tui.send("\r", "save the unchanged Auto main model")
+                tui.wait_for(
+                    lambda s: (
+                        "Choose your main model" not in s
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the unchanged Auto selection saved without reopening its selector",
+                )
                 tui.exit_normally()
+            assert MANAGED_PATHS[0].read_bytes() == managed_before
 
     @pytest.mark.parametrize("agent", AGENTS)
     @pytest.mark.parametrize(

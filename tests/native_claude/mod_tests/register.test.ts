@@ -2,6 +2,7 @@ import type { AgentInfo, On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
+import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
@@ -123,6 +124,28 @@ async function hintTail($: any, tails: unknown[]): Promise<unknown> {
   await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: '' } });
   return tails.at(-1);
 }
+
+test('native Auto aliases preserve the configured digest, mapping and context', () => {
+  const model = 'system.ai.claude-opus-4-6[1m]';
+  const alias = 'ug-auto-111111111111-claude-opus-4-6[1m]';
+  const bare = 'ug-auto-222222222222-claude-opus-4-6';
+  const auto = {model: alias, mainModel: model, storeKey: 'main', description: 'Auto', models: [
+    {model, label: '1M', autoModel: alias}, {model: model.slice(0, -4), label: 'bare', autoModel: bare},
+  ]};
+  const overrides = {[alias]: model, [bare]: model.slice(0, -4)};
+  for (const selected of [alias, alias.slice(0, -4)]) {
+    expect(resolveAutoModel(auto, selected)).toBe(alias);
+    expect(sameAutoTarget(auto, model, selected, overrides)).toBe(true);
+    expect(sameAutoTarget(auto, selected, alias, overrides)).toBe(true);
+    expect(sameAutoTarget(auto, bare, selected, overrides)).toBe(false);
+    expect(sameAutoTarget(auto, model.slice(0, -4), selected, overrides)).toBe(false);
+    expect(sameAutoTarget(auto, model, selected, {[alias]: model.slice(0, -4)})).toBe(false);
+  }
+  for (const manual of [model, model.slice(0, -4), bare + '[1m]', alias.replace('111111111111', '333333333333').slice(0, -4)]) {
+    expect(resolveAutoModel(auto, manual)).toBe(manual);
+    expect(sameAutoTarget(auto, model, manual, overrides)).toBe(false);
+  }
+});
 
 test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);

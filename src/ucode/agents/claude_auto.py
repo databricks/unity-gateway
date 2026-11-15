@@ -46,13 +46,16 @@ def auto_model_target(alias: str) -> str | None:
 
     Personal aliases retain the target ID (Claude IDs omit system.ai in their
     capability suffix). Admin behavesAs aliases still require their explicit mapping.
+    Native may strip a trailing [1m]; the digest still covers the full target.
     """
     match = re.fullmatch(r"ug-auto-[a-f0-9]{12}-(.+)", alias)
     if match:
         suffix = match[1]
-        for target in (suffix, "system.ai." + suffix):
-            if auto_variant({"model": target}) == alias:
-                return target
+        for candidate in (suffix, suffix + "[1m]"):
+            for target in (candidate, "system.ai." + candidate):
+                expected = auto_variant({"model": target})
+                if alias in (expected, expected.removesuffix("[1m]")):
+                    return target
     return None
 
 

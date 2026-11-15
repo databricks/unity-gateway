@@ -119,15 +119,18 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
-Claude Auto is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
+Claude Auto visibility is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
 `subagent_auto_v0_claude_only` config version. Existing versions set the flag to `"0"`.
 Fresh Auto launches use the managed default model, or the first available model;
 explicit model arguments and native resume retain precedence over startup Auto.
 Fresh Auto session controls start OFF; native startup initializes the selected state
 without treating a manual-model launch as a feedback-gated user disable. Ordinary
 launches preserve installed Auto picker metadata independently of their Auto flag.
-Configure modifies only UG-owned pickers, preserving foreign admin picker/custom
-option settings. Inline effort controls read native `/effort status` and save through `/effort`;
+Configure provisions Auto aliases and sets `modelPicker.replaceBuiltInOptions=false`
+for UG-owned pickers when managed Claude `smart_routing_enabled` is true, regardless
+of its config version, or when Auto is explicitly enabled. Otherwise it keeps replacement
+enabled. Launch configuration controls Auto visibility. Configure preserves foreign admin
+picker/custom option settings. Inline effort controls read native `/effort status` and save through `/effort`;
 Claude owns model-specific capabilities and defaults.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
 permits only aliases whose real targets are allowed. Configure removes stale UG
@@ -135,7 +138,9 @@ aliases and sets `modelPicker.replaceBuiltInOptions` false only for UG-owned
 pickers so the native custom option is visible. Preserve admin custom model options
 and replacement pickers; skip Auto when they occupy or hide its native custom slot.
 Personal configure does not discover or persist a picker for Auto; unrestricted
-personal launches build their Auto aliases in launch-only settings. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+personal launches and foreign non-replacing pickers build Auto aliases in launch-only
+settings when managed settings define neither `modelOverrides` nor `availableModels`.
+Managed denials still filter aliases and their real targets. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
 its display companions in the process environment: putting these in settings env
 would reset the pointer whenever native `/model` saves a selection. Keep one Auto
 row; aliases must not be separate modelPicker rows. Preserve other overrides and

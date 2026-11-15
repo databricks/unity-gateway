@@ -1,4 +1,5 @@
 import type { On, PluginOptions } from 'claude-code'
+import { matchesAutoModel } from './auto-model.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
 type RoutingRecord = {
@@ -148,8 +149,9 @@ export const registerSubagentRouting = (
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[]
     if (!command.length || e.subagent_type === 'fork' || e.resume) return next(e)
+    const selected = autoModels ? await $.session.model() : ''
     if (autoModels && (
-      !autoModels.includes(await $.session.model()) ||
+      !autoModels.some(model => matchesAutoModel(model, selected)) ||
       !isRoutingEnabled({
         ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
         ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),

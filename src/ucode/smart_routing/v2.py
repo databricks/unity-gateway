@@ -766,37 +766,76 @@ def launch_claude(
         and not route_first_prompt
         and not _claude_print_mode(remaining)
     )
-    from ucode.agents.claude import _managed_settings_path, auto_picker_available
-    from ucode.agents.claude_auto import add_picker_entry
+    from ucode.agents.claude import _managed_settings_path
+    from ucode.agents.claude_auto import add_picker_entry, is_auto_model, picker_is_configured
 
-    if auto_picker and not auto_picker_available():
-        print_warning(
-            "Auto is unavailable under Claude's current managed picker or custom-model policy. "
-            "`ug configure --agent claude` can repair only a UG-owned picker. "
-            "Other pickers require Auto support from their own manager; this setup is currently unsupported."
-        )
-        auto_picker = False
     if auto_picker:
-        # --settings supplies the row when no higher-priority managed picker exists.
-        settings.setdefault(
-            "modelPicker",
-            {
-                "replaceBuiltInOptions": True,
-                "options": [
-                    {"model": model, "label": catalog.model_id_to_display_name.get(model, model)}
-                    for model in model_ids
-                ],
-            },
-        )
-        settings = add_picker_entry(settings)
         managed_path = _managed_settings_path()
         managed_auto = read_json_safe(managed_path) if managed_path is not None else {}
+        denied_models = [
+            entry
+            for source in (settings, managed_auto)
+            if isinstance(source.get("deniedModels"), list)
+            for entry in source["deniedModels"]
+        ]
+        managed_picker = managed_auto.get("modelPicker")
+        managed_env = managed_auto.get("env", {})
+        custom = (
+            managed_env.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
+            if isinstance(managed_env, dict)
+            else None
+        )
+        auto_settings = None
+        if picker_is_configured(managed_auto):
+            auto_settings = {**managed_auto, "deniedModels": denied_models}
+        elif (
+            (
+                "modelPicker" not in managed_auto
+                or isinstance(managed_picker, dict)
+                and managed_picker.get("replaceBuiltInOptions", False) is False
+            )
+            # Native managed sources outrank launch settings even when empty.
+            and "modelOverrides" not in managed_auto
+            and "availableModels" not in managed_auto
+            and isinstance(managed_env, dict)
+            and (not custom or isinstance(custom, str) and is_auto_model(custom))
+        ):
+            if isinstance(managed_picker, dict):
+                settings = {**settings, "modelPicker": managed_picker}
+            settings.setdefault(
+                "modelPicker",
+                {
+                    "replaceBuiltInOptions": True,
+                    "options": [
+                        {
+                            "model": model,
+                            "label": catalog.model_id_to_display_name.get(model, model),
+                        }
+                        for model in model_ids
+                    ],
+                },
+            )
+            generated = add_picker_entry({**settings, "deniedModels": denied_models})
+            auto_settings = generated if picker_is_configured(generated) else None
+            if "deniedModels" in settings:
+                generated["deniedModels"] = settings["deniedModels"]
+            else:
+                generated.pop("deniedModels", None)
+            settings = generated
+        if auto_settings is None:
+            print_warning(
+                "Auto is unavailable under Claude's current managed picker or custom-model policy. "
+                "`ug configure --agent claude` can repair only a UG-owned picker. "
+                "Other pickers require Auto support from their own manager; this setup is currently unsupported."
+            )
+            auto_picker = False
+    if auto_picker:
         try:
             auto_config = json.loads(
                 picker_config(
                     catalog,
                     workspace,
-                    managed_auto if "modelPicker" in managed_auto else settings,
+                    auto_settings,
                     default_model=launch_model
                     or default_model
                     or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")

@@ -531,20 +531,29 @@ so these logs may still contain sensitive details. Claude's audit format is unch
 
 ### Auto in Claude Code
 
-Auto is opt-in. Enable the new config version for configure and launch:
+Auto visibility is opt-in. Enable the new config version for configure and launch:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent claude
 SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
 ```
 
-UG preserves replacement pickers owned by other managers, including installed
-Isaac's. These currently prevent Auto, and `ug configure --agent claude` cannot
-repair them. Auto requires support from the picker manager, which is not currently
-available for Isaac. Isaac bootstrap alone does not enable Auto.
+When workspace managed config enables Claude smart routing, ordinary `ug configure`
+already provisions Auto aliases and sets `modelPicker.replaceBuiltInOptions=false`
+for UG-owned pickers, regardless of its config version. Launch configuration controls
+Auto visibility. Without managed routing or explicit Auto opt-in, configure keeps
+`replaceBuiltInOptions=true`.
 
-All existing versions, including `subagent_orch_v0_claude_only`, keep the old
-model picker and Smart Router controls. `ENABLE_SMART_ROUTER_AUTO_MODE=1` enables
+UG preserves pickers owned by other managers, including Isaac. Their manager must
+set `modelPicker.replaceBuiltInOptions=false` to expose Auto's native custom-model slot.
+When managed settings define neither `modelOverrides` nor `availableModels`, UG can
+supply Auto aliases for that session. Managed mappings and allowlists retain precedence
+and must already admit Auto. A foreign custom-model slot also prevents Auto.
+Changing machine-wide picker settings can require sudo; launching `ug claude` does
+not install or rewrite those settings.
+
+Existing versions, including `subagent_orch_v0_claude_only`, keep Auto hidden
+and retain their Smart Router controls. `ENABLE_SMART_ROUTER_AUTO_MODE=1` enables
 the picker for an already smart-routed launch without a version selector; the flag
 alone does not enable routing. A known version overrides this flag.
 
@@ -569,7 +578,7 @@ Model-switch echoes and confirmations use Auto. Native `/status` and the header 
 alias because Claude 2.1.290 does not expose a model-name display hook.
 
 This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
-wrapper. When opted in, configure writes fixed aliases only for UG-owned model
+wrapper. Configure writes these fixed aliases only for UG-owned model
 pickers, preserving foreign administrator pickers and custom model options. It enables
 Claude's native custom-model row (`replaceBuiltInOptions: false`). This also exposes
 native built-in choices when no `availableModels` restriction is configured; existing

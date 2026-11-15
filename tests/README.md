@@ -2,6 +2,9 @@
 
 Claude Auto's existing CUJ 4 selector journey verifies the managed default, manual
 OFF and Auto ON transitions, and completed inference on the newly selected main model.
+It retains the configured managed picker, aliases and allowlist, and requires the
+managed file to remain byte-identical across the launch and selections. Foreign
+picker session aliases have component coverage; dedicated live coverage remains a gap.
 The existing main/subagent preset journey now includes `subagent_auto_v0_claude_only`:
 completed parent/child answers must match correlated router decisions and paired
 successful inference responses carrying real model IDs. CUJ 7's discovery journey
@@ -9,9 +12,11 @@ saves a personal Auto selection, restarts with routing disabled, and requires
 completed inference on the same real model without persistent Auto mappings.
 These journeys require authenticated live CI; collection is not a live pass.
 
-Focused regressions in the existing suites cover Auto configure → ordinary launch →
-Auto launch without a managed-file rewrite, fresh OFF session controls, and native
-manual-model startup with feedback required through the next main turn. The native
+Focused regressions cover managed routing with Auto off at configure, non-routing
+configure retaining its replacement picker, and explicit Auto configure opt-in.
+Ordinary and Auto launches preserve managed bytes and invoke no further privileged
+writes, with or without write access. Existing suites also cover fresh OFF session
+controls and native manual-model startup with feedback required through the next main turn. The native
 case deliberately fails inference without credentials and checks state only.
 Rollout ownership and restoration share the existing known-version test matrix.
 The full-screen Auto alias assertion remains disabled pending native Claude support

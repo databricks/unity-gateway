@@ -2,6 +2,8 @@
 
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
+The configure-time managed-routing and Auto opt-in matrix has component coverage in
+`../test_agent_claude.py`; live configure-to-launch validation remains a gap.
 
 `../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
 discovery, implicit PAT classification, and the separate selected-workspace authentication check at controlled
@@ -2021,6 +2023,8 @@ unknown selectors, and absent versus empty flags. These checks do not establish 
 CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
+Its Auto selector journey also covers a non-replacing managed picker without managed
+aliases or an allowlist, completed inference, and unchanged machine-wide settings.
 
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journeys rather than `claude plugin test`; native
