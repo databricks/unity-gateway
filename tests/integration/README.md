@@ -2128,14 +2128,17 @@ Closing Markdown may be followed by sentence punctuation; literal URL punctuatio
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
 
-## Omnigent launcher preview
+## Omnigent
 
-`tests/test_omni.py` covers bare launch, opaque argument forwarding (including
-`--` separators and prompt metacharacters), help/version dispatch, missing
-installation, launch failures, propagated exit status, and unchanged environment
-and working directory. Process handoff behavior uses `tests/test_launcher.py`.
-These are component tests, not gateway inference tests. Manual checks on Ubuntu
-ARM64 with Omnigent 0.22.0 verified CLI startup and native Claude/Codex skill
-invocation through the web-session API; they required existing provider setup.
-No automated Omnigent live-integration lane is included. Smart routing and managed
-configuration are unsupported by this launcher.
+`tests/test_omni.py` covers opaque argument forwarding, terminal handoff, missing
+executables, failure/exit propagation, configuration picker and explicit selection,
+repeat provider setup, unrelated settings/default preservation, available native
+families, invalid config and install failures, dry-run isolation, MCP client aliasing,
+downloaded-skill refresh, private backups, and revert preserving later host/provider
+edits. The shared CLI suite covers first-run bootstrap.
+
+Manual Ubuntu ARM64 checks with Omnigent 0.22.0 cover installed configure, CLI
+startup, native Claude/Codex skill invocation, and a completed Claude web-search MCP
+call. The managed system-ai-web_search registration was absent in Claude; the
+Codex MCP request did not complete within the manual test window. These checks
+are not an automated live-integration lane or managed-policy/smart-routing coverage.
