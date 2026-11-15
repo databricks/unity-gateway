@@ -94,7 +94,10 @@ skills.json entries added after configure) and `test_agents_commands.py` cover d
 native installer, `agy mcp list` parsing, `ug antigravity`/`ug agy`, and
 `ug agents add antigravity`. These are unit/component checks. Automated live coverage is the
 eight journeys in `integration/` (blocking Linux CI lane, Databricks Hosted and the Gemini
-Enterprise MPS; see `integration/README.md`).
+Enterprise MPS; see `integration/README.md`). The integration session saves Antigravity request
+URLs before cleanup even when a task assertion fails. Offline checks in
+`test_integration_evidence.py` cover successful and failed assertions and sessions without native
+logs. These artifacts identify native request destinations, not gateway timing or timeout causality.
 
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are

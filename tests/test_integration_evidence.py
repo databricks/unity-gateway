@@ -1,6 +1,9 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
+import contextlib
 import json
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +16,7 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.harness import UserSession
 from tests.integration.utils.terminal import codex_command_approval_pending
 
 
@@ -227,6 +231,42 @@ def test_terminal_api_failure_reports_the_actual_error(screen):
 )
 def test_transient_retries_and_running_tasks_are_not_terminal_errors(screen):
     assert_no_terminal_api_error(screen)
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-assertion"])
+def test_antigravity_request_evidence_survives_test_outcome(tmp_path, failed):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+    log = session.home / antigravity.STATE_DIRECTORY / "log" / "cli-test.log"
+    url = "http://127.0.0.1:37805/ai-gateway/gemini/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
+    outcome = (
+        pytest.raises(AssertionError, match="native status ERROR")
+        if failed
+        else contextlib.nullcontext()
+    )
+
+    with outcome:
+        with antigravity.record_requests(session):
+            log.parent.mkdir(parents=True)
+            log.write_text(f"Making Gateway streaming request to: {url}\n")
+            if failed:
+                raise AssertionError("native status ERROR")
+
+    artifact = session.artifacts / "antigravity-requests.json"
+    assert json.loads(artifact.read_text()) == {"urls": [url]}
+    assert log.read_text() == f"Making Gateway streaming request to: {url}\n"
+
+
+def test_antigravity_request_capture_omits_sessions_without_native_logs(tmp_path):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    with antigravity.record_requests(session):
+        pass
+
+    assert list(session.artifacts.iterdir()) == []
 
 
 @pytest.mark.parametrize("reason", ["RESOURCE_EXHAUSTED", "REQUEST_LIMIT_EXCEEDED"])

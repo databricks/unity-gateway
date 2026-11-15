@@ -1,5 +1,6 @@
 """Antigravity CLI evidence, read from its own stream-json output, conversation store, and log."""
 
+import contextlib
 import json
 import random
 import re
@@ -83,6 +84,16 @@ def final_response(events: list[dict]) -> str:
 
 def _logs(session) -> list[Path]:
     return sorted((session.home / STATE_DIRECTORY / "log").glob("cli-*.log"))
+
+
+@contextlib.contextmanager
+def record_requests(session):
+    """Keep request evidence when a journey exits before its model assertions."""
+    try:
+        yield
+    finally:
+        if _logs(session):
+            requested_urls(session)
 
 
 def requested_urls(session) -> list[str]:
