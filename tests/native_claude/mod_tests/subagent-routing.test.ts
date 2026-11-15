@@ -1491,7 +1491,7 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   const deniedRow = await $.ui.mount(row('stale-selection'));
   expect(await deniedRow.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
   await deniedRow.unmount();
-  response = { deny: 'All routing candidates are rate-limited.' };
+  response = { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true };
   expect((await launch('all-limited')).deny).toBe('All routing candidates are rate-limited.');
   response = undefined;
   expect((await launch('empty-response')).deny).toContain('could not select an available model');
@@ -1515,7 +1515,7 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash']);
   await $.prompt.submit({ ...notice, text: notice.text
     .replace('child-first', 'child-request-id').replace('system.ai.glm-5-3-flash', 'databricks-claude-haiku-5-5') });
-  response = { deny: 'All routing candidates are rate-limited.' };
+  response = { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true };
   expect((await launch('both-limited')).deny).toBe('All routing candidates are rate-limited.');
   expect(requests.at(-1).excluded_models).toEqual(['glm-5-3-flash', 'claude-haiku-5-5']);
   timestamp += 60_000;
@@ -1527,3 +1527,81 @@ test('a confirmed 429 excludes the model from routing until its cooldown expires
   expect((await launch('custom-model-excluded')).result.resolvedModel).toBe(parent);
   expect(requests.at(-1).excluded_models).toEqual(['team.models.claude-opus-4-8']);
 });
+
+for (const [label, response, exitCode] of [
+  ['empty response', undefined, 0],
+  ['command failure', undefined, 1],
+  ['invalid response', 'not JSON', 0],
+  ['all candidates excluded', { deny: 'All routing candidates are rate-limited.', rate_limit_cooldown: true }, 0],
+  ['route selection failed', { deny: 'No available model during cooldown.', rate_limit_cooldown: true }, 0],
+  ['other denial', { deny: 'Policy disallows this task.' }, 0],
+] as const) {
+  for (const [timing, delay, clockAvailableAfter] of [
+    ['before expiry', 9_999, true],
+    ['at expiry', 10_000, true],
+    ['after expiry', 20_000, true],
+    ['clock unavailable', 20_000, false],
+  ] as const) {
+    test('cooldown is checked after routing: ' + label + ', ' + timing, async ($, on) => {
+      const blocked = 'system.ai.glm-5-3-flash';
+      const parent = 'system.ai.claude-sonnet-5-5';
+      let timestamp = 10_000;
+      let clockAvailable = true;
+      let waiting = false;
+      const requests: any[] = [];
+      const spawns: any[] = [];
+      on('clock.now', () => {
+        if (!clockAvailable) throw new Error('Clock unavailable');
+        return { value: timestamp };
+      });
+      on('session.id', () => ({ value: 'session-1' }));
+      on('fs.write', () => ({ value: undefined }));
+      on('process.run', ($, e) => {
+        requests.push(JSON.parse(e.init.stdin));
+        if (!waiting) return { value: { exitCode: 0, stderr: '',
+          stdout: JSON.stringify({ model: blocked, rationale: 'Selected for the task' }) } };
+        timestamp += delay;
+        clockAvailable = clockAvailableAfter;
+        return { value: { exitCode, stderr: '',
+          stdout: typeof response === 'string' ? response : response ? JSON.stringify(response) : '' } };
+      });
+      on('agent.spawn', ($, e) => {
+        spawns.push(e);
+        return { model: e.model!, agentId: 'child-' + e.tool_use_id };
+      });
+      on('tool.call', async (_, e) => {
+        expect(e.model).toBe(originalInput.model);
+        const child = await $.agent.spawn({
+          tool_use_id: e.tool_use_id!, prompt: e.prompt, description: e.description,
+          subagentType: 'general-purpose', model: parent, parentModel: parent,
+          provider: { plugin: 'engine', tier: 'core' }, background: true, fork: false,
+        });
+        return child.deny ? { deny: child.deny } : { result: { resolvedModel: child.model } };
+      });
+      on('prompt.submit', ($, e) => ({ text: e.text }));
+      const launch = (id: string) => $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+      expect((await launch('initial')).result.resolvedModel).toBe(blocked);
+      await $.prompt.submit({
+        text: '<task-notification>\n<task-id>child-initial</task-id>\n<status>failed</status>\n'
+          + '<summary>Agent "Inspect parser" failed: Agent terminated early due to an API error '
+          + '(error type rate_limit, HTTP 429, model sent to the API: ' + blocked + ')</summary>\n</task-notification>',
+        wait: false, origin: { kind: 'task-notification' },
+      });
+      timestamp += 50_000;
+      waiting = true;
+      const answer = await launch('waiting');
+      expect(requests).toHaveLength(2);
+      expect(requests[1].excluded_models).toEqual(['glm-5-3-flash']);
+      if (label === 'other denial' || timing === 'before expiry' || !clockAvailableAfter) {
+        expect(typeof answer.deny).toBe('string');
+        expect(spawns).toHaveLength(1);
+        if (label === 'other denial') expect(answer.deny).toBe('Policy disallows this task.');
+      } else {
+        expect(answer.deny).toBeUndefined();
+        expect(answer.result.resolvedModel).toBe(parent);
+        expect(spawns).toHaveLength(2);
+        expect(spawns[1].model).toBe(parent);
+      }
+    });
+  }
+}

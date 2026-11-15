@@ -692,7 +692,8 @@ def route_claude_subagent(
         ]
         if not available_models:
             return {
-                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent."
+                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent.",
+                "rate_limit_cooldown": True,
             }
     started = time.monotonic()
     attribution = routing.attribution_headers(
@@ -718,7 +719,8 @@ def route_claude_subagent(
     if route is None:
         if excluded:
             return {
-                "deny": "Smart Router could not select an available model during rate-limit cooldown. Try again later."
+                "deny": "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                "rate_limit_cooldown": True,
             }
         return None
     if audit_decision:

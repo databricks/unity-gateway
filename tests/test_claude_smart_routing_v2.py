@@ -1948,7 +1948,8 @@ class TestSubagentRouting:
 
         if not expected_models:
             assert output == {
-                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent."
+                "deny": "All routing candidates are rate-limited. Wait for the cooldown to expire before starting another subagent.",
+                "rate_limit_cooldown": True,
             }
             assert captured == {}
             assert not decisions_path.exists()
@@ -1965,20 +1966,27 @@ class TestSubagentRouting:
         assert record["router_name"] == routing.ROUTER_NAME
 
     @pytest.mark.parametrize(
-        ("excluded_models", "expected_error", "requested_models"),
+        ("excluded_models", "expected_output", "requested_models"),
         [
-            ("claude-opus-4-8", "Invalid rate-limit exclusions; no subagent was started.", []),
-            ([None], "Invalid rate-limit exclusions; no subagent was started.", []),
+            (
+                "claude-opus-4-8",
+                {"deny": "Invalid rate-limit exclusions; no subagent was started."},
+                [],
+            ),
+            ([None], {"deny": "Invalid rate-limit exclusions; no subagent was started."}, []),
             ([], None, [["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]]),
             (
                 ["system.ai.claude-opus-4-8"],
-                "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                {
+                    "deny": "Smart Router could not select an available model during rate-limit cooldown. Try again later.",
+                    "rate_limit_cooldown": True,
+                },
                 [["system.ai.claude-sonnet-5"]],
             ),
         ],
     )
     def test_missing_route_and_malformed_exclusions(
-        self, excluded_models, expected_error, requested_models
+        self, excluded_models, expected_output, requested_models
     ):
         # An empty local response exercises the real router client's no-selection path.
         requests = []
@@ -2014,7 +2022,7 @@ class TestSubagentRouting:
                 server.shutdown()
                 thread.join(timeout=5)
 
-        assert output == ({"deny": expected_error} if expected_error else None)
+        assert output == expected_output
         assert requests == requested_models
 
     def test_legacy_hook_notice_shows_the_unwrapped_gateway_model(self, monkeypatch):

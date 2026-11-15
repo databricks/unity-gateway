@@ -1911,7 +1911,9 @@ unknown selectors, and absent versus empty flags. These checks do not establish 
 Native hook tests also cover confirmed subagent 429s: candidate exclusions, notifications
 with and without request IDs, refusal when routing fails or no candidate remains,
 notices received during routing failures, removal of rejected routing cards, cooldown
-expiry, unchanged resumes/disabled routing, and the model reported to the parent.
+expiry before and during routing (including the exact boundary and unavailable clocks),
+preserved non-cooldown denials, unchanged resumes/disabled routing, and the model reported
+to the parent.
 Python component tests verify that the outgoing router request excludes equivalent model
 aliases (including custom-deployment context hints) while preserving distinct namespaces,
 skips the request for malformed exclusions or when no candidates remain, and denies a

@@ -598,8 +598,10 @@ or construct ug state files. The normal test suite checks these boundaries.
 The Claude mod entry point has separate native component checks in
 `../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
-native hook tests cover rate-limit candidate exclusions, cooldown expiry, optional request IDs,
-notices received during failed routing, rejected-card removal, and launch-model reporting using fixtures.
+native hook tests cover rate-limit candidate exclusions, cooldown expiry before and during
+routing, the exact expiry boundary, unavailable clocks, preserved non-cooldown denials,
+optional request IDs, notices received during failed routing, rejected-card removal, and
+launch-model reporting using fixtures.
 Python component tests check the filtered router request, custom-deployment context hints,
 malformed exclusions and missing routing decisions. Native process coverage verifies the
 explicit disabled response.
