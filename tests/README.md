@@ -1629,3 +1629,18 @@ is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. No installed-agent journey currently covers mixed wildcard sources or
 proves inference with qualified MPS models.
+
+## Omnigent
+
+`tests/test_omni.py` covers opaque argument forwarding, terminal handoff, missing
+executables, failure/exit propagation, configuration picker and explicit selection,
+repeat provider setup, unrelated settings/default preservation, available native
+families, invalid config and install failures, dry-run isolation, MCP client aliasing,
+downloaded-skill refresh, private backups, and revert preserving later host/provider
+edits. The shared CLI suite covers first-run bootstrap.
+
+Manual Ubuntu ARM64 checks with Omnigent 0.22.0 cover installed configure, CLI
+startup, native Claude/Codex skill invocation, and a completed Claude web-search MCP
+call. The managed system-ai-web_search registration was absent in Claude; the
+Codex MCP request did not complete within the manual test window. These checks
+are not an automated live-integration lane or managed-policy/smart-routing coverage.

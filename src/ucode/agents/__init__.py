@@ -47,7 +47,7 @@ from ucode.ui import (
     status_subprocess_stdout,
 )
 
-from . import antigravity, claude, codex, copilot, gemini, kilo, opencode, pi
+from . import antigravity, claude, codex, copilot, gemini, kilo, omni, opencode, pi
 from .args import LaunchOptions as LaunchOptions
 from .args import explicit_model_arg_value as explicit_model_arg_value
 
@@ -59,6 +59,7 @@ _MODULES = {
     "kilo": kilo,
     "copilot": copilot,
     "pi": pi,
+    "omni": omni,
     "antigravity": antigravity,
 }
 
@@ -80,6 +81,8 @@ TOOL_ALIASES = {
     "kilocode": "kilo",
     "copilot": "copilot",
     "pi": "pi",
+    "omni": "omni",
+    "omnigent": "omni",
     "antigravity": "antigravity",
     "agy": "antigravity",
     "antigravity-cli": "antigravity",
@@ -134,6 +137,10 @@ def install_databricks_ai_tools_for_agents(
     # self-install AI Tools under one (may become a managed-config option later).
     if refresh_managed_config(state, force_refresh=force_refresh).manifest is not None:
         return
+    if "omni" in tools:
+        tools = list(
+            dict.fromkeys([*tools, *(t for t in ("claude", "codex") if state.get(f"{t}_models"))])
+        )
     agents = [AITOOLS_AGENT_TOKENS[tool] for tool in tools if tool in AITOOLS_AGENT_TOKENS]
     if not agents:
         return
@@ -145,7 +152,7 @@ def normalize_tool(tool: str) -> str:
     if not normalized:
         raise RuntimeError(
             f"Unsupported tool '{tool}'. Use one of: codex, claude, gemini, opencode, kilo, copilot, "
-            "pi, antigravity."
+            "pi, omni, antigravity."
         )
     return normalized
 
@@ -609,7 +616,9 @@ def configure_tool(
 ) -> dict:
     metrics.annotate(config_scope=config_scope())
     result: dict | tuple[dict, str]
-    if tool == AGENT_CODEX:
+    if tool == "omni":
+        result = omni.write_tool_config(state)
+    elif tool == AGENT_CODEX:
         result = codex.write_tool_config(
             state, model, provider=provider, parent_schema=parent_schema, relayed=relayed
         )
@@ -701,6 +710,8 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
         return bool(antigravity.model_catalog(state))
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
+    if tool == "omni":
+        return bool(state.get("claude_models") or state.get("codex_models"))
     if tool == "pi":
         return (
             bool(state.get("claude_models"))
@@ -718,6 +729,7 @@ _TOOL_DISCOVERY_SOURCES: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini",),
     "copilot": ("copilot",),
     "pi": ("claude", "codex", "gemini"),
+    "omni": ("claude", "codex"),
     "antigravity": ("gemini",),
 }
 
@@ -840,8 +852,8 @@ def _configure_one(
         return configure_tool(
             tool, state, None, provider=provider, provider_models=provider_models, relayed=relayed
         )
-    if tool == "codex":
-        return configure_tool("codex", state)
+    if tool in ("codex", "omni"):
+        return configure_tool(tool, state)
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:
         # `ug configure` writes the managed model keys a plain launch would.

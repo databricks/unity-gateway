@@ -177,6 +177,46 @@ ug removes its shared reference on discovery/validation failure, reconfiguration
 revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
 discovery or `ug configure` for a managed static list, then restart the app server.
 
+### Omnigent
+
+Select **Omnigent (Claude and Codex)** in `ug configure`, or configure it directly:
+
+```bash
+ug configure --agents omni --profile <databricks-profile>
+ug omni
+ug omni codex
+ug omni claude
+ug omni --help
+```
+
+UG installs `omnigent[databricks]>=0.22.0` through `uv` and installs the native
+Claude/Codex CLIs for the model families available on your workspace. It writes the
+`unity-gateway` provider in `~/.omnigent/config.yaml` (or
+`$OMNIGENT_CONFIG_HOME/config.yaml`), makes it the default for those families, and
+preserves other providers and host settings. Reconfigure after changing your UG
+workspace. Restart the Omnigent host when its sessions are finished to load provider
+changes. A first `ug omni` launch also offers the usual UG workspace setup.
+
+MCP uses the native Claude/Codex user configurations. Managed-only MCP entries
+are subject to Omnigent’s native discovery limitations:
+
+```bash
+ug mcp add --agents omni --location system.ai
+ug configure skills --location <catalog>.<schema>
+```
+
+Downloaded skills live in `.claude/skills` and `.agents/skills`, which Omnigent
+reads. Existing downloads are refreshed on session launch. Invoke a skill with
+`/skill-name` in Claude or `$skill-name` in Codex; reload the web menu after a download
+if it is cached. `/mcp` opens the MCP panel inside an existing web conversation.
+
+All arguments, including `--` separators, are forwarded unchanged. Help and
+management commands do not run UG setup. On managed workspaces, explicit Omni
+selection configures it as a self-managed agent. UG smart routing, managed configuration,
+and hosts serving multiple workspaces are not supported by this adapter. Use the
+native UG harnesses when those features are required. Omni remains a separate
+application with its own host, web UI, and platform prerequisites.
+
 ## Configure
 
 ```bash

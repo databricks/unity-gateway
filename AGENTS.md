@@ -368,3 +368,15 @@ Fields live in the VS Code user `settings.json`. `ug`'s extension writes them wh
 | `chat.defaultModel` | Ignore | Create/replace unless the developer set their own | The config's `default_model` for Copilot, when VS Code's models include it: the model new chat conversations start on |
 
 </details>
+
+## Omnigent adapter ownership
+
+Omnigent is an explicitly selected self-managed application. UG owns the
+`providers.unity-gateway` entry and the default scopes it assigns to available
+Claude/Codex families in `~/.omnigent/config.yaml` (honoring `OMNIGENT_CONFIG_HOME`).
+Other provider fields, host settings, and project configuration are preserved.
+The backup and atomic replacement are private files. Revert removes/restores only
+UG's provider and unchanged default scopes, keeping later host/provider edits.
+Native Claude/Codex user MCP configuration and shared skill directories are reused.
+The adapter does not implement UG managed policy or smart routing, and cannot route
+hosts that serve multiple workspaces.

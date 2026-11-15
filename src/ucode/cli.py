@@ -495,6 +495,14 @@ def _parse_agents_option(agents: str) -> list[str]:
     return tools
 
 
+def _parse_mcp_agents(agents: str) -> set[str] | None:
+    scope = {a.strip().lower() for a in agents.split(",") if a.strip()}
+    if scope & {"omni", "omnigent"}:
+        scope.difference_update(("omni", "omnigent"))
+        scope.update(("claude", "codex"))
+    return scope or None
+
+
 def _parse_skill_locations(location: str | None) -> list[str]:
     """Parse a comma-separated `--location` into `<catalog>.<schema>` refs,
     dropping duplicates while preserving order. `None`/empty yields `[]` (the
@@ -789,6 +797,7 @@ def configure_shared_state(
         or "kilo" in tools
         or "copilot" in tools
         or "pi" in tools
+        or "omni" in tools
     )
     want_gemini = (
         fetch_all
@@ -800,7 +809,12 @@ def configure_shared_state(
     )
     # Claude's web-search server also needs a Responses-capable model.
     want_codex = (
-        fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
+        fetch_all
+        or "codex" in tools
+        or "claude" in tools
+        or "copilot" in tools
+        or "pi" in tools
+        or "omni" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
     # configure must persist that discovered family too.
@@ -1210,7 +1224,7 @@ def _setup_single_agent(
     state = _save_headless_model_source(
         state, [tool], model_location=model_location, provider=provider
     )
-    if apply_managed and not managed_enabled_tools(managed or {}):
+    if apply_managed and (tool == "omni" or not managed_enabled_tools(managed or {})):
         state = _record_unmanaged_configured_agents(state, [tool])
     if apply_managed and tool == "claude":
         from ucode.agents.desktop.setup import configure_claude_desktop
@@ -1463,6 +1477,10 @@ def _configure_workspace_command(
     workspace_entries = workspaces or [_prompt_for_configuration(tool)]
     previous_workspace = state_workspace_key(load_state())
 
+    # Omni is an explicitly selected self-managed application, like the optional
+    # agents added through `ug agents add`. Its adapter does not install admin policy.
+    if selected_tools == ["omni"]:
+        tool, selected_tools = "omni", None
     if tool is not None:
         _setup_single_agent(
             workspace_entries,
@@ -1597,6 +1615,9 @@ def _configure_workspace_command(
                 _sync_claude_cowork_plugin(
                     state, managed_mcp_servers=resolved_mcps, sync_cowork=skills_configured
                 )
+        if "omni" in (selected_tools or []):
+            persisted = configure_single_tool("omni", persisted)
+            _record_unmanaged_configured_agents(persisted, ["omni"])
         _summarize_managed_config(managed, configured_tools, registered_mcps)
         _fail_machine_wide_run(failed_tools)
         return 0
@@ -1640,6 +1661,8 @@ def _configure_workspace_command(
     refuse_user_scope_over_managed_files(picked)
 
     for tool_name in picked:
+        if tool_name == "omni" and is_dry_run():
+            continue
         install_tool_binary(
             tool_name,
             strict=False,
@@ -1720,7 +1743,10 @@ def _configure_workspace_command(
     )
     if offer_optional_setup and not is_dry_run():
         _configure_optional_setup(state, picked)
-    _fail_machine_wide_run([tool_name for tool_name in picked if tool_name not in configured_set])
+    failed = [tool_name for tool_name in picked if tool_name not in configured_set]
+    if "omni" in failed:
+        raise RuntimeError("Omnigent configuration failed. Fix the warning above and retry.")
+    _fail_machine_wide_run(failed)
     return 0
 
 
@@ -2032,6 +2058,7 @@ def _print_managed_revert_result(display: str, result: str, path: Path | None) -
 
 
 def revert() -> int:
+    from ucode.agents import omni
     from ucode.agents.desktop.setup import revert_desktop
 
     state = load_state()
@@ -2056,14 +2083,20 @@ def revert() -> int:
         print_warning(f"Could not revert VS Code: {exc}. Fix it, then run ug revert again.")
         vscode_result = "failed"
 
-    results: dict[str, bool] = {
-        # Antigravity's skills.json is shared with its app and IDE extensions, so revert
-        # removes only ug's entry rather than restoring a snapshot.
-        tool: antigravity_agent.revert_skills_config()
-        if tool == "antigravity"
-        else restore_file(spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool)))
-        for tool, spec in TOOL_SPECS.items()
-    }
+    results: dict[str, bool] = {}
+    for tool, spec in TOOL_SPECS.items():
+        if tool == "antigravity":
+            results[tool] = antigravity_agent.revert_skills_config()
+        elif tool == "omni":
+            results[tool] = (
+                omni.revert_config()
+                if managed_configs.get(tool) or omni.BACKUP_PATH.exists()
+                else False
+            )
+        else:
+            results[tool] = restore_file(
+                spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool))
+            )
     pi_settings_restored = restore_file(
         PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
     )
@@ -2113,6 +2146,7 @@ _HELP_COMMAND_ORDER = (
     "opencode",
     "kilo",
     "pi",
+    "omni",
     "antigravity",
     "configure",
     "mcp",
@@ -2375,6 +2409,9 @@ def _configure_agents_for_mcp(
 ) -> set[str]:
     """Select MCP clients for one workspace without changing agent model settings."""
     scope = {a if a == "cursor" else normalize_tool(a) for a in requested}
+    if "omni" in scope:
+        scope.remove("omni")
+        scope.update(("claude", "codex"))
     installed = available_mcp_clients()
     # A named client whose user MCP config UG writes directly needs no CLI on PATH.
     not_installed = sorted(scope - set(installed) - CONFIG_WRITABLE_MCP_CLIENTS.keys())
@@ -2518,11 +2555,7 @@ def mcp_add(
     setup never configures agent models or machine-wide settings.
     """
     selected = None if names is None else {s.strip() for s in names.split(",") if s.strip()}
-    requested_agents = (
-        None
-        if agents is None
-        else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
-    )
+    requested_agents = None if agents is None else _parse_mcp_agents(agents)
     previous_workspace = current_workspace_key(load_full_state())
     workspace_entries = None
     added = False
@@ -2611,11 +2644,7 @@ def mcp_remove(
     Interactive: shows the servers you currently have configured and unregisters the
     ones you select. Needs no Databricks login.
     """
-    requested_agents = (
-        None
-        if agents is None
-        else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
-    )
+    requested_agents = None if agents is None else _parse_mcp_agents(agents)
     try:
         remove_mcp_command(agents=requested_agents)
         _sync_claude_cowork_plugin()
@@ -2645,11 +2674,7 @@ def mcp_list(
     each server is connected. Read-only; needs no Databricks login. Use the `add`/`remove`
     subcommands to change what's configured.
     """
-    requested_agents = (
-        None
-        if agents is None
-        else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
-    )
+    requested_agents = None if agents is None else _parse_mcp_agents(agents)
     try:
         list_mcp_command(agents=requested_agents)
     except RuntimeError as exc:
@@ -2793,11 +2818,7 @@ def skills_add(
         requested_skills = (
             None if names is None else {s.strip() for s in names.split(",") if s.strip()}
         )
-        requested_agents = (
-            None
-            if agents is None
-            else ({agent.strip().lower() for agent in agents.split(",") if agent.strip()} or None)
-        )
+        requested_agents = None if agents is None else _parse_mcp_agents(agents)
         if mcp and path is not None:
             raise RuntimeError("--path is not supported with --via mcp")
         if mcp and requested_skills is not None:
@@ -2907,11 +2928,7 @@ def skills_remove(
         if mcp:
             if path is not None or requested_skills is not None:
                 raise RuntimeError("--path and --names are not supported with --via mcp.")
-            requested_agents = (
-                None
-                if agents is None
-                else ({a.strip().lower() for a in agents.split(",") if a.strip()} or None)
-            )
+            requested_agents = None if agents is None else _parse_mcp_agents(agents)
             locations = _parse_skill_locations(location)
             if locations:
                 remove_skills_locations_command(locations, agents=requested_agents)
@@ -5013,6 +5030,46 @@ def copilot_cmd(
         workspace_url=workspace,
         parent_schema=model_location,
     )
+
+
+class _OmniCommand(TyperCommand):
+    """Preserve Omnigent's argument separators as well as its flags."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        original = list(args)
+        super().parse_args(ctx, args)
+        ctx.args = original
+        return original
+
+
+@app.command(
+    "omni",
+    cls=_OmniCommand,
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+    rich_help_panel="Launch",
+)
+def omni_cmd(ctx: typer.Context) -> None:
+    """Launch Omnigent; forwards all arguments to its CLI."""
+    from ucode.agents.omni import launch_cli as launch
+
+    starts_session = not ctx.args or ctx.args[0] in {"start", "run", "claude", "codex"}
+    if starts_session and not any(arg in {"--help", "-h", "--version"} for arg in ctx.args):
+        try:
+            state = load_state()
+            if not state.get("workspace") or "omni" not in (state.get("available_tools") or []):
+                ensure_bootstrap_dependencies("omni")
+                _auto_configure_tool("omni")
+                state = ensure_provider_state("omni")
+            launch_agent("omni", state, list(ctx.args), options=LaunchOptions())
+        except RuntimeError as exc:
+            print_err(str(exc))
+            raise typer.Exit(1) from None
+    else:
+        launch(list(ctx.args))
 
 
 @app.command(

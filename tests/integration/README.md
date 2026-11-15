@@ -2127,3 +2127,18 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+## Omnigent
+
+`tests/test_omni.py` covers opaque argument forwarding, terminal handoff, missing
+executables, failure/exit propagation, configuration picker and explicit selection,
+repeat provider setup, unrelated settings/default preservation, available native
+families, invalid config and install failures, dry-run isolation, MCP client aliasing,
+downloaded-skill refresh, private backups, and revert preserving later host/provider
+edits. The shared CLI suite covers first-run bootstrap.
+
+Manual Ubuntu ARM64 checks with Omnigent 0.22.0 cover installed configure, CLI
+startup, native Claude/Codex skill invocation, and a completed Claude web-search MCP
+call. The managed system-ai-web_search registration was absent in Claude; the
+Codex MCP request did not complete within the manual test window. These checks
+are not an automated live-integration lane or managed-policy/smart-routing coverage.
