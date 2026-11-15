@@ -3,8 +3,10 @@
 [Watch the live recording](live-recording.mp4) (44.2 seconds).
 
 The first live run uses native Claude Code 2.1.314 with a Sonnet 5.5 parent and a
-routed Haiku 5.5 child. It was recorded at `ea7141fc`; product source is unchanged
-from `ab985f45`. Model responses and the routing decision came from the live gateway.
+routed Haiku 5.5 child. It was recorded at `ea7141fc`, before the orchestration
+guidance was split out of this PR. The feedback-reuse and preview implementation
+shown here is unchanged. Model responses and the routing decision came from the
+live gateway; the delegated segment shows the behavior of that recorded revision.
 
 - 0:00: Supply the disable reason once. The first off command reuses it verbatim,
   and the session then turns routing back on.
