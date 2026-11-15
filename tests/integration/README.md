@@ -1,5 +1,9 @@
 # Integration tests
 
+Copilot orchestration component coverage checks command-based session-start context,
+native task guidance, disabled and child contexts, and preservation of older presets.
+Live child routing is verified separately from these component checks.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity

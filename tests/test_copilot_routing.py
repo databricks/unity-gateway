@@ -119,6 +119,38 @@ def test_plugin_hook_runs_only_for_task_calls(tmp_path):
     assert hook["timeoutSec"] > 30
 
 
+def test_orchestration_uses_a_command_session_start_hook(tmp_path, monkeypatch):
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
+    monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+    directory = tmp_path / "plugin"
+    copilot_routing.write_plugin(directory, ["/bin/ug", "copilot-router-hook", "route-subagent"])
+    hooks = json.loads((directory / "hooks/hooks.json").read_text())["hooks"]
+    (hook,) = hooks["sessionStart"]
+    assert hook["type"] == "command"
+    assert shlex.split(hook["bash"])[1:] == [
+        "-m",
+        "ucode.smart_routing.orchestrator",
+        "--agent",
+        "copilot",
+    ]
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
+    directory = tmp_path / "disabled"
+    copilot_routing.write_plugin(directory, ["/bin/ug", "copilot-router-hook", "route-subagent"])
+    assert "sessionStart" not in json.loads((directory / "hooks/hooks.json").read_text())["hooks"]
+
+
+def test_orchestration_context_uses_native_tasks_and_respects_off_and_child(monkeypatch):
+    from ucode.smart_routing import orchestrator
+
+    monkeypatch.setattr(orchestrator, "enabled", lambda **_kwargs: True)
+    context = orchestrator.hook_output({"sessionId": "parent"}, agent="copilot")
+    assert "native `task` tool" in context["additionalContext"]
+    assert "do not delegate again" in context["additionalContext"]
+    assert orchestrator.hook_output({"agentId": "child"}, agent="copilot") is None
+    monkeypatch.setattr(orchestrator, "enabled", lambda **_kwargs: False)
+    assert orchestrator.hook_output({"sessionId": "parent"}, agent="copilot") is None
+
+
 class TestRouterHookCommand:
     ARGS = ["copilot-router-hook", "route-subagent", "--host", WS, "--model", GPT_REF]
     runner = CliRunner()

@@ -10,13 +10,15 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import sys
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
 from ucode.config_io import APP_DIR
+from ucode.constants import AGENT_COPILOT
 from ucode.databricks import build_auth_token_argv
-from ucode.smart_routing import routing
+from ucode.smart_routing import orchestrator, routing
 from ucode.smart_routing.routing import RoutingDecision
 from ucode.workspace import workspace_id_args
 
@@ -153,7 +155,18 @@ def write_plugin(directory: Path, argv: list[str]) -> Path:
         "powershell": subprocess.list2cmdline(argv),
         "timeoutSec": HOOK_TIMEOUT_S,
     }
+    hooks = {"preToolUse": [hook]}
+    if orchestrator.feature_enabled(agent=AGENT_COPILOT):
+        command = [sys.executable, "-m", orchestrator.HOOK_MODULE, "--agent", AGENT_COPILOT]
+        hooks["sessionStart"] = [
+            {
+                "type": "command",
+                "bash": shlex.join(command),
+                "powershell": subprocess.list2cmdline(command),
+                "timeoutSec": 5,
+            }
+        ]
     (directory / "hooks" / "hooks.json").write_text(
-        json.dumps({"version": 1, "hooks": {"preToolUse": [hook]}}), encoding="utf-8"
+        json.dumps({"version": 1, "hooks": hooks}), encoding="utf-8"
     )
     return directory

@@ -367,9 +367,11 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
 
 @pytest.mark.parametrize("version", sorted(config._VERSIONS))
-def test_copilot_never_gets_first_prompt_routing_or_orchestration(version):
+def test_copilot_orchestration_is_enabled_only_by_the_new_preset(version):
     resolved = config.resolve_environment(
         {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}, agent=AGENT_COPILOT
     )
     assert resolved[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
-    assert resolved[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "0"
+    assert resolved[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == (
+        "1" if version == config.SUBAGENT_ORCH_V1_CLAUDE_COPILOT else "0"
+    )
