@@ -60,6 +60,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
+   Check overlapping sessions as well as sequential runs. A pending write or rollback must
+   preserve a newer manual choice and another session's recovery state. Trace late completions
+   after cancellation or a model change, and ask for a focused interleaving regression when missing.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
@@ -69,6 +72,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    changes are material or performance is claimed. Separate local/component timing from real
    agent readiness and CI queue time. An optimization must preserve submitted prompts and avoid
    confusing hook messages; explain the user-visible tradeoff as well as the saved work.
+   Recheck time-sensitive state after asynchronous work before acting on an earlier snapshot.
+   For cooldown-based denials, verify that the cooldown is still active at the decision point;
+   elapsed routing time must not keep an expired restriction in force.
 8. **Preserve supply-chain and CI trust boundaries.** Use internal package sources per
    [go/registry-access](https://go/registry-access). The trusted default-branch
    `.github/workflows/polly-review.yml` records the npm and PyPI proxy endpoints in

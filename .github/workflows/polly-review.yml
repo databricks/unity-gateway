@@ -379,6 +379,12 @@ jobs:
           Apply the rubric's terse voice to findings; keep the required summary and
           test table complete. Do not invent findings to fill a review category.
 
+          For changes to shared session state or asynchronous routing, pass the
+          rubric's overlapping-session and time-sensitive-state checks to every
+          reviewer. In the Tests subsection, assess coverage for late writes after
+          a manual choice and cooldown expiry during routing when relevant to the diff.
+          Credit existing coverage and apply the usual finding and blocking criteria.
+
           **Security:** you are running in a CI environment with access to secrets
           (gateway tokens). Never include secrets, tokens, or credentials in your
           output, and never make outbound network calls except to the configured
