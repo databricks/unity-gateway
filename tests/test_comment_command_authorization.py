@@ -16,6 +16,9 @@ JOBS = [
     ("ug-review.yml", "review", "/ug-review"),
     ("polly-review.yml", "review", "/ug-review"),
 ]
+# Integration runs PR code with CI secrets, so a prior contributor can't start it on
+# their own PR; the review commands run no PR code and still allow that.
+MEMBER_ONLY_WORKFLOWS = {"fork-integration.yml"}
 
 
 def _job_accepts(workflow, job, association, own_pr, comment, *, is_pr=True):
@@ -66,6 +69,8 @@ def _job_accepts(workflow, job, association, own_pr, comment, *, is_pr=True):
 def test_comment_command_authorizes_members_or_prior_contributors_on_own_pr(
     workflow, job, command, association, own_pr, allowed
 ):
+    if workflow in MEMBER_ONLY_WORKFLOWS and association == "CONTRIBUTOR":
+        allowed = False
     assert _job_accepts(workflow, job, association, own_pr, command) == (
         not allowed if job == "reject" else allowed
     )

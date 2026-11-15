@@ -665,8 +665,10 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!({MEMBER_ONLY} ||" in reject
-    assert "Prior contributors can run integration tests on their own PR" in reject
+    assert f"!{MEMBER_ONLY}" in reject
+    # Integration runs PR code with CI secrets, so a contributor can't start it on their own PR.
+    assert "CONTRIBUTOR" not in workflow
+    assert "only Databricks org members can run integration tests" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
