@@ -150,7 +150,9 @@ def normalize_tool(tool: str) -> str:
     return normalized
 
 
-def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
+def _update_installed_tool_binary(
+    tool: str, version: str | None = None, *, continued_with_fallback: bool = True
+) -> bool:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
     package = spec["package"]
@@ -188,7 +190,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
             operation=metrics.DEPENDENCY_INSTALL_OPERATION,
             dependency=tool,
             action="downgrade" if version else "update",
-            continued_with_fallback=True,
+            continued_with_fallback=continued_with_fallback,
         ):
             subprocess_cross_os.run(
                 command, check=True, timeout=300, stdout=status_subprocess_stdout()
@@ -228,7 +230,7 @@ def ensure_minimum_version(
             )
         ):
             raise RuntimeError(version_error)
-        if not _update_installed_tool_binary(tool):
+        if not _update_installed_tool_binary(tool, continued_with_fallback=False):
             raise RuntimeError(version_error)
         version_error = version_check()
     if version_error:

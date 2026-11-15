@@ -62,6 +62,7 @@ def sign_in(monkeypatch):
             raise urllib_error.HTTPError(request.full_url, result, "test error", {}, None)
         body = result if isinstance(result, bytes) else json.dumps(result).encode()
         response = io.BytesIO(body)
+        response.status = 200
         response.headers = {"X-Databricks-Org-Id": "12345"}
         return response
 
@@ -257,9 +258,13 @@ class TestRunConnectionLogin:
 
     def test_missing_workspace_id_does_not_open_wrong_workspace(self, sign_in, monkeypatch):
         _, _, launches, _ = sign_in
-        monkeypatch.setattr(
-            db_mod.urllib_request, "urlopen", lambda *args, **kwargs: io.BytesIO(b"{}")
-        )
+
+        def urlopen(request, **kwargs):
+            response = io.BytesIO(b"{}")
+            response.status = 200
+            return response
+
+        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
         ok, message = mcl.run_connection_login(AIGW_URL, WS, profile="selected")
         assert not ok and "workspace ID" in message
         assert not launches

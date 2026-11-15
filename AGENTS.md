@@ -94,6 +94,26 @@ Startup instrumentation uses these constants (all in `metrics`):
 | `COMMAND_OPERATION` | `failure()` in CLI exception handlers resolves this to the parsed command name and ignores cancellation and propagated agent exit codes. |
 | `UG_CLI_ERROR` | Emitted by `failure()` with phase and sanitized error labels; call that helper rather than incrementing the counter directly. |
 
+
+Authentication and API instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `DATABRICKS_TOKEN_FETCH_DURATION_MS` | `timed()` around a token fetch, including refresh or login, with `token_source` (`environment`, `command`, `cli`, or `sdk`) and `in_process_cache_hit`; SDK imports happen before timing. |
+| `DATABRICKS_TOKEN_FETCH_OPERATION` | The error operation for a token-fetch `measure()` block; the duration name is derived from it. |
+| `DATABRICKS_LOGIN_DURATION_MS` | `timed()` or `measure()` around browser login, with `login_method` (`cli` or `sdk`); call `mark_login()` when login starts so startup samples include `interactive_login`. |
+| `DATABRICKS_LOGIN_OPERATION` | The error operation for login measurements and `failure()` on a nonzero login-process exit; report the exit code without changing the caller's retry behavior. |
+| `CODING_AGENT_CONFIG_FETCH_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around fetching the workspace's managed coding-agent configuration. |
+| `MODEL_SERVICE_DISCOVERY_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around listing and classifying model services, with `cache_hit` for the in-process catalog cache. |
+| `MODEL_SERVICE_ACCESS_CHECK_DURATION_MS` | `timed()` around the model-services access check, including all pages it reads. |
+| `HTTP_REQUEST_DURATION_MS` | `record()` once per HTTP attempt, including failures, with `api_operation`, `http_method`, `attempt`, and `http_status_code` when a response exists; excludes retry backoff. |
+| `HTTP_RETRY_COUNT` | `record(..., 1)` before each retry, with `api_operation` and `http_method`; never count the first attempt or count an outer retry twice. |
+
+HTTP helpers annotate the enclosing operation with its final response status. Pass
+`http_status_code=None` after a network failure with no response to clear an earlier
+attempt's status. Use `http_attempt()` to number retries managed by an outer API helper;
+`http_result` reports only the final failure at that boundary.
+
 ## Smart-routing configuration
 
 `SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in
