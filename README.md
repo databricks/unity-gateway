@@ -177,6 +177,34 @@ ug removes its shared reference on discovery/validation failure, reconfiguration
 revert, or before installing/updating Codex. After an update, run `ug codex` to refresh
 discovery or `ug configure` for a managed static list, then restart the app server.
 
+### Omnigent launcher (preview)
+
+Install [Omnigent](https://github.com/omnigent-ai/omnigent) separately, then launch it:
+
+```bash
+uv tool install 'omnigent[databricks]'
+ug omni
+ug omni --help
+ug omni codex
+ug omni claude
+```
+
+`ug omni` forwards every argument to Omnigent, including `--` separators, and uses
+its existing installation, working directory, environment, and terminal. Help and
+version flags belong to Omnigent. Missing installations produce a setup command;
+UG does not install or upgrade Omnigent automatically.
+
+Choose your Databricks provider in Omnigent's setup. This preview does not add an
+`omni` agent to `ug configure`, synchronize its provider or MCP configuration, or
+support UG smart routing or managed configuration. Existing native agent settings
+may still be inherited; this is not equivalent to the normal UG agent launch flow.
+
+UG-downloaded skills use the native `.claude/skills` and `.agents/skills` directories
+that Omnigent discovers. Invoke them with `/skill-name` in Claude or `$skill-name`
+in Codex. The web menu may lag behind a download because of discovery caching.
+Omnigent's own prerequisites and platform limitations still apply.
+
+
 ## Configure
 
 ```bash

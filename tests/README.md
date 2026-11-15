@@ -1630,3 +1630,15 @@ is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. No installed-agent journey currently covers mixed wildcard sources or
 proves inference with qualified MPS models.
+
+## Omnigent launcher preview
+
+`tests/test_omni.py` covers bare launch, opaque argument forwarding (including
+`--` separators and prompt metacharacters), help/version dispatch, missing
+installation, launch failures, propagated exit status, and unchanged environment
+and working directory. Process handoff behavior uses `tests/test_launcher.py`.
+These are component tests, not gateway inference tests. Manual checks on Ubuntu
+ARM64 with Omnigent 0.22.0 verified CLI startup and native Claude/Codex skill
+invocation through the web-session API; they required existing provider setup.
+No automated Omnigent live-integration lane is included. Smart routing and managed
+configuration are unsupported by this launcher.

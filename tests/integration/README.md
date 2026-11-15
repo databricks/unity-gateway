@@ -2127,3 +2127,15 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+## Omnigent launcher preview
+
+`tests/test_omni.py` covers bare launch, opaque argument forwarding (including
+`--` separators and prompt metacharacters), help/version dispatch, missing
+installation, launch failures, propagated exit status, and unchanged environment
+and working directory. Process handoff behavior uses `tests/test_launcher.py`.
+These are component tests, not gateway inference tests. Manual checks on Ubuntu
+ARM64 with Omnigent 0.22.0 verified CLI startup and native Claude/Codex skill
+invocation through the web-session API; they required existing provider setup.
+No automated Omnigent live-integration lane is included. Smart routing and managed
+configuration are unsupported by this launcher.

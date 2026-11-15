@@ -5015,6 +5015,33 @@ def copilot_cmd(
     )
 
 
+class _OmniCommand(TyperCommand):
+    """Preserve Omnigent's argument separators as well as its flags."""
+
+    def parse_args(self, ctx: Any, args: list[str]) -> list[str]:
+        original = list(args)
+        super().parse_args(ctx, args)
+        ctx.args = original
+        return original
+
+
+@app.command(
+    "omni",
+    cls=_OmniCommand,
+    context_settings={
+        "allow_extra_args": True,
+        "ignore_unknown_options": True,
+        "help_option_names": [],
+    },
+    rich_help_panel="Launch",
+)
+def omni_cmd(ctx: typer.Context) -> None:
+    """Launch Omnigent; forwards all arguments to its CLI."""
+    from ucode.agents.omni import launch
+
+    launch(list(ctx.args))
+
+
 @app.command(
     "pi",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
