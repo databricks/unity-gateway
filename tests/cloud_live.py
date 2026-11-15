@@ -94,7 +94,7 @@ def main():
             assert sid in listing()
         failure = call(
             "task-failure-cleanup",
-            [*base, "claude", "--model", "nonexistent-cloud-test-model", "-p", "Reply OK"],
+            [*base, "claude", "--cloud-test-invalid-flag", "-p", "Reply OK"],
             expected=None,
         )
         assert failure.returncode != 0
