@@ -335,9 +335,9 @@ def defer():
     observations["deferred"] += 1
     (root / "deferred").touch()
 
-def abandon():
+def abandon(manual_model):
     try:
-        return guard.abandon()
+        return guard.abandon(manual_model)
     except OSError:
         (root / "handoff-failed").touch()
         raise
@@ -354,6 +354,7 @@ try:
         restore_model_setting=restore,
         defer_model_setting=defer,
         abandon_model_setting=abandon,
+        confirm_manual_model_setting=guard.confirm_manual_choice,
         log_path=root / "routing.log",
     )
 finally:
@@ -617,6 +618,64 @@ capture_path.write_text(json.dumps({
         assert capture["settings_while_running"] == settings == {"model": "sonnet"}
         assert (tmp_path / "handoff-failed").exists() is fail_handoff
 
+    @pytest.mark.parametrize(
+        "chunks", [[b"/model haiku\r"], [b"/mo", b"del hai", b"ku\r"]], ids=["typed", "fragmented"]
+    )
+    def test_manual_model_command_protects_against_another_sessions_late_write(
+        self, replay_model_switch, tmp_path, chunks
+    ):
+        body = """\
+from ucode.smart_routing import v2
+
+settings = Path(sys.argv[3])
+settings.write_text(json.dumps({"model": "opus", "unrelated": "preserved"}))
+other = v2._ClaudeModelSettingGuard(settings)
+try:
+    assert other.begin("sonnet")
+    other.defer()
+    time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
+    assert not other.is_routed()
+    assert send_hook(socket_path, "hello")["action"] == "block"
+    tty.setraw(0)
+    print("blocked", flush=True)
+    read_until(b"\\r")
+    assert os.read(0, 1) == b"\\x1b"
+    while not (test_dir / "deferred").exists():
+        time.sleep(0.01)
+    (test_dir / "ready").touch()
+    command = read_until(b"\\r")
+    # Keep polling from observing the manual setting before the competing write.
+    with (v2.APP_DIR / "claude-v2-model.lock").open("a+") as lock:
+        v2.acquire_exclusive_file_lock(lock, timeout=2)
+        try:
+            settings.write_text(json.dumps({"model": "haiku", "unrelated": "preserved"}))
+            settings.write_text(json.dumps({"model": "sonnet", "unrelated": "preserved"}))
+        finally:
+            v2.release_file_lock(lock)
+    os.write(1, b"SetmodeltoClaudeHaiku5.5andsavedasyourdefaultfornewsessions\\r\\r\\n")
+    deadline = time.monotonic() + 2
+    # Native confirmation may briefly hold the nonblocking recovery lock.
+    while not other.is_routed():
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    while not other.restore():
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    capture_path.write_text(json.dumps({
+        "command": command.hex(), "settings_while_running": json.loads(settings.read_text()),
+    }))
+finally:
+    other.finish()
+"""
+        with _stdin_after(tmp_path / "ready", chunks):
+            capture, settings, _ = replay_model_switch(body)
+        assert capture["command"] == b"".join(chunks).hex()
+        assert (
+            capture["settings_while_running"]
+            == settings
+            == {"model": "haiku", "unrelated": "preserved"}
+        )
+
     @pytest.mark.skipif(
         os.name != "posix" or os.geteuid() == 0,
         reason="requires unprivileged POSIX directory permissions",
@@ -769,6 +828,30 @@ capture_path.write_text(json.dumps({
         assert "automatic replay stopped" in (tmp_path / "routing.log").read_text()
 
 
+class TestManualModelConfirmation:
+    @pytest.mark.parametrize(
+        "model, output, expected",
+        [
+            (
+                "haiku",
+                b"SetmodeltoClaudeHaiku5.5andsavedasyourdefaultfornewsessions\r\r\n",
+                True,
+            ),
+            ("haiku", b"Set model to haiku\n", True),
+            ("haiku", b"SetmodeltoSonnet5.5andsavedasyourdefaultfornewsessions\r\n", False),
+            ("haiku", b"SetmodeltoClaudeHaiku5.5", False),
+            ("haiku", b"Set model to haiku-other\n", False),
+            ("not-a-model", b"Could not set model to not-a-model\n", False),
+            ("system.ai.custom", b"Model set to system.ai.custom\n", True),
+            ("system.ai.custom", b"Model set to Custom Display\n", False),
+        ],
+    )
+    def test_requires_a_complete_matching_native_result(self, model, output, expected):
+        confirmation = claude_pty.ManualModelConfirmation(model)
+        observations = [confirmation.observe(bytes([byte])) for byte in output]
+        assert any(observations) is expected
+
+
 class TestModelSwitchInput:
     @pytest.mark.parametrize(
         "sequence",
@@ -798,7 +881,9 @@ class TestModelSwitchInput:
         state = claude_pty.ModelSwitchInput()
         assert state.observe(b"/model ", 1.0) == (True, False)
         assert state.observe(b"sonnet\r", 1.1) == (True, True)
+        assert state.manual_model == "sonnet"
         assert state.observe(b"/mod\r", 1.2) == (True, True)
+        assert state.manual_model is None
         assert state.observe(b"plain text\r", 1.3) == (True, False)
 
     @pytest.mark.parametrize(
@@ -810,7 +895,27 @@ class TestModelSwitchInput:
         state = claude_pty.ModelSwitchInput()
         state.observe(editing, 1.0)
         assert state.observe(b"\r", 1.1) == (True, True)
+        assert state.manual_model is None
         assert state.observe(b"plain text\r", 1.2) == (True, False)
+
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            (b"  /model system.ai.claude-sonnet-5[1m]\r", "system.ai.claude-sonnet-5[1m]"),
+            (b"\x1b[200~/model haiku\x1b[201~\r", "haiku"),
+            (b"/model haikx\x7fu\r", "haiku"),
+            (b"/model\r", None),
+            (b"/model haiku extra\r", None),
+            (b"/model haiku\x1b[D\r", None),
+            (b"/model haiku\r\x1b[A\r", None),
+            (b"x" * 4096 + b"/model haiku\r", None),
+        ],
+    )
+    def test_manual_target_requires_a_complete_known_command(self, command, expected):
+        state = claude_pty.ModelSwitchInput()
+        for index, byte in enumerate(command):
+            state.observe(bytes([byte]), index / 1000)
+        assert state.manual_model == expected
 
     def test_terminal_replies_do_not_make_a_known_line_unknown(self):
         state = claude_pty.ModelSwitchInput()

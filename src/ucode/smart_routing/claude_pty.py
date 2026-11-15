@@ -129,6 +129,32 @@ class OutputMarkerDetector:
         return self.triggered
 
 
+class ManualModelConfirmation:
+    """Match a completed native result for a known manual model command."""
+
+    def __init__(self, model: str) -> None:
+        self._model = _squash(model).casefold()
+        self._buffer = b""
+
+    def observe(self, chunk: bytes) -> bool:
+        self._buffer = (self._buffer + chunk)[-8192:]
+        text = re.sub(r"[^\S\r\n]+", "", strip_ansi(self._buffer)).casefold()
+        for result in re.finditer(
+            r"(?:^|[^a-z0-9])(?:setmodelto|modelsetto|keptmodelas)(.*?)"
+            r"(?:andsavedasyourdefaultfornewsessions|[\r\n])",
+            text,
+        ):
+            label = result[1]
+            if label == self._model:
+                return True
+            # Native family shortcuts render a display version instead of the saved alias.
+            if self._model in {"opus", "sonnet", "haiku", "fable"} and re.fullmatch(
+                rf"(?:claude)?{self._model}(?:[0-9]+(?:\.[0-9]+)*)?", label
+            ):
+                return True
+        return False
+
+
 class ModelSwitchInput:
     """Distinguish edits and possible model commands from terminal traffic."""
 
@@ -138,6 +164,7 @@ class ModelSwitchInput:
         self._line_known = True
         self._last_input = 0.0
         self._pasting = False
+        self.manual_model: str | None = None
 
     @property
     def pending(self) -> bool:
@@ -148,6 +175,7 @@ class ModelSwitchInput:
             self._pending += data
             self._last_input = now
         edited = selected_model = False
+        self.manual_model = None
         while self._pending:
             if self._pending.startswith(b"\x1b"):
                 match = _INPUT_ESCAPE_RE.match(self._pending)
@@ -186,20 +214,33 @@ class ModelSwitchInput:
             char, self._pending = self._pending[:1], self._pending[1:]
             edited = True
             if char in (b"\r", b"\n") and not self._pasting:
-                selected_model |= not self._line_known or (
+                possible_model = not self._line_known or (
                     b"\n" not in self._line
                     and b"\r" not in self._line
                     and self._line.lstrip().startswith(b"/")
                 )
+                if possible_model:
+                    selected_model = True
+                    self.manual_model = None
+                    command = self._line.decode("utf-8", "replace").split()
+                    if (
+                        self._line_known
+                        and len(command) == 2
+                        and command[0] == "/model"
+                        and valid_model_name(command[1])
+                    ):
+                        self.manual_model = command[1]
                 self._line = b""
                 self._line_known = True
             elif self._pasting:
+                self._line_known &= len(self._line) < 4096
                 self._line = (self._line + char)[-4096:]
             elif char in (b"\x08", b"\x7f"):
                 self._line = self._line[:-1]
             elif char == CLEAR_LINE:
                 self._line = b""
             elif char >= b" ":
+                self._line_known &= len(self._line) < 4096
                 self._line = (self._line + char)[-4096:]
             else:
                 # Completion, search, and editing bindings can change text without
@@ -427,7 +468,8 @@ def run_claude_pty(
     model_switch_persisted: Callable[[], bool] = lambda: True,
     restore_model_setting: Callable[[], bool | None] = lambda: None,
     defer_model_setting: Callable[[], None] = lambda: None,
-    abandon_model_setting: Callable[[], bool | None] = lambda: None,
+    abandon_model_setting: Callable[[str | None], bool | None] = lambda _model: None,
+    confirm_manual_model_setting: Callable[[], bool | None] = lambda: None,
     log_path: Path | None = None,
 ) -> int:
     """Run Claude in a PTY, switch its model, and replay the first prompt."""
@@ -505,6 +547,7 @@ def run_claude_pty(
             submit_attempts = 0
             switch_complete: OutputMarkerDetector | None = None
             switch_cancelled: OutputMarkerDetector | None = None
+            manual_complete: ManualModelConfirmation | None = None
             model_pending = False
             deferred_restore = False
             restore_ready = False
@@ -513,15 +556,16 @@ def run_claude_pty(
             user_input = ModelSwitchInput()
 
             def observe_input(data: bytes, now: float) -> None:
-                nonlocal phase, model_pending, deferred_restore, restore_ready
+                nonlocal phase, model_pending, deferred_restore, restore_ready, manual_complete
                 if phase == "waiting_prompt":
                     return
                 edited, selected_model = user_input.observe(data, now)
                 if selected_model:
-                    # Manual input also revokes other sessions' pending recovery
-                    # after this session has finished its automatic replay.
+                    # A known manual target must also survive other sessions' late writes.
+                    model = user_input.manual_model
+                    manual_complete = ManualModelConfirmation(model) if model is not None else None
                     try:
-                        model_pending = abandon_model_setting() is False
+                        model_pending = abandon_model_setting(user_input.manual_model) is False
                     except (OSError, ValueError, RuntimeError) as exc:
                         model_pending = True
                         log(f"[WARN] manual model handoff deferred: {exc}")
@@ -592,6 +636,14 @@ def run_claude_pty(
                         assert switch_cancelled is not None
                         if phase == "waiting_cancel":
                             switch_cancelled.observe(chunk)
+                    if manual_complete is not None and manual_complete.observe(chunk):
+                        try:
+                            model_pending = confirm_manual_model_setting() is False
+                        except (OSError, ValueError, RuntimeError) as exc:
+                            model_pending = True
+                            log(f"[WARN] confirmed manual model handoff deferred: {exc}")
+                        deferred_restore = restore_ready = model_pending
+                        manual_complete = None
 
                 if phase == "waiting_prompt":
                     with pending_lock:

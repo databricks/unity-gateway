@@ -1092,8 +1092,16 @@ original default in shared recovery state. Competing-process tests check that la
 during, and after a second switch cannot become its saved default, including an originally absent
 model setting. A missing late write does not block the second switch until the first child exits.
 Same-model sessions cannot both consume one persisted write. A crashed owner retains its original
-baseline for the next launch. Manual model input revokes older pending recovery across sessions,
-including when the choosing session has already completed its own recovery.
+baseline for the next launch. Direct `/model NAME` input retains other sessions' pending
+recovery. A native success marker or matching saved setting changes its restore target to the
+manual choice; an unconfirmed command never becomes the saved default. Process and PTY cases cover
+late writes, fragmented commands, a completed choosing session, a new route before manual
+persistence, handoff failures, superseded choices, and unconfirmed chooser exit or crash. History,
+picker, and other unknown-line input still revoke older cleanup:
+their selected model is not observable from stdin, so cross-session late-write recovery for those
+inputs is not covered. The direct Haiku race uses the captured Claude Code 2.1.322 display label
+after another session overwrites the saved setting. Incomplete, different-model and rejected
+results do not confirm a choice; arbitrary display labels cannot establish a saved model ID.
 PTY checks verify that settings reads are throttled during busy output. These are component
 checks; live first-prompt routing on a pinned Claude Code version is not executed here.
 

@@ -1219,6 +1219,107 @@ finally:
         assert first("restore") is True
         assert json.loads(settings.read_text()) == {"model": model, "theme": "light"}
 
+    @pytest.mark.parametrize("completed", [False, True], ids=["fresh-chooser", "completed-chooser"])
+    @pytest.mark.parametrize("before", [{"model": "opus"}, {}], ids=["saved-model", "no-model"])
+    def test_manual_choice_survives_another_sessions_late_write(
+        self, guard_sessions, completed, before
+    ):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({**before, "theme": "dark"}))
+        chooser, pending = start(), start()
+        if completed:
+            assert chooser("begin", routed_model="sonnet")
+            settings.write_text(json.dumps({"model": "sonnet", "theme": "dark"}))
+            assert chooser("restore")
+        assert pending("begin", routed_model="sonnet")
+        assert chooser("abandon", manual_model="haiku") is False
+        settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert chooser("confirm_manual_choice")
+        assert pending("is_routed")
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.mark.parametrize("persisted", [False, True], ids=["manual-pending", "manual-persisted"])
+    def test_new_route_keeps_the_manual_restore_target(self, guard_sessions, persisted):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({"model": "opus", "theme": "dark"}))
+        pending, chooser, new = start(), start(), start()
+        assert pending("begin", routed_model="sonnet")
+        pending("defer")
+        time.sleep(v2.CLAUDE_MODEL_DEFER_TIMEOUT_S + 0.1)
+        assert pending("is_routed") is False
+        assert chooser("abandon", manual_model="haiku") is False
+        if persisted:
+            settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+        else:
+            assert new("begin", routed_model="opus") is False
+            settings.write_text(json.dumps({"model": "haiku", "theme": "light"}))
+            assert chooser("confirm_manual_choice")
+        assert new("begin", routed_model="opus")
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert new("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.mark.parametrize("older_completion", ["restore", "confirm_manual_choice"])
+    def test_later_manual_choice_survives_an_older_handoff(self, guard_sessions, older_completion):
+        settings, start = guard_sessions
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "dark"}))
+        pending, first, second = start(), start(), start()
+        assert pending("begin", routed_model="opus")
+        assert first("abandon", manual_model="haiku") is False
+        assert second("abandon", manual_model="fable") is False
+        assert first(older_completion)
+        settings.write_text(json.dumps({"model": "fable", "theme": "light"}))
+        assert second("confirm_manual_choice")
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "fable", "theme": "light"}
+
+    @pytest.mark.parametrize("exit_method", ["finish", "crash"])
+    def test_unconfirmed_manual_model_does_not_replace_the_default(
+        self, guard_sessions, exit_method
+    ):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        assert chooser("abandon", manual_model="not-a-real-model") is False
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore") is False
+        assert json.loads(settings.read_text()) == {"model": "sonnet", "theme": "light"}
+        chooser(exit_method)
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "haiku", "theme": "light"}
+
+    @pytest.mark.skipif(
+        os.name != "posix" or os.geteuid() == 0,
+        reason="requires unprivileged POSIX directory permissions",
+    )
+    @pytest.mark.parametrize("failure_phase", ["register", "confirm"])
+    def test_manual_target_survives_a_failed_handoff(self, guard_sessions, tmp_path, failure_phase):
+        settings, start = guard_sessions
+        pending, chooser = start(), start()
+        assert pending("begin", routed_model="sonnet")
+        recovery_dir = tmp_path / ".ucode"
+        if failure_phase == "confirm":
+            assert chooser("abandon", manual_model="opus") is False
+        try:
+            recovery_dir.chmod(0o500)
+            if failure_phase == "register":
+                chooser("abandon", manual_model="opus", error="PermissionError")
+            else:
+                chooser("confirm_manual_choice", error="PermissionError")
+        finally:
+            recovery_dir.chmod(0o700)
+        settings.write_text(json.dumps({"model": "opus", "theme": "light"}))
+        assert chooser("restore")
+        settings.write_text(json.dumps({"model": "sonnet", "theme": "light"}))
+        assert pending("restore")
+        assert json.loads(settings.read_text()) == {"model": "opus", "theme": "light"}
+
     @pytest.mark.skipif(
         os.name != "posix" or os.geteuid() == 0,
         reason="requires unprivileged POSIX directory permissions",

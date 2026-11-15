@@ -1751,7 +1751,9 @@ the file task, and normal exit. The managed default alone routes only Claude sub
 orchestrator; Codex's managed default is opted out and covered by its launch-only test.
 
 See the [component coverage inventory](../README.md) for delayed Claude model-switch
-recovery, manual choices, fragmented terminal input, and filesystem-failure coverage and gaps.
+recovery, direct manual model choices across sessions, fragmented terminal input, and
+filesystem-failure coverage and gaps. History and picker choices do not expose a model target
+to the wrapper and retain their conservative cleanup behavior.
 Those checks use temporary settings and fake TUIs; they do not establish live Claude or gateway
 coverage or replace the completed file task required by these live journeys.
 

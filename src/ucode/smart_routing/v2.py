@@ -660,6 +660,9 @@ class _ClaudeModelSettingGuard:
         self._owner_lock: TextIO | None = None
         self._deferred_until: float | None = None
         self._cancelled = False
+        self._manual_model: str | None = None
+        self._manual_confirmed = False
+        self._manual_registered = False
         self._begin_error_warned = False
         self._token = uuid.uuid4().hex
         settings_key = hashlib.sha256(str(settings_path.resolve()).encode()).hexdigest()[:16]
@@ -707,7 +710,35 @@ class _ClaudeModelSettingGuard:
                 or entry["pid"] <= 0
             ):
                 raise ValueError(f"Invalid model recovery entry in {self._recovery_path}")
+        manual = recovery.get("manual")
+        if manual is not None and (
+            not isinstance(manual, dict)
+            or not isinstance(manual.get("token"), str)
+            or not isinstance(manual.get("model"), str)
+            or type(manual.get("pid")) is not int
+            or manual["pid"] <= 0
+        ):
+            raise ValueError(f"Invalid manual model recovery in {self._recovery_path}")
         return recovery
+
+    def _manual_choice_pending(self, recovery: dict) -> bool:
+        manual = recovery.get("manual")
+        if manual is None:
+            return False
+        if self._read_settings().get("model") == manual["model"]:
+            recovery["before"] = {"model": manual["model"]}
+            del recovery["manual"]
+            self._write_recovery(recovery)
+            return False
+        if os.name == "posix" and manual["pid"] != os.getpid():
+            try:
+                os.kill(manual["pid"], 0)
+            except ProcessLookupError:
+                del recovery["manual"]
+                return False
+            except PermissionError:
+                pass
+        return True
 
     @staticmethod
     def _prune_finished_recovery(recovery: dict) -> None:
@@ -767,6 +798,9 @@ class _ClaudeModelSettingGuard:
         self._routed_model = None
         self._deferred_until = None
         self._cancelled = False
+        self._manual_model = None
+        self._manual_confirmed = False
+        self._manual_registered = False
         self._release_settings_lock()
         self._release_owner_lock()
 
@@ -782,6 +816,9 @@ class _ClaudeModelSettingGuard:
                 current = self._read_settings()
                 before = {"model": current["model"]} if "model" in current else {}
                 recovery = self._read_recovery()
+                if self._manual_choice_pending(recovery):
+                    self._clear()
+                    return False
                 if recovery["pending"]:
                     if any(
                         current.get("model") == entry["model"]
@@ -841,32 +878,94 @@ class _ClaudeModelSettingGuard:
             self._deferred_until = time.monotonic() + CLAUDE_MODEL_DEFER_TIMEOUT_S
         self._expire_owner()
 
-    def abandon(self) -> bool:
+    def abandon(self, manual_model: str | None = None) -> bool:
         self._cancelled = True
+        self._manual_model = manual_model
+        self._manual_confirmed = False
+        self._manual_registered = False
+        return self._try_abandon()
+
+    def _try_abandon(self) -> bool:
+        manual_model = self._manual_model
         self._release_owner_lock()
         if self._lock is None:
             self._lock = self._open_lock("claude-v2-model.lock")
         if self._lock is None:
             return False
         try:
-            # Explicit input supersedes every older automatic restoration,
-            # including one currently owned by a different routed session.
-            self._recovery_path.unlink(missing_ok=True)
+            if manual_model is None:
+                # History and picker input do not expose the chosen model.
+                self._recovery_path.unlink(missing_ok=True)
+            else:
+                recovery = self._read_recovery()
+                current_model = self._read_settings().get("model")
+                if self._manual_registered and recovery.get("manual_choice") != self._token:
+                    self._clear()
+                    return True
+                recovery["pending"].pop(self._token, None)
+                recovery["manual_choice"] = self._token
+                if current_model == manual_model or (
+                    self._manual_registered and "manual" not in recovery
+                ):
+                    if current_model == manual_model:
+                        recovery["before"] = {"model": manual_model}
+                    recovery.pop("manual", None)
+                elif recovery["pending"]:
+                    # Keep older writers until this command succeeds or its child exits.
+                    recovery["manual"] = {
+                        "token": self._token,
+                        "model": manual_model,
+                        "pid": os.getpid(),
+                    }
+                    self._write_recovery(recovery)
+                    self._manual_registered = True
+                    return False
+                self._write_recovery(recovery)
         finally:
             self._release_settings_lock()
         self._clear()
         return True
 
+    def _finish_manual_choice(self, *, confirmed: bool) -> bool:
+        if self._lock is None:
+            self._lock = self._open_lock("claude-v2-model.lock")
+        if self._lock is None:
+            return False
+        try:
+            recovery = self._read_recovery()
+            if recovery.get("manual", {}).get("token") == self._token:
+                if confirmed:
+                    recovery["before"] = {"model": self._manual_model}
+                del recovery["manual"]
+            recovery["pending"].pop(self._token, None)
+            self._write_recovery(recovery)
+        finally:
+            self._release_settings_lock()
+        self._clear()
+        return True
+
+    def confirm_manual_choice(self) -> bool:
+        if not self._cancelled or self._manual_model is None:
+            return True
+        self._manual_confirmed = True
+        return self._finish_manual_choice(confirmed=True)
+
     def restore(self) -> bool:
         if self._cancelled:
-            return self.abandon()
+            if self._manual_confirmed:
+                return self._finish_manual_choice(confirmed=True)
+            return self._try_abandon()
         if self._before is None:
             return True
         if not self._lock_for_restore():
             return False
         try:
             recovery = self._read_recovery()
+            if self._manual_choice_pending(recovery):
+                self.defer()
+                return False
             if self._token in recovery["pending"]:
+                self._before = recovery["before"]
                 current = self._read_settings()
                 # A later user choice is not the temporary /model write we own.
                 if current.get("model") == self._routed_model:
@@ -895,7 +994,10 @@ class _ClaudeModelSettingGuard:
         try:
             while True:
                 try:
-                    if self.restore():
+                    if self._cancelled and self._manual_model is not None:
+                        if self._finish_manual_choice(confirmed=self._manual_confirmed):
+                            return True
+                    elif self.restore():
                         return True
                 except (OSError, ValueError, RuntimeError):
                     pass
@@ -1069,6 +1171,7 @@ def launch_claude(
                     restore_model_setting=model_setting.restore,
                     defer_model_setting=model_setting.defer,
                     abandon_model_setting=model_setting.abandon,
+                    confirm_manual_model_setting=model_setting.confirm_manual_choice,
                     log_path=CLAUDE_PTY_LOG,
                 )
             else:
