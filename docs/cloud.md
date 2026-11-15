@@ -34,3 +34,5 @@ native onboarding and trust prompts remain. Live resize, detached/background run
 survival, shared-host workspace routing and automatic project sync are outside this initial scope.
 
 See [implementation details](cloud-preview.md) and [validation/decisions](cloud-validation.md).
+
+[Watch the recorded CLI journeys](cloud-recordings.md).

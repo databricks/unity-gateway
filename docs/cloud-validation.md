@@ -99,3 +99,11 @@ flags; footer shell quoting and exit status. Mock/subprocess fixtures are compon
 This is broad coverage of the supported paths, not “all possible variations.” Fresh-create lifecycle
 remains blocked by current quota; long-running auth renewal, kill/disconnect recovery, concurrent
 resume, and other image/platform versions require additional coverage before release.
+
+## Recorded demonstrations
+
+[Four real terminal GIFs](cloud-recordings.md) capture interactive Claude launch/exit,
+exact-session picker resume, headless execution in an existing environment, and quota
+rejection. GIFs show accelerated playback with elapsed-time labels. Their hashes and
+process outcomes are recorded in `docs/media/cloud/manifest.json`. Automatic cleanup
+could not be filmed because fresh creation remains quota-blocked. No success is simulated.

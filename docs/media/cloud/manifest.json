@@ -1,0 +1,39 @@
+{
+  "candidate": "0.2.1+cloudpr.1",
+  "date": "2026-11-15",
+  "source": "Live SSH PTY output rendered with pyte and Pillow; accelerated playback",
+  "recordings": [
+    {
+      "name": "interactive",
+      "exit_code": 0,
+      "elapsed_seconds": 26.99,
+      "gif_frames": 47,
+      "gif_sha256": "679d5524357f93e195dbc8fda464dead49567d1d9d4ac47cc9ac1a5b36d163bc",
+      "terminal_log_sha256": "626de9d4891e75fbf94370a993aefa2a783e0940beb2009528fd29193eb67151"
+    },
+    {
+      "name": "resume",
+      "exit_code": 0,
+      "elapsed_seconds": 23.21,
+      "gif_frames": 40,
+      "gif_sha256": "21e3c4a874f52e73fc4965c550cc524e1e6f4637b71c3a8291c11021367f7b5c",
+      "terminal_log_sha256": "d4c3e7b187c50330f93fdf81c49bead5bfd7661a3c4ea7b4392f55fdb3102eb0"
+    },
+    {
+      "name": "headless-reuse",
+      "exit_code": 0,
+      "elapsed_seconds": 21.36,
+      "gif_frames": 42,
+      "gif_sha256": "a96ddab48ad0c9dea3aa189f352d11db7918489969c371136043f9db1166bdd2",
+      "terminal_log_sha256": "32f635af083773a7666881468e4847700b1c6c53002d21c037f2833b0c1c2988"
+    },
+    {
+      "name": "headless",
+      "exit_code": 1,
+      "elapsed_seconds": 2.1,
+      "gif_frames": 5,
+      "gif_sha256": "fdafbe3e0d6173e1915f4de111bc1d3eab9a75d462b7a4f191dfb87243655361",
+      "terminal_log_sha256": "3f9464eda2cadafdd3e56083a140844a2df48663c02bd8b08f73401400112827"
+    }
+  ]
+}
