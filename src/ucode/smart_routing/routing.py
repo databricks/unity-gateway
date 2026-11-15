@@ -202,7 +202,9 @@ def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, st
     return [(model, harness) for model in dict.fromkeys(models)]
 
 
-@metrics.timed("routing_decision_duration_ms", reason_result=True, continued_with_fallback=True)
+@metrics.timed(
+    metrics.ROUTING_DECISION_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def select_route(
     workspace: str,
     token: str,
@@ -260,7 +262,7 @@ def select_route(
         return None, f"router request failed: {exc}"
     finally:
         metrics.record(
-            "http_request_duration_ms",
+            metrics.HTTP_REQUEST_DURATION_MS,
             (time.perf_counter() - request_started) * 1000,
             workspace=workspace,
             api_operation="routes_select",

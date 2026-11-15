@@ -114,6 +114,18 @@ HTTP helpers annotate the enclosing operation with its final response status. Pa
 attempt's status. Use `http_attempt()` to number retries managed by an outer API helper;
 `http_result` reports only the final failure at that boundary.
 
+Usage and routing instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
+| `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent`. |
+
+Both durations are recorded on success and failure. Use `subagent_routing()` around
+subagent route selection so its trigger is scoped to that decision. Each routing HTTP
+attempt also uses `HTTP_REQUEST_DURATION_MS` with `api_operation="routes_select"`,
+`http_method="POST"`, `attempt=1`, and `http_status_code` when a response is available.
+
 ## Smart-routing configuration
 
 `SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in

@@ -36,6 +36,8 @@ MODEL_SERVICE_ACCESS_CHECK_DURATION_MS = "model_service_access_check_duration_ms
 MODEL_SERVICE_DISCOVERY_DURATION_MS = "model_service_discovery_duration_ms"
 HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
 HTTP_RETRY_COUNT = "http_retry_count"
+UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
+ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
 
 MAX_OBSERVATIONS = 1000
 MAX_HANDOFF_BYTES = 2 * 1024 * 1024
@@ -53,8 +55,8 @@ DURATION_METRICS = frozenset(
         MODEL_SERVICE_DISCOVERY_DURATION_MS,
         AGENT_CONFIGURATION_DURATION_MS,
         SKILLS_REFRESH_DURATION_MS,
-        "routing_decision_duration_ms",
-        "ug_usage_duration_ms",
+        ROUTING_DECISION_DURATION_MS,
+        UG_USAGE_DURATION_MS,
         HTTP_REQUEST_DURATION_MS,
         "proxy_upstream_headers_duration_ms",
         "proxy_first_byte_duration_ms",
