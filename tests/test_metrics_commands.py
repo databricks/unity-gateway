@@ -50,6 +50,7 @@ def test_subagent_routing_http_failure_records_fallback_without_prompt(
     rows = list(metrics_recorder.pending)
     labels = {n: a for _, n, _, a in rows}
     assert labels["routing_decision_duration_ms"]["routing_trigger"] == "subagent"
+    assert labels["routing_decision_duration_ms"]["http_status_code"] == 503
     assert labels["http_request_duration_ms"]["api_operation"] == "routes_select"
     assert labels["http_request_duration_ms"]["http_status_code"] == 503
     assert labels["ug_cli_error"]["continued_with_fallback"] is True

@@ -265,11 +265,12 @@ def select_route(
             metrics.HTTP_REQUEST_DURATION_MS,
             (time.perf_counter() - request_started) * 1000,
             workspace=workspace,
-            api_operation="routes_select",
+            api_operation=metrics.api_operation(request.full_url),
             http_method="POST",
             http_status_code=status,
             attempt=1,
         )
+        metrics.annotate(http_status_code=status)
 
     model = _selected_model(payload)
     if model is None:
