@@ -8,6 +8,7 @@ from collections.abc import Mapping, MutableMapping
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -33,8 +34,11 @@ SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
+# Claude keeps subagent_orch_v0, Codex stays unrouted, and Copilot routes its subagents.
+SUBAGENT_ORCH_V0_CLAUDE_COPILOT = "subagent_orch_v0_claude_copilot"
+
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
-DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
+DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_COPILOT
 
 _RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 
@@ -66,43 +70,67 @@ _BASE_VERSIONS = {
     },
 }
 
+_ALL_OFF = {
+    ENABLE_SMART_ROUTING_ENV_VAR: "0",
+    ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+    ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+}
+
+
+def _copilot_preset(base: Mapping[str, str]) -> dict[str, str]:
+    """Copilot routes subagents only: it has neither first-prompt routing nor orchestration."""
+    return {
+        **base,
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+    }
+
+
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
 _VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
         AGENT_CODEX: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
+        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0]),
     },
     SUBAGENT_ONLY_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
+        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ONLY_V0]),
     },
     SUBAGENT_ONLY_V1: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ONLY_V1],
+        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ONLY_V1]),
     },
     SUBAGENT_ORCH_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
+        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ORCH_V0]),
     },
     SUBAGENT_ORCH_V1: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
+        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ORCH_V1]),
     },
-    # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
+    # Codex and Copilot opt out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
-        AGENT_CODEX: {
-            ENABLE_SMART_ROUTING_ENV_VAR: "0",
-            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
-            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-        },
+        AGENT_CODEX: _ALL_OFF,
+        AGENT_COPILOT: _ALL_OFF,
+    },
+    # Codex opts out; Claude keeps subagent_orch_v0 and Copilot routes subagents.
+    SUBAGENT_ORCH_V0_CLAUDE_COPILOT: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
+        AGENT_CODEX: _ALL_OFF,
+        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ORCH_V0]),
     },
 }
 
 
 def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) -> None:
     """Require both agents and a complete, explicit flag set for each."""
-    expected_agents = {AGENT_CLAUDE, AGENT_CODEX}
+    expected_agents = {AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT}
     expected = set(SMART_ROUTING_ENV_KEYS)
     for version, agents in versions.items():
         if agents.keys() != expected_agents:

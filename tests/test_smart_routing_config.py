@@ -7,6 +7,7 @@ import pytest
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
@@ -226,15 +227,31 @@ def test_enabled_version_keeps_a_known_version(agent, version):
     assert applied == inherited
 
 
+_CLAUDE_ONLY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: False}
+_DEFAULT_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: True}
+# Copilot routes subagents only, so a version that routes only the first prompt leaves it unrouted.
+_ALL_AGENT_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: True}
+
+
 @pytest.mark.parametrize(
     ("selector", "routes"),
     [
-        (None, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
-        ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: False}),
-        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (None, _DEFAULT_ROUTES),
+        ("unsupported_version", _DEFAULT_ROUTES),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_COPILOT, _DEFAULT_ROUTES),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES),
+        (
+            config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+            {**_ALL_AGENT_ROUTES, AGENT_COPILOT: False},
+        ),
         *(
-            (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
-            for version in sorted(set(config._VERSIONS) - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY})
+            (version, _ALL_AGENT_ROUTES)
+            for version in (
+                config.SUBAGENT_ONLY_V0,
+                config.SUBAGENT_ONLY_V1,
+                config.SUBAGENT_ORCH_V0,
+                config.SUBAGENT_ORCH_V1,
+            )
         ),
     ],
 )
@@ -347,3 +364,12 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 
     assert config.enabled_version_routes(env, agent="opencode") is False
     assert config.enabled_version_routes({}, agent="opencode") is False
+
+
+@pytest.mark.parametrize("version", sorted(config._VERSIONS))
+def test_copilot_never_gets_first_prompt_routing_or_orchestration(version):
+    resolved = config.resolve_environment(
+        {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}, agent=AGENT_COPILOT
+    )
+    assert resolved[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+    assert resolved[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == "0"

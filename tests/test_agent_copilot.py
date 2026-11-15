@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 from pathlib import Path
 
 import httpx
@@ -1636,6 +1637,43 @@ class TestLaunch:
             copilot.launch(dict(STATE), [], options=copilot.LaunchOptions(launch_model=GPT))
 
         assert seen["env"]["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
+
+    def _launch_capturing_plugin(self, monkeypatch, tmp_path, *, routed):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "start_session", lambda: None)
+        seen = _stub_launch(monkeypatch)
+        stubbed_popen = copilot.subprocess_cross_os.popen
+
+        def popen(argv, *, env):
+            if "--plugin-dir" in argv:
+                plugin = Path(argv[argv.index("--plugin-dir") + 1])
+                seen["hook"] = json.loads((plugin / "hooks/hooks.json").read_text())
+            return stubbed_popen(argv, env=env)
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                dict(STATE), [], options=copilot.LaunchOptions(launch_smart_routing=routed)
+            )
+        return seen
+
+    def test_smart_routed_launch_loads_a_hook_plugin_offering_the_registry_models(
+        self, tmp_path, monkeypatch
+    ):
+        seen = self._launch_capturing_plugin(monkeypatch, tmp_path, routed=True)
+
+        plugin = Path(seen["argv"][seen["argv"].index("--plugin-dir") + 1])
+        (hook,) = seen["hook"]["hooks"]["preToolUse"]
+        assert shlex.split(hook["bash"])[1:3] == ["copilot-router-hook", "route-subagent"]
+        assert f"--model dbx-anthropic/{SONNET}" in hook["bash"]
+        assert f"--model dbx-responses/{GPT}" in hook["bash"]
+        assert not plugin.exists()
+
+    def test_plain_launch_loads_no_routing_plugin(self, tmp_path, monkeypatch):
+        seen = self._launch_capturing_plugin(monkeypatch, tmp_path, routed=False)
+
+        assert "--plugin-dir" not in seen["argv"]
+        assert "hook" not in seen
 
     def test_a_wire_model_override_applies_to_the_start_model(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)

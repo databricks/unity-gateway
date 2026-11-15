@@ -746,20 +746,20 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         mock_set.assert_not_called()
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
     @pytest.mark.parametrize(
         ("launch_env", "expected_version"),
         [
-            ({}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
-            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
-            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            ({}, smart_routing_config.DEFAULT_ENABLED_VERSION),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.DEFAULT_ENABLED_VERSION),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.DEFAULT_ENABLED_VERSION),
             (
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                smart_routing_config.DEFAULT_ENABLED_VERSION,
             ),
             (
                 {"SMART_ROUTER_CONFIG_VERSION": "unknown_version"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                smart_routing_config.DEFAULT_ENABLED_VERSION,
             ),
             *(
                 ({"SMART_ROUTER_CONFIG_VERSION": version}, version)
@@ -781,7 +781,7 @@ class TestSubcommandRouting:
             "claude-only-version",
         ],
     )
-    def test_enable_smart_routing_keeps_a_known_version_or_selects_claude_only(
+    def test_enable_smart_routing_keeps_a_known_version_or_selects_the_default(
         self, monkeypatch, tool, launch_env, expected_version
     ):
         for name, value in launch_env.items():

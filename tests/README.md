@@ -1002,6 +1002,11 @@ real version gate: declining blocks launch, upgrading to 0.164 allows routing, a
 `test_codex_routing.py` checks that long Unicode assignments reach the router and hook
 unchanged while audits contain their hash and length, and bound each reason to 1,000
 characters. Shared-writer coverage keeps Claude's full task and reason fields intact.
+`test_copilot_routing.py` checks that a Copilot `task` call is rewritten to the routed registry
+model, that the router is offered `claude` harness options capped at its model limit, that the
+launch-scoped plugin hook matches only `task`, and that the hook command exits zero on every
+failure (Copilot denies the tool call otherwise); `test_agent_copilot.py` checks that a routed launch
+passes the plugin and a plain launch does not.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
