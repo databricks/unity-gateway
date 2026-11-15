@@ -2127,3 +2127,7 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+## Cloud Sandbox launcher
+
+`tests/test_cloud.py` covers transport, quoting, auth repair, quota errors, cleanup and resume selection using component fixtures. Live validation and limits are recorded in `docs/cloud-validation.md`.

@@ -821,3 +821,7 @@ authentication and UC permissions, add this step to your workflow:
 The [setup guide](actions/publish-skills/README.md) includes complete OIDC and OAuth
 workflows, custom folder mappings, sharing permissions, and verification steps.
 Use `@main` for automatic updates or pin a reviewed commit for reproducible runs.
+
+### Remote Sandbox agents
+
+Run `ug cloud claude` or `ug cloud codex` to start the agent inside a Databricks Sandbox. See [commands and lifecycle](docs/cloud.md).
