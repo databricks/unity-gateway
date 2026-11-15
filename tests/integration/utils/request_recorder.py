@@ -270,6 +270,11 @@ def assert_served(recorder, request, model):
         "model": request.payload["model"],
         "output_config": request.payload.get("output_config"),
         "thinking": request.payload.get("thinking"),
+        "tool_choice": request.payload.get("tool_choice"),
+        "tools": [
+            {"name": tool.get("name"), "defer_loading": tool.get("defer_loading")}
+            for tool in request.payload.get("tools", [])
+        ],
         "response_body": httpx.Response(
             response.status_code, headers=response.headers, content=response.body
         ).text[:2000],

@@ -87,6 +87,7 @@ def assert_claude_desktop_profile(
         "modelDiscoveryEnabled": False,
         "toolSearchEnabled": True,
         "inferenceModels": models,
+        "claudeAiImport": {"enabled": True},
         "inferenceCustomHeaders": custom_headers,
         "managedMcpServers": [
             {

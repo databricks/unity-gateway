@@ -61,6 +61,35 @@ def test_records_request_and_response(recorder):
     assert_response(recorder.response_for(request))
 
 
+def test_rejected_inference_reports_tool_setup_without_conversation():
+    payload = {
+        "model": "glm",
+        "system": "secret system",
+        "messages": [{"role": "user", "content": "secret prompt"}],
+        "tool_choice": {"type": "auto"},
+        "tools": [
+            {"name": "Read", "input_schema": {"type": "object"}},
+            {"name": "SubagentHandback", "defer_loading": True, "description": "secret"},
+        ],
+    }
+    request = RecordedRequest(1, "POST", "/messages", {}, json.dumps(payload).encode())
+
+    class Rejected:
+        def response_for(self, request, timeout):
+            return RecordedResponse(400, {}, b'{"error_code": "BAD_REQUEST"}')
+
+    with pytest.raises(AssertionError) as rejected:
+        request_recorder.assert_served(Rejected(), request, "glm")
+
+    details = rejected.value.args[0]
+    assert details["tool_choice"] == {"type": "auto"}
+    assert details["tools"] == [
+        {"name": "Read", "defer_loading": None},
+        {"name": "SubagentHandback", "defer_loading": True},
+    ]
+    assert "secret" not in str(details)
+
+
 def _configured_session(recorder, tmp_path, commands):
     class Session:
         home = tmp_path

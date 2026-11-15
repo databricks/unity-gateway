@@ -17,6 +17,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -292,6 +293,17 @@ def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, t
         )
     first.close()
     assert second.call("still alive", 3)["value"] == "still alive"
+
+
+def test_default_schema_server_count_initializes_within_startup_budget(clients, peer, tmp_path):
+    """Catch proxy overhead when a client checks 17 default-sized servers in sequence."""
+    url, _ = peer
+    started = time.monotonic()
+    for i in range(17):
+        clients(f"{url}/server-{i}").initialize()
+    elapsed = time.monotonic() - started
+    assert len(_endpoints(tmp_path)) == 1
+    assert elapsed < 15, f"17 MCP servers initialized in {elapsed:.1f}s"
 
 
 def test_explicit_user_agent_takes_precedence_over_client_info(clients, peer):

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
+from ucode import metrics
 from ucode.constants import LOCALHOST, LOOPBACK_HOST
 from ucode.databricks import (
     build_auth_token_argv,
@@ -238,6 +239,7 @@ def get_custom_client_token(
             if not token:
                 raise ValueError("OAuth returned no access token")
             cache.save(credentials)
+            metrics.bind(workspace, token)
             return token
     except Exception as exc:
         raise RuntimeError(

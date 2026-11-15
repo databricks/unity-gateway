@@ -260,12 +260,12 @@ class TestCodexUserAgent:
             mp.setattr("ucode.state.save_state", lambda s: None)
             codex.write_tool_config({"workspace": capture_server.base_url})
 
-        # Point codex at the redirected config dir and let $OPENAI_API_KEY
-        # bypass the auth command.
+        # Keep the auth command independent of the developer's login state.
         env = {
             **os.environ,
             "CODEX_HOME": str(config_dir),
             "OPENAI_API_KEY": "test-key-not-real",
+            "DATABRICKS_BEARER": "test-key-not-real",
         }
         result = _run_until_first_request(codex.validate_cmd("codex"), env)
 
@@ -299,6 +299,7 @@ class TestCodexUserAgent:
             **os.environ,
             "CODEX_HOME": str(config_dir),
             "OPENAI_API_KEY": "test-key-not-real",
+            "DATABRICKS_BEARER": "test-key-not-real",
         }
         result = _run_until_first_request(codex.validate_cmd("codex"), env)
 

@@ -9,6 +9,7 @@ import re
 import urllib.error
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -128,11 +129,13 @@ def test_workflow_keeps_authorized_comment_trusted_checkout_and_existing_credent
 
 def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
     workflow = WORKFLOW_PATH.read_text()
-    assert "pull_request:\n    types: [labeled]" in workflow
+    assert "pull_request:\n    types: [labeled, ready_for_review]" in workflow
     assert "github.event_name == 'pull_request' &&" in workflow
     assert "github.event.pull_request.head.repo.full_name == github.repository &&" in workflow
     assert (
-        'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
+        "(github.event.action == 'labeled' &&\n"
+        '              contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)'
+        in workflow
     )
     assert "github.event_name == 'issue_comment' &&" in workflow
     assert (
@@ -141,6 +144,55 @@ def test_workflow_accepts_either_review_label_only_on_in_repo_pull_requests():
     assert "pr_number: ${{ steps.pr.outputs.number }}" in workflow
     assert "base_ref: ${{ steps.pr.outputs.base }}" in workflow
     assert "head_sha: ${{ steps.pr.outputs.head }}" in workflow
+
+
+def _review_runs_on_pull_request_event(workflow: str, action: str, label, in_repo: bool) -> bool:
+    text = (ROOT / ".github" / "workflows" / workflow).read_text().split("\n  review:\n", 1)[1]
+    guard = re.search(r"if: >-\s*\$\{\{(.*?)\}\}", text, re.S)
+    assert guard is not None
+    expression = " ".join(guard[1].replace("&&", " and ").replace("||", " or ").split())
+    event = SimpleNamespace(
+        action=action,
+        label=SimpleNamespace(name=label) if label else None,
+        pull_request=SimpleNamespace(
+            head=SimpleNamespace(
+                repo=SimpleNamespace(full_name="databricks/unity-gateway" if in_repo else "x/fork")
+            )
+        ),
+    )
+    github = SimpleNamespace(
+        event_name="pull_request", event=event, repository="databricks/unity-gateway"
+    )
+    # The guard uses only boolean operators, equality, contains, and fromJSON.
+    return bool(
+        eval(
+            expression,
+            {"__builtins__": {}},
+            {
+                "github": github,
+                "contains": lambda items, value: value in items,
+                "fromJSON": json.loads,
+            },
+        )
+    )
+
+
+@pytest.mark.parametrize("workflow", ["ug-review.yml", "polly-review.yml"])
+@pytest.mark.parametrize(
+    ("action", "label", "in_repo", "runs"),
+    [
+        ("ready_for_review", None, True, True),
+        ("ready_for_review", None, False, False),
+        ("labeled", "ug-review", True, True),
+        ("labeled", "code-review", True, True),
+        ("labeled", "code-review", False, False),
+        ("labeled", "bug", True, False),
+    ],
+)
+def test_pull_request_guard_runs_ready_for_review_and_review_labels_only_in_repo(
+    workflow, action, label, in_repo, runs
+):
+    assert _review_runs_on_pull_request_event(workflow, action, label, in_repo) == runs
 
 
 def test_workflow_uses_pinned_open_code_review_action_and_cli():

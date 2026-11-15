@@ -1,4 +1,4 @@
-"""Report downloaded skills to AI Gateway, which counts them toward UC skill popularity.
+"""Report downloaded skills to Unity Gateway, which counts them toward UC skill popularity.
 
 Reports are sent by a detached child process, so no command waits on the network and exiting
 doesn't cut a report short.

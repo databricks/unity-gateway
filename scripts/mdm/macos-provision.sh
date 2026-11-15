@@ -3,10 +3,9 @@
 # macOS MDM provisioning script, written for Jamf Pro policies: install
 # ug, the Databricks CLI, Claude Code and Codex machine-wide and run
 # `ug configure` as root, which installs the workspace policy at
-# /etc/unitygateway/managed-settings.json.
-# Users then launch with no sudo:
-#
-#   UG_SKIP_OS_SETTINGS=1 ug claude    (or: ug codex)
+# /etc/unitygateway/managed-settings.json. It also adds `claude` and
+# `codex` aliases to /etc/zshrc and /etc/bashrc, so users launch with
+# `claude` or `codex` in a new terminal, with no sudo.
 #
 # Jamf parameters ($1-$3 are reserved by Jamf):
 #   $4  Databricks workspace URL, starting with https://
@@ -78,15 +77,22 @@ if [ ! -x /usr/local/bin/claude ]; then
   install -m 755 "$tmp/claude" /usr/local/bin/claude
 fi
 
-# Install Codex
-if [ ! -x /usr/local/bin/codex ]; then
+# Install Codex from its release package, which also includes the
+# codex-code-mode-host helper Code Mode needs next to codex.
+if [ ! -x "$PREFIX/codex/bin/codex" ]; then
   case "$(uname -m)" in
     arm64) target=aarch64-apple-darwin ;;
     *) target=x86_64-apple-darwin ;;
   esac
-  curl -fsSL "$CODEX_RELEASES/codex-$target.tar.gz" \
-    | tar -xzf - -C "$tmp" "codex-$target"
-  install -m 755 "$tmp/codex-$target" /usr/local/bin/codex
+  package="codex-package-$target.tar.gz"
+  curl -fsSL -o "$tmp/$package" "$CODEX_RELEASES/$package"
+  curl -fsSL "$CODEX_RELEASES/codex-package_SHA256SUMS" \
+    | grep "  $package\$" | (cd "$tmp" && shasum -a 256 -c -)
+  mkdir -p "$PREFIX/codex"
+  tar -xzf "$tmp/$package" -C "$PREFIX/codex"
+  ln -sfn "$PREFIX/codex/bin/codex" /usr/local/bin/codex
+  ln -sfn "$PREFIX/codex/bin/codex-code-mode-host" \
+    /usr/local/bin/codex-code-mode-host
 fi
 
 # Get short lived credential; curl reads the client id and secret from
@@ -105,3 +111,17 @@ export DATABRICKS_BEARER
 
 ug configure --global --workspace "$WORKSPACE" \
   --agents claude,codex </dev/null
+
+# Aliases for every user's interactive zsh and bash shells. The block is
+# rewritten on each run, which restores it if a macOS update resets
+# the file.
+for rc in /etc/zshrc /etc/bashrc; do
+  [ -f "$rc" ] || continue
+  sed -i '' '/^# BEGIN unity-gateway/,/^# END unity-gateway/d' "$rc"
+  cat >>"$rc" <<'ALIASES'
+# BEGIN unity-gateway (managed by MDM)
+alias claude='UG_SKIP_OS_SETTINGS=1 ug claude'
+alias codex='UG_SKIP_OS_SETTINGS=1 ug codex'
+# END unity-gateway
+ALIASES
+done

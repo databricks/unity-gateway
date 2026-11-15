@@ -339,6 +339,7 @@ def _cowork_mcp_config(
     *,
     use_pat: bool = False,
     custom_oauth: bool = False,
+    mdm_ug_executable: Path | None = None,
 ) -> dict:
     entries: dict[str, dict] = {}
     urls: dict[str, str] = {}
@@ -359,12 +360,12 @@ def _cowork_mcp_config(
             profile,
             use_pat=use_pat,
         )
-        executable = Path(argv[0])
-        if not executable.is_absolute():
+        command = mdm_ug_executable if mdm_ug_executable is not None else Path(argv[0])
+        if not command.is_absolute():
             raise RuntimeError(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
             )
-        entries[name] = {"type": "stdio", "command": str(executable), "args": argv[1:]}
+        entries[name] = {"type": "stdio", "command": str(command), "args": argv[1:]}
         urls[name] = url
     aliases = _cowork_mcp_aliases(urls)
     return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}

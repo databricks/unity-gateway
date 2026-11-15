@@ -3,8 +3,11 @@
 import pytest
 from utils.constants import (
     CLAUDE_TEST_MODEL,
+    COPILOT_DEEPSEEK_TEST_MODEL,
+    COPILOT_GLM_TEST_MODEL,
     COPILOT_GPT_TEST_MODEL,
     COPILOT_HEADLESS_FLAGS,
+    COPILOT_KIMI_TEST_MODEL,
 )
 from utils.evidence import (
     FileTask,
@@ -77,6 +80,46 @@ def test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref(live_session,
     gpt_limits = session.workspace_state()["copilot_catalog"].get("limits", {})
     if COPILOT_GPT_TEST_MODEL in gpt_limits:
         assert gpt_limits[COPILOT_GPT_TEST_MODEL][0] > 128_000
+
+
+def test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions(
+    live_session, workspace
+):
+    """Scenario: configure Copilot once, then run a headless task on a GLM, a Kimi and a DeepSeek
+    model, each named by its catalog id, without reconfiguring.
+
+    Expected: each completed answer contains its fixture value and was sent as the requested
+    model, every session started on `dbx-completions`, the saved catalog lists all three, and no
+    session registry is left afterwards. DeepSeek isn't on the gateway's Anthropic-route listing,
+    so it is registered from the model-services listing.
+    """
+    session = live_session
+    models = (COPILOT_GLM_TEST_MODEL, COPILOT_KIMI_TEST_MODEL, COPILOT_DEEPSEEK_TEST_MODEL)
+    tasks = {model: FileTask(session) for model in models}
+    _configure(session, workspace)
+    session.record("copilot-models.json", {"models": list(models)})
+
+    results = {
+        model: session.run(
+            "copilot",
+            "--model",
+            model,
+            "-p",
+            task.prompt,
+            *COPILOT_HEADLESS_FLAGS,
+            timeout=180,
+        )
+        for model, task in tasks.items()
+    }
+
+    assert set(models) <= set(session.workspace_state()["copilot_catalog"]["models"])
+    for model, task in tasks.items():
+        task.assert_headless_answer("copilot", results[model])
+        assert_completed_task_model(session, "copilot", task.value, model)
+    selected = copilot_selected_models(session)
+    for model in models:
+        assert f"dbx-completions/{model}" in selected
+    assert_no_session_registry_left(session)
 
 
 def test_ug_copilot_unknown_model_lists_available_models(live_session, workspace):

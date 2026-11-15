@@ -1065,7 +1065,26 @@ class TestSkillDownloadPicker:
             lambda choices: None, threading.Event()
         )
 
-        assert message == "⚠ Timed out after 30s, found 2 skills"
+        assert message == (
+            "⚠ Timed out after 30s; found 2 skills. "
+            "Use `ug skills add --names <catalog.schema.skill>` to add a known skill."
+        )
+
+    def test_background_loader_reports_incomplete_listing(self, tmp_path, monkeypatch):
+        roots = skill_dir_roots(str(tmp_path))
+        monkeypatch.setattr(
+            sd,
+            "list_all_skills",
+            lambda *args, **kwargs: ([], "HTTP 503 Service Unavailable"),
+        )
+
+        message = sd._skills_download_background_loader(WS, "token", roots)(
+            lambda choices: None, threading.Event()
+        )
+
+        assert message is not None
+        assert "Discovery stopped before the full list loaded" in message
+        assert "ug skills add --names" in message
 
     def test_prompt_returns_selected_fqns(self, tmp_path, monkeypatch):
         roots = skill_dir_roots(str(tmp_path))

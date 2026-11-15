@@ -214,10 +214,10 @@ def list_all_skills(
         workspace, token, deadline=deadline, probe=probe, collect=collect, cancel_event=cancel_event
     )
     if reason is not None:
+        if reason.startswith("deadline exceeded"):
+            return sorted(by_fqn.values(), key=lambda ref: ref.fqn), _SKILLS_WALK_TIMEOUT_REASON
         return [], reason
     refs = sorted(by_fqn.values(), key=lambda ref: ref.fqn)
-    if time.monotonic() > deadline:
-        return refs, _SKILLS_WALK_TIMEOUT_REASON
     if not refs:
         return [], "no skills found"
     return refs, None

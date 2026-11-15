@@ -5,13 +5,14 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import uuid
 from pathlib import Path
 
 import httpx
 import pytest
 
 from ucode import custom_oauth
-from ucode.agents import copilot
+from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.telemetry import client_platform
 
@@ -56,6 +57,12 @@ class TestClassifyCopilotModel:
             ("system.ai.gpt-4o-mini", "completions"),
             ("gpt-5.4", "responses"),
             ("claude-sonnet-4.5", "anthropic"),
+            ("system.ai.glm-5-3", "completions"),
+            ("system.ai.kimi-k3-1-pro", "completions"),
+            ("system.ai.deepseek-v4-1-flash-1017", "completions"),
+            ("databricks-glm-5-3-flash-scale", "completions"),
+            ("system.ai.kimi-k3-neo", "completions"),
+            ("system.ai.glm-9", "completions"),
         ],
     )
     def test_names_decide_the_wire(self, model, wire):
@@ -65,9 +72,9 @@ class TestClassifyCopilotModel:
         ("model", "reason"),
         [
             ("system.ai.gemini-3-flash", "Gemini"),
-            ("system.ai.gpt-oss-120b", "Claude and GPT"),
-            ("system.ai.meta-llama-3-3-70b-instruct", "Claude and GPT"),
-            ("system.ai.gte-large-en", "Claude and GPT"),
+            ("system.ai.gpt-oss-120b", "Claude, GPT, GLM, Kimi and DeepSeek"),
+            ("system.ai.meta-llama-3-3-70b-instruct", "Claude, GPT"),
+            ("system.ai.gte-large-en", "Claude, GPT"),
             ("system.ai.claude-opus-4-1", "thinking"),
             ("anthropic-aigw-12e8d1ee-system.ai.gpt-5-6-sol", "alias"),
         ],
@@ -84,8 +91,54 @@ class TestClassifyCopilotModel:
             copilot.classify_copilot_model("system.ai.gpt-5-3-codex", codex_routes) == "responses"
         )
 
+    def test_open_models_need_chat_completions(self):
+        deepseek = "system.ai.deepseek-v4-1-flash-1017"
+        routes = ["mlflow/v1/chat/completions", "mlflow/v1/responses"]
+
+        assert copilot.classify_copilot_model(deepseek, routes) == "completions"
+        assert copilot.classify_copilot_model(deepseek, ["mlflow/v1/responses"]) is None
+
 
 class TestBuildCopilotCatalog:
+    def test_provider_wildcards_reach_the_registry_with_qualified_ids(self, monkeypatch):
+        services = {
+            "main.default.lilly-personal-anthropic": (
+                "anthropic",
+                ["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+            ),
+            "main.default.lill-oai": ("openai", ["gpt-6.1-sol", "gpt-6.1-terra"]),
+        }
+        monkeypatch.setattr(
+            model_sources,
+            "get_model_provider_service",
+            lambda name, workspace, token: ({"provider_type": services[name][0]}, None),
+        )
+        monkeypatch.setattr(
+            model_sources,
+            "list_provider_service_models",
+            lambda workspace, token, name, provider: (services[name][1], None),
+        )
+        models, _ = model_sources.resolve_model_sources(
+            [SONNET, *(f"{service}.*" for service in services)], "copilot", WS, "token"
+        )
+        state = {"copilot_static_models": models}
+        result = copilot.render_providers_config(copilot.copilot_catalog(state), PROXY, "secret")
+
+        expected = {SONNET: "anthropic"}
+        expected.update(
+            (f"{service}.{model}", "anthropic" if provider == "anthropic" else "responses")
+            for service, (provider, names) in services.items()
+            for model in names
+        )
+        assert {entry["id"] for entry in result["models"]} == set(expected)
+        assert copilot.unservable_static_models(state) == []
+        for entry in result["models"]:
+            assert entry["wireModel"] == entry["id"]
+            assert entry["provider"] == copilot.PROVIDER_NAMES[expected[entry["id"]]]
+            if expected[entry["id"]] == "anthropic":
+                assert entry["modelId"].startswith("claude-")
+                assert entry["maxPromptTokens"] == 872_000
+
     def test_orders_claude_by_family_newest_first_then_gpt(self):
         models = catalog(
             "system.ai.gpt-5-4",
@@ -106,6 +159,23 @@ class TestBuildCopilotCatalog:
             "system.ai.claude-haiku-4-5",
             "system.ai.gpt-6-1-sol",
             "system.ai.gpt-5-4",
+        ]
+
+    def test_open_models_come_after_gpt_on_chat_completions(self):
+        models = catalog(
+            "system.ai.kimi-k3",
+            "system.ai.deepseek-v4-1-flash-1017",
+            "system.ai.gpt-4o",
+            "system.ai.glm-5-3",
+            SONNET,
+        )
+
+        assert [m.id for m in models] == [
+            SONNET,
+            "system.ai.gpt-4o",
+            "system.ai.deepseek-v4-1-flash-1017",
+            "system.ai.glm-5-3",
+            "system.ai.kimi-k3",
         ]
 
     def test_uses_the_listing_routes_and_drops_duplicates(self):
@@ -160,6 +230,48 @@ class TestCatalogFromListings:
             ("system.ai.gpt-6-luna", "responses", (922_000, 128_000)),
         ]
 
+    def test_open_models_come_from_the_model_services_listing(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=[
+                "system.ai.claude-opus-4-8",
+                "anthropic-aigw-ba377e31-system.ai.kimi-k3",
+                "anthropic-aigw-73ea02b2-system.ai.glm-5-2",
+            ],
+            model_id_to_display_name={},
+        )
+        entries = [
+            ModelServiceEntry("system.ai.glm-5-2", ("mlflow/v1/chat/completions",)),
+            ModelServiceEntry(
+                "system.ai.deepseek-v4-1-flash-1017", ("mlflow/v1/chat/completions",)
+            ),
+            ModelServiceEntry("system.ai.kimi-k3-neo", ("mlflow/v1/chat/completions",)),
+        ]
+
+        models = copilot.catalog_from_listings(entries, [SONNET], gateway)
+
+        assert [(m.id, m.wire) for m in models] == [
+            ("system.ai.claude-opus-4-8", "anthropic"),
+            ("system.ai.deepseek-v4-1-flash-1017", "completions"),
+            ("system.ai.glm-5-2", "completions"),
+            ("system.ai.kimi-k3-neo", "completions"),
+        ]
+
+    def test_open_models_dont_stand_in_for_a_missing_gpt_family(self):
+        entries = [ModelServiceEntry(SONNET), ModelServiceEntry("system.ai.glm-5-2")]
+
+        models = copilot.catalog_from_listings(entries, [SONNET, GPT, "system.ai.kimi-k3"])
+
+        assert [m.id for m in models] == [SONNET, GPT, "system.ai.glm-5-2"]
+
+    def test_an_anthropic_route_listing_of_only_open_models_falls_back(self):
+        gateway = AnthropicModelCatalog(
+            model_ids=["anthropic-aigw-ba377e31-system.ai.kimi-k3"], model_id_to_display_name={}
+        )
+
+        models = copilot.catalog_from_listings([ModelServiceEntry(GPT)], [SONNET], gateway)
+
+        assert models == catalog(SONNET, GPT)
+
     def test_an_anthropic_route_listing_without_usable_models_falls_back(self):
         gateway = AnthropicModelCatalog(
             model_ids=[], model_id_to_display_name={}, error_msg="HTTP 404"
@@ -192,6 +304,31 @@ class TestCopilotCatalog:
                 copilot.copilot_exclusion_reason("system.ai.gemini-3-flash"),
             )
         ]
+
+    def test_managed_list_takes_the_limits_discovery_saved(self):
+        discovered = [
+            copilot.CopilotModel(SONNET, "anthropic"),
+            copilot.CopilotModel(GPT, "responses", (922_000, 128_000)),
+        ]
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(discovered),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert model.listed_limits == (922_000, 128_000)
+        assert copilot.catalog_model_limits(model) == (794_000, 128_000)
+
+    def test_managed_model_without_saved_limits_keeps_copilots_default(self):
+        state = {
+            "copilot_static_models": [GPT],
+            "copilot_catalog": copilot.catalog_state(catalog(SONNET)),
+        }
+
+        [model] = copilot.copilot_catalog(state)
+
+        assert copilot.catalog_model_limits(model) is None
 
     def test_an_unusable_managed_list_falls_back_to_discovery(self):
         state = {
@@ -292,10 +429,21 @@ class TestLaunchModel:
             ((GPT, "system.ai.claude-opus-5-5", SONNET), SONNET),
             ((GPT, "system.ai.claude-opus-5-5"), "system.ai.claude-opus-5-5"),
             (("system.ai.claude-fable-5", GPT), GPT),
+            (("system.ai.kimi-k3", "system.ai.gpt-4o"), "system.ai.gpt-4o"),
+            (("system.ai.kimi-k3", "system.ai.claude-fable-5"), "system.ai.claude-fable-5"),
+            (("system.ai.kimi-k3",), "system.ai.kimi-k3"),
         ],
     )
     def test_defaults_to_sonnet_then_opus_then_gpt(self, ids, expected):
         assert copilot.launch_model({}, catalog(*ids)).id == expected
+
+    def test_a_provider_service_starts_on_gpt_before_an_open_model(self):
+        models, _ = copilot.build_catalog(
+            [("gpt-4o", ()), ("deepseek-v4-1-flash", ()), ("glm-5-2", ())],
+            provider_type="openai",
+        )
+
+        assert copilot.launch_model({}, models, managed_list=False).id == "gpt-4o"
 
     def test_an_unavailable_requested_model_warns_and_falls_through(self, capsys):
         model = copilot.launch_model({}, self.MODELS, requested="system.ai.gemini-3-flash")
@@ -654,10 +802,46 @@ class TestLocationCatalog:
         assert seen["parent_schema"] == "main.ucode"
 
     def test_an_empty_schema_says_so(self, monkeypatch):
-        _stub_location(monkeypatch, [], error="AI Gateway returned no Anthropic model ids")
+        _stub_location(monkeypatch, [], error="Unity Gateway returned no Anthropic model ids")
 
         with pytest.raises(RuntimeError, match="no model services to use in main.ucode"):
             copilot.location_catalog({"workspace": WS}, "main.ucode")
+
+
+OVERFLOW = (
+    b'{"error_code":"BAD_REQUEST","message":"{\\"error\\":\\"Input exceeds the model\'s maximum'
+    b' context length. Reduce the length of the input messages.\\"}"}'
+)
+
+
+class TestRecognizableContextOverflow:
+    def test_puts_copilots_words_before_the_gateways(self):
+        rewritten = copilot.recognizable_context_overflow(OVERFLOW)
+
+        assert rewritten == OVERFLOW.replace(b"Input exceeds", b"prompt is too long: Input exceeds")
+        inner = json.loads(json.loads(rewritten)["message"])
+        assert inner["error"].startswith("prompt is too long: Input exceeds")
+
+    def test_the_runtime_wording_too(self):
+        body = (
+            b'{"message":"The input (1100000 tokens) is longer than the model\'s context length'
+            b' (1048576 tokens)."}'
+        )
+
+        assert copilot.recognizable_context_overflow(body) == body.replace(
+            b"The input", b"prompt is too long: The input"
+        )
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b'{"error":{"message":"prompt is too long: 210000 tokens > 200000 maximum"}}',
+            b'{"error_code":"BAD_REQUEST","message":"max_tokens exceeds the limit"}',
+            b"\xff\xfe",
+        ],
+    )
+    def test_other_bodies_are_relayed_unchanged(self, body):
+        assert copilot.recognizable_context_overflow(body) is None
 
 
 class TestCopilotModelLimits:
@@ -699,6 +883,15 @@ class TestCopilotModelLimits:
 
     def test_gpt_without_listed_limits_keeps_copilots_defaults(self):
         assert copilot.catalog_model_limits(copilot.CopilotModel(GPT, "responses")) is None
+
+    @pytest.mark.parametrize(
+        "model",
+        ["system.ai.glm-5-3", "system.ai.kimi-k3-1-pro", "deepseek-v4-1-flash", "glm-9"],
+    )
+    def test_open_models_keep_the_prompt_well_inside_their_window(self, model):
+        limits = copilot.catalog_model_limits(copilot.CopilotModel(model, "completions"))
+
+        assert limits == (687_000, 32_000)
 
     def test_a_listed_output_that_fills_the_window_is_ignored(self):
         model = copilot.CopilotModel(SONNET, "anthropic", (64_000, 64_000))
@@ -746,6 +939,20 @@ class TestRenderProvidersConfig:
                 "maxOutputTokens": 128_000,
             },
             {"id": GPT, "provider": "dbx-responses", "wireModel": GPT, "name": GPT},
+        ]
+
+    def test_open_models_get_limits_and_no_catalog_id(self):
+        config = copilot.render_providers_config(catalog("system.ai.kimi-k3"), PROXY, "secret")
+
+        assert config["models"] == [
+            {
+                "id": "system.ai.kimi-k3",
+                "provider": "dbx-completions",
+                "wireModel": "system.ai.kimi-k3",
+                "name": "system.ai.kimi-k3",
+                "maxPromptTokens": 687_000,
+                "maxOutputTokens": 32_000,
+            }
         ]
 
     def test_provider_service_routes_every_provider_by_header(self):
@@ -831,6 +1038,31 @@ class TestBuildRuntimeEnv:
         monkeypatch.setenv(key, "user-value")
         env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
         assert env.get(key) != "user-value"
+
+    def test_tracing_replaces_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://collector:4318/t")
+        monkeypatch.setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", "/tmp/spans")
+        monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "team=ml")
+        otel = copilot.otel_env(PROXY, "secret")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0], otel=otel)
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"{PROXY}/ai-gateway/otel"
+        assert env["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+        assert env["OTEL_EXPORTER_OTLP_HEADERS"] == "x-api-key=secret"
+        assert env["COPILOT_OTEL_ENABLED"] == "true"
+        assert "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT" not in env
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in env
+        assert env["OTEL_RESOURCE_ATTRIBUTES"] == "team=ml"
+
+    def test_without_tracing_keeps_the_users_own_exporter_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+
+        env = copilot.build_runtime_env(tmp_path / "providers.json", catalog(GPT)[0])
+
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://collector:4318"
+        assert "COPILOT_OTEL_ENABLED" not in env
 
 
 class TestSessionRegistry:
@@ -1291,6 +1523,14 @@ def _stub_launch(monkeypatch, process=None, token="dbx-token"):
             content=b"{}",
             timeout=5,
         ).status_code
+        if endpoint := env.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
+            api_key = env["OTEL_EXPORTER_OTLP_HEADERS"].removeprefix("x-api-key=")
+            seen["metrics_status"] = httpx.post(
+                f"{endpoint}/v1/metrics", headers={"x-api-key": api_key}, content=b"", timeout=5
+            ).status_code
+            seen["unsigned_traces_status"] = httpx.post(
+                f"{endpoint}/v1/traces", content=b"", timeout=5
+            ).status_code
         return process or _ExitedProcess()
 
     monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
@@ -1321,6 +1561,31 @@ class TestLaunch:
         assert seen["wrong_secret_status"] == 401
         assert not os.path.exists(seen["registry_path"])
 
+    def test_tracing_exports_to_the_session_proxy(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                {**STATE, "copilot_otel_tracing": True}, [], options=copilot.LaunchOptions()
+            )
+
+        secret = seen["registry"]["providers"][0]["bearerToken"]
+        assert seen["env"]["OTEL_EXPORTER_OTLP_HEADERS"] == f"x-api-key={secret}"
+        assert seen["env"]["OTEL_EXPORTER_OTLP_ENDPOINT"].startswith("http://127.0.0.1:")
+        assert seen["metrics_status"] == 200
+        assert seen["unsigned_traces_status"] == 401
+
+    def test_without_tracing_the_proxy_serves_no_otel_path(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), [], options=copilot.LaunchOptions())
+
+        assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in seen["env"]
+        assert "COPILOT_OTEL_ENABLED" not in seen["env"]
+
     def test_explicit_model_is_rewritten_to_the_registry_ref(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         seen = _stub_launch(monkeypatch)
@@ -1335,12 +1600,62 @@ class TestLaunch:
         assert seen["argv"] == [
             "copilot",
             "--allow-all-mcp-server-instructions",
+            "--session-id",
+            seen["argv"][3],
             "-p",
             "hi",
             "--model",
             f"dbx-responses/{GPT}",
         ]
         assert seen["env"]["COPILOT_MODEL"] == f"dbx-responses/{GPT}"
+
+    def test_the_proxy_rewords_context_overflows_and_drops_reasoning_effort(
+        self, tmp_path, monkeypatch
+    ):
+        from ucode import gateway_proxy
+
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        _stub_launch(monkeypatch)
+        start = gateway_proxy.start_gateway_auth_proxy
+        seen = {}
+
+        def start_proxy(*args, **kwargs):
+            seen.update(kwargs)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(gateway_proxy, "start_gateway_auth_proxy", start_proxy)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), [], options=copilot.LaunchOptions())
+
+        assert seen["bad_request_rewriter"] is copilot.recognizable_context_overflow
+        assert tuple(seen["dropped_chat_completions_fields"]) == ("reasoning_effort",)
+
+    def test_the_proxy_sends_the_session_id_and_marks_subagents(self, tmp_path, monkeypatch):
+        from ucode import gateway_proxy
+
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        start = gateway_proxy.start_gateway_auth_proxy
+        proxy = {}
+
+        def start_proxy(*args, **kwargs):
+            proxy.update(kwargs)
+            return start(*args, **kwargs)
+
+        monkeypatch.setattr(gateway_proxy, "start_gateway_auth_proxy", start_proxy)
+
+        with pytest.raises(SystemExit):
+            copilot.launch(dict(STATE), ["-p", "hi"], options=copilot.LaunchOptions())
+
+        session_id = seen["argv"][seen["argv"].index("--session-id") + 1]
+        assert str(uuid.UUID(session_id)) == session_id
+        assert proxy["added_headers"]["session-id"] == session_id
+        subagent = {"x-interaction-type": "conversation-subagent"}
+        body = json.dumps({"messages": [{"role": "user", "content": "find the tests"}]}).encode()
+        assert proxy["request_headers_adder"](subagent, body)["thread-id"].startswith(
+            f"{session_id}-"
+        )
 
     def test_starts_on_the_requested_launch_model(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
@@ -1544,3 +1859,135 @@ class TestWriteUserMcpServers:
         assert "gone" not in doc["mcpServers"]
         assert doc["mcpServers"]["mine"] == {"type": "local"}
         assert doc["mcpServers"]["svc"]["command"] == "ug"
+
+
+SESSION = "0b6f3a52-2c5e-4d1e-9a51-1f2b8e4c7d90"
+
+
+class TestSessionArgs:
+    def test_a_new_session_gets_a_new_id_that_copilot_uses_too(self):
+        args, session_id = copilot.session_args(["-p", "hi"])
+
+        assert args == ["--session-id", session_id, "-p", "hi"]
+        assert str(uuid.UUID(session_id)) == session_id
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["--session-id", SESSION],
+            [f"--session-id={SESSION}"],
+            ["--resume", SESSION.upper()],
+            ["-r", SESSION, "-p", "hi"],
+            [f"--resume={SESSION}"],
+        ],
+    )
+    def test_a_session_named_by_uuid_keeps_its_id(self, args):
+        assert copilot.session_args(args) == (args, SESSION)
+
+    @pytest.mark.parametrize(
+        "args",
+        [["--continue"], ["--resume"], ["-r", "-p", "hi"], ["--resume=my-session"], ["sessions"]],
+    )
+    def test_a_session_picked_otherwise_gets_an_id_of_this_launch(self, args):
+        new_args, session_id = copilot.session_args(args)
+
+        assert new_args == args
+        assert str(uuid.UUID(session_id)) == session_id
+        assert copilot.session_args(args)[1] != session_id
+
+
+class TestSubagentHeaders:
+    SUBAGENT = {"x-interaction-type": "conversation-subagent"}
+
+    def setup_method(self):
+        self.adder = copilot.subagent_headers(SESSION)
+
+    def _id(self, body, headers=SUBAGENT):
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+        return self.adder(headers, raw).get("thread-id")
+
+    def test_each_subagent_keeps_one_id_over_its_turns(self):
+        first = {
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "find tests"}]}]
+        }
+        later = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "find tests",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                },
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t"}]},
+            ]
+        }
+        other = {"messages": [{"role": "user", "content": "read the docs"}]}
+
+        assert self._id(first) == self._id(later)
+        assert self._id(first).startswith(f"{SESSION}-")
+        assert self._id(other) != self._id(first)
+
+    def test_reads_the_first_user_message_of_each_api(self):
+        prompt = "find tests"
+        anthropic = {"system": "s", "messages": [{"role": "user", "content": prompt}]}
+        completions = {
+            "messages": [
+                {"role": "system", "content": "the same for every subagent"},
+                {"role": "user", "content": [{"type": "text", "text": prompt}]},
+            ]
+        }
+        responses = {
+            "instructions": "s",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
+        }
+
+        assert self._id(anthropic) == self._id(completions) == self._id(responses)
+        assert self._id({"input": prompt}) == self._id(anthropic)
+
+    @pytest.mark.parametrize(
+        ("headers", "body"),
+        [
+            (
+                {"x-interaction-type": "conversation-user"},
+                {"messages": [{"role": "user", "content": "hi"}]},
+            ),
+            ({}, {"messages": [{"role": "user", "content": "hi"}]}),
+            (SUBAGENT, b"not json"),
+            (SUBAGENT, {"messages": [{"role": "assistant", "content": "hi"}]}),
+            (SUBAGENT, ["not", "an", "object"]),
+        ],
+    )
+    def test_no_id_for_the_main_agent_or_a_body_it_cannot_read(self, headers, body):
+        assert self._id(body, headers) is None
+
+    def test_a_lone_surrogate_still_gets_an_id(self):
+        body = b'{"messages": [{"role": "user", "content": "cut \\ud83d"}]}'
+
+        assert self._id(body).startswith(f"{SESSION}-")
+
+    def test_the_id_is_keyed_for_the_launch(self):
+        body = json.dumps({"messages": [{"role": "user", "content": "find tests"}]}).encode()
+        one, other = copilot.subagent_headers(SESSION), copilot.subagent_headers(SESSION)
+
+        assert one(self.SUBAGENT, body) == one(self.SUBAGENT, body)
+        assert one(self.SUBAGENT, body) != other(self.SUBAGENT, body)
+
+
+class TestWithSessionId:
+    def test_adds_the_session_id_unless_an_admin_header_sets_it(self):
+        assert copilot.with_session_id({"User-Agent": "u"}, SESSION) == {
+            "session-id": SESSION,
+            "User-Agent": "u",
+        }
+        assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}

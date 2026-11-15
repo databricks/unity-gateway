@@ -792,10 +792,23 @@ class TestListAllSkills:
         assert sa.list_all_skills(WS, "token") == ([], "no skills found")
 
     def test_timeout_returns_partial_results_with_reason(self, monkeypatch):
-        monkeypatch.setattr(sa, "walk_catalog_schemas", _walk_stub([("main", "default")]))
+        monkeypatch.setattr(
+            sa,
+            "walk_catalog_schemas",
+            _walk_stub([("main", "default")], reason="deadline exceeded while listing UC schemas"),
+        )
         monkeypatch.setattr(sa, "list_schema_skills", lambda ws, tok, c, s: ([ref("triage")], None))
 
-        refs, reason = sa.list_all_skills(WS, "token", deadline_seconds=-1)
+        refs, reason = sa.list_all_skills(WS, "token")
 
         assert [r.fqn for r in refs] == ["main.default.triage"]
         assert reason == sa._SKILLS_WALK_TIMEOUT_REASON
+
+    def test_catalog_listing_timeout_uses_picker_timeout_reason(self, monkeypatch):
+        monkeypatch.setattr(
+            sa,
+            "walk_catalog_schemas",
+            _walk_stub([], reason="deadline exceeded while listing UC schemas"),
+        )
+
+        assert sa.list_all_skills(WS, "token") == ([], sa._SKILLS_WALK_TIMEOUT_REASON)

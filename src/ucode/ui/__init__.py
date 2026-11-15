@@ -6,7 +6,6 @@ import itertools
 import sys
 import textwrap
 import threading
-import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import timedelta
@@ -23,6 +22,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn
 
+from ucode import metrics
 from ucode.ui.interactive_picker import _BACK as _BACK
 from ucode.ui.interactive_picker import PICKER_VISIBLE_ROWS as PICKER_VISIBLE_ROWS
 from ucode.ui.interactive_picker import StreamingInquirerControl as StreamingInquirerControl
@@ -241,7 +241,9 @@ def spinner(message: str | Callable[[], str]):
             # doesn't leave stale characters behind.
             sys.stdout.write(f"\r\033[2m{frame}\033[0m {current_message()}\033[K")
             sys.stdout.flush()
-            time.sleep(0.1)
+            # Wake as soon as the operation finishes instead of adding the remaining
+            # frame interval to every interactive startup phase.
+            stop_event.wait(0.1)
         sys.stdout.write("\r\033[K")
         sys.stdout.flush()
 
@@ -670,6 +672,8 @@ def prompt_for_selection(
 
 
 def prompt_yes_no(prompt: str) -> bool:
+    if sys.stdin.isatty():
+        metrics.mark_interactive_wait()
     while True:
         response = console.input(f"{label(prompt)} {muted('(y/n)')} {muted('›')} ").strip().lower()
         if response in {"y", "yes"}:
@@ -681,6 +685,8 @@ def prompt_yes_no(prompt: str) -> bool:
 
 def prompt_yes_no_default(prompt: str, *, default: bool) -> bool:
     """Empty answer or closed stdin (EOF) takes ``default`` (no abort on piped runs)."""
+    if sys.stdin.isatty():
+        metrics.mark_interactive_wait()
     hint = "(Y/n)" if default else "(y/N)"
     while True:
         try:

@@ -179,6 +179,20 @@ class TestHttpChokepoints:
         assert request.get_header("X-databricks-org-id") == WSID
         assert request.get_header("X-databricks-workspace-id") == WSID
 
+    def test_usage_dashboard_uses_selected_workspace(self, selected):
+        url = f"{SHARED}/api/ai-gateway/v2/usage-analytics-dashboard"
+        dashboard_url = f"{SHARED}/dashboardsv3/dashboard/published?o={WSID}"
+        body = json.dumps({"dashboard_url": dashboard_url}).encode()
+        with patch.object(
+            db_mod.urllib_request, "urlopen", return_value=_Response(body, url, WSID)
+        ) as urlopen:
+            assert db_mod.get_usage_dashboard_url(SHARED, "tok") == dashboard_url
+
+        request = urlopen.call_args.args[0]
+        assert request.full_url == url
+        assert request.get_header("X-databricks-org-id") == WSID
+        assert request.get_header("X-databricks-workspace-id") == WSID
+
     def test_classic_requests_are_unchanged(self):
         url = f"{CLASSIC}/api/2.0/x"
         _, request = self._get(url, _Response(b"{}", url))

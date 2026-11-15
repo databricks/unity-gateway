@@ -40,6 +40,7 @@ def _run_task(session, provider, *model_args):
     return task, result
 
 
+@pytest.mark.anthropic_mps
 def test_ug_copilot_runs_a_task_through_an_anthropic_provider(
     live_session, workspace, claude_provider, claude_provider_model
 ):

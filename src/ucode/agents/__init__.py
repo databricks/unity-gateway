@@ -17,6 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from ucode import metrics
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
@@ -25,6 +26,7 @@ from ucode.databricks import (
     install_ai_tools,
     install_databricks_cli,
     map_claude_family_models,
+    provider_targets_for_tool,
     resolve_provider_service,
 )
 from ucode.env import env_bool
@@ -181,7 +183,16 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         # Detach potentially incompatible metadata until the next validated refresh.
         codex.detach_app_model_catalog()
     try:
-        subprocess_cross_os.run(command, check=True, timeout=300, stdout=status_subprocess_stdout())
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="downgrade" if version else "update",
+            continued_with_fallback=True,
+        ):
+            subprocess_cross_os.run(
+                command, check=True, timeout=300, stdout=status_subprocess_stdout()
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print_warning(f"Could not update {spec['display']}; continuing.")
         return False
@@ -249,7 +260,7 @@ def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     installed, target = downgrade
     print_warning(
         f"{spec['display']} {installed} is newer than the latest version known to work "
-        f"with the Databricks AI Gateway ({target})."
+        f"with the Databricks Unity Gateway ({target})."
     )
     if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)
@@ -291,12 +302,19 @@ def install_tool_binary(
     if tool == "codex":
         codex.detach_app_model_catalog()
     try:
-        subprocess_cross_os.run(
-            ["npm", "install", "-g", package],
-            check=True,
-            timeout=300,
-            stdout=status_subprocess_stdout(),
-        )
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="install",
+            continued_with_fallback=not strict,
+        ):
+            subprocess_cross_os.run(
+                ["npm", "install", "-g", package],
+                check=True,
+                timeout=300,
+                stdout=status_subprocess_stdout(),
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically."
         if strict:
@@ -330,7 +348,14 @@ def _run_native_installer(tool: str, installer: Callable[[], None], *, strict: b
     print_section("Bootstrap")
     print_warning(f"`{spec['binary']}` was not found. Installing {spec['display']}...")
     try:
-        installer()
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="install",
+            continued_with_fallback=not strict,
+        ):
+            installer()
     except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically: {exc}"
         if strict:
@@ -381,6 +406,11 @@ def tool_version_error(tool: str) -> str | None:
     return _minimum_version_error(tool)
 
 
+@metrics.timed(
+    metrics.DEPENDENCY_SETUP_DURATION_MS,
+    label_args={"tool": "agent", "skip_cli_version_check": "cli_version_check_skipped"},
+    interactive_wait=False,
+)
 def ensure_bootstrap_dependencies(
     tool: str,
     *,
@@ -417,9 +447,11 @@ def resolve_provider_models(
     """Validate ``provider`` for ``tool`` and return the model ids to pin.
 
     Returns ``(provider_models, error, relayed)``. ``provider_models`` is a ``{family: model_id}``
-    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), API-key
-    Anthropic, and relayed Anthropic that declares a curated allowlist alike — so the client uses the
-    ids the MPS allows rather than Claude Code's defaults. It is None when ``provider`` is None, when
+    dict re-derived from the service's declared targets — Bedrock (provider-side slugs), Foundry
+    (deployment names), API-key Anthropic, and relayed Anthropic that declares a curated allowlist
+    alike — so the client uses the ids the MPS allows rather than Claude Code's defaults.
+    When no family can be inferred, ``default`` pins the first compatible target instead.
+    It is None when ``provider`` is None, when
     the service declares no Claude targets (e.g. an ``allow_all`` relay), or for a non-Claude (e.g.
     codex) service. ``relayed`` is True for a credential-less Anthropic subscription relay, which the
     launch path wires with the relayed overlay + refresh proxy. A non-None ``error`` means the
@@ -444,7 +476,11 @@ def resolve_provider_models(
     # through Claude-family logic would be meaningless (see docstring).
     if tool != "claude":
         return None, None, relayed
-    return map_claude_family_models(service.get("targets") or []) or None, None, relayed
+    targets = provider_targets_for_tool(tool, service)
+    models = map_claude_family_models(targets)
+    if not models and targets:
+        models = {"default": targets[0]}
+    return models or None, None, relayed
 
 
 def _newest_first(model: str) -> list[int]:
@@ -554,6 +590,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     )
 
 
+@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS, label_args={"tool": "agent"})
 def configure_tool(
     tool: str,
     state: dict,
@@ -568,6 +605,7 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
     derive_managed_model_inputs: bool = False,
 ) -> dict:
+    metrics.annotate(config_scope=config_scope())
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
@@ -704,7 +742,11 @@ def request_vscode_with_copilot(requested: bool = True) -> None:
 
 
 def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
-    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with."""
+    """Set up Copilot Chat in VS Code with the models the Copilot CLI was configured with, or remove
+    an earlier setup when the workspace's managed config turns VS Code off."""
+    if state.get("copilot_vscode_integration") is False:
+        _remove_vscode_for_managed_config()
+        return
     if not _vscode_with_copilot:
         return
     if is_dry_run():
@@ -713,6 +755,19 @@ def configure_vscode(state: dict, *, provider: str | None, parent_schema: str | 
     from . import vscode
 
     vscode.configure(state, provider=provider, location=parent_schema)
+
+
+def _remove_vscode_for_managed_config() -> None:
+    if is_dry_run():
+        print_note("Dry run: VS Code isn't changed.")
+        return
+    from . import vscode
+
+    removed = vscode.revert() == "removed"
+    print_note(
+        "This workspace's managed configuration turns off GitHub Copilot in VS Code, so "
+        + ("the VS Code extension was removed." if removed else "VS Code was skipped.")
+    )
 
 
 def configure_single_tool(
@@ -798,6 +853,7 @@ def configure_selected_tools(
     *,
     install_ai_tools: bool = True,
     parent_schemas: dict[str, str] | None = None,
+    providers: dict[str, str] | None = None,
 ) -> dict:
     """Configure the given tools. Caller is responsible for ensuring each tool
     is available on the workspace.
@@ -813,10 +869,14 @@ def configure_selected_tools(
     configured: list[str] = []
     with managed_write_batch(_managed_settings_displays(tools)):
         for tool in tools:
+            # An explicit provider displaces a saved model location, as on the picker.
+            explicit_provider = (providers or {}).get(tool)
             parent_schema = (parent_schemas or {}).get(tool) or _persisted_model_location(
-                tool, state, None
+                tool, state, explicit_provider
             )
-            provider = None if parent_schema else get_provider_service(state, tool)
+            provider = (
+                None if parent_schema else explicit_provider or get_provider_service(state, tool)
+            )
             try:
                 state = _configure_one(tool, state, provider, parent_schema=parent_schema)
             except Exception as exc:  # noqa: BLE001 -- surface any harness failure as a warning

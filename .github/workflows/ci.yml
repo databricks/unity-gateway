@@ -135,11 +135,11 @@ jobs:
         include:
           - group: gateway
             name: Gateway API tests
-            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestModelProviderLaunch or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
+            keyword: not (TestCodexLaunch or TestClaudeLaunch or TestConfigureSubset or TestGeminiLaunch or TestGeminiFreshInstall or TestGeminiAuthRecovery or TestOpencodeLaunch or TestCopilotLaunch or TestPiLaunch)
             package: ''
           - group: claude
             name: Agent launch tests · Claude
-            keyword: TestClaudeLaunch or TestConfigureSubset or (TestModelProviderLaunch and not codex)
+            keyword: TestClaudeLaunch or TestConfigureSubset
             package: '@anthropic-ai/claude-code'
           - group: codex
             name: Agent launch tests · Codex

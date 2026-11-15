@@ -3,9 +3,23 @@ from __future__ import annotations
 import tomlkit
 
 from ucode.agents import codex
-from ucode.codex_config import codex_config_args
+from ucode.codex_config import codex_config_args, strip_hook_trust_state
 
 WS = "https://example.databricks.com"
+
+# The stale trust snapshot Codex leaves in a config layer: per-hook-source
+# trusted hashes under hooks.state (AIGTWY-5220).
+HOOKS_WITH_STALE_TRUST_STATE = """
+[[hooks.PreToolUse]]
+matcher = "Agent|.*spawn_agent$"
+
+[hooks.PreToolUse.hooks]
+type = "command"
+command = "ug codex-router-hook route-subagent"
+
+[hooks.state."/home/u/.codex/hooks.json:post_tool_use:1:0"]
+trusted_hash = "sha256:a4ce19f6a4c610a35e632d2bb901bef8b62e0528832f2ab4ee4026b84efa2589"
+"""
 
 
 class TestCodexConfigArgs:
@@ -48,7 +62,7 @@ class TestCodexConfigArgs:
 model_provider = "ucode-databricks"
 
 [model_providers.ucode-databricks]
-name = "Databricks AI Gateway"
+name = "Databricks Unity Gateway"
 
 [model_providers.ucode-databricks.http_headers]
 User-Agent = "ucode"
@@ -70,3 +84,42 @@ args = ["codex-token"]
         assert 'http_headers = {User-Agent = "ucode"}' in provider_override
         assert 'auth = {command = "ucode", args = ["codex-token"]}' in provider_override
         assert 'tui={model_availability_nux = {"gpt-5.6-sol" = 1}}' in args
+
+    def test_never_forwards_hook_trust_state(self):
+        profile = tomlkit.parse(f'model_provider = "Databricks"\n{HOOKS_WITH_STALE_TRUST_STATE}')
+
+        args = codex_config_args(profile)
+
+        assert not any(arg.startswith("hooks.state") for arg in args)
+        assert not any("trusted_hash" in arg for arg in args)
+        # Real hook configuration is still forwarded, entry by entry.
+        pre_tool_override = next(arg for arg in args if arg.startswith("hooks.PreToolUse="))
+        assert "route-subagent" in pre_tool_override
+        assert 'model_provider="Databricks"' in args
+
+
+class TestStripHookTrustState:
+    def test_removes_state_and_keeps_other_hooks(self):
+        doc = tomlkit.parse(f"{HOOKS_WITH_STALE_TRUST_STATE}").unwrap()
+
+        assert strip_hook_trust_state(doc) is True
+
+        assert "state" not in doc["hooks"]
+        assert doc["hooks"]["PreToolUse"][0]["matcher"] == "Agent|.*spawn_agent$"
+
+    def test_removes_emptied_hooks_table(self):
+        doc = {"hooks": {"state": {"/u/hooks.json:pre_tool_use:0:0": {"trusted_hash": "sha256:x"}}}}
+
+        assert strip_hook_trust_state(doc) is True
+
+        assert "hooks" not in doc
+
+    def test_returns_false_without_state(self):
+        doc = {"hooks": {"PreToolUse": []}}
+
+        assert strip_hook_trust_state(doc) is False
+
+    def test_returns_false_without_hooks(self):
+        doc = {"model_provider": "Databricks"}
+
+        assert strip_hook_trust_state(doc) is False

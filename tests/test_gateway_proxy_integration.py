@@ -8,7 +8,7 @@ of those exercise is the whole thing wired together over real sockets: the
 real `rfile`, the pooled `httpx` client streaming to a real upstream and back,
 and `_relay_response` writing to a real `wfile`.
 
-These tests stand up a fake AI Gateway upstream, start the *real* relay or OTLP
+These tests stand up a fake Unity Gateway upstream, start the *real* relay or OTLP
 proxy pointed at it, and drive it with a real HTTP client — so a regression
 anywhere in that chain is caught.
 Fully hermetic: no agent binary, no network, no workspace credentials.
@@ -17,6 +17,7 @@ Fully hermetic: no agent binary, no network, no workspace credentials.
 from __future__ import annotations
 
 import contextlib
+import gzip
 import json
 import threading
 import time
@@ -29,19 +30,28 @@ from ucode import gateway_proxy
 
 
 class _CapturedRequest:
-    def __init__(self, method: str, path: str, headers: dict[str, str], body: bytes):
+    def __init__(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str],
+        body: bytes,
+        names: tuple[str, ...] = (),
+    ):
         self.method = method
         self.path = path
         # Keyed lowercase so assertions don't depend on header-case normalization.
         self.headers = headers
         self.body = body
+        # Every header name as sent, lowercased, to catch one sent twice.
+        self.names = names
 
     def header(self, name: str) -> str | None:
         return self.headers.get(name.lower())
 
 
 class _FakeGateway:
-    """Real HTTP server standing in for the workspace AI Gateway upstream.
+    """Real HTTP server standing in for the workspace Unity Gateway upstream.
 
     Records each forwarded request and returns a scripted response: a status code
     plus a list of body byte-chunks (flushed with an optional inter-chunk delay so
@@ -53,6 +63,7 @@ class _FakeGateway:
         chunks: list[bytes] | None = None,
         sse_delay: float = 0.0,
         statuses: list[int] | None = None,
+        headers: dict[str, str] | None = None,
     ):
         self.requests: list[_CapturedRequest] = []
         self._status = status
@@ -60,6 +71,7 @@ class _FakeGateway:
         self._statuses = list(statuses or [])
         self._chunks = chunks if chunks is not None else [b'{"ok":true}']
         self._sse_delay = sse_delay
+        self._headers = headers or {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -71,6 +83,7 @@ class _FakeGateway:
     def start(self) -> None:
         captured = self.requests
         status, chunks, sse_delay = self._status, self._chunks, self._sse_delay
+        extra_headers = self._headers
         statuses = self._statuses
 
         class Handler(BaseHTTPRequestHandler):
@@ -83,10 +96,13 @@ class _FakeGateway:
                         path=self.path,
                         headers={k.lower(): v for k, v in self.headers.items()},
                         body=body,
+                        names=tuple(k.lower() for k in self.headers.keys()),
                     )
                 )
                 self.send_response(statuses.pop(0) if statuses else status)
                 self.send_header("Content-Type", "text/event-stream")
+                for name, value in extra_headers.items():
+                    self.send_header(name, value)
                 self.end_headers()
                 for chunk in chunks:
                     self.wfile.write(chunk)
@@ -334,6 +350,71 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.header("X-Tag") == "t"
         assert req.body == b'{"model":"m"}'
 
+    def test_adds_per_request_headers_from_the_request_over_the_session_ones(self, make_gateway):
+        gw = make_gateway()
+
+        def adder(headers, body):
+            return {"thread-id": f"sub-{len(body)}"} if headers.get("x-kind") == "sub" else {}
+
+        with _running_gateway_auth_proxy(
+            gw,
+            added_headers={"session-id": "s-1", "thread-id": "session-wide"},
+            request_headers_adder=adder,
+        ) as proxy_url:
+            for kind in ("sub", "main"):
+                httpx.post(
+                    f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                    headers={
+                        "Authorization": f"Bearer {_SESSION_SECRET}",
+                        "x-kind": kind,
+                        "thread-id": "from-client",
+                    },
+                    content=b'{"model":"m"}',
+                    timeout=10,
+                )
+        sub, main = gw.requests[-2:]
+        assert sub.header("session-id") == main.header("session-id") == "s-1"
+        assert sub.header("thread-id") == "sub-13"
+        assert main.header("thread-id") == "session-wide"
+        assert sub.names.count("thread-id") == main.names.count("thread-id") == 1
+
+    def test_a_per_request_header_replaces_a_session_one_of_another_case(self, make_gateway):
+        gw = make_gateway()
+        with _running_gateway_auth_proxy(
+            gw,
+            added_headers={"thread-id": "session-wide", "session-id": "s-1"},
+            request_headers_adder=lambda headers, body: {"Thread-Id": "sub"},
+        ) as proxy_url:
+            httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}", "THREAD-ID": "client"},
+                content=b'{"model":"m"}',
+                timeout=10,
+            )
+        request = gw.requests[-1]
+        assert request.header("thread-id") == "sub"
+        assert request.names.count("thread-id") == 1
+        assert request.header("session-id") == "s-1"
+
+    def test_forwards_the_request_when_the_per_request_headers_fail(self, make_gateway):
+        gw = make_gateway()
+
+        def adder(headers, body):
+            raise UnicodeEncodeError("utf-8", "x", 0, 1, "surrogates not allowed")
+
+        with _running_gateway_auth_proxy(
+            gw, added_headers={"session-id": "s-1"}, request_headers_adder=adder
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/anthropic/v1/messages",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b'{"model":"m"}',
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        assert gw.requests[-1].header("session-id") == "s-1"
+        assert gw.requests[-1].body == b'{"model":"m"}'
+
     def test_drops_configured_fields_from_chat_completions_only(self, make_gateway):
         gw = make_gateway()
         body = b'{"model":"gpt-4o-mini","reasoning_effort":"medium","messages":[]}'
@@ -351,6 +432,91 @@ class TestGatewayAuthProxyEndToEnd:
         assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
         assert responses.body == body
 
+    def test_copilot_session_rewords_a_context_overflow(self, make_gateway):
+        from ucode.agents import copilot
+
+        overflow = (
+            b'{"error_code":"BAD_REQUEST","message":"{\\"error\\":\\"Input exceeds the model\'s'
+            b' maximum context length. Reduce the length of the input messages.\\"}"}'
+        )
+        gw = make_gateway(status=400, chunks=[overflow])
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b'{"model":"system.ai.glm-5-3"}',
+                timeout=10,
+            )
+        assert resp.status_code == 400
+        assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
+        assert resp.headers["Content-Length"] == str(len(resp.content))
+
+    def test_copilot_session_rewords_a_compressed_context_overflow(self, make_gateway):
+        from ucode.agents import copilot
+
+        overflow = b'{"message":"Input exceeds the model\'s maximum context length."}'
+        gw = make_gateway(
+            status=400, chunks=[gzip.compress(overflow)], headers={"Content-Encoding": "gzip"}
+        )
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 400
+        assert "Content-Encoding" not in resp.headers
+        assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
+
+    def test_copilot_session_relays_a_body_it_cannot_decode_as_it_is(self, make_gateway):
+        from ucode.agents import copilot
+
+        body = b"\x8b\x05\x80not-really-brotli"
+        gw = make_gateway(status=400, chunks=[body], headers={"Content-Encoding": "br"})
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            with httpx.stream(
+                "POST",
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            ) as resp:
+                raw = b"".join(resp.iter_raw())
+        assert resp.status_code == 400
+        assert resp.headers["Content-Encoding"] == "br"
+        assert raw == body
+
+    @pytest.mark.parametrize(
+        ("status", "chunks"),
+        [
+            (400, [b'{"error_code":"BAD_REQUEST",', b'"message":"endpoint is deprecated"}']),
+            (200, [b'data: {"a":1}\n\n', b"data: [DONE]\n\n"]),
+            (404, [b'{"message":"Input exceeds the model\'s maximum context length"}']),
+        ],
+    )
+    def test_copilot_session_relays_other_responses_unchanged(self, make_gateway, status, chunks):
+        from ucode.agents import copilot
+
+        gw = make_gateway(status=status, chunks=chunks)
+        with _running_gateway_auth_proxy(
+            gw, bad_request_rewriter=copilot.recognizable_context_overflow
+        ) as proxy_url:
+            resp = httpx.post(
+                f"{proxy_url}/ai-gateway/mlflow/v1/chat/completions",
+                headers={"Authorization": f"Bearer {_SESSION_SECRET}"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == status
+        assert resp.content == b"".join(chunks)
+
     def test_accepts_secret_in_x_api_key_and_does_not_forward_it(self, make_gateway):
         gw = make_gateway()
         with _running_gateway_auth_proxy(gw, _counting_token("dbx-token")) as proxy_url:
@@ -365,6 +531,36 @@ class TestGatewayAuthProxyEndToEnd:
         assert req.path == "/ai-gateway/anthropic/v1/messages"
         assert req.header("x-api-key") is None
         assert req.header("Authorization") == "Bearer dbx-token"
+
+    def test_forwards_traces_and_drops_metrics_on_allowed_otel_paths(self, make_gateway):
+        gw = make_gateway()
+        traces, metrics = "/ai-gateway/otel/v1/traces", "/ai-gateway/otel/v1/metrics"
+        with _running_gateway_auth_proxy(
+            gw,
+            _counting_token("dbx-token"),
+            allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, traces, metrics),
+            discarded_paths=(metrics,),
+        ) as proxy_url:
+            sent = httpx.post(
+                f"{proxy_url}{traces}",
+                headers={"x-api-key": _SESSION_SECRET, "Content-Type": "application/x-protobuf"},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            dropped = httpx.post(
+                f"{proxy_url}{metrics}",
+                headers={"x-api-key": _SESSION_SECRET},
+                content=b"\x0a\x00",
+                timeout=10,
+            )
+            unauthenticated = httpx.post(f"{proxy_url}{metrics}", content=b"", timeout=10)
+        assert sent.status_code == 200
+        assert (dropped.status_code, dropped.content) == (200, b"")
+        assert unauthenticated.status_code == 401
+        assert [req.path for req in gw.requests] == [traces]
+        assert gw.requests[0].header("Authorization") == "Bearer dbx-token"
+        assert gw.requests[0].header("x-api-key") is None
+        assert gw.requests[0].body == b"\x0a\x00"
 
     @pytest.mark.parametrize("credential", [None, "Bearer wrong", "Basic session-secret"])
     def test_rejects_missing_or_wrong_secret_without_forwarding(self, make_gateway, credential):

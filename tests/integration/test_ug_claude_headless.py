@@ -154,28 +154,42 @@ def test_ug_claude_headless_fresh_workspace(live_session, workspace):
 
 
 @pytest.mark.usefixtures("unmanaged_workspace")
-def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provider):
-    """Scenario: launch Claude from fresh state with an explicit provider service.
+def test_ug_claude_fresh_foundry_mps(
+    live_session, workspace, claude_foundry_provider, claude_foundry_provider_model
+):
+    """Scenario: launch ug claude --provider against Foundry from a fresh home.
 
-    Expected: ``ug claude --workspace`` with ``--provider`` starts the real installed Claude
-    CLI without a configure step, reports the selected provider, and writes the provider header
-    to its generated settings; ``--version`` exits successfully without inference or routing.
+    Expected: the real Claude agent accepts the provider, reads a local file, and returns
+    its unknown value in a successful structured result through the selected deployment.
+    The generated settings retain the exact provider header; smart routing stays off.
     """
     session = live_session
+    task = FileTask(session)
+    session.record("model.json", {"model": claude_foundry_provider_model})
+
     result = session.run(
         "claude",
         "--workspace",
         workspace,
         "--provider",
-        claude_provider,
+        claude_foundry_provider,
+        "--model",
+        claude_foundry_provider_model,
         "--",
-        "--version",
-        timeout=180,
+        "-p",
+        task.prompt,
+        "--output-format",
+        "json",
+        "--allowedTools",
+        "Read",
+        timeout=240,
     )
-    assert claude_provider in result.stdout
+
+    task.assert_headless_answer("claude", result)
     settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
-    assert f"Databricks-Model-Provider-Service: {claude_provider}" in headers
+    headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+    assert f"Databricks-Model-Provider-Service: {claude_foundry_provider}" in headers
+    assert_completed_task_model(session, "claude", task.value, claude_foundry_provider_model)
     session.assert_not_routed()
 
 
@@ -306,8 +320,8 @@ def test_ug_claude_headless_allow_all_bedrock_provider(
     """Scenario: launch Claude through a Bedrock MPS with allow_all_targets and no declared
     targets (issue #811), pinning the explicit Bedrock Sonnet 5.5 model.
 
-    Expected: ug accepts the provider (rather than rejecting it as "exposes no Claude models"),
-    and the real file task completes through Bedrock.
+    Expected: ug accepts the provider without declared targets, and the real file task
+    completes through Bedrock.
     """
     session = live_session
     task = FileTask(session)

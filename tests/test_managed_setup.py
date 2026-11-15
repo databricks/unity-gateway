@@ -77,6 +77,13 @@ def _full_manifest() -> dict:
                 "otel_tracing_enabled": False,
                 "model_config": {"default_model": "system.ai.gpt-5-6"},
             },
+            "copilot": {
+                "vscode_integration_enabled": False,
+                "model_config": {
+                    "default_model": "system.ai.claude-opus-4-8",
+                    "model_services": ["system.ai.claude-opus-4-8"],
+                },
+            },
             "opencode": {
                 "model_config": {
                     "default_model": "system.ai.claude-opus-4-8",
@@ -155,6 +162,11 @@ class TestRoundTrip:
             "mcp_servers": {"names": ["main.default.github", "system.ai.jira"]},
             "skills": {"names": ["system.ai.pdf-extraction"]},
         }
+        assert normalize_managed_config(serialize_managed_config(manifest)) == manifest
+
+    def test_mcp_sources_round_trip(self):
+        # Serializing must keep `sources`, or a publish would clear an admin's multi-schema list.
+        manifest = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}}
         assert normalize_managed_config(serialize_managed_config(manifest)) == manifest
 
     def test_mcp_and_skills_location_round_trip(self):
@@ -340,12 +352,22 @@ class TestModelOptions:
             assert "system.ai.gemini-3-flash" in options, tool
             assert "system.ai.kimi-k2-6" in options, tool
 
-    def test_copilot_sees_only_claude_and_gpt(self):
+    def test_copilot_sees_claude_gpt_and_open_models_but_not_gemini(self):
         options = model_options_for_agent("copilot", STATE)
         assert "system.ai.claude-opus-4-8" in options
         assert "system.ai.gpt-5-6" in options
+        assert "system.ai.kimi-k2-6" in options
         assert "system.ai.gemini-3-flash" not in options
-        assert "system.ai.kimi-k2-6" not in options
+
+    def test_copilot_sees_glm_kimi_and_deepseek(self):
+        state = {
+            "oss_models": ["system.ai.kimi-k3", "system.ai.qwen3-next-80b", "system.ai.glm-5-3"]
+        }
+
+        assert model_options_for_agent("copilot", state) == [
+            "system.ai.kimi-k3",
+            "system.ai.glm-5-3",
+        ]
 
     def test_empty_state_yields_no_options(self):
         assert model_options_for_agent("claude", {}) == []
@@ -533,6 +555,26 @@ class TestValidate:
         # Nothing configured is not an error here; the wizard decides whether to publish it.
         assert validate_manifest({}, STATE) == []
 
+    def test_mps_model_refs_in_sources_are_not_checked_against_the_inventory(self):
+        manifest = {
+            "default_agent": "claude",
+            "enabled_agents": {
+                "claude": {
+                    "model_config": {
+                        "default_model": "system.ai.claude-opus-4-8",
+                        "sources": [
+                            "main.anthropic.byok.claude-opus-5-5",
+                            "system.ai.claude-opus-4-8",
+                            "system.ai.not-on-this-workspace",
+                        ],
+                    }
+                }
+            },
+        }
+        assert validate_manifest(manifest, STATE) == [
+            "claude: model 'system.ai.not-on-this-workspace' is not available on this workspace."
+        ]
+
     def test_default_agent_required_when_agents_present(self):
         manifest = {"enabled_agents": {"claude": {"model_config": {"default_model": "m"}}}}
         errors = validate_manifest(manifest)
@@ -651,6 +693,26 @@ class TestValidate:
             "set either names or unity_catalog_location" in e
             for e in validate_manifest({"skills": {"names": []}})
         )
+
+    def test_mcp_sources_are_accepted(self):
+        manifest = {"mcp_servers": {"sources": ["system.ai.*", "main.exa.*", "main.tools.foo"]}}
+        assert validate_manifest(manifest) == []
+
+    # Representative boundaries; the full grammar is covered by test_mcp_source_kind.
+    @pytest.mark.parametrize("bad", ["system.*", "main.tools.c*"])
+    def test_malformed_mcp_source_is_rejected(self, bad):
+        errors = validate_manifest({"mcp_servers": {"sources": ["system.ai.*", bad]}})
+        assert any("mcp_servers.sources must be" in e and bad in e for e in errors)
+
+    def test_mcp_sources_exclude_the_other_selectors(self):
+        errors = validate_manifest(
+            {"mcp_servers": {"sources": ["system.ai.*"], "unity_catalog_location": "a.b"}}
+        )
+        assert any("not more than one" in e for e in errors)
+
+    def test_skills_reject_sources(self):
+        errors = validate_manifest({"skills": {"sources": ["system.ai.*"]}})
+        assert any("skills.sources is not supported" in e for e in errors)
 
     def test_non_fqn_mcp_name_is_rejected(self):
         errors = validate_manifest({"mcp_servers": {"names": ["main.default.ok", "not-an-fqn"]}})
