@@ -23,6 +23,11 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "capabilities": {
+    "agentsWindow": {
+      "supported": true
+    }
+  },
   "contributes": {
     "languageModelChatProviders": [
       {
