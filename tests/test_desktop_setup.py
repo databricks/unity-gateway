@@ -1060,3 +1060,18 @@ def test_windows_configure_claude_desktop(desktop, installation, monkeypatch, ca
         assert "Open Claude Desktop once" not in output
     assert not desktop.parent.exists()
     assert not claude_desktop.APP_DIR.exists()
+
+
+@pytest.mark.parametrize("message", ["Needs a dedicated hostname.", "Needs a dedicated hostname"])
+def test_desktop_failure_reads_as_one_sentence(monkeypatch, capsys, message):
+    monkeypatch.setattr(desktop_setup.sys, "platform", "linux")
+    monkeypatch.setattr(desktop_setup, "machine_wide_only", lambda: False)
+    monkeypatch.setattr(desktop_setup, "is_dry_run", lambda: False)
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(desktop_setup, "_configure_claude_desktop_user_level", fail)
+    desktop_setup.configure_claude_desktop({"workspace": "https://example.com"})
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not configure Claude Desktop: Needs a dedicated hostname. Claude Code" in output

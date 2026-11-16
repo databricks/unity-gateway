@@ -29,7 +29,7 @@ from rich.markup import escape
 from ucode import managed_files, ownership
 from ucode.agents import claude as claude_agent
 from ucode.agents import codex as codex_agent
-from ucode.config_io import deep_merge_dict
+from ucode.config_io import deep_merge_dict, is_dry_run
 from ucode.databricks import get_databricks_token, get_model_provider_service
 from ucode.managed_config import (
     _is_feature_disabled,
@@ -399,8 +399,9 @@ def plan_agents(
             if _ug_wrote_legacy_codex_file():
                 plan.files[LEGACY_CODEX_MANAGED_CONFIG_PATH] = None
                 plan.warnings.append(
-                    f"Removed {LEGACY_CODEX_MANAGED_CONFIG_PATH}, which an earlier `ug configure` "
-                    "wrote: its values would outrank `ug codex`'s launch settings."
+                    f"{'Would remove' if is_dry_run() else 'Removed'} "
+                    f"{LEGACY_CODEX_MANAGED_CONFIG_PATH}, which an earlier `ug configure` wrote: "
+                    "its values would outrank `ug codex`'s launch settings."
                 )
             version_warning = _codex_version_warning()
             if version_warning:

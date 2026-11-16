@@ -281,13 +281,19 @@ class TestCodexFiles:
         skipped = [item.path for _path, c in plan.reports for item in c.items]
         assert "tui" in skipped
 
-    def test_plan_removes_legacy_ug_managed_config(self):
+    @pytest.mark.parametrize(("dry_run", "verb"), [(True, "Would remove"), (False, "Removed")])
+    def test_plan_removes_legacy_ug_managed_config(self, monkeypatch, dry_run, verb):
+        monkeypatch.setattr(machine, "is_dry_run", lambda: dry_run)
         machine.LEGACY_CODEX_MANAGED_CONFIG_PATH.parent.mkdir(parents=True)
         machine.LEGACY_CODEX_MANAGED_CONFIG_PATH.write_text('model_provider = "Databricks"\n')
         [plan] = machine.plan_agents(
             _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, None
         )
         assert plan.files[machine.LEGACY_CODEX_MANAGED_CONFIG_PATH] is None
+        assert any(
+            w.startswith(f"{verb} {machine.LEGACY_CODEX_MANAGED_CONFIG_PATH}")
+            for w in plan.warnings
+        )
 
     def test_old_codex_is_warned(self, monkeypatch):
         monkeypatch.setattr(machine, "agent_version", lambda *_a, **_k: "0.150.0")
@@ -768,6 +774,28 @@ class TestGlobalCli:
         monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (None, "HTTP 503"))
         result = _configure("--agents", "claude")
         assert result.exit_code == machine.EXIT_FETCH
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_an_installation_other_users_cant_run(self, monkeypatch, writes, global_cli, dry_run):
+        # A real run refuses; a dry run still previews the files and says a real run would refuse.
+        written, _ = writes
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+
+        def home_folder():
+            raise RuntimeError("this ug installation is in a user's home folder.")
+
+        monkeypatch.setattr(cli_mod, "_require_shared_installation", home_folder)
+        result = _configure("--agents", "claude", *(["--dry-run"] if dry_run else []))
+        output = " ".join(result.output.split())
+        assert written == {}
+        if dry_run:
+            assert result.exit_code == 0, result.output
+            assert "A real run would stop here: this ug installation is in a user's home" in output
+            assert "Files this run would change" in output
+        else:
+            assert result.exit_code == machine.EXIT_USAGE, result.output
+            assert "Files this run would change" not in output
 
     def test_no_config_falls_back_to_the_merge(self, monkeypatch, writes, global_cli):
         written, _ = writes

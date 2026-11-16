@@ -5810,12 +5810,15 @@ def _configure_global_from_agent_config(
         selected = published_agent_config.parse_agents(agents if agents is not None else agent)
         if not dry_run:
             published_agent_config.check_privileges()
-            try:
-                _require_shared_installation()
-            except RuntimeError as exc:
+        try:
+            _require_shared_installation()
+        except RuntimeError as exc:
+            if not dry_run:
                 raise published_agent_config.ManagedRunError(
                     published_agent_config.EXIT_USAGE, str(exc)
                 ) from exc
+            # The preview still shows the files, with this installation's paths in them.
+            print_warning(f"A real run would stop here: {exc}")
         published_agent_config.run(
             key=key,
             raw=raw,
