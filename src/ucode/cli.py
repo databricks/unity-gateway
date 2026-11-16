@@ -66,6 +66,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.cloud import app as cloud_app
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -2196,6 +2197,10 @@ app = typer.Typer(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     cls=_HelpOrderedGroup,
 )
+app.add_typer(
+    cloud_app, name="cloud", rich_help_panel="Launch", help="Run agents in Databricks Sandbox."
+)
+
 configure_app = typer.Typer(add_completion=False, no_args_is_help=False)
 app.add_typer(
     configure_app,

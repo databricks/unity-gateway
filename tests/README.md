@@ -1629,3 +1629,7 @@ is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. No installed-agent journey currently covers mixed wildcard sources or
 proves inference with qualified MPS models.
+
+## Cloud Sandbox launcher
+
+`tests/test_cloud.py` covers transport, quoting, auth repair, quota errors, cleanup and resume selection using component fixtures. Live validation and limits are recorded in `docs/cloud-validation.md`.
