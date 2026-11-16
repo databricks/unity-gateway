@@ -2130,4 +2130,4 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 
 ## Cloud Sandbox launcher
 
-`tests/test_cloud.py` covers transport, quoting, auth repair, quota errors, cleanup and resume selection using component fixtures. Live validation and limits are recorded in `docs/cloud-validation.md`.
+`tests/test_cloud.py` covers transport, quoting, auth repair, quota errors, cleanup and resume selection using component fixtures. Live validation results and limits are summarized in [PR #1689](https://github.com/databricks/unity-gateway/pull/1689).

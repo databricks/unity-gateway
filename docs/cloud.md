@@ -33,6 +33,6 @@ stop with the service's configured limit. Terminal capabilities and initial dime
 native onboarding and trust prompts remain. Live resize, detached/background runs, disconnect
 survival, shared-host workspace routing and automatic project sync are outside this initial scope.
 
-See [implementation details](cloud-preview.md) and [validation/decisions](cloud-validation.md).
+See [implementation details](cloud-preview.md).
 
 [Watch the recorded CLI journeys](https://github.com/databricks/unity-gateway/pull/1689#recorded-cli-journeys).
