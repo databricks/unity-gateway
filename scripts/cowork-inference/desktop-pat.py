@@ -1,9 +1,9 @@
 """Mint or revoke the short-lived PAT behind the Desktop jobs' `desktop-ci` profile.
 
-Desktop starts MCP connectors with a near-empty environment, so the job's DATABRICKS_BEARER never
-reaches UG's connector proxy. A PAT profile in ~/.databrickscfg is read from disk instead, as a
-user's CLI login would be. `create` mints the PAT with the job's bearer and writes the profile;
-`revoke` deletes it. Only the token id is kept in STATE.
+Desktop starts MCP connectors with a near-empty environment, so the job's bearer never reaches
+UG's connector proxy. A PAT profile in ~/.databrickscfg is read from disk instead, as a user's
+CLI login would be. `create` mints the PAT with the job's DATABRICKS_BEARER or
+DATABRICKS_BEARER_COMMAND and writes the profile; `revoke` deletes it. Only the token id is kept in STATE.
 """
 
 import argparse
@@ -12,6 +12,8 @@ import os
 import sys
 import urllib.request
 from pathlib import Path
+
+from ucode.databricks import get_databricks_token
 
 LIFETIME_SECONDS = 2 * 60 * 60
 COMMENT = "ug-ci-cowork-desktop"
@@ -23,7 +25,7 @@ def call(path, payload):
         f"{workspace}{path}",
         data=json.dumps(payload).encode(),
         headers={
-            "Authorization": f"Bearer {os.environ['DATABRICKS_BEARER']}",
+            "Authorization": f"Bearer {get_databricks_token(workspace)}",
             "Content-Type": "application/json",
         },
     )

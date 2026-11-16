@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -800,7 +800,7 @@ wheels = [
 [[package]]
 name = "pytest-rerunfailures"
 version = "16.7"
-source = { registry = "https://pypi-proxy.cloud.databricks.com/simple/" }
+source = { registry = "https://pypi-proxy.cloud.databricks.com/simple" }
 dependencies = [
     { name = "packaging" },
     { name = "pytest" },

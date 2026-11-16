@@ -88,13 +88,14 @@ After inference, three fresh Cowork tasks run through the same native UI:
    URLs, ignoring Markdown and trailing slashes. Search ranking and wording are not asserted;
    Desktop's native web search cannot satisfy it. Desktop asks before the connector's first use;
    the task approves it (**Allow for this task** on Windows 2.42304.2, **Allow once** on macOS
-   4.23118.0) and records the label. This runs in the hosted Windows and macOS
-   Desktop jobs, not the staging `anthropic-mps` lane.
+   4.23118.0) and records the label. This runs in every Desktop job, including the staging
+   `anthropic-mps` lane.
    UG writes the connector's absolute command from the `ug` on `PATH`, so both install scripts
    add the test runtime to `PATH`, as an installed `ug` would be.
    Desktop starts connectors with a near-empty environment, so the job's `DATABRICKS_BEARER`
    never reaches UG's connector proxy. These jobs therefore configure a PAT profile:
-   `desktop-pat.py` mints a two-hour workspace PAT with the job's bearer (comment
+   `desktop-pat.py` mints a two-hour workspace PAT with the job's `DATABRICKS_BEARER`, or in the
+   staging lane its `DATABRICKS_BEARER_COMMAND` (comment
    `ug-ci-cowork-desktop`), writes it to the `desktop-ci` profile in `~/.databrickscfg`, and
    `ug configure` runs with `--use-pat`. An always-run step revokes the PAT. Only its token id
    is kept outside the profile, the job masks it in logs, and evidence redaction covers its value

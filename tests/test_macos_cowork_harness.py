@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import runpy
@@ -866,6 +867,40 @@ def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
         "desktop-log-Library-Logs-Claude-3p-mcp-server-web_search.log": "x" * 10
         + "connector started"
     }
+
+
+@pytest.mark.parametrize("source", ["bearer", "bearer_command"])
+def test_desktop_pat_is_minted_with_the_jobs_bearer_or_bearer_command(
+    monkeypatch, tmp_path, source
+):
+    pat_script = runpy.run_path(str(SCRIPTS.parent / "desktop-pat.py"))
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+    monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+    if source == "bearer":
+        monkeypatch.setenv("DATABRICKS_BEARER", "job-bearer")
+    else:
+        # The staging lane has no static bearer, only a command that mints one per call.
+        mint = tmp_path / "mint.py"
+        mint.write_text("print('job-bearer')\n")
+        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", f'"{sys.executable}" "{mint}"')
+    sent = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def urlopen(request, timeout):
+        sent.append((request.full_url, request.get_header("Authorization")))
+        return Response(b'{"token_value": "dapi-new", "token_info": {"token_id": "token-1"}}')
+
+    # The Tokens API needs a live workspace; the bearer lookup stays real.
+    monkeypatch.setattr(pat_script["urllib"].request, "urlopen", urlopen)
+    pat_script["create"](tmp_path / "databrickscfg", "desktop-ci", tmp_path / "pat-id")
+    assert sent == [("https://workspace.example/api/2.0/token/create", "Bearer job-bearer")]
 
 
 def test_desktop_pat_profile_is_minted_on_disk_and_revoked(monkeypatch, tmp_path):

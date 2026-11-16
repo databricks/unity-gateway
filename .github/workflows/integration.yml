@@ -518,6 +518,21 @@ jobs:
           & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
             -Capability skill -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/skill"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Assert Cowork MCP web search
+        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          & "$PSHOME/pwsh.exe" -NoProfile -STA -File scripts/cowork-inference/test-task.ps1 `
+            -Capability mcp -OutputDirectory "$env:RUNNER_TEMP/cowork-inference/mcp"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Revoke the Desktop PAT
+        if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}
+        shell: pwsh
+        run: |
+          $python = Join-Path $env:RUNNER_TEMP 'desktop-ug-runtime/Scripts/python.exe'
+          & $python scripts/cowork-inference/desktop-pat.py revoke --state "$env:RUNNER_TEMP/cowork-pat-id"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload Cowork evidence
         if: ${{ !cancelled() && steps.desktop-install.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
@@ -530,6 +545,7 @@ jobs:
             ${{ runner.temp }}/cowork-inference/native-*.log
             ${{ runner.temp }}/cowork-inference/file/
             ${{ runner.temp }}/cowork-inference/skill/
+            ${{ runner.temp }}/cowork-inference/mcp/
           if-no-files-found: warn
 
   anthropic-mps:
@@ -561,6 +577,7 @@ jobs:
       UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps
       UG_COWORK_MODEL: claude-haiku-4-5-20251001
       UG_COWORK_RELAY: false
+      UG_COWORK_MCP: true
     steps: *live-steps
 
   headless-windows:

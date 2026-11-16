@@ -1129,9 +1129,8 @@ def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
     assert "        if: always()\n" in revoke
     assert "desktop-pat.py revoke" in revoke
     assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in revoke
-    # configure selects the MCP service; the staging lane's workspace is not asked to serve it.
+    # configure selects the MCP service for Desktop's connectors.
     assert "      UG_COWORK_MCP: true\n" in job
-    assert "UG_COWORK_MCP:" not in _integration_jobs()["anthropic-mps"]
 
 
 def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
@@ -1157,6 +1156,29 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     assert len(gates) == desktop.count("      - name: ") + 1
     assert "DATABRICKS_BEARER_COMMAND=" in desktop
     assert "name: cowork-inference-anthropic\n" in desktop
+    # The staging lane runs the same MCP web search; its PAT is minted with the bearer command.
+    assert "      UG_COWORK_MCP: true\n" in job
+    mcp = desktop.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}\n" in mcp
+    )
+    assert "-Capability mcp" in mcp
+    revoke = desktop.split("      - name: Revoke the Desktop PAT\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}\n" in revoke
+    )
+    assert "desktop-pat.py revoke" in revoke
+    assert "${{ runner.temp }}/cowork-inference/mcp/\n" in desktop
+    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_MCP:" in body]
+    assert sorted(opted_in) == [
+        "anthropic-mps",
+        "cowork-inference-macos",
+        "cowork-inference-windows",
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
