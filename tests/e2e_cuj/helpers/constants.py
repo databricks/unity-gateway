@@ -47,7 +47,7 @@ CODING_AGENT_BY_CLI_NAME = {
 }
 
 MODEL_PROVIDER_SERVICE_FIXTURES = {
-    CLAUDE: ("ug_e2e.providers.anthropic", "claude-haiku-4-5-20251001"),
+    CLAUDE: ("ug_e2e.providers.anthropic", "claude-haiku-5-5"),
     CODEX: ("ug_e2e.providers.openai", "gpt-6-luna"),
 }
 
