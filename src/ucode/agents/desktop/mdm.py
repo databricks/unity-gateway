@@ -391,7 +391,6 @@ def configure(workspace: str, profile: str | None, *, managed_config: dict | Non
         user_profile,
         mdm_ug_executable=helper,
         mdm_args=prefix,
-        use_aliases=not windows,
     )
     rendered["managedMcpServers"] = claude_config.render_managed_mcp_servers(mcp_config)
     hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)

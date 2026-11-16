@@ -268,7 +268,7 @@ def test_windows_rendering_uses_consumer_auth_and_has_no_managed_skills(machine,
     assert args[:2] == ["-I", str(machine.runtime / "runtime.py")]
     assert args[-1] == mdm.user_auth_profile("https://workspace.example")
     servers = json.loads(policy["managedMcpServers"][0])
-    assert [server["name"] for server in servers] == ["system-ai-github"]
+    assert [server["name"] for server in servers] == ["github"]
     assert servers[0]["args"][:3] == [*args[:2], "mcp-proxy"]
     hooks = json.loads((machine.plugin / "hooks/hooks.json").read_bytes())
     for event in ("SessionStart", "UserPromptSubmit"):
@@ -320,7 +320,7 @@ def test_windows_unrestricted_managed_config_retains_connectors(machine, workspa
     manifest["enabled_agents"] = []
     mdm.configure("https://workspace.example", "admin")
     servers = json.loads(machine.registry.values["managedMcpServers"][0])
-    assert [server["name"] for server in servers] == ["system-ai-github"]
+    assert [server["name"] for server in servers] == ["github"]
 
 
 @pytest.mark.parametrize("failure", ["fetch_denied", "claude_disabled"])

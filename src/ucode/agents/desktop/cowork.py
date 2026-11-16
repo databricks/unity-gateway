@@ -341,7 +341,6 @@ def _cowork_mcp_config(
     custom_oauth: bool = False,
     mdm_ug_executable: Path | None = None,
     mdm_args: list[str] | None = None,
-    use_aliases: bool = True,
 ) -> dict:
     entries: dict[str, dict] = {}
     urls: dict[str, str] = {}
@@ -373,7 +372,7 @@ def _cowork_mcp_config(
             "args": [*(mdm_args or []), *argv[1:]],
         }
         urls[name] = url
-    aliases = _cowork_mcp_aliases(urls) if use_aliases else {name: name for name in urls}
+    aliases = _cowork_mcp_aliases(urls)
     return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}
 
 
