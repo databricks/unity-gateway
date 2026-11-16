@@ -335,8 +335,8 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
-The smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` and checks that both
-first-prompt and subagent route selections carry the managed MPS header and return HTTP 200.
+The smart-routing case checks that Claude's default Model Provider Service support carries the
+managed MPS header on both first-prompt and subagent route selections, which return HTTP 200.
 File, skill, MCP and subagent tasks retain their expected-value checks.
 The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
