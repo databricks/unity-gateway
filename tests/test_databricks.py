@@ -538,11 +538,17 @@ def _model_service(model_id: str) -> dict:
 
 
 class TestModelTokenLimits:
-    def test_glm_is_capped(self):
-        assert db_mod.model_token_limits("system.ai.glm-5-2") == {
-            "context": 200_000,
-            "output": 25_000,
-        }
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            # Per-model MLflow limits win over the GLM family cap for every agent.
+            ("system.ai.glm-5-3", 1_048_576, 131_072),
+            ("system.ai.glm-5-2", 1_000_000, 131_072),
+            ("system.ai.glm-4-6", 200_000, 25_000),
+        ],
+    )
+    def test_glm_is_capped(self, model_id, context, output):
+        assert db_mod.model_token_limits(model_id) == {"context": context, "output": output}
 
     def test_glm_matches_any_version(self):
         assert db_mod.model_token_limits("system.ai.glm-4-6-flash") == {

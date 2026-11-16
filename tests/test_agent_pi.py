@@ -1258,6 +1258,21 @@ class TestExcludedSelectedModel:
 
         assert pi.default_model(state) is None
 
+    def test_a_third_party_provider_selector_is_kept(self, tmp_path, monkeypatch):
+        # Pi's own `openai` provider, not a Databricks one: passed through, while an unqualified
+        # model Pi can't serve still falls back.
+        state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}}
+
+        warn = self._write(tmp_path, monkeypatch, state, "openai/o3")
+
+        assert json.loads((tmp_path / "models.json").read_text())["model"] == "openai/o3"
+        warn.assert_not_called()
+        assert pi._usable_model(state, "openai/o3") == "openai/o3"
+        with patch("ucode.agents.pi.print_warning"):
+            assert pi._usable_model(state, "system.ai.qwen35-122b-a10b") == (
+                "system.ai.claude-opus-5-5"
+            )
+
     def test_a_served_model_is_kept_without_a_warning(self, tmp_path, monkeypatch):
         state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}, "codex_models": ["gpt-5"]}
 
