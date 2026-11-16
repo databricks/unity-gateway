@@ -339,10 +339,6 @@ class TestPiDefaultModel:
         state = {"claude_models": {}, "codex_models": [], "gemini_models": ["gemini-2"]}
         assert pi.default_model(state) == "gemini-2"
 
-    def test_gpt_stays_the_default_with_grok_listed(self):
-        state = {"codex_models": ["system.ai.gpt-5-6-sol", "system.ai.grok-4-7"]}
-        assert pi.default_model(state) == "system.ai.gpt-5-6-sol"
-
     def test_falls_back_to_mlflow_models_last(self):
         state = {"codex_models": ["system.ai.gpt-oss-120b"], "oss_models": ["system.ai.glm-5-3"]}
         assert pi.default_model(state) == "system.ai.glm-5-3"

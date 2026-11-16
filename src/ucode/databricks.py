@@ -2360,9 +2360,9 @@ def is_mlflow_chat_model_name(model_id: str) -> bool:
     A config records no API types, so this matches the shared OSS families and the other MLflow
     chat families discovery lists by API type (gpt-oss, Qwen, Llama, Gemma) by name, never an
     embedding or reranking service."""
-    name = canonical_model_name(model_id)
-    if any(bad in name for bad in _NON_CHAT_MODEL_SUBSTRINGS):
+    if _is_non_chat_model_name(model_id):
         return False
+    name = canonical_model_name(model_id)
     return is_oss_family_model(model_id) or name.startswith(_MLFLOW_CHAT_MODEL_PREFIXES)
 
 
@@ -2476,12 +2476,9 @@ def gemini_model_token_limits(model_id: str) -> dict[str, int]:
     return dict(_GEMINI_IMAGE_LIMITS if image else _GEMINI_TEXT_LIMITS)
 
 
-# Per-model limits of chat models on `/ai-gateway/mlflow/v1`, keyed by canonical name and ordered
-# most specific first; a key matches the name or a `<key>-` prefix. Output caps are the largest
-# `max_tokens` the gateway accepts (GLM 5.x 128K; gpt-oss 25K, "cannot be greater than
-# max_output_tokens 25000"; Qwen 3.5 25K and Qwen3 Next 10K, "cannot exceed"). Kimi K3 accepts
-# `max_tokens` up to its whole window, so 128K bounds a runaway answer. Context windows come from
-# each model's serving-endpoint description; Qwen's describe none, so they keep the 128K floor.
+# Per-model limits on `/ai-gateway/mlflow/v1`, keyed like `_GPT_TOKEN_LIMITS`. Output caps are the
+# largest `max_tokens` the gateway accepts; Kimi K3 accepts its whole window, so 128K bounds it.
+# Windows come from serving-endpoint descriptions; Qwen's list none and keep the 128K floor.
 _OSS_TOKEN_LIMITS: tuple[tuple[str, dict[str, int]], ...] = (
     ("glm-5-3", {"context": 1_048_576, "output": 131_072}),
     ("glm-5-2", {"context": 1_000_000, "output": 131_072}),
@@ -2793,14 +2790,29 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     (see `managed_setup.claude_family_candidates`), so this returns the full set without disturbing
     that shape.
     """
-    ids, reason = list_model_services(workspace, token)
-    if not ids:
+    entries, reason = list_model_service_entries(workspace, token)
+    if not entries:
         return [], reason
-    return [m for m in ids if "claude-" in m.lower()], None
+    return [entry.id for entry in entries if is_claude_chat_entry(entry)], None
+
+
+def is_claude_service_id(model_id: str) -> bool:
+    """Whether a model-service id names a Claude chat model (not an embedding or reranker)."""
+    return "claude-" in model_id.lower() and not _is_non_chat_model_name(model_id)
+
+
+def is_claude_chat_entry(entry: ModelServiceEntry) -> bool:
+    """Whether ``entry`` is a Claude chat service that can call tools."""
+    return entry.function_calling is not False and is_claude_service_id(entry.id)
 
 
 # Embedding and reranking services are never chat candidates, even with malformed metadata.
-_NON_CHAT_MODEL_SUBSTRINGS = ("embedding", "embed", "rerank")
+_NON_CHAT_MODEL_SUBSTRINGS = ("embed", "rerank")
+
+
+def _is_non_chat_model_name(model_id: str) -> bool:
+    """Whether ``model_id`` names an embedding or reranking service."""
+    return any(bad in canonical_model_name(model_id) for bad in _NON_CHAT_MODEL_SUBSTRINGS)
 
 
 def _declares_api(entry: ModelServiceEntry, api_type: str, *, name_fallback: bool) -> bool:
@@ -2809,15 +2821,11 @@ def _declares_api(entry: ModelServiceEntry, api_type: str, *, name_fallback: boo
 
 
 def _is_oss_chat_entry(entry: ModelServiceEntry) -> bool:
-    """An MLflow chat model that can call tools, else (no API types listed) a known OSS family.
+    """An MLflow chat model, else (no API types listed) a known OSS family.
 
-    gpt-oss lists only MLflow routes, so it lands here rather than in the Responses bucket. A
-    service that lists no tool calling (``function_calling: false``) can't drive a coding agent."""
-    name = canonical_model_name(entry.id)
-    if entry.function_calling is False or any(bad in name for bad in _NON_CHAT_MODEL_SUBSTRINGS):
-        return False
+    gpt-oss lists only MLflow routes, so it lands here rather than in the Responses bucket."""
     if not entry.api_types:
-        return is_oss_family_model(entry.id) or name.startswith("gpt-oss")
+        return is_oss_family_model(entry.id) or canonical_model_name(entry.id).startswith("gpt-oss")
     return API_MLFLOW_CHAT_COMPLETIONS in entry.api_types
 
 
@@ -2850,23 +2858,24 @@ def discover_model_services(
     if not entries:
         return {}, [], [], [], reason
     ids = [entry.id for entry in entries]
+    # Embedding and reranking services, and services that list no tool calling
+    # (``function_calling: false``), can't drive a coding agent: they stay out of every bucket.
+    usable = [
+        entry
+        for entry in entries
+        if entry.function_calling is not False and not _is_non_chat_model_name(entry.id)
+    ]
 
     claude_models: dict[str, str] = {}
     for family in ANTHROPIC_FAMILIES:
         candidates = sorted(
-            [m for m in ids if f"claude-{family}-" in m],
+            [entry.id for entry in usable if f"claude-{family}-" in entry.id],
             key=model_version_sort_key,
         )
         if candidates:
             claude_models[family] = candidates[0]
 
-    # Embedding and reranking services stay out of every chat bucket, even by name fallback.
-    chat_entries = [
-        entry
-        for entry in entries
-        if "claude-" not in entry.id.lower()
-        and not any(bad in canonical_model_name(entry.id) for bad in _NON_CHAT_MODEL_SUBSTRINGS)
-    ]
+    chat_entries = [entry for entry in usable if not is_claude_service_id(entry.id)]
     responses_api = _TOOL_API_TYPES["codex"]
     codex_models = sorted(
         [

@@ -402,10 +402,8 @@ def _oss_model_entry(model_id: str) -> dict:
     return entry
 
 
-# MLflow chat models reject OpenAI fields Pi sends by default (HTTP 400 "json: unknown field" on
-# gpt-oss, Qwen and Llama): `store`, `max_completion_tokens`, and the `prompt_cache_retention` /
-# `prompt_cache_key` pair Pi adds under PI_CACHE_RETENTION=long. Qwen's chat template also
-# rejects the `developer` role.
+# MLflow chat models reject (HTTP 400) Pi's default `store` and `max_completion_tokens` fields and
+# its PI_CACHE_RETENTION=long cache fields; Qwen also rejects the `developer` role.
 _MLFLOW_COMPAT: dict[str, object] = {
     "supportsStore": False,
     "supportsStrictMode": False,

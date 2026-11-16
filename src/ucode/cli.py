@@ -102,6 +102,7 @@ from ucode.databricks import (
     find_profile_name_for_workspace,
     get_databricks_token,
     install_databricks_cli,
+    is_claude_chat_entry,
     is_model_provider_feature_unavailable,
     is_oss_family_model,
     list_anthropic_model_catalog,
@@ -852,7 +853,7 @@ def configure_shared_state(
                 all_claude_models = [
                     entry.id
                     for entry in cached_model_service_entries(workspace) or ()
-                    if "claude-" in entry.id.lower()
+                    if is_claude_chat_entry(entry)
                 ]
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason

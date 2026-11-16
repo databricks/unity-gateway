@@ -6094,6 +6094,11 @@ class TestDiscoverModelServicesByApiTypes:
                     function_calling=False,
                 ),
                 _listed_service("system.ai.custom-embedding-chat", ["mlflow/v1/chat/completions"]),
+                # Tool-less Responses and Gemini services, by API type and by name fallback.
+                _listed_service("system.ai.gpt-5-5", _RESPONSES_APIS, function_calling=False),
+                _listed_service("system.ai.gpt-5-4", [], function_calling=False),
+                _listed_service("system.ai.gemini-3-1-pro", _GEMINI_APIS, function_calling=False),
+                _listed_service("system.ai.gemini-3-flash", [], function_calling=False),
             ],
         )
 
@@ -6125,10 +6130,14 @@ class TestDiscoverModelServicesByApiTypes:
         ],
     )
     def test_listed_tool_calling_false_wins_over_the_name_fallback(
-        self, api_types, function_calling, expected
+        self, monkeypatch, api_types, function_calling, expected
     ):
-        entry = db_mod.ModelServiceEntry("system.ai.glm-5-2", api_types, function_calling)
-        assert db_mod._is_oss_chat_entry(entry) is expected
+        service = _listed_service(
+            "system.ai.glm-5-2", list(api_types), function_calling=function_calling
+        )
+        _claude, _codex, _gemini, oss, _reason = self._discover(monkeypatch, [service])
+
+        assert (oss == ["system.ai.glm-5-2"]) is expected
 
     def test_unknown_tool_calling_keeps_a_chat_model(self, monkeypatch):
         _claude, _codex, _gemini, oss, _reason = self._discover(
@@ -6342,6 +6351,34 @@ class TestModelServicesCache:
         # Both views retain the newest-per-family choice and the full list.
         assert claude["opus"] == "system.ai.claude-opus-5"
         assert unbucketed == ["system.ai.claude-opus-4-8", "system.ai.claude-opus-5"]
+
+    def test_claude_chat_entry_excludes_non_chat_and_no_tool_services(self):
+        entry = db_mod.ModelServiceEntry
+        assert db_mod.is_claude_chat_entry(entry("system.ai.claude-opus-5"))
+        assert db_mod.is_claude_chat_entry(entry("system.ai.claude-opus-5", function_calling=True))
+        assert not db_mod.is_claude_chat_entry(
+            entry("system.ai.claude-opus-5", function_calling=False)
+        )
+        assert not db_mod.is_claude_chat_entry(entry("system.ai.claude-embed-1"))
+        assert not db_mod.is_claude_service_id("system.ai.claude-rerank-1")
+
+    def test_unbucketed_claude_listing_drops_non_chat_and_no_tool_services(self, monkeypatch):
+        entry = db_mod.ModelServiceEntry
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_service_entries",
+            lambda *a, **k: (
+                [
+                    entry("system.ai.claude-opus-5"),
+                    entry("system.ai.claude-notools", function_calling=False),
+                    entry("system.ai.claude-embed-1"),
+                    entry("system.ai.gpt-5"),
+                ],
+                None,
+            ),
+        )
+        ids, _ = db_mod.discover_claude_models_unbucketed(WS, "tok")
+        assert ids == ["system.ai.claude-opus-5"]
 
     def test_use_cache_false_forces_a_fresh_walk(self, monkeypatch):
         calls: dict = {}
