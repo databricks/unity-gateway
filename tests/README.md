@@ -1608,7 +1608,9 @@ working, backend crash/restart, EOF/reset reconnect diagnostics, local authentic
 idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
-check. These tests do not establish live gateway or native Windows coverage.
+check. On Windows, a console-less observer uses the native console API to verify
+the actual backend has no console, then the client completes a tool call.
+These tests do not establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before

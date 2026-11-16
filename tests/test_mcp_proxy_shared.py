@@ -263,6 +263,43 @@ def _endpoints(tmp_path):
     ]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows console allocation")
+def test_backend_has_no_windows_console(clients, peer, tmp_path):
+    client = clients(peer[0] + "/mcp")
+    client.initialize()
+    (metadata,) = _endpoints(tmp_path)
+    probe = """
+import ctypes
+import sys
+from ctypes import wintypes
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetConsoleWindow.argtypes = []
+kernel32.GetConsoleWindow.restype = wintypes.HWND
+kernel32.AttachConsole.argtypes = [wintypes.DWORD]
+kernel32.AttachConsole.restype = wintypes.BOOL
+kernel32.FreeConsole.argtypes = []
+kernel32.FreeConsole.restype = wintypes.BOOL
+
+assert not kernel32.GetConsoleWindow(), "console observer must start without a console"
+attached = kernel32.AttachConsole(int(sys.argv[1]))
+error = ctypes.get_last_error()
+if attached:
+    kernel32.FreeConsole()
+assert not attached, "MCP backend unexpectedly owns a Windows console"
+assert error == 6, f"AttachConsole failed with {error}, expected ERROR_INVALID_HANDLE (6)"
+"""
+    result = subprocess.run(
+        [str(Path(sys.executable).with_name("pythonw.exe")), "-c", probe, str(metadata["pid"])],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert client.call("no console")["value"] == "no console"
+
+
 def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, tmp_path):
     url, sessions = peer
     first = clients(url + "/first", header="X-Agent: first", profile="one")

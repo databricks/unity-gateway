@@ -159,7 +159,7 @@ def connect_backend(directory: Path) -> socket.socket:
             with os.fdopen(log_fd, "ab") as log:
                 options = (
                     {
-                        "creationflags": subprocess.DETACHED_PROCESS
+                        "creationflags": subprocess.CREATE_NO_WINDOW
                         | subprocess.CREATE_NEW_PROCESS_GROUP
                     }
                     if os.name == "nt"
