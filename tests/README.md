@@ -1639,7 +1639,10 @@ Copilot schema wildcards use UC model-service entries and the existing Copilot c
 which includes Claude, GPT, and supported open models while filtering incompatible APIs.
 Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
 and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
-wire APIs and Claude limits. These checks use controlled discovery responses.
+wire APIs and Claude limits. Provider wildcard checks also cover by-tool catalog selection:
+Claude expands from the Anthropic catalog and Codex from the Codex catalog whatever the
+service's provider type, while other tools keep provider-based selection.
+These checks use controlled discovery responses.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
