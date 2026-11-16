@@ -1184,7 +1184,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
-| `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
+| `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference`, `test_cuj_claude_mps_smart_routing_header` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, Claude TUI, and Claude smart-routing cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; inference cases record the MPS target header, model, paired HTTP 200, and completed greeting. The smart-routing case checks the managed MPS header on first-prompt and delegated-task router requests, their HTTP 200 responses, and completed native turns. Request IDs correlate greeting traffic. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
 | `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku/Sonnet deployment defaults; completed TUI file task on Sonnet; normal exit |
@@ -1458,17 +1458,16 @@ hosts, matching the Linux scanner; Python parser checks also run on Windows. Sen
 rejection checks the annotation as well as the exit status.
 
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
-job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
-can request it only on their own PR. `/integration-test <sha>` additionally requires the
-current head to match that commit. After authorization, the shared gate must find a successful
+job. Only org members can comment `/integration-test`, on any PR: integration runs the PR's
+code with CI secrets, so a member reviews the changes first and other contributors ask one.
+`/integration-test <sha>` additionally requires the current head to match that commit.
+After authorization, the shared gate must find a successful
 scan for that exact commit before integration receives CI secrets. A comment reuses the latest
 scan for the authorized SHA; its later timestamp does not invalidate the earlier scan.
 Missing or invalid PR/SHA inputs fail instead of skipping the gate. Scan failures, missing scans
 and API errors skip integration and post a failed `Fork integration` status on the authorized SHA.
 `test_security_gate_comment_requires_existing_scan_of_authorized_commit` covers reuse and SHA
 mismatches; `test_fork_integration_reports_scan_failure_on_authorized_commit` exercises the report.
-This policy still trusts prior contributors to request runs of their own PR code; first-time
-contributors need a member. Member-only authorization is a separate change.
 It posts a `Fork integration` status, and works on in-repo PRs too as an on-demand rerun.
 Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
@@ -1486,9 +1485,9 @@ is removed. `test_polly_review.py` covers the Polly review workflow contract and
 summary helper. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
 `test_comment_command_authorization.py` evaluates integration/review job guards with synthetic
-GitHub events: members on any PR, prior contributors on their own PR, rejected first-time
-and unrelated contributors, integration commands with or without a SHA, ordinary comments,
-and non-PR issues. These component checks do not establish live GitHub event delivery or
+GitHub events: members on any PR, prior contributors on their own PR for review only (rejected
+for integration), rejected first-time and unrelated contributors, integration commands with or
+without a SHA, ordinary comments, and non-PR issues. These component checks do not establish live GitHub event delivery or
 the timing of GitHub's contributor classification.
 
 ## Gaps and deferred scope
