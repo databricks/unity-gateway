@@ -1557,6 +1557,7 @@ class TestListProviderServiceModels:
             ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
             ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
             ("openai", ({"models": []}, None), ([], None)),
+            ("microsoft_foundry", ({"models": []}, None), ([], None)),
         ],
     )
     def test_reports_failures_but_not_empty_listings(

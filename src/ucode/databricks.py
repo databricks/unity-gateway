@@ -4434,6 +4434,34 @@ def _fetch_codex_model_catalog(
     return payload
 
 
+def list_anthropic_provider_models(
+    workspace: str, token: str, service_name: str
+) -> tuple[list[str], str | None]:
+    """The Anthropic-catalog models the gateway lists for ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+    """
+    listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+    reason = listing.error_msg
+    return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+
+
+def list_codex_provider_models(
+    workspace: str, token: str, service_name: str
+) -> tuple[list[str], str | None]:
+    """The Codex-catalog models the gateway lists for ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+    """
+    try:
+        catalog = _fetch_codex_model_catalog(
+            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
+        )
+    except CodexModelCatalogEmpty:
+        return [], None
+    except RuntimeError as exc:
+        return [], str(exc)
+    return catalog_slugs(catalog), None
+
+
 def list_provider_service_models(
     workspace: str, token: str, service_name: str, provider_type: str
 ) -> tuple[list[str], str | None]:
@@ -4444,18 +4472,8 @@ def list_provider_service_models(
     """
 
     if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
-        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
-    try:
-        catalog = _fetch_codex_model_catalog(
-            workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
-        )
-    except CodexModelCatalogEmpty:
-        return [], None
-    except RuntimeError as exc:
-        return [], str(exc)
-    return catalog_slugs(catalog), None
+        return list_anthropic_provider_models(workspace, token, service_name)
+    return list_codex_provider_models(workspace, token, service_name)
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:
