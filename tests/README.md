@@ -1,5 +1,16 @@
 # Test suites and user journeys
 
+`test_security_scan_request.py` verifies the default-branch Security Scan's request
+validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
+This prerequisite installs the producer and reusable consumer without making existing CI
+wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
+secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
+warnings, symlink handling, and multi-batch Semgrep report parsing. These tests use inert
+fixtures; they do not execute contributed code or validate live GitHub event delivery,
+organization settings, Semgrep rules or advisory-service responses. Bash cases run only
+on non-Windows hosts, matching the scanner's Linux runner; Python parser checks also run
+on Windows. Sensitive-path rejection asserts its annotation as well as the exit status.
+
 Profile discovery component checks in `test_databricks.py::TestGetDatabricksProfiles`
 require local metadata listing without validating unrelated workspaces, preserve PAT
 filtering (including implicit PATs without DEFAULT inheritance), tolerate unreadable
@@ -32,6 +43,8 @@ transport/backend validation limits.
 
 The busy-child journey passes its full assignment through an ordinary input file and
 uses absolute input paths so a child changing directories can still run its gate command.
+The exact gate command is fenced separately from prose to keep instruction words out
+of the copied shell command.
 It distinguishes the follow-up receipt from the original answer. Continuity assertions
 remain the same; model task omission or a stale answer still fails the journey.
 
@@ -1212,10 +1225,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_headless_allow_all_bedrock_provider` | Launch Claude through the Bedrock MPS with `allow_all_targets` and no declared targets, explicitly selecting `us.anthropic.claude-sonnet-4-6` | Structured final answer contains the file value; inference completes through Bedrock; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value and was sent as the requested model; the session started on the matching registry provider; no file under the session home holds the Databricks credential; no session registry left (non-blocking CI lane) |
-| `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `dbx-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `dbx-anthropic` and `dbx-responses` (non-blocking CI lane) |
-| `test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions` | One configure, then headless tasks on a GLM, a Kimi and a DeepSeek model named by catalog id | Each answer contains its file value and was sent as the requested model; every session started on `dbx-completions`; the saved catalog lists all three, DeepSeek coming from the model-services listing (non-blocking CI lane) |
+| `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `databricks-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `databricks` and `databricks-responses` (non-blocking CI lane) |
+| `test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions` | One configure, then headless tasks on a GLM, a Kimi and a DeepSeek model named by catalog id | Each answer contains its file value and was sent as the requested model; every session started on `databricks-completions`; the saved catalog lists all three, DeepSeek coming from the model-services listing (non-blocking CI lane) |
 | `test_ug_copilot_unknown_model_lists_available_models` | Interactive launch with a model the workspace doesn't have | Exit 1 before Copilot starts; stderr names the model and lists the available ones, without `claude-opus-4-1`; no session registry left (non-blocking CI lane) |
-| `test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command` | TUI: answer folder trust, Claude task, `/model dbx-responses/<model>`, GPT task, `/exit` | Both answers sent as the Claude then GPT model; the session records the switch; normal exit; no session registry left (non-blocking CI lane) |
+| `test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command` | TUI: answer folder trust, Claude task, `/model databricks-responses/<model>`, GPT task, `/exit` | The footer shows the Claude model's readable label; both answers sent as the Claude then GPT model; the switch notice names both models without `system.ai.`; the session records the switch; normal exit; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_refreshes_a_revoked_token_mid_session`, `test_ug_copilot_reports_expired_sign_in` | Sign in through `DATABRICKS_BEARER_COMMAND` minting short-lived PATs; mid-task the agent revokes them (or also signs out) | Revoked: a token is minted after the revocation and the task completes without restarting Copilot. Signed out: output shows "Databricks sign-in expired" with `databricks auth login`; the failure is in `~/.ucode/logs/copilot-proxy.log`, not the terminal (non-blocking CI lane) |
 | `test_ug_configure_copilot_repeat_and_revert` | Configure Copilot twice over a user-owned `~/.copilot/mcp-config.json`, run a GPT task, revert twice | Task completes; no file holds the bearer; revert removes `~/.copilot/ucode.env`, leaves the user file byte-identical and reports Not Configured. (non-blocking CI lane) |
 | `test_ug_mcp_add_copilot_registers_server_in_copilot_config` | Over a developer-owned, disabled server in `~/.copilot/mcp-config.json`, configure Copilot, `ug mcp add --agents copilot --names system.ai.web_search`, run a headless task that calls the tool, then revert | `copilot mcp list --json` lists ug's server from the user config, enabled, next to the developer's still-disabled one; `ug mcp list --agents copilot` reports it enabled; Copilot's session events record a successful call loaded from the user config; revert leaves only the developer's server and no legacy `ucode-mcp-config.json` (non-blocking CI lane) |
@@ -1507,6 +1520,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
+| Relayed launch from a managed static model-service list | Unit/component checks in `test_databricks.py` (relay detection), `test_agent_claude.py` (state helper, signed-in gating, static picker kept when relayed without a provider) and `test_cli.py` (`relayed` reaches configure). No dedicated live journey; checked manually against a relayed workspace. |
 | Saved Claude picker selection | Unit/component checks in `test_agent_claude.py` cover mapped family aliases, `[1m]`/`[200k]` variants, and unavailable-model fallback without changing saved settings. No dedicated live journey. |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
@@ -1638,3 +1652,56 @@ artifact. Claude and Codex use custom defaults, while Copilot uses hosted
 `system.ai.gpt-6-luna`. All 14 cases are active. These are implemented assertions,
 not a live pass. See the
 [CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).
+
+Copilot CLI registry label checks cover human-readable labels for qualified catalog models,
+duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names
+remain raw so regional target distinctions are preserved. Native picker and inference validation
+remain separate from these component checks.
+
+## Security scan rollout
+
+1. Merge producer PR [#1653](https://github.com/databricks/unity-gateway/pull/1653)
+   first. Update a PR to obtain the `CI #<PR>` run name and verify a real
+   `workflow_run` scan using that CI request ID, its PR head SHA and policy from main.
+   GitHub cannot start this producer until it exists on the default branch.
+2. Land the consumers in [#1629](https://github.com/databricks/unity-gateway/pull/1629).
+   An org administrator must require `.github/workflows/security-gate.yml` from
+   `databricks/unity-gateway` at protected `refs/heads/main` using a **required-workflow
+   ruleset**, not just a required check name. Keep the existing `test`/`e2e` checks.
+   In organization **Settings → Rules → Rulesets**, target this repository and `main`,
+   select **Require workflows to pass before merging**, and choose that repository,
+   workflow path and ref. Limit bypass actors. Validate on a temporary branch first
+   as described below, then activate on main and verify the effective branch rules
+   include a `workflows` rule. A required workflow blocks merging; runner restrictions
+   separately control which definitions can execute on the protected pool.
+3. Restrict protected runner access to approved workflow definitions at trusted refs.
+   The new direct definitions are
+   `databricks/unity-gateway/.github/workflows/security-scan.yml@refs/heads/main` and
+   `databricks/unity-gateway/.github/workflows/security-gate.yml@refs/heads/main`;
+   authorized comments also need `fork-integration.yml@refs/heads/main` in that repo.
+   Audit and migrate protected jobs in `integration.yml`, `user-journey-test-required.yml`,
+   `ug-review.yml` and `polly-review.yml` before restricting a shared runner group:
+   PR-ref jobs would be denied by a main-only allowlist.
+4. **Merge-queue validation blocks enforcement rollout.** On an admin-controlled
+   validation branch with the intended rules, verify that a missing/failed PR scan
+   prevents queue entry, and that updating an already queued PR invalidates its old
+   entry and requires the new head's scan. Record the settings and run links before
+   activating the required-workflow rule on main. Retain the `ALLGREEN` queue policy.
+   Update or reopen existing PRs after activating the rule.
+
+The gate currently skips scan polling on `merge_group`; it relies on GitHub's PR-level
+queue admission and head-update invalidation. GitHub [documents admission after required
+checks](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue),
+but head-update invalidation and this required-workflow setup have **not been validated
+live**. The SHA suffix in an observed queue ref was the base commit, not the PR head;
+do not use it as scan evidence. Runner policy also remains unverified: the current
+credentials received HTTP 403 from the org runner-groups API. These are open rollout
+requirements, not guarantees supplied by the YAML or component tests.
+
+Re-running CI reuses its original scan. A maintainer can apply
+`skip-scan:<full 40-character head SHA>` for a reviewed commit, then re-run all scan jobs
+to refresh labels and the failed CI jobs. Later pushes need a new waiver; the old generic
+`skip-security-scan` label has no effect. Gates poll every two minutes for up to 20 minutes
+(with a 25-minute job budget). Public API limits still
+fail closed; retry after the reported quota reset. A static scan does not replace human
+authorization for credentialed integration.
