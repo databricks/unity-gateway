@@ -72,16 +72,17 @@ and Copilot CLI, explicit inference on every expanded model, and one routed
 Claude child. Smart routing is enabled only for Claude Code. Codex and Copilot
 tasks must send no routing requests.
 
-| Agent | Explicit MPS deep link | Custom model service | Wildcard |
+| Agent | Explicit MPS deep link | Explicit model service | Wildcard |
 | --- | --- | --- | --- |
 | Claude Code | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.models.claude_sonnet` | `ug_e2e.other_models.*` includes both aliases |
 | Codex | `ug_e2e.providers.openai.gpt-6-luna` | `ug_e2e.models.gpt_luna` | `ug_e2e.other_models.*` includes only `codex_decoy` |
-| Copilot CLI | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.default.gpt-5-5-fmapi` | `ug_e2e.providers.openai.*` adds the qualified GPT model |
+| Copilot CLI | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `system.ai.gpt-6-luna` (hosted) | `ug_e2e.providers.openai.*` adds the qualified GPT model |
 
 Each source contributes distinct models, so wildcard expansion cannot hide a
-missing explicit source. The custom service is each agent's default. Copilot
-requires names such as `gpt-5-5-fmapi`; aliases such as `gpt_luna` are incompatible
-with its model classifier.
+missing explicit source. Claude and Codex default to their custom model services;
+Copilot defaults to the hosted GPT service. Copilot requires names such as
+`gpt-6-luna`; aliases such as `gpt_luna` are incompatible with its model classifier.
+Custom-model inference is covered by Claude and Codex.
 
 Claude and Codex discovery cases compare exact native picker inventories; Codex
 also checks its app-server `model/list`. Copilot checks the active per-session
@@ -92,18 +93,20 @@ successful recorded inference on the exact model. The routing case also requires
 a successful source-scoped decision, a matching native child start, the selected
 model's inference, and completed child and parent answers.
 
-Before a live run, an administrator must publish the exact CodingAgentConfig in
-[`fixtures/cuj9_model_sources.json`](fixtures/cuj9_model_sources.json) on that
-workspace. This file is a preparation artifact, never a local stub or configure
-input. The suite only reads the published config and fails on a mismatch. Grant
-the CUJ service principal access to the workspace and the named services.
+The workspace directly publishes CodingAgentConfig
+`coding-agent-configs/d55f1e06-54bf-42cd-9b2c-19db77da968f`, created on 2026-11-16,
+with the sources and defaults above. Claude is the default agent, tracing is off
+for all three agents, and Copilot VS Code integration is off. The suite reads and
+validates this live configuration; it does not load a local configuration artifact.
+The CUJ service principal needs access to the workspace and named services.
+Tests never change the published configuration, services, or grants.
 
-On 2026-11-16, read-only inspection found no published CodingAgentConfig. The
-shared services exist, but `ug_e2e.default.gpt-5-5-fmapi` inference failed because
-its owner lacks `EXECUTE` on destination provider
-`ai_gateway_us_east_1.default.openai-fmapi`. The fixture owner must resolve that
-permission before the Copilot custom-model cases can pass. The tests do not
-repair configuration, fixture definitions, or grants.
+Direct API probes on 2026-11-16 found two live failures. The Anthropic catalog's
+`anthropic-aigw-e6dfbcac-ug_e2e.other_models.codex_decoy` alias returns not found
+for inference, while its raw service ID succeeds. The qualified OpenAI provider
+model succeeds at `/ai-gateway/codex/v1/responses`, but Copilot's configured
+`/ai-gateway/mlflow/v1/responses` path rejects its native API type. The suite
+retains both cases and requires successful inference.
 
 Use a clean disposable POSIX runner and the normal CUJ service-principal
 variables. Install the checkout's `ug`, Databricks CLI `1.17.0`, Claude Code
@@ -116,8 +119,8 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
 ```
 
 Collection and offline checks establish suite structure only. No live CUJ9 pass
-is claimed until the published configuration, fixture permissions, and agent
-journeys have been validated together.
+is claimed until the published configuration and agent journeys have been
+validated together. Direct API probes do not establish native agent or TUI coverage.
 
 CUJ1, CUJ2 and CUJ3 share Desktop setup that seeds the same personal profile and metadata in an
 isolated Linux profile path. CUJ1 and CUJ2's configuration cases read their dedicated workspaces'

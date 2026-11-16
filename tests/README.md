@@ -1184,7 +1184,8 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
-| `test_sources_{claude,codex,copilot}_discovers_mixed_models_and_uses_custom_default` in CUJ9 | Configure mixed model sources, inspect native discovery, and complete a TUI task on the custom default | Exact Claude/Codex picker inventories, Codex model/list, Copilot's active registry, native completed answers and paired exact-model HTTP 200 responses |
+| `test_sources_{claude,codex}_discovers_mixed_models_and_uses_custom_default` in CUJ9 | Configure mixed model sources, inspect native discovery, and complete a TUI task on the custom default | Exact Claude/Codex picker inventories, Codex model/list, native completed answers and paired exact-model HTTP 200 responses |
+| `test_sources_copilot_discovers_mixed_models_and_uses_service_default` in CUJ9 | Configure mixed model sources, inspect the live registry, and complete a TUI task on the hosted GPT default | Exact active registry IDs and wire providers, a native completed answer, paired exact-model HTTP 200 inference, and registry removal on exit |
 | `test_sources_{claude,codex,copilot}_inference_on_each_source_model` in CUJ9 | Run an explicit headless file task on every expanded source model | Each provider deep link, custom service, schema wildcard and provider wildcard contribution serves a hidden-value task; Codex and Copilot never route |
 | `test_sources_claude_routes_a_native_child_within_expanded_sources` in CUJ9 | Delegate a real task with Claude-only managed smart routing | A successful source-scoped routing decision, selected-model child inference, native child start, and completed child and parent answers |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
@@ -1631,7 +1632,8 @@ context hints. Shared unwrapping checks leave malformed aliases unchanged. Nativ
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. CUJ9 adds 14 installed-agent cases for mixed sources and qualified MPS
-inference, with smart routing only for Claude Code. These are implemented assertions,
-not a live pass. Its workspace has no published config as of 2026-11-16, and the Copilot
-custom fixture's owner lacks EXECUTE on its destination provider. See the
+inference, with smart routing only for Claude Code. The workspace directly publishes
+its configuration as of 2026-11-16; tests validate it without a local configuration
+artifact. Claude and Codex use custom defaults, while Copilot uses hosted
+`system.ai.gpt-6-luna`. These are implemented assertions, not a live pass. See the
 [CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).

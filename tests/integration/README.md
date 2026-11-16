@@ -2121,14 +2121,15 @@ is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
 component coverage. Dedicated CUJ9 adds 14 installed-agent cases for mixed sources and
 qualified MPS inference on its separate workspace. Smart routing is enabled only for
-Claude Code. Its workspace has no published config as of 2026-11-16, and the Copilot
-custom fixture's owner lacks EXECUTE on its destination provider. These are implemented
+Claude Code. The workspace directly publishes its configuration as of 2026-11-16;
+tests validate it without a local configuration artifact. Claude and Codex use custom
+defaults, while Copilot uses hosted `system.ai.gpt-6-luna`. These are implemented
 assertions, not a live pass. See the
-[CUJ9 preparation manifest and run command](../e2e_cuj/README.md#model-sources-in-cuj9).
+[CUJ9 published configuration and run command](../e2e_cuj/README.md#model-sources-in-cuj9).
 
 | CUJ9 journey | Observable evidence |
 | --- | --- |
-| Claude, Codex, and Copilot discovery and custom defaults | Exact native Claude/Codex picker inventories, Codex model/list, active Copilot registry IDs and wire providers, followed by completed native TUI tasks and exact-model HTTP 200 inference |
+| Claude, Codex, and Copilot discovery and defaults | Exact native Claude/Codex picker inventories, Codex model/list, active Copilot registry IDs and wire providers, followed by completed native TUI tasks on custom Claude/Codex or hosted Copilot defaults and exact-model HTTP 200 inference |
 | Explicit inference on every source model | Hidden-value tasks on MPS deep links, custom model services, schema wildcards and a provider wildcard; Codex and Copilot send no routing request |
 | Claude-only delegated task | Source-scoped routing options, one successful decision, matching native child start, selected-model child HTTP 200 inference, and completed child and parent answers |
 

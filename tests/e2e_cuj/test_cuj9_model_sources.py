@@ -2,7 +2,6 @@
 
 import json
 import shutil
-from pathlib import Path
 
 import pytest
 
@@ -38,7 +37,7 @@ from .helpers.constants import (
     SOURCE_CLAUDE_PROVIDER_MODEL,
     SOURCE_CODEX_ALIAS,
     SOURCE_CODEX_PROVIDER_MODEL,
-    SOURCE_COPILOT_CUSTOM_MODEL,
+    SOURCE_COPILOT_DEFAULT_MODEL,
     SOURCE_OPENAI_PROVIDER,
     SOURCE_OPENAI_TARGET,
     SOURCE_SCHEMA,
@@ -58,7 +57,6 @@ from .helpers.terminal import Terminal
 CUJ_NAME = "CUJ 9 · Model sources"
 pytestmark = [pytest.mark.live, pytest.mark.managed, pytest.mark.workspace_isolated]
 
-CONFIG_PATH = Path(__file__).parent / "fixtures/cuj9_model_sources.json"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 CLAUDE_MODELS = {
     SOURCE_CLAUDE_PROVIDER_MODEL: "Claude Haiku 5.5",
@@ -73,23 +71,47 @@ CODEX_MODELS = {
 }
 COPILOT_MODELS = {
     SOURCE_CLAUDE_PROVIDER_MODEL: "dbx-anthropic",
-    SOURCE_COPILOT_CUSTOM_MODEL: "dbx-responses",
+    SOURCE_COPILOT_DEFAULT_MODEL: "dbx-responses",
     SOURCE_CODEX_PROVIDER_MODEL: "dbx-responses",
 }
 
 
 @pytest.fixture(scope="class")
 def source_contract(cuj):
-    """Read the exact published contract and its independent upstream catalogs."""
+    """Validate the workspace's published sources and independent upstream catalogs."""
     _, workspace, _ = cuj
-    expected = json.loads(CONFIG_PATH.read_text())
     published = workspace.config()
-    published.pop("name")
-    assert published == expected, (
-        f"CUJ9 requires the prepublished config in {CONFIG_PATH}. "
-        "Provision it separately; CUJ tests never change workspace configuration.",
-        published,
-    )
+    assert published["default_agent"] == "CODING_AGENT_CLAUDE_CODE", published
+    configs = workspace.agent_configs(published)
+    sources_and_defaults = {
+        "CODING_AGENT_CLAUDE_CODE": (
+            [SOURCE_CLAUDE_PROVIDER_MODEL, CLAUDE_SONNET_MODEL_SERVICE, f"{SOURCE_SCHEMA}.*"],
+            CLAUDE_SONNET_MODEL_SERVICE,
+            True,
+        ),
+        "CODING_AGENT_CODEX": (
+            [SOURCE_CODEX_PROVIDER_MODEL, CODEX_LUNA_MODEL_SERVICE, f"{SOURCE_SCHEMA}.*"],
+            CODEX_LUNA_MODEL_SERVICE,
+            False,
+        ),
+        "CODING_AGENT_GITHUB_COPILOT": (
+            [
+                SOURCE_CLAUDE_PROVIDER_MODEL,
+                SOURCE_COPILOT_DEFAULT_MODEL,
+                f"{SOURCE_OPENAI_PROVIDER}.*",
+            ],
+            SOURCE_COPILOT_DEFAULT_MODEL,
+            False,
+        ),
+    }
+    assert configs.keys() == sources_and_defaults.keys(), configs
+    for agent, (sources, default, routing) in sources_and_defaults.items():
+        config = configs[agent]
+        assert config["models"]["sources"] == sources, (agent, config)
+        assert config["default_models"]["default_model"] == default, (agent, config)
+        assert config["smart_routing"]["enabled"] is routing, (agent, config)
+        assert config["tracing"]["enabled"] is False, (agent, config)
+    assert configs["CODING_AGENT_GITHUB_COPILOT"]["vscode_integration"]["enabled"] is False
     assert shutil.which(COPILOT), "Install the pinned Copilot CLI before running CUJ9"
     for provider, target in (
         (SOURCE_ANTHROPIC_PROVIDER, SOURCE_ANTHROPIC_TARGET),
@@ -103,7 +125,7 @@ def source_contract(cuj):
     for model in (
         CLAUDE_SONNET_MODEL_SERVICE,
         CODEX_LUNA_MODEL_SERVICE,
-        SOURCE_COPILOT_CUSTOM_MODEL,
+        SOURCE_COPILOT_DEFAULT_MODEL,
     ):
         service = workspace.client.ai_gateway.get_model_service(f"model-services/{model}")
         assert service.name == f"model-services/{model}", model
@@ -228,11 +250,11 @@ class TestModelSources(BaseCujTest):
 
     @pytest.mark.copilot
     @pytest.mark.tui
-    def test_sources_copilot_discovers_mixed_models_and_uses_custom_default(self, cuj):
+    def test_sources_copilot_discovers_mixed_models_and_uses_service_default(self, cuj):
         """Scenario: configure Copilot, inspect its live registry, and complete a TUI file task.
 
-        Expected: the exact registry retains the Anthropic deep link, custom service, and
-        provider-wildcard GPT on their native wires. The custom default completes inference,
+        Expected: the exact registry retains the Anthropic deep link, hosted service, and
+        provider-wildcard GPT on their native wires. The hosted default completes inference,
         no routing occurs, and the credential-bearing registry is removed on exit.
         """
         session, _, recorder = cuj
@@ -270,9 +292,9 @@ class TestModelSources(BaseCujTest):
             tui.wait_for(completed, "completed native Copilot file task", timeout=240)
             tui.exit_normally()
         task.assert_completed(session, COPILOT)
-        assert_completed_task_model(session, COPILOT, task.value, SOURCE_COPILOT_CUSTOM_MODEL)
-        _assert_copilot_selection(session, task, SOURCE_COPILOT_CUSTOM_MODEL)
-        _assert_copilot_inference(recorder, checkpoint, task, SOURCE_COPILOT_CUSTOM_MODEL)
+        assert_completed_task_model(session, COPILOT, task.value, SOURCE_COPILOT_DEFAULT_MODEL)
+        _assert_copilot_selection(session, task, SOURCE_COPILOT_DEFAULT_MODEL)
+        _assert_copilot_inference(recorder, checkpoint, task, SOURCE_COPILOT_DEFAULT_MODEL)
         _assert_no_routes(recorder, checkpoint)
         assert_no_session_registry_left(session)
 
@@ -341,7 +363,7 @@ class TestModelSources(BaseCujTest):
     def test_sources_copilot_inference_on_each_source_model(self, cuj, model):
         """Scenario: configure and run a Copilot headless file task on every registered source.
 
-        Expected: the MPS deep link, custom service, and provider-wildcard model each serve
+        Expected: the MPS deep link, hosted service, and provider-wildcard model each serve
         a completed native answer on the exact model, without routing or leftover registries.
         """
         session, _, recorder = cuj
