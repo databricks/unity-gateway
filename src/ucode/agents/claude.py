@@ -2068,6 +2068,11 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
     return settings
 
 
+# Without "merge", a hosting app's own policy (Claude Desktop's Cowork and Chat) is dropped in
+# favor of this file, and Desktop warns about it. An administrator's explicit value is kept.
+CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH = ["parentSettingsBehavior"]
+CLAUDE_PARENT_SETTINGS_BEHAVIOR = "merge"
+
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
 _HEADER_MOD_PREFIX = "ug-headers@"
 CLAUDE_HEADER_MOD_ID = f"{_HEADER_MOD_PREFIX}{CLAUDE_HEADER_MOD_MARKETPLACE}"
@@ -2343,6 +2348,11 @@ def _reconcile_managed_settings(
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
+    if _explicit_configure:
+        desired_settings.setdefault(
+            CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0], CLAUDE_PARENT_SETTINGS_BEHAVIOR
+        )
+        owned_paths = [*owned_paths, CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH]
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
