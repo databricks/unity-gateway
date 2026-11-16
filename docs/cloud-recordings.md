@@ -1,35 +1,49 @@
 # Cloud CLI recordings
 
-Captured November 15, 2026 on the Ubuntu VM with installed candidate `0.2.1+cloudpr.1`.
-These GIFs render real SSH terminal output; playback is accelerated and the header shows
-actual elapsed time. They are text-based terminal recordings, not reconstructed mockups.
-The workspace's native agent policy and existing warnings remain visible.
+Recaptured November 15, 2026 on Ubuntu with candidate `0.2.1+cloudpr.1`.
+These GIFs show real terminal output with accelerated playback and elapsed-time labels.
+The candidate is on `PATH`; the workspace is already configured. Commands use the
+remote directory default. `claude` is required: `ug cloud` alone displays help.
 
-## Interactive Claude: launch, task, exit
+## Open Claude
 
-Open Claude in the existing Sandbox, accept trust for the dedicated demo directory,
-ask it to remember `amber-29`, receive `SAVED`, then exit. The footer prints the resume command.
+`ug cloud --sandbox decisive-eft-1099 claude`
 
-![Interactive Claude launch and exit](media/cloud/interactive.gif)
+Reuse an existing Sandbox. Ask Claude to remember `amber-29`. The default router
+selects a deprecated DeepSeek endpoint and the request fails. Enter `/model opus`
+inside Claude and repeat the prompt: Claude replies `SAVED`. Exit retains the Sandbox.
 
-## Resume through the picker
+![Interactive Claude launch and model-selection workaround](media/cloud/interactive.gif)
 
-Choose “Resume previous session” and ask for the marker without repeating it.
-Claude returns `amber-29` from the same conversation; exit succeeds.
+## Resume Claude
 
-![Resume picker and remembered conversation](media/cloud/resume.gif)
+`ug cloud claude`
 
-## Headless execution in an existing Sandbox
+Choose “Resume previous session”. Ask Claude for the marker: it recalls `amber-29`.
+Exit retains the Sandbox. No workspace, directory, or session ID is needed on the command line.
 
-Claude runs the calculation and returns **60**, exit 0. This uses `--sandbox`, so the
-existing environment is retained. This recording does **not** demonstrate automatic deletion.
+![Resume through the picker](media/cloud/resume.gif)
 
-![Successful headless Claude job](media/cloud/headless-reuse.gif)
+## Run a headless prompt in an existing Sandbox
 
-## Fresh creation: quota rejection
+`ug cloud --sandbox decisive-eft-1099 claude -p "What is 10 + 20 + 30?"`
 
-The service rejects creation at the configured limit of **200**. ug surfaces that error
-and stops in approximately **2.2 seconds**, exit 1. No new Sandbox is created.
-A fresh-job-plus-automatic-cleanup recording remains blocked by this quota.
+The command reaches Claude, but the default router selects
+`system.ai.deepseek-v4-1-flash`. Gateway returns `400 BAD_REQUEST` because the
+endpoint is deprecated; the job exits 1. The explicitly reused Sandbox is retained.
+This minimal-command recording does **not** show a successful model response.
+The earlier successful headless recording disabled smart routing; this one leaves defaults intact.
 
-![Immediate Sandbox quota error](media/cloud/headless.gif)
+![Headless prompt encounters the deprecated default routing target](media/cloud/headless-reuse.gif)
+
+## Run a headless prompt in a new Sandbox
+
+`ug cloud claude -p "What is 10 + 20 + 30?"`
+
+Creation is rejected at the service quota of **200**. ug reports the error and exits 1
+in about **3 seconds**. No Sandbox is created; automatic cleanup remains unverified live.
+
+![New Sandbox creation reaches the quota limit](media/cloud/headless.gif)
+
+`--sandbox` appears only when explicitly reusing an environment; `-p` selects headless mode.
+The longer recovery commands printed by ug itself remain visible as actual CLI output.

@@ -103,7 +103,9 @@ resume, and other image/platform versions require additional coverage before rel
 ## Recorded demonstrations
 
 [Four real terminal GIFs](cloud-recordings.md) capture interactive Claude launch/exit,
-exact-session picker resume, headless execution in an existing environment, and quota
-rejection. GIFs show accelerated playback with elapsed-time labels. Their hashes and
+exact-session picker resume, a headless attempt in an existing environment, and quota
+rejection. The latest captures use minimal commands and default routing. Unlike the earlier
+headless success with routing disabled, the minimal headless command fails because the
+router selects a deprecated DeepSeek endpoint. Interactive Claude recovers with `/model opus`. GIFs show accelerated playback with elapsed-time labels. Their hashes and
 process outcomes are recorded in `docs/media/cloud/manifest.json`. Automatic cleanup
 could not be filmed because fresh creation remains quota-blocked. No success is simulated.

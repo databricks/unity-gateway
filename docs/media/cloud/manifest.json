@@ -6,34 +6,38 @@
     {
       "name": "interactive",
       "exit_code": 0,
-      "elapsed_seconds": 26.99,
-      "gif_frames": 47,
-      "gif_sha256": "679d5524357f93e195dbc8fda464dead49567d1d9d4ac47cc9ac1a5b36d163bc",
-      "terminal_log_sha256": "626de9d4891e75fbf94370a993aefa2a783e0940beb2009528fd29193eb67151"
+      "elapsed_seconds": 26.67,
+      "gif_frames": 51,
+      "gif_sha256": "8c920ca78cba89d46dceb158c6845c9ffc78a0f25ef900d989d4ac36861a8640",
+      "terminal_log_sha256": "2ba9073bc89030218d91d29288ebbacd15455dadd1da890761d8572aa1bc0fe9",
+      "command": "ug cloud --sandbox decisive-eft-1099 claude"
     },
     {
       "name": "resume",
       "exit_code": 0,
-      "elapsed_seconds": 23.21,
-      "gif_frames": 40,
-      "gif_sha256": "21e3c4a874f52e73fc4965c550cc524e1e6f4637b71c3a8291c11021367f7b5c",
-      "terminal_log_sha256": "d4c3e7b187c50330f93fdf81c49bead5bfd7661a3c4ea7b4392f55fdb3102eb0"
+      "elapsed_seconds": 28.69,
+      "gif_frames": 50,
+      "gif_sha256": "6b97910f4804c269525a6fb924d3049558a5120fadbbe7d14b9d157522025e6c",
+      "terminal_log_sha256": "7a2c4f26ddb97aef1fac9b9d3ff3da532ef9ea920fa684a16ce7051de84229fd",
+      "command": "ug cloud claude"
     },
     {
       "name": "headless-reuse",
-      "exit_code": 0,
-      "elapsed_seconds": 21.36,
-      "gif_frames": 42,
-      "gif_sha256": "a96ddab48ad0c9dea3aa189f352d11db7918489969c371136043f9db1166bdd2",
-      "terminal_log_sha256": "32f635af083773a7666881468e4847700b1c6c53002d21c037f2833b0c1c2988"
+      "exit_code": 1,
+      "elapsed_seconds": 17.1,
+      "gif_frames": 33,
+      "gif_sha256": "768589eed2f7c08c9299d741bc32b6de64e17a0b8704044b5829f94173182672",
+      "terminal_log_sha256": "33edb6f3c22eb3249993464052301a9503ae8ef01e1833e3fdff6c2d4dfe0701",
+      "command": "ug cloud --sandbox decisive-eft-1099 claude -p \"What is 10 + 20 + 30?\""
     },
     {
       "name": "headless",
       "exit_code": 1,
-      "elapsed_seconds": 2.1,
-      "gif_frames": 5,
-      "gif_sha256": "fdafbe3e0d6173e1915f4de111bc1d3eab9a75d462b7a4f191dfb87243655361",
-      "terminal_log_sha256": "3f9464eda2cadafdd3e56083a140844a2df48663c02bd8b08f73401400112827"
+      "elapsed_seconds": 2.75,
+      "gif_frames": 6,
+      "gif_sha256": "68113449a929dfa78de7d0cc13deae3e1598b34153cb939897a7b60e5365b17c",
+      "terminal_log_sha256": "3f9464eda2cadafdd3e56083a140844a2df48663c02bd8b08f73401400112827",
+      "command": "ug cloud claude -p \"What is 10 + 20 + 30?\""
     }
   ]
 }
