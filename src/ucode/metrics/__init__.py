@@ -38,6 +38,12 @@ HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
 HTTP_RETRY_COUNT = "http_retry_count"
 UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
 ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
+PROXY_REQUEST_OPERATION = "proxy_request"
+PROXY_REQUEST_DURATION_MS = f"{PROXY_REQUEST_OPERATION}_duration_ms"
+PROXY_UPSTREAM_HEADERS_DURATION_MS = "proxy_upstream_headers_duration_ms"
+PROXY_FIRST_BYTE_DURATION_MS = "proxy_first_byte_duration_ms"
+PROXY_AUTH_RETRY_COUNT = "proxy_auth_retry_count"
+PROXY_RESPONSE_BYTES = "proxy_response_bytes"
 
 MAX_OBSERVATIONS = 1000
 MAX_HANDOFF_BYTES = 2 * 1024 * 1024
@@ -58,13 +64,13 @@ DURATION_METRICS = frozenset(
         ROUTING_DECISION_DURATION_MS,
         UG_USAGE_DURATION_MS,
         HTTP_REQUEST_DURATION_MS,
-        "proxy_upstream_headers_duration_ms",
-        "proxy_first_byte_duration_ms",
-        "proxy_request_duration_ms",
+        PROXY_UPSTREAM_HEADERS_DURATION_MS,
+        PROXY_FIRST_BYTE_DURATION_MS,
+        PROXY_REQUEST_DURATION_MS,
     }
 )
-COUNTER_METRICS = frozenset({HTTP_RETRY_COUNT, "proxy_auth_retry_count", UG_CLI_ERROR})
-METRICS = DURATION_METRICS | COUNTER_METRICS | {"proxy_response_bytes"}
+COUNTER_METRICS = frozenset({HTTP_RETRY_COUNT, PROXY_AUTH_RETRY_COUNT, UG_CLI_ERROR})
+METRICS = DURATION_METRICS | COUNTER_METRICS | {PROXY_RESPONSE_BYTES}
 STRING_LABELS = frozenset(
     {
         "command",

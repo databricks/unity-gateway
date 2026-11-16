@@ -132,6 +132,24 @@ subagent route selection so its trigger is scoped to that decision. Each routing
 attempt also uses `HTTP_REQUEST_DURATION_MS` with `api_operation="routes_select"`,
 `http_method="POST"`, `attempt=1`, and `http_status_code` when a response is available.
 
+Proxy instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `PROXY_REQUEST_DURATION_MS` | `record()` once when the proxy handler finishes forwarding or stops on an error/disconnect, measured from handler entry and including body reads, token lookup, the auth retry, and response streaming; label `client_disconnected`. |
+| `PROXY_UPSTREAM_HEADERS_DURATION_MS` | `record()` when each upstream response's headers arrive, measured from the start of forwarding, with `attempt=1` or `2`; the second sample includes the first attempt and token refresh. |
+| `PROXY_FIRST_BYTE_DURATION_MS` | `record()` on the first nonempty chunk of the response selected for forwarding, measured from the start of forwarding before writing that chunk; includes an auth retry and is absent for empty responses. |
+| `PROXY_RESPONSE_BYTES` | `record()` once per handled request with the response body bytes written and flushed to the client, including partial responses; excludes headers and the rejected auth response consumed before retry. |
+| `PROXY_AUTH_RETRY_COUNT` | `record(..., 1)` immediately before retrying after an upstream 401/403; do not count the initial attempt. |
+| `PROXY_REQUEST_OPERATION` | `failure()` once for a terminal proxy failure with `phase="agent_session"`; a recovered auth rejection or ordinary client disconnect does not emit an error. |
+
+Proxy observations use `workspace=metrics_workspace` and labels `proxy_mode`
+(`gateway_auth`, `relay`, or `otel`), `api_operation`, and `http_method`, plus
+`http_status_code` once upstream headers arrive. Reuse the proxy's existing token
+with `metrics.bind()`; never fetch credentials solely for metrics. Duration names
+are registered in `DURATION_METRICS`, the retry counter in `COUNTER_METRICS`, and
+`PROXY_RESPONSE_BYTES` in `METRICS` with byte units and `BYTE_BOUNDS` in the exporter.
+
 ## Smart-routing configuration
 
 `SMART_ROUTER_CONFIG_VERSION` is the external selector. Version definitions live in
