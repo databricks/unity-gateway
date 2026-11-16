@@ -24,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from ucode.os_compatibility.subprocess_cross_os import run
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 
 
@@ -119,7 +120,11 @@ class _CaptureServer:
 
 
 @pytest.fixture
-def capture_server():
+def capture_server(monkeypatch):
+    from ucode.os_compatibility import subprocess_cross_os
+
+    # Native launches need the real PATH lookup suppressed by the global unit fixture.
+    monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
     server = _CaptureServer()
     server.start()
     yield server
@@ -151,7 +156,7 @@ def _run_until_first_request(
     has what we need by then. Returns the CompletedProcess (or None on
     timeout) so callers can surface stderr on failure."""
     try:
-        return subprocess.run(
+        return run(
             cmd,
             env=env,
             capture_output=True,

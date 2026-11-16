@@ -42,6 +42,7 @@ jobs:
   test:
     name: Unit tests · ${{ matrix.os == 'windows-latest' && 'Windows' || 'Linux' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     needs: lint
     strategy:
       fail-fast: false
@@ -60,6 +61,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b  # v8.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+      - name: Install pinned native Codex for config validation
+        run: npm install -g --registry https://npm-proxy.cloud.databricks.com/ @openai/codex@0.169.0
       - name: Install dependencies
         run: |
           uv lock

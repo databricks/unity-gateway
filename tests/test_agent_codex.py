@@ -2,20 +2,28 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import plistlib
+import queue
 import re
+import shutil
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from subprocess import CalledProcessError, CompletedProcess, TimeoutExpired
 from unittest.mock import Mock
 
 import pytest
 
+from tests.integration.utils.harness import clean_environment, process_group_options, stop_process
 from ucode import custom_oauth, gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing import codex_routing
 from ucode.telemetry import client_platform
 
@@ -1866,9 +1874,154 @@ class TestCodexLaunch:
         assert "OAUTH_TOKEN" not in os.environ
         argv = popen.call_args.args[0]
         assert any("http://127.0.0.1:54321/v1" in arg for arg in argv)
+        assert 'model_provider="DatabricksCliRelay"' in argv
+        relay_arg = next(
+            arg for arg in argv if arg.startswith("model_providers.DatabricksCliRelay=")
+        )
+        assert 'Databricks-Model-Provider-Service = "cat.s.mps"' in relay_arg
+        assert not any(arg.startswith("model_providers.Databricks=") for arg in argv)
         assert argv[-2:] == ["exec", "hi"]
         cache.stop.assert_called_once_with()
         server.shutdown.assert_called_once_with()
+
+    @pytest.mark.parametrize("tool_args", [[], ["update"]])
+    @pytest.mark.parametrize("profile", ['model_provider = "Databricks"\n', "[model_providers]\n"])
+    def test_relayed_launch_requires_configured_provider(
+        self, tmp_path, monkeypatch, tool_args, profile
+    ):
+        launches = self._patch(tmp_path, monkeypatch)
+        codex.CODEX_CONFIG_PATH.write_text(profile, encoding="utf-8")
+        relay = Mock()
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", relay)
+        login = Mock()
+        monkeypatch.setattr(codex, "_ensure_chatgpt_login", login)
+
+        with pytest.raises(RuntimeError, match="ug configure --agents codex"):
+            codex.launch(
+                {"workspace": WS, "codex_relayed": True}, tool_args, options=LaunchOptions()
+            )
+
+        assert launches == []
+        relay.assert_not_called()
+        login.assert_not_called()
+
+    @pytest.mark.parametrize("tool_args", [[], ["update"]])
+    def test_relayed_launch_keeps_user_provider_auth_with_native_parser(
+        self, tmp_path, monkeypatch, tool_args
+    ):
+        binary = shutil.which("codex")
+        if binary is None:
+            if os.environ.get("CI"):
+                pytest.fail("Native Codex is required for provider config merge validation in CI")
+            pytest.skip("Native Codex is required for provider config merge validation")
+        self._patch(tmp_path, monkeypatch)
+        codex.CODEX_CONFIG_PATH.write_text(
+            codex.tomlkit.dumps(codex.render_overlay(WS, provider="cat.s.mps", relayed=True)),
+            encoding="utf-8",
+        )
+        user_config = tmp_path / "config.toml"
+        user_config.write_text(
+            'model_provider = "Databricks"\n'
+            'model_reasoning_effort = "low"\n'
+            "[model_providers.Databricks]\n"
+            'name = "User provider"\n'
+            'base_url = "http://127.0.0.1:9/v1"\n'
+            'wire_api = "responses"\n'
+            "[model_providers.Databricks.auth]\n"
+            'command = "unused-auth-command"\n',
+            encoding="utf-8",
+        )
+        doc = read_toml_safe(user_config)
+        block = codex._provider_block(WS, None, provider="desktop.s.mps", relayed=True)
+        block["base_url"] = "http://127.0.0.1:54320/v1"
+        block["http_headers"]["X-Desktop-Only"] = "stale-desktop"
+        doc["model_providers"][codex.CODEX_APP_RELAY_PROVIDER_NAME] = block
+        codex.write_toml_file(user_config, doc)
+        original = user_config.read_bytes()
+        launches = []
+        login = Mock()
+        monkeypatch.setattr(codex, "_ensure_chatgpt_login", login)
+        # Only config parsing runs; no login or relay inference is needed.
+        relay = Mock(return_value=(Mock(server_address=("127.0.0.1", 54321)), Mock(), Mock()))
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", relay)
+        monkeypatch.setattr(
+            codex, "_run_codex", lambda state, argv, *a, **kw: launches.append(argv)
+        )
+
+        codex.launch(
+            {"workspace": WS, "codex_relayed": True, "_codex_launch_provider": "cat.s.mps"},
+            tool_args,
+            options=LaunchOptions(),
+        )
+        if tool_args == ["update"]:
+            login.assert_not_called()
+            relay.assert_not_called()
+        assert 'model_provider="DatabricksCliRelay"' in launches[0]
+        monkeypatch.setattr(subprocess_cross_os, "shutil", shutil)
+        home = tmp_path / "home"
+        home.mkdir()
+        cwd = tmp_path / "work"
+        cwd.mkdir()
+        proc = subprocess_cross_os.popen(
+            [binary, *launches[0][1:], "app-server"],
+            env={**clean_environment(home), "CODEX_HOME": str(tmp_path)},
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+            **process_group_options(),
+        )
+        responses = queue.Queue()
+
+        def read_responses():
+            for line in proc.stdout:
+                try:
+                    responses.put(json.loads(line))
+                except json.JSONDecodeError as exc:
+                    responses.put({"reader_error": f"Invalid app-server JSON: {exc}"})
+                    return
+            responses.put({"reader_error": "App-server stdout closed before response"})
+
+        reader = threading.Thread(target=read_responses, daemon=True)
+        reader.start()
+
+        def request(request_id, method, params):
+            proc.stdin.write(
+                json.dumps({"id": request_id, "method": method, "params": params}) + "\n"
+            )
+            proc.stdin.flush()
+            deadline = time.monotonic() + 20
+            while (remaining := deadline - time.monotonic()) > 0:
+                response = responses.get(timeout=remaining)
+                assert "reader_error" not in response, response.get("reader_error")
+                if response.get("id") == request_id:
+                    assert "error" not in response
+                    return response["result"]
+            pytest.fail(f"Native Codex app-server timed out waiting for {method}")
+
+        try:
+            request(1, "initialize", {"clientInfo": {"name": "ug-relay-test", "version": "1"}})
+            proc.stdin.write('{"method":"initialized","params":{}}\n')
+            proc.stdin.flush()
+            effective = request(2, "config/read", {"includeLayers": False})
+            block = effective["config"]["model_providers"][codex.CODEX_CLI_RELAY_PROVIDER_NAME]
+            assert block["auth"] is None
+            assert block["requires_openai_auth"] is True
+            assert block["base_url"] == (
+                "http://127.0.0.1/v1" if tool_args == ["update"] else "http://127.0.0.1:54321/v1"
+            )
+            assert block["http_headers"][codex.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+            assert "X-Desktop-Only" not in block["http_headers"]
+        finally:
+            with contextlib.suppress(BrokenPipeError):
+                proc.stdin.close()
+            stop_process(proc)
+            reader.join(timeout=5)
+            assert not reader.is_alive(), "Native Codex app-server kept stdout open after cleanup"
+            proc.stdout.close()
+        assert user_config.read_bytes() == original
 
     def test_relayed_launch_logs_in_when_not_chatgpt(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
@@ -2119,24 +2272,67 @@ class TestCodexManagedConfig:
         assert "auth" in provider
         assert "codex_relayed" not in state
 
-    def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "provider_name", ["Databricks", "DatabricksRelay", "DatabricksCliRelay"]
+    )
+    def test_relayed_rejects_managed_provider_override(self, tmp_path, monkeypatch, provider_name):
         _, managed_path = self._patch(tmp_path, monkeypatch)
         managed_path.parent.mkdir(parents=True)
         managed_path.write_text(
-            'model_provider = "Databricks"\n[model_providers.Databricks]\nbase_url = "x"\n',
+            f'model_provider = "{provider_name}"\n[model_providers.{provider_name}]\nbase_url = "x"\n',
             encoding="utf-8",
         )
 
-        with pytest.raises(RuntimeError, match=r"model_provider, .*base_url.*ug revert"):
+        expected = (
+            r"model_provider.*ug revert"
+            if provider_name == "Databricks"
+            else r"model_provider, .*base_url.*ug revert"
+        )
+        with pytest.raises(RuntimeError, match=expected):
             codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
 
         # requirements.toml replaces the whole entry, so even a name-only one would drop the relay.
         requirements = tmp_path / "ProgramData" / "requirements.toml"
         requirements.parent.mkdir(parents=True)
-        requirements.write_text('[model_providers.Databricks]\nname = "x"\n', encoding="utf-8")
+        requirements.write_text(
+            f'[model_providers.{provider_name}]\nname = "x"\n', encoding="utf-8"
+        )
         monkeypatch.setattr(codex, "codex_managed_config_path", lambda: requirements)
-        with pytest.raises(RuntimeError, match=r"define model_providers\.Databricks at"):
+        if provider_name == "Databricks":
+            original = requirements.read_bytes()
             codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+            assert requirements.read_bytes() == original
+        else:
+            with pytest.raises(RuntimeError, match=rf"define model_providers\.{provider_name} at"):
+                codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+    @pytest.mark.parametrize("provider_name", ["DatabricksRelay", "DatabricksCliRelay"])
+    def test_relayed_rejects_managed_auth_without_provider_selection(
+        self, tmp_path, monkeypatch, provider_name
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        managed_path.parent.mkdir(parents=True)
+        managed_path.write_text(
+            f'[model_providers.{provider_name}]\nauth = {{ command = "auth" }}\n',
+            encoding="utf-8",
+        )
+
+        with pytest.raises(
+            RuntimeError, match=rf"model_providers\.{provider_name}\.auth.*ug revert"
+        ):
+            codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+
+    @pytest.mark.parametrize("filename", ["managed_config.toml", "requirements.toml"])
+    def test_relayed_preserves_unrelated_managed_provider(self, tmp_path, monkeypatch, filename):
+        self._patch(tmp_path, monkeypatch)
+        path = tmp_path / filename
+        path.write_text(
+            '[model_providers.Databricks]\nbase_url = "https://example.test/v1"\nauth = { command = "auth" }\n'
+        )
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: path)
+        original = path.read_bytes()
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert path.read_bytes() == original
 
     def test_relayed_state_requires_relay_compatible_scope(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
