@@ -403,15 +403,28 @@ class TestCujSmartRouting(BaseCujTest):
                     expected_model
                 )
                 evidence.assert_applied(task, supported, expected=expected_model)
-                if agent == CODEX and subagent_routed:
-                    assert "x-codex-turn-metadata" in inference.headers, (
-                        f"{agent}: missing x-codex-turn-metadata on parent inference"
+                if agent == CODEX:
+                    if subagent_routed:
+                        assert "x-codex-turn-metadata" in inference.headers, (
+                            f"{agent}: missing x-codex-turn-metadata on parent inference"
+                        )
+                    launch_metadata = json.loads(
+                        inference.headers.get("x-codex-turn-metadata", "{}")
                     )
-                launch_metadata = (
-                    inference.payload
-                    if agent == CLAUDE
-                    else json.loads(inference.headers.get("x-codex-turn-metadata", "{}"))
-                )
+                    assert "smart_router_recipe_name" not in inference.payload
+                    if subagent_routed:
+                        assert launch_metadata["agent_name"] == "/root"
+                        assert launch_metadata["smart_router_state"] == "on"
+                    else:
+                        assert "smart_router_state" not in launch_metadata
+                    assert inference.headers.get(
+                        "databricks-smart-router-recipe"
+                    ) == launch_metadata.get("smart_router_recipe_name")
+                elif agent == CLAUDE:
+                    launch_metadata = inference.payload
+                    assert "databricks-smart-router-recipe" not in inference.headers
+                else:
+                    raise AssertionError(f"Unsupported agent: {agent}")
                 launch_recipe = launch_metadata.get("smart_router_recipe_name")
                 if subagent_routed:
                     assert (
@@ -423,16 +436,6 @@ class TestCujSmartRouting(BaseCujTest):
                         assert routes[0].payload["route_selector"]["router_name"] == launch_recipe
                 else:
                     assert "smart_router_recipe_name" not in launch_metadata
-                if agent == CODEX:
-                    assert "smart_router_recipe_name" not in inference.payload
-                    if subagent_routed:
-                        assert launch_metadata["agent_name"] == "/root"
-                        assert launch_metadata["smart_router_state"] == "on"
-                    else:
-                        assert "smart_router_state" not in launch_metadata
-                    assert inference.headers.get("databricks-smart-router-recipe") == launch_recipe
-                else:
-                    assert "databricks-smart-router-recipe" not in inference.headers
                 assert (ORCHESTRATOR_CONTEXT.encode() in inference.body) == orchestrator_enabled, (
                     agent
                 )
@@ -519,21 +522,19 @@ class TestCujSmartRouting(BaseCujTest):
                         assert "x-codex-turn-metadata" in inference.headers, (
                             f"{agent}: missing x-codex-turn-metadata on child inference"
                         )
-                    child_metadata = (
-                        inference.payload
-                        if agent == CLAUDE
-                        else json.loads(inference.headers["x-codex-turn-metadata"])
-                    )
-                    assert child_metadata.get("smart_router_recipe_name") == launch_recipe
-                    if agent == CODEX:
+                        child_metadata = json.loads(inference.headers["x-codex-turn-metadata"])
                         assert child_metadata["agent_name"].startswith("/root/")
                         assert child_metadata["agent_name"].endswith("__sr_on")
                         assert "smart_router_recipe_name" not in inference.payload
                         assert (
                             inference.headers.get("databricks-smart-router-recipe") == launch_recipe
                         )
-                    else:
+                    elif agent == CLAUDE:
+                        child_metadata = inference.payload
                         assert "databricks-smart-router-recipe" not in inference.headers
+                    else:
+                        raise AssertionError(f"Unsupported agent: {agent}")
+                    assert child_metadata.get("smart_router_recipe_name") == launch_recipe
                 else:
                     assert read_jsonl(decisions_path) == original_decisions
                     assert not any(
