@@ -38,6 +38,7 @@ from ucode.agents import (
     configure_selected_tools,
     configure_single_tool,
     configure_tool,
+    default_model_for_tool,
     ensure_bootstrap_dependencies,
     ensure_provider_state,
     explicit_model_arg_value,
@@ -58,7 +59,6 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
-from ucode.agents import pi as pi_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
@@ -1811,7 +1811,7 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
         return copilot_agent.default_model(state)
     if tool == "pi" and models:
         # Pi skips a managed default or model it can't serve, so report the model it starts on.
-        return pi_agent.default_model(state)
+        return default_model_for_tool("pi", state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit

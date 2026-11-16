@@ -831,11 +831,22 @@ class TestUnservableModels:
         assert pi._managed_model_families(gpt_oss_only) == ({}, ["system.ai.gpt-oss-120b"], [])
         assert pi.default_model(gpt_oss_only) == "system.ai.gpt-oss-120b"
 
-    def test_excluded_managed_default_is_not_the_default(self):
+    @pytest.mark.parametrize(
+        "excluded",
+        [
+            "system.ai.claude-opus-4-1",
+            # The legacy `claude-<major>-<minor>-<family>` scheme has no recognized family.
+            "system.ai.claude-3-7-sonnet",
+            "databricks-claude/system.ai.claude-3-7-sonnet",
+        ],
+    )
+    def test_excluded_managed_default_is_not_the_default(self, excluded):
         state = {
-            "pi_default_model": "system.ai.claude-opus-4-1",
-            "pi_models": ["system.ai.claude-opus-4-1", "system.ai.gpt-5"],
+            "pi_default_model": excluded,
+            "pi_models": [excluded, "system.ai.gpt-5"],
         }
+
+        assert not pi.serves_pi_model(excluded)
 
         assert pi.default_model(state) == "system.ai.gpt-5"
         assert pi.default_model({**state, "pi_default_model": "system.ai.gpt-oss-120b"}) == (
@@ -868,13 +879,15 @@ class TestGeminiEnvironment:
         assert env["GOOGLE_GENAI_USE_ENTERPRISE"] == "True"
         warn.assert_not_called()
 
-    @pytest.mark.parametrize("key_var", ["GEMINI_API_KEY", "GOOGLE_API_KEY"])
-    def test_warns_when_a_gemini_api_key_meets_the_rewritten_switch(self, monkeypatch, key_var):
+    @pytest.mark.parametrize("key_var", ["GEMINI_API_KEY", "GOOGLE_API_KEY", None])
+    def test_warns_whenever_a_switch_is_rewritten(self, monkeypatch, key_var):
+        # ADC users without an API key lose Vertex mode in Pi's shell too.
         monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
         monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
         monkeypatch.delenv("GEMINI_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.setenv(key_var, "key")
+        if key_var is not None:
+            monkeypatch.setenv(key_var, "key")
 
         with patch("ucode.agents.pi.print_warning") as warn:
             env = pi.build_runtime_env("tok")
@@ -884,8 +897,8 @@ class TestGeminiEnvironment:
         assert "GOOGLE_GENAI_USE_VERTEXAI=false" in message
         assert "vertexai=True" in message
 
-    @pytest.mark.parametrize(("switch", "api_key"), [("true", ""), ("false", "key"), (None, "key")])
-    def test_no_warning_without_a_rewrite_and_an_api_key(self, monkeypatch, switch, api_key):
+    @pytest.mark.parametrize(("switch", "api_key"), [("false", "key"), (None, "key"), ("0", "")])
+    def test_no_warning_without_a_rewrite(self, monkeypatch, switch, api_key):
         monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", api_key)
@@ -968,6 +981,29 @@ class TestGeminiEnvironment:
         assert env["GOOGLE_GENAI_USE_ENTERPRISE"] == "false"
         assert "GOOGLE_GENAI_USE_VERTEXAI" not in env
 
+    @pytest.mark.parametrize(
+        "state",
+        [
+            {"gemini_models": ["system.ai.gemini-3-1-pro"]},
+            {"pi_models": ["system.ai.gpt-5"], "gemini_models": ["system.ai.gemini-3-1-pro"]},
+            {"pi_models": ["system.ai.kimi-k2-7-code"], "gemini_models": ["system.ai.gemini-3"]},
+        ],
+    )
+    def test_launch_override_matches_the_written_gemini_provider(
+        self, tmp_path, monkeypatch, state
+    ):
+        # `launch` and `write_tool_config` read the same family split, so they can't drift.
+        TestWriteToolConfig()._setup(tmp_path, monkeypatch)
+        with patch("ucode.agents.pi.save_state"):
+            pi.write_tool_config(
+                {"workspace": WS, "base_urls": {"pi": _base_urls()}, **state},
+                pi.default_model(state),
+                token="tok",
+            )
+
+        providers = json.loads((tmp_path / "models.json").read_text())["providers"]
+        assert pi._has_gemini(state) == ("databricks-gemini" in providers)
+
 
 class TestManagedModelEntries:
     def test_managed_models_get_per_model_entries(self, tmp_path, monkeypatch):
@@ -1012,17 +1048,27 @@ class TestExcludedSelectedModel:
             )
         return warn
 
-    def test_old_claude_falls_back_to_the_default_with_a_warning(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "excluded",
+        [
+            "system.ai.claude-opus-4-1",
+            "system.ai.claude-3-7-sonnet",
+            "databricks-claude/system.ai.claude-3-7-sonnet",
+        ],
+    )
+    def test_old_claude_falls_back_to_the_default_with_a_warning(
+        self, tmp_path, monkeypatch, excluded
+    ):
         state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}}
 
-        warn = self._write(tmp_path, monkeypatch, state, "system.ai.claude-opus-4-1")
+        warn = self._write(tmp_path, monkeypatch, state, excluded)
 
         written = json.loads((tmp_path / "models.json").read_text())
         settings = json.loads((tmp_path / "settings.json").read_text())
         assert written["model"] == "databricks-claude/system.ai.claude-opus-5-5"
         assert settings["defaultModel"] == "system.ai.claude-opus-5-5"
         warn.assert_called_once()
-        assert "system.ai.claude-opus-4-1" in warn.call_args.args[0]
+        assert excluded in warn.call_args.args[0]
         assert "Starting on system.ai.claude-opus-5-5" in warn.call_args.args[0]
 
     def test_old_claude_without_another_model_is_an_actionable_error(self, tmp_path, monkeypatch):
