@@ -2346,11 +2346,27 @@ _MODEL_TOKEN_LIMITS: dict[str, dict[str, int]] = {
 }
 
 
+def _lookup_canonical_limits(
+    table: tuple[tuple[str, dict[str, int]], ...], model_id: str
+) -> dict[str, int] | None:
+    """The first ``table`` limits whose key is ``model_id``'s canonical name or a `<key>-` prefix
+    of it, or None."""
+    name = canonical_model_name(model_id)
+    for key, limits in table:
+        if name == key or name.startswith(f"{key}-"):
+            return dict(limits)
+    return None
+
+
 def model_token_limits(model_id: str) -> dict[str, int] | None:
     """Return ``{"context": ..., "output": ...}`` limits for ``model_id``, or None.
 
-    Matches by family substring (e.g. any ``*glm*`` id). None means the model
-    has no known limits and the agent should not pin any."""
+    Per-model MLflow limits (``_OSS_TOKEN_LIMITS``) win; otherwise matches by family substring
+    (e.g. any ``*glm*`` id). None means the model has no known limits and the agent should not
+    pin any."""
+    per_model = _lookup_canonical_limits(_OSS_TOKEN_LIMITS, model_id)
+    if per_model is not None:
+        return per_model
     for family, limits in _MODEL_TOKEN_LIMITS.items():
         if family in model_id:
             return dict(limits)
@@ -2388,11 +2404,7 @@ _GPT_FALLBACK_LIMITS = {"context": 128_000, "output": 16_384}
 
 def gpt_model_token_limits(model_id: str) -> dict[str, int]:
     """``{"context": ..., "output": ...}`` for a GPT model, else a conservative 128K/16K."""
-    name = canonical_model_name(model_id)
-    for family, limits in _GPT_TOKEN_LIMITS:
-        if name == family or name.startswith(f"{family}-"):
-            return dict(limits)
-    return dict(_GPT_FALLBACK_LIMITS)
+    return _lookup_canonical_limits(_GPT_TOKEN_LIMITS, model_id) or dict(_GPT_FALLBACK_LIMITS)
 
 
 # Gemini 2.5+ text models share a 1M context and 64K output. Image-generation variants (`-image`)
@@ -2426,11 +2438,7 @@ _OSS_FALLBACK_LIMITS = {"context": 128_000, "output": 8_192}
 def oss_model_token_limits(model_id: str) -> dict[str, int]:
     """``{"context": ..., "output": ...}`` for an MLflow chat model, never uncapped.
 
-    Falls back to the family limits of ``model_token_limits``, then to a conservative floor."""
-    name = canonical_model_name(model_id)
-    for family, limits in _OSS_TOKEN_LIMITS:
-        if name == family or name.startswith(f"{family}-"):
-            return dict(limits)
+    Per-model and family limits come from ``model_token_limits``, then a conservative floor."""
     return model_token_limits(model_id) or dict(_OSS_FALLBACK_LIMITS)
 
 

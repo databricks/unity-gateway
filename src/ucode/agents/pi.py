@@ -491,9 +491,11 @@ def _usable_model(state: dict, model: str) -> str:
 
     An admin's managed default or a budget recommendation can name a Claude model older than
     4.5. Pi would start on a model no provider lists, so it starts on its default instead, as
-    Copilot does for a recommended model it can't serve.
+    Copilot does for a recommended model it can't serve. An explicit selector for another Pi
+    provider (`openai/o3`) is the user's own choice and is kept.
     """
-    if serves_pi_model(model):
+    provider, separator, _ = model.partition("/")
+    if (separator and provider not in PROVIDER_NAMES) or serves_pi_model(model):
         return model
     reason = (
         "Claude models older than 4.5 reject Pi's requests"
