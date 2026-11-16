@@ -220,7 +220,7 @@ try {
   if (-not $resp.access_token) { throw 'Token request returned no access_token.' }
   $env:DATABRICKS_BEARER = $resp.access_token
   $env:UG_SKIP_OS_SETTINGS = $null
-  $null | & (Join-Path $BinDir 'ug.exe') configure --global --workspace $Workspace --agents claude,codex
+  $null | & (Join-Path $BinDir 'ug.exe') configure --global --mdm --workspace $Workspace --agents claude,codex
   if ($LASTEXITCODE -ne 0) { throw "ug configure failed: $LASTEXITCODE" }
 } finally {
   $env:DATABRICKS_BEARER = $previousBearer
