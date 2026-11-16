@@ -842,7 +842,7 @@ output stays out of helper errors and streams.
 Shared CLI discovery checks pin the newest absolute binary through recovery and
 reject a missing CLI before token fetch or browser login.
 `../test_databricks.py::TestDatabricksCliResolution` also checks macOS Homebrew and
-user-local discovery with a Dock-style, empty, or unset PATH, preserving an existing
+user-local discovery with a Dock-style PATH, preserving an existing
 PATH installation and leaving other platforms unchanged. A Desktop auth component
 case checks token fetch through the resolved user-local binary. Filesystem/version
 or auth subprocess boundaries are controlled; native Dock launch remains untested.

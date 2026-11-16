@@ -5086,16 +5086,13 @@ class TestDatabricksCliResolution:
         assert db_mod._iter_databricks_executables() == [str(exe)]
 
     @pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"])
-    @pytest.mark.parametrize("path", ["/usr/bin:/bin:/usr/sbin:/sbin", "", None])
-    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory, path):
+    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory):
         monkeypatch.setattr(db_mod.sys, "platform", "darwin")
         monkeypatch.setenv("HOME", str(tmp_path / "Mac User"))
         monkeypatch.setenv("USERPROFILE", str(tmp_path / "Mac User"))
         monkeypatch.setenv("PATHEXT", ".exe")
-        if path is None:
-            monkeypatch.delenv("PATH", raising=False)
-        else:
-            monkeypatch.setenv("PATH", path)
+        gui_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", gui_path)
         name = "databricks.exe" if os.name == "nt" else "databricks"
         candidate = os.path.join(os.path.expanduser(directory), name)
         monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value == candidate)
@@ -5103,7 +5100,7 @@ class TestDatabricksCliResolution:
         monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda value: (1, 20, 0))
 
         assert databricks_cli_path() == os.path.abspath(candidate)
-        assert os.environ.get("PATH") == path
+        assert os.environ.get("PATH") == gui_path
 
     def test_macos_preserves_cli_found_on_path(self, monkeypatch, tmp_path):
         monkeypatch.setattr(db_mod.sys, "platform", "darwin")

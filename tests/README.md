@@ -548,7 +548,7 @@ browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
 macOS CLI discovery regressions in `test_databricks.py::TestDatabricksCliResolution`
-cover Homebrew and user-local installs with a Dock-style, empty, or unset PATH.
+cover Homebrew and user-local installs with a Dock-style PATH.
 They preserve existing PATH selection and keep fallback searches macOS-only.
 `test_desktop_auth.py` also checks token fetch through the resolved user-local CLI.
 These component checks control filesystem/version or auth subprocess boundaries;
