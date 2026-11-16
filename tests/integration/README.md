@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
+real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
+failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
+exercise live sudo or Codex startup.
+
 `../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
 fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
 checks run on both platforms. These are not live GitHub or credentialed integration checks.
