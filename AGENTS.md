@@ -34,7 +34,7 @@ Tests live in `tests/`.
   - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
-- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
+- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Only members/owners may request a run that executes PR code with CI secrets (as in `fork-integration.yml`), after reviewing the changes. Review commands that run no PR code (`ug-review.yml`) may also let GitHub-classified `CONTRIBUTOR`s request their own PR; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 
 ## CLI performance metrics

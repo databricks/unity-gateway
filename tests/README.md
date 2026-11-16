@@ -43,6 +43,8 @@ transport/backend validation limits.
 
 The busy-child journey passes its full assignment through an ordinary input file and
 uses absolute input paths so a child changing directories can still run its gate command.
+The exact gate command is fenced separately from prose to keep instruction words out
+of the copied shell command.
 It distinguishes the follow-up receipt from the original answer. Continuity assertions
 remain the same; model task omission or a stale answer still fails the journey.
 
@@ -1195,7 +1197,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
-| `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
+| `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference`, `test_cuj_claude_mps_smart_routing_header` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, Claude TUI, and Claude smart-routing cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; inference cases record the MPS target header, model, paired HTTP 200, and completed greeting. The smart-routing case checks the managed MPS header on first-prompt and delegated-task router requests, their HTTP 200 responses, and completed native turns. Request IDs correlate greeting traffic. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
 | `test_ug_configure_claude_foundry_mps` | Select Foundry MPS in the real configure picker; launch Claude without an explicit model | Saved provider and Haiku/Sonnet deployment defaults; completed TUI file task on Sonnet; normal exit |
@@ -1219,10 +1221,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_claude_headless_allow_all_bedrock_provider` | Launch Claude through the Bedrock MPS with `allow_all_targets` and no declared targets, explicitly selecting `us.anthropic.claude-sonnet-4-6` | Structured final answer contains the file value; inference completes through Bedrock; no routing |
 | `test_ug_codex_headless_prompt_argument`, `test_ug_codex_headless_prompt_stdin`, `test_ug_codex_headless_prompt_after_separator` | Run Codex from a script using each prompt form | Completed turn and final answer contain the file value; exit zero; no routing |
 | `test_ug_copilot_headless_completes_file_task`, `test_ug_copilot_headless_gpt_responses_task` | Run Copilot CLI from a script (`-p ... --output-format json`) on a Claude model (Anthropic Messages) and a GPT model (Responses) | Completed turn whose assistant message contains the file value and was sent as the requested model; the session started on the matching registry provider; no file under the session home holds the Databricks credential; no session registry left (non-blocking CI lane) |
-| `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `dbx-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `dbx-anthropic` and `dbx-responses` (non-blocking CI lane) |
-| `test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions` | One configure, then headless tasks on a GLM, a Kimi and a DeepSeek model named by catalog id | Each answer contains its file value and was sent as the requested model; every session started on `dbx-completions`; the saved catalog lists all three, DeepSeek coming from the model-services listing (non-blocking CI lane) |
+| `test_ug_copilot_one_setup_runs_claude_then_gpt_by_provider_ref` | One configure, then headless tasks on a Claude model older than its family's newest (only the full catalog registers it) and a GPT model chosen as `databricks-responses/<model>` | Each answer contains its file value and was sent as the requested model; sessions started on `databricks` and `databricks-responses` (non-blocking CI lane) |
+| `test_ug_copilot_one_setup_runs_glm_kimi_and_deepseek_on_chat_completions` | One configure, then headless tasks on a GLM, a Kimi and a DeepSeek model named by catalog id | Each answer contains its file value and was sent as the requested model; every session started on `databricks-completions`; the saved catalog lists all three, DeepSeek coming from the model-services listing (non-blocking CI lane) |
 | `test_ug_copilot_unknown_model_lists_available_models` | Interactive launch with a model the workspace doesn't have | Exit 1 before Copilot starts; stderr names the model and lists the available ones, without `claude-opus-4-1`; no session registry left (non-blocking CI lane) |
-| `test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command` | TUI: answer folder trust, Claude task, `/model dbx-responses/<model>`, GPT task, `/exit` | Both answers sent as the Claude then GPT model; the session records the switch; normal exit; no session registry left (non-blocking CI lane) |
+| `test_ug_copilot_tui_switches_from_claude_to_gpt_with_model_command` | TUI: answer folder trust, Claude task, `/model databricks-responses/<model>`, GPT task, `/exit` | The footer shows the Claude model's readable label; both answers sent as the Claude then GPT model; the switch notice names both models without `system.ai.`; the session records the switch; normal exit; no session registry left (non-blocking CI lane) |
 | `test_ug_copilot_refreshes_a_revoked_token_mid_session`, `test_ug_copilot_reports_expired_sign_in` | Sign in through `DATABRICKS_BEARER_COMMAND` minting short-lived PATs; mid-task the agent revokes them (or also signs out) | Revoked: a token is minted after the revocation and the task completes without restarting Copilot. Signed out: output shows "Databricks sign-in expired" with `databricks auth login`; the failure is in `~/.ucode/logs/copilot-proxy.log`, not the terminal (non-blocking CI lane) |
 | `test_ug_configure_copilot_repeat_and_revert` | Configure Copilot twice over a user-owned `~/.copilot/mcp-config.json`, run a GPT task, revert twice | Task completes; no file holds the bearer; revert removes `~/.copilot/ucode.env`, leaves the user file byte-identical and reports Not Configured. (non-blocking CI lane) |
 | `test_ug_mcp_add_copilot_registers_server_in_copilot_config` | Over a developer-owned, disabled server in `~/.copilot/mcp-config.json`, configure Copilot, `ug mcp add --agents copilot --names system.ai.web_search`, run a headless task that calls the tool, then revert | `copilot mcp list --json` lists ug's server from the user config, enabled, next to the developer's still-disabled one; `ug mcp list --agents copilot` reports it enabled; Copilot's session events record a successful call loaded from the user config; revert leaves only the developer's server and no legacy `ucode-mcp-config.json` (non-blocking CI lane) |
@@ -1429,10 +1431,9 @@ pending. The advisory Windows installation and headless lanes are not part of `A
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
-job. Org members can comment `/integration-test` on any PR; GitHub-classified `CONTRIBUTOR`s
-can request it only on their own PR. `/integration-test <sha>` additionally requires the
-current head to match that commit. Integration runs with CI secrets: this policy trusts
-prior contributors to run their own PR code. First-time contributors still need a member.
+job. Only org members can comment `/integration-test`, on any PR: integration runs the PR's
+code with CI secrets, so a member reviews the changes first and other contributors ask one.
+`/integration-test <sha>` additionally requires the current head to match that commit.
 It posts a `Fork integration` status, and works on in-repo PRs too as an on-demand rerun.
 Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
@@ -1450,9 +1451,9 @@ is removed. `test_polly_review.py` covers the Polly review workflow contract and
 summary helper. `/user-journey-check` runs the user-journey gate,
 which runs automatically only for in-repo PRs.
 `test_comment_command_authorization.py` evaluates integration/review job guards with synthetic
-GitHub events: members on any PR, prior contributors on their own PR, rejected first-time
-and unrelated contributors, integration commands with or without a SHA, ordinary comments,
-and non-PR issues. These component checks do not establish live GitHub event delivery or
+GitHub events: members on any PR, prior contributors on their own PR for review only (rejected
+for integration), rejected first-time and unrelated contributors, integration commands with or
+without a SHA, ordinary comments, and non-PR issues. These component checks do not establish live GitHub event delivery or
 the timing of GitHub's contributor classification.
 
 ## Gaps and deferred scope
@@ -1642,6 +1643,10 @@ Launch fallback, workspace-cache isolation, and wildcard configure failures lack
 component coverage. No installed-agent journey currently covers mixed wildcard sources or
 proves inference with qualified MPS models.
 
+Copilot CLI registry label checks cover human-readable labels for qualified catalog models,
+duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names
+remain raw so regional target distinctions are preserved. Native picker and inference validation
+remain separate from these component checks.
 
 ## Security scan rollout
 

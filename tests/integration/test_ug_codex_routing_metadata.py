@@ -146,8 +146,11 @@ def test_codex_routing_toggle_preserves_busy_child_and_nested_registry(
         '& "$env:UCODE_SMART_ROUTER_PYTHON"' if os.name == "nt" else '"$UCODE_SMART_ROUTER_PYTHON"'
     )
     assignment = (
-        f'Run {python} "{gate}" exactly once. This command waits for a release file; '
-        "let it run without restarting it. After it finishes, spawn exactly one child with "
+        "Execute this exact command once, copying only the code block contents:\n\n"
+        f"```{'powershell' if os.name == 'nt' else 'sh'}\n"
+        f'{python} "{gate}"\n```\n\n'
+        "This command waits for a release file; let it run without restarting it. "
+        "After it succeeds, spawn exactly one child with "
         f'task_name nested, fork_turns none, asking it to read "{secret}" and return its '
         "entire contents. Then use send_message to send 'old sibling reached new sibling' "
         "to /root/new__sr_off. Wait for your child's answer and return that value."
