@@ -527,7 +527,7 @@ def arguments(
     parser.add_argument(
         "--codex-relayed-provider",
         default="main.ucode.ci_e2e_openai_relay_mps",
-        help="Existing relayed (ChatGPT-subscription relay) OpenAI MPS for the Codex relay CUJs.",
+        help="Existing relayed OpenAI MPS for the Codex login and inference check.",
     )
     parser.add_argument(
         "--codex-custom-provider",

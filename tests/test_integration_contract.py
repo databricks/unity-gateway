@@ -263,6 +263,12 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             )
         assert "- agent: codex\n            smart_routing: true" in jobs["managed"]
         full |= routing
+        relay = _collect_integration_cases(_ci_marker_expression(jobs["codex-relay"], agent))
+        assert relay == {
+            "test_ug_codex_relayed.py::test_ug_codex_relayed_completes_inference_through_the_relay"
+        }
+        assert not (smoke | full) & relay
+        full |= relay
     # Full skips smoke cases only because smoke runs them on the same OS matrix.
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
@@ -275,6 +281,22 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         assert not selected & staging
         selected |= staging
     assert selected == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
+    jobs = _integration_jobs()
+    relay = jobs["codex-relay"]
+    assert "group: databricks-protected-runner-group" in relay
+    assert "labels: linux-ubuntu-latest" in relay
+    assert "CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}" in relay
+    assert "CODEX_ACCESS_TOKEN" not in jobs["full"]
+    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in relay
+    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in relay
+    assert "steps: *live-steps" in relay
+    assert "continue-on-error:" not in relay
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-relay" in {name.strip() for name in needs.group(1).split(",")}
 
 
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
@@ -594,6 +616,7 @@ FORK_GUARD = (
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
     "anthropic-mps",
+    "codex-relay",
     "cowork-inference-windows",
     "cowork-inference-macos",
     "workspace",
@@ -841,6 +864,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "codex-relay",
         "antigravity",
         "managed",
         "codex-desktop-macos",
@@ -865,6 +889,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "codex-relay",
             "antigravity",
             "managed",
             "codex-desktop-macos",

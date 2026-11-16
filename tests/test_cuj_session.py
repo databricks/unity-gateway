@@ -1,5 +1,7 @@
 """Local environment/artifact safety checks for CUJ helpers."""
 
+import json
+import sys
 from pathlib import Path
 
 from tests.e2e_cuj.helpers.session import UserSession
@@ -52,6 +54,12 @@ def test_integration_session_redacts_relay_token_from_runner_env(tmp_path, monke
 
 def test_integration_session_redacts_codex_access_token_from_runner_env(tmp_path, monkeypatch):
     monkeypatch.setenv("UG_INTEGRATION_CODEX_ACCESS_TOKEN", "codex-access-token")
-    session = IntegrationSession(tmp_path, tmp_path, Path("/installed/ug"), tmp_path / "artifacts")
+    session = IntegrationSession(tmp_path, tmp_path, Path(sys.executable), tmp_path / "artifacts")
 
-    assert session.redact("token=codex-access-token") == "token=<redacted>"
+    result = session.run(
+        "-c", "import sys; print(sys.stdin.read())", input_text="codex-access-token"
+    )
+    assert result.stdout.strip() == "<redacted>"
+    evidence = (session.artifacts / "command-1.json").read_text()
+    assert json.loads(evidence)["stdin"] == "<redacted>"
+    assert "codex-access-token" not in evidence
