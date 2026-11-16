@@ -702,12 +702,7 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
     if tool == "pi":
-        return (
-            bool(state.get("claude_models"))
-            or bool(state.get("codex_models"))
-            or bool(state.get("gemini_models"))
-            or bool(state.get("oss_models"))
-        )
+        return pi.default_model(state) is not None
     return False
 
 

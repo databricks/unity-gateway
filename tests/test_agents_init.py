@@ -333,7 +333,13 @@ class TestCheckGatewayEndpoint:
         assert check_gateway_endpoint({}, "copilot") is False
 
     def test_pi_available_with_claude(self):
-        assert check_gateway_endpoint({"claude_models": {"sonnet": "s4"}}, "pi") is True
+        state = {"claude_models": {"sonnet": "databricks-claude-sonnet-4-5"}}
+        assert check_gateway_endpoint(state, "pi") is True
+
+    def test_pi_unavailable_with_only_pre_4_5_claude(self):
+        # Pi leaves out Claude older than 4.5, so it has no model to configure.
+        state = {"claude_models": {"opus": "databricks-claude-opus-4-1"}}
+        assert check_gateway_endpoint(state, "pi") is False
 
     def test_pi_available_with_codex(self):
         assert check_gateway_endpoint({"codex_models": ["m"]}, "pi") is True
