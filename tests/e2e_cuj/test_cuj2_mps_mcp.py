@@ -388,7 +388,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
     def test_cuj_claude_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Claude inference.
 
-        Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
+        Expected: Claude sends a Messages request for claude-haiku-5-5 with the
         ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
         parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """
