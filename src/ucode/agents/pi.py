@@ -430,12 +430,7 @@ def write_tool_config(
     if token is None:
         token = get_databricks_token(state["workspace"], state.get("profile"))
     pi_base_urls = state.get("base_urls", {}).get("pi") or build_pi_base_urls(state["workspace"])
-    managed_families = _managed_model_families(state)
-    claude_models, codex_models, gemini_models = managed_families or (
-        state.get("claude_models") or {},
-        state.get("codex_models") or [],
-        state.get("gemini_models") or [],
-    )
+    claude_models, codex_models, gemini_models = _effective_model_families(state)
     overlay, managed_keys = render_overlay(
         model,
         build_pi_api_key(state),
@@ -499,8 +494,22 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
     return claude, codex, gemini
 
 
+def _effective_model_families(state: dict) -> tuple[dict[str, str], list[str], list[str]]:
+    """The per-family model inputs ``write_tool_config`` renders: the managed ``pi_models`` split,
+    or workspace-wide discovery when the managed config yields no family Pi serves."""
+    return _managed_model_families(state) or (
+        state.get("claude_models") or {},
+        state.get("codex_models") or [],
+        state.get("gemini_models") or [],
+    )
+
+
 def serves_pi_model(model_id: str) -> bool:
     """Whether Pi has a provider for ``model_id``: Claude 4.5 or newer, GPT or Gemini."""
+    # The legacy `claude-3-7-sonnet` scheme has no family `classify_model_family` recognizes.
+    parsed = claude_version(model_id)
+    if parsed is not None:
+        return parsed[1] >= _MIN_CLAUDE_VERSION
     family = classify_model_family(model_id)
     if family in ANTHROPIC_FAMILIES:
         return _serves_claude_model(model_id)
@@ -509,7 +518,8 @@ def serves_pi_model(model_id: str) -> bool:
 
 def _excluded_model(model: str) -> bool:
     """Whether ``model`` is a Claude model Pi leaves out (older than 4.5)."""
-    return classify_model_family(model) in ANTHROPIC_FAMILIES and not _serves_claude_model(model)
+    parsed = claude_version(model)
+    return parsed is not None and parsed[1] < _MIN_CLAUDE_VERSION
 
 
 def default_model(state: dict) -> str | None:
@@ -544,8 +554,7 @@ def default_model(state: dict) -> str | None:
 
 def _has_gemini(state: dict) -> bool:
     """Whether ``write_tool_config`` gives Pi a ``databricks-gemini`` provider."""
-    families = _managed_model_families(state)
-    return bool(families[2] if families else state.get("gemini_models"))
+    return bool(_effective_model_families(state)[2])
 
 
 def _configure_launch(state: dict) -> str:
@@ -573,12 +582,11 @@ def build_runtime_env(token: str, *, has_gemini: bool = True) -> dict[str, str]:
     rewritten = [name for name in _GOOGLE_VERTEX_SWITCHES if env.get(name, "").lower() == "true"]
     for name in rewritten:
         env[name] = "false"
-    if rewritten and (env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY")):
+    if rewritten:
         switches = ", ".join(f"{name}=false" for name in rewritten)
         print_warning(
-            f"Pi sets {switches} for its Gemini provider while a Gemini API key is set, so "
-            "google-genai code in Pi's shell targets the Gemini API unless it passes "
-            "vertexai=True."
+            f"Pi sets {switches} for its Gemini provider, so google-genai code in Pi's shell "
+            "targets the Gemini API instead of Vertex AI unless it passes vertexai=True."
         )
     return env
 

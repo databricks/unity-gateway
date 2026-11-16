@@ -1023,10 +1023,14 @@ class TestPiLaunch:
     """
 
     def _all_models(self, e2e_state: dict) -> list[tuple[str, str]]:
+        from ucode.agents import pi
+
         out: list[tuple[str, str]] = []
         claude_models: dict = e2e_state.get("claude_models") or {}
         for family, model_id in _launchable_model_items(claude_models):
-            out.append((f"claude-{family}", model_id))
+            # Pi leaves out Claude older than 4.5, which rejects its request shape.
+            if pi.serves_pi_model(model_id):
+                out.append((f"claude-{family}", model_id))
         for model in e2e_state.get("codex_models") or []:
             if not _model_is_skipped(model, "pi"):
                 out.append(("codex", model))
