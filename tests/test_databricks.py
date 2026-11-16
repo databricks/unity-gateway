@@ -3208,6 +3208,24 @@ class TestGetDatabricksToken:
         assert error_labels["process_exit_code"] == 7
         assert capfd.readouterr() == ("", "")
 
+    def test_browser_login_invalidates_cached_bearers(self, tmp_path, monkeypatch):
+        import base64
+        import json
+
+        from ucode import token_cache
+
+        env = self._fake_databricks(tmp_path, "sys.exit(0)")
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        claims = json.dumps({"exp": time.time() + 3600, "sub": "old"}).encode()
+        jwt = f"h.{base64.urlsafe_b64encode(claims).decode().rstrip('=')}.s"
+        token_cache.write(WS, "other", jwt)
+        assert token_cache.lookup(WS, "other") is not None
+        fetches = iter([("", None), ("new-token", 3600)])
+
+        assert db_mod._browser_login(WS, None, env, lambda: next(fetches)) == ("new-token", 3600)
+        assert token_cache.lookup(WS, "other") is None
+
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
         # cache fail with "cache update: exit status 45". That's transient (the

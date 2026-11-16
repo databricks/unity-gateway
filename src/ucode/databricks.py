@@ -1931,6 +1931,9 @@ def _browser_login(
                     )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
+        finally:
+            # The sign-in may change the identity behind a profile; drop cached bearers.
+            clear_databricks_token_cache()
         return fetch()
 
 
