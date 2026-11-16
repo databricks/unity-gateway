@@ -120,7 +120,9 @@ MCP_CLIENTS = {
     },
     "copilot": {
         "binary": "copilot",
-        "display": "GitHub Copilot CLI",
+        # VS Code reads the same user MCP file; `cli_display` names the CLI that `mcp list` probes.
+        "display": "GitHub Copilot (CLI and VS Code)",
+        "cli_display": "GitHub Copilot CLI",
         "list_command": "copilot mcp list --json",
     },
     "cursor": {
@@ -3198,7 +3200,7 @@ def list_mcp_command(agents: set[str] | None = None) -> int:
     )
     # Only mention the enabled/disabled caveat for the agents actually probed through their CLI.
     config_state_clients = [
-        MCP_CLIENTS[client]["display"]
+        MCP_CLIENTS[client].get("cli_display", MCP_CLIENTS[client]["display"])
         for client in ("codex", "copilot")
         if client in probe_clients and client not in config_only
     ]
