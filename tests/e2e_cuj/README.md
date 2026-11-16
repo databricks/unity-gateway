@@ -88,10 +88,10 @@ Claude and Codex discovery cases compare exact native picker inventories; Codex
 also checks its app-server `model/list`. Copilot checks the active per-session
 registry's model IDs and wire providers without archiving its credentials. This
 is registry and completed-task coverage, not a Copilot picker assertion. Every
-model task requires a completed native answer containing a hidden file value and
-successful recorded inference on the exact model. The routing case also requires
-a successful source-scoped decision, a matching native child start, the selected
-model's inference, and completed child and parent answers.
+explicit-model task requires a completed native answer containing a hidden file
+value and successful recorded inference on the exact model. The routing case uses
+the TUI request recorder to pair `routes:select` with an HTTP 200 response selecting
+an offered source model. It also requires completed child and parent answers.
 
 The workspace directly publishes CodingAgentConfig
 `coding-agent-configs/d55f1e06-54bf-42cd-9b2c-19db77da968f`, created on 2026-11-16,

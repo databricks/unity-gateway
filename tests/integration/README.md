@@ -2134,7 +2134,7 @@ assertions, not a live pass. See the
 | --- | --- |
 | Claude, Codex, and Copilot discovery and defaults | Exact native Claude/Codex picker inventories, Codex model/list, active Copilot registry IDs and wire providers, followed by completed native TUI tasks on custom Claude/Codex or hosted Copilot defaults and exact-model HTTP 200 inference |
 | Explicit inference on every source model | Hidden-value tasks on MPS deep links, custom model services, schema wildcards and a provider wildcard; Codex and Copilot send no routing request |
-| Claude-only delegated task | Source-scoped routing options, one successful decision, matching native child start, selected-model child HTTP 200 inference, and completed child and parent answers |
+| Claude-only delegated task | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
 
 Antigravity MCP web-search evidence compares homepage slash variants and ignores
 `utm_source` attribution while retaining the completed-call and official-URL checks.
