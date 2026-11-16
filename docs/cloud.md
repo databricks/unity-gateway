@@ -35,4 +35,4 @@ survival, shared-host workspace routing and automatic project sync are outside t
 
 See [implementation details](cloud-preview.md) and [validation/decisions](cloud-validation.md).
 
-[Watch the recorded CLI journeys](cloud-recordings.md).
+[Watch the recorded CLI journeys](https://github.com/databricks/unity-gateway/pull/1689#recorded-cli-journeys).

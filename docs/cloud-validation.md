@@ -102,7 +102,7 @@ resume, and other image/platform versions require additional coverage before rel
 
 ## Recorded demonstrations
 
-[Four real terminal GIFs](cloud-recordings.md) capture interactive Claude launch/exit,
+[Four real terminal GIFs](https://github.com/databricks/unity-gateway/pull/1689#recorded-cli-journeys) capture interactive Claude launch/exit,
 exact-session picker resume, a headless attempt in an existing environment, and quota
 rejection. The latest captures use minimal commands and default routing. Unlike the earlier
 headless success with routing disabled, the minimal headless command fails because the
