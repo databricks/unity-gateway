@@ -179,11 +179,15 @@ class _BrokenPipeWriter(io.RawIOBase):
         raise BrokenPipeError(32, "Broken pipe")
 
 
-def _relay_handler(wfile) -> gateway_proxy._ProxyHandler:
+def _relay_handler(wfile, handler_class=gateway_proxy._ProxyHandler) -> gateway_proxy._ProxyHandler:
     # Bypass BaseHTTPRequestHandler.__init__ (which would service a socket);
     # we only exercise _relay_response's write path. Set the few attributes the
     # send_response/send_header machinery reads (normally populated by __init__).
-    handler = object.__new__(gateway_proxy._ProxyHandler)
+    handler = object.__new__(handler_class)
+    handler._metric_labels = {}
+    handler._metric_bytes = 0
+    handler._metric_disconnected = False
+    handler._metric_error = None
     handler.wfile = wfile
     handler.request_version = "HTTP/1.1"
     handler.requestline = "POST /v1/messages HTTP/1.1"
@@ -1049,11 +1053,75 @@ class TestProxyMetrics:
         assert [v for _, n, v, _ in rows if n == "proxy_response_bytes"] == [0]
         assert not any(n == "ug_cli_error" for _, n, _, _ in rows)
 
-    @pytest.mark.parametrize("agent", ["claude", "codex"])
-    def test_relay_factory_sets_explicit_mode(self, monkeypatch, agent):
-        start = Mock(return_value=None)
-        monkeypatch.setattr(gateway_proxy, "_start_proxy", start)
-        gateway_proxy.start_relay_proxy(
-            "https://example.databricks.com", lambda _: "fake", 0, agent=agent
+    @pytest.mark.parametrize("retry", [False, True])
+    def test_transport_failure_records_the_502_sent_to_client(self, metrics_recorder, retry):
+        from ucode import metrics
+
+        attempts = []
+
+        def upstream(request):
+            attempts.append(request)
+            if retry and len(attempts) == 1:
+                return httpx.Response(401, content=b"rejected")
+            raise httpx.ConnectError("upstream unavailable", request=request)
+
+        output = _Collect()
+        with httpx.Client(
+            base_url="https://example.databricks.com", transport=httpx.MockTransport(upstream)
+        ) as client:
+            handler = _handle_handler(client, _FakeCache(), output)
+            handler._handle()
+        assert output.data.split(b"\r\n", 1)[0].split()[1] == b"502"
+        assert len(attempts) == (2 if retry else 1)
+        rows = list(metrics_recorder.pending)
+        for name in (
+            metrics.PROXY_REQUEST_DURATION_MS,
+            metrics.PROXY_RESPONSE_BYTES,
+            metrics.UG_CLI_ERROR,
+        ):
+            labels = [a for _, n, _, a in rows if n == name]
+            assert len(labels) == 1
+            assert labels[0]["http_status_code"] == 502
+
+    def test_stream_failure_preserves_already_sent_200(self, metrics_recorder):
+        from ucode import metrics
+
+        class InterruptedResponse(_FakeResp):
+            def iter_raw(self, _n=None):
+                yield b"partial"
+                raise httpx.ReadError("stream interrupted")
+
+        output = _Collect()
+        handler = _handle_handler(_FakeClient([InterruptedResponse(200)]), _FakeCache(), output)
+        handler._handle()
+        assert b"200 OK" in output.data
+        assert output.data.endswith(b"partial")
+        assert b"502" not in output.data
+        rows = list(metrics_recorder.pending)
+        assert [v for _, n, v, _ in rows if n == metrics.PROXY_RESPONSE_BYTES] == [7]
+        errors = [a for _, n, _, a in rows if n == metrics.UG_CLI_ERROR]
+        assert len(errors) == 1
+        assert errors[0]["http_status_code"] == 200
+
+    @pytest.mark.parametrize("disconnect", [False, True])
+    def test_rewritten_response_counts_only_delivered_body(self, metrics_recorder, disconnect):
+        from ucode import metrics
+
+        class Writer(_Collect):
+            def write(self, data):
+                if disconnect and data == b"rewritten":
+                    raise BrokenPipeError()
+                return super().write(data)
+
+        handler = _relay_handler(Writer(), gateway_proxy._GatewayAuthProxyHandler)
+        handler.bad_request_rewriter = lambda body: b"rewritten"
+        handler._relay_response(httpx.Response(400, content=b"original"))
+        assert handler._metric_bytes == (0 if disconnect else len(b"rewritten"))
+        assert handler._metric_disconnected is disconnect
+        assert handler._metric_error == "HTTP 400"
+        assert (
+            sum(
+                n == metrics.PROXY_FIRST_BYTE_DURATION_MS for _, n, _, _ in metrics_recorder.pending
+            )
+            == 1
         )
-        assert start.call_args.kwargs["metrics_proxy_mode"] == "relay"

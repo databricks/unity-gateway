@@ -299,7 +299,6 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     token_header = AI_GATEWAY_TOKEN_HEADER
     # Applied last so neither the agent nor an admin header can select another workspace.
     workspace_selector: Mapping[str, str] = {}
-    _metric_labels: dict[str, object] = {}
     metrics_workspace = ""
     metrics_proxy_mode = "gateway_auth"
 
@@ -378,6 +377,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             **self._metric_labels,
             attempt=attempt,
         )
+
+    def _metric_first_byte(self, started: float) -> int:
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        metrics.record(
+            metrics.PROXY_FIRST_BYTE_DURATION_MS,
+            elapsed_ms,
+            workspace=self.metrics_workspace,
+            **self._metric_labels,
+        )
+        return elapsed_ms
 
     def _forward(self) -> None:
         diagnostic_id = uuid.uuid4().hex[:12]
@@ -520,6 +529,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 error_type=type(exc).__name__,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
+            self._metric_labels["http_status_code"] = 502
             self._safe_send_error(502, "gateway proxy upstream error")
 
     # Streaming passthrough: forward chunks as they arrive so SSE token streaming
@@ -554,13 +564,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             for chunk in resp.iter_raw():
                 if chunk:
                     if first_byte_ms is None:
-                        first_byte_ms = round((time.monotonic() - started) * 1000)
-                        metrics.record(
-                            metrics.PROXY_FIRST_BYTE_DURATION_MS,
-                            first_byte_ms,
-                            workspace=self.metrics_workspace,
-                            **self._metric_labels,
-                        )
+                        first_byte_ms = self._metric_first_byte(started)
                     self.wfile.write(chunk)
                     self.wfile.flush()
                     chunks += 1
@@ -689,8 +693,11 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             or encoding not in ("identity", "gzip", "deflate")
         ):
             return super()._relay_response(resp, **kwargs)
+        started = kwargs.get("started")
+        started = started if started is not None else time.monotonic()
         body = resp.read()
         body = self.bad_request_rewriter(body) or body
+        self._metric_error = "HTTP 400"
         try:
             self.send_response(400)
             for key, value in resp.headers.items():
@@ -698,9 +705,14 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
                     self.send_header(key, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
+            if body:
+                self._metric_first_byte(started)
             self.wfile.write(body)
-        except OSError:
-            pass
+            self.wfile.flush()
+            self._metric_bytes = len(body)
+        except OSError as exc:
+            if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+                self._metric_disconnected = True
 
     def _request_body(self, body: bytes | None) -> bytes | None:
         if body and self.body_rewriter is not None:
