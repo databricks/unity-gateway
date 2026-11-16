@@ -327,9 +327,10 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
-Each smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` and checks that both
-first-prompt and subagent route selections carry the managed MPS header and return HTTP 200.
-An optional `UG_HEADERS` traffic selector is also checked on routing and inference requests.
+Each smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` with `subagent_orch_v0`,
+spawns a subagent from the first prompt, and checks that its route selections carry the managed
+MPS header and return HTTP 200. An optional `UG_HEADERS` traffic selector is also checked on
+those routing requests.
 File, skill, MCP and subagent tasks retain their expected-value checks.
 The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.

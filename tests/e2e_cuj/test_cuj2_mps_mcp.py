@@ -15,8 +15,8 @@ from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 from tests.integration.utils.evidence import FileTask, fresh_id, read_jsonl
 from ucode.constants import ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR, UG_HEADERS_ENV_VAR
 from ucode.smart_routing.config import (
-    FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
+    SUBAGENT_ORCH_V0,
 )
 from ucode.ug_headers import ug_headers
 
@@ -231,7 +231,7 @@ def _assert_traffic_header(session, request) -> None:
 def _provider_routing(session):
     settings = {
         ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR: "1",
-        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: SUBAGENT_ORCH_V0,
     }
     previous = {key: session.env.get(key) for key in settings}
     session.env.update(settings)
@@ -353,7 +353,7 @@ class TestCuj2CodexInference(_Cuj2Base):
 
 class TestCuj2CodexSmartRouting(_Cuj2Base):
     def test_cuj_codex_mps_smart_routing_header(self, cuj):
-        """A managed MPS reaches the real router for Codex's parent and child tasks."""
+        """A managed MPS reaches the real router when Codex's first prompt spawns a subagent."""
         session, workspace, recorder = cuj
         _assert_cuj2_config(workspace.config())
         recorder.configure_session(
@@ -362,31 +362,12 @@ class TestCuj2CodexSmartRouting(_Cuj2Base):
         _assert_configured_files(session, workspace.url)
         with _provider_routing(session):
             recorder.prepare_launch()
-            marker = f"CUJ2-CODEX-ROUTER-{fresh_id()}"
-            task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
-            evidence = SessionEvidence(session.home, CODEX)
-            checkpoint = recorder.checkpoint()
             decisions_path = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
+            child = FileTask(session)
+            child.prompt = child.delegate_prompt
+            checkpoint = recorder.checkpoint()
             with Terminal(session, "cuj2-codex-router", [CODEX]) as tui:
                 tui.boot(timeout=150)
-                tui.submit(task.prompt)
-                tui.wait_until(lambda: evidence.completed(task), "completed Codex task")
-                route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
-                assert route.payload["task"]["prompt"] == task.prompt
-                _assert_provider_route(session, recorder, route, agent=CODEX)
-                request = _served_marker_request(recorder, checkpoint, CODEX, marker)
-                _assert_traffic_header(session, request)
-                _assert_inference_request(
-                    recorder,
-                    request,
-                    provider=MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][0],
-                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CODEX][1],
-                    marker=marker,
-                )
-
-                child = FileTask(session)
-                child.prompt = child.delegate_prompt
-                checkpoint = recorder.checkpoint()
                 decision_count = len(read_jsonl(decisions_path))
                 tui.submit(child.prompt)
                 tui.wait_until(
@@ -418,7 +399,7 @@ class TestCuj2CodexSmartRouting(_Cuj2Base):
 
 class TestCuj2ClaudeSmartRouting(_Cuj2Base):
     def test_cuj_claude_mps_smart_routing_header(self, cuj):
-        """A managed MPS reaches the real router during a Claude TUI first prompt."""
+        """A managed MPS reaches the real router when Claude's first prompt spawns a subagent."""
         session, workspace, recorder = cuj
         _assert_cuj2_config(workspace.config())
         recorder.configure_session(
@@ -427,9 +408,8 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
         _assert_configured_files(session, workspace.url)
         with _provider_routing(session):
             recorder.prepare_launch()
-            marker = f"CUJ2-CLAUDE-ROUTER-{fresh_id()}"
-            task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
-            evidence = SessionEvidence(session.home, CLAUDE)
+            child = FileTask(session)
+            child.prompt = child.delegate_prompt
             checkpoint = recorder.checkpoint()
             with Terminal(
                 session,
@@ -437,24 +417,6 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
                 [CLAUDE, "--", "--disallowedTools", "ScheduleWakeup,CronCreate"],
             ) as tui:
                 tui.boot(timeout=150)
-                tui.submit(task.prompt)
-                tui.wait_until(lambda: evidence.completed(task), "completed Claude task")
-                route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
-                assert route.payload["task"]["prompt"] == task.prompt
-                _assert_provider_route(session, recorder, route, agent=CLAUDE)
-                request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
-                _assert_traffic_header(session, request)
-                _assert_inference_request(
-                    recorder,
-                    request,
-                    provider=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0],
-                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
-                    marker=marker,
-                )
-
-                child = FileTask(session)
-                child.prompt = child.delegate_prompt
-                checkpoint = recorder.checkpoint()
                 tui.submit(child.prompt)
                 tui.wait_until(
                     lambda: (

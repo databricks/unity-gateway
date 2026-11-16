@@ -70,7 +70,7 @@ def test_cuj2_provider_routing_restores_environment_after_failure(previous):
     with pytest.raises(RuntimeError, match="task failed"):
         with cuj2._provider_routing(session):
             assert session.env[keys[0]] == "1"
-            assert session.env[keys[1]] == "first_prompt_and_subagent_no_orch_v0"
+            assert session.env[keys[1]] == "subagent_orch_v0"
             raise RuntimeError("task failed")
     assert session.env == original
 
