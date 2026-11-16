@@ -27,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, metrics
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -72,7 +72,6 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
@@ -240,7 +239,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
-from ucode.ug_headers import parse_header_line
+from ucode.ug_headers import CODING_AGENT_HEADER, parse_header_line, without_header
 from ucode.ui import (
     console,
     heading,
@@ -2277,6 +2276,7 @@ def agents_add(
             f"Added {TOOL_SPECS[tool]['display']} as self-managed. Run `ug {tool}` to use it."
         )
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2305,6 +2305,7 @@ def agents_remove(
         save_state(state)
         print_success(f"Removed {TOOL_SPECS[tool]['display']} from your self-managed list.")
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2346,6 +2347,7 @@ def agents_list_cmd() -> None:
             print_note("No agents set up for this workspace yet.")
         print_note("Add another agent to run it self-managed with `ug agents add <agent>`.")
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2579,6 +2581,7 @@ def mcp_add(
         added = True
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -2616,6 +2619,7 @@ def mcp_remove(
         remove_mcp_command(agents=requested_agents)
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -2648,6 +2652,7 @@ def mcp_list(
     try:
         list_mcp_command(agents=requested_agents)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -3142,6 +3147,7 @@ def auth_token_cmd(
                 workspace, profile, force_refresh=force_refresh, browser_login=browser_login
             )
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     # Write the bare token (with trailing newline) to stdout — nothing else may
@@ -3221,6 +3227,7 @@ def otel_headers_cmd(
         with redirect_stdout(sys.stderr):
             token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     sys.stdout.write(
@@ -3393,6 +3400,7 @@ def claude_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
@@ -3473,6 +3481,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
+        **({"provider": provider} if provider else {}),
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
@@ -3571,6 +3580,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
@@ -3845,10 +3855,8 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
-    return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
-    )
+    """Whether smart routing supports this agent and provider combination."""
+    return not provider or tool == "claude"
 
 
 def _routes_launch(
@@ -3866,7 +3874,7 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services require the external-models gate.
+        # Model Provider Services are supported for Claude only.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
@@ -3969,6 +3977,7 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
+        metrics.start_agent(tool, preflight_skipped=skip_preflight)
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
@@ -3998,6 +4007,9 @@ def _launch_tool(
             apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
+        )
+        metrics.start_agent(
+            tool, preflight_skipped=skip_preflight, first_time_setup=needs_auto_configure
         )
         # Refuse an agent the managed config doesn't enable before installing or configuring it, so
         # a blocked launch never downloads the agent first. Reading the config needs a known
@@ -4243,6 +4255,10 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CLAUDE and not provider and not parent_schema:
+            # A static model list (no provider) can still name a model service that routes to a
+            # subscription relay; that launch must swap credentials like a relayed provider.
+            relayed = claude_agent.static_models_need_subscription_relay(state)
         # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"
@@ -4497,6 +4513,7 @@ def _launch_tool(
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -4539,6 +4556,9 @@ WorkspaceOption = Annotated[
 
 
 _PROMPT_SUFFIX_KEY = "ucode_explicit_prompt_suffix"
+
+# Subcommands that launch an agent; a bare `ug` launches one too.
+_AGENT_LAUNCH_COMMANDS = frozenset({*TOOL_ALIASES, "cursor"})
 
 
 class _PromptAwareCommand(TyperCommand):
@@ -4590,19 +4610,38 @@ def default(
         typer.Option(
             "--header",
             help="Extra `Name: value` header for this launch's Claude Code, Codex, and ug "
-            "Databricks requests (repeatable). A header already sent keeps its value.",
+            "Databricks requests (repeatable). A header already sent keeps its value. An agent "
+            "launch drops a Databricks-Custom-Coding-Agent inherited through UG_HEADERS; pass "
+            "it here to set one.",
         ),
     ] = None,
 ) -> None:
     """Configure and launch coding agents through Databricks Unity Gateway."""
+    command = ctx.invoked_subcommand or "launch"
+    metrics.set_command(command)
+    if ctx.invoked_subcommand is None:
+        metrics.start_agent("unknown")
+    elif command in TOOL_ALIASES:
+        metrics.start_agent(TOOL_ALIASES[command])
+    elif command == "cursor":
+        metrics.start_agent("cursor")
     for number, line in enumerate(header or [], 1):
         if parse_header_line(line) is None:
             # Name only the flag's position: the value may be a token.
             print_err(f"--header #{number}: expected `Name: value` with a valid name and value.")
             raise typer.Exit(1)
-    if header:
-        existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
-        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
+    inherited = os.environ.get(UG_HEADERS_ENV_VAR, "")
+    existing = inherited
+    if ctx.invoked_subcommand is None or ctx.invoked_subcommand in _AGENT_LAUNCH_COMMANDS:
+        # An inherited coding agent names whatever launched ug, such as an Isaac Claude Code
+        # session, not the agent this launch starts; without it the gateway reads ug's User-Agent.
+        existing = without_header(inherited, CODING_AGENT_HEADER)
+    if header or existing != inherited:
+        merged = "\n".join(filter(None, [existing, *(header or [])]))
+        if merged:
+            os.environ[UG_HEADERS_ENV_VAR] = merged
+        else:
+            os.environ.pop(UG_HEADERS_ENV_VAR, None)
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
     ctx.call_on_close(export_mdm_os())
@@ -4619,6 +4658,7 @@ def default(
         # `print_err(str(exc))` printing the exit code — a bare, meaningless "ERROR 1".
         raise
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -4758,6 +4798,7 @@ def codex_cmd(
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from exc
     # Read before the flag applies the version, which consumes the selector.
@@ -4860,6 +4901,7 @@ def claude_cmd(
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from exc
     with _smart_routing_v2_flag(
@@ -5072,6 +5114,7 @@ def cursor_cmd(ctx: typer.Context) -> None:
         print_success("Starting Cursor Agent")
         cursor.launch(load_state(), ctx.args)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -5516,6 +5559,7 @@ def configure(
         # meaningless "ERROR 0".
         raise
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -5658,6 +5702,7 @@ def export_cmd(
     try:
         export_command(file_path=file_path)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5668,6 +5713,7 @@ def status_cmd() -> None:
     try:
         status()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5679,6 +5725,7 @@ def revert_cmd() -> None:
     try:
         result = revert()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     raise typer.Exit(result)
@@ -5692,11 +5739,13 @@ def doctor_cmd() -> None:
     try:
         doctor()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
 
 @app.command("usage", rich_help_panel="Usage")
+@metrics.timed(metrics.UG_USAGE_DURATION_MS, label_args={"show_all": "show_all"})
 def usage_cmd(
     show_all: Annotated[
         bool, typer.Option("--all", help="Show all applicable budget limits.")
@@ -5707,6 +5756,7 @@ def usage_cmd(
         install_databricks_cli()
         usage_report(show_all=show_all)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5788,6 +5838,7 @@ def upgrade_cmd() -> None:
             print_err(f"Upgrade failed (exit code {exc.returncode}); `ucode` was not removed.")
         raise typer.Exit(1) from None
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 

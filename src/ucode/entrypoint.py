@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 _DISTRIBUTION = "unity_gateway"
 _VERSION_ARGV = (["--version"], ["-V"])
@@ -59,6 +60,7 @@ def _read_installed_version() -> str | None:
 
 
 def main() -> None:
+    started = time.perf_counter()
     if sys.argv[1:] in _VERSION_ARGV:
         version = _read_installed_version()
         if version is None:
@@ -68,12 +70,24 @@ def main() -> None:
         print(version)
         return
 
-    if sys.argv[1:2] == ["mcp-proxy"]:
-        from ucode.mcp_proxy_runtime import main as proxy_main
+    from ucode import metrics
 
-        proxy_main()
-        return
-
-    from ucode.cli import main as cli_main
-
-    cli_main()
+    is_mcp_proxy = sys.argv[1:2] == ["mcp-proxy"]
+    enabled = not any(arg in {"--help", "-h"} for arg in sys.argv[1:])
+    if enabled:
+        metrics.begin("mcp-proxy" if is_mcp_proxy else metrics.COMMAND_OPERATION, started)
+    try:
+        import_started = time.perf_counter()
+        if is_mcp_proxy:
+            from ucode.mcp_proxy_runtime import main as command_main
+        else:
+            from ucode.cli import main as command_main
+        metrics.record(
+            metrics.CLI_IMPORT_DURATION_MS, (time.perf_counter() - import_started) * 1000
+        )
+        command_main()
+    except BaseException as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
+        raise
+    finally:
+        metrics.finish()
