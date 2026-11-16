@@ -198,7 +198,9 @@ def test_gui_path_finds_user_local_cli_and_fetches_token(monkeypatch, tmp_path):
     cli_path.parent.mkdir(parents=True)
     cli_path.write_text("")
     cli_path.chmod(0o755)
-    monkeypatch.setattr(databricks.os.path, "isfile", lambda value: value == str(cli_path))
+    monkeypatch.setattr(
+        databricks.os.path, "isfile", lambda value: os.path.normpath(value) == str(cli_path)
+    )
     monkeypatch.setattr(databricks, "_read_databricks_cli_version", lambda value: (1, 20, 0))
     run = Mock(return_value=_result(token="desktop-token"))
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
