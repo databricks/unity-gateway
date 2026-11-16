@@ -139,10 +139,13 @@ file task. Assertions require a new native child transcript containing the value
 a correlated spawn-routing decision and successful child inference on the
 router's selected model when routing is enabled. Disabled routing requires no router
 requests, new routing decisions, recipe metadata, or orchestrator context. Claude's parent
-and child inference payloads carry the launch recipe in `smart_router_recipe_name`
-without a recipe header; Codex retains the recipe header. This tests requested delegation, not automatic orchestrator delegation.
-Claude's recipe is compared with the recorded routing request's selector rather than
-a hardcoded default recipe name.
+and child inference payloads carry the launch recipe in `smart_router_recipe_name`.
+Codex carries the recipe in `x-codex-turn-metadata`, with `smart_router_state: "on"`
+for `/root` and an `agent_name` ending in `__sr_on` for the child. Both agents omit
+the legacy recipe header, and Codex omits the payload recipe field. Each agent's
+recipe must match the recorded routing request's selector rather than a hardcoded
+default. Disabled Codex presets omit both routing fields from native metadata.
+This tests requested delegation, not automatic orchestrator delegation.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
