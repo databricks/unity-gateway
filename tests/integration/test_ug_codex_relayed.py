@@ -19,6 +19,7 @@ def test_ug_codex_relayed_completes_inference_through_the_relay(
     and browser sign-in are outside this check.
     """
     session = live_session
+    (session.home / ".codex").mkdir(exist_ok=True)
     session.env["CODEX_ACCESS_TOKEN"] = codex_access_token
     login = session.run(
         "-c",
