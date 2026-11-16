@@ -9,7 +9,6 @@ $ProgressPreference = 'SilentlyContinue'
 $script:Secrets = @($env:UG_MDM_E2E_CLIENT_SECRET)
 $machine = $null
 $stage = $null
-$profileCreated = $false
 try {
   if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitProcess -or
       $env:UG_MDM_E2E -ne '1') { throw 'Requires UG_MDM_E2E=1 on a disposable 64-bit Windows host.' }
@@ -65,7 +64,6 @@ try {
 
   $identity = Invoke-MdmTask $machine 'USER' 'Write-Output $env:USERPROFILE'
   Assert-Mdm ($identity.code -eq 0) 'standard-user task starts without UAC or a password prompt'
-  $profileCreated = $true
   $userHome = $identity.home
   $timeoutCommand = @'
 $child = Start-Process "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -PassThru -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 120'
@@ -220,9 +218,17 @@ exit `$code
         } catch { $cleanupErrors += Protect-Output $_.Exception.Message }
       }
     }
-    if ($profileCreated) {
-      try { Get-CimInstance Win32_UserProfile | Where-Object SID -eq $machine.UserSid | Remove-CimInstance }
-      catch { $cleanupErrors += Protect-Output $_.Exception.Message }
+    if ($machine.UserSid) {
+      try {
+        $deadline = [DateTime]::UtcNow.AddSeconds(30)
+        do {
+          $profile = Get-CimInstance Win32_UserProfile | Where-Object SID -eq $machine.UserSid
+          if (-not $profile -or -not $profile.Loaded) { break }
+          Start-Sleep -Milliseconds 200
+        } while ([DateTime]::UtcNow -lt $deadline)
+        if ($profile.Loaded) { throw 'Test user profile remained loaded after task termination.' }
+        if ($profile) { $profile | Remove-CimInstance }
+      } catch { $cleanupErrors += Protect-Output $_.Exception.Message }
     }
     if ($machine.BatchLogonGranted) {
       try { [MdmWindows]::BatchLogon($machine.UserSid, $false) }

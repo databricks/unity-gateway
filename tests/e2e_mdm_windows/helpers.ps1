@@ -14,6 +14,28 @@ function Read-PipeLine($Reader, [int]$Seconds) {
   if ($null -eq $pending.Result) { throw 'Scheduled task closed its pipe without a result.' }
   $pending.Result | ConvertFrom-Json
 }
+function Stop-MdmWorker([int]$ProcessId) {
+  if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return }
+  $start = New-Object Diagnostics.ProcessStartInfo
+  $start.FileName = "$env:SystemRoot\System32\taskkill.exe"
+  $start.Arguments = "/PID $ProcessId /T /F"
+  $start.UseShellExecute = $false
+  $start.CreateNoWindow = $true
+  $start.RedirectStandardOutput = $true
+  $start.RedirectStandardError = $true
+  $killer = New-Object Diagnostics.Process
+  $killer.StartInfo = $start
+  try {
+    $null = $killer.Start()
+    $stdout = $killer.StandardOutput.ReadToEndAsync()
+    $stderr = $killer.StandardError.ReadToEndAsync()
+    if (-not $killer.WaitForExit(10000)) { $killer.Kill(); throw 'taskkill timed out.' }
+    # A completed task can exit between the initial process lookup and taskkill.
+    if ($killer.ExitCode -ne 0 -and (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+      throw "Could not terminate worker $ProcessId."
+    }
+  } finally { $killer.Dispose() }
+}
 function Invoke-MdmTask($Machine, [string]$Identity, [string]$Command,
     [hashtable]$Environment = @{}, [int]$Timeout = 120, [switch]$LoadProfile) {
   $name = 'ug-mdm-' + [guid]::NewGuid().ToString('N')
@@ -73,13 +95,13 @@ function Invoke-MdmTask($Machine, [string]$Identity, [string]$Command,
     return $result
   } finally {
     Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
-    if ($workerPid -and (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) {
-      & "$env:SystemRoot\System32\taskkill.exe" /PID $workerPid /T /F 2>&1 | Out-Null
+    try { if ($workerPid) { Stop-MdmWorker $workerPid } }
+    finally {
+      Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
+      if ($writer) { $writer.Dispose() }
+      if ($reader) { $reader.Dispose() }
+      $pipe.Dispose()
     }
-    Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue
-    if ($writer) { $writer.Dispose() }
-    if ($reader) { $reader.Dispose() }
-    $pipe.Dispose()
   }
 }
 function Get-MdmEntries([string]$Root) {

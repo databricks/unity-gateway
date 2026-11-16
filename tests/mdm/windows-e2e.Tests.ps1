@@ -27,6 +27,8 @@ Expect-Error { Assert-MdmSnapshot @{ a = 'one' } @{ a = 'changed' } } 'machine f
 Expect-Error { Assert-MdmSnapshot @{ a = 'one' } @{} } 'machine files'
 Expect-Error { Assert-MdmSnapshot @{} @{ a = 'new' } } 'machine files'
 Write-Output 'PASS: snapshot comparisons reject changed, deleted and added paths'
+Stop-MdmWorker ([int]::MaxValue)
+Write-Output 'PASS: worker cleanup tolerates an already-exited process'
 
 $dir = Join-Path ([IO.Path]::GetTempPath()) ('ug-e2e-helpers-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $dir | Out-Null
