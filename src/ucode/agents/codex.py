@@ -739,8 +739,12 @@ def revert_managed_config() -> str:
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
+        companion_references={"model_catalog_json": path}
+        if (path := _managed_catalog_path())
+        else None,
     )
-    _remove_managed_catalog()
+    if result == "unchanged":
+        _remove_managed_catalog()
     return result
 
 
@@ -1215,9 +1219,11 @@ def _reconcile_managed_config(
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
-        if catalog is not None:
-            # Before the reference, so Codex never reads a missing or stale catalog.
-            _write_managed_catalog(catalog)
+        companion_files = None
+        if (catalog_path := _managed_catalog_path()) is not None and (catalog is not None or named):
+            companion_files = {
+                catalog_path: json.dumps(catalog, indent=2) + "\n" if catalog is not None else None
+            }
         reconcile_managed_file(
             path,
             tomlkit.dumps(desired_doc),
@@ -1225,6 +1231,7 @@ def _reconcile_managed_config(
             display="Codex",
             owned_paths=[*MANAGED_KEYS, ["model_catalog_json"]],
             parser=_parse_managed_config,
+            companion_files=companion_files,
         )
     except ManagedFileWriteUnavailable:
         # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
@@ -1256,25 +1263,13 @@ def _named_managed_catalog(doc: dict) -> Path | None:
     return ours if ours is not None and doc.get("model_catalog_json") == str(ours) else None
 
 
-def _write_managed_catalog(catalog: dict | None) -> None:
-    """Write (or, for None, remove) ug's machine-wide catalog through the privileged writer."""
-    path = _managed_catalog_path()
-    if path is None or is_dry_run():
-        return
-    text = json.dumps(catalog, indent=2) + "\n" if catalog is not None else None
-    try:
-        reconcile_privileged_files({path: text}, display="Codex")
-    except (OSError, CalledProcessError) as exc:
-        detail = str(getattr(exc, "stderr", None) or exc).strip()
-        raise ManagedFileWriteUnavailable(
-            f"Could not update the Codex model catalog at {path}: {detail}"
-        ) from exc
-
-
 def _remove_managed_catalog() -> None:
     """Remove ug's machine-wide catalog unless the managed file still names it; a failure only
     warns."""
     path = codex_managed_config_path()
+    catalog_path = _managed_catalog_path()
+    if catalog_path is None or is_dry_run():
+        return
     try:
         text = read_managed_file(path) if path is not None else None
         if text is not None and _named_managed_catalog(_parse_managed_config(text)):
@@ -1282,9 +1277,9 @@ def _remove_managed_catalog() -> None:
     except RuntimeError:
         return  # An unreadable managed file may still name it.
     try:
-        _write_managed_catalog(None)
-    except ManagedFileWriteUnavailable as exc:
-        print_warning_err(str(exc))
+        reconcile_privileged_files({catalog_path: None}, display="Codex")
+    except (OSError, CalledProcessError, ManagedFileWriteUnavailable) as exc:
+        print_warning_err(f"Could not remove the Codex model catalog at {catalog_path}: {exc}")
 
 
 def _as_requirements(compose: Callable[[dict], dict]) -> Callable[[dict], dict]:

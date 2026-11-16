@@ -2041,7 +2041,12 @@ class TestCodexManagedConfig:
             Path(path).write_text(text, encoding="utf-8")
             return "written"
 
-        monkeypatch.setattr(codex, "reconcile_managed_file", fake_write_managed)
+        monkeypatch.setattr(managed_files, "_privileged_replace", fake_write_managed)
+        monkeypatch.setattr(
+            managed_files, "_privileged_remove", lambda path: path.unlink(missing_ok=True)
+        )
+        monkeypatch.setattr(managed_files, "managed_files_supported", lambda: True)
+        monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kwargs: True)
         return config_path, managed_path
 
     def test_writes_managed_config_by_default(self, tmp_path, monkeypatch):
@@ -2090,6 +2095,7 @@ class TestCodexManagedConfig:
                     path.write_text(text, encoding="utf-8")
 
         monkeypatch.setattr(codex, "reconcile_privileged_files", fake_privileged)
+        monkeypatch.setattr(managed_files, "reconcile_privileged_files", fake_privileged)
         return managed_path.parent / codex.MANAGED_MODEL_CATALOG_NAME
 
     def test_static_list_is_enforced_through_managed_catalog(self, tmp_path, monkeypatch):
@@ -2131,7 +2137,7 @@ class TestCodexManagedConfig:
         def denied(files, **kwargs):
             raise CalledProcessError(1, ["sudo"], stderr="sudo: a password is required")
 
-        monkeypatch.setattr(codex, "reconcile_privileged_files", denied)
+        monkeypatch.setattr(managed_files, "reconcile_privileged_files", denied)
 
         codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
 
@@ -2140,6 +2146,174 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_catalog_json"] == str(
             codex.CODEX_MODEL_CATALOG_PATH
         )
+
+    @pytest.mark.parametrize("replacement", [None, {"models": [{"slug": "gpt-6"}]}])
+    def test_second_user_revert_restores_catalog_before_reference(
+        self, tmp_path, monkeypatch, replacement
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        original_catalog = catalog_path.read_text()
+        # A second user starts with their own empty backup history.
+        backups = tmp_path / "second-user" / "managed-backups"
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backups)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
+        )
+        state = {"workspace": WS}
+        if replacement is not None:
+            state["codex_static_models"] = ["gpt-6"]
+            monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: replacement)
+        codex.write_tool_config(state)
+        assert catalog_path.exists() is (replacement is not None)
+
+        def restore_toml(path, text):
+            if "model_catalog_json" in text:
+                assert catalog_path.read_text() == original_catalog
+            path.write_text(text)
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", restore_toml)
+        codex.revert_managed_config()
+
+        assert managed_path.read_text() == original_toml
+        assert catalog_path.read_text() == original_catalog
+        assert json.loads((backups / "manifest.json").read_text())["files"] == {}
+
+    @pytest.mark.parametrize(
+        "error", [PermissionError("denied"), RuntimeError("verification failed")]
+    )
+    def test_failed_toml_update_rolls_back_catalog(self, tmp_path, monkeypatch, error):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        original_catalog = catalog_path.read_text()
+        replacement = {"models": [{"slug": "gpt-6"}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: replacement)
+
+        def fail_toml(*args, **kwargs):
+            assert json.loads(catalog_path.read_text()) == replacement
+            raise error
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", fail_toml)
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_static_models": ["gpt-6"], "codex_default_model": "gpt-6"}
+            )
+
+        assert managed_path.read_text() == original_toml
+        assert catalog_path.read_text() == original_catalog
+
+    @pytest.mark.parametrize("concurrent_edit", [False, True])
+    def test_catalog_rollback_failure_is_reported(self, tmp_path, monkeypatch, concurrent_edit):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        replacement = {"models": [{"slug": "gpt-6"}]}
+        external = {"models": [{"slug": "admin-model"}]}
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: replacement)
+
+        def fail_toml(*args):
+            if concurrent_edit:
+                catalog_path.write_text(json.dumps(external))
+            else:
+
+                def fail_rollback(*args, **kwargs):
+                    raise PermissionError("rollback denied")
+
+                monkeypatch.setattr(managed_files, "reconcile_privileged_files", fail_rollback)
+            raise PermissionError("TOML denied")
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", fail_toml)
+        with pytest.raises(RuntimeError, match="companion rollback also failed"):
+            codex.write_tool_config(
+                {"workspace": WS, "codex_static_models": ["gpt-6"], "codex_default_model": "gpt-6"}
+            )
+
+        assert managed_path.read_text() == original_toml
+        assert json.loads(catalog_path.read_text()) == (
+            external if concurrent_edit else replacement
+        )
+
+    @pytest.mark.parametrize("failure", ["catalog", "toml"])
+    def test_failed_revert_retains_backup_and_can_retry(self, tmp_path, monkeypatch, failure):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        original_toml = managed_path.read_text()
+        original_catalog = catalog_path.read_text()
+        backups = tmp_path / "second-user" / "managed-backups"
+        monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backups)
+        monkeypatch.setattr(
+            managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
+        )
+        codex.write_tool_config({"workspace": WS})
+        without_catalog = managed_path.read_text()
+        manifest = (backups / "manifest.json").read_text()
+
+        def denied(*args, **kwargs):
+            raise PermissionError("revert denied")
+
+        with monkeypatch.context() as failing:
+            failing.setattr(
+                managed_files,
+                "reconcile_privileged_files" if failure == "catalog" else "_privileged_replace",
+                denied,
+            )
+            with pytest.raises(RuntimeError):
+                codex.revert_managed_config()
+
+        assert managed_path.read_text() == without_catalog
+        assert not catalog_path.exists()
+        assert (backups / "manifest.json").read_text() == manifest
+        codex.revert_managed_config()
+        assert managed_path.read_text() == original_toml
+        assert catalog_path.read_text() == original_catalog
+
+    def test_failed_first_catalog_install_removes_unreferenced_file(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        codex.write_tool_config({"workspace": WS})
+        original_toml = managed_path.read_text()
+        monkeypatch.setattr(codex, "explicit_managed_writes", lambda: True)
+
+        def denied(*args):
+            assert catalog_path.exists()
+            raise PermissionError("TOML denied")
+
+        monkeypatch.setattr(managed_files, "_privileged_replace", denied)
+        with pytest.raises(RuntimeError):
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+        assert managed_path.read_text() == original_toml
+        assert not catalog_path.exists()
+
+    @pytest.mark.parametrize("existing_reference", [False, True])
+    def test_revert_preserves_another_writers_catalog(
+        self, tmp_path, monkeypatch, existing_reference
+    ):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        if existing_reference:
+            codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
+            backups = tmp_path / "second-user" / "managed-backups"
+            monkeypatch.setattr(managed_files, "MANAGED_BACKUP_DIR", backups)
+            monkeypatch.setattr(
+                managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
+            )
+        monkeypatch.setattr(
+            codex, "prepare_codex_catalog", lambda *a: {"models": [{"slug": "gpt-6"}]}
+        )
+        codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-6"]})
+        external = {"models": [{"slug": "admin-model"}]}
+        catalog_path.write_text(json.dumps(external))
+
+        codex.revert_managed_config()
+
+        assert json.loads(catalog_path.read_text()) == external
+        assert managed_path.exists() is existing_reference
 
     @pytest.mark.parametrize("restored", [True, False])
     def test_revert_removes_managed_catalog_once_unreferenced(
@@ -2151,13 +2325,10 @@ class TestCodexManagedConfig:
 
         # Without ug's backup record (another user configured, or ~/.ucode was wiped), revert
         # restores nothing; deleting the catalog the file still names would break every user's Codex.
-        def fake_revert(*args, **kwargs):
-            if not restored:
-                return "unchanged"
-            managed_path.unlink()
-            return "removed"
-
-        monkeypatch.setattr(codex, "revert_managed_file", fake_revert)
+        if not restored:
+            monkeypatch.setattr(
+                managed_files, "MANAGED_BACKUP_MANIFEST_PATH", tmp_path / "missing.json"
+            )
 
         codex.revert_managed_config()
 

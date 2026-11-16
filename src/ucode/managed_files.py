@@ -799,7 +799,115 @@ def managed_file_status(
     return status, _backup_label(tool)
 
 
+@contextmanager
+def _companion_update(
+    files: Mapping[Path, str | None], *, display: str, managed_path: Path
+) -> Iterator[None]:
+    """Roll back companion writes when their managed-file update fails."""
+    if not files:
+        yield
+        return
+    before = {path: read_managed_file(path) for path in files}
+    managed_before = read_managed_file(managed_path)
+    try:
+        yield
+    except Exception as exc:
+        try:
+            for path, previous in before.items():
+                current = read_managed_file(path)
+                if current == previous:
+                    continue
+                if current != files[path]:
+                    raise RuntimeError(
+                        f"{path} changed concurrently; its newer contents were retained"
+                    )
+                if previous is None and read_managed_file(managed_path) != managed_before:
+                    raise RuntimeError(
+                        f"{managed_path} changed; retained {path} to avoid a missing reference"
+                    )
+                reconcile_privileged_files({path: previous}, display=display)
+        except Exception as rollback_error:
+            raise RuntimeError(
+                f"{display} settings update failed ({exc}); companion rollback also failed: "
+                f"{rollback_error}. Repair the managed settings before retrying."
+            ) from exc
+        if isinstance(exc, (OSError, subprocess.CalledProcessError)):
+            raise ManagedFileWriteUnavailable(
+                f"Could not update {display} companion files: {exc}"
+            ) from exc
+        raise
+
+
 def reconcile_managed_file(
+    path: Path,
+    desired_text: str,
+    *,
+    tool: str,
+    display: str,
+    owned_paths: list[list[str]],
+    parser: ManagedParser,
+    companion_files: Mapping[Path, str | None] | None = None,
+) -> str:
+    """Reconcile settings and any files they reference, retaining both for revert."""
+    if not companion_files or is_dry_run() or not managed_files_supported():
+        return _reconcile_managed_file(
+            path, desired_text, tool=tool, display=display, owned_paths=owned_paths, parser=parser
+        )
+    for companion in companion_files:
+        if companion.is_symlink():
+            raise RuntimeError(f"Refusing to update linked managed companion file {companion}.")
+    if path.is_symlink():
+        raise RuntimeError(f"Refusing to update {display} managed settings through symlink {path}.")
+    current_text = read_managed_file(path)
+    if all(read_managed_file(p) == text for p, text in companion_files.items()) and (
+        current_text is not None
+        and is_semantically_equal(
+            mask_user_agent_versions(parser(current_text)),
+            mask_user_agent_versions(parser(desired_text)),
+        )
+    ):
+        return _reconcile_managed_file(
+            path, desired_text, tool=tool, display=display, owned_paths=owned_paths, parser=parser
+        )
+    _ensure_backup(tool, path, current_text)
+    manifest = _load_manifest()
+    entry = _manifest_files(manifest)[tool]
+    snapshots = entry.setdefault("companion_files", {})
+    for companion in companion_files:
+        if str(companion) not in snapshots:
+            original = read_managed_file(companion)
+            snapshot = {"original_existed": original is not None}
+            if original is not None:
+                filename = f"{tool}-companion-{_sha256(str(companion))}.backup"
+                _write_private_file(MANAGED_BACKUP_DIR / filename, original)
+                snapshot.update(backup_file=filename, original_sha256=_sha256(original))
+            snapshots[str(companion)] = snapshot
+    _write_manifest(manifest)
+    with _companion_update(companion_files, display=display, managed_path=path):
+        reconcile_privileged_files(
+            {p: text for p, text in companion_files.items() if text is not None}, display=display
+        )
+        result = _reconcile_managed_file(
+            path, desired_text, tool=tool, display=display, owned_paths=owned_paths, parser=parser
+        )
+        reconcile_privileged_files(
+            {p: None for p, text in companion_files.items() if text is None}, display=display
+        )
+        # A catalog-only update still needs a last-applied TOML snapshot for revert.
+        if result == "unchanged":
+            assert current_text is not None
+            _record_last_applied(tool, path, current_text, owned_paths)
+        manifest = _load_manifest()
+        snapshots = _manifest_files(manifest)[tool]["companion_files"]
+        for companion, text in companion_files.items():
+            snapshots[str(companion)]["last_applied_sha256"] = (
+                _sha256(text) if text is not None else None
+            )
+        _write_manifest(manifest)
+    return result
+
+
+def _reconcile_managed_file(
     path: Path,
     desired_text: str,
     *,
@@ -918,6 +1026,7 @@ def revert_managed_file(
     display: str,
     parser: ManagedParser,
     dumper: ManagedDumper,
+    companion_references: Mapping[str, Path] | None = None,
 ) -> str:
     """Restore one managed file from its baseline while preserving later external edits."""
     manifest = _load_manifest()
@@ -963,22 +1072,49 @@ def revert_managed_file(
                     "`ug revert` from an interactive terminal."
                 )
             raise RuntimeError(_windows_admin_required_message(display, path, "ug revert"))
-        try:
-            if desired_text is None:
-                _privileged_remove(path)
-            else:
-                _privileged_replace(path, desired_text)
-        except (OSError, subprocess.CalledProcessError) as exc:
-            raise RuntimeError(
-                f"Could not restore {display} managed settings at {path}. The backup was retained "
-                f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
-                "again."
-            ) from exc
-        if read_managed_file(path) != desired_text:
-            raise RuntimeError(
-                f"Could not verify restored {display} managed settings at {path}. The backup was "
-                f"retained under {MANAGED_BACKUP_DIR}."
-            )
+
+    companions = {}
+    desired_doc = parser(desired_text) if desired_text is not None and companion_references else {}
+    for key, companion in (companion_references or {}).items():
+        snapshot = entry.get("companion_files", {}).get(str(companion))
+        if not isinstance(snapshot, dict):
+            continue
+        if companion.is_symlink():
+            raise RuntimeError(f"Refusing to restore linked managed companion file {companion}.")
+        current = read_managed_file(companion)
+        fingerprint = _sha256(current) if current is not None else None
+        if fingerprint != snapshot.get("last_applied_sha256"):
+            continue  # Preserve a later writer's catalog, just as we preserve their TOML edits.
+        if desired_doc.get(key) == str(companion):
+            original = _original_text(snapshot)
+            if original is not None:
+                companions[companion] = original
+        else:
+            companions[companion] = None
+    with _companion_update(companions, display=display, managed_path=path):
+        reconcile_privileged_files(
+            {p: text for p, text in companions.items() if text is not None}, display=display
+        )
+        if desired_text != current_text:
+            try:
+                if desired_text is None:
+                    _privileged_remove(path)
+                else:
+                    _privileged_replace(path, desired_text)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                raise RuntimeError(
+                    f"Could not restore {display} managed settings at {path}. The backup was retained "
+                    f"under {MANAGED_BACKUP_DIR}. Resolve the permission issue and run `ug revert` "
+                    "again."
+                ) from exc
+            if read_managed_file(path) != desired_text:
+                raise RuntimeError(
+                    f"Could not verify restored {display} managed settings at {path}. The backup was "
+                    f"retained under {MANAGED_BACKUP_DIR}."
+                )
+        reconcile_privileged_files(
+            {p: None for p, text in companions.items() if text is None}, display=display
+        )
 
     _delete_backup(tool, manifest, entry)
     if original_text is None and desired_text is None:
@@ -1132,13 +1268,14 @@ def _backup_label(tool: str) -> str:
 
 
 def _delete_backup(tool: str, manifest: dict, entry: dict) -> None:
-    for key in ("backup_file", "last_applied_file"):
-        filename = entry.get(key)
-        if isinstance(filename, str):
-            try:
-                _snapshot_path(filename).unlink(missing_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
+    for snapshot in (entry, *entry.get("companion_files", {}).values()):
+        for key in ("backup_file", "last_applied_file"):
+            filename = snapshot.get(key)
+            if isinstance(filename, str):
+                try:
+                    _snapshot_path(filename).unlink(missing_ok=True)
+                except OSError as exc:
+                    raise RuntimeError(f"Could not remove managed-settings backup: {exc}") from exc
     _manifest_files(manifest).pop(tool, None)
     _write_manifest(manifest)
 

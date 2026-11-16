@@ -842,7 +842,10 @@ live telemetry-export coverage.
 static list writes `/etc/codex/ug-model-catalog.json` and names it in the managed file; dropping the
 list or adding a provider or UC location removes both; a failed catalog write leaves the managed
 file unchanged; revert keeps the catalog while the managed file still names it; and a launch with
-no terminal rewrites a changed or dropped list but leaves a metadata-only change alone. Privileged
+no terminal rewrites a changed or dropped list but leaves a metadata-only change alone. The real
+backup/revert flow also covers a second user dropping or replacing the list, restoring the original
+catalog before its TOML reference, catalog rollback after TOML write/verification failure, failed
+rollback diagnostics, failed-revert retry, and preservation of later catalog edits. Privileged
 writes are replaced by temporary-file operations, so real sudo and Codex reading the catalog are not
 covered here.
 

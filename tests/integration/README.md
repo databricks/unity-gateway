@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
+real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
+failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
+exercise live sudo or Codex startup.
+
 Smart Router preserves the parent's native streamed response, including its synthesis
 of subagent results. It does not inject an animal-labeled answer or replace parent prose.
 Native component checks cover original text/thinking chunks, tool calls, errors,
