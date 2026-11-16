@@ -327,7 +327,8 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
-Each smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` with `subagent_orch_v0`,
+Each smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` (Claude with the client's
+`DEFAULT_ENABLED_VERSION`, Codex with `subagent_orch_v0` because that default disables Codex routing),
 spawns a subagent from the first prompt, and checks that its route selections carry the managed
 MPS header and return HTTP 200. An optional `UG_HEADERS` traffic selector is also checked on
 those routing requests.

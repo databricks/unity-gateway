@@ -15,6 +15,7 @@ from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 from tests.integration.utils.evidence import FileTask, fresh_id, read_jsonl
 from ucode.constants import ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR, UG_HEADERS_ENV_VAR
 from ucode.smart_routing.config import (
+    DEFAULT_ENABLED_VERSION,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SUBAGENT_ORCH_V0,
 )
@@ -228,10 +229,10 @@ def _assert_traffic_header(session, request) -> None:
 
 
 @contextmanager
-def _provider_routing(session):
+def _provider_routing(session, version: str):
     settings = {
         ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR: "1",
-        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: SUBAGENT_ORCH_V0,
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version,
     }
     previous = {key: session.env.get(key) for key in settings}
     session.env.update(settings)
@@ -360,7 +361,8 @@ class TestCuj2CodexSmartRouting(_Cuj2Base):
             session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
         )
         _assert_configured_files(session, workspace.url)
-        with _provider_routing(session):
+        # DEFAULT_ENABLED_VERSION turns Codex routing off; use the preset it gives Claude.
+        with _provider_routing(session, SUBAGENT_ORCH_V0):
             recorder.prepare_launch()
             decisions_path = session.home / ".ucode" / "codex-smart-routing-decisions.jsonl"
             child = FileTask(session)
@@ -406,7 +408,7 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
             session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
         )
         _assert_configured_files(session, workspace.url)
-        with _provider_routing(session):
+        with _provider_routing(session, DEFAULT_ENABLED_VERSION):
             recorder.prepare_launch()
             child = FileTask(session)
             child.prompt = child.delegate_prompt

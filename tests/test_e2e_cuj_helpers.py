@@ -68,7 +68,7 @@ def test_cuj2_provider_routing_restores_environment_after_failure(previous):
         original.update(dict.fromkeys(keys, previous))
     session = SimpleNamespace(env=original.copy())
     with pytest.raises(RuntimeError, match="task failed"):
-        with cuj2._provider_routing(session):
+        with cuj2._provider_routing(session, "subagent_orch_v0"):
             assert session.env[keys[0]] == "1"
             assert session.env[keys[1]] == "subagent_orch_v0"
             raise RuntimeError("task failed")
