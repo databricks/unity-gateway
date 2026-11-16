@@ -157,13 +157,9 @@ def connect_backend(directory: Path) -> socket.socket:
                 directory / "backend.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
             )
             with os.fdopen(log_fd, "ab") as log:
-                executable = sys.executable
-                if os.name == "nt":
-                    pythonw = Path(sys.executable).with_name("pythonw.exe")
-                    if pythonw.is_file():
-                        executable = str(pythonw)
                 options = (
                     {
+                        # Auth subprocesses inherit this hidden console instead of opening windows.
                         "creationflags": subprocess.CREATE_NO_WINDOW
                         | subprocess.CREATE_NEW_PROCESS_GROUP
                     }
@@ -171,7 +167,7 @@ def connect_backend(directory: Path) -> socket.socket:
                     else {"start_new_session": True}
                 )
                 child = subprocess_cross_os.popen(
-                    [executable, "-m", "ucode.mcp_proxy_daemon", str(directory)],
+                    [sys.executable, "-m", "ucode.mcp_proxy_daemon", str(directory)],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=log,
