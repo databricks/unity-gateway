@@ -37,7 +37,8 @@ POLICY_PATH = managed_files.CLAUDE_DESKTOP_POLICY_PATH
 def validate_mdm_execution() -> None:
     if sys.platform not in ("darwin", "win32"):
         raise RuntimeError("Desktop MDM supports macOS and Windows only.")
-    if sys.platform == "win32" and not system_cross_os.is_admin():
+    # A dry run writes nothing, so it stays available without elevation.
+    if sys.platform == "win32" and not config_io.is_dry_run() and not system_cross_os.is_admin():
         raise PermissionError("Run ug configure --global from an elevated terminal.")
 
 

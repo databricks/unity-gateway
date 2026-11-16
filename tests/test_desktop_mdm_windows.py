@@ -147,6 +147,19 @@ def test_registry_failure_rolls_back_and_can_be_retried(machine):
     assert not json.loads((machine.runtime / "ownership.json").read_bytes())["pending_registry"]
 
 
+def test_failed_rollback_keeps_original_error(machine, monkeypatch):
+    mdm_windows.publish(machine.source, machine.files, machine.policy)
+
+    def deny(*args):
+        raise PermissionError("registry write denied")
+
+    monkeypatch.setattr(machine.registry, "SetValueEx", deny)
+    updated = {**machine.policy, "toolSearchEnabled": "true"}
+    with pytest.raises(PermissionError, match="registry write denied") as raised:
+        mdm_windows.publish(machine.source, machine.files, updated)
+    assert any("Registry rollback failed" in note for note in raised.value.__notes__)
+
+
 def test_dependency_failure_keeps_registry_and_retries(machine, monkeypatch):
     mdm_windows.publish(machine.source, machine.files, machine.policy)
     before = dict(machine.registry.values)
@@ -226,6 +239,9 @@ def test_windows_requires_elevation(monkeypatch):
     monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: False)
     with pytest.raises(PermissionError, match="elevated"):
         mdm.validate_mdm_execution()
+    monkeypatch.setattr(mdm.config_io, "is_dry_run", lambda: True)
+    mdm.validate_mdm_execution()
+    monkeypatch.setattr(mdm.config_io, "is_dry_run", lambda: False)
     monkeypatch.setattr(mdm.system_cross_os, "is_admin", lambda: True)
     mdm.validate_mdm_execution()
 

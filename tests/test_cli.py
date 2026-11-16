@@ -7021,20 +7021,21 @@ class TestConfigureScopeFlags:
         mock_cfg.assert_called_once()
 
     @pytest.mark.parametrize(
-        ("platform", "admin", "rejected"),
+        ("platform", "admin", "extra", "rejected"),
         [
-            ("win32", False, True),
-            ("win32", True, False),
-            ("linux", False, False),
+            ("win32", False, [], True),
+            ("win32", False, ["--dry-run"], False),
+            ("win32", True, [], False),
+            ("linux", False, [], False),
         ],
     )
     def test_global_flag_requires_elevation_on_windows(
-        self, monkeypatch, platform, admin, rejected
+        self, monkeypatch, platform, admin, extra, rejected
     ):
         monkeypatch.setattr(cli_mod, "_require_windows_elevation", _REAL_REQUIRE_ELEVATION)
         monkeypatch.setattr(cli_mod.sys, "platform", platform)
         monkeypatch.setattr(cli_mod.system_cross_os, "is_admin", lambda: admin)
-        result, mock_cfg = self._configure(["--global"])
+        result, mock_cfg = self._configure(["--global", *extra])
         output = " ".join(_strip_ansi(result.output).split())
         if rejected:
             assert result.exit_code == 1, output

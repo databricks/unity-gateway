@@ -151,8 +151,13 @@ def publish(source: Path, files: dict[Path, bytes | None], policy: dict[str, str
     rollback = {name: _value(current, name) for name in changes}
     try:
         _write_policy(changes)
-    except OSError:
-        _write_policy(rollback)
+    except OSError as error:
+        try:
+            _write_policy(rollback)
+        except OSError as rollback_error:
+            error.add_note(
+                f"Registry rollback failed: {rollback_error}. Rerun ug configure --global."
+            )
         raise
     _write_ownership({"version": 1, "registry": desired, "pending_registry": {}})
 
@@ -161,7 +166,8 @@ def remove() -> bool:
     if not _ownership_path().exists():
         return False
     state = _read_ownership()
-    assert state is not None
+    if state is None:
+        return False
     if not system_cross_os.is_admin():
         raise managed_files.ManagedFileWriteUnavailable("administrator rights are required")
     owned = _owned_policy(state, read_policy())

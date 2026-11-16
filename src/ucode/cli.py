@@ -5594,8 +5594,8 @@ def _check_machine_wide_only_request(
 
 def _require_windows_elevation() -> None:
     # Windows has no sudo prompt, so without elevation the first machine-wide write fails only
-    # after login and model discovery.
-    if sys.platform == "win32" and not system_cross_os.is_admin():
+    # after login and model discovery. A dry run writes nothing, so it needs no elevation.
+    if sys.platform == "win32" and not is_dry_run() and not system_cross_os.is_admin():
         raise RuntimeError(
             "`ug configure --global` writes machine-wide settings, which requires administrator "
             "rights on Windows. Rerun it from an elevated terminal (Run as administrator)."
