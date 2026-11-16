@@ -91,6 +91,11 @@ Mode helper symlinks. A nonzero configure exit fails the policy.
 Existing agent versions are subject to Unity Gateway's compatibility checks; the script does not
 otherwise update Node.js, the agents or the Databricks CLI.
 
+Macs provisioned by the older script keep their native agent installations; this is not an automatic
+migration to npm. Before moving those Macs to npm, remove the old native installations through your
+software-management process, then rerun the policy. Do not rely on a native agent's updater running
+as root (`HOME=/var/root`) to migrate or maintain the shared installation.
+
 ## 3. Create the policy
 
 Go to **Computers → Policies → New**:
