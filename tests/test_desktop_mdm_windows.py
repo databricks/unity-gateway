@@ -211,14 +211,14 @@ def test_invalid_ownership_never_removes_registry(machine):
     assert machine.registry.values == before
 
 
-def test_windows_global_setup_propagates_failure(monkeypatch):
+def test_windows_global_setup_failure_only_warns(monkeypatch, capsys):
     monkeypatch.setattr(setup, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(setup, "machine_wide_only", lambda: True)
     monkeypatch.setattr(mdm, "configure", Mock(side_effect=RuntimeError("publication failed")))
-    with pytest.raises(RuntimeError, match="Windows Desktop globally"):
-        setup.configure_claude_desktop(
-            {"workspace": "https://workspace.example", "profile": "admin"}
-        )
+    setup.configure_claude_desktop({"workspace": "https://workspace.example", "profile": "admin"})
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Could not configure Claude Desktop: publication failed" in output
+    assert "Claude Code setup is unchanged" in output
 
 
 def test_windows_requires_elevation(monkeypatch):

@@ -11,8 +11,8 @@ paths are rejected. UG validates existing installations; it does not install sha
 
 Workspace-managed configuration is optional, as on macOS. Without it, UG discovers
 accessible Claude models and configures inference without managed connectors or tracing.
-An explicit enabled-agent list excluding Claude is rejected. Configuration fetch errors
-and failed publication still fail the global command.
+An explicit enabled-agent list excluding Claude, a configuration fetch error, or a failed
+publication skips Desktop with a warning; as on macOS, configure continues and exits normally.
 Dedicated workspace hostnames and normal Databricks OAuth are required; PAT/custom OAuth
 deployment remains unsupported.
 Already completed CLI/file changes can remain after a later component fails; rerun configure

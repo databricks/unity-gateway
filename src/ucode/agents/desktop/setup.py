@@ -64,8 +64,6 @@ def configure_claude_desktop(
             return
         _configure_claude_desktop_user_level(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
-        if sys.platform == "win32" and machine_wide_only():
-            raise RuntimeError(f"Could not configure Windows Desktop globally: {exc}") from exc
         print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
 
 
