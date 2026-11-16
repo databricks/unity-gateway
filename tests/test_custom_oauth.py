@@ -14,6 +14,8 @@ from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
+from tests.conftest import metric_observations
+from ucode import metrics
 from ucode.cli import app
 from ucode.custom_oauth import (
     _custom_oauth_lock,
@@ -97,7 +99,7 @@ class TestCustomClientToken:
             "custom-profile",
         ]
 
-    def test_browser_login_uses_custom_client_and_redirect(self, capsys):
+    def test_browser_login_uses_custom_client_and_redirect(self, capsys, metrics_recorder):
         redirect_url = "http://localhost:41735/ai-devtools-workspace-oauth"
         token = get_custom_client_token(
             WS, client_id="custom-client", redirect_url=redirect_url, scopes=TEST_SCOPES
@@ -111,6 +113,17 @@ class TestCustomClientToken:
         assert query["client_id"] == ["custom-client"]
         assert query["redirect_uri"] == [redirect_url]
         assert query["scope"][0].split() == list(TEST_SCOPES)
+
+        [(_, token_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS
+        )
+        assert token_labels["token_source"] == "sdk"
+        assert token_labels["in_process_cache_hit"] is False
+        [(_, login_labels)] = metric_observations(
+            metrics_recorder, metrics.DATABRICKS_LOGIN_DURATION_MS
+        )
+        assert login_labels["login_method"] == "sdk"
+        assert metrics_recorder.startup_labels["interactive_login"] is True
 
     def test_reuses_cached_token_without_refresh_or_login(self):
         self._cache().save(self._credentials("cached", "refresh"))
@@ -171,11 +184,16 @@ class TestCustomClientToken:
             )
         self.discovery.assert_not_called()
 
-    def test_login_failure_is_actionable_and_does_not_expose_response(self):
+    def test_login_failure_is_actionable_and_does_not_expose_response(self, metrics_recorder):
         self.browser.side_effect = ValueError("sensitive server response")
         with pytest.raises(RuntimeError, match="registered redirect URL") as error:
             get_custom_client_token(WS, client_id="custom-client", scopes=TEST_SCOPES)
         assert "sensitive server response" not in str(error.value)
+
+        [(count, error_labels)] = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert count == 1
+        assert error_labels["operation"] == metrics.DATABRICKS_LOGIN_OPERATION
+        assert "sensitive server response" not in str(list(metrics_recorder.pending))
 
     @pytest.mark.parametrize("scopes", [["offline_access"], ["catalog.catalogs:read"]])
     def test_api_scopes_are_required(self, scopes):

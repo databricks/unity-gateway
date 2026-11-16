@@ -262,7 +262,7 @@ class TestCuj2Configuration(_Cuj2Base):
         Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
         MCP; both native MPS APIs advertise their selected model, generated agent settings use
         the exact provider/model values, the complete Desktop profile/metadata match the
-        Anthropic MPS contract with the readable Claude Haiku 4.5 label, and agent MCP listings
+        Anthropic MPS contract with the readable Claude Haiku 5.5 label, and agent MCP listings
         exclude web_search.
         """
         session, workspace, _ = cuj
@@ -287,7 +287,7 @@ class TestCuj2Configuration(_Cuj2Base):
             session,
             config_library,
             workspace.url,
-            models=[{"name": claude_model, "labelOverride": "Claude Haiku 4.5"}],
+            models=[{"name": claude_model, "labelOverride": "Claude Haiku 5.5"}],
             mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
@@ -481,7 +481,7 @@ class TestCuj2ClaudeInference(_Cuj2Base):
     def test_cuj_claude_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Claude inference.
 
-        Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
+        Expected: Claude sends a Messages request for claude-haiku-5-5 with the
         ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
         parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """

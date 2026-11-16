@@ -361,6 +361,7 @@ class TestDatabricksTokenAuth:
                     }
                 }
             response = io.BytesIO(json.dumps(body).encode())
+            response.status = 200
             response.headers = {"X-Databricks-Org-Id": "12345"}
             return response
 
