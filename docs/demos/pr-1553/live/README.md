@@ -20,6 +20,7 @@ Live cooldown acceptance remains pending.
 
 The video renders actual native terminal output in real time. Model responses
 are live, native retries retain their defaults, and no failure was injected.
-[Provenance and media hashes](provenance.json) record the inputs and observations.
+The [PR description](https://github.com/databricks/unity-gateway/pull/1553) records
+the inputs, observations, source and runtime versions, and media hashes.
 The [earlier fixture recording](../README.md) remains historical evidence and
 does not satisfy the live E2E requirement.
