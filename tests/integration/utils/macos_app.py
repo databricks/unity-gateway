@@ -81,10 +81,34 @@ class MacApp:
 
     def click(self, role: str, label: str | None, timeout: float = 60) -> None:
         """Click the first ``role`` element labelled ``label`` (any label if None)."""
-        self.wait_for(role, label, timeout)
-        self.session.run(
-            "click", str(self.proc.pid), role, label or "", binary=self.client, timeout=60
-        )
+        ready_tree = self.wait_for(role, label, timeout)
+        # Aim to leave 10s for action/output; an in-flight AX scan can overrun its budget.
+        lookup_timeout_seconds = 50
+        try:
+            self.session.run(
+                "click",
+                str(self.proc.pid),
+                role,
+                label or "",
+                str(lookup_timeout_seconds),
+                binary=self.client,
+                timeout=60,
+            )
+        except Exception as click_error:
+            evidence = {
+                "target": [role, label],
+                "ready_tree": ready_tree,
+                "lookup_timeout_seconds": lookup_timeout_seconds,
+            }
+            try:
+                evidence["failure_tree"] = self.read_tree()
+            except Exception as capture_error:
+                evidence["capture_error"] = type(capture_error).__name__
+            try:
+                self.session.record(f"{self.name}-click-failure.json", evidence)
+            except Exception as record_error:
+                click_error.add_note(f"click evidence not recorded: {type(record_error).__name__}")
+            raise
 
     def type_line(self, text: str) -> None:
         """Type into the focused control with real keystrokes, then press Return."""

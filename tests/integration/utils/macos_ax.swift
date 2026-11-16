@@ -1,4 +1,4 @@
-// An Accessibility client for one app: `tree PID` prints its UI elements, `click PID ROLE LABEL`
+// An Accessibility client for one app: `tree PID` prints its UI elements, `click PID ROLE LABEL LOOKUP_SECONDS`
 // clicks the centre of the first matching element (any label if LABEL is empty) with the mouse.
 import AppKit
 
@@ -17,20 +17,41 @@ func elements(_ element: AXUIElement, depth: Int = 0) -> [AXUIElement] {
 }
 
 let arguments = CommandLine.arguments
-guard arguments.count >= 3, let pid = pid_t(arguments[2]) else { fatalError("usage: tree|click PID [ROLE LABEL]") }
+guard arguments.count >= 3, let pid = pid_t(arguments[2]) else { fatalError("usage: tree|click PID [ROLE LABEL LOOKUP_SECONDS]") }
 guard AXIsProcessTrusted() else { fatalError("This process is not trusted for Accessibility") }
-let all = elements(AXUIElementCreateApplication(pid))
+let application = AXUIElementCreateApplication(pid)
 let labels = [kAXTitleAttribute, kAXDescriptionAttribute, kAXValueAttribute]
-switch arguments[1] {
-case "tree":
+func printTree(_ all: [AXUIElement]) {
     for element in all {
         print(([kAXRoleAttribute] + labels).map { attribute(element, $0) }.joined(separator: "\t"))
     }
-case "click" where arguments.count == 5:
-    guard let target = all.first(where: { element in
-        attribute(element, kAXRoleAttribute) == arguments[3]
-            && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
-    }) else { fatalError("No \(arguments[3]) labelled \(arguments[4])") }
+}
+switch arguments[1] {
+case "tree":
+    printTree(elements(application))
+case "click" where arguments.count == 6:
+    guard let lookupSeconds = Double(arguments[5]), lookupSeconds.isFinite, lookupSeconds >= 0 else {
+        fatalError("LOOKUP_SECONDS must be finite and nonnegative")
+    }
+    let deadline = ProcessInfo.processInfo.systemUptime + lookupSeconds
+    var all: [AXUIElement]
+    var target: AXUIElement?
+    repeat {
+        all = elements(application)
+        target = all.first(where: { element in
+            attribute(element, kAXRoleAttribute) == arguments[3]
+                && (arguments[4].isEmpty || labels.contains { attribute(element, $0) == arguments[4] })
+        })
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        if target != nil || remaining <= 0 { break }
+        Thread.sleep(forTimeInterval: min(0.1, remaining))
+    } while ProcessInfo.processInfo.systemUptime < deadline
+    guard let target else {
+        printTree(all)
+        // fatalError traps before buffered stdout is flushed.
+        fflush(stdout)
+        fatalError("No \(arguments[3]) labelled \(arguments[4])")
+    }
     var position = CGPoint.zero, size = CGSize.zero
     var value: CFTypeRef?
     AXUIElementCopyAttributeValue(target, kAXPositionAttribute as CFString, &value)
@@ -46,5 +67,5 @@ case "click" where arguments.count == 5:
         usleep(100_000)
     }
 default:
-    fatalError("usage: tree|click PID [ROLE LABEL]")
+    fatalError("usage: tree|click PID [ROLE LABEL LOOKUP_SECONDS]")
 }
