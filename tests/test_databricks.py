@@ -1569,6 +1569,27 @@ class TestListProviderServiceModels:
             db_mod.list_provider_service_models(WS, "token", "main.a.b", provider_type) == expected
         )
 
+    @pytest.mark.parametrize(
+        ("codex", "anthropic", "expected"),
+        [
+            ((None, "HTTP 503"), ({"data": [{"id": "claude-a"}]}, None), (["claude-a"], None)),
+            (({"models": []}, None), (None, "HTTP 403"), ([], "HTTP 403")),
+        ],
+    )
+    def test_non_anthropic_provider_merges_both_catalogs(
+        self, monkeypatch, codex, anthropic, expected
+    ):
+        monkeypatch.setattr(
+            db_mod,
+            "_http_get_json",
+            lambda url, token, **kw: anthropic if "/anthropic/" in url else codex,
+        )
+
+        assert (
+            db_mod.list_provider_service_models(WS, "token", "main.a.b", "microsoft_foundry")
+            == expected
+        )
+
     def test_reports_a_codex_listing_failure(self, monkeypatch):
         monkeypatch.setattr(
             db_mod,
