@@ -57,7 +57,9 @@ def test_claude_preserves_prompt_and_headless_transport(setup):
     assert shlex.split(remote) == [
         "env",
         "_UCODE_DISPATCH_ACTIVE=1",
-        "ug",
+        "python3",
+        "-c",
+        cloud.Path(cloud.__file__).with_name("cloud_remote.py").read_text(encoding="utf-8"),
         "claude",
         "--workspace",
         "https://test.cloud.databricks.com",
@@ -214,7 +216,7 @@ def test_terminal_defaults_are_forwarded_without_credentials(monkeypatch):
     assert "TERM_PROGRAM=test; $(touch /tmp/nope)" in outer
     assert "must-not-transfer" not in command
     inner = outer[outer.index("-c") + 1]
-    assert inner.startswith("stty rows 30 cols 100; exec env _UCODE_DISPATCH_ACTIVE=1 ug claude")
+    assert inner.startswith("stty rows 30 cols 100; exec env _UCODE_DISPATCH_ACTIVE=1 python3 -c")
 
 
 def test_terminal_type_fallback(monkeypatch):
@@ -296,45 +298,122 @@ def test_reused_headless_sandbox_is_not_deleted(setup):
     assert not any("delete" in call.args[0] for call in run.call_args_list)
 
 
-@pytest.mark.parametrize("choice", ["resume", "fresh", "new", None])
-def test_interactive_resume_choices(setup, monkeypatch, choice):
-    t = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project")
-    session = "12345678-1234-1234-1234-123456789abc"
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_default_interactive_launch_ignores_previous_session(setup, monkeypatch, agent):
+    """A plain launch creates a new Sandbox even when a previous session is saved."""
+    run, execute = setup
+    target = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project")
+    previous = "12345678-1234-1234-1234-123456789abc"
     cloud.atomic_write_json(
-        cloud.session_path(t, "claude"), {"sandbox": "existing", "session": session}
+        cloud.session_path(target, agent), {"sandbox": "existing", "session": previous}
     )
-    monkeypatch.setattr(
-        cloud,
-        "checked",
-        lambda t, argv: '[{"sandboxId":"existing"}]' if "list" in argv else "/a/conversation.jsonl",
+    read_saved = Mock(side_effect=AssertionError("Default launch must not read saved sessions"))
+    monkeypatch.setattr(cloud, "read_json_safe", read_saved)
+    monkeypatch.setattr(cloud.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    cloud.launch(SimpleNamespace(obj=(None, "test", None, "/tmp/project"), args=[]), agent)
+    read_saved.assert_not_called()
+    assert any("create" in call.args[0] for call in run.call_args_list)
+    assert not any("list" in call.args[0] for call in run.call_args_list)
+    assert "test-sbx@gateway.example.com" in execute.call_args.args[0]
+    saved = json.loads(cloud.session_path(target, agent).read_text())
+    assert saved["sandbox"] == "test-sbx"
+    if agent == "claude":
+        assert saved["session"] != previous
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_explicit_cloud_resume_reuses_previous_session_without_creation(setup, monkeypatch, agent):
+    """--resume directly reopens the scoped session instead of offering a picker."""
+    run, execute = setup
+    original = run.side_effect
+    session = "12345678-1234-1234-1234-123456789abc"
+    target = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project")
+    cloud.atomic_write_json(
+        cloud.session_path(target, agent), {"sandbox": "existing", "session": session}
     )
-    seen = []
 
-    def pick(prompt, choices):
-        seen.extend(choices)
-        return choice
+    def response(args, **kwargs):
+        if "list" in args:
+            return SimpleNamespace(returncode=0, stdout='[{"sandboxId":"existing"}]', stderr="")
+        if "find " in args[-1]:
+            return SimpleNamespace(returncode=0, stdout="/a/conversation.jsonl", stderr="")
+        return original(args, **kwargs)
 
-    monkeypatch.setattr(cloud, "prompt_for_selection", pick)
-    if choice is None:
-        with pytest.raises(cloud.typer.Exit):
-            cloud.choose_previous(t, "claude", [])
-        return
-    sid, args, saved = cloud.choose_previous(t, "claude", [])
-    assert len(seen) == 3
-    assert sid == (None if choice == "new" else "existing")
-    assert args == (["--resume", session] if choice == "resume" else [])
-    assert saved == (session if choice == "resume" else None)
+    run.side_effect = response
+    monkeypatch.setattr(cloud.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    remote = Mock(wraps=cloud.remote_command)
+    monkeypatch.setattr(cloud, "remote_command", remote)
+    cloud.launch(SimpleNamespace(obj=(None, "test", None, "/tmp/project", True), args=[]), agent)
+    assert remote.call_args.args[1] == (
+        ["--resume", session] if agent == "claude" else ["resume", "--last"]
+    )
+    assert not any("create" in call.args[0] for call in run.call_args_list)
+    assert "existing@gateway.example.com" in execute.call_args.args[0]
 
 
-def test_deleted_sandbox_is_not_offered(setup, monkeypatch):
-    t = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project")
-    cloud.atomic_write_json(cloud.session_path(t, "claude"), {"sandbox": "deleted"})
-    monkeypatch.setattr(cloud, "checked", lambda *a: "[]")
-    picker = Mock()
-    monkeypatch.setattr(cloud, "prompt_for_selection", picker)
-    assert cloud.choose_previous(t, "claude", []) == (None, [], None)
-    picker.assert_not_called()
-    assert not cloud.session_path(t, "claude").exists()
+@pytest.mark.parametrize("flags,expected", [([], False), (["--resume"], True)])
+def test_resume_option_is_parsed_before_agent(setup, monkeypatch, flags, expected):
+    launch = Mock()
+    monkeypatch.setattr(cloud, "launch", launch)
+    result = CliRunner().invoke(
+        cloud.app, ["--profile", "test", *flags, "claude", "--model", "opus"]
+    )
+    assert result.exit_code == 0, result.output
+    assert launch.call_args.args[0].obj[-1] is expected
+    assert launch.call_args.args[0].args == ["--model", "opus"]
+
+
+@pytest.mark.parametrize("saved", [{}, {"sandbox": "bad/id"}])
+def test_explicit_resume_without_saved_sandbox_does_not_create(setup, monkeypatch, saved):
+    run, execute = setup
+    target = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project", True)
+    cloud.atomic_write_json(cloud.session_path(target, "claude"), saved)
+    monkeypatch.setattr(cloud.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    with pytest.raises(cloud.typer.Exit):
+        cloud.launch(
+            SimpleNamespace(obj=(None, "test", None, "/tmp/project", True), args=[]), "claude"
+        )
+    run.assert_not_called()
+    execute.assert_not_called()
+
+
+def test_explicit_resume_of_deleted_sandbox_fails_without_creation(setup, monkeypatch):
+    target = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project", True)
+    cloud.atomic_write_json(cloud.session_path(target, "claude"), {"sandbox": "deleted"})
+    checked = Mock(return_value="[]")
+    monkeypatch.setattr(cloud, "checked", checked)
+    with pytest.raises(RuntimeError, match="no longer exists"):
+        cloud.choose_previous(target, "claude", [])
+    assert checked.call_count == 1
+    assert not cloud.session_path(target, "claude").exists()
+
+
+@pytest.mark.parametrize("args", [["claude", "-p", "hi"], ["codex", "exec", "hi"]])
+def test_cloud_resume_rejects_headless_jobs(setup, args):
+    run, execute = setup
+    result = CliRunner().invoke(cloud.app, ["--profile", "test", "--resume", *args])
+    assert result.exit_code != 0
+    assert "interactive conversations" in result.output
+    run.assert_not_called()
+    execute.assert_not_called()
+
+
+def test_cloud_resume_rejects_conflicting_sandbox_selection(setup):
+    run, _ = setup
+    result = CliRunner().invoke(
+        cloud.app, ["--profile", "test", "--resume", "--sandbox", "existing", "claude"]
+    )
+    assert result.exit_code != 0
+    assert "not both" in result.output
+    run.assert_not_called()
+
+
+def test_cloud_resume_is_not_silently_ignored_by_list(setup):
+    run, _ = setup
+    result = CliRunner().invoke(cloud.app, ["--profile", "test", "--resume", "list"])
+    assert result.exit_code != 0
+    assert "only supported with claude or codex" in result.output
+    run.assert_not_called()
 
 
 def test_resume_scope_and_explicit_selection(setup):
@@ -363,22 +442,17 @@ def test_exit_instructions_preserve_exit_status_and_quote(tmp_path):
     assert not marker.exists()
 
 
-def test_onboarding_without_conversation_offers_reuse_only(setup, monkeypatch):
-    t = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project")
+def test_resume_after_incomplete_onboarding_fails_without_creating(setup, monkeypatch):
+    target = cloud.Target("https://test.cloud.databricks.com", "test", None, "/tmp/project", True)
     cloud.atomic_write_json(
-        cloud.session_path(t, "claude"),
+        cloud.session_path(target, "claude"),
         {"sandbox": "existing", "session": "12345678-1234-1234-1234-123456789abc"},
     )
-    monkeypatch.setattr(
-        cloud, "checked", lambda t, argv: '[{"sandboxId":"existing"}]' if "list" in argv else ""
-    )
-
-    def pick(prompt, choices):
-        assert [item[0] for item in choices] == ["fresh", "new"]
-        return "fresh"
-
-    monkeypatch.setattr(cloud, "prompt_for_selection", pick)
-    assert cloud.choose_previous(t, "claude", []) == ("existing", [], None)
+    checked = Mock(side_effect=['[{"sandboxId":"existing"}]', ""])
+    monkeypatch.setattr(cloud, "checked", checked)
+    with pytest.raises(RuntimeError, match="ug cloud --sandbox existing claude"):
+        cloud.choose_previous(target, "claude", [])
+    assert checked.call_count == 2
 
 
 @pytest.mark.parametrize("configured", [True, False])
@@ -457,6 +531,66 @@ def test_cleanup_failure_returns_error_and_recovery_command(setup):
     assert result.exit_code == 1
     assert "Cleanup failed" in result.output
     assert "delete test-sbx" in result.output
+
+
+def test_interactive_status_is_short_and_resume_prints_only_on_exit(setup, monkeypatch, capsys):
+    _, execute = setup
+    monkeypatch.setattr(cloud.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(
+        cloud,
+        "load_state",
+        lambda: {"workspace": "https://test.cloud.databricks.com", "profile": "test"},
+    )
+    cloud.launch(
+        SimpleNamespace(obj=(None, "test", None, "/home/sandbox-agent/project"), args=[]),
+        "claude",
+    )
+    assert capsys.readouterr().err.splitlines() == [
+        "Starting Claude in a new Sandbox...",
+        "Sandbox: test-sbx",
+    ]
+    remote = execute.call_args.args[0][-1]
+    assert "Resume: ug cloud --resume claude" in remote
+    assert "Delete: ug cloud delete test-sbx" in remote
+    assert remote.count("Sandbox retained: test-sbx") == 1
+
+
+def test_resume_hint_keeps_nondefault_scope_and_save_failure_fallback():
+    target = cloud.Target("https://other", "other-profile", "existing", "/custom project")
+    hint = cloud.resume_instructions(target, "existing", "claude", "session")
+    assert "--profile other-profile --directory '/custom project' --resume claude" in hint
+    fallback = cloud.resume_instructions(target, "existing", "claude", "session", shortcut=False)
+    assert "--sandbox existing --directory '/custom project' claude --resume session" in fallback
+
+
+def test_remote_status_filter_preserves_warnings_errors_and_prompts(monkeypatch):
+    import io
+
+    from rich.console import Console
+    from rich.panel import Panel
+
+    from ucode.cloud_remote import StartupConsole
+
+    output = io.StringIO()
+    original = Console(file=output, color_system=None)
+    compact = StartupConsole(original)
+    compact.print("[bold green]✔[/bold green] Unity Gateway connected")
+    compact.print("[dim]•[/dim] Using your settings")
+    compact.print(Panel("Configured", title="Configuration Complete"))
+    compact.print(Panel("Launching Claude Code with Unity Gateway"))
+    compact.print("[bold yellow]![/bold yellow] Review your MCP configuration.")
+    compact.print("[bold yellow]![/bold yellow] Review your MCP configuration.")
+    compact.print("[bold red]ERROR[/bold red] Authentication failed")
+    compact.print("Unrecognized diagnostic: keep this visible")
+    monkeypatch.setattr("builtins.input", lambda: "yes")
+    assert compact.input("Continue? ") == "yes"
+    text = output.getvalue()
+    assert "connected" not in text and "Configured" not in text and "Launching" not in text
+    assert "Using your settings" not in text
+    assert text.count("Review your MCP configuration.") == 1
+    assert "Authentication failed" in text
+    assert "Unrecognized diagnostic" in text
+    assert "Continue?" in text
 
 
 def test_keyboard_interrupt_cleans_created_headless_sandbox(setup):

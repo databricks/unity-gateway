@@ -25,7 +25,6 @@ from ucode.databricks import databricks_cli_path, list_profile_entries
 from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility.subprocess_cross_os import popen, run
 from ucode.state import load_state
-from ucode.ui import prompt_for_selection
 from ucode.workspace import resolve_workspace, split_workspace_key
 
 app = typer.Typer(help="Run Claude or Codex in Databricks Sandbox.", no_args_is_help=True)
@@ -37,6 +36,7 @@ class Target:
     profile: str | None
     sandbox: str | None
     directory: str
+    resume: bool = False
 
     def cli(self, *args: str) -> list[str]:
         return [
@@ -64,8 +64,16 @@ class Target:
 
 
 def target(
-    workspace: str | None, profile: str | None, sandbox: str | None, directory: str
+    workspace: str | None,
+    profile: str | None,
+    sandbox: str | None,
+    directory: str,
+    resume: bool = False,
 ) -> Target:
+    if resume and sandbox:
+        raise RuntimeError(
+            "Use --resume for the last conversation, or --sandbox <id> to select an environment, not both."
+        )
     if not shutil.which("ssh"):
         raise RuntimeError("Install OpenSSH client before running ug cloud.")
     state = load_state()
@@ -101,7 +109,7 @@ def target(
         raise RuntimeError("Invalid Sandbox ID.")
     if not directory.startswith("/") or "\x00" in directory or "\n" in directory:
         raise RuntimeError("--directory must be an absolute remote Linux path.")
-    return Target(host, profile, sandbox, directory)
+    return Target(host, profile, sandbox, directory, resume)
 
 
 def apply_environment(t: Target) -> None:
@@ -208,9 +216,16 @@ def options(
         "/home/sandbox-agent/project",
         help="Remote working directory. Local files are not uploaded.",
     ),
+    resume: bool = typer.Option(
+        False,
+        "--resume",
+        help="Resume the last interactive conversation instead of creating a new Sandbox.",
+    ),
 ) -> None:
+    if resume and ctx.invoked_subcommand not in {"claude", "codex"}:
+        raise typer.BadParameter("--resume is only supported with claude or codex.")
     # Resolve only when executing, so all help paths work offline.
-    ctx.obj = (workspace, profile, sandbox, directory)
+    ctx.obj = (workspace, profile, sandbox, directory, resume)
 
 
 def resolve(ctx: typer.Context) -> Target:
@@ -274,8 +289,19 @@ def remote_command(agent: str, args: list[str], t: Target, *, tty: bool = False)
     # Every user-controlled token is quoted for the remote POSIX shell.
     # Sandbox harness wrappers otherwise dispatch back into ug/ucode, configuring twice.
     # This is the image's own recursion guard; the outer ug still configures Gateway.
+    startup = Path(__file__).with_name("cloud_remote.py").read_text(encoding="utf-8")
     launch = shlex.join(
-        ["env", "_UCODE_DISPATCH_ACTIVE=1", "ug", agent, "--workspace", t.host, *args]
+        [
+            "env",
+            "_UCODE_DISPATCH_ACTIVE=1",
+            "python3",
+            "-c",
+            startup,
+            agent,
+            "--workspace",
+            t.host,
+            *args,
+        ]
     )
     if tty:
         # Sandbox SSH currently accepts -tt but supplies pipes (isatty=False).
@@ -325,7 +351,7 @@ def native_session_requested(agent: str, args: list[str]) -> bool:
 def choose_previous(
     t: Target, agent: str, args: list[str]
 ) -> tuple[str | None, list[str], str | None]:
-    """Offer the last launch only in the same workspace, profile and directory."""
+    """Reuse a saved launch only with explicit --resume; never prompt for a session."""
     if t.sandbox:
         session = None
         if agent == "claude":
@@ -342,23 +368,28 @@ def choose_previous(
         raise RuntimeError(
             "Select --sandbox <id> before the agent when resuming an explicit session."
         )
+    if not t.resume:
+        return None, args, None
     saved = read_json_safe(session_path(t, agent))
     sid = saved.get("sandbox")
     if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", sid):
-        return None, args, None
+        raise RuntimeError(
+            f"No previous {agent} Sandbox is saved for this workspace, profile and directory. "
+            f"Run ug cloud {agent} to start a new one."
+        )
     sandboxes = json.loads(checked(t, t.cli("list", "--json")))
     if not isinstance(sandboxes, list):
         raise RuntimeError("Cannot check previous Sandbox: unexpected sandbox list response.")
     if not any(isinstance(row, dict) and row.get("sandboxId") == sid for row in sandboxes):
-        typer.echo(f"Previous Sandbox {sid} no longer exists. Creating a new one.", err=True)
         session_path(t, agent).unlink(missing_ok=True)
-        return None, args, None
+        raise RuntimeError(
+            f"Previous Sandbox {sid} no longer exists. Run ug cloud {agent} to start a new one."
+        )
     session = saved.get("session")
     try:
         session = str(uuid.UUID(session)) if isinstance(session, str) else None
     except ValueError:
         session = None
-    can_resume = True
     if agent == "claude" and session:
         # A launch can end during onboarding, before Claude writes a conversation.
         found = checked(
@@ -369,41 +400,40 @@ def choose_previous(
                 f'find "$HOME/.claude/projects" -type f -name {shlex.quote(session + ".jsonl")} -print -quit 2>/dev/null || true',
             ),
         )
-        can_resume = bool(found.strip())
-    choices = [("fresh", "Start a new session in that Sandbox"), ("new", "Create a new Sandbox")]
-    if can_resume:
-        label = (
-            "Resume previous session" if session else "Resume latest conversation in this Sandbox"
-        )
-        choices.insert(0, ("resume", label))
-    else:
-        typer.echo("No saved Claude conversation yet; the Sandbox can still be reused.", err=True)
-    choice = prompt_for_selection(
-        f"Previous {agent} Sandbox: {sid} (last opened: {saved.get('opened_at', 'unknown')})",
-        choices,
+        if not found.strip():
+            raise RuntimeError(
+                "No saved Claude conversation was found. Start a new conversation with "
+                f"ug cloud --sandbox {sid} claude."
+            )
+    resume_args = (
+        (["--resume", session] if session else ["--continue"])
+        if agent == "claude"
+        else ["resume", "--last"]
     )
-    if choice is None:
-        raise typer.Exit(130)
-    if choice == "new":
-        return None, args, None
-    if choice == "resume":
-        resume = (
-            (["--resume", session] if session else ["--continue"])
-            if agent == "claude"
-            else ["resume", "--last"]
-        )
-        return sid, [*resume, *args], session
-    return sid, args, None
+    return sid, [*resume_args, *args], session
 
 
-def resume_instructions(t: Target, sid: str, agent: str, session: str | None) -> str:
-    base = ["ug", "cloud", *(["--profile", t.profile] if t.profile else ["--workspace", t.host])]
+def resume_instructions(
+    t: Target, sid: str, agent: str, session: str | None, *, shortcut: bool = True
+) -> str:
+    state = load_state()
+    selection = (
+        []
+        if state.get("workspace") == t.host and state.get("profile") == t.profile
+        else (["--profile", t.profile] if t.profile else ["--workspace", t.host])
+    )
+    base = ["ug", "cloud", *selection]
+    directory = [] if t.directory == "/home/sandbox-agent/project" else ["--directory", t.directory]
     resume = (
         (["--resume", session] if session else ["--continue"])
         if agent == "claude"
         else ["resume", "--last"]
     )
-    command = shlex.join([*base, "--sandbox", sid, "--directory", t.directory, agent, *resume])
+    command = shlex.join(
+        [*base, *directory, "--resume", agent]
+        if shortcut
+        else [*base, "--sandbox", sid, *directory, agent, *resume]
+    )
     delete = shlex.join([*base, "delete", sid])
     return f"Sandbox retained: {sid}\nResume: {command}\nDelete: {delete}"
 
@@ -440,7 +470,6 @@ def ensure_remote_auth(t: Target, sid: str, agent: str) -> None:
         )
     if status.get("configured") is True:
         return
-    typer.echo("Configuring ug to use the Sandbox-provided Databricks credential...", err=True)
     configure = shlex.join(
         [
             "env",
@@ -480,6 +509,10 @@ def launch(ctx: typer.Context, agent: str) -> None:
     headless = (
         agent == "claude" and any(a in ("-p", "--print") or a.startswith("--print=") for a in args)
     ) or (agent == "codex" and args[:1] in (["exec"], ["e"], ["review"]))
+    if t.resume and headless:
+        raise typer.BadParameter(
+            "--resume is for interactive conversations. Use --sandbox <id> for a headless job in an existing Sandbox."
+        )
     if not headless and not sys.stdin.isatty():
         raise typer.BadParameter(
             "Interactive launch needs a terminal. Use claude -p or codex exec for headless work."
@@ -495,10 +528,10 @@ def launch(ctx: typer.Context, agent: str) -> None:
                 session = str(uuid.uuid4())
                 args = ["--session-id", session, *args]
         # Reuses an existing key; does not read or transfer the client's credentials.
-        typer.echo("Registering the Sandbox SSH key...", err=True)
+        destination = f"Sandbox {sid}" if sid else "a new Sandbox"
+        typer.echo(f"Starting {agent.title()} in {destination}...", err=True)
         checked(t, t.cli("register"))
         if not sid:
-            typer.echo("Creating a Databricks Sandbox...", err=True)
             data = json.loads(create_sandbox(t, agent))
             sid = data.get("sandboxId")
             if not isinstance(sid, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", sid):
@@ -506,15 +539,7 @@ def launch(ctx: typer.Context, agent: str) -> None:
                     "Sandbox create returned no valid sandboxId. Inspect databricks sandbox list."
                 )
             disposable = headless
-        retention = (
-            "Temporary Sandbox: deleted automatically when this headless run ends."
-            if disposable
-            else f"Sandbox is retained; use ug cloud --workspace {t.host} delete {sid} when finished."
-        )
-        typer.echo(
-            f"Running {agent} in Databricks Sandbox\nWorkspace: {t.host}\nSandbox: {sid}\nDirectory: {t.directory}\n{retention}",
-            err=True,
-        )
+            typer.echo(f"Sandbox: {sid}", err=True)
         checked(
             t,
             ssh_argv(
@@ -540,7 +565,7 @@ def launch(ctx: typer.Context, agent: str) -> None:
                 )
             except (RuntimeError, OSError) as exc:
                 typer.echo(f"Could not save the resume shortcut: {exc}", err=True)
-            typer.echo(instructions, err=True)
+                instructions = resume_instructions(t, sid, agent, session, shortcut=False)
             remote = with_exit_instructions(remote, instructions)
         command = connected_ssh(t, sid, remote, tty=not headless)
         if headless:

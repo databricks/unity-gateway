@@ -824,4 +824,4 @@ Use `@main` for automatic updates or pin a reviewed commit for reproducible runs
 
 ### Remote Sandbox agents
 
-Run `ug cloud claude` or `ug cloud codex` to start the agent inside a Databricks Sandbox. See [commands and lifecycle](docs/cloud.md).
+Run `ug cloud claude` or `ug cloud codex` to start a new conversation in a new Databricks Sandbox. Use `ug cloud --resume claude` or `ug cloud --resume codex` to return to the last conversation without a picker. See [commands and lifecycle](docs/cloud.md).

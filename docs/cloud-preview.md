@@ -69,26 +69,30 @@ Sandbox creation detects the service quota rejection during native CLI retries a
 with the configured limit and recovery options. Debug output is inspected in memory only;
 it is not printed or saved. Creation has a 300-second timeout.
 
-## Interactive resume picker
+## Explicit interactive resume
 
-After an interactive launch, `ug cloud claude` in the same workspace/profile/directory
-checks the last Sandbox and offers: resume the conversation, start a new conversation
-in that Sandbox, or create a new Sandbox. Explicit `--sandbox` and native resume flags
-bypass the picker. Headless jobs never use the picker.
+`ug cloud claude` and `ug cloud codex` always create a new Sandbox and start a new
+conversation. They do not read saved session metadata or display a session picker.
+Use `ug cloud --resume claude` or `ug cloud --resume codex` to reopen the last
+conversation in the same workspace/profile/directory directly. Use `--sandbox <id>`
+for a new conversation in a chosen environment; native resume flags still work with
+that explicit Sandbox. Do not combine the cloud `--resume` flag with `--sandbox`
+or native resume arguments. Headless jobs reject the cloud `--resume` shortcut.
 
-New Claude conversations get a native session UUID; resume targets that exact UUID.
-If onboarding ended before a transcript was written, only new-session/recreate choices
-are offered. Codex uses its native `resume --last` and labels the option as the latest
-conversation. Remote conversation contents stay in the Sandbox; local metadata in
-`~/.ucode/cloud-sessions/` contains only Sandbox/session IDs and the last-opened timestamp.
-The shortcut is scoped to workspace, authentication profile, agent, and working directory.
+New Claude conversations get a native session UUID; explicit resume targets that exact
+UUID. If onboarding ended before a transcript was written, resume stops with a command
+to start a new conversation in that Sandbox. Codex uses its native `resume --last`.
+Remote conversations stay in the Sandbox; local metadata in `~/.ucode/cloud-sessions/`
+contains only Sandbox/session IDs and the last-opened timestamp. The shortcut is scoped
+to workspace, authentication profile, agent, and working directory.
 
-Resume/delete commands print before launch and after a normal remote exit. If SSH
-breaks, the exit message may not arrive; the saved picker shortcut is available next time.
-Deleting/expiring a Sandbox removes its remote files and conversations; ug checks for
-its existence before offering resume. Session retention across Sandbox service expiration
-is not guaranteed. Previously created Sandboxes can be registered by launching once with
-`--sandbox <id>`; this does not import older conversations into an exact-ID shortcut.
+Resume/delete commands print once, after a normal remote exit. If SSH
+breaks, the exit message may not arrive; `ug cloud --resume <agent>` is available
+next time. Missing saved metadata or a deleted Sandbox causes an error, never an
+implicit fresh launch. Deleting/expiring a Sandbox removes its files and conversations;
+session retention across service expiration is not guaranteed. Previously created
+Sandboxes can be remembered by launching once with `--sandbox <id>`; this does not
+import older conversations into an exact-ID shortcut.
 
 ## Sandbox authentication
 
@@ -98,3 +102,8 @@ the launcher repairs it using `ug configure --profile DEFAULT --agents <agent> -
 It rechecks the saved configuration before launching. This uses the credential already
 inside the Sandbox; local credentials are not uploaded. Missing/mismatched credentials
 stop with an actionable error instead of offering browser login inside the Sandbox.
+
+Cloud startup sends a small Python output adapter to the image’s installed ug. It hides
+routine Rich status messages and repeated identical warnings without redirecting the
+agent’s streams or modifying the image installation. Errors and prompts remain visible.
+Resume/delete hints appear only on exit and omit the default workspace and directory.

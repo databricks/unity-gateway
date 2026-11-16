@@ -2130,4 +2130,8 @@ hosts, pages, meaningful queries and fragments. They do not establish a live MCP
 
 ## Cloud Sandbox launcher
 
-`tests/test_cloud.py` covers transport, quoting, auth repair, quota errors, cleanup and resume selection using component fixtures. Live validation results and limits are summarized in [PR #1689](https://github.com/databricks/unity-gateway/pull/1689).
+`tests/test_cloud.py` covers transport, quoting, auth repair, quota errors, cleanup, new-Sandbox default launches, and explicit `--resume` using component fixtures. Resume coverage includes scoped metadata, missing/deleted environments, incomplete onboarding, and conflicting/headless flags; it replaces the removed automatic picker contract. Live validation results and limits are summarized in [PR #1689](https://github.com/databricks/unity-gateway/pull/1689).
+
+Cloud startup component tests also cover compact status output, warning deduplication,
+visible errors/prompts, and scoped resume hints printed only on exit. Live terminal
+coverage must separately verify the remote image adapter and native agent output.
