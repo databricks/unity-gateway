@@ -1,5 +1,16 @@
 # Test suites and user journeys
 
+`test_security_scan_request.py` verifies the default-branch Security Scan's request
+validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
+This prerequisite installs the producer and reusable consumer without making existing CI
+wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
+secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
+warnings, symlink handling, and multi-batch Semgrep report parsing. These tests use inert
+fixtures; they do not execute contributed code or validate live GitHub event delivery,
+organization settings, Semgrep rules or advisory-service responses. Bash cases run only
+on non-Windows hosts, matching the scanner's Linux runner; Python parser checks also run
+on Windows. Sensitive-path rejection asserts its annotation as well as the exit status.
+
 Profile discovery component checks in `test_databricks.py::TestGetDatabricksProfiles`
 require local metadata listing without validating unrelated workspaces, preserve PAT
 filtering (including implicit PATs without DEFAULT inheritance), tolerate unreadable
@@ -1552,6 +1563,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Broad configure flags, multiple workspaces, and PAT flows | Deferred while focusing on basic CUJs |
 | Workspace-switch MCP cleanup | The `workspace_switch` CUJ covers real registration, cleanup, repeat configure, and a completed Claude task. Unit/component tests cover duplicate attempts and injected removal failures; the CUJ does not force an agent timeout. It runs in the required managed CI lane for full/live runs. |
 | Relayed/subscription MPS discovery | Not covered by the scoped discovery journeys |
+| Relayed launch from a managed static model-service list | Unit/component checks in `test_databricks.py` (relay detection), `test_agent_claude.py` (state helper, signed-in gating, static picker kept when relayed without a provider) and `test_cli.py` (`relayed` reaches configure). No dedicated live journey; checked manually against a relayed workspace. |
 | Saved Claude picker selection | Unit/component checks in `test_agent_claude.py` cover mapped family aliases, `[1m]`/`[200k]` variants, and unavailable-model fallback without changing saved settings. No dedicated live journey. |
 | Fresh provider/parent validation and mixed Bedrock filtering | Not covered after removing the duplicate model-discovery suites |
 | TUI initial prompt supplied on the launch command line | Not yet covered; headless prompt arguments are covered |
