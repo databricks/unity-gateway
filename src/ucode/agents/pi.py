@@ -162,8 +162,8 @@ def render_overlay(
             "authHeader": True,
             # Gateway's Anthropic translator rejects per-tool
             # `eager_input_streaming` on the streaming + tools path. Pi sends
-            # the legacy beta header instead when this is false. Session affinity
-            # keeps a conversation on one destination (see module docstring).
+            # the legacy beta header instead when this is false.
+            # Session affinity hints that requests should share a destination (see module docstring).
             "compat": {
                 "supportsEagerToolInputStreaming": False,
                 "sendSessionAffinityHeaders": True,
