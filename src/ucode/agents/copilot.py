@@ -1173,94 +1173,17 @@ def _session_catalog(
     return catalog
 
 
-_RESUME_FLAGS = ("--resume", "-r", "--session-id")
-_SESSION_MODEL_KEYS = ("selectedModel", "newModel", "currentModel")
-_REGISTRY_PROVIDERS = frozenset((*PROVIDER_NAMES.values(), *LEGACY_PROVIDER_NAMES))
-
-
-def _resumed_session_dir(tool_args: list[str]) -> Path | None:
-    """The saved session that ``--resume <id>``, ``--session-id <id>`` or ``--continue`` opens.
-
-    None for a session name, the session picker, or a session that isn't saved here."""
-    value: str | None = None
-    latest = False
-    for index, arg in enumerate(tool_args):
-        if arg == "--":
-            break
-        flag, separator, inline = arg.partition("=")
-        if flag in _RESUME_FLAGS:
-            following = tool_args[index + 1] if index + 1 < len(tool_args) else ""
-            value = inline if separator else following
-            value = None if value.startswith("-") else value
-            latest = False
-        elif arg == "--continue":
-            value, latest = None, True
-    if not value and not latest:
-        return None
-    root = COPILOT_CONFIG_DIR / "session-state"
-    try:
-        sessions = {
-            path: (path / "events.jsonl").stat().st_mtime
-            for path in root.iterdir()
-            if (path / "events.jsonl").is_file()
-        }
-    except OSError:
-        return None
-    if latest:
-        return max(sessions, key=sessions.__getitem__, default=None)
-    matches = [path for path in sessions if value and path.name.startswith(value)]
-    return matches[0] if len(matches) == 1 else None
-
-
-def resumed_session_model(tool_args: list[str], catalog: list[CopilotModel]) -> CopilotModel | None:
-    """The model a resumed session last used, when the session saved it under a legacy provider
-    name: Copilot can't find that model in this registry and would switch to ``COPILOT_MODEL``."""
-    session = _resumed_session_dir(tool_args)
-    if session is None:
-        return None
-    last: str | None = None
-    try:
-        # A write Copilot cut off can leave a partial character; that line just fails to parse.
-        with (session / "events.jsonl").open(encoding="utf-8", errors="replace") as events:
-            for line in events:
-                if "Model" not in line:
-                    continue
-                try:
-                    data = json.loads(line).get("data")
-                except (ValueError, AttributeError):
-                    continue
-                if not isinstance(data, dict):
-                    continue
-                for key in _SESSION_MODEL_KEYS:
-                    value = data.get(key)
-                    # `session.shutdown` records a bare id; only a registry ref says which names.
-                    if isinstance(value, str) and value.partition("/")[0] in _REGISTRY_PROVIDERS:
-                        last = value
-    except OSError:
-        return None
-    if not last or last.partition("/")[0] not in LEGACY_PROVIDER_NAMES:
-        return None
-    try:
-        return resolve_copilot_model(last, catalog)
-    except RuntimeError:
-        return None
-
-
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
     model_location = state.pop(LAUNCH_MODEL_LOCATION_KEY, None)
     catalog = _session_catalog(state, tool_args, provider_service, model_location)
     # Resolve before the proxy starts so a bad model fails without starting Copilot.
     tool_args, selected = rewrite_model_args(tool_args, catalog)
-    start_model = (
-        selected
-        or resumed_session_model(tool_args, catalog)
-        or launch_model(
-            state,
-            catalog,
-            requested=options.launch_model,
-            managed_list=not (provider_service or model_location),
-        )
+    start_model = selected or launch_model(
+        state,
+        catalog,
+        requested=options.launch_model,
+        managed_list=not (provider_service or model_location),
     )
     scrub_stored_credentials()
     try:
