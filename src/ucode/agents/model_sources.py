@@ -63,6 +63,8 @@ def _expand_wildcard_source(
     service, reason = get_model_provider_service(source_name, workspace, token)
     if service is None:
         return [], reason
+    # For Claude and Codex, use the specific Claude and Codex discovery endpoints.
+    # Otherwise, for other agents, fall back to the previous discovery methods.
     if tool in PROVIDER_MODEL_CATALOGS:
         targets, reason = PROVIDER_MODEL_CATALOGS[tool](workspace, token, source_name)
     else:
