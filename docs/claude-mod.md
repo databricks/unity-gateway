@@ -72,6 +72,18 @@ routing decision audit log is unchanged.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 
+Claude always loads `SubagentHandback`, but routed GLM children have selected it through
+ToolSearch, and the gateway rejected each follow-up request with HTTP 400. For a child that
+`agent.spawn` routed, a `tool.call` hook on ToolSearch denies `select:SubagentHandback` without
+running the search, and tells the child to call the tool directly. A select that also names other
+tools runs with only those names and the original `max_results`, and the child gets the same
+guidance after the result. Denials and tool errors from that search are left unchanged.
+ToolSearch from the root, unrouted children, keyword searches, and selects that do not name
+`SubagentHandback` run unchanged, and the mod never answers `SubagentHandback` itself. This is
+a client-side mitigation. The gateway's rejection is not yet explained, keyword searches can
+still return a `SubagentHandback` reference, and a child that ends with a text-only reply
+still delivers nothing. Only live runs show whether GLM follows the guidance.
+
 In eligible Smart Router Orchestrator launches, `tool.describe` replaces the native
 Agent/Task delegation advice with the orchestrator's instructions. It changes only the
 description, preserving the native input schema and execution. The host's `Usage notes`

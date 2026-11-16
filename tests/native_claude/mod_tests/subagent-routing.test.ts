@@ -678,3 +678,97 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
   expect(spawn.chunks.map(chunk => chunk.kind)).toEqual(['thinking', 'text', 'tool', 'input', 'tool', 'input']);
   expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
 });
+
+const childSpawn = (id: string) => ({
+  tool_use_id: id, prompt: originalInput.prompt, description: originalInput.description,
+  subagentType: originalInput.subagent_type, parentModel: 'parent-model',
+  provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+  name: id, permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
+});
+
+async function spawnRoutedUnroutedAndDeniedChildren($: any, on: any, native: (e: any) => any) {
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', ($: any, e: any) => ({ value: { exitCode: 0, stderr: '', stdout:
+    JSON.parse(e.init.stdin).tool_use_id === 'unrouted' ? ''
+      : JSON.stringify({ model: 'system.ai.glm-5', rationale: 'Selected for the task' }) } }));
+  on('fs.write', () => ({ value: undefined }));
+  on('agent.spawn', ($: any, e: any) => e.tool_use_id === 'denied' ? { deny: 'Permission denied' }
+    : { agentId: `child-${e.tool_use_id}`, model: 'system.ai.glm-5' });
+  on('tool.call', ($: any, { tool_use_id: _assignedByHarness, ...toolInput }: any) => native(toolInput));
+  for (const id of ['routed', 'unrouted', 'denied']) {
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
+    await $.agent.spawn(childSpawn(id));
+  }
+}
+
+test('a routed child selecting only SubagentHandback is told to call it and ToolSearch never runs', async ($, on) => {
+  const searches: any[] = [];
+  const handbacks: any[] = [];
+  const delivered = { result: { delivered: true }, text: 'Report delivered' };
+  await spawnRoutedUnroutedAndDeniedChildren($, on, (e) => {
+    if (e.tool === 'ToolSearch') searches.push(e);
+    if (e.tool === 'SubagentHandback') { handbacks.push(e); return delivered; }
+    return { result: 'ok' };
+  });
+  for (const query of ['select:SubagentHandback', 'SELECT: subagenthandback ', 'select:SubagentHandback,SubagentHandback', 'select:SubagentHandback,']) {
+    const answer = await $.tool.call({ tool: 'ToolSearch', query, max_results: 5, agentId: 'child-routed' });
+    expect(answer.deny).toMatch(/SubagentHandback is already loaded/);
+    expect(answer.deny).toMatch(/Call SubagentHandback directly/);
+  }
+  expect(searches).toEqual([]);
+
+  const report = { tool: 'SubagentHandback', message: 'Full report', agentId: 'child-routed' };
+  expect(await $.tool.call(report)).toEqual(delivered);
+  expect(handbacks).toEqual([report]);
+});
+
+test('a routed child mixing SubagentHandback into a select searches only the other tools', async ($, on) => {
+  const searches: any[] = [];
+  const found = { result: { matches: ['Monitor', 'TaskStop'] }, text: 'Loaded Monitor, TaskStop', context: ['Existing context'] };
+  const outcomes: Record<string, any> = {
+    'select:Monitor,TaskStop': found,
+    'select:Monitor': { deny: 'user policy' },
+    'select:TaskStop': { result: 'failed', text: 'Search failed', isError: true },
+  };
+  await spawnRoutedUnroutedAndDeniedChildren($, on, (e) => {
+    if (e.tool !== 'ToolSearch') return { result: 'ok' };
+    searches.push(e);
+    return outcomes[e.query] ?? { result: 'unexpected query', text: e.query };
+  });
+
+  const answer = await $.tool.call({ tool: 'ToolSearch', query: 'select:SubagentHandback, Monitor,TaskStop', max_results: 3, agentId: 'child-routed' });
+  expect(searches[0]).toEqual({ tool: 'ToolSearch', query: 'select:Monitor,TaskStop', max_results: 3, agentId: 'child-routed' });
+  expect(answer.result).toEqual(found.result);
+  expect(answer.text).toBe(found.text);
+  expect(answer.context?.[0]).toBe('Existing context');
+  expect(answer.context).toHaveLength(2);
+  expect(answer.context?.[1]).toMatch(/SubagentHandback is already loaded/);
+  expect(answer.context?.[1]).toMatch(/Call SubagentHandback directly/);
+
+  expect(await $.tool.call({ tool: 'ToolSearch', query: 'select:Monitor,SubagentHandback', max_results: 5, agentId: 'child-routed' }))
+    .toEqual(outcomes['select:Monitor']);
+  expect(await $.tool.call({ tool: 'ToolSearch', query: 'select:subagenthandback,TaskStop', max_results: 5, agentId: 'child-routed' }))
+    .toEqual(outcomes['select:TaskStop']);
+  expect(searches.map((e) => e.query)).toEqual(['select:Monitor,TaskStop', 'select:Monitor', 'select:TaskStop']);
+});
+
+for (const [name, agentId, query] of [
+  ['root', undefined, 'select:SubagentHandback'],
+  ['an unrouted child', 'child-unrouted', 'select:SubagentHandback'],
+  ['a denied spawn', 'child-denied', 'select:SubagentHandback,Monitor'],
+  ['a keyword search', 'child-routed', 'SubagentHandback report'],
+  ['a select without SubagentHandback', 'child-routed', 'select:Monitor,SubagentHandbackExtra'],
+] as const) {
+  test(`ToolSearch from ${name} passes through unchanged`, async ($, on) => {
+    const searches: any[] = [];
+    const found = { result: { matches: [] }, text: 'No matches' };
+    await spawnRoutedUnroutedAndDeniedChildren($, on, (e) => {
+      if (e.tool !== 'ToolSearch') return { result: 'ok' };
+      searches.push(e);
+      return found;
+    });
+    const call = { tool: 'ToolSearch', query, max_results: 5, ...(agentId ? { agentId } : {}) };
+    expect(await $.tool.call(call)).toEqual(found);
+    expect(searches).toEqual([call]);
+  });
+}
