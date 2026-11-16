@@ -11,6 +11,7 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import parse_qs
 
 import pytest
@@ -5019,7 +5020,8 @@ class TestDatabricksCliResolution:
     the version-read subprocess directly — no real Databricks CLI is needed."""
 
     @pytest.fixture(autouse=True)
-    def _fresh_databricks_cli_cache(self):
+    def _fresh_databricks_cli_cache(self, monkeypatch):
+        monkeypatch.setattr(db_mod.sys, "platform", "win32" if os.name == "nt" else "linux")
         clear_databricks_cli_cache()
         yield
         clear_databricks_cli_cache()
@@ -5082,6 +5084,53 @@ class TestDatabricksCliResolution:
         exe = tmp_path / "databricks.exe"
         exe.write_text("matches PATHEXT's .exe")
         assert db_mod._iter_databricks_executables() == [str(exe)]
+
+    @pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"])
+    @pytest.mark.parametrize("path", ["/usr/bin:/bin:/usr/sbin:/sbin", "", None])
+    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory, path):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("HOME", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        if path is None:
+            monkeypatch.delenv("PATH", raising=False)
+        else:
+            monkeypatch.setenv("PATH", path)
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        candidate = os.path.join(os.path.expanduser(directory), name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value == candidate)
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda value: (1, 20, 0))
+
+        assert databricks_cli_path() == os.path.abspath(candidate)
+        assert os.environ.get("PATH") == path
+
+    def test_macos_preserves_cli_found_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        configured = str(tmp_path / name)
+        homebrew = os.path.join("/opt/homebrew/bin", name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value in {configured, homebrew})
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        probes = Mock(side_effect=lambda value: (1, 0, 0) if value == configured else (1, 20, 0))
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probes)
+
+        assert databricks_cli_path() == configured
+        probes.assert_called_once_with(configured)
+
+    @pytest.mark.parametrize("platform", ["linux", "win32"])
+    def test_standard_macos_locations_are_not_searched_on_other_platforms(
+        self, monkeypatch, platform
+    ):
+        monkeypatch.setattr(db_mod.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        files = Mock(return_value=True)
+        monkeypatch.setattr(db_mod.os.path, "isfile", files)
+
+        assert db_mod._iter_databricks_executables() == []
+        files.assert_not_called()
 
     # -- _discover_databricks_clis -------------------------------------------
 

@@ -842,7 +842,7 @@ def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
 
 
 def _iter_databricks_executables() -> list[str]:
-    """Scan every directory on PATH for a `databricks` executable, in PATH order.
+    """Scan PATH, falling back to standard macOS installs when no CLI is found.
 
     A machine can have more than one `databricks` on PATH (e.g. a stale
     ``~/.local/bin/databricks`` shadowing a newer Homebrew install); this is the
@@ -852,6 +852,7 @@ def _iter_databricks_executables() -> list[str]:
     (e.g. a symlink), and deduping by realpath is `_discover_databricks_clis`'s
     job. On POSIX a candidate must have the execute bit; on Windows PATHEXT is
     honored (a matching filename is runnable — there's no execute bit to test).
+    macOS GUI apps inherit a PATH without Homebrew or user-local install directories.
     """
     if os.name == "nt":
         exts = tuple(e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e) or (
@@ -868,16 +869,25 @@ def _iter_databricks_executables() -> list[str]:
         def perms_ok(path: str) -> bool:
             return os.access(path, os.X_OK)
 
+    search_groups = [os.environ.get("PATH", "").split(os.pathsep)]
+    if sys.platform == "darwin":
+        search_groups.append(
+            ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
+        )
+
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if directory in seen_dirs:
-            continue
-        seen_dirs.add(directory)
-        for ext in exts:
-            candidate = os.path.join(directory, f"databricks{ext}")
-            if os.path.isfile(candidate) and perms_ok(candidate):
-                found.append(os.path.abspath(candidate))
+    for directories in search_groups:
+        for directory in directories:
+            if directory in seen_dirs:
+                continue
+            seen_dirs.add(directory)
+            for ext in exts:
+                candidate = os.path.join(directory, f"databricks{ext}")
+                if os.path.isfile(candidate) and perms_ok(candidate):
+                    found.append(os.path.abspath(candidate))
+        if found:
+            return found
     return found
 
 
@@ -906,7 +916,7 @@ _DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None
 def _discover_databricks_clis(
     *, use_cache: bool = True
 ) -> list[tuple[str, tuple[int, int, int] | None]]:
-    """Find every distinct `databricks` binary on PATH, ordered best-first.
+    """Find distinct `databricks` binaries in the search locations, ordered best-first.
 
     Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
     same binary reachable via more than one PATH entry is only probed once.
@@ -957,9 +967,10 @@ def databricks_cli_path() -> str:
     ``~/.local/bin/databricks`` shadowing a newer Homebrew install), and
     `shutil.which` only ever returns the first match — which may be the wrong
     one. Discovery instead orders every binary newest-first, so the front entry
-    is the one to run; its absolute path means a shadowing install or a
-    minimal-PATH launcher (e.g. a desktop GUI) can't cause the wrong binary to
-    run. Falls back to the bare name only when nothing is discovered at all —
+    is the one to run. If PATH has no CLI on macOS, discovery checks standard
+    Homebrew and user-local install directories for desktop GUI helpers.
+    Its absolute path prevents later PATH changes from selecting another binary.
+    Falls back to the bare name only when nothing is discovered at all —
     running it then raises FileNotFoundError, which callers surface as "CLI not
     installed". Cached via discovery — call ``clear_databricks_cli_cache()`` to
     force re-resolution (e.g. after installing/upgrading the CLI).
@@ -977,7 +988,7 @@ def clear_databricks_cli_cache() -> None:
 
 
 def databricks_cli_installed() -> bool:
-    """Whether any `databricks` binary was found on PATH."""
+    """Whether any `databricks` binary was discovered."""
     return bool(_discover_databricks_clis())
 
 
