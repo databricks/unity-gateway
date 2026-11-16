@@ -1077,13 +1077,10 @@ class TestPiLaunch:
                 "ucode.agents.pi.get_databricks_token",
                 lambda ws, profile=None, **kwargs: e2e_token,
             )
-            pi.write_tool_config(
-                {**e2e_state, "workspace": e2e_workspace},
-                model,
-                token=e2e_token,
-            )
+            pi_state = {**e2e_state, "workspace": e2e_workspace}
+            pi.write_tool_config(pi_state, model, token=e2e_token)
 
-        env = pi.build_runtime_env(e2e_token)
+        env = pi.build_runtime_env(e2e_token, has_gemini=pi._has_gemini(pi_state))
         cmd = pi.validate_cmd("pi")
         result = _run_agent(cmd, env=env, timeout=120)
         combined = (result.stdout + result.stderr).strip()

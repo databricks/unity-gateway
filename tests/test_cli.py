@@ -3204,6 +3204,16 @@ class TestStatus:
         assert cli_mod._status_default_model("claude", MINIMAL_STATE, ["cached"]) is None
         assert "Tracing: disabled" in output
 
+    def test_status_reports_the_model_pi_starts_on(self):
+        # Pi skips a managed default it can't serve (Claude older than 4.5) and starts elsewhere.
+        state = {
+            "pi_default_model": "system.ai.claude-opus-4-1",
+            "pi_models": ["system.ai.claude-opus-4-1", "system.ai.gpt-5"],
+        }
+
+        assert cli_mod._status_default_model("pi", state, ["system.ai.gpt-5"]) == "system.ai.gpt-5"
+        assert cli_mod._status_default_model("pi", {"codex_models": ["gpt-5"]}, []) is None
+
 
 class TestStatusLiveModels:
     def test_refreshes_models_with_the_saved_profile_without_persisting(self):
