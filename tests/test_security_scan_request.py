@@ -65,22 +65,10 @@ def _resolve(tmp_path, monkeypatch, change=None, notification=None, run_error=No
     return json.loads(output.read_text().removeprefix("metadata="))
 
 
-def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
-    metadata = _resolve(tmp_path, monkeypatch)
-    assert metadata == {
-        "head_sha": HEAD,
-        "base_sha": BASE,
-        "author_association": "NONE",
-        "author": "contributor",
-        "author_type": "User",
-        "head_repo": "external/fork",
-        "labels": ["reviewed"],
-    }
-
-
 @pytest.mark.parametrize(
     "notification",
     [
+        None,
         {"id": RUN_ID, "event": "pull_request"},
         {
             "id": RUN_ID,
@@ -90,10 +78,17 @@ def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
         },
     ],
 )
-def test_trusted_scan_refreshes_requested_event_metadata(tmp_path, monkeypatch, notification):
+def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch, notification):
     metadata = _resolve(tmp_path, monkeypatch, notification=notification)
-    assert metadata["head_sha"] == HEAD
-    assert metadata["author_association"] == "NONE"
+    assert metadata == {
+        "head_sha": HEAD,
+        "base_sha": BASE,
+        "author_association": "NONE",
+        "author": "contributor",
+        "author_type": "User",
+        "head_repo": "external/fork",
+        "labels": ["reviewed"],
+    }
 
 
 @pytest.mark.parametrize("run_id", [None, 0, -1, "123", True])
