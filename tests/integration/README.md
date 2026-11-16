@@ -1,5 +1,10 @@
 # Integration tests
 
+The macOS Jamf npm-provisioning path has component coverage in
+`../test_macos_provision.py`, using redirected paths and stubbed installers. A real Jamf policy
+run, npm agent installation and standard-user launch remain manual validation steps; these
+component checks are not integration coverage.
+
 `../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
 fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
 checks run on both platforms. These are not live GitHub or credentialed integration checks.
