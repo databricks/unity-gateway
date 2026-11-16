@@ -489,6 +489,7 @@ def _request_claude_routing_decision(
     token: str,
     prompt: str,
     model_ids: list[str],
+    provider: str | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
     route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
     if not route_options:
@@ -499,6 +500,7 @@ def _request_claude_routing_decision(
         prompt,
         route_options,
         router_name=routing.configured_router_name(),
+        provider=provider,
         timeout=CLAUDE_ROUTE_SELECTION_TIMEOUT_S,
     )
 
@@ -519,7 +521,9 @@ def _route_claude_prompt(
             raise RuntimeError(
                 discovery_error or "Anthropic models endpoint returned no Claude models"
             )
-    decision, error = _request_claude_routing_decision(workspace, token, prompt, model_ids)
+    decision, error = _request_claude_routing_decision(
+        workspace, token, prompt, model_ids, state.get("_claude_launch_provider")
+    )
     if decision is None:
         raise RuntimeError(error or "router returned no Claude model selection")
     return decision
@@ -551,6 +555,7 @@ def route_claude_subagent(
     workspace: str,
     token: str,
     available_models: list[str],
+    provider: str | None = None,
     audit_decision: bool = False,
     hook_output: bool = False,
 ) -> dict | None:
@@ -564,7 +569,7 @@ def route_claude_subagent(
         payload,
         is_spawn_agent=claude_routing.is_spawn_agent_tool,
         decision_fn=lambda task: _request_claude_routing_decision(
-            workspace, token, task, available_models
+            workspace, token, task, available_models, provider
         ),
         default_task_label="Claude Code subagent task",
         model_id_mapper=lambda model: model,
