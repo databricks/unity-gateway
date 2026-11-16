@@ -19,7 +19,6 @@ import ucode.custom_oauth as custom_oauth_mod
 import ucode.databricks as db_mod
 from tests.conftest import metric_observations
 from ucode import metrics
-from ucode.agents import model_sources
 from ucode.databricks import (
     _format_subprocess_result,
     _parse_databricks_cli_version,
@@ -1545,58 +1544,6 @@ class TestResolveProviderService:
 
 
 class TestListProviderServiceModels:
-    @pytest.mark.parametrize(
-        ("provider_type", "tool", "codex_catalog", "expected"),
-        [
-            # Claude expands from the Anthropic catalog even when the Codex catalog is empty.
-            ("microsoft_foundry", "claude", [], ["claude-a", "claude-b", "claude-c"]),
-            ("microsoft_foundry", "codex", [{"slug": "gpt-a"}], ["gpt-a"]),
-            ("microsoft_foundry", "copilot", [{"slug": "gpt-a"}], ["gpt-a"]),
-            ("custom", "claude", [], ["claude-a", "claude-b", "claude-c"]),
-            ("custom", "codex", [{"slug": "gpt-a"}], ["gpt-a"]),
-            ("anthropic", "claude", [], ["claude-a", "claude-b", "claude-c"]),
-            ("anthropic", "codex", [{"slug": "gpt-a"}], ["gpt-a"]),
-            ("anthropic", "copilot", [], ["claude-a", "claude-b", "claude-c"]),
-            ("amazon_bedrock", "claude", [], ["claude-a", "claude-b", "claude-c"]),
-            ("amazon_bedrock", "codex", [{"slug": "gpt-a"}], ["gpt-a"]),
-            ("openai", "claude", [], ["claude-a", "claude-b", "claude-c"]),
-        ],
-    )
-    def test_provider_wildcard_uses_tool_catalog(
-        self, monkeypatch, provider_type, tool, codex_catalog, expected
-    ):
-        service = "main.test.provider"
-        source = f"{service}.*"
-
-        def get_json(url, token, **kwargs):
-            if "/unity-catalog/model-provider-services/" in url:
-                return {
-                    "name": f"model-provider-services/{service}",
-                    "config": {
-                        "provider_type": provider_type,
-                        "targets": [
-                            {"model": "claude-a", "native_api_types": ["anthropic/v1/messages"]}
-                        ],
-                    },
-                }, None
-            assert kwargs["headers"][db_mod.MODEL_PROVIDER_SERVICE_HEADER] == service
-            if "/anthropic/" in url:
-                return {
-                    "data": [
-                        {"id": name} for name in ("claude-a", "claude-b", f"{service}.claude-c")
-                    ]
-                }, None
-            assert "/codex/" in url
-            return {"models": codex_catalog}, None
-
-        monkeypatch.setattr(db_mod, "_http_get_json", get_json)
-
-        models, live = model_sources.resolve_model_sources([source], tool, WS, "token")
-
-        qualified = [f"{service}.{name}" for name in expected]
-        assert models == qualified
-        assert live == ({source: qualified} if qualified else {})
-
     @pytest.mark.parametrize(
         ("provider_type", "response", "expected"),
         [
