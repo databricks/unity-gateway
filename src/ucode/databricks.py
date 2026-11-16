@@ -20,7 +20,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -2349,9 +2349,14 @@ def is_oss_family_model(model_id: str) -> bool:
     return classify_model_family(model_id) == "oss"
 
 
-# Canonical-name prefixes of the other MLflow chat models discovery lists in ``oss_models`` (see
-# `is_mlflow_chat_model_name`).
-_MLFLOW_CHAT_MODEL_PREFIXES = ("gpt-oss", "qwen", "llama", "meta-llama", "gemma")
+def is_gpt_oss_model(model_id: str) -> bool:
+    """Whether ``model_id`` is OpenAI's open-weight gpt-oss, served on MLflow routes only."""
+    return bare_model_name(model_id).startswith("gpt-oss")
+
+
+# Canonical-name prefixes of the other MLflow chat models discovery lists in ``oss_models`` beside
+# gpt-oss (see `is_mlflow_chat_model_name`).
+_MLFLOW_CHAT_MODEL_PREFIXES = ("qwen", "llama", "meta-llama", "gemma")
 
 
 def is_mlflow_chat_model_name(model_id: str) -> bool:
@@ -2362,21 +2367,23 @@ def is_mlflow_chat_model_name(model_id: str) -> bool:
     embedding or reranking service."""
     if _is_non_chat_model_name(model_id):
         return False
-    name = canonical_model_name(model_id)
-    return is_oss_family_model(model_id) or name.startswith(_MLFLOW_CHAT_MODEL_PREFIXES)
+    return (
+        is_oss_family_model(model_id)
+        or is_gpt_oss_model(model_id)
+        or canonical_model_name(model_id).startswith(_MLFLOW_CHAT_MODEL_PREFIXES)
+    )
 
 
 def is_gpt_model(model_id: str) -> bool:
     """Whether ``model_id`` is an OpenAI GPT model on the Responses API (gpt-oss is not)."""
-    name = canonical_model_name(model_id)
-    return name.startswith("gpt-") and not name.startswith("gpt-oss")
+    return canonical_model_name(model_id).startswith("gpt-") and not is_gpt_oss_model(model_id)
 
 
 def runs_web_search_tool(model_id: str) -> bool:
     """Whether a Responses model runs the hosted ``web_search`` tool Claude's web search sends.
 
     Grok answers on the Responses route without running the tool, and gpt-oss isn't served there."""
-    return not canonical_model_name(model_id).startswith(("grok-", "gpt-oss"))
+    return not (canonical_model_name(model_id).startswith("grok-") or is_gpt_oss_model(model_id))
 
 
 def responses_model_sort_key(model_id: str) -> tuple:
@@ -2793,7 +2800,7 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     entries, reason = list_model_service_entries(workspace, token)
     if not entries:
         return [], reason
-    return [entry.id for entry in entries if is_claude_chat_entry(entry)], None
+    return claude_ids_from_entries(entries), None
 
 
 def is_claude_service_id(model_id: str) -> bool:
@@ -2804,6 +2811,11 @@ def is_claude_service_id(model_id: str) -> bool:
 def is_claude_chat_entry(entry: ModelServiceEntry) -> bool:
     """Whether ``entry`` is a Claude chat service that can call tools."""
     return entry.function_calling is not False and is_claude_service_id(entry.id)
+
+
+def claude_ids_from_entries(entries: Iterable[ModelServiceEntry]) -> list[str]:
+    """Every Claude chat service id in a model-services listing, in listing order."""
+    return [entry.id for entry in entries if is_claude_chat_entry(entry)]
 
 
 # Embedding and reranking services are never chat candidates, even with malformed metadata.
@@ -2825,7 +2837,7 @@ def _is_oss_chat_entry(entry: ModelServiceEntry) -> bool:
 
     gpt-oss lists only MLflow routes, so it lands here rather than in the Responses bucket."""
     if not entry.api_types:
-        return is_oss_family_model(entry.id) or canonical_model_name(entry.id).startswith("gpt-oss")
+        return is_oss_family_model(entry.id) or is_gpt_oss_model(entry.id)
     return API_MLFLOW_CHAT_COMPLETIONS in entry.api_types
 
 
@@ -2885,7 +2897,7 @@ def discover_model_services(
                 entry,
                 responses_api,
                 name_fallback=classify_model_family(entry.id) == "codex"
-                and not canonical_model_name(entry.id).startswith("gpt-oss"),
+                and not is_gpt_oss_model(entry.id),
             )
         ],
         key=responses_model_sort_key,

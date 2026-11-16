@@ -6266,6 +6266,31 @@ class TestResponsesModelHelpers:
     def test_is_mlflow_chat_model_name(self, model_id, expected):
         assert db_mod.is_mlflow_chat_model_name(model_id) is expected
 
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.gpt-oss-120b", True),
+            ("databricks-gpt-oss-20b", True),
+            ("system.ai.gpt-5-5", False),
+            ("system.ai.glm-5-2", False),
+        ],
+    )
+    def test_is_gpt_oss_model(self, model_id, expected):
+        assert db_mod.is_gpt_oss_model(model_id) is expected
+
+    def test_claude_ids_from_entries_keeps_tool_calling_claude(self):
+        entries = [
+            db_mod.ModelServiceEntry("system.ai.claude-opus-5-5"),
+            db_mod.ModelServiceEntry("system.ai.claude-sonnet-4-5", function_calling=False),
+            db_mod.ModelServiceEntry("system.ai.gpt-5-5"),
+            db_mod.ModelServiceEntry("system.ai.claude-haiku-4-5"),
+        ]
+
+        assert db_mod.claude_ids_from_entries(entries) == [
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-haiku-4-5",
+        ]
+
     def test_codex_fallback_listing_orders_gpt_first(self, monkeypatch):
         def endpoint(name: str) -> dict:
             foundation_model = {

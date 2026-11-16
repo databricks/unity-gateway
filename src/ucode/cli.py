@@ -90,6 +90,7 @@ from ucode.databricks import (
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
+    claude_ids_from_entries,
     databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
@@ -102,7 +103,6 @@ from ucode.databricks import (
     find_profile_name_for_workspace,
     get_databricks_token,
     install_databricks_cli,
-    is_claude_chat_entry,
     is_model_provider_feature_unavailable,
     is_oss_family_model,
     list_anthropic_model_catalog,
@@ -850,11 +850,9 @@ def configure_shared_state(
                     claude_models, claude_reason = discover_claude_models(workspace, token)
                 # Every Claude version this run's UC listing found, for Pi's model picker. Without
                 # one, Pi lists the family models above.
-                all_claude_models = [
-                    entry.id
-                    for entry in cached_model_service_entries(workspace) or ()
-                    if is_claude_chat_entry(entry)
-                ]
+                all_claude_models = claude_ids_from_entries(
+                    cached_model_service_entries(workspace) or ()
+                )
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -876,8 +874,7 @@ def configure_shared_state(
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
             opencode_models["gemini"] = gemini_models
-        # OpenCode and Kilo serve only the OSS families validated for every agent.
-        opencode_oss = [m for m in oss_models if is_oss_family_model(m)]
+        opencode_oss = _opencode_oss_models(oss_models)
         if opencode_oss:
             opencode_models["oss"] = opencode_oss
 
@@ -1836,6 +1833,12 @@ def _status_default_model(tool: str, state: dict, models: list[str]) -> str | No
     return models[0] if models and tool in ("gemini", "opencode", "kilo", "antigravity") else None
 
 
+def _opencode_oss_models(oss_models: list[str]) -> list[str]:
+    """The discovered OSS models OpenCode and Kilo serve: only the families validated for every
+    agent, not the other MLflow chat models Pi lists."""
+    return [m for m in oss_models if is_oss_family_model(m)]
+
+
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     """Return a fresh, read-only model inventory and its freshness label."""
     workspace = state.get("workspace")
@@ -1873,12 +1876,18 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["codex_models"] = codex_models
     live["gemini_models"] = gemini_models
     live["oss_models"] = oss_models
+    # Pi lists every Claude version from this listing, as configure saves it.
+    all_claude_models = claude_ids_from_entries(cached_model_service_entries(workspace) or ())
+    if all_claude_models:
+        live["all_claude_models"] = all_claude_models
+    else:
+        live.pop("all_claude_models", None)
     opencode_models: dict[str, list[str]] = {}
     if claude_models:
         opencode_models["anthropic"] = list(claude_models.values())
     if gemini_models:
         opencode_models["gemini"] = gemini_models
-    opencode_oss = [m for m in oss_models if is_oss_family_model(m)]
+    opencode_oss = _opencode_oss_models(oss_models)
     if opencode_oss:
         opencode_models["oss"] = opencode_oss
     live["opencode_models"] = opencode_models

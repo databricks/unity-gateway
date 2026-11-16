@@ -1469,3 +1469,91 @@ class TestExcludedSelectedModel:
             "databricks-openai/gpt-5"
         )
         warn.assert_not_called()
+
+
+class TestDiscoveredUnfamiliarModels:
+    """Discovery buckets by API type, so a listed model can have a name Pi doesn't recognize."""
+
+    CUSTOM = "system.ai.custom-chat"
+
+    def _write(self, tmp_path, monkeypatch, state: dict, model: str):
+        TestWriteToolConfig()._setup(tmp_path, monkeypatch)
+        with patch("ucode.agents.pi.save_state"), patch("ucode.agents.pi.print_warning") as warn:
+            pi.write_tool_config(
+                {"workspace": WS, "base_urls": {"pi": _base_urls()}, **state}, model, token="tok"
+            )
+        providers = json.loads((tmp_path / "models.json").read_text())
+        return providers, warn
+
+    def _ids(self, written: dict) -> dict[str, list[str]]:
+        return {name: [m["id"] for m in p["models"]] for name, p in written["providers"].items()}
+
+    def test_explicit_discovered_model_is_kept_without_a_warning(self, tmp_path, monkeypatch):
+        state = {"oss_models": [self.CUSTOM], "codex_models": ["system.ai.gpt-5"]}
+
+        assert not pi.serves_pi_model(self.CUSTOM)
+        assert pi.serves_pi_model(self.CUSTOM, state)
+        written, warn = self._write(tmp_path, monkeypatch, state, self.CUSTOM)
+
+        assert written["model"] == f"databricks-mlflow/{self.CUSTOM}"
+        warn.assert_not_called()
+
+    def test_managed_list_renders_a_discovered_model(self, tmp_path, monkeypatch):
+        state = {"oss_models": [self.CUSTOM], "pi_models": [self.CUSTOM, "system.ai.gpt-5"]}
+
+        assert pi._managed_model_families(state) == ({}, ["system.ai.gpt-5"], [], [self.CUSTOM])
+        written, warn = self._write(tmp_path, monkeypatch, state, pi.default_model(state))
+
+        assert self._ids(written) == {
+            "databricks-openai": ["system.ai.gpt-5"],
+            "databricks-mlflow": [self.CUSTOM],
+        }
+        warn.assert_not_called()
+
+    def test_singleton_managed_list_keeps_its_model_as_default(self, tmp_path, monkeypatch):
+        # The managed list stays in force rather than falling back to full discovery.
+        state = {
+            "oss_models": [self.CUSTOM],
+            "codex_models": ["system.ai.gpt-5"],
+            "pi_models": [self.CUSTOM],
+        }
+
+        assert pi.default_model(state) == self.CUSTOM
+        written, warn = self._write(tmp_path, monkeypatch, state, pi.default_model(state))
+
+        assert written["model"] == f"databricks-mlflow/{self.CUSTOM}"
+        assert self._ids(written) == {"databricks-mlflow": [self.CUSTOM]}
+        warn.assert_not_called()
+
+    def test_discovered_buckets_win_over_name_classification(self):
+        state = {
+            "codex_models": ["system.ai.custom-responses", "system.ai.gpt-oss-120b"],
+            "gemini_models": ["system.ai.custom-vision"],
+            "all_claude_models": ["system.ai.custom-claude"],
+            "pi_models": [
+                "system.ai.custom-responses",
+                "system.ai.gpt-oss-120b",
+                "system.ai.custom-vision",
+                "system.ai.custom-claude",
+            ],
+        }
+
+        assert pi._managed_model_families(state) == (
+            {"system.ai.custom-claude": "system.ai.custom-claude"},
+            ["system.ai.custom-responses"],
+            ["system.ai.custom-vision"],
+            ["system.ai.gpt-oss-120b"],
+        )
+
+    def test_discovery_does_not_serve_pre_4_5_claude(self):
+        old = "system.ai.claude-3-7-sonnet"
+        assert not pi.serves_pi_model(old, {"all_claude_models": [old]})
+
+    def test_a_fallback_naming_the_same_model_is_an_error(self, tmp_path, monkeypatch):
+        # A default that is the unservable model itself must not warn "Starting on X instead".
+        state = {"claude_models": {}}
+        with (
+            patch("ucode.agents.pi.default_model", return_value="system.ai.qwen3-embedding-0-6b"),
+            pytest.raises(RuntimeError, match="Pi does not support this model"),
+        ):
+            pi._usable_model(state, "system.ai.qwen3-embedding-0-6b")

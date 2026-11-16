@@ -1234,7 +1234,9 @@ saved Claude version list (`test_cli.py`), and Claude's web-search model (`test_
 keep GPT first and leave Grok, gpt-oss, Qwen, Llama and Gemma out where those agents can't use
 them. `test_agent_pi.py` pins Grok's and Qwen 3.5's levels, the new MLflow limits, and every listed
 Claude version in Pi's picker; it and `test_managed_resolve.py` also pin managed `pi_models` lists
-that name gpt-oss, Qwen, Llama or Gemma (bucketing, default and unservable warnings). Explicit
+that name gpt-oss, Qwen, Llama or Gemma (bucketing, default and unservable warnings), and a
+discovered model with an unfamiliar name keeps discovery's bucket as an explicit model, in a
+managed list and as a managed list's only model. Explicit
 `function_calling: false` and embedding names are excluded even by the name fallback. These are
 component checks with stubbed listings, not live discovery.
 

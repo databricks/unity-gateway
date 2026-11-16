@@ -3255,6 +3255,33 @@ class TestStatusLiveModels:
         legacy_gemini.assert_not_called()
         save.assert_not_called()
 
+    def test_refreshes_pi_claude_versions_from_the_live_listing(self):
+        state = {
+            **MINIMAL_STATE,
+            "profile": "explicit-profile",
+            "all_claude_models": ["system.ai.claude-opus-4-8"],
+        }
+        listing = [
+            db_mod.ModelServiceEntry("system.ai.claude-opus-5-5"),
+            db_mod.ModelServiceEntry("system.ai.claude-sonnet-5"),
+            db_mod.ModelServiceEntry("system.ai.gpt-5-5"),
+        ]
+        with (
+            patch("ucode.cli.get_databricks_token", return_value="token"),
+            patch(
+                "ucode.cli.discover_model_services",
+                return_value=({"opus": "system.ai.claude-opus-5-5"}, ["c"], ["g"], [], None),
+            ),
+            patch("ucode.cli.cached_model_service_entries", return_value=listing),
+        ):
+            live, _ = cli_mod._live_status_model_state(state, {"pi"})
+
+        assert live["all_claude_models"] == [
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-5",
+        ]
+        assert state["all_claude_models"] == ["system.ai.claude-opus-4-8"]
+
     def test_labels_cached_fallback_when_live_auth_fails(self):
         state = {**MINIMAL_STATE, "profile": "explicit-profile"}
         with patch("ucode.cli.get_databricks_token", side_effect=RuntimeError("expired login")):
@@ -7525,6 +7552,24 @@ class TestConfigureSharedStateUsePat:
         assert cli_mod._status_models("pi", state) == [
             "system.ai.gpt-5",
             "system.ai.gpt-oss-120b",
+        ]
+
+    def test_pi_status_lists_every_claude_version_pi_serves(self):
+        import ucode.cli as cli_mod
+
+        # The same Claude versions the written config lists, pre-4.5 ones left out.
+        state = {
+            "claude_models": {"opus": "system.ai.claude-opus-5-5"},
+            "all_claude_models": [
+                "system.ai.claude-opus-4-1",
+                "system.ai.claude-opus-4-8",
+                "system.ai.claude-opus-5-5",
+            ],
+        }
+
+        assert cli_mod._status_models("pi", state) == [
+            "system.ai.claude-opus-4-8",
+            "system.ai.claude-opus-5-5",
         ]
 
     def _stub_with_fable(self, monkeypatch):

@@ -62,6 +62,7 @@ from ucode.databricks import (
     gemini_model_token_limits,
     get_databricks_token,
     gpt_model_token_limits,
+    is_gpt_oss_model,
     is_mlflow_chat_model_name,
     oss_model_token_limits,
 )
@@ -150,19 +151,15 @@ def _serves_claude_model(model_id: str) -> bool:
     return parsed is None or parsed[1] >= _MIN_CLAUDE_VERSION
 
 
-def _is_gpt_oss(model_id: str) -> bool:
-    return canonical_model_name(model_id).startswith("gpt-oss")
-
-
 def _serves_codex_model(model_id: str) -> bool:
     # gpt-oss shares the GPT bucket by name, but its model service declares only the MLflow
     # route, so Pi serves it from `databricks-mlflow` instead of the Responses provider.
-    return not _is_gpt_oss(model_id)
+    return not is_gpt_oss_model(model_id)
 
 
 def _mlflow_models(oss_models: list[str], codex_models: list[str]) -> list[str]:
     """The `databricks-mlflow` models: discovered OSS models, then gpt-oss from the GPT bucket."""
-    return list(dict.fromkeys([*oss_models, *(m for m in codex_models if _is_gpt_oss(m))]))
+    return list(dict.fromkeys([*oss_models, *(m for m in codex_models if is_gpt_oss_model(m))]))
 
 
 def _servable_families(
@@ -562,7 +559,7 @@ def _usable_model(state: dict, model: str) -> str:
     legacy (`databricks-oss/...`), is judged by the model it names.
     """
     bare = _strip_ug_provider(model)
-    if bare is None or serves_pi_model(bare):
+    if bare is None or serves_pi_model(bare, state):
         return model
     reason = (
         "Claude models older than 4.5 reject Pi's requests"
@@ -570,7 +567,8 @@ def _usable_model(state: dict, model: str) -> str:
         else "Pi does not support this model"
     )
     fallback = default_model(state)
-    if fallback is None:
+    # A fallback naming the same model would start Pi on the model it can't use.
+    if fallback is None or fallback == model:
         raise RuntimeError(
             f"Pi can't use {model}: {reason}, and no other Pi model is available on this "
             "workspace. Choose a Claude 4.5 or newer, GPT, Gemini or OSS model."
@@ -638,7 +636,8 @@ def _managed_model_families(
 
     Pi builds one provider block per family, so a flat list has to be classified back out:
     ``(claude, codex, gemini, oss)``, with gpt-oss and the other MLflow chat models (Qwen, Llama,
-    Gemma) under ``oss``. Returns None when the managed
+    Gemma) under ``oss``. A model discovery listed keeps discovery's bucket, whatever its name;
+    others are classified by name. Returns None when the managed
     models yield no family Pi can serve, leaving the workspace-wide discovery lists in play rather
     than writing a config with no usable provider.
     """
@@ -651,6 +650,13 @@ def _managed_model_families(
     oss: list[str] = []
     for model in managed:
         if not isinstance(model, str) or not model.strip():
+            continue
+        discovered = _discovered_family(state, model)
+        if discovered == "claude":
+            claude.setdefault(classify_model_family(model) or model, model)
+            continue
+        if discovered is not None:
+            {"codex": codex, "gemini": gemini, "oss": oss}[discovered].append(model)
             continue
         family = classify_model_family(model)
         if family in ANTHROPIC_FAMILIES:
@@ -696,11 +702,45 @@ def has_servable_models(state: dict) -> bool:
 def status_models(state: dict) -> list[str]:
     """The models ``write_tool_config`` gives Pi's providers, in provider order, deduplicated."""
     claude, codex, gemini, oss = _servable_families(*_effective_model_families(state))
-    return list(dict.fromkeys([*sorted(set(claude.values())), *codex, *gemini, *oss]))
+    claude_ids = _claude_ids(claude, _effective_claude_model_ids(state))
+    return list(dict.fromkeys([*claude_ids, *codex, *gemini, *oss]))
 
 
-def serves_pi_model(model_id: str) -> bool:
-    """Whether Pi has a provider for ``model_id``: Claude 4.5 or newer, GPT, Gemini or OSS."""
+def _discovered_family(state: dict, model_id: str) -> str | None:
+    """The provider input discovery bucketed ``model_id`` in (``claude``, ``codex``, ``gemini`` or
+    ``oss``; gpt-oss under ``oss``), or None when discovery didn't list it or Pi leaves it out.
+
+    Discovery buckets by the API types a service lists, so this keeps a model with an unfamiliar
+    name (`system.ai.custom-chat`) that name classification would drop."""
+    bare = _strip_ug_provider(model_id)
+    if bare is None or _excluded_model(bare):
+        return None
+
+    def listed(key: str) -> bool:
+        models = state.get(key)
+        return isinstance(models, list) and bare in models
+
+    claude_models = state.get("claude_models")
+    if (isinstance(claude_models, dict) and bare in claude_models.values()) or listed(
+        "all_claude_models"
+    ):
+        return "claude"
+    if listed("codex_models"):
+        return "codex" if _serves_codex_model(bare) else "oss"
+    if listed("gemini_models"):
+        return "gemini"
+    if listed("oss_models"):
+        return "oss"
+    return None
+
+
+def serves_pi_model(model_id: str, state: dict | None = None) -> bool:
+    """Whether Pi has a provider for ``model_id``: Claude 4.5 or newer, GPT, Gemini or OSS.
+
+    With ``state``, a model discovery listed is served whatever its name; others are judged by
+    name."""
+    if state is not None and _discovered_family(state, model_id) is not None:
+        return True
     # The legacy `claude-3-7-sonnet` scheme has no family `classify_model_family` recognizes.
     parsed = claude_version(model_id)
     if parsed is not None:
@@ -727,11 +767,13 @@ def default_model(state: dict) -> str | None:
     the default.
     """
     managed_default = state.get("pi_default_model")
-    if isinstance(managed_default, str) and serves_pi_model(managed_default):
+    if isinstance(managed_default, str) and serves_pi_model(managed_default, state):
         return managed_default
     managed = state.get("pi_models")
     if isinstance(managed, list):
-        served = next((m for m in managed if isinstance(m, str) and serves_pi_model(m)), None)
+        served = next(
+            (m for m in managed if isinstance(m, str) and serves_pi_model(m, state)), None
+        )
         if served is not None:
             return served
     claude_models = state.get("claude_models") or {}
