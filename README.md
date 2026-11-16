@@ -81,7 +81,7 @@ for 24-hour prompt-cache retention and Claude models write 1-hour cache entries 
 write costs more. gpt-oss models keep the short default, because the gateway rejects the
 retention field for them. Run `PI_CACHE_RETENTION=short ug pi` to keep Pi's default. Pi's Claude
 requests also carry a session-affinity header, a hint meant to keep a conversation on one
-AI Gateway destination when traffic splitting is configured.
+Unity Gateway destination when traffic splitting is configured.
 
 Use `ug opencode --model system.ai.glm-5-3` (or `-m`) to select a configured
 model for one launch. OpenCode's `provider/model` form is also accepted.
