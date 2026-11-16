@@ -340,6 +340,7 @@ def _cowork_mcp_config(
     use_pat: bool = False,
     custom_oauth: bool = False,
     mdm_ug_executable: Path | None = None,
+    mdm_args: list[str] | None = None,
 ) -> dict:
     entries: dict[str, dict] = {}
     urls: dict[str, str] = {}
@@ -365,7 +366,11 @@ def _cowork_mcp_config(
             raise RuntimeError(
                 "Could not resolve the absolute `ug` executable required by Claude Cowork."
             )
-        entries[name] = {"type": "stdio", "command": str(command), "args": argv[1:]}
+        entries[name] = {
+            "type": "stdio",
+            "command": str(command),
+            "args": [*(mdm_args or []), *argv[1:]],
+        }
         urls[name] = url
     aliases = _cowork_mcp_aliases(urls)
     return {"mcpServers": {aliases[name]: entry for name, entry in entries.items()}}
@@ -532,7 +537,12 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
 
 
 def _connector_hooks(
-    mcp_config: dict, workspace: str, profile: str, *, use_pat: bool
+    mcp_config: dict,
+    workspace: str,
+    profile: str,
+    *,
+    use_pat: bool,
+    mdm_args: list[str] | None = None,
 ) -> dict | None:
     # Reuse each proxy entry's absolute `ug` and URL so the hook targets exactly what Cowork runs.
     urls: dict[str, str] = {}
@@ -544,7 +554,14 @@ def _connector_hooks(
             command = entry["command"]
     if command is None:
         return None
-    argv = [command, "cowork-hook", "--host", workspace.rstrip("/"), *workspace_id_args(workspace)]
+    argv = [
+        command,
+        *(mdm_args or []),
+        "cowork-hook",
+        "--host",
+        workspace.rstrip("/"),
+        *workspace_id_args(workspace),
+    ]
     argv += ["--profile", profile]
     if use_pat:
         argv.append("--use-pat")

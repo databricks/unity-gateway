@@ -35,6 +35,7 @@ from ucode.state import save_state as real_save_state
 
 # Captured before the autouse conftest stub replaces it; the installation-location tests restore it.
 _REAL_REQUIRE_SHARED = cli_mod._require_shared_installation
+_REAL_REQUIRE_ELEVATION = cli_mod._require_windows_elevation
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -7018,6 +7019,31 @@ class TestConfigureScopeFlags:
         result, mock_cfg = self._configure()
         assert result.exit_code == 0, result.output
         mock_cfg.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("platform", "admin", "extra", "rejected"),
+        [
+            ("win32", False, [], True),
+            ("win32", False, ["--dry-run"], False),
+            ("win32", True, [], False),
+            ("linux", False, [], False),
+        ],
+    )
+    def test_global_flag_requires_elevation_on_windows(
+        self, monkeypatch, platform, admin, extra, rejected
+    ):
+        monkeypatch.setattr(cli_mod, "_require_windows_elevation", _REAL_REQUIRE_ELEVATION)
+        monkeypatch.setattr(cli_mod.sys, "platform", platform)
+        monkeypatch.setattr(cli_mod.system_cross_os, "is_admin", lambda: admin)
+        result, mock_cfg = self._configure(["--global", *extra])
+        output = " ".join(_strip_ansi(result.output).split())
+        if rejected:
+            assert result.exit_code == 1, output
+            assert "elevated terminal" in output
+            mock_cfg.assert_not_called()
+        else:
+            assert result.exit_code == 0, output
+            mock_cfg.assert_called_once()
 
     def test_global_flag_rejects_skip_os_settings(self, monkeypatch):
         monkeypatch.setenv(managed_files.SKIP_OS_SETTINGS_ENV, "1")

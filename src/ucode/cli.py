@@ -189,7 +189,7 @@ from ucode.mcp import (
     revert_mcp_configs,
 )
 from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.os_compatibility.browser_cross_os import open_in_browser
 from ucode.skills_download import (
     configure_location_skills_download_command,
@@ -1214,7 +1214,7 @@ def _setup_single_agent(
     if apply_managed and tool == "claude":
         from ucode.agents.desktop.setup import configure_claude_desktop
 
-        configure_claude_desktop(state, parent_schema=parent_schema)
+        configure_claude_desktop(state, parent_schema=parent_schema, managed_config=managed)
     if apply_managed and tool in _FRESH_POLICY_AGENTS and not is_dry_run():
         resolved_mcps = _configure_managed_mcp_servers(managed)
         skills_configured = _configure_managed_skills(managed)
@@ -1556,7 +1556,9 @@ def _configure_workspace_command(
                     if tool_name == "claude":
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
-                        configure_claude_desktop(configured, parent_schema=parent_schema)
+                        configure_claude_desktop(
+                            configured, parent_schema=parent_schema, managed_config=managed
+                        )
                 else:
                     failed_tools.append(tool_name)
                     failure_reasons[tool_name] = "agent configuration failed"
@@ -5576,6 +5578,7 @@ def _check_machine_wide_only_request(
             "`ug configure --global` isn't supported on this platform: it has no machine-wide "
             "Claude Code or Codex settings. Run `ug configure` without --global."
         )
+    _require_windows_elevation()
     _require_shared_installation()
     if mcp is not None:
         raise RuntimeError(
@@ -5586,6 +5589,16 @@ def _check_machine_wide_only_request(
         raise RuntimeError(
             "Databricks AI Tools install into per-user settings, so "
             "--enable-databricks-ai-tools can't be combined with --global."
+        )
+
+
+def _require_windows_elevation() -> None:
+    # Windows has no sudo prompt, so without elevation the first machine-wide write fails only
+    # after login and model discovery. A dry run writes nothing, so it needs no elevation.
+    if sys.platform == "win32" and not is_dry_run() and not system_cross_os.is_admin():
+        raise RuntimeError(
+            "`ug configure --global` writes machine-wide settings, which requires administrator "
+            "rights on Windows. Rerun it from an elevated terminal (Run as administrator)."
         )
 
 
