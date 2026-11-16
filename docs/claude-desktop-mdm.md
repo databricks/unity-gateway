@@ -30,9 +30,9 @@ Windows publishes:
 Workspace-skill delivery is deferred. No enterprise skills or downloaded workspace-skill
 copies are installed. CLI native settings retain administrator-supplied hooks. A missing
 `parentSettingsBehavior` defaults to `merge` so Desktop's parent restrictions remain in
-effect; an existing or explicitly supplied value is preserved. Windows Desktop connector
-names match the native CLI names. CLI connectors still require the existing native OAuth
-capabilities; an undeliverable requested connector fails global configuration.
+effect; an existing or explicitly supplied value is preserved. Windows Desktop uses the same
+short connector aliases as macOS. CLI connectors still require the existing native OAuth
+capabilities; as on macOS, an undeliverable connector is skipped with a warning.
 
 Shared helpers use isolated Python, discard provisioning credentials/config overrides,
 and authenticate through the consuming user's `UG_DESKTOP_<workspace-hash>` profile.

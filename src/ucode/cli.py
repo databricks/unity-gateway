@@ -3770,8 +3770,6 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
     try:
         registered = reconcile_managed_mcp_servers(managed, agents)
     except McpServiceListingRateLimited:
-        if machine_wide_only() and sys.platform == "win32" and "claude" in agents:
-            raise
         # A transient 429 while discovering the workspace's MCP services: skip MCP setup for this
         # run (existing servers are left untouched) with an info note instead of a hard failure, so
         # `ug configure` still completes. The next configure retries.
@@ -3782,8 +3780,6 @@ def _configure_managed_mcp_servers(managed: dict | None) -> list[dict] | None:
         return None
     except RuntimeError as exc:
         # A denied machine-wide write fails `ug configure`, like the agents' own settings.
-        if machine_wide_only() and sys.platform == "win32" and "claude" in agents:
-            raise
         if isinstance(exc, ManagedFileWriteUnavailable) and explicit_managed_writes():
             raise
         print_warning(f"Could not register your workspace's MCP servers: {exc}")

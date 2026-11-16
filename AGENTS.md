@@ -318,8 +318,8 @@ of Claude still fail. Workspace-skill delivery is deferred. Native settings defa
 `parentSettingsBehavior` to `merge`; existing/admin-supplied values are preserved. CLI and
 Desktop helpers use the consuming user's deterministic OAuth profile, with provisioning
 credentials/config overrides removed. Protected ownership tracks registry values across
-configure/revert; unrelated policy and local profiles are preserved. Desktop setup failures
-warn without failing configure, as on macOS; required Windows global MCP failures propagate. Shared
+configure/revert; unrelated policy and local profiles are preserved. Desktop and managed MCP
+failures are handled as on macOS: they warn rather than failing configure. Shared
 runtime installation is still external. Native global auth/MCP/UI validation remains required;
 see docs/claude-desktop-mdm.md.
 Cowork uses short service-first aliases for generated UC MCP names, with collision qualifiers;

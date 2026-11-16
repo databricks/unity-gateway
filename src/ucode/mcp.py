@@ -42,9 +42,7 @@ from ucode.databricks import (
 )
 from ucode.managed_config import MCP_SOURCE_NAME, MCP_SOURCE_SCHEMA, mcp_source_kind
 from ucode.managed_files import (
-    OS,
     ManagedFileWriteUnavailable,
-    current_os,
     explicit_managed_writes,
     machine_wide_only,
 )
@@ -1437,22 +1435,15 @@ def reconcile_managed_mcp_servers(managed: dict, agents: set[str]) -> list[dict]
     if machine_wide_only():
         # `ug configure --global` leaves per-user MCP registrations alone, so neither the fallback
         # nor the cleanup below runs, and the saved fallback list stays as the last run left it.
-        undelivered = {
-            (name, client)
-            for server in working
-            if (name := _server_name(server))
-            for client in _mcp_server_clients(server)
-            if client in clients and (name, client) not in delivered
-        }
-        skipped = sorted({name for name, _ in undelivered})
-        # Windows Desktop has no per-user fallback for Claude connectors, so a gap is fatal there.
-        skipped_for_claude = sorted({name for name, client in undelivered if client == "claude"})
-        if skipped_for_claude and current_os() is OS.WINDOWS:
-            raise RuntimeError(
-                "Windows global configure could not deliver every requested Claude MCP server: "
-                + ", ".join(skipped_for_claude)
-                + ". The CLI requires native OAuth support for these managed connectors."
-            )
+        skipped = sorted(
+            {
+                name
+                for server in working
+                if (name := _server_name(server))
+                for client in _mcp_server_clients(server)
+                if client in clients and (name, client) not in delivered
+            }
+        )
         if skipped:
             print_warning(
                 "Skipped your workspace's MCP servers that can only be registered in per-user "
