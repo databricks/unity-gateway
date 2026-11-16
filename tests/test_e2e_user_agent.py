@@ -455,6 +455,7 @@ class TestPiUserAgent:
             )
             pi.write_tool_config(state, "test-claude-model", token="test-token")
 
+        monkeypatch.delenv("PI_CACHE_RETENTION", raising=False)
         env = pi.build_runtime_env("test-token")
         # Pi now resolves its apiKey by running `ucode auth-token`. The static
         # bearer short-circuit gives that command something to print without a
@@ -466,6 +467,19 @@ class TestPiUserAgent:
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("pi", "pi"))
         assert _header(req, "x-session-affinity"), "missing x-session-affinity header"
+
+        def _cache_controls(node):
+            if isinstance(node, dict):
+                if isinstance(node.get("cache_control"), dict):
+                    yield node["cache_control"]
+                for v in node.values():
+                    yield from _cache_controls(v)
+            elif isinstance(node, list):
+                for v in node:
+                    yield from _cache_controls(v)
+
+        payload = json.loads(req.body)
+        assert any(cc.get("ttl") == "1h" for cc in _cache_controls(payload)), req.body[:500]
 
     def test_prompt_cache_retention_on_wire(self, tmp_path, monkeypatch, capture_server):
         import ucode.config_io as config_io_mod
@@ -505,6 +519,7 @@ class TestPiUserAgent:
             )
             pi.write_tool_config(state, gpt, token="test-token")
 
+        monkeypatch.delenv("PI_CACHE_RETENTION", raising=False)
         env = pi.build_runtime_env("test-token")
         env["DATABRICKS_BEARER"] = "test-token"
 
