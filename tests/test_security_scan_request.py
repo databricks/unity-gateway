@@ -10,10 +10,12 @@ import pytest
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/security-scan.yml"
 HEAD = "a" * 40
 BASE = "b" * 40
+RUN_ID = 123
 
 
-def _resolve(tmp_path, monkeypatch, change=None):
+def _resolve(tmp_path, monkeypatch, change=None, notification=None, run_error=None):
     request = {
+        "id": RUN_ID,
         "event": "pull_request",
         "path": ".github/workflows/ci.yml",
         "display_title": "CI #7",
@@ -22,6 +24,8 @@ def _resolve(tmp_path, monkeypatch, change=None):
         "head_branch": "topic",
         "author_association": "OWNER",  # This untrusted hint must never set policy.
     }
+    if notification is None:
+        notification = dict(request)
     pr = {
         "number": 7,
         "state": "open",
@@ -38,15 +42,19 @@ def _resolve(tmp_path, monkeypatch, change=None):
             target = target[key]
         target[path[-1]] = value
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"workflow_run": request}))
+    event.write_text(json.dumps({"workflow_run": notification}))
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("REPO", "databricks/unity-gateway")
 
     def fetch(args, timeout):
-        assert args == ["gh", "api", "repos/databricks/unity-gateway/pulls/7"]
         assert timeout == 30
+        if args == ["gh", "api", f"repos/databricks/unity-gateway/actions/runs/{RUN_ID}"]:
+            if run_error:
+                raise run_error
+            return json.dumps(request).encode()
+        assert args == ["gh", "api", "repos/databricks/unity-gateway/pulls/7"]
         return json.dumps(pr).encode()
 
     monkeypatch.setattr(subprocess, "check_output", fetch)
@@ -71,8 +79,43 @@ def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "notification",
+    [
+        {"id": RUN_ID, "event": "pull_request"},
+        {
+            "id": RUN_ID,
+            "event": "pull_request",
+            "path": ".github/workflows/ci.yml",
+            "display_title": "Merge latest main",
+        },
+    ],
+)
+def test_trusted_scan_refreshes_requested_event_metadata(tmp_path, monkeypatch, notification):
+    metadata = _resolve(tmp_path, monkeypatch, notification=notification)
+    assert metadata["head_sha"] == HEAD
+    assert metadata["author_association"] == "NONE"
+
+
+@pytest.mark.parametrize("run_id", [None, 0, -1, "123", True])
+def test_trusted_scan_rejects_invalid_event_run_id(tmp_path, monkeypatch, run_id):
+    with pytest.raises(SystemExit, match="run ID"):
+        _resolve(tmp_path, monkeypatch, notification={"id": run_id})
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.CalledProcessError(1, "gh"), subprocess.TimeoutExpired("gh", 30)]
+)
+def test_trusted_scan_run_lookup_fails_closed(tmp_path, monkeypatch, error):
+    with pytest.raises(type(error)):
+        _resolve(tmp_path, monkeypatch, run_error=error)
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
     "change",
     [
+        ("request", ("id",), RUN_ID + 1),
         ("request", ("event",), "push"),
         ("request", ("path",), ".github/workflows/other.yml"),
         ("request", ("display_title",), "Unrecognized request"),
@@ -92,6 +135,9 @@ def test_trusted_scan_rejects_mismatched_request(tmp_path, monkeypatch, change):
     with pytest.raises(SystemExit) as result:
         _resolve(tmp_path, monkeypatch, change)
     assert result.value.code != 0
+    if change[0] == "request":
+        field = "run ID" if change[1] == ("id",) else change[1][0]
+        assert field in str(result.value)
     assert not (tmp_path / "output").exists()
 
 
@@ -104,6 +150,7 @@ def test_scan_orchestration_and_policy_use_the_default_branch():
     assert "workflows: [CI]" in trigger
     assert "uses:" not in resolve and "git " not in resolve
     assert "pull-requests: read" in resolve
+    assert "actions: read" in resolve
     assert "runs-on: ubuntu-latest" in scan and "needs: resolve" in scan
     assert "POLICY_SHA: ${{ github.workflow_sha }}" in scan
     assert 'git fetch -q --depth=1 origin "$POLICY_SHA"' in scan

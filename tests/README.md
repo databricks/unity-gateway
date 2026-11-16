@@ -2,6 +2,11 @@
 
 `test_security_scan_request.py` verifies the default-branch Security Scan's request
 validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
+The resolver uses the event's run ID to fetch current CI metadata through the authenticated
+Actions API. Cases cover incomplete or stale event metadata, invalid/mismatched run IDs,
+API errors/timeouts, and field-specific diagnostics; lookup failure never falls back to
+the event snapshot. These fixtures do not establish the exact live webhook mismatch or
+GitHub's metadata availability timing.
 This prerequisite installs the producer and reusable consumer without making existing CI
 wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
 secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
