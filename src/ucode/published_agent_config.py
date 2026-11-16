@@ -58,7 +58,7 @@ from ucode.managed_setup import claude_family_candidates, validate_manifest
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import console, normalize_workspace_url, print_note, print_warning
-from ucode.workspace import activate, resolve_workspace, split_workspace_key
+from ucode.workspace import activate, pin, resolve_workspace, split_workspace_key
 
 MANAGED_AGENTS = ("claude", "codex")
 MARKER_VERSION = 1
@@ -480,7 +480,12 @@ def resolve_host(workspace: str) -> tuple[str, str]:
     except RuntimeError as exc:
         raise ManagedRunError(EXIT_USAGE, str(exc)) from exc
     host, workspace_id = split_workspace_key(key)
-    activate(host, workspace_id)
+    if workspace_id:
+        # Pinned: the run reads saved state on the way (the User-Agent does), which would otherwise
+        # select the saved workspace and send the request without this workspace's selector.
+        pin(host, workspace_id)
+    else:
+        activate(host, workspace_id)
     return key, host
 
 

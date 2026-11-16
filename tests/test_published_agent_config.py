@@ -616,6 +616,40 @@ class TestGlobalCli:
         assert signed_in == [WS]
         assert claude.managed_settings_path() in written
 
+    def test_the_fetch_selects_the_workspace_saved_state_has_no_id_for(
+        self, monkeypatch, writes, global_cli
+    ):
+        # On a host that serves several workspaces, the run reads saved state before the fetch (the
+        # User-Agent does). The saved workspace for the same host, saved without an id, must not
+        # replace the workspace --workspace selected.
+        import ucode.state as state_mod
+        import ucode.workspace as workspace_mod
+
+        state_mod.save_state({"workspace": WS})
+        monkeypatch.setattr(workspace_mod, "host_type", lambda host: "unified")
+        sent: list[dict] = []
+
+        def fetch(host, token):
+            state_mod.load_state()
+            sent.append(workspace_mod.workspace_headers(f"{host}/api"))
+            return _raw_config(claude_config={}), None
+
+        monkeypatch.setattr(machine, "get_managed_config", fetch)
+        result = CliRunner().invoke(
+            cli_mod.app,
+            [
+                "configure",
+                "--global",
+                "--dry-run",
+                "--agents",
+                "claude",
+                "--workspace",
+                f"{WS}/?o=42",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert sent == [{"X-Databricks-Org-Id": "42", "X-Databricks-Workspace-Id": "42"}]
+
     def test_mcp_servers_are_listed_as_the_run_signed_in(self, monkeypatch, writes, global_cli):
         from ucode import mcp
 
