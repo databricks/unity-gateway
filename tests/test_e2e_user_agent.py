@@ -35,10 +35,11 @@ def _require_binary(binary: str):
 class _CapturedRequest:
     """Bag of fields recorded by the capture server for one inbound request."""
 
-    def __init__(self, method: str, path: str, headers: dict[str, str]):
+    def __init__(self, method: str, path: str, headers: dict[str, str], body: bytes = b""):
         self.method = method
         self.path = path
         self.headers = headers
+        self.body = body
 
 
 class _CaptureServer:
@@ -47,6 +48,7 @@ class _CaptureServer:
 
     def __init__(self):
         self.requests: list[_CapturedRequest] = []
+        self._lock = threading.Lock()
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -61,23 +63,29 @@ class _CaptureServer:
 
     def start(self) -> None:
         captured = self.requests
+        lock = self._lock
 
         class Handler(BaseHTTPRequestHandler):
             def _record_and_reply(self):
                 # Drain any request body so the client doesn't block on write.
                 length = int(self.headers.get("Content-Length") or 0)
-                if length:
-                    try:
-                        self.rfile.read(length)
-                    except Exception:
-                        pass
-                captured.append(
-                    _CapturedRequest(
-                        method=self.command,
-                        path=self.path,
-                        headers=dict(self.headers.items()),
+                raw = b""
+                try:
+                    if length:
+                        raw = self.rfile.read(length)
+                    elif "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+                        raw = self._read_chunked()
+                except Exception:
+                    pass
+                with lock:
+                    captured.append(
+                        _CapturedRequest(
+                            method=self.command,
+                            path=self.path,
+                            headers=dict(self.headers.items()),
+                            body=raw,
+                        )
                     )
-                )
                 body = json.dumps(
                     {"error": {"type": "invalid_api_key", "message": "ucode test capture"}}
                 ).encode()
@@ -86,6 +94,18 @@ class _CaptureServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def _read_chunked(self) -> bytes:
+                out = b""
+                while True:
+                    size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
+                    if size == 0:
+                        # Consume optional trailers up to the final blank line.
+                        while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                            pass
+                        return out
+                    out += self.rfile.read(size)
+                    self.rfile.readline()  # CRLF after chunk data
 
             def do_GET(self):  # noqa: N802
                 self._record_and_reply()
@@ -111,10 +131,21 @@ class _CaptureServer:
             self._thread.join(timeout=2)
             self._thread = None
 
-    def first_request_with_path_prefix(self, prefix: str) -> _CapturedRequest | None:
-        for req in self.requests:
-            if req.path.startswith(prefix):
-                return req
+    def request_count(self) -> int:
+        with self._lock:
+            return len(self.requests)
+
+    def first_request_with_path_prefix(
+        self, prefix: str, start_idx: int = 0, body_contains: str | None = None
+    ) -> _CapturedRequest | None:
+        with self._lock:
+            snapshot = list(self.requests[start_idx:])
+        for req in snapshot:
+            if not req.path.startswith(prefix):
+                continue
+            if body_contains is not None and body_contains not in req.body.decode(errors="replace"):
+                continue
+            return req
         return None
 
 
@@ -434,3 +465,59 @@ class TestPiUserAgent:
         req = capture_server.first_request_with_path_prefix("/ai-gateway/anthropic")
         assert req is not None, _no_request_msg(capture_server, result)
         _assert_ua(req, _expected_ua("pi", "pi"))
+        assert _header(req, "x-session-affinity"), "missing x-session-affinity header"
+
+    def test_prompt_cache_retention_on_wire(self, tmp_path, monkeypatch, capture_server):
+        import ucode.config_io as config_io_mod
+        from ucode.agents import pi
+
+        _require_binary("pi")
+        pi_home = tmp_path / "pi-home"
+        pi_dir = pi_home / ".pi" / "agent"
+
+        monkeypatch.setattr(config_io_mod, "APP_DIR", tmp_path)
+        monkeypatch.setattr(pi, "PI_UCODE_HOME", pi_home)
+        monkeypatch.setattr(pi, "PI_CONFIG_DIR", pi_dir)
+        monkeypatch.setattr(pi, "PI_CONFIG_PATH", pi_dir / "models.json")
+        monkeypatch.setattr(pi, "PI_SETTINGS_PATH", pi_dir / "settings.json")
+        monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings.backup.json")
+        monkeypatch.setattr(pi, "PI_BACKUP_PATH", tmp_path / "pi.backup.json")
+
+        gpt, oss = "system.ai.gpt-5", "system.ai.gpt-oss-120b"
+        state = {
+            "workspace": capture_server.base_url,
+            "claude_models": {},
+            "codex_models": [gpt, oss],
+            "gemini_models": [],
+            "base_urls": {
+                "pi": {
+                    "claude": f"{capture_server.base_url}/ai-gateway/anthropic",
+                    "openai": f"{capture_server.base_url}/ai-gateway/codex/v1",
+                    "gemini": f"{capture_server.base_url}/ai-gateway/gemini/v1beta",
+                },
+            },
+        }
+        with pytest.MonkeyPatch().context() as mp:
+            mp.setattr("ucode.state.save_state", lambda s: None)
+            mp.setattr(
+                "ucode.agents.pi.get_databricks_token",
+                lambda ws, profile=None, **kwargs: "test-token",
+            )
+            pi.write_tool_config(state, gpt, token="test-token")
+
+        env = pi.build_runtime_env("test-token")
+        env["DATABRICKS_BEARER"] = "test-token"
+
+        bodies: dict[str, str] = {}
+        for model in (gpt, oss):
+            start_idx = capture_server.request_count()
+            cmd = [*pi.validate_cmd("pi"), "--model", f"databricks-openai/{model}"]
+            result = _run_until_first_request(cmd, env)
+            req = capture_server.first_request_with_path_prefix(
+                "/ai-gateway/codex/v1", start_idx=start_idx, body_contains=model.split(".")[-1]
+            )
+            assert req is not None, _no_request_msg(capture_server, result)
+            bodies[model] = req.body.decode(errors="replace")
+
+        assert '"prompt_cache_retention":"24h"' in bodies[gpt].replace(" ", ""), bodies[gpt][:300]
+        assert '"prompt_cache_retention"' not in bodies[oss].replace(" ", ""), bodies[oss][:300]
