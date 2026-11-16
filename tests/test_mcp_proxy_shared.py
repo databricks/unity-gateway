@@ -16,6 +16,7 @@ import socket
 import struct
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -37,10 +38,11 @@ class _Client:
         *,
         workspace="https://component.example",
         workspace_id=None,
+        executable=sys.executable,
     ):
         self.process = subprocess.Popen(
             [
-                sys.executable,
+                executable,
                 "-c",
                 "from ucode.entrypoint import main; main()",
                 "mcp-proxy",
@@ -232,6 +234,7 @@ def clients(tmp_path):
         bearer="component-bearer",
         workspace="https://component.example",
         workspace_id=None,
+        executable=sys.executable,
     ):
         client = _Client(
             {**env, "UG_HEADERS": header, "DATABRICKS_BEARER": bearer},
@@ -239,6 +242,7 @@ def clients(tmp_path):
             profile,
             workspace=workspace,
             workspace_id=workspace_id,
+            executable=executable,
         )
         started.append(client)
         return client
@@ -263,9 +267,27 @@ def _endpoints(tmp_path):
     ]
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows console allocation")
-def test_backend_has_no_windows_console(clients, peer, tmp_path):
-    client = clients(peer[0] + "/mcp")
+@pytest.mark.skipif(os.name != "nt", reason="Windows console visibility")
+@pytest.mark.parametrize("windowless_interpreter", [True, False], ids=["pythonw", "python"])
+def test_backend_has_no_visible_windows_console(clients, peer, tmp_path, windowless_interpreter):
+    environment = tmp_path / "python"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    (environment / "Lib" / "site-packages" / "dependencies.pth").write_text(
+        sysconfig.get_path("purelib") + "\n", encoding="utf-8"
+    )
+    pythonw = environment / "Scripts" / "pythonw.exe"
+    assert pythonw.is_file()
+    if not windowless_interpreter:
+        pythonw.unlink()
+    client = clients(peer[0] + "/mcp", executable=str(environment / "Scripts" / "python.exe"))
     client.initialize()
     (metadata,) = _endpoints(tmp_path)
     probe = """
@@ -280,24 +302,32 @@ kernel32.AttachConsole.argtypes = [wintypes.DWORD]
 kernel32.AttachConsole.restype = wintypes.BOOL
 kernel32.FreeConsole.argtypes = []
 kernel32.FreeConsole.restype = wintypes.BOOL
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
 
-assert not kernel32.GetConsoleWindow(), "console observer must start without a console"
+assert kernel32.FreeConsole(), "console observer could not detach its own console"
 attached = kernel32.AttachConsole(int(sys.argv[1]))
-error = ctypes.get_last_error()
 if attached:
-    kernel32.FreeConsole()
-assert not attached, "MCP backend unexpectedly owns a Windows console"
-assert error == 6, f"AttachConsole failed with {error}, expected ERROR_INVALID_HANDLE (6)"
+    try:
+        window = kernel32.GetConsoleWindow()
+        assert not user32.IsWindowVisible(window), "MCP backend has a visible Windows console"
+    finally:
+        kernel32.FreeConsole()
+else:
+    error = ctypes.get_last_error()
+    assert error == 6, f"AttachConsole failed with {error}, expected ERROR_INVALID_HANDLE (6)"
 """
     result = subprocess.run(
-        [str(Path(sys.executable).with_name("pythonw.exe")), "-c", probe, str(metadata["pid"])],
+        [sys.executable, "-c", probe, str(metadata["pid"])],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         timeout=10,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     assert result.returncode == 0, result.stderr
-    assert client.call("no console")["value"] == "no console"
+    assert client.call("no visible console")["value"] == "no visible console"
 
 
 def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, tmp_path):

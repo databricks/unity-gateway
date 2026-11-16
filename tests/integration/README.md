@@ -2115,10 +2115,12 @@ Proxy startup has component coverage in `../test_mcp_proxy_cli.py` and shared-pr
 coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend processes
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
-shutdown, and sign-in output with native line endings. On Windows, a console-less
-observer checks the actual backend with the native console API, followed by a
-successful client tool call. These component checks do not establish live gateway
-or Desktop GUI coverage.
+shutdown, and sign-in output with native line endings. On Windows, an observer
+checks the actual backend has no visible console window using native console and
+window APIs, followed by a successful client tool call. Both `pythonw.exe` and the
+`python.exe` fallback run in isolated Python environments. A hidden console is
+allowed because the contract is no visible window. These component checks do not
+establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before

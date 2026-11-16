@@ -1608,8 +1608,10 @@ working, backend crash/restart, EOF/reset reconnect diagnostics, local authentic
 idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
-check. On Windows, a console-less observer uses the native console API to verify
-the actual backend has no console, then the client completes a tool call.
+check. On Windows, an observer uses the native console and window APIs to verify
+the actual backend has no visible console window, then the client completes a tool call.
+Both the `pythonw.exe` path and the `python.exe` fallback run in isolated Python
+environments; a hidden console is allowed because the contract is no visible window.
 These tests do not establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
