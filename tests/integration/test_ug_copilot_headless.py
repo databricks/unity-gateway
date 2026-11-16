@@ -7,6 +7,7 @@ from utils.evidence import (
     assert_completed_task_model,
     assert_no_bearer_on_disk,
     assert_no_session_registry_left,
+    copilot_ref,
     copilot_selected_models,
 )
 
@@ -47,7 +48,7 @@ def test_ug_copilot_headless_completes_file_task(live_session, workspace):
 
     task.assert_headless_answer("copilot", result)
     assert_completed_task_model(session, "copilot", task.value, CLAUDE_TEST_MODEL)
-    assert copilot_selected_models(session)[0] == f"dbx-anthropic/{CLAUDE_TEST_MODEL}"
+    assert copilot_selected_models(session)[0] == copilot_ref("databricks", CLAUDE_TEST_MODEL)
     assert_no_bearer_on_disk(session)
     assert_no_session_registry_left(session)
 
@@ -86,6 +87,8 @@ def test_ug_copilot_headless_gpt_responses_task(live_session, workspace):
 
     task.assert_headless_answer("copilot", result)
     assert_completed_task_model(session, "copilot", task.value, COPILOT_GPT_TEST_MODEL)
-    assert copilot_selected_models(session)[0] == f"dbx-responses/{COPILOT_GPT_TEST_MODEL}"
+    assert copilot_selected_models(session)[0] == copilot_ref(
+        "databricks-responses", COPILOT_GPT_TEST_MODEL
+    )
     assert_no_bearer_on_disk(session)
     assert_no_session_registry_left(session)

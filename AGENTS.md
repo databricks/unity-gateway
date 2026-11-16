@@ -2,8 +2,8 @@
 
 ## Project
 
-Unity Gateway (`ug`) is a Python CLI that configures and launches coding agents through Databricks
-AI Gateway. Its internal Python package remains named `ucode` for backward compatibility.
+Unity Gateway (`ug`) is a Python CLI that configures and launches coding agents through a
+Databricks workspace. Its internal Python package remains named `ucode` for backward compatibility.
 
 The package code lives in `src/ucode/`.
 Tests live in `tests/`.
@@ -34,8 +34,97 @@ Tests live in `tests/`.
   - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Add or update focused tests for behavior changes.
-- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Members/owners may request any PR; GitHub-classified `CONTRIBUTOR`s may request only their own PR (as in `fork-integration.yml`). This policy trusts prior contributors to run PR code with CI secrets; first-time contributors need a member.
+- Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Only members/owners may request a run that executes PR code with CI secrets (as in `fork-integration.yml`), after reviewing the changes. Review commands that run no PR code (`ug-review.yml`) may also let GitHub-classified `CONTRIBUTOR`s request their own PR; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
+
+## CLI performance metrics
+
+Use `from ucode import metrics` for instrumentation. The recorder and helpers live in
+`src/ucode/metrics/__init__.py`; `metrics/exporter.py` aggregates observations with the
+OTel SDK and uploads OTLP to `/api/2.0/ai-gateway/ug-cli/otel/v1/metrics` in a detached process.
+Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
+
+- Keep `begin`/`finish` at the CLI lifecycle boundary and `start_agent`/`agent_handoff`
+  around agent startup. The Typer callback uses `set_command()` to attribute observations
+  to the parsed command. Individual operations must not create or replace the recorder.
+- Call `metrics.bind(workspace, token)` where an operation obtains, reuses, or refreshes
+  its workspace token. Reuse those credentials; never authenticate solely for telemetry.
+  Use the selected workspace key, including its workspace selector. Observations recorded
+  before the first binding belong to that first workspace; pass `workspace=` explicitly
+  when an operation targets a different workspace.
+- Use metric-name constants from `metrics`, such as
+  `@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS)`, for a whole synchronous
+  operation including its retries. The decorator binds existing `workspace`/`token`
+  arguments and derives the error operation by removing `_duration_ms` from the name.
+  For a smaller block, use `metrics.measure(metrics.DEPENDENCY_INSTALL_DURATION_MS,
+  operation=metrics.DEPENDENCY_INSTALL_OPERATION, dependency=tool, action="install")`.
+  `metrics.annotate(...)` adds labels discovered during that measurement; `metrics.record(...)`
+  handles counters, byte sizes, or durations measured across callbacks.
+- Report handled errors with `metrics.failure(operation, error, ...)`; set
+  `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
+  (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
+  result or exception; telemetry must never rerun an operation or change its exit status.
+- Define new metric-name constants in `metrics/__init__.py` and register them in
+  `DURATION_METRICS` or `COUNTER_METRICS`; add labels to the typed
+  label allowlists. String values must be bounded identifiers; never record tokens, URLs,
+  prompts, response bodies, or raw exception messages. A new non-duration histogram also
+  needs an entry in `METRICS` and its unit and bucket configuration in `exporter.py`.
+- Keep OTel SDK imports and uploads in the exporter. A daemon starts the detached exporter
+  when recording is enabled; command threads hand off observations through an unbuffered,
+  nonblocking pipe. The exporter holds at most 1,000 observations and uploads every 60 seconds,
+  on a flush signal, or after EOF when the CLI exits or execs an agent. Recording and shutdown
+  must never wait for locks, process startup, pipe capacity, or networking. A bounded startup
+  backlog handles helper startup; contention and backpressure may still drop telemetry.
+- Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
+  tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
+  recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.
+
+Startup instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `UG_STARTUP_DURATION_MS` | Emitted by `agent_handoff()` or `finish()` from the entrypoint start time; operation code must not emit another startup sample. |
+| `CLI_IMPORT_DURATION_MS` | `record()` in the entrypoint around importing the selected CLI implementation. |
+| `DEPENDENCY_SETUP_DURATION_MS` | `timed()` around the complete bootstrap dependency check, with `agent` and `cli_version_check_skipped`; prompts mark `interactive_wait`. |
+| `DEPENDENCY_INSTALL_DURATION_MS` | `timed()` around one dependency installer, or `measure()` around an install/update/downgrade subprocess with `dependency` and `action`. |
+| `DEPENDENCY_INSTALL_OPERATION` | The matching error operation for a dependency-install `measure()` block; the duration constant is derived from it. |
+| `AGENT_CONFIGURATION_DURATION_MS` | `timed()` around `configure_tool()`, with the selected `agent` and `config_scope`. |
+| `SKILLS_REFRESH_DURATION_MS` | `measure()` around checks and updates for existing downloaded skills, after no-work returns; annotate `deadline_reached` after the bounded refresh. |
+| `SKILLS_REFRESH_OPERATION` | `failure()` for a handled refresh error that lets launch continue; the duration constant is derived from it. |
+| `COMMAND_OPERATION` | `failure()` in CLI exception handlers resolves this to the parsed command name and ignores cancellation and propagated agent exit codes. |
+| `UG_CLI_ERROR` | Emitted by `failure()` with phase and sanitized error labels; call that helper rather than incrementing the counter directly. |
+
+
+Authentication and API instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `DATABRICKS_TOKEN_FETCH_DURATION_MS` | `timed()` around a token fetch, including refresh or login, with `token_source` (`environment`, `command`, `cli`, or `sdk`) and `in_process_cache_hit`; SDK imports happen before timing. |
+| `DATABRICKS_TOKEN_FETCH_OPERATION` | The error operation for a token-fetch `measure()` block; the duration name is derived from it. |
+| `DATABRICKS_LOGIN_DURATION_MS` | `timed()` or `measure()` around browser login, with `login_method` (`cli` or `sdk`); call `mark_login()` when login starts so startup samples include `interactive_login`. |
+| `DATABRICKS_LOGIN_OPERATION` | The error operation for login measurements and `failure()` on a nonzero login-process exit; report the exit code without changing the caller's retry behavior. |
+| `CODING_AGENT_CONFIG_FETCH_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around fetching the workspace's managed coding-agent configuration. |
+| `MODEL_SERVICE_DISCOVERY_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around listing and classifying model services, with `cache_hit` for the in-process catalog cache. |
+| `MODEL_SERVICE_ACCESS_CHECK_DURATION_MS` | `timed()` around the model-services access check, including all pages it reads. |
+| `HTTP_REQUEST_DURATION_MS` | `record()` once per HTTP attempt, including failures, with `api_operation`, `http_method`, `attempt`, and `http_status_code` when a response exists; excludes retry backoff. |
+| `HTTP_RETRY_COUNT` | `record(..., 1)` before each retry, with `api_operation` and `http_method`; never count the first attempt or count an outer retry twice. |
+
+HTTP helpers annotate the enclosing operation with its final response status. Pass
+`http_status_code=None` after a network failure with no response to clear an earlier
+attempt's status. Use `http_attempt()` to number retries managed by an outer API helper;
+`http_result` reports only the final failure at that boundary.
+
+Usage and routing instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
+| `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent` and `http_status_code` when a response is available. |
+
+Both durations are recorded on success and failure. Use `subagent_routing()` around
+subagent route selection so its trigger is scoped to that decision. Each routing HTTP
+attempt also uses `HTTP_REQUEST_DURATION_MS` with `api_operation="routes_select"`,
+`http_method="POST"`, `attempt=1`, and `http_status_code` when a response is available.
 
 ## Smart-routing configuration
 
@@ -136,7 +225,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.CLAUDE_CODE_USE_GATEWAY` | Create/replace | Create/replace | Gateway-routing flag |
 | `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
-| Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list |
+| Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list. A static list naming a model service whose primary destination is a subscription-relay MPS makes Claude Code CLI launch relayed for a user already signed in to a Claude subscription (credential swap, no `apiKeyHelper`; others keep gateway auth with a sign-in note) with the list still owning the picker; Claude Desktop keeps gateway auth for it (CLI-only for now) |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone. `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1` makes one launch strip the bare rule and hide `web_search` in its inline `--settings`; a managed, drop-in or user `WebSearch` deny makes it keep ug's MCP. The managed file never gets the deny; `ug configure --enable-server-side-web-search` (saved as `claude_server_side_web_search`) makes an explicit configure remove an existing bare one unless the admin's settings request it |
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
@@ -263,6 +352,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |
 | Native v2 collaboration | Launch-only (-c), never written | Launch-only (-c), never written | `features.multi_agent_v2.non_code_mode_only=false` and matching `root_agent_usage_hint_text` / `subagent_usage_hint_text` override saved values for the session; only for smart routing on Codex 0.164.0 or newer. User config files, general developer instructions, and native delegation-mode controls are preserved |
+| Smart Router native metadata | Launch-only (-c), never written | Launch-only (-c), never written | `responses_api_metadata.smart_router_recipe_name` records the configured recipe. The app-server interposer updates `smart_router_state` per main turn; spawn hooks stamp child task names. Reserve the state key for the interposer; a static config value would override turn updates |
 
 </details>
 

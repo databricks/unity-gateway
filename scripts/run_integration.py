@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -79,7 +80,6 @@ WINDOWS_UNSUPPORTED_NODES = {
     # Seeds machine-wide managed settings, which ug has no Windows path for.
     "test_ug_configure_claude_lifecycle.py::test_unmanaged_claude_preserves_preexisting_family_defaults",
     # Codex's Windows sandbox can't read ug's owner-only session-env dir yet.
-    "test_ug_smart_routing_hooks.py::test_smart_router_routes_codex_subagent_at_launch",
     "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_subagent_routing_off",
     "test_ug_smart_routing_hooks.py::test_smart_router_skill_turns_codex_subagent_routing_back_on",
 }
@@ -238,8 +238,17 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
-        token = json.load(response).get("access_token", "")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
+            token = json.load(response).get("access_token", "")
+    except urllib.error.HTTPError as exc:
+        detail = redact_secrets(
+            exc.read().decode("utf-8", errors="replace"), (client_secret, basic)
+        )[:2000]
+        raise RuntimeError(
+            f"Service-principal OAuth token request to {request.full_url} failed "
+            f"(HTTP {exc.code}): {detail}"
+        ) from None
     if not token:
         raise RuntimeError("Service-principal client credentials returned no access token.")
     return token
@@ -248,7 +257,7 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
 @contextlib.contextmanager
 def managed_process(command, *, interrupt=False, **kwargs):
     """Bound child lifetimes, including descendants that outlive their parent."""
-    proc = subprocess.Popen(command, **process_group_options(), **kwargs)
+    proc = subprocess.Popen(command, **process_group_options(), **kwargs)  # noqa: TID251 - runs before UG is installed
     try:
         yield proc
     finally:
@@ -278,7 +287,7 @@ def managed_process(command, *, interrupt=False, **kwargs):
             if proc.poll() is None:
                 # taskkill /T handles descendants; proc.kill() only handles the
                 # direct child on Windows.
-                subprocess.run(
+                subprocess.run(  # noqa: TID251 - runner cannot import UG
                     [shutil.which("taskkill") or "taskkill", "/PID", str(proc.pid), "/T", "/F"],
                     check=False,
                     stdout=subprocess.DEVNULL,
@@ -415,7 +424,7 @@ def arguments(
     )
     parser.add_argument(
         "--claude-provider",
-        default="main.ucode.ci_e2e_anthropic_nonrelay_mps",
+        default="main.ucode.dont_delete_ci_company_anthropic_mps",
         help="Existing Anthropic MPS selected in the configure CUJ.",
     )
     parser.add_argument(
@@ -575,6 +584,11 @@ def arguments(
         "--default-index", default=environment.get("UV_DEFAULT_INDEX", "https://pypi.org/simple")
     )
     parser.add_argument("--npm-registry", default="https://registry.npmjs.org")
+    parser.add_argument(
+        "--smart-router-name",
+        default=environment.get("SMART_ROUTER_NAME"),
+        help="Explicit router recipe for smart-routing journeys.",
+    )
     parser.add_argument("--profile", help="Explicit Databricks profile to mint the live bearer.")
     parser.add_argument("--workspace", default=environment.get("UCODE_TEST_WORKSPACE"))
     parser.add_argument(
@@ -794,6 +808,7 @@ def main() -> int:
             "antigravity": args.antigravity_build,
             "claude_model": args.claude_model,
             "codex_model": args.codex_model,
+            "smart_router_name": args.smart_router_name,
             "opencode_model": args.opencode_model,
             "copilot_model": args.copilot_model,
             "antigravity_model": args.antigravity_model,
@@ -1123,6 +1138,7 @@ def main() -> int:
                 "UG_INTEGRATION_BIN": str(binary),
                 "UG_INTEGRATION_RUN_DIR": str(output),
                 "UG_INTEGRATION_AGENTS": ",".join(agents),
+                "UG_INTEGRATION_SMART_ROUTER_NAME": args.smart_router_name or "",
                 "UG_INTEGRATION_CLAUDE_PROVIDER": args.claude_provider,
                 "UG_INTEGRATION_CLAUDE_CUSTOM_PROVIDER": args.claude_custom_provider,
                 "UG_INTEGRATION_CLAUDE_RELAYED_PROVIDER": args.claude_relayed_provider,
@@ -1155,6 +1171,9 @@ def main() -> int:
                 "UG_INTEGRATION_CLAUDE_PARENT_MODEL": args.claude_parent_model,
                 "UG_INTEGRATION_CODEX_PARENT_MODEL": args.codex_parent_model,
                 "UCODE_TEST_WORKSPACE": args.workspace or "",
+                "UCODE_TEST_CODEX_ROUTING_FIXTURE": os.environ.get(
+                    "UCODE_TEST_CODEX_ROUTING_FIXTURE", ""
+                ),
                 "DATABRICKS_BEARER": bearer,
                 "UCODE_TEST_SECOND_WORKSPACE": args.second_workspace or "",
                 "DATABRICKS_SECOND_BEARER": second_bearer,

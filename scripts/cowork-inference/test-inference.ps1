@@ -26,6 +26,7 @@ function Wait-Control {
 }
 
 . "$PSScriptRoot/diagnostics.ps1"
+. "$PSScriptRoot/model-picker.ps1"
 
 $report = [ordered]@{}
 $process = $null
@@ -64,7 +65,7 @@ try {
     }
     $report.coworkActivated = $true
     $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
-    $null = Wait-Control -Root $window -Names "Model: $($configuration.targetModelLabel)"
+    $report.initialModel = Select-CoworkModel -Root $window -Label $configuration.targetModelLabel
     $report.model = $configuration.targetModel
     $editor = Wait-Control -Root $window -Names 'Write your prompt to Claude'
     $prompt = 'Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools.'

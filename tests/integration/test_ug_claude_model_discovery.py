@@ -101,6 +101,7 @@ def test_case_09_fresh_claude_discovers_system_models(live_session, workspace):
 
 @pytest.mark.live
 @pytest.mark.tui
+@pytest.mark.anthropic_mps
 def test_case_11_configured_claude_provider_discovers_models_by_default(
     live_session, workspace, claude_provider, claude_provider_model
 ):
@@ -135,6 +136,7 @@ def test_case_11_configured_claude_provider_discovers_models_by_default(
 
 @pytest.mark.live
 @pytest.mark.tui
+@pytest.mark.anthropic_mps
 def test_case_11_fresh_claude_provider_discovers_models_by_default(
     live_session, workspace, claude_provider, claude_provider_model
 ):
@@ -142,6 +144,7 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
 
     Expected: the cache contains exactly the provider model and the replacement
     picker contains that catalog row plus Default resolving to the same model.
+    Generated settings contain the selected provider's routing header.
     """
     session = live_session
     command = [
@@ -159,6 +162,9 @@ def test_case_11_fresh_claude_provider_discovers_models_by_default(
         )
         tui.exit_normally()
 
+    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
+    headers = settings["env"]["ANTHROPIC_CUSTOM_HEADERS"].splitlines()
+    assert f"Databricks-Model-Provider-Service: {claude_provider}" in headers
     _assert_scoped_models_in_picker(session, screen, [claude_provider_model])
     _assert_replacement_picker(session, [claude_provider_model])
 

@@ -1,6 +1,8 @@
 """CUJs: configure Claude through ug, then use its real interactive session."""
 
 import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -79,14 +81,17 @@ def test_ug_configure_claude_databricks(live_session, workspace, desktop_cli_pro
         tui.check_input_and_exit()
 
 
+@pytest.mark.anthropic_mps
 def test_ug_configure_claude_anthropic_mps(
-    live_session, claude_provider, claude_provider_model, desktop_cli_profile
+    live_session, workspace, claude_provider, claude_provider_model, desktop_cli_profile
 ):
     """Scenario: choose the real Anthropic MPS in ug configure's provider picker.
 
     Expected: ug saves that provider, and launching Claude without --provider
     uses the saved choice to complete a file-reading task and exit normally.
     The Desktop profile keeps the dated provider ID and labels it Claude Haiku 4.5.
+    The gateway rejects a model outside the service's allowlist; the completed task's
+    transcript identifies the allowed Haiku model.
     """
     session = live_session
     task = FileTask(session)
@@ -111,6 +116,32 @@ def test_ug_configure_claude_anthropic_mps(
         session, {claude_provider_model: "Claude Haiku 4.5"}, provider=claude_provider
     )
 
+    request = urllib.request.Request(
+        workspace.rstrip("/") + "/ai-gateway/anthropic/v1/messages",
+        data=json.dumps(
+            {
+                "model": "claude-sonnet-4-5",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "say hi"}],
+            }
+        ).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {session.env['DATABRICKS_BEARER']}",
+            "Content-Type": "application/json",
+            "Anthropic-Version": "2023-06-01",
+            "Databricks-Model-Provider-Service": claude_provider,
+            "x-databricks-use-coding-agent-mode": "true",
+        },
+        method="POST",
+    )
+    with pytest.raises(urllib.error.HTTPError) as rejected:
+        with urllib.request.urlopen(request, timeout=60):
+            pytest.fail("MPS accepted a model outside its allowlist")
+    with rejected.value as response:
+        body = response.read().decode("utf-8")
+        assert response.code == 403, body
+        assert "not in the allowed models list" in body
+
     with AgentTerminal(
         session, "claude", [str(session.binary), "claude"], "provider-session"
     ) as tui:
@@ -119,6 +150,7 @@ def test_ug_configure_claude_anthropic_mps(
         tui.wait_for_task(task, timeout=300)
         tui.exit_normally()
     task.assert_completed(session, "claude")
+    assert_completed_task_model(session, "claude", task.value, claude_provider_model)
     session.assert_not_routed()
 
 

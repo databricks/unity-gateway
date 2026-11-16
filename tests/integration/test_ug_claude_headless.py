@@ -154,32 +154,6 @@ def test_ug_claude_headless_fresh_workspace(live_session, workspace):
 
 
 @pytest.mark.usefixtures("unmanaged_workspace")
-def test_ug_claude_fresh_provider_launch(live_session, workspace, claude_provider):
-    """Scenario: launch Claude from fresh state with an explicit provider service.
-
-    Expected: ``ug claude --workspace`` with ``--provider`` starts the real installed Claude
-    CLI without a configure step, reports the selected provider, and writes the provider header
-    to its generated settings; ``--version`` exits successfully without inference or routing.
-    """
-    session = live_session
-    result = session.run(
-        "claude",
-        "--workspace",
-        workspace,
-        "--provider",
-        claude_provider,
-        "--",
-        "--version",
-        timeout=180,
-    )
-    assert claude_provider in result.stdout
-    settings = json.loads((session.home / ".claude/ucode-settings.json").read_text())
-    headers = (settings.get("env") or {}).get("ANTHROPIC_CUSTOM_HEADERS", "").splitlines()
-    assert f"Databricks-Model-Provider-Service: {claude_provider}" in headers
-    session.assert_not_routed()
-
-
-@pytest.mark.usefixtures("unmanaged_workspace")
 def test_ug_claude_fresh_foundry_mps(
     live_session, workspace, claude_foundry_provider, claude_foundry_provider_model
 ):

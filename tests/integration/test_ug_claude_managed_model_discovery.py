@@ -21,7 +21,7 @@ from utils.provider_catalog import (
 )
 from utils.terminal import AgentTerminal
 
-pytestmark = [pytest.mark.managed_fixture, pytest.mark.claude]
+pytestmark = [pytest.mark.managed_fixture, pytest.mark.claude, pytest.mark.anthropic_mps]
 
 
 @pytest.fixture(scope="module")

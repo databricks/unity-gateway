@@ -58,6 +58,7 @@ def _codex_listed(session):
 
 @pytest.mark.managed_fixture
 @pytest.mark.claude
+@pytest.mark.anthropic_mps
 def test_managed_fixture_claude_model_lifecycle(live_session, workspace):
     """Scenario: configure Claude across no config -> static A -> static B -> MPS -> no config,
     injecting each config (and an explicit null for the no-config states) via the stub.

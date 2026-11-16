@@ -125,7 +125,7 @@ class TestConfigure:
         assert (
             f"VS Code extension: installed {vscode.EXTENSION_ID} {VERSION} with 2 models" in printed
         )
-        assert "Next, in VS Code: 1. If VS Code is open," in printed
+        assert "Next, in VS Code: 1. " in printed
 
     def test_models_with_the_same_label_show_their_ids(self, code):
         discovered = copilot.build_copilot_catalog(
@@ -376,6 +376,7 @@ class TestCopilotModels:
         assert vscode.configure(state)
 
         assert [model["id"] for model in code.config["models"]] == [self.GPT]
+        assert code.config["models"][0]["maxInputTokens"] == 794_000
         assert "Skipping system.ai.gemini-4-argon from your workspace's managed config" in (
             _printed(capsys)
         )
@@ -622,9 +623,9 @@ class TestNextSteps:
     @pytest.mark.parametrize(
         ("system", "restart"),
         [
-            (OS.MACOS, "If VS Code is open, quit it (Cmd+Q) and open it again."),
-            (OS.WINDOWS, "If VS Code is open, close every VS Code window and open it again."),
-            (OS.LINUX, "If VS Code is open, close every VS Code window and open it again."),
+            (OS.MACOS, "Quit VS Code with Cmd+Q, even if no window is open, and open it again."),
+            (OS.WINDOWS, "Close every VS Code window and open VS Code again."),
+            (OS.LINUX, "Close every VS Code window and open VS Code again."),
         ],
     )
     def test_says_how_to_restart_on_the_os(self, monkeypatch, system, restart):

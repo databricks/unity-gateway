@@ -369,7 +369,13 @@ class TestCujSmartRouting(BaseCujTest):
             task.prompt += " Do not delegate."
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
-            with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", [agent]) as tui:
+            # A reminder scheduled to check on the subagent outlives it and blocks /exit.
+            launch = (
+                [agent, "--", "--disallowedTools", "ScheduleWakeup,CronCreate"]
+                if agent == CLAUDE
+                else [agent]
+            )
+            with Terminal(session, f"{SMART_ROUTER_CONFIG_VERSION}-{agent}", launch) as tui:
                 tui.boot(timeout=150)
                 tui.submit(task.prompt)
                 tui.task(evidence, task)

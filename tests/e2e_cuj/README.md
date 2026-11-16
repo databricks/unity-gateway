@@ -70,7 +70,7 @@ before their existing installed `ug configure`, then compare the entire profile 
 JSON with the expected structure and values. This includes model labels, helper arguments and
 refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
 the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
-CUJ2 requires `Claude Haiku 4.5` for its dated Anthropic target, including when discovery
+CUJ2 requires `Claude Haiku 5.5` for its `claude-haiku-5-5` Anthropic target, including when discovery
 echoes that target ID as the display name. Actual and expected profile JSON are retained in
 `desktop-profile.json` for failures.
 Both also require the personal profile's bytes to survive and metadata to retain its entry.
@@ -86,6 +86,10 @@ CUJ2's Claude and Codex MPS inference cases ask for a short greeting. Each requi
 native parent turn matching that prompt, a nonempty answer, the expected provider/model and
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
+
+A separate CUJ2 Claude TUI case enables the external-models routing gate and the
+first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
+both route-selection requests, plus completed parent and child turns.
 
 CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
 Responses and Chat Completions native APIs; its workspace's Codex default must match.
@@ -155,6 +159,8 @@ before continuing. Later occurrences are handled the same way; any other dialog 
 After verifying the delegated task, Claude sessions also wait in the native `/tasks` view
 until no background work remains, including a child resumed after its initial answer.
 Only then does the test close the task view and submit `/exit`.
+These Claude launches pass `--disallowedTools ScheduleWakeup,CronCreate`: a reminder the model
+schedules to check on its subagent would outlive the finished child and hold `/exit` open.
 Each preset also runs public `ug revert` in cleanup, including after a failed assertion, so
 interactive launches' OS-managed settings cannot contaminate the next preset's configuration.
 The Claude and Codex explicit-model precedence cases both run; the routing-disabled case
