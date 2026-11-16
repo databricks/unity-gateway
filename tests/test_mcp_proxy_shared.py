@@ -281,7 +281,7 @@ def test_backend_has_no_visible_windows_console(clients, peer, tmp_path, windowl
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     (environment / "Lib" / "site-packages" / "dependencies.pth").write_text(
-        sysconfig.get_path("purelib") + "\n", encoding="utf-8"
+        f"import site; site.addsitedir({sysconfig.get_path('purelib')!r})\n", encoding="utf-8"
     )
     pythonw = environment / "Scripts" / "pythonw.exe"
     assert pythonw.is_file()
