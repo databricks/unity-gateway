@@ -4016,7 +4016,10 @@ def bare_model_name(model: str) -> str:
 # Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
 # `-20250929-v1:0`.
 _CLAUDE_RELEASE_SUFFIX_PATTERN = re.compile(r"(?:-\d{8})?(?:-v\d+(?::\d+)?)?$")
-_CLAUDE_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:-(\d+))?$")
+# `claude-<family>-<major>[-<minor>]` with an optional variant (`claude-sonnet-4-6-thinking`), and
+# the legacy `claude-<major>[-<minor>]-<family>` (`claude-3-7-sonnet`).
+_CLAUDE_VERSION_PATTERN = re.compile(r"^claude-([a-z]+)-(\d+)(?:-(\d+))?(?:-[a-z][\w-]*)?$")
+_LEGACY_CLAUDE_VERSION_PATTERN = re.compile(r"^claude-(\d+)(?:-(\d+))?-([a-z]+)(?:-[a-z][\w-]*)?$")
 # (max_input_tokens, max_tokens) of Claude models the gateway lists no limits for.
 _CLAUDE_1M_TOKENS = (1_000_000, 128_000)
 _CLAUDE_200K_TOKENS = (200_000, 32_000)
@@ -4033,17 +4036,31 @@ def claude_model_name(model: str) -> str:
     return _CLAUDE_RELEASE_SUFFIX_PATTERN.sub("", name, count=1)
 
 
+def claude_version(model_id: str) -> tuple[str, tuple[int, int]] | None:
+    """``(family, (major, minor))`` of a Claude id, or None when it doesn't follow either scheme:
+    ``databricks-claude-3-7-sonnet`` -> ``("sonnet", (3, 7))``."""
+    name = claude_model_name(model_id).replace(".", "-")
+    match = _CLAUDE_VERSION_PATTERN.match(name)
+    if match:
+        family, major, minor = match.groups()
+    else:
+        match = _LEGACY_CLAUDE_VERSION_PATTERN.match(name)
+        if not match:
+            return None
+        major, minor, family = match.groups()
+    return family, (int(major), int(minor or 0))
+
+
 def claude_token_limits(model: str) -> tuple[int, int] | None:
     """``(max_input_tokens, max_tokens)`` of a Claude model by its name, or None for other models.
 
     Opus and Sonnet 4.6+ and every Claude 5+ model have the 1M window; the rest 200K."""
-    name = claude_model_name(model)
-    if not name.startswith("claude-"):
+    if not claude_model_name(model).startswith("claude-"):
         return None
-    version = _CLAUDE_VERSION_PATTERN.match(name.replace(".", "-"))
-    if version is None:
+    parsed = claude_version(model)
+    if parsed is None:
         return _CLAUDE_200K_TOKENS
-    family, major, minor = version.group(1), int(version.group(2)), int(version.group(3) or 0)
+    family, (major, minor) = parsed
     if major >= 5 or (family in ("opus", "sonnet") and (major, minor) >= (4, 6)):
         return _CLAUDE_1M_TOKENS
     return _CLAUDE_200K_TOKENS

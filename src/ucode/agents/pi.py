@@ -38,7 +38,6 @@ already uses). A token still reaches the process environment: `launch` exports
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import signal
 
@@ -58,8 +57,8 @@ from ucode.databricks import (
     build_pi_base_urls,
     canonical_model_name,
     classify_model_family,
-    claude_model_name,
     claude_token_limits,
+    claude_version,
     gemini_model_token_limits,
     get_databricks_token,
     gpt_model_token_limits,
@@ -126,20 +125,11 @@ _IMAGE_INPUT_LIMITS: dict[str, object] = {
 # `cache_control.ephemeral.ttl` and `thinking.enabled.display` are "Extra inputs are not
 # permitted" (HTTP 400), and it refuses tool calls even without them. Other agents still list it.
 _MIN_CLAUDE_VERSION = (4, 5)
-_CLAUDE_VERSION_RE = re.compile(r"^claude-(fable|opus|sonnet|haiku)-(\d+)(?:-(\d+))?$")
-
-
-def _claude_version(model_id: str) -> tuple[str, tuple[int, int]] | None:
-    """``(family, (major, minor))`` of a Claude id, or None when it doesn't follow the scheme."""
-    match = _CLAUDE_VERSION_RE.match(claude_model_name(model_id).replace(".", "-"))
-    if not match:
-        return None
-    family, major, minor = match.groups()
-    return family, (int(major), int(minor or 0))
 
 
 def _serves_claude_model(model_id: str) -> bool:
-    parsed = _claude_version(model_id)
+    # A Claude id without a version (a custom endpoint name) is assumed current.
+    parsed = claude_version(model_id)
     return parsed is None or parsed[1] >= _MIN_CLAUDE_VERSION
 
 
@@ -151,7 +141,7 @@ def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
     thinking with HTTP 400). Opus/Sonnet 5.5 and Fable can't turn thinking off; Opus/Sonnet 5.5
     and Haiku 5.5 have no `minimal`; the gateway rejects `xhigh` and `max` for Haiku 5.5.
     """
-    parsed = _claude_version(model_id)
+    parsed = claude_version(model_id)
     if parsed is None:
         return None
     family, version = parsed
@@ -202,6 +192,11 @@ _GPT_SOL_TERRA_LUNA = tuple(
 _ORIGINAL_GPT_5 = frozenset({"gpt-5", "gpt-5-mini", "gpt-5-nano"})
 
 
+def _is_gpt_variant(name: str, *keys: str) -> bool:
+    """Whether ``name`` is one of ``keys`` or a `<key>-` variant, so `gpt-5-1` misses `gpt-5-10`."""
+    return any(name == key or name.startswith(f"{key}-") for key in keys)
+
+
 def _gpt_thinking_level_map(name: str) -> ThinkingLevelMap | None:
     """Levels for a canonical GPT name, or None for a model Pi should send no reasoning.
 
@@ -210,19 +205,19 @@ def _gpt_thinking_level_map(name: str) -> ThinkingLevelMap | None:
     HTTP 400, and without an `off` entry Pi sends `none` whenever thinking is off. No GPT model
     accepts Pi's `minimal` except the original GPT-5 models.
     """
-    if name.startswith("gpt-6-astra"):
+    if _is_gpt_variant(name, "gpt-6-astra"):
         return {"off": None, "minimal": None, "xhigh": "xhigh", "max": "max"}
-    if name.startswith(_GPT_SOL_TERRA_LUNA):
+    if _is_gpt_variant(name, *_GPT_SOL_TERRA_LUNA):
         return {"off": "none", "minimal": None, "xhigh": "xhigh", "max": "max"}
-    if name.startswith(("gpt-5-2-pro", "gpt-5-4-pro", "gpt-5-5-pro")):
+    if _is_gpt_variant(name, "gpt-5-2-pro", "gpt-5-4-pro", "gpt-5-5-pro"):
         return {"off": None, "minimal": None, "low": None, "xhigh": "xhigh"}
-    if name.startswith("gpt-5-pro"):
+    if _is_gpt_variant(name, "gpt-5-pro"):
         return {"off": None, "minimal": None, "low": None, "medium": None}
-    if name.startswith("gpt-5-3-codex-spark"):
+    if _is_gpt_variant(name, "gpt-5-3-codex-spark"):
         return {"off": None, "minimal": None, "xhigh": "xhigh"}
-    if name.startswith(("gpt-5-2", "gpt-5-3", "gpt-5-4", "gpt-5-5")):
+    if _is_gpt_variant(name, "gpt-5-2", "gpt-5-3", "gpt-5-4", "gpt-5-5"):
         return {"off": "none", "minimal": None, "xhigh": "xhigh"}
-    if name.startswith("gpt-5-1"):
+    if _is_gpt_variant(name, "gpt-5-1"):
         return {"off": "none", "minimal": None}
     if name in _ORIGINAL_GPT_5:
         return {"off": None}
@@ -504,10 +499,11 @@ def _managed_model_families(state: dict) -> tuple[dict[str, str], list[str], lis
     return claude, codex, gemini
 
 
-def _serves_model(model: str) -> bool:
-    family = classify_model_family(model)
+def serves_pi_model(model_id: str) -> bool:
+    """Whether Pi has a provider for ``model_id``: Claude 4.5 or newer, GPT or Gemini."""
+    family = classify_model_family(model_id)
     if family in ANTHROPIC_FAMILIES:
-        return _serves_claude_model(model)
+        return _serves_claude_model(model_id)
     return family in ("codex", "gemini")
 
 
@@ -530,7 +526,7 @@ def default_model(state: dict) -> str | None:
         return managed_default
     managed = state.get("pi_models")
     if isinstance(managed, list):
-        served = next((m for m in managed if isinstance(m, str) and _serves_model(m)), None)
+        served = next((m for m in managed if isinstance(m, str) and serves_pi_model(m)), None)
         if served is not None:
             return served
     claude_models = state.get("claude_models") or {}
@@ -546,6 +542,12 @@ def default_model(state: dict) -> str | None:
     return next((m for m in claude_models.values() if _serves_claude_model(m)), None)
 
 
+def _has_gemini(state: dict) -> bool:
+    """Whether ``write_tool_config`` gives Pi a ``databricks-gemini`` provider."""
+    families = _managed_model_families(state)
+    return bool(families[2] if families else state.get("gemini_models"))
+
+
 def _configure_launch(state: dict) -> str:
     model = default_model(state)
     if not model:
@@ -559,23 +561,32 @@ def _configure_launch(state: dict) -> str:
 _GOOGLE_VERTEX_SWITCHES = ("GOOGLE_GENAI_USE_VERTEXAI", "GOOGLE_GENAI_USE_ENTERPRISE")
 
 
-def build_runtime_env(token: str) -> dict[str, str]:
+def build_runtime_env(token: str, *, has_gemini: bool = True) -> dict[str, str]:
     env = os.environ.copy()
     env["OAUTH_TOKEN"] = token
     env["PI_CODING_AGENT_DIR"] = str(PI_CONFIG_DIR)
+    if not has_gemini:
+        return env
     # The gateway's Gemini route rejects the Vertex paths Pi's Google SDK uses when an inherited
     # switch turns Vertex on. Pi has no per-provider setting, so a switch that is on is turned off
     # here, which Pi's shell and child processes also inherit. Unset switches are left unset.
-    for name in _GOOGLE_VERTEX_SWITCHES:
-        if env.get(name, "").lower() == "true":
-            env[name] = "false"
+    rewritten = [name for name in _GOOGLE_VERTEX_SWITCHES if env.get(name, "").lower() == "true"]
+    for name in rewritten:
+        env[name] = "false"
+    if rewritten and (env.get("GEMINI_API_KEY") or env.get("GOOGLE_API_KEY")):
+        switches = ", ".join(f"{name}=false" for name in rewritten)
+        print_warning(
+            f"Pi sets {switches} for its Gemini provider while a Gemini API key is set, so "
+            "google-genai code in Pi's shell targets the Gemini API unless it passes "
+            "vertexai=True."
+        )
     return env
 
 
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     """Launch Pi; it re-resolves its apiKey command per request, so no refresher."""
     token = _configure_launch(state)
-    env = build_runtime_env(token)
+    env = build_runtime_env(token, has_gemini=_has_gemini(state))
 
     metrics.agent_handoff()
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)

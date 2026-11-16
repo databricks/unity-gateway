@@ -58,6 +58,7 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
+from ucode.agents import pi as pi_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
@@ -1809,16 +1810,15 @@ def _status_models(tool: str, state: dict) -> list[str]:
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
     if tool == "copilot":
         return copilot_agent.default_model(state)
+    if tool == "pi" and models:
+        # Pi skips a managed default or model it can't serve, so report the model it starts on.
+        return pi_agent.default_model(state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return (
-        models[0]
-        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity")
-        else None
-    )
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "antigravity") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:

@@ -587,10 +587,32 @@ class TestClaudeModelName:
             ("databricks-claude-fable-5-1", (1_000_000, 128_000)),
             ("claude-sonnet-4-5-20250929", (200_000, 32_000)),
             ("claude-sonnet-4-5-thinking", (200_000, 32_000)),
+            ("system.ai.claude-sonnet-4-6-thinking", (1_000_000, 128_000)),
+            ("claude-fable-5-fast", (1_000_000, 128_000)),
+            ("databricks-claude-3-7-sonnet", (200_000, 32_000)),
+            ("system.ai.gpt-5", None),
         ],
     )
     def test_token_limits_by_name(self, model_id, tokens):
         assert db_mod.claude_token_limits(model_id) == tokens
+
+    @pytest.mark.parametrize(
+        ("model_id", "version"),
+        [
+            ("system.ai.claude-opus-4-8[1m]", ("opus", (4, 8))),
+            ("claude-opus-4.6", ("opus", (4, 6))),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", ("sonnet", (4, 5))),
+            ("claude-sonnet-4-6-thinking", ("sonnet", (4, 6))),
+            ("claude-fable-5-fast", ("fable", (5, 0))),
+            ("databricks-claude-3-7-sonnet", ("sonnet", (3, 7))),
+            ("claude-3-5-sonnet", ("sonnet", (3, 5))),
+            ("claude-3-haiku", ("haiku", (3, 0))),
+            ("test-claude-model", None),
+            ("system.ai.gpt-5", None),
+        ],
+    )
+    def test_claude_version(self, model_id, version):
+        assert db_mod.claude_version(model_id) == version
 
 
 class TestGptModelTokenLimits:

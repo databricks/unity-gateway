@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import shlex
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -705,6 +705,9 @@ class TestModelEntries:
             "gpt-5.6",
             "system.ai.gpt-5-codex",
             "system.ai.gpt-5-7",
+            # A later minor release must not match an earlier one's `gpt-5-1` / `gpt-5-2` key.
+            "system.ai.gpt-5-10",
+            "system.ai.gpt-5-20",
         ],
     )
     def test_gpt_models_without_documented_levels_get_limits_only(self, model_id):
@@ -743,6 +746,24 @@ class TestModelEntries:
             == _entry("claude-opus-5-5")["thinkingLevelMap"]
         )
         assert not pi._serves_claude_model("claude-opus-4.1")
+
+    def test_variant_claude_ids_keep_their_version_levels(self):
+        assert (
+            _entry("system.ai.claude-sonnet-4-6-thinking")["thinkingLevelMap"]
+            == (_entry("system.ai.claude-sonnet-4-6")["thinkingLevelMap"])
+        )
+        assert _entry("system.ai.claude-fable-5-fast")["compat"] == {"forceAdaptiveThinking": True}
+
+    @pytest.mark.parametrize(
+        "model_id",
+        ["databricks-claude-3-7-sonnet", "system.ai.claude-3-5-sonnet", "claude-3-haiku"],
+    )
+    def test_legacy_claude_ids_are_older_than_4_5(self, model_id):
+        assert not pi._serves_claude_model(model_id)
+        assert not pi.serves_pi_model(model_id)
+
+    def test_unversioned_claude_ids_are_served(self):
+        assert pi._serves_claude_model("test-claude-model")
 
 
 class TestUnservableModels:
@@ -806,12 +827,9 @@ class TestUnservableModels:
             [],
         )
         assert pi.default_model(state) == "system.ai.gpt-oss-120b"
-
-    def test_managed_gpt_oss_is_served(self):
-        state = {"pi_models": ["system.ai.gpt-oss-120b"]}
-
-        assert pi._managed_model_families(state) == ({}, ["system.ai.gpt-oss-120b"], [])
-        assert pi.default_model(state) == "system.ai.gpt-oss-120b"
+        gpt_oss_only = {"pi_models": ["system.ai.gpt-oss-120b"]}
+        assert pi._managed_model_families(gpt_oss_only) == ({}, ["system.ai.gpt-oss-120b"], [])
+        assert pi.default_model(gpt_oss_only) == "system.ai.gpt-oss-120b"
 
     def test_excluded_managed_default_is_not_the_default(self):
         state = {
@@ -838,6 +856,77 @@ class TestUnservableModels:
 
 
 class TestGeminiEnvironment:
+    def test_leaves_the_switches_without_a_gemini_provider(self, monkeypatch):
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.setenv("GOOGLE_GENAI_USE_ENTERPRISE", "True")
+        monkeypatch.setenv("GEMINI_API_KEY", "key")
+
+        with patch("ucode.agents.pi.print_warning") as warn:
+            env = pi.build_runtime_env("tok", has_gemini=False)
+
+        assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "true"
+        assert env["GOOGLE_GENAI_USE_ENTERPRISE"] == "True"
+        warn.assert_not_called()
+
+    @pytest.mark.parametrize("key_var", ["GEMINI_API_KEY", "GOOGLE_API_KEY"])
+    def test_warns_when_a_gemini_api_key_meets_the_rewritten_switch(self, monkeypatch, key_var):
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv(key_var, "key")
+
+        with patch("ucode.agents.pi.print_warning") as warn:
+            env = pi.build_runtime_env("tok")
+
+        assert env["GOOGLE_GENAI_USE_VERTEXAI"] == "false"
+        (message,), _ = warn.call_args
+        assert "GOOGLE_GENAI_USE_VERTEXAI=false" in message
+        assert "vertexai=True" in message
+
+    @pytest.mark.parametrize(("switch", "api_key"), [("true", ""), ("false", "key"), (None, "key")])
+    def test_no_warning_without_a_rewrite_and_an_api_key(self, monkeypatch, switch, api_key):
+        monkeypatch.delenv("GOOGLE_GENAI_USE_ENTERPRISE", raising=False)
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", api_key)
+        if switch is None:
+            monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+        else:
+            monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", switch)
+
+        with patch("ucode.agents.pi.print_warning") as warn:
+            pi.build_runtime_env("tok")
+
+        warn.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("state", "has_gemini"),
+        [
+            ({"gemini_models": ["system.ai.gemini-3-1-pro"]}, True),
+            ({"codex_models": ["system.ai.gpt-5"]}, False),
+            (
+                {
+                    "pi_models": ["system.ai.gpt-5"],
+                    "gemini_models": ["system.ai.gemini-3-1-pro"],
+                },
+                False,
+            ),
+        ],
+    )
+    def test_launch_scopes_the_override_to_a_gemini_provider(self, state, has_gemini):
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        with (
+            patch("ucode.agents.pi._configure_launch", return_value="tok"),
+            patch("ucode.agents.pi.build_runtime_env", return_value={}) as build_env,
+            patch("ucode.agents.pi.subprocess_cross_os.popen", return_value=proc),
+            patch("ucode.agents.pi.metrics.agent_handoff"),
+            pytest.raises(SystemExit),
+        ):
+            pi.launch(state, [], options=MagicMock())
+
+        build_env.assert_called_once_with("tok", has_gemini=has_gemini)
+
     def test_pins_the_gemini_sdk_off_vertex(self, monkeypatch):
         monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
         monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "my-project")
