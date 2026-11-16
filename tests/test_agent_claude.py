@@ -663,17 +663,79 @@ class TestRenderOverlay:
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
+    @pytest.mark.parametrize("source", ["static", "discovered"])
+    def test_picker_description_hides_gateway_prefix_without_changing_model(self, source):
+        glm = "anthropic-aigw-77df06ae-system.ai.glm-5-3-flash"
+        gpt = "anthropic-aigw-c442a48e-system.ai.gpt-6-1-sol"
+        short_gpt = "anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]"
+        plain = "system.ai.claude-haiku-5-5"
+        models = [glm, gpt, short_gpt, plain]
+        kwargs = (
+            {"static_models": models}
+            if source == "static"
+            else {
+                "picker_catalog": db_mod.AnthropicModelCatalog(
+                    model_ids=models, model_id_to_display_name={}
+                )
+            }
+        )
+
+        overlay, _ = claude.render_overlay(WS, "s4", **kwargs)
+
+        options = overlay["modelPicker"]["options"]
+        assert [option["model"] for option in options] == [glm, f"{gpt}[1m]", short_gpt, plain]
+        assert options[0]["description"] == "Managed by your organization (system.ai.glm-5-3-flash)"
+        assert (
+            options[1]["description"] == "Managed by your organization (system.ai.gpt-6-1-sol[1m])"
+        )
+        assert options[2]["description"] == options[1]["description"]
+        assert "description" not in options[3]
+        if source == "static":
+            assert overlay["availableModels"] == models
+            assert all("behavesAs" not in option for option in options)
+
+    def test_picker_preserves_explicit_description_for_gateway_alias(self):
+        model = "anthropic-aigw-1234abcd-system.ai.claude-haiku-5-5"
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[model],
+            model_id_to_display_name={model: "Claude Haiku 5.5"},
+            model_id_to_description={model: "For quick tasks"},
+        )
+
+        overlay, _ = claude.render_overlay(WS, "s4", picker_catalog=catalog)
+
+        assert overlay["modelPicker"]["options"] == [
+            {
+                "model": model,
+                "label": "Claude Haiku 5.5",
+                "description": "For quick tasks",
+                "behavesAs": "claude-haiku-5-5",
+            }
+        ]
+
     def test_static_models_label_is_prettified(self):
-        # Picker labels drop the ``system.ai.`` prefix and are title-cased with a dotted version.
         static = [
             "system.ai.claude-opus-4-8",
             "system.ai.glm-5-3",
             "system.ai.kimi-k3",
             "databricks-custom-model",
+            "main.default.lilly-personal-anthropic.claude-haiku-5-5",
+            "main.default.lilly-personal-anthropic.claude-opus-5-5",
+            "main.default.lilly-personal-anthropic.claude-sonnet-5-5",
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
-        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+        assert labels == [
+            "Claude Opus 4.8",
+            "GLM 5.3",
+            "Kimi K3",
+            "Databricks Custom Model",
+            "Claude Haiku 5.5",
+            "Claude Opus 5.5",
+            "Claude Sonnet 5.5",
+        ]
+        assert overlay["availableModels"] == static
+        assert [opt["model"] for opt in overlay["modelPicker"]["options"]] == static
 
 
 class TestRenderOverlayOtelTracing:
@@ -2531,10 +2593,18 @@ class TestWriteToolConfigManagedSettings:
         assert managed_writes == []
         assert warns == []
 
-    def test_relayed_fails_on_conflicting_managed_auth(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "managed_auth",
+        [
+            {"apiKeyHelper": "enterprise-helper"},
+            {"env": {"ANTHROPIC_API_KEY": "enterprise-key"}},
+            {"env": {"ANTHROPIC_AUTH_TOKEN": "enterprise-token"}},
+        ],
+    )
+    def test_relayed_fails_on_conflicting_managed_auth(self, monkeypatch, managed_auth):
         private_writes: list = []
         managed_writes: list = []
-        existing = {str(FAKE_MANAGED_PATH): {"apiKeyHelper": "enterprise-helper"}}
+        existing = {str(FAKE_MANAGED_PATH): managed_auth}
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
         state = {"workspace": WS, "codex_models": []}
@@ -3942,7 +4012,7 @@ class TestBuildClaudeArgv:
         assert set(merged["permissions"]["deny"]) == {denied_tool, "Bash(rm:*)", "WebSearch"}
         assert len(merged["permissions"]["deny"]) == 3
         assert merged["permissions"]["allow"] == ["Read"]
-        assert merged["apiKeyHelper"] == "gateway-helper"
+        assert merged["apiKeyHelper"] == ("" if launch_mode == "relayed" else "gateway-helper")
         assert argv[-4:] == ["--disallowedTools", "Write", "--print", "Read the release notes"]
         assert args == original_args
         assert (settings_path.read_bytes(), caller_file.read_bytes()) == original_files
@@ -4006,9 +4076,43 @@ class TestBuildClaudeArgv:
         src = argv[argv.index("--setting-sources") + 1]
         assert src == claude._RELAYED_SETTING_SOURCES
         assert "user" not in src
-        # ucode's own settings file is still passed.
+        # ucode's gateway credentials are composed into the per-launch settings.
         assert "--settings" in argv
-        assert str(claude.CLAUDE_SETTINGS_PATH) in argv
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["apiKeyHelper"] == ""
+
+    def test_relayed_always_suppresses_credentials_and_keeps_preferences(
+        self, tmp_path, monkeypatch
+    ):
+        gateway_settings = tmp_path / "ucode-settings.json"
+        gateway_settings.write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "gateway-helper",
+                    "env": {"ANTHROPIC_BASE_URL": "http://localhost"},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", gateway_settings)
+        args = [
+            "--settings",
+            json.dumps(
+                {"apiKeyHelper": "caller", "model": "example", "statusLine": {"type": "command"}}
+            ),
+        ]
+
+        argv = claude._build_claude_argv("claude", args, relayed=True)
+
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["apiKeyHelper"] == ""
+        assert settings["env"] == {
+            "ANTHROPIC_BASE_URL": "http://localhost",
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_AUTH_TOKEN": "",
+        }
+        assert settings["model"] == "example"
+        assert settings["statusLine"] == {"type": "command"}
+        assert argv[argv.index("--setting-sources") + 1] == "project,local"
 
     def test_relayed_with_caller_settings_keeps_setting_sources(self, monkeypatch):
         # Even when composing a caller --settings, relayed still excludes user scope.
@@ -4549,12 +4653,14 @@ class TestHasSubscriptionLogin:
         calls = self._status(monkeypatch, '{"loggedIn": true, "authMethod": "claude.ai"}')
 
         assert claude._has_subscription_login() is True
-        # Same scopes as the relayed session, so a user-scope apiKeyHelper can't mask the login.
+        # Same scopes as the relayed session, with credentials forced to the subscription path.
         assert calls == [
             [
                 claude.SPEC["binary"],
                 "--setting-sources",
                 "project,local",
+                "--settings",
+                '{"apiKeyHelper":"","env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_API_KEY":""}}',
                 "auth",
                 "status",
                 "--json",

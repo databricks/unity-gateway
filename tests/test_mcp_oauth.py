@@ -21,12 +21,45 @@ def test_workspace_cimd_metadata_controls_agent_selected_client(monkeypatch):
         "urlopen",
         lambda req, timeout=0: io.BytesIO(json.dumps(metadata).encode()),
     )
-    assert mcp_oauth.workspace_supports_cimd(WS)
-    metadata["client_id_metadata_document_supported"] = False
-    assert not mcp_oauth.workspace_supports_cimd(WS)
-    metadata["client_id_metadata_document_supported"] = True
-    metadata["token_endpoint_auth_methods_supported"] = ["client_secret_basic"]
-    assert not mcp_oauth.workspace_supports_cimd(WS)
+    mcp_oauth._workspace_cimd_capability.cache_clear()
+    try:
+        assert mcp_oauth.workspace_supports_cimd(WS)
+        metadata["client_id_metadata_document_supported"] = False
+        assert mcp_oauth.workspace_supports_cimd(WS)  # all agents share the first probe
+        assert not mcp_oauth.workspace_supports_cimd(WS + "/unsupported")
+        metadata["client_id_metadata_document_supported"] = True
+        metadata["token_endpoint_auth_methods_supported"] = ["client_secret_basic"]
+        assert not mcp_oauth.workspace_supports_cimd(WS + "/unsupported-method")
+    finally:
+        mcp_oauth._workspace_cimd_capability.cache_clear()
+
+
+def test_workspace_cimd_metadata_retries_a_failed_read(monkeypatch):
+    attempts = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary failure")
+        return io.BytesIO(
+            json.dumps(
+                {
+                    "client_id_metadata_document_supported": True,
+                    "token_endpoint_auth_methods_supported": ["none"],
+                }
+            ).encode()
+        )
+
+    monkeypatch.setattr(mcp_oauth.urllib.request, "urlopen", fake_urlopen)
+    mcp_oauth._workspace_cimd_capability.cache_clear()
+    try:
+        assert not mcp_oauth.workspace_supports_cimd(WS)
+        assert mcp_oauth.workspace_supports_cimd(WS)
+        assert mcp_oauth.workspace_supports_cimd(WS)
+        assert attempts == 2
+    finally:
+        mcp_oauth._workspace_cimd_capability.cache_clear()
 
 
 def test_pinned_client_probe_distinguishes_published_from_missing(monkeypatch):

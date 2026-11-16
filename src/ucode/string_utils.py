@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 
 def _is_valid_dotted_name(value: str, levels: int) -> bool:
     parts = value.split(".")
@@ -27,12 +29,17 @@ _MODEL_LABEL_ACRONYMS = frozenset({"glm", "gpt"})
 _MODEL_LABEL_WORDS = {"deepseek": "DeepSeek"}
 
 
+def unqualified_model_name(model: str) -> str:
+    """Drop dotted namespace prefixes, preserving dots before version digits."""
+    return re.split(r"\.(?!\d)", model)[-1]
+
+
 def model_picker_label(model: str) -> str:
     """A human-friendly picker label for a model id (e.g. ``system.ai.claude-haiku-4-5`` ->
     ``Claude Haiku 4.5``): keep the vendor and name words title-cased, uppercase known acronyms,
     and join a run of numeric segments into a dotted version, also a short one after a word that
     ends in a digit (``kimi-k3-1-pro`` -> ``Kimi K3.1 Pro``)."""
-    stem = model.removeprefix("system.ai.")
+    stem = unqualified_model_name(model)
     parts: list[str] = []
     version: list[str] = []
     for token in stem.split("-"):

@@ -1,11 +1,12 @@
 name: UG Review
 
-# Add `ug-review` or `code-review` to an in-repo PR. Org members can comment `/ug-review`
-# on any PR; prior contributors can request it on their own PR. Fork PR events get no secrets.
+# Add `ug-review` or `code-review` to an in-repo PR, or mark it ready for review. Org members
+# can comment `/ug-review` on any PR; prior contributors can request it on their own PR.
+# Fork PR events get no secrets.
 # Open Code Review reads PR blobs through Git; it never executes PR code.
 on:
   pull_request:
-    types: [labeled]
+    types: [labeled, ready_for_review]
   issue_comment:
     types: [created]
 
@@ -19,7 +20,9 @@ jobs:
       ${{
         (github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
-          contains(fromJSON('["ug-review", "code-review"]'), github.event.label.name)) ||
+          (github.event.action == 'ready_for_review' ||
+            (github.event.action == 'labeled' &&
+              contains(fromJSON('["ug-review", "code-review"]'), github.event.label.name)))) ||
         (github.event_name == 'issue_comment' &&
           github.event.issue.pull_request &&
           github.event.comment.body == '/ug-review' &&
@@ -115,7 +118,8 @@ jobs:
             core.setOutput('base', pr.base.ref);
             core.setOutput('head', pr.head.sha);
 
-      # Comment runs check out the default branch; label runs check out the in-repo merge ref.
+      # Comment runs check out the default branch; label and ready-for-review runs check out the
+      # in-repo merge ref.
       # The action reads the diff through Git and never installs or executes PR code.
       - name: Review and publish findings
         if: steps.pr.outputs.head != ''

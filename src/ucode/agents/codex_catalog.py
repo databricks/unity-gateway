@@ -77,7 +77,7 @@ def build_codex_catalog(
 
     Preserve all native metadata (including unknown future fields), except picker
     slug/visibility/order. Services without native metadata get a picker label from their
-    last name segment, or the full id when labels collide. Only requested slugs are visible.
+    unqualified model name, or the full id when labels collide. Only requested slugs are visible.
     Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
     by_slug = {model["slug"]: model for model in bundled_models}
@@ -121,8 +121,8 @@ def build_codex_catalog(
                     default_reasoning_level=efforts[-1],
                     supported_reasoning_levels=_reasoning_levels(efforts),
                 )
-            model["description"] = f"{name} served on the Databricks AI Gateway."
-            model["display_name"] = model_picker_label(name.rsplit(".", 1)[-1])
+            model["description"] = f"{name} served on the Databricks Unity Gateway."
+            model["display_name"] = model_picker_label(name)
         model.update(
             slug=name,
             visibility=ModelVisibility.LIST,

@@ -517,6 +517,7 @@ def test_decision_record_persists_rationale(tmp_path, monkeypatch, rationale):
 
 
 def test_failed_subagent_routing_reports_reason_without_hook_response(monkeypatch, caplog):
+    caplog.set_level("DEBUG", logger="ucode.smart_routing.routing")
     monkeypatch.setattr(
         codex_routing,
         "request_routing_decision",
@@ -529,6 +530,7 @@ def test_failed_subagent_routing_reports_reason_without_hook_response(monkeypatc
         available_models=["system.ai.gpt-5-6-sol"],
     )
     assert output is None
+    assert all(record.levelname == "DEBUG" for record in caplog.records)
     assert "router returned HTTP 400: unsupported model" in caplog.text
     assert "private-bearer" not in caplog.text
     assert "Review the parser" not in caplog.text

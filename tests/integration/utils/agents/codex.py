@@ -5,13 +5,52 @@ from . import _evidence_id
 
 __all__ = [
     "EVIDENCE_KIND",
+    "assert_agent_interaction_completed",
     "assistant_answers",
     "completed_task_models",
+    "completed_command_outputs",
     "model_in_picker",
 ]
 
 SESSION_DIRECTORY = ".codex/sessions"
 EVIDENCE_KIND = "client-selected model"
+
+
+def assert_agent_interaction_completed(records: list[dict], target: str, thread_id: str) -> None:
+    """Require the native delivery receipt, shared by direct tools and code mode."""
+    assert any(
+        row.get("type") == "event_msg"
+        and row.get("payload", {}).get("type") == "item_completed"
+        and (item := row["payload"].get("item", {})).get("type") == "SubAgentActivity"
+        and item.get("kind") == "interacted"
+        and item.get("agent_path") == target
+        and item.get("agent_thread_id") == thread_id
+        for row in records
+    ), f"No successful native interaction with {target} ({thread_id})"
+
+
+def _command_text(command: object) -> str:
+    if isinstance(command, str):
+        return command
+    if isinstance(command, list) and all(isinstance(part, str) for part in command):
+        return " ".join(command)
+    return ""
+
+
+def completed_command_outputs(
+    records: list[dict], *, command_contains: str | None = None
+) -> list[str]:
+    return [
+        item["aggregated_output"]
+        for row in records
+        if row.get("type") == "event_msg"
+        and row.get("payload", {}).get("type") == "item_completed"
+        and (item := row["payload"].get("item", {})).get("type") == "CommandExecution"
+        and item.get("status") == "completed"
+        and item.get("exit_code") == 0
+        and isinstance(item.get("aggregated_output"), str)
+        and (command_contains is None or command_contains in _command_text(item.get("command")))
+    ]
 
 
 def is_child_session(path: str, records: list[dict]) -> bool:

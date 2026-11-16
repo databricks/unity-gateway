@@ -62,7 +62,7 @@ class TestCodexConfigArgs:
 model_provider = "ucode-databricks"
 
 [model_providers.ucode-databricks]
-name = "Databricks AI Gateway"
+name = "Databricks Unity Gateway"
 
 [model_providers.ucode-databricks.http_headers]
 User-Agent = "ucode"

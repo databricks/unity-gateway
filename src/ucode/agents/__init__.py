@@ -17,6 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from ucode import metrics
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
@@ -149,7 +150,9 @@ def normalize_tool(tool: str) -> str:
     return normalized
 
 
-def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
+def _update_installed_tool_binary(
+    tool: str, version: str | None = None, *, continued_with_fallback: bool = True
+) -> bool:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
     package = spec["package"]
@@ -182,7 +185,16 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         # Detach potentially incompatible metadata until the next validated refresh.
         codex.detach_app_model_catalog()
     try:
-        subprocess_cross_os.run(command, check=True, timeout=300, stdout=status_subprocess_stdout())
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="downgrade" if version else "update",
+            continued_with_fallback=continued_with_fallback,
+        ):
+            subprocess_cross_os.run(
+                command, check=True, timeout=300, stdout=status_subprocess_stdout()
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print_warning(f"Could not update {spec['display']}; continuing.")
         return False
@@ -218,7 +230,7 @@ def ensure_minimum_version(
             )
         ):
             raise RuntimeError(version_error)
-        if not _update_installed_tool_binary(tool):
+        if not _update_installed_tool_binary(tool, continued_with_fallback=False):
             raise RuntimeError(version_error)
         version_error = version_check()
     if version_error:
@@ -250,7 +262,7 @@ def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     installed, target = downgrade
     print_warning(
         f"{spec['display']} {installed} is newer than the latest version known to work "
-        f"with the Databricks AI Gateway ({target})."
+        f"with the Databricks Unity Gateway ({target})."
     )
     if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)
@@ -292,12 +304,19 @@ def install_tool_binary(
     if tool == "codex":
         codex.detach_app_model_catalog()
     try:
-        subprocess_cross_os.run(
-            ["npm", "install", "-g", package],
-            check=True,
-            timeout=300,
-            stdout=status_subprocess_stdout(),
-        )
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="install",
+            continued_with_fallback=not strict,
+        ):
+            subprocess_cross_os.run(
+                ["npm", "install", "-g", package],
+                check=True,
+                timeout=300,
+                stdout=status_subprocess_stdout(),
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically."
         if strict:
@@ -331,7 +350,14 @@ def _run_native_installer(tool: str, installer: Callable[[], None], *, strict: b
     print_section("Bootstrap")
     print_warning(f"`{spec['binary']}` was not found. Installing {spec['display']}...")
     try:
-        installer()
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="install",
+            continued_with_fallback=not strict,
+        ):
+            installer()
     except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically: {exc}"
         if strict:
@@ -382,6 +408,11 @@ def tool_version_error(tool: str) -> str | None:
     return _minimum_version_error(tool)
 
 
+@metrics.timed(
+    metrics.DEPENDENCY_SETUP_DURATION_MS,
+    label_args={"tool": "agent", "skip_cli_version_check": "cli_version_check_skipped"},
+    interactive_wait=False,
+)
 def ensure_bootstrap_dependencies(
     tool: str,
     *,
@@ -561,6 +592,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     )
 
 
+@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS, label_args={"tool": "agent"})
 def configure_tool(
     tool: str,
     state: dict,
@@ -575,6 +607,7 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
     derive_managed_model_inputs: bool = False,
 ) -> dict:
+    metrics.annotate(config_scope=config_scope())
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(

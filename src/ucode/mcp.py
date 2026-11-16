@@ -24,6 +24,7 @@ from ucode.databricks import (
     _MCP_SERVICES_WALK_DEADLINE_SECONDS,
     _MCP_SERVICES_WALK_TIMEOUT_REASON,
     AIGW_MCP_SERVICES_SEGMENT,
+    INCOMPLETE_LISTING_PREFIX,
     AuthTokenError,
     PermissionDeniedError,
     apply_pat_environment,
@@ -39,6 +40,7 @@ from ucode.databricks import (
     raise_for_invalid_access_token,
     workspace_hostname,
 )
+from ucode.managed_config import MCP_SOURCE_NAME, MCP_SOURCE_SCHEMA, mcp_source_kind
 from ucode.managed_files import (
     ManagedFileWriteUnavailable,
     explicit_managed_writes,
@@ -76,7 +78,7 @@ from ucode.ui import (
 from ucode.ui.interactive_picker import CatalogChoice, picker_details
 from ucode.workspace import state_workspace_key, workspace_headers
 
-# Workspace-relative path fragments for the V2 AI Gateway MCP endpoints, shared by the URL-shape
+# Workspace-relative path fragments for the V2 Unity Gateway MCP endpoints, shared by the URL-shape
 # checks (`_is_app_mcp_server`, `_mcp_server_location`) so the set stays in one place.
 MCP_EXTERNAL_PATH = "/api/2.0/mcp/external/"
 MCP_GENIE_PATH = "/api/2.0/mcp/genie/"
@@ -1037,29 +1039,122 @@ def _resolve_managed_mcp_servers(
 ) -> list[dict]:
     """Resolve a managed ``mcp_servers`` selector into MCP server entries for ``clients``.
 
-    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?}``), and
-    the two branches resolve differently:
+    ``selector`` is the normalized ``NamesOrLocation`` (``{names?, unity_catalog_location?,
+    sources?}``). The API sets exactly one; if several are present, ``sources`` wins, then
+    ``unity_catalog_location``, then ``names``:
 
-    - a ``unity_catalog_location`` registers every MCP service under that ``<catalog>.<schema>``, so
-      it discovers the set via :func:`_resolve_location_mcp_servers` (with no ``original_servers``);
-    - ``names`` registers exactly those services. Each is a full ``<catalog>.<schema>.<service>``
-      whose proxy URL is deterministic, so its entry is built directly here with no discovery or
-      narrowing call.
+    - ``sources`` mixes exact ``<catalog>.<schema>.<service>`` names with ``<catalog>.<schema>.*``
+      patterns, so one config can span several schemas (e.g. ``system.ai`` plus a team schema);
+      see :func:`_resolve_managed_mcp_sources`.
+    - a ``unity_catalog_location`` (deprecated) registers every MCP service under that one schema
+      via :func:`_resolve_location_mcp_servers` (with no ``original_servers``);
+    - ``names`` registers exactly those services, built directly (see
+      :func:`_named_mcp_server_entries`).
 
-    Either way the managed set is tracked on its own and never entangles the developer's own servers
-    or the skills connection. A ``names`` entry that isn't a full three-part FQN is skipped with a
-    warning, so an admin's typo in one entry never blocks the developer from the valid entries.
+    The managed set is tracked on its own and never entangles the developer's own servers or the
+    skills connection. A malformed entry is skipped with a warning, so an admin's typo in one entry
+    never blocks the developer from the valid entries.
     """
+    sources = [s for s in (selector.get("sources") or []) if isinstance(s, str) and s]
+    if sources:
+        return _resolve_managed_mcp_sources(sources, workspace, profile, clients, token=token)
     location = selector.get("unity_catalog_location")
     if isinstance(location, str) and location:
-        if token is not None:
-            return _resolve_location_mcp_servers(
-                workspace, profile, clients, location, [], token=token
-            )
-        return _resolve_location_mcp_servers(workspace, profile, clients, location, [])
+        return _discover_managed_location(location, workspace, profile, clients, token=token)
     names = [n for n in (selector.get("names") or []) if isinstance(n, str) and n]
-    if not names:
-        return []
+    return _named_mcp_server_entries(_drop_malformed_mcp_names(names), workspace, clients)
+
+
+def _resolve_managed_mcp_sources(
+    sources: list[str],
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    token: str | None = None,
+) -> list[dict]:
+    """Resolve managed ``mcp_servers.sources`` into one deduplicated server list.
+
+    Each ``.*`` pattern discovers its schema; each exact name is built directly. A schema that
+    doesn't exist or isn't readable (HTTP 404) is skipped with a warning, so one bad entry doesn't
+    drop the other schemas; if every schema is missing and no exact name remains, the first
+    :class:`McpLocationNotFound` is raised so reconcile keeps the registered servers. Any other discovery failure, including a rate limit or a failed later
+    page, propagates, so a partial listing never unregisters servers from a schema that only
+    failed transiently. A persistent non-404 failure on one schema therefore blocks managed MCP
+    setup for the run, as it does for a single ``unity_catalog_location``.
+    """
+    kinds = {source: mcp_source_kind(source) for source in sources}
+    malformed = sorted(source for source, kind in kinds.items() if kind is None)
+    if malformed:
+        print_warning(
+            "Skipping managed mcp_servers source(s) that aren't `<catalog>.<schema>.<service>` "
+            f"or `<catalog>.<schema>.*`: {', '.join(malformed)}."
+        )
+    locations = sorted(
+        {source[: -len(".*")] for source, kind in kinds.items() if kind == MCP_SOURCE_SCHEMA}
+    )
+    names = [source for source, kind in kinds.items() if kind == MCP_SOURCE_NAME]
+    if locations and token is None:
+        token = get_databricks_token(workspace, profile)
+    working: list[dict] = []
+    missing: list[McpLocationNotFound] = []
+    for location in locations:
+        try:
+            working.extend(
+                _discover_managed_location(
+                    location, workspace, profile, clients, token=token, strict_listing=True
+                )
+            )
+        except McpLocationNotFound as exc:
+            missing.append(exc)
+            print_warning(f"Skipping managed mcp_servers source `{location}.*`: {exc}")
+    # When nothing is left, treat it like a missing single location: fail, so reconcile keeps the
+    # registered servers rather than unregistering all of them.
+    if missing and len(missing) == len(locations) and not names:
+        raise missing[0]
+    working.extend(_named_mcp_server_entries(names, workspace, clients))
+    # A name can also be covered by a schema pattern; register it once. Entry names replace dots
+    # with dashes, so two different services (`main.a-b.c`, `main.a.b-c`) can map to one name.
+    deduped: list[dict] = []
+    url_by_name: dict[str, object] = {}
+    for server in working:
+        name = _server_name(server)
+        if name in url_by_name:
+            if url_by_name[name] != server.get("url"):
+                print_warning(
+                    f"Skipping managed MCP service at {server.get('url')}: its entry name `{name}` "
+                    "is already used by another service."
+                )
+            continue
+        if name:
+            url_by_name[name] = server.get("url")
+        deduped.append(server)
+    return deduped
+
+
+def _discover_managed_location(
+    location: str,
+    workspace: str,
+    profile: str | None,
+    clients: list[str],
+    *,
+    token: str | None = None,
+    strict_listing: bool = False,
+) -> list[dict]:
+    """Every MCP service under ``location``.
+
+    Passes no ``original_servers``: the managed set is tracked separately from the user's servers.
+    """
+    kwargs: dict = {}
+    if token is not None:
+        kwargs["token"] = token
+    if strict_listing:
+        kwargs["strict_listing"] = True
+    return _resolve_location_mcp_servers(workspace, profile, clients, location, [], **kwargs)
+
+
+def _drop_malformed_mcp_names(names: list[str]) -> list[str]:
+    """Drop entries that aren't full ``<catalog>.<schema>.<service>`` names, with one warning."""
     malformed = sorted(
         n for n in names if n.count(".") != 2 or not all(part for part in n.split("."))
     )
@@ -1068,20 +1163,28 @@ def _resolve_managed_mcp_servers(
             "Skipping managed mcp_servers name(s) that aren't full "
             f"`<catalog>.<schema>.<service>` names: {', '.join(malformed)}."
         )
-    names = [n for n in names if n not in set(malformed)]
-    if not names:
-        return []
-    # Explicit FQNs need no runtime discovery: the proxy URL is deterministic from the name, and
-    # access is enforced when a tool is actually called. So build the entries directly and skip the
-    # per-schema ListMcpServices round-trip (and the Atlas load it drives at scale) that narrowing a
-    # discovered list would require. A since-removed name simply fails at call time rather than
-    # slowing every `ug configure`. The `unity_catalog_location` selector above is the one path that
-    # still discovers, since a whole-schema pointer has no explicit set to register.
+    return [n for n in names if n not in set(malformed)]
+
+
+def _named_mcp_server_entries(names: list[str], workspace: str, clients: list[str]) -> list[dict]:
+    """Proxy entries for explicit MCP service FQNs, built without discovery.
+
+    Explicit FQNs need no runtime discovery: the proxy URL is deterministic from the name, and
+    access is enforced when a tool is actually called. So build the entries directly and skip the
+    per-schema ListMcpServices round-trip (and the Atlas load it drives at scale) that narrowing a
+    discovered list would require. A since-removed name simply fails at call time rather than
+    slowing every `ug configure`. Whole-schema selectors (a location or a ``.*`` source) are the one
+    path that still discovers, since they have no explicit set to register.
+    """
     working: list[dict] = []
     seen: set[str] = set()
     for full_name in sorted(set(names)):
         entry_name = full_name.replace(".", "-")
         if entry_name in seen:
+            print_warning(
+                f"Skipping managed MCP service `{full_name}`: its entry name `{entry_name}` is "
+                "already used by another service."
+            )
             continue
         seen.add(entry_name)
         working.append(
@@ -1964,6 +2067,14 @@ def _skills_entries(servers: list[dict]) -> list[dict]:
     return [s for s in servers if s.get("kind") == SKILLS_MCP_KIND]
 
 
+class McpLocationNotFound(RuntimeError):
+    """MCP-service discovery found no such schema, or no USE permission on it (HTTP 404).
+
+    A ``RuntimeError`` subtype: a single-location configure fails on it, while a multi-schema
+    ``sources`` resolve skips just that schema.
+    """
+
+
 class McpServiceListingRateLimited(RuntimeError):
     """MCP-service discovery (`ListMcpServices`) was rate-limited (HTTP 429).
 
@@ -1988,6 +2099,7 @@ def _resolve_location_mcp_servers(
     services: set[str] | None = None,
     *,
     token: str | None = None,
+    strict_listing: bool = False,
 ) -> list[dict]:
     """Build the desired MCP server list for ``--location <cat>.<schema>``.
 
@@ -1996,8 +2108,11 @@ def _resolve_location_mcp_servers(
     is removed by ``apply_mcp_server_changes``), plus any existing skills
     connection, preserved untouched. Raises the distinct
     :class:`McpServiceListingRateLimited` when discovery is rate-limited (HTTP 429) so callers can
-    skip gracefully, and plain ``RuntimeError`` for an invalid location (HTTP 404 from the listing
-    API) or any other listing failure.
+    skip gracefully, :class:`McpLocationNotFound` (a ``RuntimeError``) for an invalid location
+    (HTTP 404 from the listing API), and plain ``RuntimeError`` for any other listing failure.
+
+    ``strict_listing`` fails on any incomplete listing (see ``list_mcp_services(strict=True)``)
+    instead of returning the pages that succeeded.
 
     When ``services`` is given, the discovered set is narrowed to exactly that
     subset (matched by full name like ``system.ai.github`` or bare short name
@@ -2011,14 +2126,17 @@ def _resolve_location_mcp_servers(
 
     token = token if token is not None else get_databricks_token(workspace, profile)
     with spinner(f"Discovering MCP services in {location}..."):
-        names, reason = list_mcp_services(workspace, token, parent=location)
+        if strict_listing:
+            names, reason = list_mcp_services(workspace, token, parent=location, strict=True)
+        else:
+            names, reason = list_mcp_services(workspace, token, parent=location)
 
     if reason and reason.startswith("HTTP 404"):
-        raise RuntimeError(
+        raise McpLocationNotFound(
             f"Invalid location: `{location}` is not a valid Unity Catalog schema "
             "in this workspace (or you lack USE permission on it)."
         )
-    if reason and reason.startswith("HTTP 429"):
+    if reason and reason.removeprefix(INCOMPLETE_LISTING_PREFIX).startswith("HTTP 429"):
         # A transient rate-limit must not break `ug configure` or unregister already-configured
         # servers. Raise a distinct type so the managed path skips MCP setup this run with an info
         # note (leaving existing servers untouched) and retries on the next configure.
@@ -2064,7 +2182,7 @@ def _resolve_location_mcp_servers(
 
 
 # The interactive picker searches a single source: MCP services (the `/ai-gateway/mcp-services/`
-# path), the one source a consumer-only identity can reach. The V2 AI Gateway sources — external
+# path), the one source a consumer-only identity can reach. The V2 Unity Gateway sources — external
 # connections, Databricks apps, Genie spaces, Vector Search, and UC functions, all served under
 # `/api/2.0/mcp/*` — aren't offered in the picker because consumer entitlements don't grant access
 # to them; workspace users add one non-interactively with a typed `--names` selector (see
@@ -2072,7 +2190,7 @@ def _resolve_location_mcp_servers(
 # there is no "choose sources" wizard step.
 MCP_SERVICES_SOURCE = "mcp-services"
 
-# Typed `--names` selectors that name a V2 AI Gateway MCP server directly, e.g.
+# Typed `--names` selectors that name a V2 Unity Gateway MCP server directly, e.g.
 # `vector-search:main.docs` or `uc-functions:main.tools`. These bypass the interactive
 # picker (which no longer offers V2 sources) so workspace users can still add them on
 # request; a consumer-only identity is blocked with a clear error before registering.
@@ -2211,12 +2329,12 @@ def _configure_v2_mcp_selectors(
     append: bool,
     agents: set[str] | None,
 ) -> int:
-    """Non-interactive add for V2 AI Gateway MCP servers named by typed `--names`
+    """Non-interactive add for V2 Unity Gateway MCP servers named by typed `--names`
     selectors (`vector-search:`/`uc-functions:`/`external:`/`genie-space:`/`app:`).
 
     The interactive picker no longer offers these sources; this is how a workspace user adds one
     on request. These require workspace access, which consumer-only identities lack — but that's
-    enforced upstream at the AI Gateway (which ucode already hits during model setup), not here:
+    enforced upstream at the Unity Gateway (which ucode already hits during model setup), not here:
     the listing calls this uses don't reliably signal consumer access (see `PermissionDeniedError`).
     Registration mirrors the interactive add path: additive under ``append`` (`ucode mcp add`), an
     exact replacement otherwise (replace mode), always preserving the skills connection."""

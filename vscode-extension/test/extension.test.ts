@@ -4,16 +4,36 @@ import { afterEach, describe, it } from "node:test";
 import type * as vscode from "vscode";
 import packageJson from "../package.json";
 import { Tokens } from "../src/auth";
-import { DatabricksModels, PROVIDER_HEADER, readConfig, requestHeaders, userAgent, type Settings } from "../src/extension";
+import {
+  DatabricksModels,
+  NOTICE_SHOWN_KEY,
+  PROVIDER_HEADER,
+  readConfig,
+  requestHeaders,
+  SESSION_ID_HEADER,
+  sessionHeaders,
+  SWITCHED_KEY,
+  switchToDefaultModel,
+  userAgent,
+  whenCopilotChatIsOn,
+  type Settings,
+} from "../src/extension";
 import { streamEvents } from "../src/gateway";
 import { collect, message, rejectsWith, text, tokenCommand, USER } from "./support";
-import { LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
+import { host, LanguageModelChatToolMode, LanguageModelTextPart } from "./vscode";
 
 const sse = (...data: string[]) => data.map((item) => `data: ${item}\n\n`).join("");
 
 /** Replaces fetch with one that answers each request with the next status and SSE body. */
 const stubFetch = (...answers: [number, string, string?][]) => {
-  const requests: { url: string; authorization: string; userAgent: string; provider: string | null; body: Record<string, unknown> }[] = [];
+  const requests: {
+    url: string;
+    authorization: string;
+    userAgent: string;
+    provider: string | null;
+    session: string | null;
+    body: Record<string, unknown>;
+  }[] = [];
   globalThis.fetch = (async (url: string, init: RequestInit) => {
     const headers = new Headers(init.headers);
     requests.push({
@@ -21,6 +41,7 @@ const stubFetch = (...answers: [number, string, string?][]) => {
       authorization: headers.get("authorization") ?? "",
       userAgent: headers.get("user-agent") ?? "",
       provider: headers.get(PROVIDER_HEADER),
+      session: headers.get(SESSION_ID_HEADER),
       body: JSON.parse(String(init.body)),
     });
     const [status, body, contentType] = answers[Math.min(requests.length - 1, answers.length - 1)] ?? [500, ""];
@@ -82,7 +103,7 @@ describe("streamEvents", () => {
     requests = stubFetch(tooBig, tooBig);
     await rejectsWith(
       collect(streamEvents("https://ws", "/m", { max_tokens: 32_000 }, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      "AI Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
+      "Unity Gateway returned 400: {\"message\":\"max_tokens: 32000 > 8192",
     );
     assert.equal(requests.length, 2);
   });
@@ -91,7 +112,7 @@ describe("streamEvents", () => {
     stubFetch([200, "<!doctype html><title>Databricks - Sign In</title>", "text/html; charset=utf-8"]);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      "AI Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
+      "Unity Gateway answered with a web page instead of the model's reply. Run `ug configure --agents copilot` again, then retry.",
     );
   });
 
@@ -99,7 +120,7 @@ describe("streamEvents", () => {
     stubFetch([400, '{"message":"bad tools"}']);
     await rejectsWith(
       collect(streamEvents("https://ws", "/r", {}, new Tokens(tokenCommand(["t"]).command), {}, new AbortController().signal)),
-      'AI Gateway returned 400: {"message":"bad tools"}',
+      'Unity Gateway returned 400: {"message":"bad tools"}',
     );
   });
 });
@@ -213,6 +234,14 @@ describe("DatabricksModels", () => {
     ],
   });
 
+  it("tells VS Code to list the models again on refresh", () => {
+    const provider = new DatabricksModels(() => settings("true"), () => {});
+    let changes = 0;
+    provider.onDidChangeLanguageModelChatInformation(() => changes++);
+    provider.refresh();
+    assert.equal(changes, 1);
+  });
+
   it("lists the configured models by name, or by id without one, or none with a hint when settings are missing", async () => {
     const logs: string[] = [];
     const models = await new DatabricksModels(() => settings("cmd"), (line) => logs.push(line)).provideLanguageModelChatInformation();
@@ -234,13 +263,13 @@ describe("DatabricksModels", () => {
     [200, sse('{"choices":[{"delta":{"content":"hey"},"finish_reason":"stop"}]}', "[DONE]")],
   ];
 
-  const askEach = async (provider: DatabricksModels) => {
+  const askEach = async (provider: DatabricksModels, modelOptions?: Record<string, unknown>) => {
     const reported: unknown[] = [];
     for (const model of await provider.provideLanguageModelChatInformation()) {
       await provider.provideLanguageModelChatResponse(
         model,
         [message(USER, text("hi"))],
-        { toolMode: LanguageModelChatToolMode.Auto } as unknown as vscode.ProvideLanguageModelChatResponseOptions,
+        { toolMode: LanguageModelChatToolMode.Auto, modelOptions } as unknown as vscode.ProvideLanguageModelChatResponseOptions,
         { report: (part) => reported.push(part) },
         { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) } as unknown as vscode.CancellationToken,
       );
@@ -264,6 +293,15 @@ describe("DatabricksModels", () => {
     assert.deepEqual(reported, [new LanguageModelTextPart("hello"), new LanguageModelTextPart("hi"), new LanguageModelTextPart("hey")]);
   });
 
+  it("sends the chat session's id on every API, and none when Copilot Chat passes none", async () => {
+    let requests = stubFetch(...answers);
+    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}), { _conversationId: "chat-1" });
+    assert.deepEqual(requests.map((request) => request.session), ["chat-1", "chat-1", "chat-1"]);
+    requests = stubFetch(...answers);
+    await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command), () => {}));
+    assert.deepEqual(requests.map((request) => request.session), [null, null, null]);
+  });
+
   it("routes a Model Provider Service's models with its header, and OpenAI ones on the OpenAI route", async () => {
     const requests = stubFetch(...answers);
     await askEach(new DatabricksModels(() => settings(tokenCommand(["t"]).command, "main.default.mps"), () => {}));
@@ -275,5 +313,196 @@ describe("DatabricksModels", () => {
         ["https://ws/ai-gateway/openai/v1/chat/completions", "main.default.mps"],
       ],
     );
+  });
+});
+
+describe("whenCopilotChatIsOn", () => {
+  const TURN_ON_COMMAND = "workbench.action.chat.manage";
+  const context = () => {
+    const state = new Map<string, unknown>();
+    return {
+      subscriptions: [] as { dispose(): void }[],
+      globalState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => void state.set(key, value) },
+    } as unknown as vscode.ExtensionContext;
+  };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+  afterEach(() => host.reset());
+
+  it("is ready at once, with no notice, when Copilot Chat is on", async () => {
+    host.copilotChat = { activate: async () => {} };
+    const calls: boolean[] = [];
+    whenCopilotChatIsOn(context(), (late) => calls.push(late), () => {});
+    await settle();
+    assert.deepEqual(calls, [false]);
+    assert.deepEqual(host.notices, []);
+  });
+
+  it("offers to turn Copilot Chat on once, and is ready after it starts", async () => {
+    host.commands = [TURN_ON_COMMAND];
+    host.choice = "Turn On Copilot Chat";
+    const calls: boolean[] = [];
+    const ctx = context();
+    whenCopilotChatIsOn(ctx, (late) => calls.push(late), () => {});
+    await settle();
+    assert.deepEqual(host.notices, [{ message: "Databricks models need Copilot Chat, which is turned off.", actions: ["Turn On Copilot Chat"] }]);
+    assert.deepEqual(host.executed, [TURN_ON_COMMAND]);
+    assert.equal(ctx.globalState.get(NOTICE_SHOWN_KEY), true);
+    assert.deepEqual(calls, []);
+
+    let started = false;
+    host.copilotChat = { activate: async () => void (started = true) };
+    for (const listener of [...host.extensionListeners]) listener();
+    await settle();
+    assert.equal(started, true);
+    assert.deepEqual(calls, [true]);
+    assert.deepEqual(host.extensionListeners, []);
+
+    host.reset();
+    whenCopilotChatIsOn(ctx, () => {}, () => {});
+    await settle();
+    assert.deepEqual(host.notices, []);
+  });
+
+  it("says how to turn Copilot Chat on when VS Code lacks the command", async () => {
+    host.choice = "Turn On Copilot Chat";
+    whenCopilotChatIsOn(context(), () => {}, () => {});
+    await settle();
+    assert.deepEqual(
+      host.notices.map((notice) => notice.message),
+      ["Databricks models need Copilot Chat, which is turned off.", "To turn on Copilot Chat, click + in the chat's model picker."],
+    );
+    assert.deepEqual(host.executed, []);
+  });
+
+  it("does nothing more when the user dismisses the notice", async () => {
+    host.commands = [TURN_ON_COMMAND];
+    whenCopilotChatIsOn(context(), () => {}, () => {});
+    await settle();
+    assert.equal(host.notices.length, 1);
+    assert.deepEqual(host.executed, []);
+  });
+
+  it("is ready at once, with no notice, in a remote window, where Copilot Chat runs out of sight", async () => {
+    host.remoteName = "ssh-remote";
+    const calls: boolean[] = [];
+    whenCopilotChatIsOn(context(), (late) => calls.push(late), () => {});
+    await settle();
+    assert.deepEqual(calls, [false]);
+    assert.deepEqual(host.notices, []);
+  });
+
+  it("lists the models even when Copilot Chat fails to start", async () => {
+    const calls: boolean[] = [];
+    whenCopilotChatIsOn(context(), (late) => calls.push(late), () => {});
+    host.copilotChat = { activate: async () => Promise.reject(new Error("boom")) };
+    for (const listener of [...host.extensionListeners]) listener();
+    await settle();
+    assert.deepEqual(calls, [true]);
+  });
+
+  it("asks again next time when the notice got no answer", async () => {
+    const ctx = context();
+    let answer: (choice: string | undefined) => void = () => {};
+    const show = host.showNotice;
+    host.showNotice = () => new Promise((resolve) => (answer = resolve));
+    whenCopilotChatIsOn(ctx, () => {}, () => {});
+    await settle();
+    assert.equal(ctx.globalState.get(NOTICE_SHOWN_KEY), undefined);
+    answer(undefined);
+    await settle();
+    assert.equal(ctx.globalState.get(NOTICE_SHOWN_KEY), true);
+    host.showNotice = show;
+  });
+
+  it("shows no notice when the user turned AI features off", async () => {
+    host.settings = { "chat.disableAIFeatures": true };
+    host.commands = [TURN_ON_COMMAND];
+    whenCopilotChatIsOn(context(), () => {}, () => {});
+    await settle();
+    assert.deepEqual(host.notices, []);
+  });
+});
+
+describe("switchToDefaultModel", () => {
+  const CHANGE = "workbench.action.chat.open";
+  const selector = (model: { vendor: string; id: string }) => ({ modelSelector: { vendor: model.vendor, id: model.id } });
+  const VENDOR = "databricks-unity-gateway";
+  const sonnet = { vendor: VENDOR, id: "system.ai.claude-sonnet-5-5", family: "claude-sonnet-5-5" };
+  const luna = { vendor: VENDOR, id: "system.ai.gpt-6-luna", family: "gpt-6-luna" };
+  const settings = (defaultModel?: string): Settings => ({
+    workspace: "https://ws",
+    authCommand: "true",
+    provider: "",
+    models: [
+      { id: sonnet.id, api: "anthropic" },
+      { id: luna.id, api: "responses" },
+    ],
+    ...(defaultModel ? { defaultModel } : {}),
+  });
+  const context = () => {
+    const state = new Map<string, unknown>();
+    return {
+      subscriptions: [],
+      globalState: { get: (key: string) => state.get(key), update: async (key: string, value: unknown) => void state.set(key, value) },
+    } as unknown as vscode.ExtensionContext;
+  };
+  afterEach(() => host.reset());
+
+  it("opens the chat on the default model once per configuration", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    host.settings = { "chat.defaultModel": luna.id };
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    assert.deepEqual(host.commandArgs, [selector(luna)]);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), "config-1");
+    await switchToDefaultModel(ctx, settings(luna.id), "config-2", () => {});
+    assert.deepEqual(host.commandArgs, [selector(luna), selector(luna)]);
+  });
+
+  it("opens it on the first model without a default", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    await switchToDefaultModel(context(), settings(), "config-1", () => {});
+    assert.deepEqual(host.commandArgs, [selector(sonnet)]);
+  });
+
+  it("leaves the chats alone when the developer chose another default model", async () => {
+    host.commands = [CHANGE];
+    host.chatModels = [sonnet, luna];
+    host.settings = { "chat.defaultModel": "gpt-4.1" };
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    assert.deepEqual(host.executed, []);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), undefined);
+  });
+
+  it("waits for a later try while VS Code doesn't list the model", async () => {
+    host.commands = [CHANGE];
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(luna.id), "config-1", () => {});
+    assert.deepEqual(host.executed, []);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), undefined);
+  });
+
+  it("logs, and doesn't retry, when VS Code has no command to switch", async () => {
+    host.chatModels = [sonnet];
+    const lines: string[] = [];
+    const ctx = context();
+    await switchToDefaultModel(ctx, settings(sonnet.id), "config-1", (line) => lines.push(line));
+    assert.match(lines[0] ?? "", /Couldn't switch the chat to system.ai.claude-sonnet-5-5/);
+    assert.equal(ctx.globalState.get(SWITCHED_KEY), "config-1");
+  });
+});
+
+describe("sessionHeaders", () => {
+  it("sends Copilot Chat's chat session id, and nothing without one", () => {
+    assert.deepEqual(sessionHeaders({ _conversationId: "c-1", _capturingTokenCorrelationId: "r-1" }), { "session-id": "c-1" });
+    assert.deepEqual(sessionHeaders({ _conversationId: 7 }), {});
+    assert.deepEqual(sessionHeaders({ _conversationId: "" }), {});
+    assert.deepEqual(sessionHeaders({ _conversationId: "a\nb" }), {});
+    assert.deepEqual(sessionHeaders({ _conversationId: "x".repeat(257) }), {});
+    assert.deepEqual(sessionHeaders(undefined), {});
   });
 });

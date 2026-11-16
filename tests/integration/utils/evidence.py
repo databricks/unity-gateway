@@ -185,7 +185,7 @@ class FileTask:
     """Ordinary project input; the expected answer is never included in the prompt."""
 
     def __init__(self, session):
-        self.value = fresh_id()
+        self.value = fresh_id()[:6]
         self.filename = "input-" + fresh_id() + ".txt"
         (session.cwd / self.filename).write_text(self.value + "\n")
         # Say "local file" so agents with MCP fixture tools (read_fixture) don't pick those.

@@ -9,6 +9,7 @@ import runpy
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -45,6 +46,7 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
     project.mkdir()
     session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
 
+    started_ms = int(time.time() * 1000)
     result = session.run(
         "-c",
         "from ucode.gateway_proxy import log_proxy_diagnostic; "
@@ -53,7 +55,9 @@ def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
 
     prefix, payload = result.stderr.strip().split(" ", 1)
     assert prefix == "[ucode-relay]"
-    assert json.loads(payload) == {"event": "request_start", "request_id": "diagnostic-check"}
+    event = json.loads(payload)
+    assert started_ms <= event.pop("timestamp_ms") <= int(time.time() * 1000)
+    assert event == {"event": "request_start", "request_id": "diagnostic-check"}
     recorded = json.loads((session.artifacts / "command-1.json").read_text())
     assert recorded["stderr"] == result.stderr
 
@@ -228,8 +232,8 @@ def _collect_integration_cases(expression):
 def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     if agent == "codex":
         workflow = WORKFLOW.read_text()
-        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.154\.0", workflow)
-        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}" in workflow
+        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.156\.0", workflow)
+        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}" in workflow
     jobs = _integration_jobs()
     selected = []
     for name in ("smoke", "full"):
@@ -249,7 +253,7 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             assert "smart_routing: [false]" in jobs[name]
             assert (
                 "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
-                "inputs.codex_version || '0.154.0' }}"
+                "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
         for platform in ("ubuntu-22.04", "windows-latest"):
@@ -417,7 +421,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
-        "inputs.codex_version || '0.154.0' }}"
+        "inputs.codex_version || '0.156.0' }}"
     ) in job
 
 
@@ -661,8 +665,10 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!({MEMBER_ONLY} ||" in reject
-    assert "Prior contributors can run integration tests on their own PR" in reject
+    assert f"!{MEMBER_ONLY}" in reject
+    # Integration runs PR code with CI secrets, so a contributor can't start it on their own PR.
+    assert "CONTRIBUTOR" not in workflow
+    assert "only Databricks org members can run integration tests" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
@@ -785,7 +791,9 @@ def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_check
     workflow = _workflow("ug-review.yml")
 
     assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
-    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert re.search(
+        r"(?m)^on:\n  pull_request:\n    types: \[labeled, ready_for_review\]\n", workflow
+    )
     assert (
         'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
     )
