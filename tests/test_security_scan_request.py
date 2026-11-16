@@ -86,7 +86,7 @@ def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
             "id": RUN_ID,
             "event": "pull_request",
             "path": ".github/workflows/ci.yml",
-            "display_title": "Merge latest main",
+            "display_title": "Require a trusted main Security Scan before PR tests and /integration-test",
         },
     ],
 )
