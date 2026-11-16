@@ -1,5 +1,20 @@
 # Test suites and user journeys
 
+## Windows MDM provisioning E2E
+
+`e2e_mdm_windows/run.ps1` runs the real Windows provisioning script as SYSTEM on a disposable
+host, then launches Claude Code and Codex through the installed PowerShell functions as a fresh
+standard user. It requires completed headless inference, shared npm binaries, protected machine
+settings and `mdm_os=Windows`, unchanged machine hashes/ACLs after launches, user-owned state,
+and no provisioning secret/token in managed files or SYSTEM's application state.
+
+The blocking `mdm-provision-windows` integration job uses the E2E admin workspace credentials.
+Version-override runs deliberately exclude this checkout/latest-agent lane; fork PRs receive no
+credentials. See [the harness instructions](e2e_mdm_windows/README.md) for explicit opt-in and limits.
+PowerShell helper checks and `test_windows_mdm_e2e_contract.py` cover redaction, credential scans,
+snapshot comparisons and CI selection; they do not establish a live Windows pass.
+
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.

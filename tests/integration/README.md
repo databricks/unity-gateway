@@ -1,5 +1,12 @@
 # Integration tests
 
+Windows MDM provisioning has a separate destructive-on-disposable-host harness in
+[`../e2e_mdm_windows`](../e2e_mdm_windows/README.md), not in this per-user pytest suite.
+It runs the checked-out provisioning script as SYSTEM and requires both PowerShell aliases to
+complete real headless inference as a fresh standard user without changing protected machine
+files. It does not exercise browser sign-in, interactive agent TUIs, or Intune package delivery.
+
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
