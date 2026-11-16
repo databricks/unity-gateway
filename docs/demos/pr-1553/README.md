@@ -27,6 +27,6 @@ events from the same execution. It demonstrates the native notification and
 routing flow, with no claim about live instruction following, provider
 compatibility, quota recovery or billing.
 
-[Provenance and media hashes](provenance.json) include the source and runtime
-versions, controlled inputs and observed model selection. Raw transcripts and
-local profiles are excluded from these assets.
+The [PR description](https://github.com/databricks/unity-gateway/pull/1553) includes
+the source and runtime versions, controlled inputs, observed model selection and
+media hashes. Raw transcripts and local profiles remain private.

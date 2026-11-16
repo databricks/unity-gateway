@@ -21,6 +21,6 @@ exercise recovery. Live cooldown acceptance remains pending.
 
 The video renders actual native terminal output in real time. Only the startup
 workspace address is masked; task output and timing are preserved.
-[Provenance and media hashes](provenance.json) record the exact source, runtime,
-ordered model choices and observations. The [earlier live session](../live/README.md)
+The [PR description](https://github.com/databricks/unity-gateway/pull/1553) records
+the exact source, runtime, ordered model choices, observations and media hashes. The [earlier live session](../live/README.md)
 and [fixture recording](../README.md#historical-fixture-recording) remain preserved.
