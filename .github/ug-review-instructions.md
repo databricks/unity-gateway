@@ -22,6 +22,8 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
+   Check that moving or sharing code preserves its validation and error handling. Ask why an
+   authentication or transport change is needed when its connection to the stated goal is unclear.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
@@ -57,10 +59,18 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
    modify only fields it owns, preserve caller/admin state, remove stale state it owns, and
    show errors that tell the user what they can do.
+   For configuration migrations, inspect merged user and managed layers when a write is skipped,
+   denied, or fails. Check that fallback writers preserve required timeouts and environment fields
+   and do not leave incompatible transports under one server name.
+   For asynchronous model switches or routing, check overlapping sessions and late completions.
+   Recheck mutable cooldowns and policy before acting on a snapshot taken before a network wait;
+   a late result must not overwrite a newer explicit user choice.
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
+   Keep shared metric definitions and the recorder and exporter implementations in the existing
+   `ucode.metrics` package, with the responsibilities described there.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
    edits for every instrumented call site.
@@ -77,6 +87,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+   For scanners and changed-file gates, check that quoted or unusual filenames and diff content
+   cannot silently drop files or added lines. PR-authored suppression comments must not waive
+   trusted security checks. Distinguish workflow guards from runner-group access policy, and
+   state which required administrative settings were actually verified.
 
 ## Voice and tone
 
