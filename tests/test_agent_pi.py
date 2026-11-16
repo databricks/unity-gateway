@@ -1273,6 +1273,40 @@ class TestExcludedSelectedModel:
                 "system.ai.claude-opus-5-5"
             )
 
+    @pytest.mark.parametrize(
+        "selector",
+        [
+            "databricks-openai/system.ai.gpt-oss-120b",
+            "databricks-oss/system.ai.gpt-oss-120b",
+            "databricks-codex/system.ai.gpt-oss-120b",
+        ],
+    )
+    def test_a_stale_ug_provider_prefix_moves_to_the_serving_provider(
+        self, tmp_path, monkeypatch, selector
+    ):
+        # gpt-oss is on the MLflow provider now; an old or wrong ug prefix must not stick.
+        state = {"codex_models": ["system.ai.gpt-5", "system.ai.gpt-oss-120b"]}
+
+        warn = self._write(tmp_path, monkeypatch, state, selector)
+
+        written = json.loads((tmp_path / "models.json").read_text())
+        settings = json.loads((tmp_path / "settings.json").read_text())
+        assert written["model"] == "databricks-mlflow/system.ai.gpt-oss-120b"
+        assert settings["defaultProvider"] == "databricks-mlflow"
+        warn.assert_not_called()
+
+    def test_an_unservable_model_under_a_legacy_prefix_falls_back(self, tmp_path, monkeypatch):
+        # `databricks-oss/` is ug's own legacy provider, not a third-party one.
+        state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}}
+
+        warn = self._write(
+            tmp_path, monkeypatch, state, "databricks-oss/system.ai.qwen35-122b-a10b"
+        )
+
+        written = json.loads((tmp_path / "models.json").read_text())
+        assert written["model"] == "databricks-claude/system.ai.claude-opus-5-5"
+        assert "Pi does not support this model" in warn.call_args.args[0]
+
     def test_a_served_model_is_kept_without_a_warning(self, tmp_path, monkeypatch):
         state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}, "codex_models": ["gpt-5"]}
 

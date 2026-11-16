@@ -101,6 +101,20 @@ PROVIDER_KEYS: list[list[str]] = [["providers", name] for name in PROVIDER_NAMES
 # users don't end up with stale entries pointing at routes that 400.
 LEGACY_PROVIDER_NAMES = ("databricks-anthropic", "databricks-codex", "databricks-oss")
 
+# Provider prefixes ug writes or once wrote. A selector under one names a gateway model, which is
+# re-resolved against the rendered providers; any other `<provider>/` is a third-party Pi provider.
+_UG_PROVIDER_NAMES = (*PROVIDER_NAMES, *LEGACY_PROVIDER_NAMES)
+
+
+def _strip_ug_provider(model: str) -> str | None:
+    """The gateway model id of ``model`` without a ug-owned prefix, or None for a selector of
+    another Pi provider (`openai/o3`)."""
+    provider, separator, bare = model.partition("/")
+    if not separator:
+        return model
+    return bare if provider in _UG_PROVIDER_NAMES else None
+
+
 # Pi levels a `thinkingLevelMap` can name. An unmapped level up to `high` sends its own name; an
 # unmapped `xhigh` or `max` is hidden; a `None` value hides the level. Pi moves a request for a
 # hidden level to a supported one (GPT-5 `--thinking off` runs at `minimal`), so it never sends a
@@ -148,6 +162,22 @@ def _serves_codex_model(model_id: str) -> bool:
 def _mlflow_models(oss_models: list[str], codex_models: list[str]) -> list[str]:
     """The `databricks-mlflow` models: discovered OSS models, then gpt-oss from the GPT bucket."""
     return list(dict.fromkeys([*oss_models, *(m for m in codex_models if _is_gpt_oss(m))]))
+
+
+def _servable_families(
+    claude_models: dict[str, str],
+    codex_models: list[str],
+    gemini_models: list[str],
+    oss_models: list[str],
+) -> tuple[dict[str, str], list[str], list[str], list[str]]:
+    """The provider inputs Pi serves: Claude older than 4.5 dropped, gpt-oss moved from the GPT
+    bucket to the MLflow models."""
+    return (
+        {f: m for f, m in claude_models.items() if _serves_claude_model(m)},
+        [m for m in codex_models if _serves_codex_model(m)],
+        list(gemini_models),
+        _mlflow_models(oss_models, codex_models),
+    )
 
 
 def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
@@ -359,18 +389,21 @@ def _resolve_model_selector(
     gemini_models: list[str],
     oss_models: list[str],
 ) -> str:
-    """Return a Pi model selector in `<provider>/<model>` form when possible."""
-    for name in PROVIDER_NAMES:
-        if model.startswith(f"{name}/"):
-            return model
-    if model in claude_models.values():
-        return f"databricks-claude/{model}"
-    if model in codex_models:
-        return f"databricks-openai/{model}"
-    if model in gemini_models:
-        return f"databricks-gemini/{model}"
-    if model in oss_models:
-        return f"databricks-mlflow/{model}"
+    """Return a Pi model selector in `<provider>/<model>` form when possible.
+
+    A ug-owned prefix, current or legacy, is replaced by the provider that now serves the model
+    (`databricks-openai/...gpt-oss-120b` moves to `databricks-mlflow`)."""
+    bare = _strip_ug_provider(model)
+    if bare is None:
+        return model
+    if bare in claude_models.values():
+        return f"databricks-claude/{bare}"
+    if bare in codex_models:
+        return f"databricks-openai/{bare}"
+    if bare in gemini_models:
+        return f"databricks-gemini/{bare}"
+    if bare in oss_models:
+        return f"databricks-mlflow/{bare}"
     return model
 
 
@@ -391,9 +424,9 @@ def render_overlay(
     gpt-oss moves from ``codex_models`` to the MLflow provider, and Claude older than 4.5 is
     dropped, before any provider or the model selector is built. ``model`` is used as given;
     ``write_tool_config`` replaces an excluded one before calling here."""
-    claude_models = {f: m for f, m in claude_models.items() if _serves_claude_model(m)}
-    oss_models = _mlflow_models(oss_models or [], codex_models)
-    codex_models = [m for m in codex_models if _serves_codex_model(m)]
+    claude_models, codex_models, gemini_models, oss_models = _servable_families(
+        claude_models, codex_models, gemini_models, oss_models or []
+    )
     providers: dict = {}
     keys: list[list[str]] = [["model"]]
     # Pi expands header values that match an env var name. Our UA contains
@@ -492,14 +525,15 @@ def _usable_model(state: dict, model: str) -> str:
     An admin's managed default or a budget recommendation can name a Claude model older than
     4.5. Pi would start on a model no provider lists, so it starts on its default instead, as
     Copilot does for a recommended model it can't serve. An explicit selector for another Pi
-    provider (`openai/o3`) is the user's own choice and is kept.
+    provider (`openai/o3`) is the user's own choice and is kept; a ug-owned prefix, current or
+    legacy (`databricks-oss/...`), is judged by the model it names.
     """
-    provider, separator, _ = model.partition("/")
-    if (separator and provider not in PROVIDER_NAMES) or serves_pi_model(model):
+    bare = _strip_ug_provider(model)
+    if bare is None or serves_pi_model(bare):
         return model
     reason = (
         "Claude models older than 4.5 reject Pi's requests"
-        if _excluded_model(model)
+        if _excluded_model(bare)
         else "Pi does not support this model"
     )
     fallback = default_model(state)
@@ -608,6 +642,17 @@ def _effective_model_families(
         state.get("gemini_models") or [],
         state.get("oss_models") or [],
     )
+
+
+def has_servable_models(state: dict) -> bool:
+    """Whether ``write_tool_config`` renders at least one provider for ``state``."""
+    return any(_servable_families(*_effective_model_families(state)))
+
+
+def status_models(state: dict) -> list[str]:
+    """The models ``write_tool_config`` gives Pi's providers, in provider order, deduplicated."""
+    claude, codex, gemini, oss = _servable_families(*_effective_model_families(state))
+    return list(dict.fromkeys([*sorted(set(claude.values())), *codex, *gemini, *oss]))
 
 
 def serves_pi_model(model_id: str) -> bool:

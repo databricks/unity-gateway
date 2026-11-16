@@ -702,7 +702,9 @@ def check_gateway_endpoint(state: dict, tool: str) -> bool:
     if tool == "copilot":
         return bool(copilot.copilot_catalog(state))
     if tool == "pi":
-        return pi.default_model(state) is not None
+        # A default alone isn't enough: with no provider to render, configuring would delete the
+        # existing providers and write none.
+        return pi.has_servable_models(state) and pi.default_model(state) is not None
     return False
 
 
