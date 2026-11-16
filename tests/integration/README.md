@@ -26,6 +26,9 @@ approval dialogs, preserving the sandbox.
 Toggle approvals accept only the requested command or its exact environment-variable guard
 on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
 remain rejected.
+PowerShell guard matching recognizes the fixed `-not` and `IsNullOrWhiteSpace` checks
+of both session variables, including ConPTY's replacement selection marker. Component
+tests reject extra commands, substitutions, other variables, and different conditions.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
@@ -847,6 +850,11 @@ the shared deadline, and network/CLI failures at each recovery stage. Invalid to
 output stays out of helper errors and streams.
 Shared CLI discovery checks pin the newest absolute binary through recovery and
 reject a missing CLI before token fetch or browser login.
+`../test_databricks.py::TestDatabricksCliResolution` also checks macOS Homebrew and
+user-local discovery with a Dock-style PATH, preserving an existing
+PATH installation and leaving other platforms unchanged. A Desktop auth component
+case checks token fetch through the resolved user-local binary. Filesystem/version
+or auth subprocess boundaries are controlled; native Dock launch remains untested.
 They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 

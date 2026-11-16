@@ -560,6 +560,12 @@ cover Desktop token-only stdout, explicit workspace/profile arguments, interacti
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
+macOS CLI discovery regressions in `test_databricks.py::TestDatabricksCliResolution`
+cover Homebrew and user-local installs with a Dock-style PATH.
+They preserve existing PATH selection and keep fallback searches macOS-only.
+`test_desktop_auth.py` also checks token fetch through the resolved user-local CLI.
+These component checks control filesystem/version or auth subprocess boundaries;
+they do not establish native Dock launch or live sign-in coverage.
 Proxy bridge coverage checks that OAuth U2M discovery retains an authentication action
 alongside normal tools, without opening a browser. It covers per-request metadata lookup,
 recovery on the next operation after a failed lookup, PAT/non-U2M exclusion, pagination,
@@ -1103,6 +1109,9 @@ runs the marked off through Claude, the mod and the real CLI.
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete
 dialog cannot borrow the confirmation footer from a previous dialog.
+Windows cases cover the ConPTY replacement selection marker and both the `-not`
+and `IsNullOrWhiteSpace` checks of the two session environment variables. Extra
+commands, substitutions, other variables, and different conditions remain rejected.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers
