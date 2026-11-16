@@ -347,21 +347,21 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             raise
         finally:
             metrics.record(
-                "proxy_request_duration_ms",
+                metrics.PROXY_REQUEST_DURATION_MS,
                 (time.monotonic() - self._metric_started) * 1000,
                 workspace=self.metrics_workspace,
                 **self._metric_labels,
                 client_disconnected=self._metric_disconnected,
             )
             metrics.record(
-                "proxy_response_bytes",
+                metrics.PROXY_RESPONSE_BYTES,
                 self._metric_bytes,
                 workspace=self.metrics_workspace,
                 **self._metric_labels,
             )
             if self._metric_error is not None:
                 metrics.failure(
-                    "proxy_request",
+                    metrics.PROXY_REQUEST_OPERATION,
                     self._metric_error,
                     workspace=self.metrics_workspace,
                     phase="agent_session",
@@ -372,7 +372,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
     def _metric_headers(self, status: int, attempt: int, started: float) -> None:
         self._metric_labels["http_status_code"] = status
         metrics.record(
-            "proxy_upstream_headers_duration_ms",
+            metrics.PROXY_UPSTREAM_HEADERS_DURATION_MS,
             (time.monotonic() - started) * 1000,
             workspace=self.metrics_workspace,
             **self._metric_labels,
@@ -481,7 +481,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
             metrics.record(
-                "proxy_auth_retry_count",
+                metrics.PROXY_AUTH_RETRY_COUNT,
                 1,
                 workspace=self.metrics_workspace,
                 **{k: v for k, v in self._metric_labels.items() if k != "http_status_code"},
@@ -556,7 +556,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                     if first_byte_ms is None:
                         first_byte_ms = round((time.monotonic() - started) * 1000)
                         metrics.record(
-                            "proxy_first_byte_duration_ms",
+                            metrics.PROXY_FIRST_BYTE_DURATION_MS,
                             first_byte_ms,
                             workspace=self.metrics_workspace,
                             **self._metric_labels,
