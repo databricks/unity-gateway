@@ -48,12 +48,7 @@ def configure_claude_desktop(
                 raise RuntimeError(
                     "Desktop MDM provisioning does not support PAT/custom OAuth profiles."
                 )
-            if sys.platform == "win32":
-                mdm.configure(
-                    state["workspace"], state.get("profile"), managed_config=managed_config
-                )
-            else:
-                mdm.configure(state["workspace"], state.get("profile"))
+            mdm.configure(state["workspace"], state.get("profile"), managed_config=managed_config)
             if not is_dry_run():
                 print_success(
                     "Claude Desktop MDM deployment configured. Restart Desktop and open new sessions; users authenticate with their own credentials."

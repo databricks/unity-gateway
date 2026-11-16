@@ -390,14 +390,13 @@ def configure(workspace: str, profile: str | None, *, managed_config: dict | Non
     )
     with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
         staging = Path(directory).resolve()
+        skills = (managed or {}).get("skills") or {}
         records = []
-        if windows:
+        if not windows:
+            records = _download_skills(workspace, token, skills, staging / "skills")
+        elif skills:
             print_note(
                 "Windows global workspace-skill delivery is deferred; skills were not installed."
-            )
-        else:
-            records = _download_skills(
-                workspace, token, (managed or {}).get("skills") or {}, staging / "skills"
             )
         source = staging / "marketplace"
         plugin_root = source / "plugins/ug"

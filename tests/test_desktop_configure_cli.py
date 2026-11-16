@@ -57,7 +57,9 @@ def test_global_skips_user_desktop_setup(monkeypatch):
     desktop_setup.configure_claude_desktop({"workspace": "https://workspace.example"})
     desktop_setup.configure_claude_cowork({}, [])
     desktop_setup.configure_claude_code_plugin([])
-    machine_configure.assert_called_once_with("https://workspace.example", None)
+    machine_configure.assert_called_once_with(
+        "https://workspace.example", None, managed_config=None
+    )
 
 
 def test_global_skips_desktop_mdm_on_other_platforms(monkeypatch):
