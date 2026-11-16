@@ -12,6 +12,20 @@ per-commit virtualenvs and a sandboxed HOME. Images are public release assets in
 `databricks/unity-gateway`. Cleanup deletes them after the PR closes; the text
 diff stays in the PR body.
 
+## Generated evidence stays outside Git
+
+Keep screenshots, GIFs, videos, terminal captures, generated reports and manifests
+outside every checkout. Never stage, commit or push them to any Git branch,
+including an orphan assets branch or another repository. Maintained documentation
+and required test fixtures remain allowed. Before committing, inspect
+`git diff --cached --name-status` and unstage generated review evidence without
+deleting its local copy.
+
+Use the release-asset publisher below or GitHub PR attachments, then embed the
+uploaded URLs in the PR description. Upload failures never justify committing
+media. An explicit `--out` must resolve outside every checkout, including through
+symlinks; do not proceed with an in-checkout target even if the recorder only warns.
+
 ## Live demo requirement
 
 - ALWAYS run the actual reviewed code, checked out and built at each revision,
