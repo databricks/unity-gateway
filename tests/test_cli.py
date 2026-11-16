@@ -905,8 +905,8 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
-    def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
+    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    def test_external_models_gate_allows_provider_routing(self, tool, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         options = cli_mod._launch_options(
             tool,
@@ -916,8 +916,7 @@ class TestSubcommandRouting:
             user_pinned_model=None,
             provider="catalog.schema.service",
         )
-
-        assert options.launch_smart_routing is expected
+        assert options.launch_smart_routing
 
     @pytest.mark.parametrize(
         ("tool", "tool_args", "model"),
@@ -1843,6 +1842,7 @@ class TestSubcommandRouting:
                 workspace="https://example.com",
                 token=launch_token,
                 available_models=["system.ai.claude-opus-4-8"],
+                provider=None,
                 audit_decision=True,
                 hook_output=False,
             )

@@ -43,6 +43,178 @@ def test_smart_routing_switch_message_wraps_to_fixed_width():
     assert "│ line without making the routing box wider.                                │" in lines
 
 
+@pytest.mark.parametrize("provider", [None, "main.default.provider"])
+@pytest.mark.parametrize("models", [None, []])
+def test_empty_routing_catalog_warning_identifies_its_source(monkeypatch, capsys, provider, models):
+    monkeypatch.setattr(v2, "custom_catalog_models", lambda: models)
+
+    def stop_before_launch(*args, **kwargs):
+        raise RuntimeError("stop before native launch")
+
+    state = {"workspace": WS, "_codex_launch_provider": provider}
+    with pytest.raises(RuntimeError, match="stop before native launch"):
+        v2.launch_codex(
+            state,
+            [],
+            binary="codex",
+            start_model="configured-model",
+            render_overlay=stop_before_launch,
+            provider_models=models,
+            provider_token="provider-token",
+        )
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "automatic model switching is unavailable" in output
+    if provider:
+        assert f"Model Provider Service {provider}" in output
+        assert "configure codex" not in output
+    else:
+        assert "Run `ucode configure codex`" in output
+
+
+class TestProviderSmartRoutingLaunch:
+    @pytest.fixture
+    def provider_launch(self, tmp_path, monkeypatch):
+        config_home = tmp_path / "codex"
+        config_home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(config_home))
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", config_home / "ucode.config.toml")
+        monkeypatch.setattr(codex, "codex_managed_config_path", lambda: tmp_path / "managed.toml")
+        monkeypatch.setattr(codex, "CODEX_MODEL_CATALOG_PATH", config_home / "catalog.json")
+        monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")
+        # Authentication, discovery and binary validation are external launch dependencies.
+        monkeypatch.setattr(codex, "_launch_token", lambda state, workspace: "provider-token")
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda *args: ({"provider_type": "openai"}, None),
+        )
+        catalog = {"models": [{"slug": "system.ai.gpt-5-6-sol"}, {"slug": "team-coding"}]}
+        fetched, validated, launched = [], [], []
+        monkeypatch.setattr(
+            codex,
+            "_fetch_codex_model_catalog",
+            lambda *args, **kwargs: fetched.append((args, kwargs)) or catalog,
+        )
+        monkeypatch.setattr(codex, "validate_codex_catalog", lambda *args: validated.append(args))
+        monkeypatch.setattr(v2, "launch_codex", lambda *args, **kwargs: launched.append(kwargs))
+        return SimpleNamespace(
+            state={"workspace": WS, "_codex_launch_provider": "main.default.provider"},
+            catalog=catalog,
+            fetched=fetched,
+            validated=validated,
+            launched=launched,
+            config_home=config_home,
+        )
+
+    @pytest.mark.parametrize("model_source", ["managed", "user"])
+    @pytest.mark.parametrize("configured_model", [None, "not-allowed", "team-coding"])
+    def test_provider_catalog_and_allowed_startup_model(
+        self, provider_launch, model_source, configured_model
+    ):
+        scenario = provider_launch
+        user_path = scenario.config_home / "config.toml"
+        if configured_model is not None:
+            if model_source == "managed":
+                scenario.state["codex_default_model"] = configured_model
+            else:
+                user_path.write_text(f'model = "{configured_model}"\n')
+
+        codex.launch(scenario.state, [], options=LaunchOptions(launch_smart_routing=True))
+
+        launch = scenario.launched[0]
+        expected = "team-coding" if configured_model == "team-coding" else "system.ai.gpt-5-6-sol"
+        assert launch["start_model"] == expected
+        assert launch["provider_models"] == ["system.ai.gpt-5-6-sol", "team-coding"]
+        assert launch["provider_token"] == "provider-token"
+        assert launch["provider_overlay"] == {}
+        path = codex._model_catalog_path(WS, "provider:main.default.provider")
+        assert launch["provider_catalog_path"] == path
+        assert json.loads(path.read_text()) == scenario.catalog
+        assert json.loads(codex.CODEX_MODEL_CATALOG_PATH.read_text()) == scenario.catalog
+        app_config = tomllib.loads(user_path.read_text())
+        assert app_config["model_catalog_json"] == str(codex.CODEX_MODEL_CATALOG_PATH)
+        if configured_model is not None and model_source == "user":
+            assert app_config["model"] == configured_model
+        assert scenario.fetched == [
+            (
+                (WS, "provider-token"),
+                {
+                    "source": codex.CodexCatalogSource.PROVIDER,
+                    "identifier": "main.default.provider",
+                },
+            )
+        ]
+        assert scenario.validated == [("codex", scenario.catalog)]
+
+    def test_unavailable_provider_catalog_degrades_and_detaches(self, provider_launch, monkeypatch):
+        scenario = provider_launch
+        codex.sync_app_model_catalog({"models": [{"slug": "previous-workspace"}]})
+
+        def unavailable(*args, **kwargs):
+            raise codex.CodexMpsModelCatalogUnavailable("model discovery is unavailable")
+
+        monkeypatch.setattr(codex, "_fetch_codex_model_catalog", unavailable)
+        scenario.state["codex_default_model"] = "configured-provider-model"
+        # A stale Databricks catalog must never become this provider's routing menu.
+        monkeypatch.setattr(codex, "custom_catalog_models", lambda: ["stale-hosted-model"])
+
+        codex.launch(scenario.state, [], options=LaunchOptions(launch_smart_routing=True))
+
+        launch = scenario.launched[0]
+        assert launch["start_model"] == "configured-provider-model"
+        assert launch["provider_catalog_path"] is None
+        assert launch["provider_models"] is None
+        assert "model_catalog_json" not in tomllib.loads(
+            (scenario.config_home / "config.toml").read_text()
+        )
+        assert not scenario.validated
+
+    @pytest.mark.parametrize("failure", ["fetch", "validation", "empty"])
+    def test_provider_catalog_failure_blocks_launch_and_detaches(
+        self, provider_launch, monkeypatch, failure
+    ):
+        scenario = provider_launch
+        codex.sync_app_model_catalog({"models": [{"slug": "previous-workspace"}]})
+
+        def fail(*args, **kwargs):
+            raise RuntimeError("invalid provider catalog")
+
+        if failure == "fetch":
+            monkeypatch.setattr(codex, "_fetch_codex_model_catalog", fail)
+        elif failure == "validation":
+            monkeypatch.setattr(codex, "validate_codex_catalog", fail)
+        else:
+            scenario.catalog["models"] = []
+        message = "no Codex model slugs" if failure == "empty" else "invalid provider catalog"
+
+        with pytest.raises(RuntimeError, match=message):
+            codex.launch(scenario.state, [], options=LaunchOptions(launch_smart_routing=True))
+
+        assert not scenario.launched
+        assert "model_catalog_json" not in tomllib.loads(
+            (scenario.config_home / "config.toml").read_text()
+        )
+
+    @pytest.mark.parametrize("provider_type", ["amazon_bedrock", "bedrock_mantle"])
+    def test_provider_web_search_overlay(self, provider_launch, monkeypatch, provider_type):
+        monkeypatch.setattr(
+            codex,
+            "get_model_provider_service",
+            lambda *args: ({"provider_type": provider_type}, None),
+        )
+        codex.launch(provider_launch.state, [], options=LaunchOptions(launch_smart_routing=True))
+
+        overlay = provider_launch.launched[0]["provider_overlay"]
+        if provider_type == "amazon_bedrock":
+            assert overlay["web_search"] == "disabled"
+            entry = overlay["mcp_servers"]["system-ai-web_search"]
+            assert "mcp-proxy" in entry["args"]
+            assert f"{WS}/ai-gateway/mcp-services/system.ai.web_search" in entry["args"]
+        else:
+            assert overlay == {}
+
+
 class TestLaunchCodex:
     @pytest.mark.parametrize(
         ("installed_version", "accept_upgrade", "upgraded_version", "auto_upgrade"),
@@ -145,6 +317,10 @@ class TestLaunchCodex:
                     "binary": "codex",
                     "start_model": "gpt-start",
                     "render_overlay": codex._render_launch_overlay,
+                    "provider_catalog_path": None,
+                    "provider_models": None,
+                    "provider_token": None,
+                    "provider_overlay": None,
                 },
             )
         ]
@@ -985,7 +1161,8 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     captured = {}
     logged = []
 
-    def select_route(workspace, token, task, route_options, *, router_name, timeout):
+    def select_route(workspace, token, task, route_options, *, router_name, timeout, provider=None):
+        assert provider is None
         captured.update(
             workspace=workspace,
             token=token,
@@ -1051,7 +1228,8 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
 def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
     captured = {}
 
-    def select_route(workspace, token, task, route_options, *, router_name, timeout):
+    def select_route(workspace, token, task, route_options, *, router_name, timeout, provider=None):
+        assert provider is None
         captured["route_options"] = list(route_options)
         return None, "not selected"
 
