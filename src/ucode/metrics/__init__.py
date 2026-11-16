@@ -325,8 +325,10 @@ class Recorder:
                 self.wake.clear()
                 with suppress(Exception):
                     if self.reporter is None or self.reporter.poll() is not None:
-                        if self.reporter is not None:
-                            self.reporter.stdin.close()
+                        with self.lock:
+                            if self.reporter is not None:
+                                self.reporter.stdin.close()
+                                self.reporter = None
                         reporter = start_exporter()
                         with self.lock:
                             self.reporter = reporter

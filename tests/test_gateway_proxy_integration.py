@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 import pytest
 
-from ucode import gateway_proxy
+from ucode import gateway_proxy, metrics
 
 
 class _CapturedRequest:
@@ -478,7 +478,7 @@ class TestGatewayAuthProxyEndToEnd:
         assert json.loads(chat.body) == {"model": "gpt-4o-mini", "messages": []}
         assert responses.body == body
 
-    def test_copilot_session_rewords_a_context_overflow(self, make_gateway):
+    def test_copilot_session_rewords_a_context_overflow(self, make_gateway, metrics_recorder):
         from ucode.agents import copilot
 
         overflow = (
@@ -498,6 +498,15 @@ class TestGatewayAuthProxyEndToEnd:
         assert resp.status_code == 400
         assert resp.content == overflow.replace(b"Input", b"prompt is too long: Input")
         assert resp.headers["Content-Length"] == str(len(resp.content))
+        rows = list(metrics_recorder.pending)
+        assert [v for _, n, v, _ in rows if n == metrics.PROXY_RESPONSE_BYTES] == [
+            len(resp.content)
+        ]
+        assert sum(n == metrics.PROXY_FIRST_BYTE_DURATION_MS for _, n, _, _ in rows) == 1
+        errors = [a for _, n, _, a in rows if n == metrics.UG_CLI_ERROR]
+        assert len(errors) == 1
+        assert errors[0]["http_status_code"] == 400
+        assert errors[0]["error_code"] == "http_400"
 
     def test_copilot_session_rewords_a_compressed_context_overflow(self, make_gateway):
         from ucode.agents import copilot
