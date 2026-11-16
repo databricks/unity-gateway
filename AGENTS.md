@@ -313,11 +313,10 @@ validation gap. See the deployment guide before migration or rollout.
 Windows explicit global setup publishes native-view HKLM Desktop policy, a required
 organization plugin with connector guidance/hooks, and isolated shared Python helpers under
 Program Files. Workspace-managed configuration is optional: without it, UG discovers
-Claude models without managed connectors/tracing. Fetch errors and explicit exclusion
-of Claude still fail. Workspace-skill delivery is deferred. Native settings default a missing
-`parentSettingsBehavior` to `merge`; existing/admin-supplied values are preserved. CLI and
-Desktop helpers use the consuming user's deterministic OAuth profile, with provisioning
-credentials/config overrides removed. Protected ownership tracks registry values across
+Claude models without managed connectors/tracing. Workspace-skill delivery is deferred.
+Desktop setup never changes Claude Code settings, which match macOS. Desktop helpers use
+the consuming user's deterministic OAuth profile, with provisioning credentials/config
+overrides removed. Protected ownership tracks registry values across
 configure/revert; unrelated policy and local profiles are preserved. Desktop and managed MCP
 failures are handled as on macOS: they warn rather than failing configure. Shared
 runtime installation is still external. Native global auth/MCP/UI validation remains required;

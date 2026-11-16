@@ -28,15 +28,14 @@ Windows publishes:
   connector guidance, warming hooks, and matching content-derived version metadata.
 
 Workspace-skill delivery is deferred. No enterprise skills or downloaded workspace-skill
-copies are installed. CLI native settings retain administrator-supplied hooks. A missing
-`parentSettingsBehavior` defaults to `merge` so Desktop's parent restrictions remain in
-effect; an existing or explicitly supplied value is preserved. Windows Desktop uses the same
+copies are installed. Desktop setup does not change Claude Code's machine-wide settings,
+which are configured exactly as on macOS. Windows Desktop uses the same
 short connector aliases as macOS. CLI connectors still require the existing native OAuth
 capabilities; as on macOS, an undeliverable connector is skipped with a warning.
 
 Shared helpers use isolated Python, discard provisioning credentials/config overrides,
 and authenticate through the consuming user's `UG_DESKTOP_<workspace-hash>` profile.
-The CLI token/tracing helpers use that same profile. No administrator home or profile file
+No administrator home or profile file
 is copied. Interactive OAuth and per-connector consent belong to each user. Restart Desktop
 and open new sessions after changes.
 

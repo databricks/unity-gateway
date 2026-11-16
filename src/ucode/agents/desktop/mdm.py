@@ -179,14 +179,6 @@ def _runtime_script(runtime: dict[str, str]) -> bytes:
     ).encode()
 
 
-def windows_runtime_argv() -> list[str]:
-    return [
-        os.path.abspath(sys.executable),
-        "-I",
-        str(managed_files.windows_desktop_mdm_root() / "runtime.py"),
-    ]
-
-
 def user_auth_profile(workspace: str) -> str:
     return "UG_DESKTOP_" + hashlib.sha256(workspace.encode()).hexdigest()[:12]
 
