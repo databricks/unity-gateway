@@ -1631,9 +1631,11 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. CUJ9 adds 14 installed-agent cases for mixed sources and qualified MPS
+component coverage. CUJ9 collects 14 installed-agent cases for mixed sources and qualified MPS
 inference, with smart routing only for Claude Code. The workspace directly publishes
 its configuration as of 2026-11-16; tests validate it without a local configuration
 artifact. Claude and Codex use custom defaults, while Copilot uses hosted
-`system.ai.gpt-6-luna`. These are implemented assertions, not a live pass. See the
+`system.ai.gpt-6-luna`. One Claude inference case for the wildcard GPT alias is
+explicitly skipped pending an inference-endpoint update; discovery remains covered.
+These are implemented assertions, not a live pass. See the
 [CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).

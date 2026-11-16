@@ -106,7 +106,10 @@ Direct API probes on 2026-11-16 found two live failures. The Anthropic catalog's
 for inference, while its raw service ID succeeds. The qualified OpenAI provider
 model succeeds at `/ai-gateway/codex/v1/responses`, but Copilot's configured
 `/ai-gateway/mlflow/v1/responses` path rejects its native API type. The suite
-retains both cases and requires successful inference.
+skips only the explicit Claude inference case for that GPT alias, with a TODO to
+update the inference endpoint and re-enable it. Discovery still checks the alias,
+Codex still tests inference on the raw service, and the Copilot case remains active.
+Of the 14 collected cases, 13 are active and one is explicitly skipped.
 
 Use a clean disposable POSIX runner and the normal CUJ service-principal
 variables. Install the checkout's `ug`, Databricks CLI `1.17.0`, Claude Code
