@@ -45,32 +45,86 @@ OTel SDK and uploads OTLP to `/api/2.0/ai-gateway/ug-cli/otel/v1/metrics` in a d
 Recording is enabled only by `UG_ENABLE_METRICS_EXPORT=1` and defaults off.
 
 - Keep `begin`/`finish` at the CLI lifecycle boundary and `start_agent`/`agent_handoff`
-  around agent startup. Individual operations must not create or replace the recorder.
+  around agent startup. The Typer callback uses `set_command()` to attribute observations
+  to the parsed command. Individual operations must not create or replace the recorder.
 - Call `metrics.bind(workspace, token)` where an operation obtains, reuses, or refreshes
   its workspace token. Reuse those credentials; never authenticate solely for telemetry.
   Use the selected workspace key, including its workspace selector. Observations recorded
   before the first binding belong to that first workspace; pass `workspace=` explicitly
   when an operation targets a different workspace.
-- Use `@metrics.timed("<operation>_duration_ms")` for a whole synchronous operation,
-  including its retries. It binds existing `workspace`/`token` arguments and records raised
-  errors. Use `metrics.measure(..., operation="<operation>")` for a smaller code block;
-  `metrics.annotate(...)` adds labels discovered during that measurement. Use
-  `metrics.record(...)` for counters, byte sizes, or durations measured across callbacks.
+- Use metric-name constants from `metrics`, such as
+  `@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS)`, for a whole synchronous
+  operation including its retries. The decorator binds existing `workspace`/`token`
+  arguments and derives the error operation by removing `_duration_ms` from the name.
+  For a smaller block, use `metrics.measure(metrics.DEPENDENCY_INSTALL_DURATION_MS,
+  operation=metrics.DEPENDENCY_INSTALL_OPERATION, dependency=tool, action="install")`.
+  `metrics.annotate(...)` adds labels discovered during that measurement; `metrics.record(...)`
+  handles counters, byte sizes, or durations measured across callbacks.
 - Report handled errors with `metrics.failure(operation, error, ...)`; set
   `continued_with_fallback=True` when execution recovers. Use the existing `phase` label
   (`startup`, `command`, or `agent_session`) to distinguish errors. Preserve the original
   result or exception; telemetry must never rerun an operation or change its exit status.
-- Register new names in `DURATION_METRICS` or `COUNTER_METRICS`, and labels in the typed
+- Define new metric-name constants in `metrics/__init__.py` and register them in
+  `DURATION_METRICS` or `COUNTER_METRICS`; add labels to the typed
   label allowlists. String values must be bounded identifiers; never record tokens, URLs,
   prompts, response bodies, or raw exception messages. A new non-duration histogram also
   needs an entry in `METRICS` and its unit and bucket configuration in `exporter.py`.
-- Keep OTel SDK imports and uploads in the exporter. Recording must not wait for locks,
-  process startup, pipe writes, or networking. The daemon worker drains at most 1,000 queued
-  observations every 60 seconds or on a flush signal, with one uploader at a time. Never
-  join it on the command path; losing telemetry, including the final batch, is acceptable.
+- Keep OTel SDK imports and uploads in the exporter. A daemon starts the detached exporter
+  when recording is enabled; command threads hand off observations through an unbuffered,
+  nonblocking pipe. The exporter holds at most 1,000 observations and uploads every 60 seconds,
+  on a flush signal, or after EOF when the CLI exits or execs an agent. Recording and shutdown
+  must never wait for locks, process startup, pipe capacity, or networking. A bounded startup
+  backlog handles helper startup; contention and backpressure may still drop telemetry.
 - Test new instrumentation with the `metrics_recorder` fixture and the relevant operation
   tests. Run `tests/test_metrics.py`, `tests/test_metrics_isolation.py`, and `just lint` for
   recorder/exporter changes; preserve disabled-mode and stalled-export isolation coverage.
+
+Startup instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `UG_STARTUP_DURATION_MS` | Emitted by `agent_handoff()` or `finish()` from the entrypoint start time; operation code must not emit another startup sample. |
+| `CLI_IMPORT_DURATION_MS` | `record()` in the entrypoint around importing the selected CLI implementation. |
+| `DEPENDENCY_SETUP_DURATION_MS` | `timed()` around the complete bootstrap dependency check, with `agent` and `cli_version_check_skipped`; prompts mark `interactive_wait`. |
+| `DEPENDENCY_INSTALL_DURATION_MS` | `timed()` around one dependency installer, or `measure()` around an install/update/downgrade subprocess with `dependency` and `action`. |
+| `DEPENDENCY_INSTALL_OPERATION` | The matching error operation for a dependency-install `measure()` block; the duration constant is derived from it. |
+| `AGENT_CONFIGURATION_DURATION_MS` | `timed()` around `configure_tool()`, with the selected `agent` and `config_scope`. |
+| `SKILLS_REFRESH_DURATION_MS` | `measure()` around checks and updates for existing downloaded skills, after no-work returns; annotate `deadline_reached` after the bounded refresh. |
+| `SKILLS_REFRESH_OPERATION` | `failure()` for a handled refresh error that lets launch continue; the duration constant is derived from it. |
+| `COMMAND_OPERATION` | `failure()` in CLI exception handlers resolves this to the parsed command name and ignores cancellation and propagated agent exit codes. |
+| `UG_CLI_ERROR` | Emitted by `failure()` with phase and sanitized error labels; call that helper rather than incrementing the counter directly. |
+
+
+Authentication and API instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `DATABRICKS_TOKEN_FETCH_DURATION_MS` | `timed()` around a token fetch, including refresh or login, with `token_source` (`environment`, `command`, `cli`, or `sdk`) and `in_process_cache_hit`; SDK imports happen before timing. |
+| `DATABRICKS_TOKEN_FETCH_OPERATION` | The error operation for a token-fetch `measure()` block; the duration name is derived from it. |
+| `DATABRICKS_LOGIN_DURATION_MS` | `timed()` or `measure()` around browser login, with `login_method` (`cli` or `sdk`); call `mark_login()` when login starts so startup samples include `interactive_login`. |
+| `DATABRICKS_LOGIN_OPERATION` | The error operation for login measurements and `failure()` on a nonzero login-process exit; report the exit code without changing the caller's retry behavior. |
+| `CODING_AGENT_CONFIG_FETCH_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around fetching the workspace's managed coding-agent configuration. |
+| `MODEL_SERVICE_DISCOVERY_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around listing and classifying model services, with `cache_hit` for the in-process catalog cache. |
+| `MODEL_SERVICE_ACCESS_CHECK_DURATION_MS` | `timed()` around the model-services access check, including all pages it reads. |
+| `HTTP_REQUEST_DURATION_MS` | `record()` once per HTTP attempt, including failures, with `api_operation`, `http_method`, `attempt`, and `http_status_code` when a response exists; excludes retry backoff. |
+| `HTTP_RETRY_COUNT` | `record(..., 1)` before each retry, with `api_operation` and `http_method`; never count the first attempt or count an outer retry twice. |
+
+HTTP helpers annotate the enclosing operation with its final response status. Pass
+`http_status_code=None` after a network failure with no response to clear an earlier
+attempt's status. Use `http_attempt()` to number retries managed by an outer API helper;
+`http_result` reports only the final failure at that boundary.
+
+Usage and routing instrumentation uses these constants (all in `metrics`):
+
+| Constant | Where and how to use it |
+| --- | --- |
+| `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
+| `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent` and `http_status_code` when a response is available. |
+
+Both durations are recorded on success and failure. Use `subagent_routing()` around
+subagent route selection so its trigger is scoped to that decision. Each routing HTTP
+attempt also uses `HTTP_REQUEST_DURATION_MS` with `api_operation="routes_select"`,
+`http_method="POST"`, `attempt=1`, and `http_status_code` when a response is available.
 
 ## Smart-routing configuration
 
