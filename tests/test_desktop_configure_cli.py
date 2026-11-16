@@ -369,6 +369,7 @@ def test_reconfigure_preserves_connectors_until_refresh_succeeds(
     monkeypatch.setattr(desktop, "claude_desktop_directory", lambda: directory)
     monkeypatch.setattr(desktop_setup, "claude_desktop_directory", lambda: directory)
     monkeypatch.setattr(desktop_setup, "get_databricks_token", lambda *args: "token")
+    monkeypatch.setattr(desktop_setup, "databricks_cli_path", lambda: "databricks")
     monkeypatch.setattr(
         desktop_setup,
         "list_anthropic_model_catalog",

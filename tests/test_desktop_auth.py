@@ -214,6 +214,58 @@ def test_shared_cli_discovery_pins_newest_binary_through_recovery(monkeypatch, t
     )
 
 
+def test_configured_cli_is_used_when_minimal_path_finds_none(monkeypatch, tmp_path):
+    """Desktop's GUI PATH omits Homebrew; the CLI bound at configure time still works."""
+    configured_cli = tmp_path / "databricks"
+    configured_cli.write_text("#!/bin/sh\n")
+    configured_cli.chmod(0o755)
+    configured_cli = str(configured_cli)
+    monkeypatch.setattr(databricks, "_iter_databricks_executables", lambda: [])
+    run = Mock(return_value=_result(token="cached-token"))
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    token = desktop_auth.get_claude_desktop_databricks_token(
+        HOST, PROFILE, databricks_binary=configured_cli
+    )
+
+    assert token == "cached-token"
+    assert run.call_args.args[0][0] == configured_cli
+
+
+@pytest.mark.parametrize("state", ["missing", "not-executable"])
+def test_stale_configured_cli_falls_back_to_discovery(cli, monkeypatch, tmp_path, state):
+    configured_cli = tmp_path / "removed" / "databricks"
+    if state == "not-executable":
+        configured_cli.parent.mkdir()
+        configured_cli.write_text("")
+        configured_cli.chmod(0o644)
+    run = Mock(return_value=_result(token="cached-token"))
+    monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
+
+    desktop_auth.get_claude_desktop_databricks_token(
+        HOST, PROFILE, databricks_binary=str(configured_cli)
+    )
+
+    assert run.call_args.args[0][0] == CLI
+
+
+def test_relay_credential_forwards_configured_cli(monkeypatch):
+    seen = {}
+
+    def databricks_token(host, profile, *, databricks_binary=None):
+        seen["databricks_binary"] = databricks_binary
+        return "databricks-token"
+
+    monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", databricks_token)
+    monkeypatch.setattr(desktop_auth, "_get_claude_auth_token", lambda *a, **k: "anthropic-token")
+
+    desktop_auth.get_claude_desktop_relay_credential(
+        HOST, PROFILE, "/opt/claude/bin/claude", databricks_binary="/opt/homebrew/bin/databricks"
+    )
+
+    assert seen == {"databricks_binary": "/opt/homebrew/bin/databricks"}
+
+
 def test_cancelled_interactive_login_is_actionable(cli, monkeypatch, tmp_path, capsys):
     monkeypatch.setenv(desktop_auth.CLAUDE_HELPER_CONTEXT_ENV, "interactive")
     monkeypatch.setattr(desktop_auth, "_AUTH_LOCK_PATH", tmp_path / "auth.lock")
@@ -443,7 +495,7 @@ def test_relay_credential_combines_keychain_and_databricks_tokens(monkeypatch):
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     credentials = {
         "claudeAiOauth": {
@@ -482,7 +534,7 @@ def test_relay_credential_uses_custom_config_keychain_service(monkeypatch):
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     credentials = {
         "claudeAiOauth": {
@@ -532,7 +584,7 @@ def test_relay_credential_reads_file_credentials_on_linux_and_windows(
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     run = Mock()
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
@@ -572,7 +624,7 @@ def test_relay_credential_uses_explicit_claude_oauth_token(monkeypatch):
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     run = Mock()
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
@@ -607,7 +659,7 @@ def test_relay_credential_rejects_invalid_explicit_claude_oauth_token(monkeypatc
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     run = Mock()
     monkeypatch.setattr(desktop_auth.subprocess_cross_os, "run", run)
@@ -643,7 +695,7 @@ def test_relay_credential_silently_refreshes_expiring_token(monkeypatch, tmp_pat
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     run = Mock(
         side_effect=[
@@ -683,7 +735,7 @@ def test_relay_credential_rediscovers_stale_claude_binary(monkeypatch, tmp_path)
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     expired = _subscription_credentials(60, "old-token")
     run = Mock(
@@ -715,7 +767,7 @@ def test_relay_credential_noninteractive_refresh_failure_does_not_open_browser(
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     expired = _subscription_credentials(60, "old-token")
     run = Mock(
@@ -744,7 +796,7 @@ def test_relay_credential_logs_in_when_silent_refresh_does_not_renew(monkeypatch
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     expired = _subscription_credentials(60, "old-token")
     run = Mock(
@@ -780,7 +832,7 @@ def test_relay_claude_refresh_and_login_share_helper_budget(monkeypatch, tmp_pat
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     now = 0.0
     monkeypatch.setattr(desktop_auth.time, "monotonic", lambda: now)
@@ -823,7 +875,7 @@ def test_relay_credential_reports_failed_claude_login(monkeypatch, tmp_path):
     monkeypatch.setattr(
         desktop_auth,
         "get_claude_desktop_databricks_token",
-        lambda host, profile: "databricks-token",
+        lambda host, profile, **_: "databricks-token",
     )
     expired = _subscription_credentials(60, "old-token")
     run = Mock(

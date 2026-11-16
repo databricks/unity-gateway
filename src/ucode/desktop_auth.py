@@ -254,11 +254,24 @@ def _remaining_budget(deadline: float, requested: float) -> float:
     return min(requested, remaining)
 
 
+def _desktop_cli_path(databricks_binary: str | None) -> str:
+    """Prefer the CLI bound at configure time; Desktop's GUI PATH may omit it."""
+    if (
+        databricks_binary
+        and os.path.isabs(databricks_binary)
+        and os.path.isfile(databricks_binary)
+        and os.access(databricks_binary, os.X_OK)
+    ):
+        return databricks_binary
+    return databricks_cli_path()
+
+
 def get_claude_desktop_databricks_token(
     host: str,
     profile: str | None = None,
     *,
     force_refresh: bool = False,
+    databricks_binary: str | None = None,
 ) -> str:
     """Return one Databricks access token for Claude Desktop's ``apiKeyHelper``.
 
@@ -267,6 +280,8 @@ def get_claude_desktop_databricks_token(
     attempts the Databricks CLI's cached/silent-refresh path.  Browser login is
     allowed only when ``CLAUDE_HELPER_CONTEXT=interactive``; all other callers
     receive a message directing them to start a new Cowork task.
+    ``databricks_binary`` is the absolute CLI path recorded by ``ug configure``;
+    when it is missing or no longer executable, PATH discovery is used instead.
     """
     if not isinstance(host, str) or not host.strip() or any(c in host for c in "\r\n"):
         raise ClaudeDesktopAuthError("A valid Databricks workspace host is required.")
@@ -279,7 +294,7 @@ def get_claude_desktop_databricks_token(
     if external_bearer_configured():
         return get_databricks_token(host, profile, force_refresh=force_refresh)
 
-    cli_path = databricks_cli_path()
+    cli_path = _desktop_cli_path(databricks_binary)
     if not os.path.isabs(cli_path):
         raise ClaudeDesktopAuthError(
             "Databricks CLI was not found. Install it, then start a new Cowork task and try again.",
@@ -568,10 +583,14 @@ def get_claude_desktop_relay_credential(
     host: str,
     profile: str,
     claude_binary: str,
+    *,
+    databricks_binary: str | None = None,
 ) -> dict[str, object]:
     """Return both credentials required by an Anthropic subscription relay."""
     deadline = time.monotonic() + _HELPER_BUDGET_SECONDS
-    databricks_token = get_claude_desktop_databricks_token(host, profile)
+    databricks_token = get_claude_desktop_databricks_token(
+        host, profile, databricks_binary=databricks_binary
+    )
     return {
         "token": _get_claude_auth_token(claude_binary, deadline=deadline),
         "headers": {AI_GATEWAY_TOKEN_HEADER: f"Bearer {databricks_token}"},

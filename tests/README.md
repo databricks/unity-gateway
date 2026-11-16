@@ -139,6 +139,12 @@ and required Cowork success in the integration gate. Desktop jobs always test th
 with pinned dependencies; manual CLI version/dependency inputs apply to CLI jobs only.
 Failure, cancellation, and skips fail the integration gate.
 
+`test_desktop_auth.py`, `test_desktop_auth_cli.py`, and `test_desktop_setup.py` cover the
+Databricks CLI path that `ug configure` records for Desktop's minimal GUI `PATH`: the helper
+uses it when discovery finds no CLI, falls back to discovery when it is missing or not
+executable, and forwards it for relay. Native Desktop jobs authenticate with
+`DATABRICKS_BEARER`, which bypasses the CLI, so they do not cover this path.
+
 `TestSpinner` in `test_ui.py` covers interrupting the animation's frame wait on
 normal and exceptional exit, clearing the terminal line, and leaving redirected
 output free of animation threads. These component

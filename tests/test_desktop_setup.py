@@ -46,6 +46,8 @@ def desktop(request, monkeypatch, tmp_path):
     monkeypatch.setattr(
         desktop_setup, "get_databricks_token", lambda host, profile: "component-token"
     )
+    # Keep helper argv independent of any Databricks CLI on the test machine's PATH.
+    monkeypatch.setattr(desktop_setup, "databricks_cli_path", lambda: "databricks")
     monkeypatch.setattr(
         desktop_setup,
         "list_anthropic_model_catalog",
@@ -736,6 +738,27 @@ def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, mon
     assert profile["inferenceCustomHeaders"][MODEL_PROVIDER_SERVICE_HEADER] == (
         "main.models.subscription"
     )
+
+
+@pytest.mark.parametrize("relayed", [False, True])
+def test_configure_binds_discovered_databricks_cli_for_gui_launches(desktop, monkeypatch, relayed):
+    databricks_binary = os.path.abspath(os.path.join("homebrew", "bin", "databricks"))
+    claude_binary = os.path.abspath(os.path.join("bin", "claude"))
+    monkeypatch.setattr(desktop_setup, "databricks_cli_path", lambda: databricks_binary)
+    monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: claude_binary)
+    state = {"workspace": "https://workspace.example", "profile": "chosen-profile"}
+    if relayed:
+        state |= {"claude_relayed": True, "provider_services": {"claude": "main.models.sub"}}
+
+    desktop_setup.configure_claude_desktop(state)
+
+    args = configured_profile(desktop)["inferenceCredentialHelperArgs"]
+    assert args[args.index("--profile") + 1 :] == [
+        "chosen-profile",
+        "--databricks-binary",
+        databricks_binary,
+        *(["--relay", "--claude-binary", claude_binary] if relayed else []),
+    ]
 
 
 def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):

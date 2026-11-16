@@ -373,6 +373,11 @@ model list.
 The profile uses a credential helper bound to the Python installation running UG.
 It stores only the workspace/profile name and command arguments, never a bearer
 token. The helper asks the Databricks CLI for a cached or silently refreshed token.
+Desktop starts the helper with the GUI's minimal `PATH` (on macOS,
+`/usr/bin:/bin:/usr/sbin:/sbin`), which omits Homebrew and other common install
+locations. Configure therefore records the absolute CLI path it discovered as
+`--databricks-binary`; if that file is later removed or not executable, the helper
+falls back to `PATH` discovery. Rerun `ug configure` after moving the CLI.
 If authentication is missing, it opens browser login only when Desktop supplies
 `CLAUDE_HELPER_CONTEXT=interactive`. Other contexts fail with instructions to start
 a new Cowork task. Browser login has a bounded timeout and concurrent sign-ins are

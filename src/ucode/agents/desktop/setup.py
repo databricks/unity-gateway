@@ -20,7 +20,12 @@ from ucode.agents.desktop.claude import (
 from ucode.agents.desktop.cowork import configure_code, configure_cowork, revert_code, revert_cowork
 from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
-from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
+from ucode.databricks import (
+    build_tool_base_url,
+    databricks_cli_path,
+    get_databricks_token,
+    list_anthropic_model_catalog,
+)
 from ucode.managed_files import ManagedFileWriteUnavailable, machine_wide_only
 from ucode.state import get_provider_service
 from ucode.string_utils import model_picker_label
@@ -141,6 +146,8 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
         raise RuntimeError("Select an explicit Databricks CLI profile and run ug configure again.")
 
     settings = resolve_gateway_profile(state, parent_schema=parent_schema)
+    # Desktop runs the helper with the GUI's minimal PATH, so bind the CLI found here.
+    databricks_binary = databricks_cli_path()
 
     write_claude_desktop_profile(
         **settings,
@@ -153,6 +160,11 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
             workspace,
             "--profile",
             profile,
+            *(
+                ["--databricks-binary", databricks_binary]
+                if os.path.isabs(databricks_binary)
+                else []
+            ),
             *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
         ],
         otel_headers_command=[

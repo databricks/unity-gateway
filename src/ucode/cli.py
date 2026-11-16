@@ -3020,6 +3020,10 @@ def claude_desktop_auth_cmd(
     claude_binary: Annotated[
         str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
     ] = None,
+    databricks_binary: Annotated[
+        str | None,
+        typer.Option("--databricks-binary", help="Absolute Databricks CLI executable path."),
+    ] = None,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
@@ -3034,9 +3038,13 @@ def claude_desktop_auth_cmd(
             if relay:
                 if not claude_binary or not os.path.isabs(claude_binary):
                     raise RuntimeError("An absolute Claude Code executable path is required.")
-                credential = get_claude_desktop_relay_credential(host, profile, claude_binary)
+                credential = get_claude_desktop_relay_credential(
+                    host, profile, claude_binary, databricks_binary=databricks_binary
+                )
             else:
-                credential = get_claude_desktop_databricks_token(host, profile)
+                credential = get_claude_desktop_databricks_token(
+                    host, profile, databricks_binary=databricks_binary
+                )
     except (RuntimeError, ValueError) as exc:
         print_err(str(exc))
         raise typer.Exit(1) from None

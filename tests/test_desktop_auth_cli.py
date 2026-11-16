@@ -19,7 +19,7 @@ def runner():
 def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypatch, runner):
     from ucode import desktop_auth
 
-    def credential(host, profile):
+    def credential(host, profile, **_):
         assert host == "https://workspace.example"
         assert profile == "selected-profile"
         print("Sign-in diagnostic")
@@ -44,7 +44,7 @@ def test_desktop_auth_emits_only_token_and_keeps_diagnostics_on_stderr(monkeypat
 def test_desktop_auth_emits_relay_credential_json(monkeypatch, runner):
     from ucode import desktop_auth
 
-    def credential(host, profile, claude_binary):
+    def credential(host, profile, claude_binary, **_):
         assert claude_binary == "/opt/claude/bin/claude"
         return {
             "token": "anthropic-token",
@@ -97,6 +97,36 @@ def test_desktop_auth_relay_requires_absolute_claude_binary(monkeypatch, runner,
     credential.assert_not_called()
 
 
+@pytest.mark.parametrize("relay", [False, True])
+def test_desktop_auth_forwards_configured_databricks_cli(monkeypatch, runner, relay):
+    from ucode import desktop_auth
+
+    seen = {}
+
+    def credential(*args, databricks_binary=None):
+        seen["databricks_binary"] = databricks_binary
+        return {"token": "t", "headers": {}} if relay else "test-access-token"
+
+    name = "get_claude_desktop_relay_credential" if relay else "get_claude_desktop_databricks_token"
+    monkeypatch.setattr(desktop_auth, name, credential)
+    args = [
+        "claude-desktop-auth",
+        "--host",
+        "https://workspace.example",
+        "--profile",
+        "selected-profile",
+        "--databricks-binary",
+        "/opt/homebrew/bin/databricks",
+    ]
+    if relay:
+        args += ["--relay", "--claude-binary", "/opt/claude/bin/claude"]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
+    assert seen == {"databricks_binary": "/opt/homebrew/bin/databricks"}
+
+
 @pytest.mark.parametrize("missing", ["host", "profile"])
 @pytest.mark.parametrize("color", [False, True], ids=["plain", "ansi"])
 def test_desktop_auth_requires_explicit_workspace_and_profile(monkeypatch, runner, missing, color):
@@ -119,7 +149,7 @@ def test_desktop_auth_requires_explicit_workspace_and_profile(monkeypatch, runne
 def test_desktop_auth_failure_is_actionable_and_never_emits_token(monkeypatch, runner, error):
     from ucode import desktop_auth
 
-    def credential(host, profile):
+    def credential(host, profile, **_):
         raise error
 
     monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
@@ -135,7 +165,7 @@ def test_desktop_auth_failure_is_actionable_and_never_emits_token(monkeypatch, r
 def test_desktop_auth_cancelled_login_is_reported_on_stderr(monkeypatch, runner):
     from ucode import desktop_auth
 
-    def credential(host, profile):
+    def credential(host, profile, **_):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(desktop_auth, "get_claude_desktop_databricks_token", credential)
