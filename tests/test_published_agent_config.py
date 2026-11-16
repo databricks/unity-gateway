@@ -71,6 +71,13 @@ class TestClaudeFile:
             {"serverName": claude.WEB_SEARCH_MCP_NAME},
         ]
 
+    def test_model_sources_let_ug_write_the_model_list(self):
+        # `models.sources` is the newer static model list; ug writes availableModels for it.
+        manifest = _manifest(_raw_config(claude_config={"models": {"sources": ["cat.sch.svc.*"]}}))
+        doc = machine.build_claude(manifest, WS).doc
+        assert doc["availableModels"] == ["cat.sch.svc.*"]
+        assert doc["enforceAvailableModels"] is True
+
     def test_no_admin_allowlist_means_ug_adds_none(self):
         doc = machine.build_claude(
             _manifest(_raw_config(claude_config={})), WS, {"uc-github": {}}

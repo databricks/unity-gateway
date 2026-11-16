@@ -124,7 +124,7 @@ def agent_features(manifest: dict, tool: str) -> set[str]:
     model_config = entry.get("model_config") or {}
     if any(
         model_config.get(key)
-        for key in ("model_services", "unity_catalog_location", "model_provider_service")
+        for key in ("sources", "model_services", "unity_catalog_location", "model_provider_service")
     ):
         features.add("models")
     return features

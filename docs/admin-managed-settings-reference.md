@@ -165,9 +165,9 @@ Check the tables for the `ug` version that your fleet runs.
 | `env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` | Reserved |  | No |  | It would turn off 1-hour prompt caching. |
 | `env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY` | Reserved |  | No |  | `ug claude` sets it per launch when the developer opts in. |
 | `env.ANTHROPIC_MODEL` | Reserved while a feature is on | `smart_routing` | No |  | `ug claude` sets it per launch while smart routing is on. |
-| `availableModels` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.model_services` lists the models. |
-| `enforceAvailableModels` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.model_services` lists the models. |
-| `modelPicker` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.model_services` lists the models. |
+| `availableModels` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models. |
+| `enforceAvailableModels` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models. |
+| `modelPicker` | Reserved while a feature is on | `models` | Yes |  | Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models. |
 | `env.CLAUDE_CODE_ENABLE_TELEMETRY` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |
 | `env.CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |
 | `env.OTEL_TRACES_EXPORTER` | Reserved while a feature is on | `tracing` | Yes |  | Unity Gateway tracing and your own OTEL export can't run together. |

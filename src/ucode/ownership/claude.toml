@@ -158,19 +158,19 @@ note = "`ug claude` sets it per launch while smart routing is on."
 path = "availableModels"
 class = "conditionally_reserved"
 feature = "models"
-note = "Use `models`. Unity Gateway writes it when `models.model_services` lists the models."
+note = "Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models."
 
 [[managed_settings]]
 path = "enforceAvailableModels"
 class = "conditionally_reserved"
 feature = "models"
-note = "Use `models`. Unity Gateway writes it when `models.model_services` lists the models."
+note = "Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models."
 
 [[managed_settings]]
 path = "modelPicker"
 class = "conditionally_reserved"
 feature = "models"
-note = "Use `models`. Unity Gateway writes it when `models.model_services` lists the models."
+note = "Use `models`. Unity Gateway writes it when `models.sources` or `models.model_services` lists the models."
 
 [[managed_settings]]
 path = "env.CLAUDE_CODE_ENABLE_TELEMETRY"
