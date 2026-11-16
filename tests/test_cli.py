@@ -888,7 +888,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            ([], False, None, "catalog.schema.service", False),
         ],
     )
     def test_codex_and_claude_share_smart_routing_policy(
@@ -906,8 +905,7 @@ class TestSubcommandRouting:
         assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
-    def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+    def test_provider_routing_is_supported_for_claude_only(self, tool, expected):
         options = cli_mod._launch_options(
             tool,
             [],
@@ -2186,7 +2184,6 @@ class TestManagedClaudeModelDiscovery:
         calls["launch"].assert_not_called()
 
     def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         calls = self._invoke(monkeypatch, None)
 

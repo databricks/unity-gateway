@@ -87,7 +87,7 @@ native parent turn matching that prompt, a nonempty answer, the expected provide
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
 
-A separate CUJ2 Claude TUI case enables the external-models routing gate and the
+A separate CUJ2 Claude TUI case checks default Model Provider Service support with the
 first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
 both route-selection requests, plus completed parent and child turns.
 
