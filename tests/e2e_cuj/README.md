@@ -101,15 +101,13 @@ validates this live configuration; it does not load a local configuration artifa
 The CUJ service principal needs access to the workspace and named services.
 Tests never change the published configuration, services, or grants.
 
-Direct API probes on 2026-11-16 found two live failures. The Anthropic catalog's
-`anthropic-aigw-e6dfbcac-ug_e2e.other_models.codex_decoy` alias returns not found
-for inference, while its raw service ID succeeds. The qualified OpenAI provider
+Direct API probes on 2026-11-16 verified inference with the Anthropic catalog's
+`anthropic-aigw-e6dfbcac-ug_e2e.other_models.codex_decoy` alias when the request
+includes `x-databricks-use-coding-agent-mode: true`, which UG sets automatically.
+All 14 cases are active. The qualified OpenAI provider
 model succeeds at `/ai-gateway/codex/v1/responses`, but Copilot's configured
 `/ai-gateway/mlflow/v1/responses` path rejects its native API type. The suite
-skips only the explicit Claude inference case for that GPT alias, with a TODO to
-update the inference endpoint and re-enable it. Discovery still checks the alias,
-Codex still tests inference on the raw service, and the Copilot case remains active.
-Of the 14 collected cases, 13 are active and one is explicitly skipped.
+requires successful inference for that case.
 
 Use a clean disposable POSIX runner and the normal CUJ service-principal
 variables. Install the checkout's `ug`, Databricks CLI `1.17.0`, Claude Code

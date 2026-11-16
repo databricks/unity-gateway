@@ -1635,7 +1635,6 @@ component coverage. CUJ9 collects 14 installed-agent cases for mixed sources and
 inference, with smart routing only for Claude Code. The workspace directly publishes
 its configuration as of 2026-11-16; tests validate it without a local configuration
 artifact. Claude and Codex use custom defaults, while Copilot uses hosted
-`system.ai.gpt-6-luna`. One Claude inference case for the wildcard GPT alias is
-explicitly skipped pending an inference-endpoint update; discovery remains covered.
-These are implemented assertions, not a live pass. See the
+`system.ai.gpt-6-luna`. All 14 cases are active. These are implemented assertions,
+not a live pass. See the
 [CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).

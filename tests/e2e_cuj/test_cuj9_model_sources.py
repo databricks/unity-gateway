@@ -299,21 +299,7 @@ class TestModelSources(BaseCujTest):
         assert_no_session_registry_left(session)
 
     @pytest.mark.claude
-    @pytest.mark.parametrize(
-        "model",
-        [
-            SOURCE_CLAUDE_PROVIDER_MODEL,
-            CLAUDE_SONNET_MODEL_SERVICE,
-            SOURCE_CLAUDE_ALIAS,
-            pytest.param(
-                SOURCE_CODEX_ALIAS,
-                marks=pytest.mark.skip(
-                    reason="TODO: Update the Anthropic inference endpoint to accept the listed "
-                    "GPT gateway alias, then re-enable this case."
-                ),
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("model", CLAUDE_MODELS)
     def test_sources_claude_inference_on_each_source_model(self, cuj, model):
         """Scenario: configure and run a Claude print file task on each mixed-source model.
 
