@@ -47,6 +47,9 @@ def _machine(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(machine, "LEGACY_CODEX_MANAGED_CONFIG_PATH", tmp_path / "codex" / "mc.toml")
     monkeypatch.setattr(
+        machine, "LEGACY_CODEX_MODEL_CATALOG_PATH", tmp_path / "codex" / "ug-model-catalog.json"
+    )
+    monkeypatch.setattr(
         managed_files_mod, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", tmp_path / "ug" / "ms.json"
     )
 
@@ -301,6 +304,24 @@ class TestCodexFiles:
             w.startswith(f"{verb} {machine.LEGACY_CODEX_MANAGED_CONFIG_PATH}")
             for w in plan.warnings
         )
+
+    @pytest.mark.parametrize("named", [True, False], ids=["named", "not-named"])
+    def test_plan_removes_the_catalog_the_legacy_file_names(self, named):
+        # An earlier `ug configure` wrote its model catalog beside managed_config.toml.
+        catalog = machine.LEGACY_CODEX_MODEL_CATALOG_PATH
+        catalog.parent.mkdir(parents=True)
+        catalog.write_text("{}\n")
+        reference = f'model_catalog_json = "{catalog}"\n' if named else ""
+        machine.LEGACY_CODEX_MANAGED_CONFIG_PATH.write_text(
+            f'model_provider = "Databricks"\n{reference}'
+        )
+        [plan] = machine.plan_agents(
+            _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, None
+        )
+        assert plan.files[machine.LEGACY_CODEX_MANAGED_CONFIG_PATH] is None
+        assert (catalog in plan.files) is named
+        if named:
+            assert plan.files[catalog] is None
 
     def test_old_codex_is_warned(self, monkeypatch):
         monkeypatch.setattr(machine, "agent_version", lambda *_a, **_k: "0.150.0")
