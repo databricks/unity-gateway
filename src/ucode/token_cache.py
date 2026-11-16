@@ -6,10 +6,13 @@ import plus a `databricks auth token` subprocess that can stall on network I/O. 
 by ``ucode.entrypoint`` before any of that is imported, so this module must stay stdlib-only.
 
 Only OAuth tokens minted through the Databricks CLI are cached: never PATs,
-``DATABRICKS_BEARER`` / ``DATABRICKS_BEARER_COMMAND`` values, or custom-client tokens, and the
+``DATABRICKS_BEARER`` / ``DATABRICKS_BEARER_COMMAND`` values, or custom-client tokens. The cache is
+off whenever an environment variable selects other credentials (``_IDENTITY_ENV_VARS``), and the
 fast path defers to the full command when the saved workspace uses a PAT. Entries are keyed by
-host, profile and the resolved ``DATABRICKS_CONFIG_FILE``. Files are ``0600`` inside a ``0700``
-directory where the OS supports modes, like the CLI's own ``~/.databricks/token-cache.json``.
+host, profile, ``XDG_CONFIG_HOME`` and the resolved config file, including its size and mtime, so
+editing it in place drops its cached tokens. Files are ``0600`` inside a ``0700`` directory owned
+by the user where the OS supports modes, like the CLI's own ``~/.databricks/token-cache.json``;
+links are never followed, and a directory that fails those checks disables the cache.
 :func:`clear` records when it ran, and a fetch that started before then is not written back.
 
 An entry is served while its JWT has at least ``MIN_REMAINING_SECONDS`` left. Once it is
@@ -26,6 +29,7 @@ import binascii
 import hashlib
 import json
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -52,7 +56,30 @@ REFRESH_AFTER_SECONDS = 1800
 # retried without spawning a process per request.
 REFRESH_RETRY_SECONDS = 300
 
-_BEARER_ENV_VARS = ("DATABRICKS_BEARER", "DATABRICKS_BEARER_COMMAND")
+# Each selects credentials other than the profile's CLI OAuth login, or changes where the CLI keeps
+# it, so a token cached for the same host and profile could belong to another identity.
+_IDENTITY_ENV_VARS = (
+    "DATABRICKS_BEARER",
+    "DATABRICKS_BEARER_COMMAND",
+    "DATABRICKS_TOKEN",
+    "DATABRICKS_CLIENT_ID",
+    "DATABRICKS_CLIENT_SECRET",
+    "DATABRICKS_AUTH_TYPE",
+    "DATABRICKS_AUTH_STORAGE",
+    "DATABRICKS_OIDC_TOKEN",
+    "DATABRICKS_OIDC_TOKEN_FILEPATH",
+    "DATABRICKS_GOOGLE_SERVICE_ACCOUNT",
+    "DATABRICKS_GOOGLE_CREDENTIALS",
+    "GOOGLE_CREDENTIALS",
+    "AZURE_CLIENT_ID",
+    "AZURE_CLIENT_SECRET",
+    "AZURE_TENANT_ID",
+)
+# Never follow a planted link to read or write a cache file (no-op where unsupported).
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_BINARY = getattr(os, "O_BINARY", 0)
+# Well-known SIDs, because Windows translates the group names (SYSTEM, Administrators).
+_WINDOWS_PRIVATE_GRANTS = ("*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F")
 
 
 def token_expiry(token: str) -> float | None:
@@ -74,8 +101,8 @@ def token_expiry(token: str) -> float | None:
 
 
 def cache_applicable() -> bool:
-    """False when an environment override owns auth; those tokens are never cached."""
-    return not any(os.environ.get(name, "").strip() for name in _BEARER_ENV_VARS)
+    """False when an environment variable selects the credentials; those are never cached."""
+    return not any(os.environ.get(name, "").strip() for name in _IDENTITY_ENV_VARS)
 
 
 def _config_file_key() -> str:
@@ -87,9 +114,187 @@ def _config_file_key() -> str:
     return os.path.abspath(os.path.expanduser(config_file)) if config_file else ""
 
 
+def _config_file_version() -> str:
+    """The config file's mtime and size, so an in-place edit keys new entries; empty if unread."""
+    config_file = _config_file_key()
+    path = Path(config_file) if config_file else Path.home() / ".databrickscfg"
+    try:
+        info = path.stat()
+    except (OSError, ValueError):
+        return ""
+    return f"{info.st_mtime_ns}:{info.st_size}"
+
+
+def _normalized_host(host: str) -> str:
+    host = host.strip().lower()
+    if "://" not in host:
+        host = "https://" + host
+    return host.rstrip("/")
+
+
 def _entry_name(host: str, profile: str | None) -> str:
-    key = "\0".join((host.strip().rstrip("/").lower(), profile or "", _config_file_key()))
+    key = "\0".join(
+        (
+            _normalized_host(host),
+            profile or "",
+            _config_file_key(),
+            os.environ.get("XDG_CONFIG_HOME", ""),
+            _config_file_version(),
+        )
+    )
     return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _ensure_private_cache_dir(*, create: bool) -> bool:
+    """Whether ``CACHE_DIR`` is a real directory private to this user, creating it if asked.
+
+    A link, another user's directory, or one that can't be checked disables the cache. On POSIX,
+    group or other permission bits are removed; on Windows a newly created directory is limited
+    to SYSTEM, Administrators and the current user, best-effort."""
+    try:
+        if create:
+            CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                CACHE_DIR.mkdir(mode=0o700)
+            except FileExistsError:
+                pass
+            else:
+                if sys.platform == "win32":
+                    _restrict_windows_dir(CACHE_DIR)
+        info = CACHE_DIR.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            return False
+        if os.name != "nt":
+            if info.st_uid != os.getuid():
+                return False
+            if info.st_mode & 0o077:
+                os.chmod(CACHE_DIR, 0o700)
+    except OSError:
+        return False
+    return True
+
+
+def _current_user_sid() -> str:
+    """Return this process's user SID string, or "" when it can't be resolved."""
+    if sys.platform != "win32":
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi32.OpenProcessToken.argtypes = [
+            wintypes.HANDLE,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.HANDLE),
+        ]
+        advapi32.GetTokenInformation.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        advapi32.ConvertSidToStringSidW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(wintypes.LPWSTR),
+        ]
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        token = wintypes.HANDLE()
+        if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+            return ""
+        try:
+            size = wintypes.DWORD()
+            advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            if not size.value:
+                return ""
+            buf = ctypes.create_string_buffer(size.value)
+            if not advapi32.GetTokenInformation(token, 1, buf, size, ctypes.byref(size)):
+                return ""
+            # TOKEN_USER begins with a SID_AND_ATTRIBUTES whose first field is the SID pointer.
+            sid_ptr = ctypes.cast(buf, ctypes.POINTER(ctypes.c_void_p))[0]
+            out = wintypes.LPWSTR()
+            if not advapi32.ConvertSidToStringSidW(sid_ptr, ctypes.byref(out)):
+                return ""
+            try:
+                return out.value or ""
+            finally:
+                kernel32.LocalFree(out)
+        finally:
+            kernel32.CloseHandle(token)
+    except Exception:
+        return ""
+
+
+def _refuse_link(path: Path) -> None:
+    """Raise OSError if ``path`` is a symlink (Windows lacks ``O_NOFOLLOW``)."""
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise OSError(f"refusing to open link: {path}")
+
+
+def _restrict_windows_dir(path: Path) -> None:
+    """Replace inherited access to ``path`` with SYSTEM, Administrators and this user."""
+    try:
+        from ucode.os_compatibility.subprocess_cross_os import run
+        from ucode.os_compatibility.system_cross_os import windows_system32_dir
+
+        sid = _current_user_sid()
+        if not sid.startswith("S-1-"):
+            # Without our own SID, stripping inheritance could lock this user out.
+            return
+        grants = [*_WINDOWS_PRIVATE_GRANTS, f"*{sid}:(OI)(CI)F"]
+        run(
+            [
+                str(windows_system32_dir() / "icacls.exe"),
+                str(path),
+                "/L",
+                "/inheritance:r",
+                *(arg for grant in grants for arg in ("/grant:r", grant)),
+            ],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception:
+        pass
+
+
+def _open_private(path: Path, flags: int) -> int:
+    """Open ``path`` without following a link, as ``0600`` on POSIX even if it already exists."""
+    _refuse_link(path)
+    fd = os.open(path, flags | _O_NOFOLLOW | _O_BINARY, 0o600)
+    if os.name != "nt":
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            os.close(fd)
+            raise
+    return fd
+
+
+def _read_text(path: Path) -> str:
+    """Read a cache file, refusing a link."""
+    _refuse_link(path)
+    fd = os.open(path, os.O_RDONLY | _O_NOFOLLOW | _O_BINARY)
+    with os.fdopen(fd, "rb") as fh:
+        return fh.read().decode("utf-8")
+
+
+def _temp_path(path: Path) -> Path:
+    return path.with_name(f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp")
+
+
+def _write_new(path: Path, text: str) -> None:
+    """Create ``path`` (which must not exist) holding ``text``."""
+    fd = _open_private(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(text.encode("utf-8"))
 
 
 def _cache_path(host: str, profile: str | None) -> Path:
@@ -107,11 +312,11 @@ def lookup(host: str, profile: str | None, *, now: float | None = None) -> tuple
     stamped in the future (the clock moved back). An entry written before the latest
     :func:`clear` is a miss even if deleting it failed (on Windows a concurrent reader can
     block the delete), so a login's previous identity is never served."""
-    if not cache_applicable():
+    if not cache_applicable() or not _ensure_private_cache_dir(create=False):
         return None
     now = time.time() if now is None else now
     try:
-        entry = json.loads(_cache_path(host, profile).read_text(encoding="utf-8"))
+        entry = json.loads(_read_text(_cache_path(host, profile)))
         token = entry["token"]
         cached_at = float(entry["cached_at"])
     except (OSError, ValueError, KeyError, TypeError, OverflowError):
@@ -145,19 +350,18 @@ def write(
     :func:`clear` ran since then (a login may have changed the identity), nothing is written."""
     if not cache_applicable() or token_expiry(token) is None:
         return
+    if not _ensure_private_cache_dir(create=True):
+        return
     path = _cache_path(host, profile)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp = _temp_path(path)
     try:
-        CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         with _locked():
             cleared_at = _cleared_at()
             if fetch_started is not None and cleared_at >= fetch_started:
                 return
             # Stamped after the latest clear, which `lookup` requires of a servable entry.
             cached_at = max(time.time(), cleared_at + _WRITE_AFTER_CLEAR_SECONDS)
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                json.dump({"token": token, "cached_at": cached_at}, fh)
+            _write_new(tmp, json.dumps({"token": token, "cached_at": cached_at}))
             os.replace(tmp, path)
     except (OSError, TimeoutError):
         try:
@@ -172,33 +376,40 @@ def clear() -> None:
     Also records when it ran, so a fetch already in flight (another helper process, or the
     background refresher) cannot write a token from before the login back afterwards. That
     includes a first fetch that has not created the cache directory yet, so the directory is
-    created to hold the record."""
-    try:
-        CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    except OSError:
+    created to hold the record. A directory that is not private to this user is left alone:
+    nothing in it is ever served."""
+    if not _ensure_private_cache_dir(create=True):
         return
     try:
         with _locked():
             _clear_entries()
-    except TimeoutError:
-        # A stuck lock holder must not keep a login from invalidating the cache.
+    except (TimeoutError, OSError):
+        # A stuck lock holder, or a lock file that can't be opened (a link, another user's),
+        # must not keep a login from invalidating the cache.
         _clear_entries()
-    except OSError:
-        pass
 
 
 def _clear_entries() -> None:
     stamp = CACHE_DIR / _CLEARED_NAME
-    tmp = stamp.with_name(f".{stamp.name}.{os.getpid()}.tmp")
+    tmp = _temp_path(stamp)
     # Later than every entry written before now (see `write`), even within one clock tick.
     cleared_at = max(time.time(), _cleared_at() + _CLEAR_AFTER_STAMP_SECONDS)
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(repr(cleared_at))
-        os.replace(tmp, stamp)
+        _write_new(tmp, repr(cleared_at))
+        for attempt in range(3):
+            try:
+                os.replace(tmp, stamp)
+                break
+            except PermissionError:
+                # A concurrent Windows reader of `cleared-at` can briefly block the replace.
+                if attempt == 2:
+                    raise
+                time.sleep(0.005)
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     try:
         entries = list(CACHE_DIR.iterdir())
     except OSError:
@@ -213,8 +424,8 @@ def _clear_entries() -> None:
 
 def _cleared_at() -> float:
     try:
-        return float((CACHE_DIR / _CLEARED_NAME).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        return float(_read_text(CACHE_DIR / _CLEARED_NAME))
+    except (OSError, ValueError, OverflowError):
         return float("-inf")
 
 
@@ -224,7 +435,8 @@ class _locked:
     def __enter__(self) -> None:
         from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 
-        self._file = (CACHE_DIR / _LOCK_NAME).open("a+b")
+        fd = _open_private(CACHE_DIR / _LOCK_NAME, os.O_RDWR | os.O_CREAT)
+        self._file = os.fdopen(fd, "r+b")
         try:
             acquire_exclusive_file_lock(self._file, timeout=_LOCK_TIMEOUT_SECONDS)
         except BaseException:
@@ -267,22 +479,16 @@ def refresh_in_background(host: str, profile: str | None) -> bool:
 
 
 def _claim_refresh(marker: Path, now: float) -> bool:
-    """Take this entry's refresh slot unless it was taken within the retry window.
-
-    The claim records ``now`` inside the marker and its age is measured against that, from the
-    same clock. The marker's mtime comes from the filesystem's clock instead: on Windows it can
-    run ahead of ``time.time()``, which made a claim taken a moment ago look stamped in the
-    future, so every request re-claimed it. The marker is a throttle, not a lock: if two callers
-    race past a stale marker, both start a refresher and both rewrite the entry atomically."""
+    """Use the marker's stamped clock; filesystem mtimes may run ahead."""
     for _ in range(2):
         try:
-            fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            fd = _open_private(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
         except FileExistsError:
             pass
         else:
             try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(repr(now))
+                with os.fdopen(fd, "wb") as fh:
+                    fh.write(repr(now).encode())
             except OSError:
                 pass  # the claim stands; its age falls back to the file's mtime
             return True
@@ -304,13 +510,13 @@ def _claimed_at(marker: Path) -> float | None:
     A marker without a readable stamp (its writer stopped after creating it, or an older ug
     wrote it empty) falls back to the file's mtime."""
     try:
-        return float(marker.read_text(encoding="utf-8"))
+        return float(_read_text(marker))
     except FileNotFoundError:
         return None
     except (OSError, ValueError, OverflowError):
         pass
     try:
-        return marker.stat().st_mtime
+        return marker.lstat().st_mtime
     except FileNotFoundError:
         return None
 

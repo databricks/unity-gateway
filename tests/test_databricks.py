@@ -3226,6 +3226,31 @@ class TestGetDatabricksToken:
         assert db_mod._browser_login(WS, None, env, lambda: next(fetches)) == ("new-token", 3600)
         assert token_cache.lookup(WS, "other") is None
 
+    def test_token_from_a_browser_login_is_memoized(self, tmp_path, monkeypatch):
+        # The login clears caches, but the token it then fetches is this process's to reuse.
+        signed_in = tmp_path / "signed-in"
+        env = self._fake_databricks(
+            tmp_path,
+            "if sys.argv[1:3] == ['auth', 'login'] and '--help' not in sys.argv:\n"
+            f"    Path({str(signed_in)!r}).touch()\n"
+            "    sys.exit(0)\n"
+            f"if Path({str(signed_in)!r}).exists():\n"
+            '    print(json.dumps({"access_token": "signed-in-token", "expires_in": 3600}))\n'
+            "    sys.exit(0)\n"
+            "print('Error: cache: no cached credentials', file=sys.stderr)\n"
+            "sys.exit(1)",
+        )
+        monkeypatch.setattr("os.environ", env)
+        monkeypatch.setattr(db_mod, "_BROWSER_LOGIN_LOCK_PATH", tmp_path / "auth-login.lock")
+        db_mod._remember_token((WS, "p"), "stale-before-login", None)
+        assert get_databricks_token(WS, "p", browser_login=True, force_refresh=True) == (
+            "signed-in-token"
+        )
+        memo = db_mod._memoized_token((WS, "p"))
+        assert memo is not None and memo.token == "signed-in-token"
+        monkeypatch.setattr(db_mod, "run", lambda *_a, **_k: pytest.fail("CLI ran again"))
+        assert get_databricks_token(WS, "p") == "signed-in-token"
+
     def test_retries_on_cache_lock_contention(self, tmp_path, monkeypatch):
         # Concurrent `databricks auth token` calls racing on the shared token
         # cache fail with "cache update: exit status 45". That's transient (the
@@ -3423,23 +3448,34 @@ class TestGetDatabricksToken:
         # No backoff sleeps past the budget (the clock starts at 1000).
         assert db_mod.time.now <= 1000.8 + 1e-9
 
-    def test_budget_also_bounds_profile_lookup(self, monkeypatch):
+    @pytest.mark.parametrize("cold", [False, True])
+    def test_budget_also_bounds_profile_lookup(self, monkeypatch, cold):
         # Without --profile the helper first lists profiles, which can hang on the network. The
-        # listing gets half the budget; the token fetch still runs, without a profile.
+        # listing gets half the budget; the token fetch still runs, without a profile. A cold
+        # CLI discovery runs first and is not charged to the listing's half alone: its 1s
+        # leaves 2s, split evenly between the listing and the token fetch.
         def respond(command, timeout, clock):
+            if command[1:] == ["--version"]:
+                clock.now += 1.0
+                return subprocess.CompletedProcess(command, 0, "Databricks CLI v0.299.0", "")
             if command[1:3] == ["auth", "profiles"]:
                 clock.now += timeout
                 raise subprocess.TimeoutExpired(command, timeout)
             return subprocess.CompletedProcess(command, 0, '{"access_token": "good-token"}', "")
 
-        calls = self._budget_harness(monkeypatch, respond)
+        calls = self._budget_harness(monkeypatch, respond, discover=cold)
         assert get_databricks_token(WS, budget_seconds=3.0, allow_reauth=False) == "good-token"
+        half = 1.0 if cold else 1.5
         assert calls == [
+            *([(["databricks", "--version"], pytest.approx(3.0))] if cold else []),
             (
                 ["databricks", "auth", "profiles", "--skip-validate", "--output", "json"],
-                pytest.approx(1.5),
+                pytest.approx(half),
             ),
-            (["databricks", "auth", "token", "--host", WS, "--output", "json"], pytest.approx(1.5)),
+            (
+                ["databricks", "auth", "token", "--host", WS, "--output", "json"],
+                pytest.approx(half),
+            ),
         ]
 
     def test_spent_budget_skips_profile_lookup(self, monkeypatch):

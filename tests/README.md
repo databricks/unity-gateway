@@ -546,18 +546,22 @@ while `--help` fails on a missing CLI startup dependency.
 the distribution rename with mocked installer calls, including `--help` verification
 of the full CLI import path and failure recovery guidance.
 `test_token_cache.py` covers the `ug auth-token` disk cache: keys (including a relative
-`DATABRICKS_CONFIG_FILE`), expiry, clearing that neither a fetch already in flight nor a failed
-delete can undo (stamps stay ordered within one clock tick), the
+`DATABRICKS_CONFIG_FILE`, `XDG_CONFIG_HOME` and an in-place config edit), the identity variables
+that turn it off, private modes and refused links or foreign directories, expiry, clearing that
+neither a fetch already in flight, a failed delete nor an unopenable lock can undo (stamps stay
+ordered within one clock tick), the
 background refresher (throttle, detached stdio, a real `python -P -m ucode` run against a fake
 CLI) and the entry-point fast path, which serves only `--host H [--profile P]` and defers to the
 full command for a saved PAT workspace. `test_auth_token_log.py` covers the helper's failure log
-and its SIGTERM line, including a real kill during `databricks auth token` that also ends the CLI
-call. `TestAuthTokenCommand` in `test_cli.py` covers cache use, the `--caller-timeout` budget, a
+(credentials and control characters stripped, `0600`, never through a link) and its SIGTERM line, including a real kill during `databricks auth token` that also ends the CLI
+call. `TestAuthTokenCommand` in `test_cli.py` covers cache use, the `--caller-timeout` budget
+less measured start-up, a
 login during a fetch (with and without a cache directory), and logging, which keeps a failing
 `DATABRICKS_BEARER_COMMAND`'s text and stderr out of the file. `TestGetDatabricksToken` in
 `test_databricks.py` covers the budget across cold CLI discovery, debug probes, profile lookup and
 lock retries under a controlled clock, a discovery walk the budget cut short (never cached), a real hung CLI (a `.cmd` shim on Windows), the skipped
-`auth login --no-browser` fallback and cache clearing after a login.
+`auth login --no-browser` fallback, cache clearing after a login, and memoizing the token that
+login fetches.
 `test_startup_imports.py` checks that a cache hit imports no CLI modules. These use fake CLIs;
 they do not establish live agent timing.
 `test_subprocess_cross_os.py` covers Windows npm shim resolution, native and Node targets,

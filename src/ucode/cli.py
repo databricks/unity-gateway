@@ -3105,7 +3105,8 @@ def claude_desktop_auth_cmd(
 
 
 # A caller that kills the helper (`--caller-timeout`, which pi's apiKey passes) leaves this much
-# of its timeout for interpreter start-up, so a slow CLI fails with ug's logged error first.
+# of its timeout in reserve, beyond the measured start-up since the entry point ran (interpreter
+# launch before it, and exit), so a slow CLI fails with ug's logged error first.
 AUTH_TOKEN_STARTUP_HEADROOM_SECONDS = 3.0
 # Nobody waits on the background refresher (`--refresh-cache`), but it must not linger.
 AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS = 30.0
@@ -3269,6 +3270,7 @@ def auth_token_cmd(
             skip_cache = force_refresh or refresh_cache
             cached = None if skip_cache else token_cache.serve(workspace, profile)
             if cached:
+                metrics.bind(workspace, cached)
                 token = cached
             else:
                 auth_token_log.set_stage(
@@ -3281,7 +3283,16 @@ def auth_token_cmd(
                 elif refresh_cache:
                     budget = AUTH_TOKEN_BACKGROUND_BUDGET_SECONDS
                 elif caller_timeout is not None:
-                    budget = max(1.0, caller_timeout - AUTH_TOKEN_STARTUP_HEADROOM_SECONDS)
+                    # Start-up (interpreter, imports) has already spent part of the timeout.
+                    elapsed = auth_token_log.startup_elapsed()
+                    budget = caller_timeout - AUTH_TOKEN_STARTUP_HEADROOM_SECONDS - elapsed
+                    if budget <= 0:
+                        raise RuntimeError(
+                            f"No time left for `databricks auth token`: start-up took "
+                            f"{elapsed:.1f}s of the caller's {caller_timeout:g}s timeout, which "
+                            f"keeps {AUTH_TOKEN_STARTUP_HEADROOM_SECONDS:g}s in reserve. Raise "
+                            "--caller-timeout or retry once the machine is less loaded."
+                        )
                 else:
                     budget = None  # each CLI call keeps its own timeout, as before
                 # Headless helper: skip the `auth login --no-browser` fallback, whose URL

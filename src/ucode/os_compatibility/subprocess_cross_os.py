@@ -152,6 +152,8 @@ def run_bounded(
             stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             _end_tree(proc)
+            # Forgotten before the drain reaps it, so a signal handler never ends it again.
+            _forget_tree(proc)
             try:
                 stdout, stderr = proc.communicate(timeout=_DRAIN_SECONDS)
             except subprocess.TimeoutExpired:
@@ -162,10 +164,10 @@ def run_bounded(
             ) from None
         except BaseException:
             _end_tree(proc)
+            _forget_tree(proc)
             raise
     finally:
-        with _RUNNING_TREES_LOCK:
-            _RUNNING_TREES.discard(proc)
+        _forget_tree(proc)
         for stream in (proc.stdout, proc.stderr):
             if stream is not None:
                 stream.close()
@@ -175,18 +177,34 @@ def run_bounded(
     return subprocess.CompletedProcess(proc.args, returncode, stdout, stderr)
 
 
-def end_running_trees() -> None:
-    """End every command ``run_bounded`` is waiting on, e.g. before this process exits by signal."""
+def _forget_tree(proc: subprocess.Popen[Any]) -> None:
     with _RUNNING_TREES_LOCK:
-        running = list(_RUNNING_TREES)
+        _RUNNING_TREES.discard(proc)
+
+
+def end_running_trees(*, blocking: bool = True) -> None:
+    """End every command ``run_bounded`` is waiting on, e.g. before this process exits by signal.
+
+    ``blocking=False`` (from a signal handler) never waits for another thread holding the
+    registry's lock; it reads a best-effort snapshot instead."""
+    if _RUNNING_TREES_LOCK.acquire(blocking=blocking):
+        try:
+            running = list(_RUNNING_TREES)
+        finally:
+            _RUNNING_TREES_LOCK.release()
+    else:
+        try:
+            running = list(_RUNNING_TREES)
+        except RuntimeError:  # changed size while copying
+            running = []
     for proc in running:
         _end_tree(proc)
 
 
 def _end_tree(proc: subprocess.Popen[Any]) -> None:
-    if proc.poll() is not None and os.name == "nt":
-        return
     if os.name == "nt":
+        if proc.poll() is not None:
+            return
         from ucode.os_compatibility.system_cross_os import windows_system32_dir
 
         try:
@@ -200,9 +218,10 @@ def _end_tree(proc: subprocess.Popen[Any]) -> None:
             )
         except (OSError, subprocess.TimeoutExpired):
             pass
-    else:
+    elif proc.returncode is None:
+        # The session leader's pid is its process group id. Until this process reaps the leader
+        # (``returncode`` is then set), its pid can't be reused, so the group is still its own.
         try:
-            # The session leader's pid is its process group id.
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass

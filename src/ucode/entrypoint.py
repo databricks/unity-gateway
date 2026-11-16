@@ -79,6 +79,8 @@ def main() -> None:
         # metrics exporter. A miss falls through to the instrumented CLI below. The kill handler is
         # installed before the cache check so a caller's timeout is logged at whichever stage.
         auth_token_log.log_if_killed(sys.argv[2:])
+        # A miss's `--caller-timeout` budget excludes the start-up spent from here on.
+        auth_token_log.set_entry_started(started)
         auth_token_log.set_stage("checking the token cache")
         token = fast_path_token(sys.argv[1:])
         if token:

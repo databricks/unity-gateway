@@ -63,6 +63,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(token_cache_mod, "CACHE_DIR", state_dir / "token-cache")
     monkeypatch.setattr(token_cache_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(auth_token_log_mod, "LOG_PATH", state_dir / "auth-token-errors.log")
+    # entrypoint.main() records its start; a later test's `auth-token` budget must not count it.
+    monkeypatch.setattr(auth_token_log_mod, "_entry_started", None)
     # A real background refresher is a separate process that sees none of these patches: it would
     # run the developer's Databricks CLI and write their real ~/.ucode token cache.
     monkeypatch.setattr(token_cache_mod, "_spawn_detached", lambda argv: None)

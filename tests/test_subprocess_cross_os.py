@@ -412,13 +412,20 @@ def _alive(pid: int) -> bool:
         from ucode.os_compatibility.system_cross_os import windows_system32_dir
 
         listing = subprocess.run(
-            [str(windows_system32_dir() / "tasklist.exe"), "/FI", f"PID eq {pid}", "/NH"],
+            [
+                str(windows_system32_dir() / "tasklist.exe"),
+                "/FI",
+                f"PID eq {pid}",
+                "/FO",
+                "CSV",
+                "/NH",
+            ],
             capture_output=True,
             text=True,
             timeout=30,
             check=False,
         )
-        return str(pid) in listing.stdout
+        return f'"{pid}"' in listing.stdout
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -497,3 +504,62 @@ class TestRunBounded:
         (result,) = outcome
         assert isinstance(result, subprocess.CompletedProcess)
         assert result.returncode != 0
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+    def test_reaped_command_is_never_signalled_again(self, monkeypatch):
+        # Once reaped, the leader's pid (its group id) may belong to an unrelated process.
+        proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        proc.wait()
+        killed: list[int] = []
+        monkeypatch.setattr(subprocess_cross_os.os, "killpg", lambda pgid, sig: killed.append(pgid))
+        subprocess_cross_os._end_tree(proc)
+        assert killed == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+    def test_timed_out_command_is_forgotten_before_it_is_reaped(self, monkeypatch):
+        # A signal handler arriving while the drain reaps the command must not end it again.
+        registered: list[bool] = []
+        real_end_tree = subprocess_cross_os._end_tree
+
+        def end_tree(proc):
+            real_end_tree(proc)
+            real_communicate = proc.communicate
+
+            def communicate(*args, **kwargs):
+                registered.append(proc in subprocess_cross_os._RUNNING_TREES)
+                return real_communicate(*args, **kwargs)
+
+            proc.communicate = communicate
+
+        monkeypatch.setattr(subprocess_cross_os, "_end_tree", end_tree)
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess_cross_os.run_bounded(
+                [sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.5
+            )
+        assert registered == [False]
+        assert subprocess_cross_os._RUNNING_TREES == set()
+
+    def test_non_blocking_end_does_not_wait_for_a_held_lock(self, monkeypatch):
+        # From the SIGTERM handler: another thread holding the registry lock must not stall it.
+        ended: list[object] = []
+        sentinel = object()
+        monkeypatch.setattr(subprocess_cross_os, "_end_tree", ended.append)
+        monkeypatch.setattr(subprocess_cross_os, "_RUNNING_TREES", {sentinel})
+        held, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with subprocess_cross_os._RUNNING_TREES_LOCK:
+                held.set()
+                release.wait(timeout=60)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        try:
+            assert held.wait(timeout=60)
+            started = time.monotonic()
+            subprocess_cross_os.end_running_trees(blocking=False)
+            assert time.monotonic() - started < 5
+            assert ended == [sentinel]
+        finally:
+            release.set()
+            thread.join(timeout=60)

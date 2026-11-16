@@ -1932,8 +1932,12 @@ def _browser_login(
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         finally:
-            # The sign-in may change the identity behind a profile; drop cached bearers.
-            clear_databricks_token_cache()
+            # The sign-in may change the identity behind a profile; drop cached bearers. Only
+            # this key's memo goes: bumping the memo epoch would also keep the caller from
+            # memoizing the token this login fetches.
+            token_cache.clear()
+            with _TOKEN_MEMO_LOCK:
+                _TOKEN_MEMO.pop(_token_memo_key(workspace, profile), None)
         return fetch()
 
 
@@ -2205,8 +2209,11 @@ def get_databricks_token(
         # See has_valid_databricks_auth: resolve the profile from the host when
         # the caller didn't supply one, so duplicate-host cfgs don't break us.
         if not profile:
-            # Under a budget the listing gets half of what is left; `databricks auth token`
-            # can find the host's profile itself if the listing runs out of time.
+            # Under a budget the listing gets half of what is left after CLI discovery (its
+            # `--version` probe); `databricks auth token` can find the host's profile itself if
+            # the listing runs out of time.
+            if budget_seconds is not None:
+                databricks_cli_path()
             with _cli_deadline(None if budget_seconds is None else _time_left(budget_seconds) / 2):
                 profile = find_profile_name_for_host(workspace)
         token = _get_databricks_token_for_profile(

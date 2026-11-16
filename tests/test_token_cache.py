@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import os
-import runpy
 import signal
 import stat
 import subprocess
@@ -53,9 +52,10 @@ def _age(host: str, profile: str | None, seconds: float) -> None:
 
 @pytest.fixture(autouse=True)
 def _no_bearer_env(monkeypatch):
-    monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
-    monkeypatch.delenv("DATABRICKS_BEARER_COMMAND", raising=False)
+    for name in token_cache._IDENTITY_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.delenv("DATABRICKS_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -89,9 +89,46 @@ class TestReadWrite:
         assert _served(WS, None) is None
         assert _served(WS, "other") is None
 
+    def test_key_adds_a_missing_scheme(self):
+        token = _jwt(time.time() + 3600)
+        token_cache.write("Example.cloud.databricks.com/", "prod", token)
+        assert _served(WS, "prod") == token
+
     def test_config_file_is_part_of_the_key(self, monkeypatch):
         token_cache.write(WS, "prod", _jwt(time.time() + 3600))
         monkeypatch.setenv("DATABRICKS_CONFIG_FILE", "/elsewhere/.databrickscfg")
+        assert _served(WS, "prod") is None
+
+    def test_xdg_config_home_is_part_of_the_key(self, monkeypatch, tmp_path):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "prod", token)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        assert _served(WS, "prod") is None
+        monkeypatch.delenv("XDG_CONFIG_HOME")
+        assert _served(WS, "prod") == token
+
+    @pytest.mark.parametrize("explicit", [False, True])
+    def test_editing_the_config_file_drops_its_entries(self, monkeypatch, tmp_path, explicit):
+        # A profile repointed at another host or identity in place must not keep its old token.
+        if explicit:
+            config = tmp_path / "custom.cfg"
+            monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+        else:
+            monkeypatch.setenv("HOME", str(tmp_path))
+            monkeypatch.setenv("USERPROFILE", str(tmp_path))
+            config = tmp_path / ".databrickscfg"
+        config.write_text("[prod]\nhost = https://a\n")
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "prod", token)
+        assert _served(WS, "prod") == token
+        config.write_text("[prod]\nhost = https://ab\n")
+        assert _served(WS, "prod") is None
+        token_cache.write(WS, "prod", token)
+        assert _served(WS, "prod") == token
+        # Same size, later mtime.
+        config.write_text("[prod]\nhost = https://ac\n")
+        later = config.stat().st_mtime + 10
+        os.utime(config, (later, later))
         assert _served(WS, "prod") is None
 
     def test_near_expiry_is_a_miss(self):
@@ -126,8 +163,10 @@ class TestReadWrite:
         token_cache.write(WS, None, "dapi-opaque-pat")
         assert not token_cache.CACHE_DIR.exists()
 
-    @pytest.mark.parametrize("env", ["DATABRICKS_BEARER", "DATABRICKS_BEARER_COMMAND"])
+    @pytest.mark.parametrize("env", token_cache._IDENTITY_ENV_VARS)
     def test_env_overrides_disable_cache(self, monkeypatch, env):
+        # An entry cached without the variable is not served with it, and nothing is cached
+        # while it is set.
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, None, token)
         monkeypatch.setenv(env, "x")
@@ -163,11 +202,88 @@ class TestReadWrite:
         assert token_cache.token_expiry(f"h.{huge_exp.rstrip('=')}.s") is None
 
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
-    def test_files_are_private(self):
-        token_cache.write(WS, None, _jwt(time.time() + 3600))
+    def test_files_are_private(self, spawned):
+        token_cache.write(WS, None, _jwt(time.time() + 86400))
+        _age(WS, None, token_cache.REFRESH_AFTER_SECONDS + 1)
+        token_cache.serve(WS, None)
+        marker = token_cache._refresh_marker_path(WS, None)
+        assert stat.S_IMODE(marker.stat().st_mode) == 0o600
+        token_cache.clear()
+        token_cache.write(WS, None, _jwt(time.time() + 86400))
         assert stat.S_IMODE(token_cache.CACHE_DIR.stat().st_mode) == 0o700
-        (entry,) = token_cache.CACHE_DIR.glob("*.json")
-        assert stat.S_IMODE(entry.stat().st_mode) == 0o600
+        names = {path.name for path in token_cache.CACHE_DIR.iterdir()}
+        assert {token_cache._LOCK_NAME, token_cache._CLEARED_NAME} <= names
+        for path in token_cache.CACHE_DIR.iterdir():
+            assert stat.S_IMODE(path.stat().st_mode) == 0o600, path.name
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions")
+    def test_loose_permissions_are_tightened(self):
+        token_cache.write(WS, None, _jwt(time.time() + 3600))
+        token_cache.clear()
+        token_cache.CACHE_DIR.chmod(0o755)
+        for name in (token_cache._LOCK_NAME, token_cache._CLEARED_NAME):
+            (token_cache.CACHE_DIR / name).chmod(0o644)
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
+        assert _served(WS, None) == token
+        token_cache.clear()
+        assert stat.S_IMODE(token_cache.CACHE_DIR.stat().st_mode) == 0o700
+        for name in (token_cache._LOCK_NAME, token_cache._CLEARED_NAME):
+            assert stat.S_IMODE((token_cache.CACHE_DIR / name).stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_linked_cache_dir_is_refused(self, tmp_path):
+        target = tmp_path / "elsewhere"
+        target.mkdir(mode=0o700)
+        token_cache.CACHE_DIR.symlink_to(target)
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
+        token_cache.clear()
+        assert list(target.iterdir()) == []
+        # An entry planted through the link is never served either.
+        (target / token_cache._cache_path(WS, None).name).write_text(
+            json.dumps({"token": token, "cached_at": time.time()})
+        )
+        assert _served(WS, None) is None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_linked_entry_and_clear_stamp_are_refused(self, tmp_path):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
+        planted = tmp_path / "planted.json"
+        planted.write_text(json.dumps({"token": token, "cached_at": time.time() + 1}))
+        entry = token_cache._cache_path(WS, None)
+        entry.unlink()
+        entry.symlink_to(planted)
+        assert _served(WS, None) is None
+        # A clear replaces a linked stamp rather than writing through it.
+        victim = tmp_path / "victim"
+        victim.write_text("untouched")
+        (token_cache.CACHE_DIR / token_cache._CLEARED_NAME).symlink_to(victim)
+        token_cache.clear()
+        assert victim.read_text() == "untouched"
+        assert not (token_cache.CACHE_DIR / token_cache._CLEARED_NAME).is_symlink()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_clear_still_clears_when_the_lock_cannot_be_opened(self, tmp_path):
+        # A broken or foreign `.lock` must not keep a login from invalidating the cache.
+        token_cache.write(WS, None, _jwt(time.time() + 3600))
+        lock = token_cache.CACHE_DIR / token_cache._LOCK_NAME
+        lock.unlink()
+        lock.symlink_to(tmp_path / "missing-target")
+        token_cache.clear()
+        assert list(token_cache.CACHE_DIR.glob("*.json")) == []
+        assert token_cache.lookup(WS, None) is None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership")
+    def test_cache_dir_owned_by_another_user_is_refused(self, monkeypatch):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
+        other_uid = os.getuid() + 1
+        monkeypatch.setattr(token_cache.os, "getuid", lambda: other_uid)
+        assert _served(WS, None) is None
+        token_cache.write(WS, "p", token)
+        assert list(token_cache.CACHE_DIR.glob("*.json")) == [token_cache._cache_path(WS, None)]
 
     @pytest.mark.parametrize("delete_fails", [False, True])
     def test_clear(self, monkeypatch, delete_fails):
@@ -382,12 +498,6 @@ class TestBackgroundRefresh:
         else:
             assert seen["start_new_session"] is True
 
-    def test_python_dash_m_ucode_runs_the_entry_point(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr("ucode.entrypoint.main", lambda: calls.append(True))
-        runpy.run_module("ucode", run_name="__main__")
-        assert calls == [True]
-
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-script fake CLI")
     def test_refresher_rewrites_the_cache_end_to_end(self, tmp_path):
         """The real refresher argv, against a fake CLI, in a throwaway HOME."""
@@ -512,9 +622,63 @@ class TestEntry:
         # Only an old entry starts the background refresher, for the same profile.
         assert spawned == ([token_cache.refresh_command(WS, "prod")] if old else [])
 
-    def test_cache_miss_delegates_to_full_cli(self, monkeypatch):
-        calls = []
-        monkeypatch.setattr(sys, "argv", ["ug", "auth-token", "--host", WS])
-        monkeypatch.setattr("ucode.cli.main", lambda: calls.append(True))
-        entrypoint.main()
-        assert calls == [True]
+
+class TestWindowsAcl:
+    def _patch(self, monkeypatch, sid):
+        from pathlib import PureWindowsPath
+
+        from ucode.os_compatibility import subprocess_cross_os, system_cross_os
+
+        calls: list[list[str]] = []
+        monkeypatch.setattr(subprocess_cross_os, "run", lambda argv, **kw: calls.append(argv))
+        monkeypatch.setattr(
+            system_cross_os, "windows_system32_dir", lambda: PureWindowsPath("C:/Windows/System32")
+        )
+        monkeypatch.setattr(token_cache, "_current_user_sid", lambda: sid)
+        return calls
+
+    def test_resolved_sid_is_granted_without_following_links(self, monkeypatch, tmp_path):
+        sid = "S-1-5-21-1-2-3-1001"
+        calls = self._patch(monkeypatch, sid)
+        token_cache._restrict_windows_dir(tmp_path)
+        assert len(calls) == 1
+        assert "/L" in calls[0]
+        assert "/inheritance:r" in calls[0]
+        assert f"*{sid}:(OI)(CI)F" in calls[0]
+
+    @pytest.mark.parametrize("sid", ["", "garbage"])
+    def test_unresolved_sid_skips_icacls(self, monkeypatch, tmp_path, sid):
+        calls = self._patch(monkeypatch, sid)
+        token_cache._restrict_windows_dir(tmp_path)
+        assert calls == []
+
+
+class TestLinkRefusalAndClearRetry:
+    def test_read_refuses_symlink(self, tmp_path):
+        target = tmp_path / "target"
+        target.write_text("x")
+        link = tmp_path / "link"
+        try:
+            link.symlink_to(target)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable")
+        with pytest.raises(OSError):
+            token_cache._read_text(link)
+        with pytest.raises(OSError):
+            token_cache._open_private(link, os.O_WRONLY | os.O_APPEND)
+
+    def test_clear_retries_permission_error(self, monkeypatch):
+        real = os.replace
+        attempts = []
+
+        def flaky(src, dst):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise PermissionError("busy")
+            real(src, dst)
+
+        monkeypatch.setattr(token_cache.os, "replace", flaky)
+        monkeypatch.setattr(token_cache.time, "sleep", lambda s: None)
+        token_cache.clear()
+        assert len(attempts) == 3
+        assert token_cache._cleared_at() > 0

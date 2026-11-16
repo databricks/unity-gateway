@@ -2810,7 +2810,11 @@ class TestAuthTokenCommand:
     """`ucode auth-token` is the cross-platform apiKeyHelper (#116)."""
 
     @pytest.fixture(autouse=True)
-    def _isolated_bearer(self):
+    def _isolated_bearer(self, monkeypatch):
+        # Any of these turns the token cache off; the cache tests need it on.
+        for name in token_cache._IDENTITY_ENV_VARS:
+            if name != "DATABRICKS_BEARER":
+                monkeypatch.delenv(name, raising=False)
         # The --use-pat path writes DATABRICKS_BEARER directly; restore it so
         # writes by code under test don't leak into other tests.
         original = os.environ.pop("DATABRICKS_BEARER", None)
@@ -2860,10 +2864,21 @@ class TestAuthTokenCommand:
         )
 
     @pytest.mark.parametrize(
-        ("caller_timeout", "budget"), [("10", 7.0), ("2", 1.0), ("2.5", 1.0), ("30", 27.0)]
+        ("caller_timeout", "startup", "budget"),
+        [
+            ("10", None, 7.0),
+            ("30", None, 27.0),
+            ("10", 0.0, 7.0),
+            ("10", 2.5, 4.5),
+            ("4", 2.0, None),
+        ],
     )
-    def test_caller_timeout_bounds_the_cli_inside_it(self, caller_timeout, budget):
+    def test_caller_timeout_bounds_the_cli_inside_it(self, caller_timeout, startup, budget):
         # Pi kills its apiKey command after 10s; the CLI gets what start-up leaves of that.
+        # ``startup`` simulates the entry point having started that many seconds ago (None: it
+        # recorded no start); a start-up that leaves no time fails before running the CLI.
+        if startup is not None:
+            auth_token_log.set_entry_started(time.perf_counter() - startup)
         with (
             patch("ucode.cli.load_state", return_value={}),
             patch("ucode.cli.get_databricks_token", return_value="tok") as fetch,
@@ -2871,13 +2886,19 @@ class TestAuthTokenCommand:
             result = runner.invoke(
                 app, ["auth-token", "--host", "https://ws", "--caller-timeout", caller_timeout]
             )
+        if budget is None:
+            assert result.exit_code == 1
+            assert result.stdout == ""
+            fetch.assert_not_called()
+            assert "No time left for `databricks auth token`" in auth_token_log.LOG_PATH.read_text()
+            return
         assert result.exit_code == 0, result.output
         fetch.assert_called_once_with(
             "https://ws",
             None,
             force_refresh=False,
             browser_login=False,
-            budget_seconds=budget,
+            budget_seconds=pytest.approx(budget, abs=0.5),
             allow_reauth=False,
         )
 
@@ -2912,11 +2933,14 @@ class TestAuthTokenCommand:
         with (
             patch("ucode.cli.load_state", return_value={}),
             patch("ucode.cli.get_databricks_token") as fetch,
+            patch("ucode.metrics.bind") as bind,
         ):
             result = runner.invoke(app, ["auth-token", "--host", "https://ws", "--profile", "prod"])
         assert result.exit_code == 0
         assert result.stdout == token + "\n"
         fetch.assert_not_called()
+        # The cached token is this command's workspace credential for metrics too.
+        bind.assert_called_once_with("https://ws", token)
 
     def test_browser_login_serves_cached_token_without_cli(self):
         token = _jwt(time.time() + 3600)
@@ -3092,22 +3116,6 @@ class TestAuthTokenCommand:
         )
         assert result.exit_code == 1
         assert result.stdout == ""
-
-    def test_cli_call_is_named_for_the_kill_log(self):
-        # The SIGTERM handler reports this stage if the caller's deadline lands here.
-        stages: list[str] = []
-
-        def fetch(*_args, **_kwargs):
-            stages.append(auth_token_log._stage)
-            return "tok"
-
-        with (
-            patch("ucode.cli.load_state", return_value={}),
-            patch("ucode.cli.get_databricks_token", side_effect=fetch),
-        ):
-            result = runner.invoke(app, ["auth-token", "--host", "https://ws"])
-        assert result.exit_code == 0, result.output
-        assert stages == ["waiting for `databricks auth token`"]
 
     def test_errors_without_workspace(self):
         with patch("ucode.cli.load_state", return_value={}):

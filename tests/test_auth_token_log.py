@@ -48,6 +48,30 @@ class TestLogFailure:
         (line,) = auth_token_log.LOG_PATH.read_text().splitlines()
         assert line.endswith(" after")
 
+    def test_strips_credentials_and_control_characters(self):
+        # The host comes from the caller's argv and the message from CLI output; neither may
+        # put a credential, a terminal escape, or a forged line into the log.
+        auth_token_log.log_failure(
+            "https://user:s3cret@example.cloud.databricks.com/",
+            "pro\x1b[31mfile\x07",
+            "bad\r\n2026-01-01T00:00:00 host=forged \x1b]0;title\x07 end\x00",
+        )
+        auth_token_log.log_failure("user@bare.example.com", None, "x")
+        first, second = auth_token_log.LOG_PATH.read_text().splitlines()
+        assert "s3cret" not in first and "user" not in first
+        assert "host=https://example.cloud.databricks.com/ profile=profile " in first
+        assert first.endswith(" bad 2026-01-01T00:00:00 host=forged end")
+        assert "\x1b" not in first and "\x07" not in first
+        assert "host=bare.example.com profile=<none> x" in second
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
+    def test_linked_log_is_not_written_through(self, tmp_path):
+        victim = tmp_path / "victim"
+        victim.write_text("untouched")
+        auth_token_log.LOG_PATH.symlink_to(victim)
+        auth_token_log.log_failure(WS, None, "boom")
+        assert victim.read_text() == "untouched"
+
     def test_unwritable_log_is_ignored(self, monkeypatch, tmp_path):
         not_a_dir = tmp_path / "file"
         not_a_dir.write_text("")
@@ -152,3 +176,25 @@ def test_log_is_private():
 
     auth_token_log.log_failure(WS, None, "boom")
     assert stat.S_IMODE(auth_token_log.LOG_PATH.stat().st_mode) == 0o600
+    # A log an earlier build (or the umask) left readable is tightened on the next write.
+    auth_token_log.LOG_PATH.chmod(0o644)
+    auth_token_log.log_failure(WS, None, "again")
+    assert stat.S_IMODE(auth_token_log.LOG_PATH.stat().st_mode) == 0o600
+
+
+def test_startup_elapsed_counts_from_the_recorded_entry():
+    assert auth_token_log.startup_elapsed() == 0.0
+    auth_token_log.set_entry_started(time.perf_counter() - 2.0)
+    assert 2.0 <= auth_token_log.startup_elapsed() < 10.0
+
+
+def test_log_failure_refuses_symlink(tmp_path):
+    target = tmp_path / "target"
+    target.write_text("keep")
+    try:
+        auth_token_log.LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        auth_token_log.LOG_PATH.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    auth_token_log.log_failure(WS, "prod", "boom")
+    assert target.read_text() == "keep"
