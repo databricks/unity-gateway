@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock
 
 import pytest
-from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
 from tests.conftest import metric_observations as observations
@@ -457,7 +456,7 @@ def test_sdk_preserves_individual_labels_and_excludes_unknown_attributes():
     assert all(set(p.attributes) == {"show_all"} for p in points)
 
 
-def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
+def test_exporter_preserves_workspace_auth_and_disables_redirects(monkeypatch):
     import requests
 
     sent = []
@@ -491,11 +490,6 @@ def test_standard_exporter_wire_format_and_workspace_headers(monkeypatch):
     assert trust_env is True
     netrc_lookup.assert_not_called()
     assert kwargs["allow_redirects"] is False
-    request = ExportMetricsServiceRequest.FromString(prepared.body)
-    metric = request.resource_metrics[0].scope_metrics[0].metrics[0]
-    assert metric.name == "ug_usage_duration_ms"
-    assert metric.histogram.aggregation_temporality == 1  # OTLP DELTA
-    assert metric.histogram.data_points[0].count == 1
 
 
 def test_exporter_stops_after_disabled_endpoint(monkeypatch):

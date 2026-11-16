@@ -1264,7 +1264,16 @@ def main() -> int:
             if client_id and client_secret:
                 bearer = mint_m2m_token(args.workspace, client_id, client_secret)
 
-        test_dependencies = ["pytest==9.0.3", "httpx==0.28.1", "pyte==0.8.2", "mcp==2.1.1"]
+        test_dependencies = [
+            "pytest==9.0.3",
+            "httpx==0.28.1",
+            "pyte==0.8.2",
+            "mcp==2.1.1",
+            # Existing UG dependencies, also needed in the separate test environment:
+            # temporary recorder certificates and decoding the captured OTLP wire format.
+            "cryptography==49.0.0",
+            "opentelemetry-proto==1.44.0",
+        ]
         test_dependencies.append("pexpect==4.9.0" if os.name == "posix" else "pywinpty==3.0.5")
         if "vscode" in agents:
             # Drives VS Code over its DevTools port; needs no Playwright browser download.

@@ -177,6 +177,15 @@ def session(request, installed_binary):
 
 
 @pytest.fixture
+def recorder_tls(session):
+    from utils.tls import localhost_tls, trust_localhost_certificate
+
+    context, certificate = localhost_tls(session.home.parent / "recorder-tls")
+    trust_localhost_certificate(session.env, certificate)
+    return context
+
+
+@pytest.fixture
 def live_session(session, workspace):
     agents = os.environ["UG_INTEGRATION_AGENTS"].split(",")
     # Agents run under their own binary names (`ug antigravity` launches `agy`).
