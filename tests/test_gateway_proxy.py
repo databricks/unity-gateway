@@ -464,7 +464,7 @@ class _FakeClient:
         self.sent_tokens: list[str | None] = []
         self.sent_headers: list[dict] = []
 
-    def stream(self, _method, _url, headers, content):
+    def stream(self, _method, _url, headers, content, extensions=None):
         self.sent_tokens.append(headers.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER))
         self.sent_headers.append(headers)
         return self._responses.pop(0)

@@ -201,6 +201,52 @@ def _running_otel_proxy(gateway: _FakeGateway, token_provider=None):
 
 
 class TestRelayedProxyEndToEnd:
+    @pytest.mark.parametrize("diagnostics", [False, True])
+    @pytest.mark.parametrize("retry", [False, True])
+    def test_transport_diagnostics_over_socket(
+        self, make_gateway, monkeypatch, capsys, diagnostics, retry
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1" if diagnostics else "0")
+        monkeypatch.delenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, raising=False)
+        gw = make_gateway(
+            statuses=[401, 200] if retry else [200],
+            chunks=[b"private-response"],
+            headers={"X-Private": "private-response-header"},
+        )
+        with _running_proxy(gw, _counting_token("private-token")) as proxy_url:
+            response = httpx.post(
+                f"{proxy_url}/v1/messages",
+                headers={"Authorization": "Bearer private-oauth"},
+                content=b"private-request",
+                timeout=10,
+            )
+
+        assert response.status_code == 200
+        assert response.content == b"private-response"
+        assert response.headers["X-Private"] == "private-response-header"
+        assert all(request.body == b"private-request" for request in gw.requests)
+        logged = capsys.readouterr().err
+        assert "private-" not in logged
+        if not diagnostics:
+            assert logged == ""
+            return
+        events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
+        assert len({event["request_id"] for event in events}) == 1
+        transport = [event for event in events if event["event"] == "upstream_transport"]
+        assert {event["attempt"] for event in transport} == ({1, 2} if retry else {1})
+        for attempt in range(1, 3 if retry else 2):
+            phases = [event["phase"] for event in transport if event["attempt"] == attempt]
+            sent = phases.index("http11.send_request_body.complete")
+            waiting = phases.index("http11.receive_response_headers.started")
+            received = phases.index("http11.receive_response_headers.complete")
+            assert sent < waiting < received
+        assert all(
+            set(event) == {"event", "timestamp_ms", "request_id", "attempt", "phase", "elapsed_ms"}
+            and isinstance(event["elapsed_ms"], int)
+            and event["elapsed_ms"] >= 0
+            for event in transport
+        )
+
     def test_forwards_request_with_swap_header_and_passthrough(self, make_gateway):
         # The whole relayed data-plane over real sockets: the proxy injects a fresh
         # swap token, passes the caller's Anthropic OAuth + the MPS routing header
