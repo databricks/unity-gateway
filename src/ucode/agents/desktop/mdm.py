@@ -393,7 +393,9 @@ def configure(workspace: str, profile: str | None, *, managed_config: dict | Non
         mdm_args=prefix,
     )
     rendered["managedMcpServers"] = claude_config.render_managed_mcp_servers(mcp_config)
-    hooks = cowork._connector_hooks(mcp_config, workspace, user_profile, use_pat=False)
+    hooks = cowork._connector_hooks(
+        mcp_config, workspace, user_profile, use_pat=False, mdm_args=prefix
+    )
     with tempfile.TemporaryDirectory(prefix="ug-mdm-stage-") as directory:
         staging = Path(directory).resolve()
         records = []

@@ -537,23 +537,26 @@ def _copy_skills(destination: Path, records: list[dict]) -> None:
 
 
 def _connector_hooks(
-    mcp_config: dict, workspace: str, profile: str, *, use_pat: bool
+    mcp_config: dict,
+    workspace: str,
+    profile: str,
+    *,
+    use_pat: bool,
+    mdm_args: list[str] | None = None,
 ) -> dict | None:
     # Reuse each proxy entry's absolute `ug` and URL so the hook targets exactly what Cowork runs.
     urls: dict[str, str] = {}
     command = None
-    prefix = []
     for name, entry in mcp_config["mcpServers"].items():
         args = entry.get("args") or []
         if "--url" in args[:-1]:
             urls[name] = args[args.index("--url") + 1]
             command = entry["command"]
-            prefix = args[: args.index("mcp-proxy")] if "mcp-proxy" in args else []
     if command is None:
         return None
     argv = [
         command,
-        *prefix,
+        *(mdm_args or []),
         "cowork-hook",
         "--host",
         workspace.rstrip("/"),
