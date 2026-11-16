@@ -1632,7 +1632,14 @@ working, backend crash/restart, EOF/reset reconnect diagnostics, local authentic
 idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
-check. These tests do not establish live gateway or native Windows coverage.
+check. On Windows, an observer uses the native console and window APIs to verify
+the actual backend has no visible console window, then the client completes a tool call.
+Isolated Python environments run with `pythonw.exe` present and absent. The backend
+keeps `python.exe` and a hidden console so auth subprocesses inherit it. A real external
+bearer command supplies fresh credentials for repeated tool calls and records its
+own console visibility; every observed auth subprocess must also have no visible window.
+The external bearer path also has cross-platform process coverage.
+These tests do not establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
