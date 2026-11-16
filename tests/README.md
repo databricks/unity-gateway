@@ -1201,6 +1201,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_sources_copilot_discovers_mixed_models_and_uses_service_default` in CUJ9 | Configure mixed model sources, inspect the live registry, and complete a TUI task on the hosted GPT default | Exact active registry IDs and wire providers, a native completed answer, paired exact-model HTTP 200 inference, and registry removal on exit |
 | `test_sources_{claude,codex,copilot}_inference_on_each_source_model` in CUJ9 | Run an explicit headless file task on every expanded source model | Each provider deep link, custom service, schema wildcard and provider wildcard contribution serves a hidden-value task; Codex and Copilot never route |
 | `test_sources_claude_routing_response_selects_an_expanded_source` in CUJ9 | Delegate a real TUI task with Claude-only managed smart routing | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
+| `test_sources_claude_foundry_wildcard_configure_and_inference` in CUJ9 | Configure Claude from an Anthropic-only Foundry MPS wildcard in an optional preconfigured workspace | Independent provider catalog and generated allow-list match every qualified target; one target completes a hidden-value task with paired exact-model HTTP 200 inference. Requires both Foundry variables; no Codex or all-target inference coverage |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference`, `test_cuj_claude_mps_smart_routing_header` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, Claude TUI, and Claude smart-routing cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; inference cases record the MPS target header, model, paired HTTP 200, and completed greeting. The smart-routing case checks the managed MPS header on first-prompt and delegated-task router requests, their HTTP 200 responses, and completed native turns. Request IDs correlate greeting traffic. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
@@ -1652,8 +1653,10 @@ component coverage. CUJ9 collects 14 installed-agent cases for mixed sources and
 inference, with smart routing only for Claude Code. The workspace directly publishes
 its configuration as of 2026-11-16; tests validate it without a local configuration
 artifact. Claude and Codex use custom defaults, while Copilot uses hosted
-`system.ai.gpt-6-luna`. All 14 cases are active. These are implemented assertions,
-not a live pass. See the
+`system.ai.gpt-6-luna`. All 14 cases are active. An optional fifteenth case checks
+Claude configure and inference from a Foundry wildcard in a separately preconfigured
+workspace; the Foundry target's qualified IDs also have component picker coverage.
+These are implemented assertions, not a live pass. See the
 [CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).
 
 Copilot CLI registry label checks cover human-readable labels for qualified catalog models,

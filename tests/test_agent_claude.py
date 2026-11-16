@@ -644,6 +644,19 @@ class TestRenderOverlay:
             "label": "GPT 5.6 Sol",
         }
 
+    def test_foundry_wildcard_models_keep_qualified_ids_in_picker(self):
+        models = [
+            "catalog.schema.foundry.claude-haiku-5-5",
+            "catalog.schema.foundry.claude-opus-5-5",
+            "catalog.schema.foundry.claude-sonnet-5",
+        ]
+
+        overlay, _ = claude.render_overlay(WS, "s4", static_models=models)
+
+        assert overlay["availableModels"] == models
+        assert overlay["enforceAvailableModels"] is True
+        assert [option["model"] for option in overlay["modelPicker"]["options"]] == models
+
     def test_static_models_keys_tracked(self):
         # The picker keys are added to managed_keys so they're tracked in the managed file.
         static = ["system.ai.claude-opus-4-8"]
