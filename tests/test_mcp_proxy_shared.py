@@ -288,7 +288,11 @@ def test_backend_has_no_visible_windows_console(clients, peer, tmp_path, windowl
     if not windowless_interpreter:
         pythonw.unlink()
     client = clients(peer[0] + "/mcp", executable=str(environment / "Scripts" / "python.exe"))
-    client.initialize()
+    try:
+        client.initialize()
+    finally:
+        for backend_log in tmp_path.glob(".ucode/mcp-proxy/*/backend.log"):
+            print(backend_log.read_text(encoding="utf-8", errors="replace"))
     (metadata,) = _endpoints(tmp_path)
     probe = """
 import ctypes
