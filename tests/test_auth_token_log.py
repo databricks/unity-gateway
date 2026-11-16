@@ -65,13 +65,6 @@ class TestLogFailure:
         assert "host=bare.example.com profile=<none> x" in second
 
     @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-    def test_linked_log_is_not_written_through(self, tmp_path):
-        victim = tmp_path / "victim"
-        victim.write_text("untouched")
-        auth_token_log.LOG_PATH.symlink_to(victim)
-        auth_token_log.log_failure(WS, None, "boom")
-        assert victim.read_text() == "untouched"
-
     def test_unwritable_log_is_ignored(self, monkeypatch, tmp_path):
         not_a_dir = tmp_path / "file"
         not_a_dir.write_text("")

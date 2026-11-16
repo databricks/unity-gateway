@@ -7,6 +7,7 @@ import signal
 import stat
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -130,6 +131,13 @@ class TestReadWrite:
         later = config.stat().st_mtime + 10
         os.utime(config, (later, later))
         assert _served(WS, "prod") is None
+        # Edited while a fetch was in flight: its token may be the old config's identity.
+        config_before = token_cache.config_fingerprint()
+        config.write_text("[prod]\nhost = https://abcd\n")
+        token_cache.write(WS, "prod", token, expected_config=config_before)
+        assert token_cache.lookup(WS, "prod") is None
+        token_cache.write(WS, "prod", token, expected_config=token_cache.config_fingerprint())
+        assert _served(WS, "prod") == token
 
     def test_near_expiry_is_a_miss(self):
         token_cache.write(WS, None, _jwt(time.time() + token_cache.MIN_REMAINING_SECONDS - 1))
@@ -338,6 +346,47 @@ class TestReadWrite:
         assert _served(WS, "p") is None
         assert list(token_cache.CACHE_DIR.glob("*.tmp")) == []
 
+    @pytest.mark.parametrize("entry_delete_fails", [False, True])
+    def test_clear_overtaking_a_paused_locked_write_wins(self, monkeypatch, entry_delete_fails):
+        # A writer holding the lock stalls after reading the clear stamp; a login's clear times
+        # out on the lock, clears without it, and the writer then resumes.
+        token_cache.clear()
+        monkeypatch.setattr(token_cache, "_LOCK_TIMEOUT_SECONDS", 0.05)
+        if entry_delete_fails:
+            _deny_entry_deletes(monkeypatch)
+        paused, resume = threading.Event(), threading.Event()
+        real_cleared_at = token_cache._cleared_at
+        writer_reads: list[float] = []
+
+        def cleared_at() -> float:
+            value = real_cleared_at()
+            if threading.current_thread().name == "writer":
+                writer_reads.append(value)
+                if len(writer_reads) == 1:
+                    paused.set()
+                    assert resume.wait(timeout=30)
+            return value
+
+        monkeypatch.setattr(token_cache, "_cleared_at", cleared_at)
+        started = time.time()
+        writer = threading.Thread(
+            target=token_cache.write,
+            args=(WS, "p", _jwt(time.time() + 3600)),
+            kwargs={"fetch_started": started},
+            name="writer",
+        )
+        writer.start()
+        try:
+            assert paused.wait(timeout=30)
+            token_cache.clear()  # times out on the writer's lock and clears unlocked
+        finally:
+            resume.set()
+            writer.join(timeout=30)
+        assert not writer.is_alive()
+        assert len(writer_reads) == 2  # the writer re-checked the stamp after its replace
+        assert token_cache.lookup(WS, "p") is None
+        assert token_cache._cache_path(WS, "p").exists() == entry_delete_fails
+
     def test_first_fetch_racing_a_login_is_not_written_back(self):
         # No helper has created the cache yet: a first fetch for the old identity is in flight
         # when a login clears the cache, then tries to write.
@@ -453,6 +502,19 @@ class TestBackgroundRefresh:
         os.utime(marker, (past, past))
         token_cache.serve(WS, "prod")
         assert len(spawned) == 1
+
+    def test_claim_file_time_just_ahead_of_now_is_still_active(self):
+        # NTFS stamps the marker from a finer clock than time.time(), so a claim taken just now
+        # can read a few milliseconds in the future; it must still hold the window.
+        token_cache._ensure_private_cache_dir(create=True)
+        marker = token_cache._refresh_marker_path(WS, "prod")
+        marker.write_text("")
+        now = time.time()
+        ahead = now + 0.02
+        assert ahead - now < token_cache._FUTURE_STAMP_TOLERANCE_SECONDS
+        os.utime(marker, (ahead, ahead))
+        assert token_cache._claim_refresh(marker, now) is False
+        assert marker.exists()
 
     def test_spawn_failure_still_serves_the_token(self, monkeypatch):
         def boom(argv):
@@ -572,10 +634,14 @@ class TestFastPath:
         assert token_cache.fast_path_token(argv) is None
 
 
-class TestSavedPatMode:
-    """The full command honors a saved workspace's PAT mode for any host, so the fast path must."""
+class TestSavedChoices:
+    """With ``--host`` the full command applies saved choices only on a machine with a published
+    agent configuration, so the fast path defers only then."""
 
-    def _save_state(self, use_pat: bool) -> None:
+    ARGV = ["auth-token", "--host", WS, "--profile", "p"]
+    ARGV_NO_PROFILE = ["auth-token", "--host", WS]
+
+    def _save_state(self, **choices) -> None:
         from ucode.state_file import STATE_VERSION
 
         token_cache.STATE_PATH.write_text(
@@ -583,29 +649,99 @@ class TestSavedPatMode:
                 {
                     "state_version": STATE_VERSION,
                     "current_workspace": WS,
-                    "workspaces": {WS: {"profile": "p", "use_pat": use_pat}},
+                    "workspaces": {WS: choices},
                 }
             )
         )
 
-    def test_saved_pat_mode_defers_to_the_full_cli(self):
+    @pytest.fixture
+    def published(self, monkeypatch):
+        monkeypatch.setattr(token_cache, "_published_agent_config_present", lambda: True)
+
+    def test_saved_pat_is_ignored_without_a_published_config(self):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "p", token)
+        self._save_state(profile="p", use_pat=True)
+        assert token_cache.fast_path_token(self.ARGV) == token
+
+    def test_saved_pat_defers_when_published(self, published):
         token_cache.write(WS, "p", _jwt(time.time() + 3600))
-        self._save_state(use_pat=True)
-        assert token_cache.fast_path_token(["auth-token", "--host", WS, "--profile", "p"]) is None
+        self._save_state(profile="p", use_pat=True)
+        assert (
+            token_cache.fast_path_token(["auth-token", "--host", WS + "/", "--profile", "p"])
+            is None
+        )
 
-    def test_saved_oauth_mode_is_served(self):
+    def test_unrelated_host_keeps_fast_path_when_published(self, published):
+        other = "https://other.cloud.databricks.com"
+        token = _jwt(time.time() + 3600)
+        token_cache.write(other, "p", token)
+        token_cache.write(other, None, token)
+        self._save_state(profile="q", use_pat=True)
+        assert (
+            token_cache.fast_path_token(["auth-token", "--host", other, "--profile", "p"]) == token
+        )
+        assert token_cache.fast_path_token(["auth-token", "--host", other]) == token
+
+    def test_saved_oauth_is_served_when_published(self, published):
         token = _jwt(time.time() + 3600)
         token_cache.write(WS, "p", token)
+        self._save_state(profile="p", use_pat=False)
+        assert token_cache.fast_path_token(self.ARGV) == token
+
+    @pytest.mark.parametrize(
+        "choice",
+        [{"profile": "q"}, {"custom_oauth": {"client_id": "c", "scopes": ["all-apis"]}}],
+    )
+    def test_no_profile_defers_to_saved_profile_or_oauth(self, published, choice):
+        token_cache.write(WS, None, _jwt(time.time() + 3600))
+        self._save_state(**choice)
+        assert token_cache.fast_path_token(self.ARGV_NO_PROFILE) is None
+
+    def test_no_profile_without_saved_choices_is_served(self, published):
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, None, token)
         self._save_state(use_pat=False)
-        assert token_cache.fast_path_token(["auth-token", "--host", WS, "--profile", "p"]) == token
-
-    def test_missing_or_corrupt_state_is_served(self):
-        token = _jwt(time.time() + 3600)
-        token_cache.write(WS, "p", token)
-        argv = ["auth-token", "--host", WS, "--profile", "p"]
-        assert token_cache.fast_path_token(argv) == token
+        assert token_cache.fast_path_token(self.ARGV_NO_PROFILE) == token
         token_cache.STATE_PATH.write_text("{not json")
-        assert token_cache.fast_path_token(argv) == token
+        assert token_cache.fast_path_token(self.ARGV_NO_PROFILE) == token
+        token_cache.STATE_PATH.unlink()
+        assert token_cache.fast_path_token(self.ARGV_NO_PROFILE) == token
+
+    def test_marker_checks_owner_mode_and_json_dict(self, tmp_path, monkeypatch):
+        import stat as stat_mod
+
+        marker = tmp_path / "marker"
+        monkeypatch.setattr(token_cache, "PUBLISHED_AGENT_CONFIG_MARKER_PATH", marker)
+        monkeypatch.setattr(
+            token_cache, "sys", SimpleNamespace(**{**vars(sys), "platform": "linux"})
+        )
+        assert token_cache._published_agent_config_present() is False
+        marker.write_text("{}")
+
+        real_lstat = type(marker).lstat
+
+        def patch_stat(uid: int, mode: int) -> None:
+            monkeypatch.setattr(
+                type(marker),
+                "lstat",
+                lambda self: (
+                    SimpleNamespace(st_uid=uid, st_mode=stat_mod.S_IFREG | mode)
+                    if self == marker
+                    else real_lstat(self)
+                ),
+            )
+
+        patch_stat(1000, 0o644)
+        assert token_cache._published_agent_config_present() is False
+        patch_stat(0, 0o664)
+        assert token_cache._published_agent_config_present() is False
+        patch_stat(0, 0o644)
+        assert token_cache._published_agent_config_present() is True
+        marker.write_text("[]")
+        assert token_cache._published_agent_config_present() is False
+        marker.write_text("{bad")
+        assert token_cache._published_agent_config_present() is False
 
 
 class TestEntry:
@@ -624,33 +760,98 @@ class TestEntry:
 
 
 class TestWindowsAcl:
-    def _patch(self, monkeypatch, sid):
+    """On Windows the cache is used only once icacls has restricted its directory."""
+
+    SID = "S-1-5-21-1-2-3-1001"
+
+    def _patch(self, monkeypatch, sid, *, returncode=0, error=None, windows=True):
         from pathlib import PureWindowsPath
 
         from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 
         calls: list[list[str]] = []
-        monkeypatch.setattr(subprocess_cross_os, "run", lambda argv, **kw: calls.append(argv))
+
+        def run(argv, **kw):
+            calls.append(argv)
+            if error is not None:
+                raise error
+            return SimpleNamespace(returncode=returncode)
+
+        monkeypatch.setattr(subprocess_cross_os, "run", run)
         monkeypatch.setattr(
             system_cross_os, "windows_system32_dir", lambda: PureWindowsPath("C:/Windows/System32")
         )
         monkeypatch.setattr(token_cache, "_current_user_sid", lambda: sid)
+        if windows:
+            monkeypatch.setattr(
+                token_cache, "sys", SimpleNamespace(**{**vars(sys), "platform": "win32"})
+            )
         return calls
 
+    def _marker(self):
+        return token_cache.CACHE_DIR / token_cache._ACL_MARKER_NAME
+
     def test_resolved_sid_is_granted_without_following_links(self, monkeypatch, tmp_path):
-        sid = "S-1-5-21-1-2-3-1001"
-        calls = self._patch(monkeypatch, sid)
-        token_cache._restrict_windows_dir(tmp_path)
+        calls = self._patch(monkeypatch, self.SID, windows=False)
+        assert token_cache._restrict_windows_dir(tmp_path) is True
         assert len(calls) == 1
         assert "/L" in calls[0]
         assert "/inheritance:r" in calls[0]
-        assert f"*{sid}:(OI)(CI)F" in calls[0]
+        assert f"*{self.SID}:(OI)(CI)F" in calls[0]
 
     @pytest.mark.parametrize("sid", ["", "garbage"])
     def test_unresolved_sid_skips_icacls(self, monkeypatch, tmp_path, sid):
-        calls = self._patch(monkeypatch, sid)
-        token_cache._restrict_windows_dir(tmp_path)
+        calls = self._patch(monkeypatch, sid, windows=False)
+        assert token_cache._restrict_windows_dir(tmp_path) is False
         assert calls == []
+
+    def test_fresh_directory_is_restricted_then_used(self, monkeypatch):
+        calls = self._patch(monkeypatch, self.SID)
+        token = _jwt(time.time() + 3600)
+        token_cache.write(WS, "p", token)
+        assert len(calls) == 1
+        assert self._marker().is_file()
+        assert _served(WS, "p") == token
+        # Once marked, the directory is not restricted again.
+        token_cache.write(WS, "q", token)
+        assert len(calls) == 1
+
+    @pytest.mark.parametrize("icacls_ok", [True, False])
+    def test_existing_unmarked_directory_is_restricted_before_use(self, monkeypatch, icacls_ok):
+        # A directory an earlier ug created (or anyone planted) without the restriction.
+        token = _jwt(time.time() + 3600)
+        token_cache.CACHE_DIR.mkdir()
+        token_cache._cache_path(WS, "p").write_text(
+            json.dumps({"token": token, "cached_at": time.time()})
+        )
+        calls = self._patch(monkeypatch, self.SID, returncode=0 if icacls_ok else 5)
+        assert token_cache.lookup(WS, "p") is None
+        assert calls == []  # a read never restricts
+        token_cache.write(WS, "q", token)
+        assert len(calls) == 1
+        assert self._marker().exists() == icacls_ok
+        assert token_cache._cache_path(WS, "q").exists() == icacls_ok
+        assert _served(WS, "q") == (token if icacls_ok else None)
+
+    @pytest.mark.parametrize("sid", ["", "garbage"])
+    def test_unresolved_sid_disables_the_cache(self, monkeypatch, sid):
+        calls = self._patch(monkeypatch, sid)
+        token_cache.write(WS, "p", _jwt(time.time() + 3600))
+        assert calls == []
+        assert list(token_cache.CACHE_DIR.glob("*.json")) == []
+        assert not self._marker().exists()
+        assert token_cache.lookup(WS, "p") is None
+
+    @pytest.mark.parametrize(
+        ("returncode", "error"), [(1, None), (0, OSError("no icacls"))], ids=["exit", "oserror"]
+    )
+    def test_failed_icacls_disables_the_cache(self, monkeypatch, returncode, error):
+        calls = self._patch(monkeypatch, self.SID, returncode=returncode, error=error)
+        token_cache.write(WS, "p", _jwt(time.time() + 3600))
+        assert len(calls) == 1
+        assert list(token_cache.CACHE_DIR.glob("*.json")) == []
+        assert not self._marker().exists()
+        assert token_cache.lookup(WS, "p") is None
 
 
 class TestLinkRefusalAndClearRetry:

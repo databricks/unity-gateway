@@ -3101,6 +3101,7 @@ class TestAuthTokenCommand:
             patch(
                 "ucode.cli.load_state", return_value={"workspace": "https://ws", "use_pat": True}
             ),
+            patch("ucode.cli.published_agent_config_used", return_value=True),
             patch(
                 "ucode.cli.get_databricks_token",
                 side_effect=lambda w, p, **_kwargs: os.environ.get("DATABRICKS_BEARER", ""),
@@ -3108,6 +3109,19 @@ class TestAuthTokenCommand:
         ):
             result = runner.invoke(app, ["auth-token", "--host", "https://ws", "--profile", "p"])
         assert result.stdout == "dapi-pat\n"
+
+    def test_saved_pat_mode_is_ignored_without_a_published_agent_config(self, monkeypatch):
+        monkeypatch.delenv("DATABRICKS_BEARER", raising=False)
+        oauth_tok = _jwt(time.time() + 3600, "oauth")
+        token_cache.write("https://ws", "p", oauth_tok)
+        with (
+            patch(
+                "ucode.cli.load_state", return_value={"workspace": "https://ws", "use_pat": True}
+            ),
+            patch("ucode.cli.published_agent_config_used", return_value=False),
+        ):
+            result = runner.invoke(app, ["auth-token", "--host", "https://ws", "--profile", "p"])
+        assert result.stdout == oauth_tok + "\n"
 
     def test_refresh_cache_rejects_client_id(self):
         result = runner.invoke(

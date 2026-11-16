@@ -2212,9 +2212,11 @@ def get_databricks_token(
             # Under a budget the listing gets half of what is left after CLI discovery (its
             # `--version` probe); `databricks auth token` can find the host's profile itself if
             # the listing runs out of time.
+            listing_budget: float | None = None
             if budget_seconds is not None:
                 databricks_cli_path()
-            with _cli_deadline(None if budget_seconds is None else _time_left(budget_seconds) / 2):
+                listing_budget = _time_left(budget_seconds) / 2
+            with _cli_deadline(listing_budget):
                 profile = find_profile_name_for_host(workspace)
         token = _get_databricks_token_for_profile(
             workspace,

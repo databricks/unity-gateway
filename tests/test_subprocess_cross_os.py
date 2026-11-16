@@ -433,8 +433,11 @@ def _alive(pid: int) -> bool:
     return True
 
 
-def _wrapper_argv(pid_file) -> list[str]:
-    """A command whose own child holds the output pipes, like the python behind a `.cmd` shim."""
+def _wrapper_argv(pid_file, *, wrapper_exits: bool = False) -> list[str]:
+    """A command whose own child holds the output pipes, like the python behind a `.cmd` shim.
+
+    With ``wrapper_exits`` the wrapper exits once its child has started, leaving the child
+    holding the pipes alone."""
     child = (
         "import os, sys, time\nopen(sys.argv[1], 'w').write(str(os.getpid()))\ntime.sleep(120)\n"
     )
@@ -443,8 +446,9 @@ def _wrapper_argv(pid_file) -> list[str]:
         f"child = subprocess.Popen([sys.executable, '-c', {child!r}, sys.argv[1]])\n"
         "while not os.path.exists(sys.argv[1]):\n"
         "    time.sleep(0.05)\n"
-        "child.wait()\n"
     )
+    if not wrapper_exits:
+        wrapper += "child.wait()\n"
     return [sys.executable, "-c", wrapper, str(pid_file)]
 
 
@@ -474,6 +478,23 @@ class TestRunBounded:
             subprocess_cross_os.run_bounded(_wrapper_argv(pid_file), timeout=10, text=True)
         # The child would hold the pipes for two minutes; plain subprocess.run waits for it.
         assert time.monotonic() - started < 60
+        child = int(pid_file.read_text())
+        deadline = time.monotonic() + 30
+        while _alive(child) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(child)
+
+    def test_timeout_ends_a_child_its_exited_wrapper_left_behind(self, tmp_path):
+        # The direct child is gone but its child still holds the pipes: ending the tree must
+        # still reach it (a Job Object on Windows), and the drain must not add seconds.
+        pid_file = tmp_path / "child.pid"
+        timeout = 5.0
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess_cross_os.run_bounded(
+                _wrapper_argv(pid_file, wrapper_exits=True), timeout=timeout, text=True
+            )
+        assert time.monotonic() - started < timeout + 2.0
         child = int(pid_file.read_text())
         deadline = time.monotonic() + 30
         while _alive(child) and time.monotonic() < deadline:
@@ -538,6 +559,36 @@ class TestRunBounded:
             )
         assert registered == [False]
         assert subprocess_cross_os._RUNNING_TREES == set()
+
+    def test_windows_tree_end_uses_the_job_even_after_the_wrapper_exited(self, monkeypatch):
+        closed: list[tuple[int, bool]] = []
+        killed: list[object] = []
+
+        class Exited:
+            pid = 1
+
+            def poll(self) -> int:
+                return 0
+
+            def kill(self) -> None:
+                pass
+
+        exited = Exited()
+        monkeypatch.setattr(subprocess_cross_os.os, "name", "nt")
+        monkeypatch.setattr(
+            subprocess_cross_os,
+            "_close_job",
+            lambda job, *, terminate: closed.append((job, terminate)),
+        )
+        monkeypatch.setattr(subprocess_cross_os.subprocess, "run", killed.append)
+        monkeypatch.setattr(subprocess_cross_os, "_TREE_JOBS", {exited: 42})
+        subprocess_cross_os._end_tree(exited)
+        assert closed == [(42, True)]
+        assert subprocess_cross_os._TREE_JOBS == {}
+        # Without a job (assignment failed), an exited wrapper has no tree left to taskkill.
+        subprocess_cross_os._end_tree(exited)
+        assert closed == [(42, True)]
+        assert killed == []
 
     def test_non_blocking_end_does_not_wait_for_a_held_lock(self, monkeypatch):
         # From the SIGTERM handler: another thread holding the registry lock must not stall it.

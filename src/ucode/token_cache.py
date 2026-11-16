@@ -11,8 +11,9 @@ off whenever an environment variable selects other credentials (``_IDENTITY_ENV_
 fast path defers to the full command when the saved workspace uses a PAT. Entries are keyed by
 host, profile, ``XDG_CONFIG_HOME`` and the resolved config file, including its size and mtime, so
 editing it in place drops its cached tokens. Files are ``0600`` inside a ``0700`` directory owned
-by the user where the OS supports modes, like the CLI's own ``~/.databricks/token-cache.json``;
-links are never followed, and a directory that fails those checks disables the cache.
+by the user where the OS supports modes, like the CLI's own ``~/.databricks/token-cache.json``.
+On Windows the directory is used only once icacls has limited it to SYSTEM, Administrators and
+the user. Links are never followed, and a directory that fails those checks disables the cache.
 :func:`clear` records when it ran, and a fetch that started before then is not written back.
 
 An entry is served while its JWT has at least ``MIN_REMAINING_SECONDS`` left. Once it is
@@ -37,8 +38,13 @@ from pathlib import Path
 CACHE_DIR = Path.home() / ".ucode" / "token-cache"
 # ug's saved state, read (stdlib-only) for the PAT mode the full command would honor.
 STATE_PATH = Path.home() / ".ucode" / "state.json"
+# Root-owned marker of a machine with a published agent configuration (managed_files owns it).
+PUBLISHED_AGENT_CONFIG_MARKER_PATH = Path("/etc/unitygateway/agents-state.json")
 _CLEARED_NAME = "cleared-at"
 _LOCK_NAME = ".lock"
+# On Windows, present only once icacls has limited the directory to SYSTEM, Administrators and
+# this user; without it nothing is read from or written to the directory.
+_ACL_MARKER_NAME = ".acl-v1"
 _LOCK_TIMEOUT_SECONDS = 2.0
 # `clear` and `write` order their stamps under the lock, so a write after a clear is always
 # stamped later, and a clear later than every write before it, even within one tick of a coarse
@@ -74,6 +80,13 @@ _IDENTITY_ENV_VARS = (
     "AZURE_CLIENT_ID",
     "AZURE_CLIENT_SECRET",
     "AZURE_TENANT_ID",
+    "ARM_CLIENT_ID",
+    "ARM_CLIENT_SECRET",
+    "ARM_TENANT_ID",
+    "ARM_USE_MSI",
+    "DATABRICKS_AZURE_RESOURCE_ID",
+    "DATABRICKS_USERNAME",
+    "DATABRICKS_PASSWORD",
 )
 # Never follow a planted link to read or write a cache file (no-op where unsupported).
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -132,16 +145,18 @@ def _normalized_host(host: str) -> str:
     return host.rstrip("/")
 
 
-def _entry_name(host: str, profile: str | None) -> str:
-    key = "\0".join(
-        (
-            _normalized_host(host),
-            profile or "",
-            _config_file_key(),
-            os.environ.get("XDG_CONFIG_HOME", ""),
-            _config_file_version(),
-        )
+def config_fingerprint() -> str:
+    """The config file, ``XDG_CONFIG_HOME`` and the file's mtime and size that key an entry.
+
+    Taken before a fetch and passed to :func:`write`, it keeps a token fetched under one
+    config from being stored under the key of a config edited while the fetch ran."""
+    return "\0".join(
+        (_config_file_key(), os.environ.get("XDG_CONFIG_HOME", ""), _config_file_version())
     )
+
+
+def _entry_name(host: str, profile: str | None) -> str:
+    key = "\0".join((_normalized_host(host), profile or "", config_fingerprint()))
     return hashlib.sha256(key.encode()).hexdigest()
 
 
@@ -149,8 +164,9 @@ def _ensure_private_cache_dir(*, create: bool) -> bool:
     """Whether ``CACHE_DIR`` is a real directory private to this user, creating it if asked.
 
     A link, another user's directory, or one that can't be checked disables the cache. On POSIX,
-    group or other permission bits are removed; on Windows a newly created directory is limited
-    to SYSTEM, Administrators and the current user, best-effort."""
+    group or other permission bits are removed. On Windows the directory, new or pre-existing, is
+    limited to SYSTEM, Administrators and the current user before its first write, and recorded
+    as such by ``_ACL_MARKER_NAME``; until then (or if that fails) the cache is off."""
     try:
         if create:
             CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
@@ -158,9 +174,6 @@ def _ensure_private_cache_dir(*, create: bool) -> bool:
                 CACHE_DIR.mkdir(mode=0o700)
             except FileExistsError:
                 pass
-            else:
-                if sys.platform == "win32":
-                    _restrict_windows_dir(CACHE_DIR)
         info = CACHE_DIR.lstat()
         if not stat.S_ISDIR(info.st_mode):
             return False
@@ -169,6 +182,30 @@ def _ensure_private_cache_dir(*, create: bool) -> bool:
                 return False
             if info.st_mode & 0o077:
                 os.chmod(CACHE_DIR, 0o700)
+    except OSError:
+        return False
+    if sys.platform == "win32":
+        return _windows_dir_restricted(create=create)
+    return True
+
+
+def _windows_dir_restricted(*, create: bool) -> bool:
+    """Whether ``CACHE_DIR`` carries the ACL marker, restricting it first if ``create``."""
+    marker = CACHE_DIR / _ACL_MARKER_NAME
+    try:
+        if stat.S_ISREG(marker.lstat().st_mode):
+            return True
+        if not create:
+            return False
+    except FileNotFoundError:
+        if not create:
+            return False
+    except OSError:
+        return False
+    if not _restrict_windows_dir(CACHE_DIR):
+        return False
+    try:
+        os.close(_open_private(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC))
     except OSError:
         return False
     return True
@@ -238,18 +275,20 @@ def _refuse_link(path: Path) -> None:
         raise OSError(f"refusing to open link: {path}")
 
 
-def _restrict_windows_dir(path: Path) -> None:
-    """Replace inherited access to ``path`` with SYSTEM, Administrators and this user."""
+def _restrict_windows_dir(path: Path) -> bool:
+    """Replace inherited access to ``path`` with SYSTEM, Administrators and this user.
+
+    Return whether icacls succeeded. Without this user's SID nothing is changed (stripping
+    inheritance could lock this user out) and the result is False."""
     try:
         from ucode.os_compatibility.subprocess_cross_os import run
         from ucode.os_compatibility.system_cross_os import windows_system32_dir
 
         sid = _current_user_sid()
         if not sid.startswith("S-1-"):
-            # Without our own SID, stripping inheritance could lock this user out.
-            return
+            return False
         grants = [*_WINDOWS_PRIVATE_GRANTS, f"*{sid}:(OI)(CI)F"]
-        run(
+        result = run(
             [
                 str(windows_system32_dir() / "icacls.exe"),
                 str(path),
@@ -261,8 +300,9 @@ def _restrict_windows_dir(path: Path) -> None:
             check=False,
             timeout=10,
         )
+        return result.returncode == 0
     except Exception:
-        pass
+        return False
 
 
 def _open_private(path: Path, flags: int) -> int:
@@ -342,12 +382,24 @@ def serve(host: str, profile: str | None) -> str | None:
 
 
 def write(
-    host: str, profile: str | None, token: str, *, fetch_started: float | None = None
+    host: str,
+    profile: str | None,
+    token: str,
+    *,
+    fetch_started: float | None = None,
+    expected_config: str | None = None,
 ) -> None:
     """Atomically store ``token``, best-effort: a cache failure must never fail the helper.
 
     ``fetch_started`` is the ``time.time()`` at which the caller began fetching ``token``. If
-    :func:`clear` ran since then (a login may have changed the identity), nothing is written."""
+    :func:`clear` ran since then (a login may have changed the identity), nothing is written.
+    ``expected_config`` is :func:`config_fingerprint` from before the fetch; if the config has
+    changed since, the token may belong to the old config's identity and is not written.
+
+    A :func:`clear` that times out on the lock clears without it, so it can land while this
+    write holds the lock. The entry is stamped with the time before it was written and checked
+    against the clear stamp again after the replace; one that a clear overtook is removed, or,
+    if that fails, the clear stamp is moved past it."""
     if not cache_applicable() or token_expiry(token) is None:
         return
     if not _ensure_private_cache_dir(create=True):
@@ -356,18 +408,38 @@ def write(
     tmp = _temp_path(path)
     try:
         with _locked():
-            cleared_at = _cleared_at()
-            if fetch_started is not None and cleared_at >= fetch_started:
+            if expected_config is not None and config_fingerprint() != expected_config:
+                return
+            write_started = time.time()
+            cleared_before = _cleared_at()
+            if fetch_started is not None and cleared_before >= fetch_started:
                 return
             # Stamped after the latest clear, which `lookup` requires of a servable entry.
-            cached_at = max(time.time(), cleared_at + _WRITE_AFTER_CLEAR_SECONDS)
+            cached_at = max(write_started, cleared_before + _WRITE_AFTER_CLEAR_SECONDS)
             _write_new(tmp, json.dumps({"token": token, "cached_at": cached_at}))
             os.replace(tmp, path)
+            cleared_after = _cleared_at()
+            if (
+                cleared_after != cleared_before
+                or cleared_after >= cached_at
+                or (fetch_started is not None and cleared_after >= fetch_started)
+            ):
+                _discard_overtaken(path, cached_at)
     except (OSError, TimeoutError):
         try:
             tmp.unlink()
         except OSError:
             pass
+
+
+def _discard_overtaken(path: Path, cached_at: float) -> None:
+    """Remove an entry a concurrent clear overtook, or move the clear stamp past it."""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        _write_cleared_at(max(time.time(), cached_at))
 
 
 def clear() -> None:
@@ -390,10 +462,24 @@ def clear() -> None:
 
 
 def _clear_entries() -> None:
+    # Later than every entry written before now (see `write`), even within one clock tick.
+    _write_cleared_at(max(time.time(), _cleared_at() + _CLEAR_AFTER_STAMP_SECONDS))
+    try:
+        entries = list(CACHE_DIR.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.suffix in (".json", ".refresh", ".tmp"):
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+def _write_cleared_at(cleared_at: float) -> None:
+    """Atomically replace the clear stamp, best-effort."""
     stamp = CACHE_DIR / _CLEARED_NAME
     tmp = _temp_path(stamp)
-    # Later than every entry written before now (see `write`), even within one clock tick.
-    cleared_at = max(time.time(), _cleared_at() + _CLEAR_AFTER_STAMP_SECONDS)
     try:
         _write_new(tmp, repr(cleared_at))
         for attempt in range(3):
@@ -410,16 +496,6 @@ def _clear_entries() -> None:
             tmp.unlink()
         except OSError:
             pass
-    try:
-        entries = list(CACHE_DIR.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if entry.suffix in (".json", ".refresh", ".tmp"):
-            try:
-                entry.unlink()
-            except OSError:
-                pass
 
 
 def _cleared_at() -> float:
@@ -495,7 +571,8 @@ def _claim_refresh(marker: Path, now: float) -> bool:
         claimed_at = _claimed_at(marker)
         if claimed_at is None:
             continue
-        if 0 <= now - claimed_at < REFRESH_RETRY_SECONDS:
+        # A file-time fallback can sit a little ahead of `now` (NTFS stamps from a finer clock).
+        if -_FUTURE_STAMP_TOLERANCE_SECONDS <= now - claimed_at < REFRESH_RETRY_SECONDS:
             return False
         try:
             marker.unlink()
@@ -563,11 +640,58 @@ def _fast_path_target(args: list[str]) -> tuple[str, str | None] | None:
     return host, parsed.get("--profile") or None
 
 
-def _saved_pat_mode() -> bool:
-    """Whether the saved current workspace uses a PAT, which the full command honors for any host."""
+def _workspace_url(url: str) -> str:
+    """Stdlib mirror of ``ui.normalize_workspace_url``."""
+    url = url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url.rstrip("/")
+
+
+def _published_agent_config_present() -> bool:
+    """Stdlib mirror of ``managed_files.published_agent_config_used``."""
+    if not (sys.platform == "darwin" or sys.platform.startswith("linux")):
+        return False
+    try:
+        info = PUBLISHED_AGENT_CONFIG_MARKER_PATH.lstat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        return False
+    try:
+        data = json.loads(PUBLISHED_AGENT_CONFIG_MARKER_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return False
+    return isinstance(data, dict)
+
+
+def _defers_to_saved_choices(host: str, profile: str | None) -> bool:
+    """Whether the full command would take its choices from the saved workspace for ``host``.
+
+    With ``--host`` it does so only on a machine with a published agent configuration when the
+    saved workspace matches ``host``; a saved PAT mode then always applies, and a saved custom
+    OAuth client or profile applies when ``--profile`` was omitted."""
+    if not _published_agent_config_present():
+        return False
     from ucode.state_file import current_workspace_state, read_state_file
 
-    return bool(current_workspace_state(read_state_file(STATE_PATH)).get("use_pat"))
+    saved = current_workspace_state(read_state_file(STATE_PATH))
+    saved_ws = saved.get("workspace")
+    if (
+        not isinstance(saved_ws, str)
+        or not saved_ws.strip()
+        or _workspace_url(saved_ws) != _workspace_url(host)
+    ):
+        return False
+    saved_oauth = saved.get("custom_oauth")
+    has_saved_oauth = (
+        isinstance(saved_oauth, dict)
+        and isinstance(saved_oauth.get("client_id"), str)
+        and isinstance(saved_oauth.get("scopes"), list)
+    )
+    return bool(
+        saved.get("use_pat") or (profile is None and (has_saved_oauth or saved.get("profile")))
+    )
 
 
 def fast_path_token(args: list[str]) -> str | None:
@@ -576,9 +700,12 @@ def fast_path_token(args: list[str]) -> str | None:
     Only the exact OAuth argv ``build_auth_token_argv`` emits, plus pi's ``--caller-timeout``, is
     handled; a hit needs no time limit. Anything else
     (``--use-pat``, ``--force-refresh``, ``--browser-login``, ``--refresh-cache``, custom-client
-    options, a missing ``--host``) returns None so the full CLI decides, as does a saved
-    workspace in PAT mode."""
+    options, a missing ``--host``) returns None so the full CLI decides, as does a host whose
+    saved choices the full command would apply (see ``_defers_to_saved_choices``)."""
     target = _fast_path_target(args)
-    if target is None or _saved_pat_mode():
+    if target is None:
         return None
-    return serve(*target)
+    host, profile = target
+    if _defers_to_saved_choices(host, profile):
+        return None
+    return serve(host, profile)

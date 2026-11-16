@@ -3278,6 +3278,8 @@ def auth_token_cmd(
                 )
                 # A login that clears the cache during this fetch must win over its result.
                 fetch_started = time.time()
+                # So does an edit to the config (another profile or identity) during the fetch.
+                config_before = token_cache.config_fingerprint()
                 if browser_login:
                     budget = None  # a person may be signing in through the browser
                 elif refresh_cache:
@@ -3305,7 +3307,13 @@ def auth_token_cmd(
                     budget_seconds=budget,
                     allow_reauth=False,
                 )
-                token_cache.write(workspace, profile, token, fetch_started=fetch_started)
+                token_cache.write(
+                    workspace,
+                    profile,
+                    token,
+                    fetch_started=fetch_started,
+                    expected_config=config_before,
+                )
     except RuntimeError as exc:
         metrics.failure(metrics.COMMAND_OPERATION, exc)
         message = str(exc)

@@ -151,6 +151,11 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         "PUBLISHED_AGENT_CONFIG_MARKER_PATH",
         tmp_path / "etc" / "agents-state.json",
     )
+    monkeypatch.setattr(
+        token_cache_mod,
+        "PUBLISHED_AGENT_CONFIG_MARKER_PATH",
+        tmp_path / "etc" / "agents-state.json",
+    )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
