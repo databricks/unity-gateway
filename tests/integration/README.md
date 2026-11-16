@@ -1752,8 +1752,10 @@ orchestrator; Codex's managed default is opted out and covered by its launch-onl
 
 See the [component coverage inventory](../README.md) for delayed Claude model-switch
 recovery, direct manual model choices across sessions, fragmented terminal input, and
-filesystem-failure coverage and gaps. History and picker choices do not expose a model target
-to the wrapper and retain their conservative cleanup behavior.
+filesystem-failure coverage and gaps. Recovery after an unconfirmed chooser crashes requires
+POSIX process liveness; the normal exit case runs on all platforms. Windows disables first-prompt
+PTY routing. History and picker choices do not expose a model target to the wrapper and retain
+their conservative cleanup behavior.
 Those checks use temporary settings and fake TUIs; they do not establish live Claude or gateway
 coverage or replace the completed file task required by these live journeys.
 

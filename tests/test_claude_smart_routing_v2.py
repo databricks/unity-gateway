@@ -1279,7 +1279,18 @@ finally:
         assert pending("restore")
         assert json.loads(settings.read_text()) == {"model": "fable", "theme": "light"}
 
-    @pytest.mark.parametrize("exit_method", ["finish", "crash"])
+    @pytest.mark.parametrize(
+        "exit_method",
+        [
+            "finish",
+            pytest.param(
+                "crash",
+                marks=pytest.mark.skipif(
+                    os.name != "posix", reason="crash recovery requires POSIX process liveness"
+                ),
+            ),
+        ],
+    )
     def test_unconfirmed_manual_model_does_not_replace_the_default(
         self, guard_sessions, exit_method
     ):

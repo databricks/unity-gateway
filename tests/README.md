@@ -1096,8 +1096,10 @@ baseline for the next launch. Direct `/model NAME` input retains other sessions'
 recovery. A native success marker or matching saved setting changes its restore target to the
 manual choice; an unconfirmed command never becomes the saved default. Process and PTY cases cover
 late writes, fragmented commands, a completed choosing session, a new route before manual
-persistence, handoff failures, superseded choices, and unconfirmed chooser exit or crash. History,
-picker, and other unknown-line input still revoke older cleanup:
+persistence, handoff failures, superseded choices, and unconfirmed chooser exit. Recovery after
+the chooser crashes uses POSIX process liveness; the normal exit case runs on all platforms.
+Windows disables first-prompt PTY routing. History, picker, and other unknown-line input still
+revoke older cleanup:
 their selected model is not observable from stdin, so cross-session late-write recovery for those
 inputs is not covered. The direct Haiku race uses the captured Claude Code 2.1.322 display label
 after another session overwrites the saved setting. Incomplete, different-model and rejected
