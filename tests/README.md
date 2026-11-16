@@ -2,7 +2,8 @@
 
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
-npm prefix, credential cleanup before version checks, failed/missing agents, and idempotent aliases.
+npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,
+and idempotent aliases.
 It does not install real packages, contact Databricks, or establish a macOS/Jamf integration pass.
 
 `test_security_scan_request.py` verifies the default-branch Security Scan's request

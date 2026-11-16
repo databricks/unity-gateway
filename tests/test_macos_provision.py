@@ -40,7 +40,8 @@ def provision(tmp_path):
     _executable(bin_dir / "databricks", "exit 0\n")
     _executable(
         mocks / "sed",
-        (
+        '[ -z "${DATABRICKS_BEARER+x}" ] || exit 99\n'
+        + (
             'if [ "$1" = -i ]; then shift 2; exec /usr/bin/sed -i "$@"; fi\n'
             if sys.platform != "darwin"
             else ""
@@ -69,11 +70,10 @@ def provision(tmp_path):
         'printf "%s\\n" "$*" > "$TEST_ROOT/configure-args"\n'
         'printf "%s\\n" "$npm_config_prefix" "$HOME" "$DATABRICKS_BEARER" '
         '> "$TEST_ROOT/configure-env"\n'
+        'if [ "${UG_EXIT:-0}" != 0 ]; then exit "$UG_EXIT"; fi\n'
         "for agent in claude codex; do\n"
         '  [ "$agent" != "${MISSING_AGENT:-}" ] || continue\n'
-        "  printf '#!/bin/bash\\n[ -z \"${DATABRICKS_BEARER+x}\" ] || exit 99\\nexit %s\\n' "
-        '"${AGENT_EXIT:-0}" > "$npm_config_prefix/bin/$agent"\n'
-        '  /bin/chmod +x "$npm_config_prefix/bin/$agent"\n'
+        '  /bin/ln -sf /usr/bin/true "$npm_config_prefix/bin/$agent"\n'
         "done\n",
     )
     text = SCRIPT.read_text()
@@ -154,17 +154,18 @@ def test_provision_reuses_shared_node_and_rewrites_aliases(provision):
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_provision_fails_if_configure_skips_an_agent(provision, agent):
+def test_provision_accepts_a_single_agent_workspace(provision, agent):
     run, root = provision
     result = run(MISSING_AGENT=agent)
-    assert result.returncode == 1
-    assert f"{agent} was not installed" in result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (root / "usr/local/bin" / agent).exists()
+    assert "# BEGIN unity-gateway" in (root / "etc/zshrc").read_text()
+
+
+def test_provision_propagates_configure_failure(provision):
+    run, root = provision
+    assert run(UG_EXIT="42").returncode == 42
     assert "# BEGIN unity-gateway" not in (root / "etc/zshrc").read_text()
-
-
-def test_provision_fails_if_agent_does_not_run(provision):
-    run, _ = provision
-    assert run(AGENT_EXIT="42").returncode == 42
 
 
 def test_provision_rejects_bad_node_checksum(provision):

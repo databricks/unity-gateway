@@ -89,15 +89,6 @@ export DATABRICKS_BEARER
   --agents claude,codex </dev/null
 unset DATABRICKS_BEARER resp
 
-# configure can skip an agent after an npm failure; fail the policy instead.
-for agent in claude codex; do
-  if ! binary="$(command -v "$agent")"; then
-    echo "$agent was not installed; check the npm errors above." >&2
-    exit 1
-  fi
-  "$binary" --version
-done
-
 # Aliases for every user's interactive zsh and bash shells. The block is
 # rewritten on each run, which restores it if a macOS update resets
 # the file.

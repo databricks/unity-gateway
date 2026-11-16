@@ -85,8 +85,9 @@ If Node.js or npm is missing from the script's shared PATH, it installs the offi
 listed above.
 
 `ug configure` reuses existing agents on that PATH, or installs `@anthropic-ai/claude-code` and
-`@openai/codex` through npm. There are no separate native agent downloads or Code Mode helper
-symlinks. The policy fails if either agent is missing or its `--version` check fails after configure.
+`@openai/codex` through npm for agents available in the workspace. It may configure only one agent
+when the workspace enables only that agent. There are no separate native agent downloads or Code
+Mode helper symlinks. A nonzero configure exit fails the policy.
 Existing agent versions are subject to Unity Gateway's compatibility checks; the script does not
 otherwise update Node.js, the agents or the Databricks CLI.
 
@@ -109,7 +110,8 @@ Go to **Computers → Policies → New**:
 
 ## 4. Verify on a test Mac
 
-After the policy runs (check the computer's **History → Policy Logs**), as a user, with no sudo:
+After the policy runs (check the computer's **History → Policy Logs**), as a user, with no sudo.
+Check only the agents enabled in your workspace:
 
 ```bash
 ls -l /usr/local/bin/{ug,databricks,node,npm,claude,codex}
