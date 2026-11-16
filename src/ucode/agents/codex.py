@@ -78,6 +78,7 @@ from ucode.managed_files import (
     current_os,
     explicit_managed_writes,
     machine_wide_only,
+    managed_companion_file,
     managed_file_conflicts,
     managed_file_is_verified,
     managed_file_scope,
@@ -740,7 +741,7 @@ def revert_managed_config() -> str:
         display="Codex",
         parser=_parse_managed_config,
         dumper=tomlkit.dumps,
-        companion_references={"model_catalog_json": path}
+        companion_reference=("model_catalog_json", path)
         if (path := _managed_catalog_path())
         else None,
     )
@@ -1220,20 +1221,21 @@ def _reconcile_managed_config(
         mark_managed_file_verified(state, "codex", path, scope="local-compatible")
         return
     try:
-        companion_files = None
+        companion = None
         if (catalog_path := _managed_catalog_path()) is not None and (catalog is not None or named):
-            companion_files = {
-                catalog_path: json.dumps(catalog, indent=2) + "\n" if catalog is not None else None
-            }
-        reconcile_managed_file(
-            path,
-            tomlkit.dumps(desired_doc),
-            tool="codex",
-            display="Codex",
-            owned_paths=[*MANAGED_KEYS, ["model_catalog_json"]],
-            parser=_parse_managed_config,
-            companion_files=companion_files,
-        )
+            companion = (
+                catalog_path,
+                json.dumps(catalog, indent=2) + "\n" if catalog is not None else None,
+            )
+        with managed_companion_file("codex", path, companion, display="Codex"):
+            reconcile_managed_file(
+                path,
+                tomlkit.dumps(desired_doc),
+                tool="codex",
+                display="Codex",
+                owned_paths=[*MANAGED_KEYS, ["model_catalog_json"]],
+                parser=_parse_managed_config,
+            )
     except ManagedFileWriteUnavailable:
         # `ug configure` must leave the machine-wide file correct, so it never degrades silently.
         if conflicts or explicit_managed_writes():
