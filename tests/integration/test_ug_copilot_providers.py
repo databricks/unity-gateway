@@ -6,6 +6,7 @@ from utils.evidence import (
     FileTask,
     assert_completed_task_model,
     assert_no_session_registry_left,
+    copilot_ref,
     copilot_selected_models,
 )
 
@@ -48,7 +49,7 @@ def test_ug_copilot_runs_a_task_through_an_anthropic_provider(
     Anthropic provider service and no `--model`.
 
     Expected: ug names the provider, Copilot starts on the service's Claude model through
-    `dbx-anthropic`, the completed answer contains the fixture value and was sent as that model,
+    `databricks`, the completed answer contains the fixture value and was sent as that model,
     and no session registry is left.
     """
     session = live_session
@@ -60,7 +61,7 @@ def test_ug_copilot_runs_a_task_through_an_anthropic_provider(
     assert claude_provider in result.stderr + result.stdout
     task.assert_headless_answer("copilot", result)
     assert_completed_task_model(session, "copilot", task.value, claude_provider_model)
-    assert f"dbx-anthropic/{claude_provider_model}" in copilot_selected_models(session)
+    assert copilot_ref("databricks", claude_provider_model) in copilot_selected_models(session)
     assert_no_session_registry_left(session)
 
 
@@ -70,7 +71,7 @@ def test_ug_copilot_runs_a_task_through_an_openai_provider(
     """Scenario: configure Copilot, then run a headless task through an OpenAI provider service
     on its allowed GPT model.
 
-    Expected: the session runs on `dbx-responses/<model>`, the completed answer contains the
+    Expected: the session runs on `databricks-responses/<model>`, the completed answer contains the
     fixture value and was sent as that model, and no session registry is left.
     """
     session = live_session
@@ -81,7 +82,9 @@ def test_ug_copilot_runs_a_task_through_an_openai_provider(
 
     task.assert_headless_answer("copilot", result)
     assert_completed_task_model(session, "copilot", task.value, codex_provider_model)
-    assert f"dbx-responses/{codex_provider_model}" in copilot_selected_models(session)
+    assert copilot_ref("databricks-responses", codex_provider_model) in copilot_selected_models(
+        session
+    )
     assert_no_session_registry_left(session)
 
 
@@ -91,7 +94,7 @@ def test_ug_copilot_runs_a_task_through_an_azure_openai_provider(
     """Scenario: configure Copilot, then run a headless task through an Azure OpenAI provider
     service on its GPT model.
 
-    Expected: the session runs on `dbx-responses/<model>` through the gateway's native OpenAI
+    Expected: the session runs on `databricks-responses/<model>` through the gateway's native OpenAI
     route, the completed answer contains the fixture value and was sent as that model, and no
     session registry is left.
     """
@@ -103,7 +106,9 @@ def test_ug_copilot_runs_a_task_through_an_azure_openai_provider(
 
     task.assert_headless_answer("copilot", result)
     assert_completed_task_model(session, "copilot", task.value, codex_azure_provider_model)
-    assert f"dbx-responses/{codex_azure_provider_model}" in copilot_selected_models(session)
+    assert copilot_ref(
+        "databricks-responses", codex_azure_provider_model
+    ) in copilot_selected_models(session)
     assert_no_session_registry_left(session)
 
 
@@ -113,7 +118,7 @@ def test_ug_copilot_runs_a_task_through_a_microsoft_foundry_provider(
     """Scenario: configure Copilot, then run a headless task through a Microsoft Foundry provider
     service on its GPT model.
 
-    Expected: the session runs on `dbx-responses/<model>` through the gateway's native OpenAI
+    Expected: the session runs on `databricks-responses/<model>` through the gateway's native OpenAI
     route, the completed answer contains the fixture value and was sent as that model, and no
     session registry is left.
     """
@@ -127,7 +132,9 @@ def test_ug_copilot_runs_a_task_through_a_microsoft_foundry_provider(
 
     task.assert_headless_answer("copilot", result)
     assert_completed_task_model(session, "copilot", task.value, codex_foundry_provider_model)
-    assert f"dbx-responses/{codex_foundry_provider_model}" in copilot_selected_models(session)
+    assert copilot_ref(
+        "databricks-responses", codex_foundry_provider_model
+    ) in copilot_selected_models(session)
     assert_no_session_registry_left(session)
 
 

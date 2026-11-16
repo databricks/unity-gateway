@@ -22,7 +22,6 @@ import socket
 import subprocess
 import tempfile
 import zipfile
-from collections import Counter
 from pathlib import Path
 from typing import cast
 from xml.sax.saxutils import escape
@@ -34,6 +33,7 @@ from ucode.agents.copilot import (
     copilot_catalog,
     location_catalog,
     managed_http_headers,
+    model_labels,
     provider_service_catalog,
     resolve_copilot_model,
     unservable_static_models,
@@ -44,7 +44,6 @@ from ucode.databricks import build_auth_shell_command
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
-from ucode.string_utils import model_picker_label
 from ucode.ui import console, print_heading, print_kv, print_note, print_warning
 from ucode.workspace import workspace_headers
 
@@ -218,17 +217,8 @@ def model_entries(
 
 
 def _entries(catalog: list[CopilotModel], provider: str | None) -> list[dict[str, object]]:
-    if provider:
-        # A service's targets are the provider's own ids, which is what its users know it by, and
-        # several of them differ only by a region the label would drop.
-        return [_model_entry(model, model.id) for model in catalog]
-    labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
-    counts = Counter(labels.values())
-    # As in Codex's picker: two models with the same label show their full ids instead.
-    return [
-        _model_entry(model, model.id if counts[label] > 1 else label)
-        for model, label in labels.items()
-    ]
+    labels = model_labels(catalog, provider_service=provider)
+    return [_model_entry(model, labels[model]) for model in catalog]
 
 
 def managed_default_model(state: dict, catalog: list[CopilotModel]) -> str | None:
