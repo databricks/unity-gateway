@@ -16,7 +16,7 @@ Per-provider `compat` flags work around fields the gateway translators reject:
   sends the legacy `anthropic-beta: fine-grained-tool-streaming-...` header
   instead, which the gateway accepts. `sendSessionAffinityHeaders: true` makes
   pi send `x-session-affinity: <session id>`, a routing hint meant to keep a
-  conversation on one AI Gateway destination under traffic splitting, since
+  conversation on one Unity Gateway destination under traffic splitting, since
   prompt caches are destination-local. Pi's Responses dialect already sends
   `session_id` without a flag, and its Gemini dialect has no affinity setting.
 
@@ -162,10 +162,8 @@ def render_overlay(
             "authHeader": True,
             # Gateway's Anthropic translator rejects per-tool
             # `eager_input_streaming` on the streaming + tools path. Pi sends
-            # the legacy beta header instead when this is false. The session
-            # affinity header is a hint meant to keep a conversation on one AI
-            # Gateway destination under traffic splitting (caches are
-            # destination-local).
+            # the legacy beta header instead when this is false. Session affinity
+            # keeps a conversation on one destination (see module docstring).
             "compat": {
                 "supportsEagerToolInputStreaming": False,
                 "sendSessionAffinityHeaders": True,
@@ -331,12 +329,7 @@ def _configure_launch(state: dict) -> str:
     return token
 
 
-# Pi's default ("short") sends no retention hint, leaving GPT on its in-memory
-# prompt cache (minutes of idle time) and Claude on the 5-minute TTL. "long"
-# requests `prompt_cache_retention: "24h"` on Responses and
-# `cache_control.ttl: "1h"` on Anthropic Messages. AI Gateway accepts both for
-# Claude and GPT-5/6 models; gpt-oss opts out per model (see
-# `_pi_openai_model_entry`). Gemini's dialect ignores the setting.
+# Long cache retention for GPT and Claude; rationale in the module docstring.
 PI_CACHE_RETENTION_DEFAULT = "long"
 
 
