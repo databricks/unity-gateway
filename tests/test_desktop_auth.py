@@ -232,7 +232,18 @@ def test_configured_cli_is_used_when_minimal_path_finds_none(monkeypatch, tmp_pa
     assert run.call_args.args[0][0] == configured_cli
 
 
-@pytest.mark.parametrize("state", ["missing", "not-executable"])
+@pytest.mark.parametrize(
+    "state",
+    [
+        "missing",
+        pytest.param(
+            "not-executable",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32", reason="Windows has no POSIX file modes"
+            ),
+        ),
+    ],
+)
 def test_stale_configured_cli_falls_back_to_discovery(cli, monkeypatch, tmp_path, state):
     configured_cli = tmp_path / "removed" / "databricks"
     if state == "not-executable":
