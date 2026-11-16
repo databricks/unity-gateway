@@ -342,7 +342,7 @@ def _oss_model_entry(model_id: str) -> dict:
 # MLflow chat models reject OpenAI fields Pi sends by default (HTTP 400 "json: unknown field" on
 # gpt-oss, Qwen and Llama): `store`, `max_completion_tokens`, and the `prompt_cache_retention` /
 # `prompt_cache_key` pair Pi adds under PI_CACHE_RETENTION=long. Qwen's chat template also
-# rejects the `developer` role. Strict tool schemas are Pi's default off; kept explicit.
+# rejects the `developer` role.
 _MLFLOW_COMPAT: dict[str, object] = {
     "supportsStore": False,
     "supportsStrictMode": False,
@@ -493,14 +493,18 @@ def _usable_model(state: dict, model: str) -> str:
     4.5. Pi would start on a model no provider lists, so it starts on its default instead, as
     Copilot does for a recommended model it can't serve.
     """
-    if not _excluded_model(model):
+    if serves_pi_model(model):
         return model
-    reason = "Claude models older than 4.5 reject Pi's requests"
+    reason = (
+        "Claude models older than 4.5 reject Pi's requests"
+        if _excluded_model(model)
+        else "Pi does not support this model"
+    )
     fallback = default_model(state)
     if fallback is None:
         raise RuntimeError(
             f"Pi can't use {model}: {reason}, and no other Pi model is available on this "
-            "workspace. Choose a Claude 4.5 or newer, GPT or Gemini model."
+            "workspace. Choose a Claude 4.5 or newer, GPT, Gemini or OSS model."
         )
     print_warning(f"Pi can't use {model}: {reason}. Starting on {fallback} instead.")
     return fallback
@@ -632,7 +636,7 @@ def default_model(state: dict) -> str | None:
     the default.
     """
     managed_default = state.get("pi_default_model")
-    if isinstance(managed_default, str) and not _excluded_model(managed_default):
+    if isinstance(managed_default, str) and serves_pi_model(managed_default):
         return managed_default
     managed = state.get("pi_models")
     if isinstance(managed, list):

@@ -575,10 +575,10 @@ class TestManagedDefaultModel:
 
     def test_pi_default_model_wins_over_allowlist(self):
         state = {
-            "pi_default_model": "admin-chosen-default",
+            "pi_default_model": "system.ai.gpt-5-2",
             "pi_models": ["system.ai.claude-opus-4-8", "system.ai.gpt-5"],
         }
-        assert pi.default_model(state) == "admin-chosen-default"
+        assert pi.default_model(state) == "system.ai.gpt-5-2"
 
     def test_falls_back_to_pi_models_without_default(self):
         state = {"pi_models": ["system.ai.claude-opus-4-8"]}
@@ -1233,10 +1233,30 @@ class TestExcludedSelectedModel:
     def test_old_claude_without_another_model_is_an_actionable_error(self, tmp_path, monkeypatch):
         state = {"claude_models": {"opus": "system.ai.claude-opus-4-1"}}
 
-        with pytest.raises(RuntimeError, match="Choose a Claude 4.5 or newer, GPT or Gemini model"):
+        with pytest.raises(
+            RuntimeError, match="Choose a Claude 4.5 or newer, GPT, Gemini or OSS model"
+        ):
             self._write(tmp_path, monkeypatch, state, "databricks-claude/system.ai.claude-opus-4-1")
 
         assert not (tmp_path / "models.json").exists()
+
+    def test_unservable_non_claude_falls_back_with_a_warning(self, tmp_path, monkeypatch):
+        state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}}
+
+        warn = self._write(tmp_path, monkeypatch, state, "system.ai.qwen35-122b-a10b")
+
+        written = json.loads((tmp_path / "models.json").read_text())
+        assert written["model"] == "databricks-claude/system.ai.claude-opus-5-5"
+        assert "Pi does not support this model" in warn.call_args.args[0]
+
+    def test_unservable_non_claude_without_another_model_is_an_error(self, tmp_path, monkeypatch):
+        with pytest.raises(RuntimeError, match="Pi does not support this model"):
+            self._write(tmp_path, monkeypatch, {}, "system.ai.qwen35-122b-a10b")
+
+    def test_unservable_managed_default_is_not_the_default(self):
+        state = {"pi_default_model": "system.ai.qwen35-122b-a10b"}
+
+        assert pi.default_model(state) is None
 
     def test_a_served_model_is_kept_without_a_warning(self, tmp_path, monkeypatch):
         state = {"claude_models": {"opus": "system.ai.claude-opus-5-5"}, "codex_models": ["gpt-5"]}
