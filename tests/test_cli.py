@@ -7440,6 +7440,21 @@ class TestConfigureSharedStateUsePat:
             "system.ai.glm-5-3"
         ]
 
+    def test_pi_status_lists_the_models_pi_serves(self):
+        import ucode.cli as cli_mod
+
+        # An allowlist of only pre-4.5 Claude falls back to discovery, as the written config does.
+        state = {
+            "pi_models": ["system.ai.claude-opus-4-1"],
+            "claude_models": {"opus": "system.ai.claude-opus-4-1"},
+            "codex_models": ["system.ai.gpt-5", "system.ai.gpt-oss-120b"],
+        }
+
+        assert cli_mod._status_models("pi", state) == [
+            "system.ai.gpt-5",
+            "system.ai.gpt-oss-120b",
+        ]
+
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
         monkeypatch.setattr(

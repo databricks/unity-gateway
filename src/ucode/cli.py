@@ -59,6 +59,7 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
+from ucode.agents import pi as pi_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
@@ -1798,12 +1799,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
     elif tool == "antigravity":
         models = list(antigravity_agent.model_catalog(state).values())
     elif tool == "pi":
-        models = _model_values(state.get("pi_models")) or (
-            _model_values(state.get("claude_models"))
-            + _model_values(state.get("codex_models"))
-            + _model_values(state.get("gemini_models"))
-            + _model_values(state.get("oss_models"))
-        )
+        # Pi skips models it can't serve, and an allowlist with none falls back to discovery.
+        models = pi_agent.status_models(state)
     else:
         models = []
     return list(dict.fromkeys(models))
