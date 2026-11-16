@@ -368,7 +368,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             log_proxy_diagnostic(
                 "upstream_request_start",
                 request_id=diagnostic_id,
-                attempt=1,
+                attempt=attempt,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
             with self.client.stream(
@@ -377,7 +377,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=1,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
@@ -408,7 +408,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             log_proxy_diagnostic(
                 "upstream_request_start",
                 request_id=diagnostic_id,
-                attempt=2,
+                attempt=attempt,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
             with self.client.stream(
@@ -417,7 +417,7 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=2,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
