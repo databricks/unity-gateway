@@ -15,3 +15,4 @@ This Software contains code from the following open source projects, licensed un
 This Software contains code from the following open source projects, licensed under the [Apache 2.0 license](https://www.apache.org/licenses/LICENSE-2.0):
 
 - **[databricks/databricks-sql-python](https://github.com/databricks/databricks-sql-python/)** — Copyright 2022 Databricks, Inc.
+- **[omnigent-ai/omnigent](https://github.com/omnigent-ai/omnigent)** — Copyright 2026 Databricks, Inc.

@@ -1,5 +1,17 @@
 # Integration tests
 
+`../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
+fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
+checks run on both platforms. These are not live GitHub or credentialed integration checks.
+
+The trusted scan producer's component coverage and staged enforcement are documented in
+the [main test guide](../README.md). This prerequisite does not change integration authorization.
+
+`../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
+discovery, implicit PAT classification, and the separate selected-workspace authentication check at controlled
+subprocess boundaries. Unrelated-profile network isolation and startup latency are
+not currently measured by a live integration journey.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
@@ -17,6 +29,8 @@ remain rejected.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
+The gate command is a fenced PowerShell or POSIX shell snippet, separate from prose,
+and the child must wait for its successful completion before proceeding.
 Assertions still require every native child, message delivery, and completed answer.
 
 Select with `--codex-version 0.167.2 -- -k routing_toggle`; the explicit
@@ -311,8 +325,8 @@ It reuses the session, terminal, file-task, and transcript helpers in `utils/`.
 Its Claude/Codex evidence helpers keep scenario-specific assertions separate from shared mechanics.
 Workspace config/catalog reads use its base class's Databricks SDK client. Configuration
 is read-only and checked for changes at teardown; concurrent readers need no reservation.
-CUJ2 adds three separately collected cases for exact published MPS/MCP configuration, Codex
-inference, and Claude inference. Its catalog checks require the fixture's exact native APIs,
+CUJ2 has four separately collected cases for exact published MPS/MCP configuration, Codex
+inference, Claude inference, and Claude smart routing with an MPS. Its catalog checks require the fixture's exact native APIs,
 model, provider type and target restrictions. Offline checks accept Responses alongside Chat
 Completions in either order and reject missing or additional APIs. CUJ2 expects only
 `gpt-6-luna` in its OpenAI MPS and as its Codex default. CUJ1 and CUJ6's Codex Luna
@@ -321,6 +335,8 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
+The smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` and checks that both
+first-prompt and subagent route selections carry the managed MPS header and return HTTP 200.
 File, skill, MCP and subagent tasks retain their expected-value checks.
 The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
@@ -635,8 +651,8 @@ sign-in-expired message. It also covers configure/revert, including upgrading fr
 covered by the hermetic proxy tests in `tests/test_gateway_proxy_integration.py`.
 `test_ug_copilot_models.py` covers the per-session model registry: one setup runs a
 Claude task on a model older than its family's newest (only the full catalog registers it)
-and then a GPT task chosen with Copilot's `dbx-responses/<model>` form, another setup runs a
-GLM, a Kimi and a DeepSeek task on `dbx-completions`, an unknown model fails before Copilot
+and then a GPT task chosen with Copilot's `databricks-responses/<model>` form, another setup runs a
+GLM, a Kimi and a DeepSeek task on `databricks-completions`, an unknown model fails before Copilot
 starts,
 and the TUI switches from Claude to GPT with `/model` mid-session. Model evidence comes
 from Copilot's own `~/.copilot/session-state/*/events.jsonl` (`utils/agents/copilot.py`).
@@ -1447,6 +1463,14 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
 - `artifacts/`: command arguments, exit codes, timeout status, redacted output,
   app-server protocol diagnostics, and TUI transcripts/rendered screens plus
   keystroke actions and routing logs. No credential files are archived.
+  Claude subagent launch/off/back-on journeys also write `claude-response-protocol.json`
+  on success and failure, after the recorder's existing bounded drain. It includes the
+  metadata for the full inference history, including pending responses, with request sequence,
+  HTTP status, parse state, and allowlisted content block types and stop reasons.
+  It excludes request and response text and tool names or arguments. A `tool_use` block does not
+  identify a named tool or establish which service caused a protocol failure.
+  It reports recorder status, including the existing synthetic 502 for interrupted upstreams,
+  and cannot diagnose truncated protocol bodies because their partial structure is discarded.
 - `wheels/`: the tested wheel when built from the checkout; replay it with
   `--ug-wheel`. For release installations, `installed.txt` records the resolution.
 
@@ -1894,6 +1918,11 @@ disconnects and transport exception classes. Each event includes a Unix timestam
 preparation. Subtract an attempt's start `elapsed_ms` from its header `elapsed_ms` to measure the
 upstream wait. The gap after rejected headers also includes draining the response and refreshing
 credentials. The logger excludes request headers, bodies and credentials.
+`upstream_transport` events add HTTPX phase names, such as `connection.connect_tcp.started`,
+`connection.start_tls.complete`, `http11.send_request_body.complete`, and
+`http11.receive_response_headers.started`. Match their request ID and attempt number to
+distinguish connection or send stalls from a wait for upstream headers. Trace payloads,
+including headers and exception messages, are excluded.
 Antigravity's native stream-json events remain in headless
 command `stdout`; its raw native logs are not archived. These diagnostics do not
 change agent timeouts, task retries or success assertions.
