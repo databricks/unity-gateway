@@ -1906,6 +1906,11 @@ disconnects and transport exception classes. Each event includes a Unix timestam
 preparation. Subtract an attempt's start `elapsed_ms` from its header `elapsed_ms` to measure the
 upstream wait. The gap after rejected headers also includes draining the response and refreshing
 credentials. The logger excludes request headers, bodies and credentials.
+`upstream_transport` events add HTTPX phase names, such as `connection.connect_tcp.started`,
+`connection.start_tls.complete`, `http11.send_request_body.complete`, and
+`http11.receive_response_headers.started`. Match their request ID and attempt number to
+distinguish connection or send stalls from a wait for upstream headers. Trace payloads,
+including headers and exception messages, are excluded.
 Antigravity's native stream-json events remain in headless
 command `stdout`; its raw native logs are not archived. These diagnostics do not
 change agent timeouts, task retries or success assertions.
