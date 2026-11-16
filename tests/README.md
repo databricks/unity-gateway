@@ -1184,6 +1184,9 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
+| `test_sources_{claude,codex,copilot}_discovers_mixed_models_and_uses_custom_default` in CUJ9 | Configure mixed model sources, inspect native discovery, and complete a TUI task on the custom default | Exact Claude/Codex picker inventories, Codex model/list, Copilot's active registry, native completed answers and paired exact-model HTTP 200 responses |
+| `test_sources_{claude,codex,copilot}_inference_on_each_source_model` in CUJ9 | Run an explicit headless file task on every expanded source model | Each provider deep link, custom service, schema wildcard and provider wildcard contribution serves a hidden-value task; Codex and Copilot never route |
+| `test_sources_claude_routes_a_native_child_within_expanded_sources` in CUJ9 | Delegate a real task with Claude-only managed smart routing | A successful source-scoped routing decision, selected-model child inference, native child start, and completed child and parent answers |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, and Claude TUI cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; each TUI case records its exact MPS target header and model, paired HTTP 200 response, and a completed parent turn with a nonempty greeting answer. Request IDs correlate traffic without requiring the model to repeat them. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
@@ -1627,5 +1630,8 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+component coverage. CUJ9 adds 14 installed-agent cases for mixed sources and qualified MPS
+inference, with smart routing only for Claude Code. These are implemented assertions,
+not a live pass. Its workspace has no published config as of 2026-11-16, and the Copilot
+custom fixture's owner lacks EXECUTE on its destination provider. See the
+[CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).

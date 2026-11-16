@@ -63,6 +63,62 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
 
+## Model sources in CUJ9
+
+`test_cuj9_model_sources.py` uses
+`https://dbc-93fdd3cb-4b13.cloud.databricks.com`, workspace `7474659962444308`.
+Its 14 cases cover native discovery and default inference for Claude Code, Codex,
+and Copilot CLI, explicit inference on every expanded model, and one routed
+Claude child. Smart routing is enabled only for Claude Code. Codex and Copilot
+tasks must send no routing requests.
+
+| Agent | Explicit MPS deep link | Custom model service | Wildcard |
+| --- | --- | --- | --- |
+| Claude Code | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.models.claude_sonnet` | `ug_e2e.other_models.*` includes both aliases |
+| Codex | `ug_e2e.providers.openai.gpt-6-luna` | `ug_e2e.models.gpt_luna` | `ug_e2e.other_models.*` includes only `codex_decoy` |
+| Copilot CLI | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.default.gpt-5-5-fmapi` | `ug_e2e.providers.openai.*` adds the qualified GPT model |
+
+Each source contributes distinct models, so wildcard expansion cannot hide a
+missing explicit source. The custom service is each agent's default. Copilot
+requires names such as `gpt-5-5-fmapi`; aliases such as `gpt_luna` are incompatible
+with its model classifier.
+
+Claude and Codex discovery cases compare exact native picker inventories; Codex
+also checks its app-server `model/list`. Copilot checks the active per-session
+registry's model IDs and wire providers without archiving its credentials. This
+is registry and completed-task coverage, not a Copilot picker assertion. Every
+model task requires a completed native answer containing a hidden file value and
+successful recorded inference on the exact model. The routing case also requires
+a successful source-scoped decision, a matching native child start, the selected
+model's inference, and completed child and parent answers.
+
+Before a live run, an administrator must publish the exact CodingAgentConfig in
+[`fixtures/cuj9_model_sources.json`](fixtures/cuj9_model_sources.json) on that
+workspace. This file is a preparation artifact, never a local stub or configure
+input. The suite only reads the published config and fails on a mismatch. Grant
+the CUJ service principal access to the workspace and the named services.
+
+On 2026-11-16, read-only inspection found no published CodingAgentConfig. The
+shared services exist, but `ug_e2e.default.gpt-5-5-fmapi` inference failed because
+its owner lacks `EXECUTE` on destination provider
+`ai_gateway_us_east_1.default.openai-fmapi`. The fixture owner must resolve that
+permission before the Copilot custom-model cases can pass. The tests do not
+repair configuration, fixture definitions, or grants.
+
+Use a clean disposable POSIX runner and the normal CUJ service-principal
+variables. Install the checkout's `ug`, Databricks CLI `1.17.0`, Claude Code
+`2.1.290`, Codex `0.156.0`, and Copilot CLI `1.0.91` on PATH. CI installs the
+pinned Copilot CLI only for this automatically discovered shard.
+
+```bash
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj9_model_sources.py -v
+```
+
+Collection and offline checks establish suite structure only. No live CUJ9 pass
+is claimed until the published configuration, fixture permissions, and agent
+journeys have been validated together.
+
 CUJ1, CUJ2 and CUJ3 share Desktop setup that seeds the same personal profile and metadata in an
 isolated Linux profile path. CUJ1 and CUJ2's configuration cases read their dedicated workspaces'
 published CodingAgentConfig without `UCODE_MANAGED_CONFIG_STUB`. They enable this profile path

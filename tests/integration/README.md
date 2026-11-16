@@ -2119,8 +2119,18 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+component coverage. Dedicated CUJ9 adds 14 installed-agent cases for mixed sources and
+qualified MPS inference on its separate workspace. Smart routing is enabled only for
+Claude Code. Its workspace has no published config as of 2026-11-16, and the Copilot
+custom fixture's owner lacks EXECUTE on its destination provider. These are implemented
+assertions, not a live pass. See the
+[CUJ9 preparation manifest and run command](../e2e_cuj/README.md#model-sources-in-cuj9).
+
+| CUJ9 journey | Observable evidence |
+| --- | --- |
+| Claude, Codex, and Copilot discovery and custom defaults | Exact native Claude/Codex picker inventories, Codex model/list, active Copilot registry IDs and wire providers, followed by completed native TUI tasks and exact-model HTTP 200 inference |
+| Explicit inference on every source model | Hidden-value tasks on MPS deep links, custom model services, schema wildcards and a provider wildcard; Codex and Copilot send no routing request |
+| Claude-only delegated task | Source-scoped routing options, one successful decision, matching native child start, selected-model child HTTP 200 inference, and completed child and parent answers |
 
 Antigravity MCP web-search evidence compares homepage slash variants and ignores
 `utm_source` attribution while retaining the completed-call and official-URL checks.
