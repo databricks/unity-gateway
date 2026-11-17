@@ -332,7 +332,7 @@ def completed_smart_routing_runs(cuj):
     return run_smart_routing_journeys(cuj)
 
 
-class TestCujSmartRouting(BaseCujTest):
+class TestCujAutoModelPicker(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
@@ -374,6 +374,7 @@ class TestCujSmartRouting(BaseCujTest):
             )
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
+            evidence = SessionEvidence(session.home, CLAUDE)
             with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
                 tui.boot(timeout=150)
                 tui.wait_for(
@@ -431,7 +432,6 @@ class TestCujSmartRouting(BaseCujTest):
                 # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
                 # assert "ug-auto" not in tui.visible
                 task = _file_task(session, CLAUDE)
-                evidence = SessionEvidence(session.home, CLAUDE)
                 tui.submit(task.prompt)
                 tui.task(evidence, task)
                 requests = recorder.requests_after(checkpoint)
@@ -467,6 +467,10 @@ class TestCujSmartRouting(BaseCujTest):
                 assert "re-read the full conversation" not in " ".join(tui.visible.split())
                 tui.exit_normally()
             assert MANAGED_PATHS[0].read_bytes() == managed_before
+
+
+class TestCujSmartRouting(BaseCujTest):
+    WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     @pytest.mark.parametrize("agent", AGENTS)
     @pytest.mark.parametrize(

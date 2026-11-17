@@ -189,6 +189,9 @@ The journey completes a real main-model file task with paired gateway request/re
 evidence, saves the unchanged main model without a cache warning after that task, and
 requires byte-identical managed settings. The existing main/subagent journey also includes Auto
 and verifies its correlated routing decision, real model IDs, and completed answers.
+The selector journey has its own class-scoped user session so its saved main-model
+preference cannot change later preset journeys. Its native evidence baseline is captured
+before Claude starts, including sessions whose transcript begins with model commands.
 Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
