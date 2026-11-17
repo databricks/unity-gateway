@@ -54,6 +54,15 @@ def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
 
 
 def _normalize_smart_router_env_guard(command: str) -> str:
+    whitespace_guard = (
+        "if ([string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)) "
+    )
+    if command.startswith(whitespace_guard):
+        command = (
+            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+            + command.removeprefix(whitespace_guard)
+        )
     return re.sub(
         r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
         r'\1"ENV_UNSET"\2',
@@ -70,7 +79,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
     if "Press enter to confirm or esc to cancel" not in dialog:
         return False
     command = re.search(
-        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>\ufffd][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
         dialog,
     )
     expected_commands = (

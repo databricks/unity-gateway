@@ -91,12 +91,13 @@ is missing (macOS and Linux). On a workspace with a managed config, which can't 
 Antigravity yet, run `ug agents add antigravity` to use it self-managed.
 
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
-Copilot's `/model` picker, and you can switch between them mid-session. Claude
+Copilot's `/model` picker, by readable names such as "Claude Opus 5.5", and you can
+switch between them mid-session. Claude
 models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
 GPT models use Chat Completions. Gemini and open-source models aren't offered, except under
 `--model-location` (below).
 `ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
-own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
+own `databricks/claude-opus-5-5`) picks the model a session starts on;
 an unknown or unsupported model fails before Copilot starts and lists the
 available ones. ug passes Copilot a per-session model registry, so your own
 `~/.copilot/providers.json` and `COPILOT_PROVIDER_*` settings apply only to plain
@@ -285,6 +286,11 @@ UG_HEADERS="X-Team: eng" ug codex
 Databricks requests only: Claude Code's and Codex's gateway requests, and ug's own requests
 (workspace APIs, MCP proxy, web search, smart routing). A header already sent keeps its value.
 Nothing is written to a config file.
+
+`UG_HEADERS` is inherited by every child process, including an agent started from another agent's
+session, so an agent launch drops an inherited `Databricks-Custom-Coding-Agent` and the gateway
+attributes the session from ug's `User-Agent`. To name the coding agent yourself, pass
+`--header "Databricks-Custom-Coding-Agent: <name>"` on that launch.
 
 - **Codex**: added to the launch's `-c` provider headers.
 - **Claude Code**: added by a mod, even when managed settings set `ANTHROPIC_CUSTOM_HEADERS`.
@@ -792,7 +798,7 @@ preferences are ignored and their files are left untouched. See the bundled
 
 | Tool | Managed files |
 |------|---------------|
-| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` (Linux and macOS), `C:\ProgramData\OpenAI\Codex\requirements.toml` (Windows, written only from an elevated terminal; enforced by Codex 0.156.0 and later) |
+| Codex | `~/.codex/ucode.config.toml`, shared catalog reference in `~/.codex/config.toml`, `~/.ucode/codex-model-catalog.json`, `/etc/codex/managed_config.toml` and `/etc/codex/ug-model-catalog.json` (Linux and macOS), `C:\ProgramData\OpenAI\Codex\requirements.toml` (Windows, written only from an elevated terminal; enforced by Codex 0.156.0 and later) |
 | Claude Code | `~/.claude/ucode-settings.json`, `~/.claude.json`, `/etc/claude-code/managed-settings.json` (Linux), `/Library/Application Support/ClaudeCode/managed-settings.json` (macOS), `C:\Program Files\ClaudeCode\managed-settings.json` (Windows, written only from an elevated terminal) |
 | Gemini CLI | `~/.gemini/ucode.env`, `~/.ucode/.gemini-home/.gemini/settings.json` |
 | OpenCode | `~/.ucode/opencode-xdg/opencode/opencode.json`, `~/.ucode/opencode-xdg/opencode/plugin/ucode-auth.js` |

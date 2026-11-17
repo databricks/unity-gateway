@@ -230,6 +230,21 @@ class TestHelperArgv:
         argv = db_mod.build_otel_headers_argv(SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
+    def test_claude_router_hook_preserves_selection_and_launch_provider(self, selected):
+        from ucode.smart_routing.claude_hooks import ROUTE_SUBAGENT_MOD_EVENT, routing_hook_argv
+
+        state = {
+            "workspace": SHARED,
+            "provider_services": {"claude": "old.schema.provider"},
+            "_claude_launch_provider": "new.schema.provider",
+        }
+        argv = routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+        assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+        assert "--provider" not in routing_hook_argv(state, "session-start")
+        del state["_claude_launch_provider"]
+        assert "--provider" not in routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
+
     def test_cowork_hook(self, selected):
         from ucode.agents.desktop import cowork
 

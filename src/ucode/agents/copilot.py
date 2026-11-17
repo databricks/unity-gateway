@@ -35,6 +35,7 @@ import re
 import secrets
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -87,6 +88,7 @@ from ucode.os_compatibility.file_lock_cross_os import (
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
+from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
 from ucode.workspace import SELECTOR_HEADER_NAMES
@@ -142,10 +144,12 @@ WIRE_RESPONSES = "responses"
 WIRE_COMPLETIONS = "completions"
 
 PROVIDER_NAMES: dict[str, str] = {
-    WIRE_ANTHROPIC: "dbx-anthropic",
-    WIRE_RESPONSES: "dbx-responses",
-    WIRE_COMPLETIONS: "dbx-completions",
+    WIRE_ANTHROPIC: "databricks",
+    WIRE_RESPONSES: "databricks-responses",
+    WIRE_COMPLETIONS: "databricks-completions",
 }
+# Earlier registries' provider names, still accepted in `--model`.
+LEGACY_PROVIDER_NAMES = ("dbx-anthropic", "dbx-responses", "dbx-completions")
 _WIRE_ROUTES: dict[str, tuple[str, ...]] = {
     WIRE_ANTHROPIC: (API_ANTHROPIC_MESSAGES,),
     WIRE_RESPONSES: (API_MLFLOW_RESPONSES, API_OPENAI_RESPONSES, API_CODEX_RESPONSES),
@@ -155,6 +159,7 @@ _UNSUPPORTED_MODELS = {
     "claude-opus-4-1": "the gateway rejects the thinking settings Copilot sends for it",
 }
 _GATEWAY_ALIAS_PREFIX = "anthropic-aigw-"
+SYSTEM_AI_PREFIX = "system.ai."
 _GPT_MODEL_MAJOR_PATTERN = re.compile(r"^gpt-(\d+)o?(?=$|[.-])")
 _CLAUDE_DASHED_VERSION_PATTERN = re.compile(r"-(\d+)-(\d+)$")
 # Anthropic and Bedrock Claude ids end in a release date and, on Bedrock, a version:
@@ -324,15 +329,22 @@ class CopilotModel:
     wire: str
     # (max_input_tokens, max_tokens) the gateway listed for the model.
     listed_limits: tuple[int, int] | None = field(default=None, compare=False)
+    # Set when dropping `system.ai.` would collide with another model in the same catalog.
+    full_registry_id: bool = field(default=False, compare=False)
 
     @property
     def provider(self) -> str:
         return PROVIDER_NAMES[self.wire]
 
     @property
+    def registry_id(self) -> str:
+        """The model's id in Copilot's registry, which Copilot prints when the model changes."""
+        return self.id if self.full_registry_id else self.id.removeprefix(SYSTEM_AI_PREFIX)
+
+    @property
     def ref(self) -> str:
         """Copilot's selection id; a bare model id isn't matched against the registry."""
-        return f"{self.provider}/{self.id}"
+        return f"{self.provider}/{self.registry_id}"
 
 
 def _catalog_sort_key(model: CopilotModel) -> tuple:
@@ -371,6 +383,10 @@ def build_catalog(
             usable.setdefault(model, CopilotModel(model, wire))
         elif reason is not None:
             skipped.setdefault(model, reason)
+    for model, entry in usable.items():
+        short = model.removeprefix(SYSTEM_AI_PREFIX)
+        if short != model and short in usable:
+            usable[model] = replace(entry, full_registry_id=True)
     return sorted(usable.values(), key=_catalog_sort_key), list(skipped.items())
 
 
@@ -381,9 +397,27 @@ def build_copilot_catalog(entries: Iterable[ModelServiceEntry | str]) -> list[Co
 
 
 def _without_registry_prefix(model: str) -> str:
-    """``model`` without a Copilot registry provider prefix: ``dbx-responses/gpt-5.5`` -> ``gpt-5.5``."""
+    """``model`` without a Copilot registry provider prefix, current or legacy:
+    ``databricks-responses/gpt-5.5`` -> ``gpt-5.5``."""
     name, separator, rest = model.partition("/")
-    return rest if separator and name in PROVIDER_NAMES.values() else model
+    providers = (*PROVIDER_NAMES.values(), *LEGACY_PROVIDER_NAMES)
+    return rest if separator and name in providers else model
+
+
+def model_labels(
+    catalog: list[CopilotModel], *, provider_service: str | None = None
+) -> dict[CopilotModel, str]:
+    """The name each model shows in a model picker: ``system.ai.claude-haiku-4-5`` ->
+    ``Claude Haiku 4.5``, as in Codex and Claude Code.
+
+    A Model Provider Service's models keep their ids, which is what its users know them by, and
+    several of them differ only by a region the label would drop. Two models with the same label
+    show their full ids instead."""
+    if provider_service:
+        return {model: model.id for model in catalog}
+    labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
+    counts = Counter(labels.values())
+    return {model: model.id if counts[label] > 1 else label for model, label in labels.items()}
 
 
 def provider_service_catalog(
@@ -582,17 +616,18 @@ def resolve_copilot_model(requested: str, catalog: list[CopilotModel]) -> Copilo
     """Match ``requested`` (an id, a short name or ``provider/id``) to a catalog model.
 
     Raises RuntimeError listing the available models when nothing matches."""
+    bare = _without_registry_prefix(requested)
     for matches in (
-        lambda m: m.id == requested,
         lambda m: m.ref == requested,
-        lambda m: _normalized(m.id) == _normalized(requested),
-        lambda m: _normalized(m.id) == f"system.ai.{_normalized(requested)}",
-        lambda m: _normalized(m.id) == f"databricks-{_normalized(requested)}",
+        lambda m: m.id == bare,
+        lambda m: _normalized(m.id) == _normalized(bare),
+        lambda m: _normalized(m.id) == f"{SYSTEM_AI_PREFIX}{_normalized(bare)}",
+        lambda m: _normalized(m.id) == f"databricks-{_normalized(bare)}",
     ):
         found = [model for model in catalog if matches(model)]
         if found:
-            return next((m for m in found if m.id.startswith("system.ai.")), found[0])
-    reason = copilot_exclusion_reason(requested)
+            return next((m for m in found if m.id.startswith(SYSTEM_AI_PREFIX)), found[0])
+    reason = copilot_exclusion_reason(bare)
     detail = f" ({reason})" if reason else ""
     available = "\n".join(
         f"  {provider}: {', '.join(m.id for m in catalog if m.provider == provider)}"
@@ -733,12 +768,13 @@ def render_providers_config(
             provider["headers"] = {MODEL_PROVIDER_SERVICE_HEADER: provider_service}
         providers.append(provider)
     models = []
+    labels = model_labels(catalog, provider_service=provider_service)
     for model in catalog:
         entry: dict[str, Any] = {
-            "id": model.id,
+            "id": model.registry_id,
             "provider": model.provider,
             "wireModel": model.id,
-            "name": model.id,
+            "name": labels[model],
         }
         catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
         if catalog_id is not None:
@@ -1285,7 +1321,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         wire_override = os.environ.get("COPILOT_PROVIDER_WIRE_MODEL")
         if wire_override:
             for entry in config["models"]:
-                if entry["id"] == start_model.id:
+                if entry["id"] == start_model.registry_id:
                     entry["wireModel"] = wire_override
         with session_registry(config) as registry_path:
             env = build_runtime_env(

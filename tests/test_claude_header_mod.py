@@ -4,12 +4,14 @@ import copy
 import json
 import shutil
 import subprocess
+from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
 from ucode import managed_files
-from ucode.agents import claude
+from ucode.agents import LaunchOptions, claude
 from ucode.managed_files import CLAUDE_HEADER_MOD_FILES, CLAUDE_HEADER_MOD_ROOTS, OS
 
 WS = "https://example.cloud.databricks.com"
@@ -73,6 +75,7 @@ def test_configure_installs_and_enables_mod_then_stays_put(tmp_path, monkeypatch
     # The built-in guard is the default list, so naming the mod there must keep it.
     assert doc["prependPlugins"] == ["ug-headers@ucode-managed", "sec-default@builtin"]
     assert claude.header_mod_active()
+    assert claude.header_mod_active(require_current=True)
 
     count = len(writes)
     claude.write_tool_config(state, "databricks-claude-sonnet-4")
@@ -325,6 +328,7 @@ def test_header_mod_active_accepts_another_installers_copy_without_ug_files(tmp_
     )
     assert not root.exists()
     assert claude.header_mod_active()
+    assert not claude.header_mod_active(require_current=True)
 
 
 def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path, monkeypatch):
@@ -341,3 +345,72 @@ def test_header_mod_active_rejects_disabled_absent_or_unrelated_plugins(tmp_path
     ):
         managed_path.write_text(json.dumps(doc), encoding="utf-8")
         assert not claude.header_mod_active()
+        assert not claude.header_mod_active(require_current=True)
+
+
+@pytest.mark.parametrize(
+    ("installed", "routed"),
+    [
+        ("missing", True),
+        ("stale", True),
+        ("other", True),
+        ("stale-other", True),
+        ("current", True),
+        ("missing", False),
+    ],
+)
+def test_routed_launch_warns_without_current_language_mod_and_keeps_launching(
+    tmp_path, monkeypatch, installed, routed
+):
+    managed_path, root, writes = _managed_env(tmp_path, monkeypatch, {})
+    if installed in {"current", "stale", "stale-other"}:
+        claude.write_tool_config(
+            {"workspace": WS, "codex_models": []}, "databricks-claude-sonnet-4"
+        )
+    if installed in {"stale", "stale-other"}:
+        (root / "ug-headers/hooks/register.ts").write_text("// old version\n", encoding="utf-8")
+    if installed in {"other", "stale-other"}:
+        settings = json.loads(managed_path.read_text())
+        settings.setdefault("enabledPlugins", {})["ug-headers@other-managed"] = True
+        managed_path.write_text(json.dumps(settings), encoding="utf-8")
+
+    assert claude.header_mod_active() == (installed in {"current", "other", "stale-other"})
+    assert claude.header_mod_active(require_current=True) == (installed == "current")
+    monkeypatch.setattr(claude, "_explicit_configure", False)
+    writes.clear()
+    before = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    warning = Mock()
+    routed_launch = Mock()
+    plain_launch = Mock()
+    monkeypatch.setattr(claude, "print_warning", warning)
+    monkeypatch.setattr(claude, "ensure_hooks_modules_gate", lambda: None)
+    monkeypatch.setattr(claude, "_external_web_search_args", lambda _state, args: args)
+    monkeypatch.setattr(claude, "_use_server_side_web_search", lambda _state: False)
+    monkeypatch.setattr(claude, "_resolve_launch_binary", lambda _binary: "native-claude")
+    monkeypatch.setattr(claude.smart_routing_v2, "launch_claude", routed_launch)
+    monkeypatch.setattr(claude, "exec_or_spawn", plain_launch)
+    monkeypatch.setattr(
+        claude, "_claude_launch_argv", lambda binary, args, **_kwargs: nullcontext([binary, *args])
+    )
+    args = ["-p", "Inspect this task"]
+
+    claude.launch({}, args, options=LaunchOptions(launch_smart_routing=routed))
+
+    if routed:
+        routed_launch.assert_called_once()
+        assert routed_launch.call_args.args == ({}, args)
+        assert routed_launch.call_args.kwargs["binary"] == "native-claude"
+        plain_launch.assert_not_called()
+    else:
+        routed_launch.assert_not_called()
+        plain_launch.assert_called_once_with(["native-claude", *args])
+    if routed and installed != "current":
+        warning.assert_called_once_with(
+            "Cannot verify Smart Router language inheritance: it requires the current UG "
+            "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
+            "Routing continues."
+        )
+    else:
+        warning.assert_not_called()
+    assert writes == []
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before

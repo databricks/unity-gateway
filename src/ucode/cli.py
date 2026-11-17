@@ -72,7 +72,6 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
@@ -240,7 +239,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
-from ucode.ug_headers import parse_header_line
+from ucode.ug_headers import CODING_AGENT_HEADER, parse_header_line, without_header
 from ucode.ui import (
     console,
     heading,
@@ -3401,6 +3400,7 @@ def claude_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
@@ -3481,6 +3481,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
+        **({"provider": provider} if provider else {}),
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
@@ -3854,10 +3855,8 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
-    return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
-    )
+    """Whether smart routing supports this agent and provider combination."""
+    return not provider or tool == "claude"
 
 
 def _routes_launch(
@@ -3875,7 +3874,7 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services require the external-models gate.
+        # Model Provider Services are supported for Claude only.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
@@ -4256,6 +4255,10 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CLAUDE and not provider and not parent_schema:
+            # A static model list (no provider) can still name a model service that routes to a
+            # subscription relay; that launch must swap credentials like a relayed provider.
+            relayed = claude_agent.static_models_need_subscription_relay(state)
         # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"
@@ -4554,6 +4557,9 @@ WorkspaceOption = Annotated[
 
 _PROMPT_SUFFIX_KEY = "ucode_explicit_prompt_suffix"
 
+# Subcommands that launch an agent; a bare `ug` launches one too.
+_AGENT_LAUNCH_COMMANDS = frozenset({*TOOL_ALIASES, "cursor"})
+
 
 class _PromptAwareCommand(TyperCommand):
     """Record an agent's ``--`` prompt separator before Click removes it."""
@@ -4604,7 +4610,9 @@ def default(
         typer.Option(
             "--header",
             help="Extra `Name: value` header for this launch's Claude Code, Codex, and ug "
-            "Databricks requests (repeatable). A header already sent keeps its value.",
+            "Databricks requests (repeatable). A header already sent keeps its value. An agent "
+            "launch drops a Databricks-Custom-Coding-Agent inherited through UG_HEADERS; pass "
+            "it here to set one.",
         ),
     ] = None,
 ) -> None:
@@ -4622,9 +4630,18 @@ def default(
             # Name only the flag's position: the value may be a token.
             print_err(f"--header #{number}: expected `Name: value` with a valid name and value.")
             raise typer.Exit(1)
-    if header:
-        existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
-        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
+    inherited = os.environ.get(UG_HEADERS_ENV_VAR, "")
+    existing = inherited
+    if ctx.invoked_subcommand is None or ctx.invoked_subcommand in _AGENT_LAUNCH_COMMANDS:
+        # An inherited coding agent names whatever launched ug, such as an Isaac Claude Code
+        # session, not the agent this launch starts; without it the gateway reads ug's User-Agent.
+        existing = without_header(inherited, CODING_AGENT_HEADER)
+    if header or existing != inherited:
+        merged = "\n".join(filter(None, [existing, *(header or [])]))
+        if merged:
+            os.environ[UG_HEADERS_ENV_VAR] = merged
+        else:
+            os.environ.pop(UG_HEADERS_ENV_VAR, None)
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
     ctx.call_on_close(export_mdm_os())
@@ -5728,6 +5745,7 @@ def doctor_cmd() -> None:
 
 
 @app.command("usage", rich_help_panel="Usage")
+@metrics.timed(metrics.UG_USAGE_DURATION_MS, label_args={"show_all": "show_all"})
 def usage_cmd(
     show_all: Annotated[
         bool, typer.Option("--all", help="Show all applicable budget limits.")
