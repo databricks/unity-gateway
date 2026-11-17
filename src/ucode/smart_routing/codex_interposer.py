@@ -13,7 +13,8 @@ from pathlib import Path
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
-from ucode.smart_routing import codex_routing, routing
+from ucode.config_io import read_json_safe
+from ucode.smart_routing import codex_routing, routing, startup_validation
 from ucode.smart_routing.codex_metadata import RoutingMetadata
 
 SETTINGS_UPDATED = "thread/settings/updated"
@@ -318,6 +319,21 @@ async def _handle_tui(
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))
 
+        async def notify_validation():
+            assert session_controls is not None
+            path = startup_validation.result_path(session_controls)
+            while True:
+                result = await asyncio.to_thread(read_json_safe, path)
+                if "message" in result:
+                    message = result["message"]
+                    if isinstance(message, str) and message:
+                        await tui.send(
+                            json.dumps({"method": "warning", "params": {"message": message}})
+                        )
+                    return
+                await asyncio.sleep(0.1)
+
+        notice = asyncio.create_task(notify_validation()) if session_controls is not None else None
         a = asyncio.create_task(tui_to_app())
         b = asyncio.create_task(app_to_tui())
         tasks = {a, b}
@@ -328,6 +344,8 @@ async def _handle_tui(
             for task in done:
                 task.result()
         finally:
+            if notice is not None:
+                tasks.add(notice)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

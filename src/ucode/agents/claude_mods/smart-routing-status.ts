@@ -1,4 +1,4 @@
-import type { On } from 'claude-code'
+import type { EngineInterface, On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -7,6 +7,7 @@ const BANNER = 'unity gateway smart router'
 // The band shows at launch and after each toggle, and hides once the next prompt's turn
 // completes. A prompt submitted while it shows arms the hide for that prompt's turn.
 const band = { isVisible: true, isHideArmed: false }
+let validationWatchStarted = false
 
 export function showStatusBand(): void {
   band.isVisible = true
@@ -51,6 +52,25 @@ async function readRoutingState($: any): Promise<RoutingState> {
     enabled: isRoutingEnabled({ [SMART_ROUTING_KEY]: full, [SUBAGENT_ONLY_KEY]: subagentOnly }),
     firstPrompt: full === '1' && subagentOnly !== '1',
   }
+}
+
+export async function watchStartupValidation($: EngineInterface): Promise<void> {
+  if (validationWatchStarted) return
+  validationWatchStarted = true
+  try {
+    const controls = await $.env.get('UCODE_SESSION_ENV_FILE')
+    if (typeof controls !== 'string' || !controls.endsWith('.json')) return
+    let complete = false
+    const notice = $.clock.every(1000, async () => {
+      try {
+        const result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
+        if (complete || !result || !('message' in result)) return
+        complete = true
+        notice.cancel()
+        if (typeof result.message === 'string' && result.message) $.ui.toast(result.message)
+      } catch {}
+    })
+  } catch {}
 }
 
 export const registerStatusBand = (on: On): void => {

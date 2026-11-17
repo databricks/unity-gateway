@@ -21,6 +21,17 @@ collect_ignore = ["integration", "e2e_cuj", "native_claude", "connector_behavior
 
 
 @pytest.fixture(autouse=True)
+def _isolate_startup_validation(monkeypatch):
+    from ucode.smart_routing import startup_validation
+
+    monkeypatch.setattr(
+        startup_validation,
+        "_http_post_json",
+        lambda *args, **kwargs: ({"is_supported": True}, None),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_selected_workspace(monkeypatch):
     """Start every test with no multi-workspace host selected, as a fresh process would."""
     import ucode.workspace as workspace_mod

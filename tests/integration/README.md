@@ -1,5 +1,9 @@
 # Integration tests
 
+Startup compatibility validation has component coverage in `../test_startup_validation.py`,
+the smart-routing launch tests, and the native Claude mod suite. They control the validation
+response or transport; no live Gateway routes:validate or classifier journey is claimed.
+
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not

@@ -58,7 +58,13 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing, session_log
+from ucode.smart_routing import (
+    claude_routing,
+    orchestrator,
+    routing,
+    session_log,
+    startup_validation,
+)
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
@@ -798,6 +804,13 @@ def launch_claude(
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             session_path = _prepare_smart_router_session("claude")
+            startup_validation.start(
+                workspace,
+                token,
+                routing.route_options_for(_canonical_claude_models(model_ids), "claude"),
+                router_name=routing.configured_router_name(),
+                session_controls=session_path,
+            )
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
@@ -929,6 +942,13 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
+    startup_validation.start(
+        workspace,
+        os.environ[OAUTH_TOKEN_ENV_VAR],
+        routing.route_options_for(available_models, "codex"),
+        router_name=routing.configured_router_name(),
+        session_controls=session_env_path,
+    )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)

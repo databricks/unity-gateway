@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand, watchStartupValidation } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -173,6 +173,7 @@ export function register(on: On, options: PluginOptions): void {
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
+    await watchStartupValidation($);
     if (launchedEnabled) {
       const current = await readEnvironment($);
       await setRouting($, options, isRoutingEnabled(current), false);

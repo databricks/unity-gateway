@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -259,6 +260,16 @@ class TestLaunchCodex:
         interposer_args = {}
         stopped = []
         token_calls = []
+        request_started, release_request = threading.Event(), threading.Event()
+        validation_requests = []
+
+        def validate(url, token, body, **kwargs):
+            validation_requests.append((token, body))
+            request_started.set()
+            assert release_request.wait(3)
+            return {"is_supported": True}, None
+
+        monkeypatch.setattr(v2.startup_validation, "_http_post_json", validate)
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
@@ -281,6 +292,10 @@ class TestLaunchCodex:
                 processes.append(self)
 
             def wait(self, timeout=None):
+                if timeout is None:
+                    assert request_started.wait(1)
+                    assert not release_request.is_set()
+                    release_request.set()
                 return 0 if timeout is not None else 7
 
             def terminate(self):
@@ -324,6 +339,18 @@ class TestLaunchCodex:
             )
 
         assert exc.value.code == 7
+        assert validation_requests == [
+            (
+                "token-1",
+                {
+                    "route_options": [
+                        {"model": "system.ai.gpt-5-6-sol", "harness": "codex"},
+                        {"model": "system.ai.glm-5-2", "harness": "codex"},
+                    ],
+                    "route_selector": {"router_name": v2.routing.configured_router_name()},
+                },
+            )
+        ]
         assert processes[0].argv[:7] == [
             "codex",
             "app-server",
