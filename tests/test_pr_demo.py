@@ -393,31 +393,51 @@ def test_recording_blocks_non_host_secrets_with_redaction(
     assert not list(out.iterdir())
 
 
-@pytest.mark.parametrize(
-    "config_text",
-    [
-        "[unit-test]\nauth_type = databricks-cli\n",
-        "[other]\ntoken = example\n",
-        "[DEFAULT]\ntoken = example\n[unit-test]\nhost = example\n",
-    ],
-)
-def test_workspace_requires_profile_pat_before_building_venvs(
-    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_text: str
+def test_workspace_missing_profile_fails_before_building_venvs(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config = tmp_path / "databrickscfg"
-    config.write_text(config_text)
+    config.write_text("[other]\ntoken = example\n")
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
     installs = []
     monkeypatch.setattr(recorder, "venv_for_sha", lambda *args: installs.append(args))
-    with pytest.raises(SystemExit, match="token = <PAT>"):
+    with pytest.raises(SystemExit, match="'unit-test' is not in"):
         recorder.main([*_record_args(tmp_path), "--workspace", "--profile", "unit-test"])
     assert installs == []
 
 
-def test_pat_profile_default_section_is_accepted(record: Any, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("config_text", "uses_pat"),
+    [
+        ("[unit-test]\nauth_type = databricks-cli\n", False),
+        ("[unit-test]\nhost = example\n", False),
+        ("[unit-test]\ntoken = example\n", True),
+        ("[unit-test]\nauth_type = pat\n", True),
+    ],
+)
+def test_only_pat_profiles_use_pat_setup(
+    record: Any, tmp_path: Path, config_text: str, uses_pat: bool
+) -> None:
     config = tmp_path / "databrickscfg"
-    config.write_text("[DEFAULT]\ntoken = example\n")
-    record.check_profile_pat(config, "DEFAULT")
+    config.write_text(config_text)
+    use_pat = record.profile_uses_pat(config, "unit-test")
+    assert use_pat is uses_pat
+    setup = record.setup_command(workspace=True, profile="unit-test", use_pat=use_pat)
+    assert setup.startswith("ug configure --agents claude --verbose low --profile unit-test")
+    assert setup.endswith("--use-pat") is uses_pat
+
+
+def test_oauth_sandbox_links_real_databricks_login(
+    record: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    real_home = tmp_path / "real-home"
+    (real_home / ".databricks").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(real_home))
+    linked_home, _ = record.make_sandbox(tmp_path / "linked", link_databricks=True)
+    link = Path(linked_home) / ".databricks"
+    assert link.is_symlink() and link.resolve() == (real_home / ".databricks").resolve()
+    isolated_home, _ = record.make_sandbox(tmp_path / "isolated")
+    assert not (Path(isolated_home) / ".databricks").exists()
 
 
 def test_command_secret_overlapping_host_is_not_redacted_away(record: Any) -> None:

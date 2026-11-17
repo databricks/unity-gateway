@@ -108,10 +108,10 @@ ROOT=$(git rev-parse --show-toplevel)
    Repeated `--command` flags are also supported. Check these recorder limits
    before proceeding:
 
-   - Workspace mode runs hidden `ug configure --profile <name> --use-pat` setup.
-     The selected profile must have its own `token = <PAT>` entry in
-     `DATABRICKS_CONFIG_FILE` or `~/.databrickscfg`; OAuth/`databricks-cli` profiles
-     do not work. The recorder checks for the key, not whether the PAT is valid.
+   - Workspace mode runs hidden `ug configure --profile <name>` setup, adding
+     `--use-pat` for profiles with a `token` entry or `auth_type = pat`. For OAuth
+     profiles the sandbox links `~/.databricks` to the real one, so run
+     `databricks auth login --profile <name>` first; the CLI may refresh that login.
      Do not let hidden setup mask the behavior under review or replace visible setup.
    - The sandbox isolates HOME, sets `UG_SKIP_OS_SETTINGS=1`, and drops inherited
      variables. Apply required config/version settings explicitly to the launch.

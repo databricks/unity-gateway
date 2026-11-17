@@ -635,8 +635,8 @@ def resolve_revisions(base: str | None, head: str | None) -> tuple[str, str, lis
     return base_sha, head_sha, notes
 
 
-def check_profile_pat(config_path: Path, profile: str) -> None:
-    """Check for the token key in the selected profile without inspecting its value."""
+def profile_uses_pat(config_path: Path, profile: str) -> bool:
+    """Return whether the profile authenticates with a PAT, without reading its value."""
     parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
     try:
         with config_path.open(encoding="utf-8") as config:
@@ -645,26 +645,29 @@ def check_profile_pat(config_path: Path, profile: str) -> None:
         raise SystemExit(
             f"Cannot read Databricks config {config_path}; check its format and permissions."
         ) from None
-    if not parser.has_section(profile) or not parser.has_option(profile, "token"):
-        raise SystemExit(
-            f"Workspace recording uses --use-pat: profile {profile!r} needs its own "
-            "token = <PAT> entry. OAuth/databricks-cli profiles cannot be used; "
-            "select a profile with a personal access token."
-        )
+    if not parser.has_section(profile):
+        raise SystemExit(f"profile {profile!r} is not in {config_path}")
+    return (
+        parser.has_option(profile, "token")
+        or parser.get(profile, "auth_type", fallback="") == "pat"
+    )
 
 
-def setup_command(*, workspace: bool, profile: str | None) -> str:
+def setup_command(*, workspace: bool, profile: str | None, use_pat: bool = False) -> str:
     """Hidden `ug configure` run inside the sandbox before the shown commands.
 
     OS-managed settings writes are already disabled through UG_SKIP_OS_SETTINGS
     (see src/ucode/managed_files.py); the fake sudo on PATH is a second guard.
-    `--use-pat` keeps configure non-interactive against a real workspace.
+    PAT profiles pass `--use-pat`; OAuth profiles reuse the developer's existing
+    `databricks auth login` session through the linked ~/.databricks.
     """
     if not workspace:
         return ""
     cmd = "ug configure --agents claude --verbose low"
     if profile:
-        cmd += f" --profile {shlex.quote(profile)} --use-pat"
+        cmd += f" --profile {shlex.quote(profile)}"
+        if use_pat:
+            cmd += " --use-pat"
     else:
         warn("workspace mode without --profile may prompt for OAuth inside the recording")
     return cmd
@@ -704,11 +707,18 @@ def venv_for_sha(sha: str, cache: Path) -> tuple[Path, bool]:
     return build_venv(sha, venv_dir), False
 
 
-def make_sandbox(sandbox_dir: Path) -> tuple[str, str]:
-    """Create the sandbox HOME tree and a bin dir with a fake `sudo`."""
+def make_sandbox(sandbox_dir: Path, *, link_databricks: bool = False) -> tuple[str, str]:
+    """Create the sandbox HOME tree and a bin dir with a fake `sudo`.
+
+    With `link_databricks`, the sandbox ~/.databricks links to the real one so the
+    Databricks CLI reuses (and may refresh) the developer's OAuth login.
+    """
     home = sandbox_dir / "home"
     for sub in (".config", ".local/share", ".cache"):
         (home / sub).mkdir(parents=True, exist_ok=True)
+    real_databricks = Path.home() / ".databricks"
+    if link_databricks and real_databricks.is_dir():
+        (home / ".databricks").symlink_to(real_databricks, target_is_directory=True)
     bin_dir = sandbox_dir / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     sudo = bin_dir / "sudo"
@@ -785,7 +795,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--profile",
-        help="workspace profile with its own token = <PAT> entry; OAuth profiles do not work",
+        help="workspace profile; PAT profiles use --use-pat, OAuth profiles reuse "
+        "your existing `databricks auth login` session",
     )
     parser.add_argument(
         "--redact-host",
@@ -812,6 +823,7 @@ def main(argv: list[str] | None = None) -> int:
     check_commands_for_secrets(commands, redact_host=args.redact_host)
 
     workspace_config = None
+    use_pat = False
     if args.workspace:
         workspace_config = str(
             Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
@@ -819,7 +831,7 @@ def main(argv: list[str] | None = None) -> int:
         if not Path(workspace_config).exists():
             raise SystemExit(f"--workspace needs {workspace_config} to exist")
         if args.profile:
-            check_profile_pat(Path(workspace_config), args.profile)
+            use_pat = profile_uses_pat(Path(workspace_config), args.profile)
 
     stage_start = time.monotonic()
     base_sha, head_sha, notes = resolve_revisions(args.base, args.head)
@@ -835,13 +847,15 @@ def main(argv: list[str] | None = None) -> int:
             temp_root = REPO_ROOT.parent
         out_dir = Path(tempfile.mkdtemp(prefix="ug-pr-demo-", dir=temp_root)).resolve()
 
-    setup = setup_command(workspace=args.workspace, profile=args.profile)
+    setup = setup_command(workspace=args.workspace, profile=args.profile, use_pat=use_pat)
     cache = venv_cache_root(args.venv_cache)
     sandbox_dir = cache / "sandbox"
     # Start each run from a clean sandbox so prior ug state cannot leak in.
     if sandbox_dir.exists():
         shutil.rmtree(sandbox_dir)
-    env_home, sandbox_bin = make_sandbox(sandbox_dir)
+    env_home, sandbox_bin = make_sandbox(
+        sandbox_dir, link_databricks=args.workspace and not use_pat
+    )
 
     results: dict[str, dict[str, object]] = {}
     recordings: dict[
