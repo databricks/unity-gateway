@@ -1830,6 +1830,8 @@ class TestWriteToolConfigManagedSettings:
         ]
         assert len(auto_rows) == (1 if static_catalog else 0)
         if static_catalog:
+            # Auto leads UG's rows (Claude renders its native Default row above them).
+            assert managed["modelPicker"]["options"][0] == auto_rows[0]
             assert auto_rows[0]["label"] == "Auto"
             alias = auto_rows[0]["model"]
             assert managed["modelOverrides"][alias] == "system.ai.claude-sonnet-4-6"
@@ -1873,10 +1875,9 @@ class TestWriteToolConfigManagedSettings:
         result = add_picker_entry(settings, static_auto_row=True)
         assert result["modelPicker"]["replaceBuiltInOptions"] is True
         options = result["modelPicker"]["options"]
-        assert [row["model"] for row in options if not is_auto_model(row["model"])] == [
-            sonnet,
-            haiku,
-        ]
+        # Auto is the first UG row; the catalog's own rows keep their order after it.
+        assert is_auto_model(options[0]["model"])
+        assert [row["model"] for row in options[1:]] == [sonnet, haiku]
         auto_rows = [row for row in options if is_auto_model(row["model"])]
         # Exactly one Auto row, pointing at the variant of the configured default model.
         assert len(auto_rows) == 1
@@ -1890,6 +1891,44 @@ class TestWriteToolConfigManagedSettings:
         assert result["enforceAvailableModels"] is True
         # The input settings are not mutated.
         assert "modelOverrides" not in settings
+
+    def test_static_auto_row_reconfigure_moves_trailing_auto_first(self):
+        from ucode.agents.claude_auto import (
+            AUTO_DESCRIPTION,
+            add_picker_entry,
+            auto_variant,
+            is_auto_model,
+        )
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        haiku = "system.ai.claude-haiku-4-5"
+        sonnet_variant = auto_variant({"model": sonnet})
+        haiku_variant = auto_variant({"model": haiku})
+        # A file installed by an earlier build, with the Auto row last.
+        installed = {
+            "env": {"ANTHROPIC_MODEL": sonnet},
+            "availableModels": [sonnet, haiku, sonnet_variant, haiku_variant],
+            "modelOverrides": {sonnet_variant: sonnet, haiku_variant: haiku},
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {"model": sonnet, "label": "Sonnet 5.5"},
+                    {"model": haiku, "label": "Haiku 4.5"},
+                    {"model": sonnet_variant, "label": "Auto", "description": AUTO_DESCRIPTION},
+                ],
+            },
+        }
+        result = add_picker_entry(installed, static_auto_row=True)
+        assert result["modelPicker"]["options"] == [
+            {"model": sonnet_variant, "label": "Auto", "description": AUTO_DESCRIPTION},
+            {"model": sonnet, "label": "Sonnet 5.5"},
+            {"model": haiku, "label": "Haiku 4.5"},
+        ]
+        assert result["modelOverrides"] == installed["modelOverrides"]
+        assert result["availableModels"] == installed["availableModels"]
+        # Reconfiguring again is a no-op.
+        assert add_picker_entry(result, static_auto_row=True) == result
+        assert sum(is_auto_model(row["model"]) for row in result["modelPicker"]["options"]) == 1
 
     def test_custom_slot_mode_still_replaces_built_in_options(self):
         from ucode.agents.claude_auto import add_picker_entry, auto_variant

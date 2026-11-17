@@ -80,7 +80,7 @@ def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:
 
     With ``static_auto_row`` (a managed static catalog under the Auto config
     version), the picker keeps ``replaceBuiltInOptions`` as the catalog wrote it
-    and appends a single Auto row for the default variant instead of exposing the
+    and puts a single Auto row for the default variant first instead of exposing the
     custom option. The mod's in-process custom option still drives main-model
     switching; aliases stay in ``modelOverrides`` and ``availableModels``.
     """
@@ -144,13 +144,14 @@ def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:
             (row for row in available if preferred in (row["model"], auto_variant(row))),
             available[0],
         )
+        # Auto leads UG's rows; Claude always renders its native Default row first.
         result["modelPicker"]["options"] = [
-            *rows,
             {
                 "model": auto_variant(default_row),
                 "label": "Auto",
                 "description": AUTO_DESCRIPTION,
             },
+            *rows,
         ]
     else:
         # Replacement pickers suppress Claude's native custom-model option.

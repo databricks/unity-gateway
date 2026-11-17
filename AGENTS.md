@@ -166,7 +166,7 @@ enabled. When managed Claude `smart_routing_enabled` is true AND the configure-t
 environment resolves to the Auto config version (`SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
 or `ENABLE_SMART_ROUTER_AUTO_MODE=1`; the managed config itself carries no version),
 configure keeps `replaceBuiltInOptions=true` on the UG-owned static catalog and serves
-Auto from one row inside it: the default variant's alias with label `Auto`, its
+Auto from one row inside it, first among UG's rows (below Claude's native Default row): the default variant's alias with label `Auto`, its
 `modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
 is written at configure only — launches preserve whichever installed mode the file
 carries, and a launch's own version selection never installs or converts the catalog.

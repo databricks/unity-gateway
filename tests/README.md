@@ -15,7 +15,8 @@ These journeys require authenticated live CI; collection is not a live pass.
 Focused regressions cover managed routing with Auto off at configure, non-routing
 configure retaining its replacement picker, and explicit Auto configure opt-in.
 Managed routing configured under the Auto config version keeps the static catalog's
-replacement picker with exactly one Auto row (default-variant alias, matching
+replacement picker with exactly one Auto row, first among UG's rows even when
+reconfiguring a file that had it last (default-variant alias, matching
 `modelOverrides` and `availableModels` entries); the launch serves that configured
 catalog to the mod without a custom-model slot, and both installed modes survive
 ordinary launches byte-identically.

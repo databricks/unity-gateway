@@ -550,7 +550,7 @@ for UG-owned pickers, regardless of its config version. When the configure-time
 environment also selects the Auto config version (`SMART_ROUTER_CONFIG_VERSION`
 above; the managed config itself carries no version), configure keeps
 `replaceBuiltInOptions=true` on the UG-owned static catalog and serves Auto from
-one row inside it: the default variant's alias labeled "Auto", with its
+one row inside it, listed first after Claude's native Default row: the default variant's alias labeled "Auto", with its
 `modelOverrides` mapping and both the alias and its target admitted by
 `availableModels`. That static-catalog mode is written at configure only; launches
 preserve whichever installed mode the file carries and never install or convert it.
