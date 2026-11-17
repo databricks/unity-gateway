@@ -55,6 +55,18 @@ def launch_config(version: str, controls: Path) -> dict:
     }
 
 
+def tui_config(config: dict) -> dict:
+    return {
+        key: config[key]
+        for key in ("features.tui_extensions_statusline", "tui.status_line_provider")
+        if key in config
+    }
+
+
+def _object(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
 def _text(value: str, color: str) -> dict:
     return {"type": "text", "props": {"color": color}, "children": [value]}
 
@@ -69,17 +81,17 @@ def render(state: dict[str, Any]) -> dict:
     except (OSError, UnicodeError, ValueError):
         label, color = "UNKNOWN", "yellow"
 
-    thread = state.get("thread", {})
-    model = thread.get("model", {})
+    thread = _object(_object(state).get("thread"))
+    model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
     children = [_text(f"smart router {label}", color), _text(model_name, "status-model")]
-    cwd = thread.get("workspace", {}).get("cwd")
+    cwd = _object(thread.get("workspace")).get("cwd")
     if cwd:
         path = PureWindowsPath(cwd) if "\\" in cwd else PurePosixPath(cwd)
         children.append(_text(path.name or str(path), "status-path"))
-    used = thread.get("usage", {}).get("context", {}).get("used_percentage")
+    used = _object(_object(thread.get("usage")).get("context")).get("used_percentage")
     if isinstance(used, (int, float)) and not isinstance(used, bool):
         remaining = max(0, min(100, round(100 - used)))
         children.append(_text(f"{remaining}% context left", "status-usage"))

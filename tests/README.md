@@ -1,7 +1,7 @@
 # Test suites and user journeys
 
 `test_codex_statusline.py` covers the experimental footer's version boundary,
-live control-file reads, ON/OFF/UNKNOWN recovery, per-thread display inputs, MCP
+live control-file reads, ON/OFF/UNKNOWN recovery, nullable per-thread display inputs, MCP
 advertisement and protocol errors, and isolation between two real stdio provider
 processes. `test_codex_smart_routing_v2.py` checks that both POSIX and Windows
 launches wire the provider into the app-server and its selection into the terminal,

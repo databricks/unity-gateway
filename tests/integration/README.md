@@ -2,6 +2,7 @@
 
 The experimental Codex footer has offline protocol, process-isolation, and launcher
 coverage in `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`.
+Those component checks also cover nullable snapshots and terminal config isolation.
 The stable CI baseline does not exercise this new renderer. Test it with pinned
 Codex `0.171.0-alpha.12` using the
 [footer validation steps](../../docs/codex-smart-router-statusline.md). A native

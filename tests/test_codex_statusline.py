@@ -63,6 +63,45 @@ def test_launch_config_pins_session_without_credentials(tmp_path):
     assert statusline.launch_config("0.169.0", controls) == {}
 
 
+def test_terminal_config_contains_only_feature_and_selection(tmp_path):
+    config = statusline.launch_config("0.171.0-alpha.12", tmp_path / "controls.json")
+    config["server_only"] = "private"
+    assert statusline.tui_config(config) == {
+        "features.tui_extensions_statusline": True,
+        "tui.status_line_provider": {
+            "server": statusline.SERVER_NAME,
+            "tool": statusline.TOOL_NAME,
+        },
+    }
+    assert statusline.tui_config({}) == {}
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        None,
+        {"thread": None},
+        {"thread": []},
+        {"thread": {"model": None}},
+        {"thread": {"model": []}},
+        {"thread": {"workspace": None}},
+        {"thread": {"usage": None}},
+        {"thread": {"usage": {"context": None}}},
+    ],
+)
+def test_nullable_snapshots_keep_footer_available(tmp_path, monkeypatch, state):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{}")
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    reply = statusline.respond(
+        "resources/read",
+        {"uri": statusline.RESOURCE_URI, "_meta": {statusline.STATE_META_KEY: state}},
+    )
+    labels = _labels(json.loads(reply["contents"][0]["text"]))
+    assert "smart router ON" in labels
+    assert "Codex" in labels
+
+
 def test_footer_tracks_session_toggles_and_current_thread(tmp_path, monkeypatch):
     monkeypatch.setenv(SESSION_ENV_VAR, str(tmp_path / "controls.json"))
     (tmp_path / "controls.json").write_text("{}")

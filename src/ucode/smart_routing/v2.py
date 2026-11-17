@@ -987,9 +987,7 @@ def launch_codex(
             [
                 binary,
                 *provider_args,
-                *codex_config_args(
-                    {key: value for key, value in statusline_config.items() if key != "mcp_servers"}
-                ),
+                *codex_config_args(codex_statusline.tui_config(statusline_config)),
                 "--remote",
                 tui_url,
                 "--model",
