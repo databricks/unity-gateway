@@ -330,7 +330,8 @@ class TestCodexFiles:
         catalog = machine.CODEX_MANAGED_CATALOG_PATH
         catalog.parent.mkdir(parents=True)
         catalog.write_text("{}\n")
-        reference = f'model_catalog_json = "{catalog}"\n' if named else ""
+        # json.dumps quotes the path as a valid TOML string, backslashes included (Windows).
+        reference = f"model_catalog_json = {json.dumps(str(catalog))}\n" if named else ""
         machine.CODEX_MANAGED_CONFIG_PATH.write_text(f'model_provider = "Databricks"\n{reference}')
         [plan] = machine.plan_agents(
             _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, None
@@ -382,7 +383,7 @@ class TestCodexFiles:
         cat, ref = machine.CODEX_MANAGED_CATALOG_PATH, machine.CODEX_MANAGED_CONFIG_PATH
         cat.parent.mkdir(parents=True)
         cat.write_text("{}\n")
-        ref.write_text(f'model_catalog_json = "{cat}"\n')
+        ref.write_text(f"model_catalog_json = {json.dumps(str(cat))}\n")
         previous = {"agents": {"codex": {"paths": [str(ref), str(cat)]}}}
         [plan] = machine.plan_agents(
             _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, previous
