@@ -39,8 +39,10 @@ For a configured test workspace and an explicitly selected profile:
 6. Repeat with `first_prompt_and_subagent_no_orch_v0` and complete an initial prompt.
 7. Repeat on Windows. Confirm both the app-server and remote terminal receive the
    correct configuration, including when paths contain spaces.
-8. Compare saved Codex settings before and after, allowing only Codex-owned trust
-   records. Existing footer preferences and unrelated MCP registrations must survive.
+8. Compare saved footer preferences and MCP registrations before and after.
+   Codex may add its own trust and onboarding records, such as
+   `tui.screen_reader_detection_done`; compare `tui.status_line` and
+   `tui.status_line_provider` independently of that bookkeeping.
 9. On stable `0.169.0`, confirm routed launch still works with its existing footer.
 
 Existing native routing journeys can be run with pinned alpha through
