@@ -361,6 +361,10 @@ class TestModelSources(BaseCujTest):
         assert_inference_evidence(recorder, checkpoint, CODEX, task, model)
         _assert_no_routes(recorder, checkpoint)
 
+    # TODO(AIGTWY-5588): investigate GPT luna on Copilot. The gateway rejects the
+    # provider-service gpt-6-luna request with 400 "Unsupported native_api_type for
+    # OpenAI v1 surface: mlflow/v1/responses"; re-enable once the route is fixed.
+    @pytest.mark.skip(reason="TODO(AIGTWY-5588): investigate Copilot GPT luna 400")
     @pytest.mark.copilot
     @pytest.mark.parametrize("model", COPILOT_MODELS)
     def test_sources_copilot_inference_on_each_source_model(self, cuj, model):

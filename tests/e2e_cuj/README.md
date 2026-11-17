@@ -72,6 +72,10 @@ and Copilot CLI, explicit inference on every expanded model, and one routed
 Claude child. Smart routing is enabled only for Claude Code. Codex and Copilot
 tasks must send no routing requests.
 
+Copilot explicit inference on each source model is currently skipped (gap): the gateway
+rejects the provider-service `gpt-6-luna` request with a 400 on `mlflow/v1/responses`.
+Re-enable it once that route is fixed (AIGTWY-5588).
+
 | Agent | Explicit MPS deep link | Explicit model service | Wildcard |
 | --- | --- | --- | --- |
 | Claude Code | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.models.claude_sonnet` | `ug_e2e.other_models.*` includes both aliases |

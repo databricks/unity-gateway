@@ -1684,7 +1684,10 @@ component coverage. CUJ9 collects 14 installed-agent cases for mixed sources and
 inference, with smart routing only for Claude Code. The workspace directly publishes
 its configuration as of 2026-11-16; tests validate it without a local configuration
 artifact. Claude and Codex use custom defaults, while Copilot uses hosted
-`system.ai.gpt-6-luna`. All 14 cases are active. An optional fifteenth case checks
+`system.ai.gpt-6-luna`. 11 of the 14 cases are active; the three
+`test_sources_copilot_inference_on_each_source_model` cases are skipped (gap) pending
+investigation (AIGTWY-5588) of a gateway 400 on `mlflow/v1/responses` for the
+provider-service GPT luna model. An optional fifteenth case checks
 Claude configure and inference from a Foundry wildcard in a separately preconfigured
 workspace; the Foundry target's qualified IDs also have component picker coverage.
 These are implemented assertions, not a live pass. See the
