@@ -20,6 +20,9 @@ reconfiguring a file that had it last (default-variant alias, matching
 `modelOverrides` and `availableModels` entries); the launch serves that configured
 catalog to the mod without a custom-model slot, and both installed modes survive
 ordinary launches byte-identically.
+The mod's component tests (`native_claude/mod_tests/auto-static.test.ts`) check that a
+subagent the router did not route, which inherits the session's Auto alias, sends the
+alias's real target model; live coverage of an unrouted child under Auto is a gap.
 Ordinary and Auto launches preserve managed bytes and invoke no further privileged
 writes, with or without write access. Existing suites also cover fresh OFF session
 controls and native manual-model startup with feedback required through the next main turn. The native

@@ -19,7 +19,7 @@ import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
-import { formatAutoConfirmation, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { autoTarget, formatAutoConfirmation, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
@@ -298,8 +298,11 @@ export function register(on: On, options: PluginOptions): void {
       // A CLI/skill toggle changes the session file without notifying this process.
       $.ui.invalidate('tool.describe');
     }
+    // An Auto alias is a picker identity, not a gateway model. A subagent the router did
+    // not route inherits the session's alias, so every loop sends the alias's real target.
     const model = routedModels.model(e.agentId)
-      ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined);
+      ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined)
+      ?? (auto ? autoTarget(auto, e.model) : undefined);
     return yield* next(model ? {...e, model} : e);
   });
 

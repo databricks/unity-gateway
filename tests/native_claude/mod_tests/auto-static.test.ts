@@ -118,3 +118,30 @@ test('/model auto opens the main-model chooser listing every catalog row', { opt
   // The current main model carries the focus marker.
   expect(drawn).toContain('❯ Sonnet 5');
 });
+
+// The engine's bottom of the turn.step chain; returns the model each step sends.
+function captureSteps(on: On): string[] {
+  const sent: string[] = [];
+  on('turn.step', async function* ($, e) {
+    sent.push(e.model);
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null };
+  });
+  return sent;
+}
+
+async function step($: any, model: string, agentId?: string): Promise<void> {
+  const stream = $.turn.step({ turnId: 'turn', index: 0, messageCount: 1, model, agentId });
+  for (let item = await stream.next(); !item.done; item = await stream.next()) {}
+}
+
+test('an unrouted subagent that inherits an Auto alias sends its real target', { options: OPTIONS }, async ($, on) => {
+  staticCatalogSession(on, OTHER_ALIAS);
+  const sent = captureSteps(on);
+  await $.session.start(START);
+
+  // The gateway serves no Auto alias, and native settings do not map a child's model.
+  await step($, OTHER_ALIAS, 'child');
+  await step($, DEFAULT_ALIAS, 'child');
+  await step($, 'system.ai.claude-opus-5', 'child');
+  expect(sent).toEqual([OTHER, MAIN, 'system.ai.claude-opus-5']);
+});

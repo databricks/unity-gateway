@@ -15,6 +15,11 @@ export function resolveAutoModel(auto: AutoPicker, selected: string): string {
   return auto.models.find(row => matchesAutoModel(row.autoModel, selected))?.autoModel ?? selected;
 }
 
+// The real model an Auto alias stands for, or undefined for any other model.
+export function autoTarget(auto: AutoPicker, model: string): string | undefined {
+  return auto.models.find(row => matchesAutoModel(row.autoModel, model))?.model;
+}
+
 export function sameAutoTarget(auto: AutoPicker, from: string, to: string, overrides: unknown, window?: number): boolean {
   from = resolveAutoModel(auto, from);
   to = resolveAutoModel(auto, to);
