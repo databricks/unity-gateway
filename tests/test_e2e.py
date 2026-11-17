@@ -1023,10 +1023,14 @@ class TestPiLaunch:
     """
 
     def _all_models(self, e2e_state: dict) -> list[tuple[str, str]]:
+        from ucode.agents import pi
+
         out: list[tuple[str, str]] = []
         claude_models: dict = e2e_state.get("claude_models") or {}
         for family, model_id in _launchable_model_items(claude_models):
-            out.append((f"claude-{family}", model_id))
+            # Pi leaves out Claude older than 4.5, which rejects its request shape.
+            if pi.serves_pi_model(model_id):
+                out.append((f"claude-{family}", model_id))
         for model in e2e_state.get("codex_models") or []:
             if not _model_is_skipped(model, "pi"):
                 out.append(("codex", model))
@@ -1077,13 +1081,10 @@ class TestPiLaunch:
                 "ucode.agents.pi.get_databricks_token",
                 lambda ws, profile=None, **kwargs: e2e_token,
             )
-            pi.write_tool_config(
-                {**e2e_state, "workspace": e2e_workspace},
-                model,
-                token=e2e_token,
-            )
+            pi_state = {**e2e_state, "workspace": e2e_workspace}
+            pi.write_tool_config(pi_state, model, token=e2e_token)
 
-        env = pi.build_runtime_env(e2e_token)
+        env = pi.build_runtime_env(e2e_token, has_gemini=pi._has_gemini(pi_state))
         cmd = pi.validate_cmd("pi")
         result = _run_agent(cmd, env=env, timeout=120)
         combined = (result.stdout + result.stderr).strip()

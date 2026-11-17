@@ -333,7 +333,13 @@ class TestCheckGatewayEndpoint:
         assert check_gateway_endpoint({}, "copilot") is False
 
     def test_pi_available_with_claude(self):
-        assert check_gateway_endpoint({"claude_models": {"sonnet": "s4"}}, "pi") is True
+        state = {"claude_models": {"sonnet": "databricks-claude-sonnet-4-5"}}
+        assert check_gateway_endpoint(state, "pi") is True
+
+    def test_pi_unavailable_with_only_pre_4_5_claude(self):
+        # Pi leaves out Claude older than 4.5, so it has no model to configure.
+        state = {"claude_models": {"opus": "databricks-claude-opus-4-1"}}
+        assert check_gateway_endpoint(state, "pi") is False
 
     def test_pi_available_with_codex(self):
         assert check_gateway_endpoint({"codex_models": ["m"]}, "pi") is True
@@ -341,8 +347,27 @@ class TestCheckGatewayEndpoint:
     def test_pi_available_with_gemini(self):
         assert check_gateway_endpoint({"gemini_models": ["gemini-2"]}, "pi") is True
 
+    def test_pi_available_with_only_oss_models(self):
+        # Pi serves discovered OSS models on its MLflow provider.
+        assert check_gateway_endpoint({"oss_models": ["system.ai.glm-5-3"]}, "pi") is True
+
     def test_pi_unavailable_when_no_models(self):
         assert check_gateway_endpoint({}, "pi") is False
+
+    def test_pi_unavailable_with_only_a_managed_default(self):
+        # A default with no provider to render would delete Pi's providers and write none.
+        state = {"pi_default_model": "system.ai.gpt-5-2"}
+
+        assert agents_mod.pi.default_model(state) == "system.ai.gpt-5-2"
+        assert agents_mod.pi.has_servable_models(state) is False
+        assert check_gateway_endpoint(state, "pi") is False
+        assert check_gateway_endpoint({**state, "codex_models": ["system.ai.gpt-5-2"]}, "pi")
+
+    def test_pi_availability_failure_names_oss_discovery(self):
+        from ucode.agents import _availability_failure_detail
+
+        detail = _availability_failure_detail("pi", {"_discovery_reasons": {"oss": "HTTP 403"}})
+        assert "oss discovery: HTTP 403" in detail
 
 
 class TestDefaultModelForTool:

@@ -697,11 +697,18 @@ class TestManagedUnservableModels:
     def _managed(tool, models):
         return {"enabled_agents": {tool: {"model_config": {"models": models}}}}
 
-    def test_pi_oss_only_is_unservable(self):
-        # Pi has no OSS provider block.
-        assert managed_unservable_models(
-            self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi"
-        ) == ["system.ai.kimi-k2-7-code"]
+    def test_pi_serves_oss_models_through_its_mlflow_provider(self):
+        managed = self._managed("pi", ["system.ai.kimi-k2-7-code"])
+        assert managed_unservable_models(managed, "pi") == []
+
+    def test_pi_unknown_family_only_is_unservable(self):
+        managed = self._managed("pi", ["system.ai.qwen35-122b-a10b"])
+        assert managed_unservable_models(managed, "pi") == ["system.ai.qwen35-122b-a10b"]
+
+    def test_pi_old_claude_only_is_unservable(self):
+        # Pi leaves out Claude older than 4.5, legacy-named ids included.
+        models = ["system.ai.claude-opus-4-1", "databricks-claude-3-7-sonnet"]
+        assert managed_unservable_models(self._managed("pi", models), "pi") == models
 
     def test_opencode_gpt_only_is_unservable(self):
         # OpenCode has no OpenAI provider block.
@@ -711,7 +718,7 @@ class TestManagedUnservableModels:
     @pytest.mark.parametrize(
         ("tool", "models"),
         [
-            ("pi", ["system.ai.kimi-k2-7-code", "system.ai.claude-opus-4-8"]),
+            ("pi", ["system.ai.qwen35-122b-a10b", "system.ai.claude-opus-4-8"]),
             ("opencode", ["system.ai.gpt-5", "system.ai.claude-opus-4-8"]),
         ],
     )

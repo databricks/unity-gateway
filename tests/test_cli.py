@@ -3204,6 +3204,16 @@ class TestStatus:
         assert cli_mod._status_default_model("claude", MINIMAL_STATE, ["cached"]) is None
         assert "Tracing: disabled" in output
 
+    def test_status_reports_the_model_pi_starts_on(self):
+        # Pi skips a managed default it can't serve (Claude older than 4.5) and starts elsewhere.
+        state = {
+            "pi_default_model": "system.ai.claude-opus-4-1",
+            "pi_models": ["system.ai.claude-opus-4-1", "system.ai.gpt-5"],
+        }
+
+        assert cli_mod._status_default_model("pi", state, ["system.ai.gpt-5"]) == "system.ai.gpt-5"
+        assert cli_mod._status_default_model("pi", {"codex_models": ["gpt-5"]}, []) is None
+
 
 class TestStatusLiveModels:
     def test_refreshes_models_with_the_saved_profile_without_persisting(self):
@@ -7399,6 +7409,51 @@ class TestConfigureSharedStateUsePat:
 
         assert state["codex_models"] == ["system.ai.gpt-5-6-sol"]
         assert state["oss_models"] == ["system.ai.glm-5-2"]
+
+    def test_pi_only_configure_persists_discovered_oss_models(self, monkeypatch):
+        # Pi's MLflow provider reads `oss_models`, so a Pi-only configure must save them.
+        cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")
+        monkeypatch.setattr(
+            cli_mod,
+            "discover_model_services",
+            lambda w, t: (
+                {},
+                ["system.ai.gpt-5-6-sol"],
+                [],
+                ["system.ai.glm-5-2"],
+                None,
+            ),
+        )
+
+        state = cli_mod.configure_shared_state(
+            self.WS,
+            profile="DEFAULT",
+            tools=["pi"],
+        )
+
+        assert state["oss_models"] == ["system.ai.glm-5-2"]
+        assert cli_mod._status_models("pi", state) == [
+            "system.ai.gpt-5-6-sol",
+            "system.ai.glm-5-2",
+        ]
+        assert cli_mod._status_models("pi", {"oss_models": ["system.ai.glm-5-3"]}) == [
+            "system.ai.glm-5-3"
+        ]
+
+    def test_pi_status_lists_the_models_pi_serves(self):
+        import ucode.cli as cli_mod
+
+        # An allowlist of only pre-4.5 Claude falls back to discovery, as the written config does.
+        state = {
+            "pi_models": ["system.ai.claude-opus-4-1"],
+            "claude_models": {"opus": "system.ai.claude-opus-4-1"},
+            "codex_models": ["system.ai.gpt-5", "system.ai.gpt-oss-120b"],
+        }
+
+        assert cli_mod._status_models("pi", state) == [
+            "system.ai.gpt-5",
+            "system.ai.gpt-oss-120b",
+        ]
 
     def _stub_with_fable(self, monkeypatch):
         cli_mod, *_ = self._stub_deps(monkeypatch, pat_token="dapi-pat")

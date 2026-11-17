@@ -38,6 +38,7 @@ from ucode.agents import (
     configure_selected_tools,
     configure_single_tool,
     configure_tool,
+    default_model_for_tool,
     ensure_bootstrap_dependencies,
     ensure_provider_state,
     explicit_model_arg_value,
@@ -58,6 +59,7 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
+from ucode.agents import pi as pi_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
@@ -277,7 +279,7 @@ _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
     "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
-    "oss": ("opencode", "kilo"),
+    "oss": ("opencode", "kilo", "pi"),
 }
 
 
@@ -802,8 +804,10 @@ def configure_shared_state(
         fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
-    # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
+    # configure must persist that discovered family too. Pi serves them on its MLflow provider.
+    want_oss = (
+        fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools or "pi" in tools
+    )
     want_copilot = fetch_all or "copilot" in tools
 
     claude_reason: str | None = None
@@ -1795,11 +1799,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
     elif tool == "antigravity":
         models = list(antigravity_agent.model_catalog(state).values())
     elif tool == "pi":
-        models = _model_values(state.get("pi_models")) or (
-            _model_values(state.get("claude_models"))
-            + _model_values(state.get("codex_models"))
-            + _model_values(state.get("gemini_models"))
-        )
+        # Pi skips models it can't serve, and an allowlist with none falls back to discovery.
+        models = pi_agent.status_models(state)
     else:
         models = []
     return list(dict.fromkeys(models))
@@ -1808,16 +1809,15 @@ def _status_models(tool: str, state: dict) -> list[str]:
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
     if tool == "copilot":
         return copilot_agent.default_model(state)
+    if tool == "pi" and models:
+        # Pi skips a managed default or model it can't serve, so report the model it starts on.
+        return default_model_for_tool("pi", state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return (
-        models[0]
-        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity")
-        else None
-    )
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "antigravity") else None
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:

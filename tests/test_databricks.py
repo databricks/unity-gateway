@@ -539,11 +539,17 @@ def _model_service(model_id: str) -> dict:
 
 
 class TestModelTokenLimits:
-    def test_glm_is_capped(self):
-        assert db_mod.model_token_limits("system.ai.glm-5-2") == {
-            "context": 200_000,
-            "output": 25_000,
-        }
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            # Per-model MLflow limits win over the GLM family cap for every agent.
+            ("system.ai.glm-5-3", 1_048_576, 131_072),
+            ("system.ai.glm-5-2", 1_000_000, 131_072),
+            ("system.ai.glm-4-6", 200_000, 25_000),
+        ],
+    )
+    def test_glm_is_capped(self, model_id, context, output):
+        assert db_mod.model_token_limits(model_id) == {"context": context, "output": output}
 
     def test_glm_matches_any_version(self):
         assert db_mod.model_token_limits("system.ai.glm-4-6-flash") == {
@@ -553,6 +559,142 @@ class TestModelTokenLimits:
 
     def test_uncapped_model_returns_none(self):
         assert db_mod.model_token_limits("system.ai.kimi-k2-7-code") is None
+
+
+class TestCanonicalModelName:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("system.ai.gpt-5.5", "gpt-5-5"),
+            ("gpt-6.1-sol", "gpt-6-1-sol"),
+            ("databricks-gemini-3-1-pro", "gemini-3-1-pro"),
+            ("system.ai.claude-opus-4-8[1m]", "claude-opus-4-8"),
+        ],
+    )
+    def test_strips_prefixes_and_dashes_versions(self, model_id, expected):
+        assert db_mod.canonical_model_name(model_id) == expected
+
+
+class TestClaudeModelName:
+    @pytest.mark.parametrize(
+        ("model_id", "expected"),
+        [
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", "claude-sonnet-4-5"),
+            ("system.ai.claude-opus-4-8[1m]", "claude-opus-4-8"),
+            ("system.ai.gpt-5", "gpt-5"),
+        ],
+    )
+    def test_strips_catalog_and_release_suffix(self, model_id, expected):
+        assert db_mod.claude_model_name(model_id) == expected
+
+    @pytest.mark.parametrize(
+        ("model_id", "tokens"),
+        [
+            ("claude-opus-4.6", (1_000_000, 128_000)),
+            ("databricks-claude-fable-5-1", (1_000_000, 128_000)),
+            ("claude-sonnet-4-5-20250929", (200_000, 32_000)),
+            ("claude-sonnet-4-5-thinking", (200_000, 32_000)),
+            ("system.ai.claude-sonnet-4-6-thinking", (1_000_000, 128_000)),
+            ("claude-fable-5-fast", (1_000_000, 128_000)),
+            ("databricks-claude-3-7-sonnet", (200_000, 32_000)),
+            ("system.ai.gpt-5", None),
+        ],
+    )
+    def test_token_limits_by_name(self, model_id, tokens):
+        assert db_mod.claude_token_limits(model_id) == tokens
+
+    @pytest.mark.parametrize(
+        ("model_id", "version"),
+        [
+            ("system.ai.claude-opus-4-8[1m]", ("opus", (4, 8))),
+            ("claude-opus-4.6", ("opus", (4, 6))),
+            ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", ("sonnet", (4, 5))),
+            ("claude-sonnet-4-6-thinking", ("sonnet", (4, 6))),
+            ("claude-fable-5-fast", ("fable", (5, 0))),
+            ("databricks-claude-3-7-sonnet", ("sonnet", (3, 7))),
+            ("claude-3-5-sonnet", ("sonnet", (3, 5))),
+            ("claude-3-haiku", ("haiku", (3, 0))),
+            ("test-claude-model", None),
+            ("system.ai.gpt-5", None),
+        ],
+    )
+    def test_claude_version(self, model_id, version):
+        assert db_mod.claude_version(model_id) == version
+
+
+class TestGptModelTokenLimits:
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            ("system.ai.gpt-6-sol", 1_050_000, 128_000),
+            ("system.ai.gpt-6-1-terra", 1_050_000, 128_000),
+            # A new GPT-6 variant inherits the family's window.
+            ("system.ai.gpt-6-nova", 1_050_000, 128_000),
+            ("system.ai.gpt-5-6-luna", 1_050_000, 128_000),
+            ("gpt-5.5-pro", 1_050_000, 128_000),
+            ("system.ai.gpt-5-5", 272_000, 128_000),
+            ("system.ai.gpt-5-4", 272_000, 128_000),
+            ("system.ai.gpt-5-4-nano", 400_000, 128_000),
+            ("databricks-gpt-5-mini", 400_000, 128_000),
+            ("system.ai.gpt-5-3-codex", 400_000, 128_000),
+            # Spark is a smaller model than the rest of GPT-5.3 Codex.
+            ("system.ai.gpt-5-3-codex-spark", 128_000, 32_000),
+            ("system.ai.gpt-4o", 128_000, 16_384),
+        ],
+    )
+    def test_limits_are_model_specific(self, model_id, context, output):
+        assert db_mod.gpt_model_token_limits(model_id) == {"context": context, "output": output}
+
+    def test_unknown_model_gets_the_conservative_fallback(self):
+        assert db_mod.gpt_model_token_limits("codex-mini") == {"context": 128_000, "output": 16_384}
+
+
+class TestGeminiModelTokenLimits:
+    def test_text_models_get_the_1m_window(self):
+        assert db_mod.gemini_model_token_limits("system.ai.gemini-3-1-pro") == {
+            "context": 1_048_576,
+            "output": 65_536,
+        }
+
+    def test_image_generation_models_get_the_smaller_window(self):
+        assert db_mod.gemini_model_token_limits("system.ai.gemini-3-1-flash-image") == {
+            "context": 65_536,
+            "output": 32_768,
+        }
+
+
+class TestOssModelTokenLimits:
+    @pytest.mark.parametrize(
+        ("model_id", "context", "output"),
+        [
+            ("system.ai.glm-5-3", 1_048_576, 131_072),
+            ("databricks-glm-5-3-flash", 1_048_576, 131_072),
+            ("system.ai.glm-5.2", 1_000_000, 131_072),
+            ("system.ai.kimi-k3", 1_000_000, 131_072),
+            ("system.ai.kimi-k3-1-pro", 1_000_000, 131_072),
+            ("system.ai.gpt-oss-120b", 128_000, 25_000),
+            ("system.ai.gpt-oss-20b", 128_000, 25_000),
+        ],
+    )
+    def test_limits_are_model_specific(self, model_id, context, output):
+        assert db_mod.oss_model_token_limits(model_id) == {"context": context, "output": output}
+
+    def test_unlisted_glm_keeps_the_shared_family_limits(self):
+        assert db_mod.oss_model_token_limits("system.ai.glm-4-6") == db_mod.model_token_limits(
+            "system.ai.glm-4-6"
+        )
+
+    def test_other_unlisted_models_are_never_uncapped(self):
+        assert db_mod.oss_model_token_limits("system.ai.deepseek-v4-1-flash") == {
+            "context": 128_000,
+            "output": 8_192,
+        }
+
+
+def test_pi_base_urls_include_the_mlflow_route():
+    assert db_mod.build_pi_base_urls("https://example.cloud.databricks.com")["oss"] == (
+        "https://example.cloud.databricks.com/ai-gateway/mlflow/v1"
+    )
 
 
 class TestDiscoverModelServices:

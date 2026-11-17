@@ -1209,6 +1209,20 @@ Pi's token-command tests in `test_agent_pi.py` exercise Windows executable paths
 through POSIX parsing, including spaces, apostrophes, profile names, and PAT mode.
 They do not launch Pi or Git Bash on Windows.
 
+Pi's model-entry tests in `test_agent_pi.py` pin each documented Claude, GPT, Gemini and
+MLflow model's thinking levels, per-model limits, image input and inline-image limits, the
+exclusion of pre-4.5 Claude (legacy `claude-3-7-sonnet` names included), and the move of
+gpt-oss from the Responses provider to the MLflow provider (providers, selector, default model
+and managed `pi_models`). They also pin the MLflow provider's compat flags, its base URL for
+state saved without one, and the Vertex environment pinning, which applies only with the
+Gemini provider `write_tool_config` renders and warns whenever it rewrites an inherited switch.
+`test_databricks.py` covers the shared GPT, Gemini and MLflow limit tables and Claude version
+parsing; `test_cli.py` and `test_agents_init.py` cover Pi-only OSS discovery, availability (a
+provider to render, not only a default) and the status inventory of the models Pi serves.
+Selectors under a current or legacy ug provider prefix are pinned to re-resolve to the
+serving provider or fall back. These render `models.json` only; they do not establish that the gateway
+accepts the levels or limits, which was checked manually on Pi 1.5.0 for a subset.
+
 Shared native transcript parsing is checked by `test_integration_agent_helpers.py` and
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
 they do not establish live agent coverage.
