@@ -150,7 +150,9 @@ def normalize_tool(tool: str) -> str:
     return normalized
 
 
-def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
+def _update_installed_tool_binary(
+    tool: str, version: str | None = None, *, continued_with_fallback: bool = True
+) -> bool:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
     package = spec["package"]
@@ -188,7 +190,7 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
             operation=metrics.DEPENDENCY_INSTALL_OPERATION,
             dependency=tool,
             action="downgrade" if version else "update",
-            continued_with_fallback=True,
+            continued_with_fallback=continued_with_fallback,
         ):
             subprocess_cross_os.run(
                 command, check=True, timeout=300, stdout=status_subprocess_stdout()
@@ -228,7 +230,7 @@ def ensure_minimum_version(
             )
         ):
             raise RuntimeError(version_error)
-        if not _update_installed_tool_binary(tool):
+        if not _update_installed_tool_binary(tool, continued_with_fallback=False):
             raise RuntimeError(version_error)
         version_error = version_check()
     if version_error:
@@ -842,8 +844,15 @@ def _configure_one(
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:
-        # `ug configure` writes the managed model keys a plain launch would.
-        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
+        # `ug configure` writes the managed model keys a plain launch would. A static list that
+        # names a subscription-relayed model service needs the relayed launch (credential swap).
+        return configure_tool(
+            tool,
+            state,
+            model,
+            relayed=claude.static_models_need_subscription_relay(state, configuring=True),
+            derive_managed_model_inputs=True,
+        )
     return configure_tool(tool, state, model)
 
 

@@ -639,6 +639,7 @@ class TestFetchClient:
         captured = {}
 
         class _FakeResponse:
+            status = 200
             headers: dict[str, str] = {}
 
             def __enter__(self):

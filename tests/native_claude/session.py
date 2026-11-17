@@ -9,6 +9,7 @@ import threading
 import time
 from pathlib import Path
 
+from ucode.agents.claude import _enable_header_mod, _header_mod_files
 from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.v2 import (
@@ -17,6 +18,13 @@ from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
     _write_routed_claude_plugin,
 )
+
+
+def install_header_mod(root: Path) -> Path:
+    for path, text in _header_mod_files(root).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    return root
 
 
 class Session:
@@ -31,6 +39,7 @@ class Session:
         resume=None,
         model="claude-sonnet-4-6",
         hooks=None,
+        user_settings=None,
     ):
         self.root = root
         root.mkdir()
@@ -49,6 +58,8 @@ class Session:
         shutil.copyfile(
             Path(__file__).parents[2] / "skills/smart-router/SKILL.md", skill / "SKILL.md"
         )
+        if user_settings is not None:
+            (root / "config/settings.json").write_text(json.dumps(user_settings))
         options = {
             **_claude_mod_launch_options(env),
             **(options or {}),
@@ -63,6 +74,8 @@ class Session:
         }
         if hooks is not None:
             settings["hooks"] = hooks
+        header_root = install_header_mod(root / "managed-mod")
+        _enable_header_mod(settings, header_root)
         process_env = {
             **{
                 key: os.environ[key]

@@ -66,6 +66,8 @@ picker, then requires `Model: <label>`; the opening model is recorded in the evi
 It submits a number-conversion prompt and requires both `Claude responded: 48213`
 in the conversation pane and `Claude finished the response` within four minutes.
 The prompt spells the number in words so echoing the input cannot pass.
+On Windows, an assistant API error fails immediately and records the redacted provider error
+in the job log and `native-launch.json`, instead of reporting a generic response timeout.
 
 After inference, two fresh Cowork tasks run through the same native UI:
 
