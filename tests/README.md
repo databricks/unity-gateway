@@ -341,8 +341,9 @@ stale-request handling, Back navigation, detail-load failures and their error en
 errors and recovery including truncated output, missing configuration, and refreshes on turn
 completions and new subagent spawns while the pane is open. Exact styling and missing-width
 fallback are not asserted; interactive pane and live-session coverage remain absent. The refresh
-case holds a reader pending while foreground/background spawns complete and checks that parallel
-spawns queue one rerun; resumed/denied spawns and closed panes do not trigger reads.
+case holds a reader pending while turn completion/status cleanup and foreground/background spawns
+proceed, and checks that parallel spawns queue one rerun; resumed/denied spawns and closed panes do
+not trigger reads.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch

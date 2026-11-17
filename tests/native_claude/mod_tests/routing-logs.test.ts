@@ -541,6 +541,11 @@ test('the open pane refreshes on turn completions and new spawns, a closed one s
     if (pause) await reader;
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions }) } };
   });
+  const waitForReads = async (count: number) => {
+    const deadline = Date.now() + 1000;
+    while (reads < count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 1));
+    expect(reads).toBe(count);
+  };
   // No reader runs while the pane has never been opened.
   await $.turn.complete({ answer: '' });
   await $.agent.spawn(spawn);
@@ -557,7 +562,7 @@ test('the open pane refreshes on turn completions and new spawns, a closed one s
   // A decision recorded after the pane opened shows up on the next turn completion.
   decisions = [records[1]];
   await $.turn.complete({ answer: '' });
-  expect(reads).toBe(2);
+  await waitForReads(2);
   const refreshed = await $.ui.mount(pane);
   const tree = JSON.stringify(await refreshed.drawn());
   expect(tree).toContain('1 routed prompt this session');
@@ -583,6 +588,67 @@ test('the open pane refreshes on turn completions and new spawns, a closed one s
   await $.turn.complete({ answer: '' });
   await $.turn.complete({ answer: '' });
   expect(reads).toBe(4);
+});
+
+test('turn completion and status cleanup do not wait for the open-pane reader', { options }, async ($, on) => {
+  let pause = false;
+  let paneChecks = 0;
+  let processCalls = 0;
+  let releaseReader: () => void = () => {};
+  let signalReaderStarted: () => void = () => {};
+  let signalReaderFinished: () => void = () => {};
+  const reader = new Promise<void>(resolve => { releaseReader = resolve; });
+  const readerStarted = new Promise<void>(resolve => { signalReaderStarted = resolve; });
+  const readerFinished = new Promise<void>(resolve => { signalReaderFinished = resolve; });
+  let finished = false;
+  const statusBand = {
+    plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
+  } as const;
+  on('session.id', () => ({ value: 'session-one' }));
+  on('prompt.submit', ($, e) => ({ text: e.text }));
+  on('turn.complete', () => ({ text: '' }));
+  on('ui.open', () => ({ value: { isPlaced: true } }));
+  on('ui.panes', () => { paneChecks++; return { value: [{ id: pane.requestId }] }; });
+  on('process.run', async () => {
+    processCalls++;
+    if (pause) {
+      signalReaderStarted();
+      await reader;
+      finished = true;
+      signalReaderFinished();
+    }
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
+  });
+  await $.command.run(command);
+  const band = await $.ui.mount(statusBand);
+  expect(JSON.stringify(await band.drawn())).toContain('unity gateway smart router');
+  await $.prompt.submit({ text: 'finish while refreshing logs' });
+  pause = true;
+
+  const completion = $.turn.complete({ answer: '' });
+  let completedBeforeReader = false;
+  const completionObserved = completion.then(() => { completedBeforeReader = true; });
+  const didStart = await Promise.race([
+    readerStarted.then(() => true),
+    new Promise<boolean>(resolve => setTimeout(() => resolve(false), 1000)),
+  ]);
+  if (!didStart) {
+    releaseReader();
+    await completionObserved;
+    throw new Error(`turn-completion refresh did not start (panes=${paneChecks}, process calls=${processCalls})`);
+  }
+  await new Promise(resolve => setTimeout(resolve, 10));
+  try {
+    if (!completedBeforeReader) throw new Error('turn completion waited for the pending log reader');
+    expect(finished).toBe(false);
+    expect(JSON.stringify(await band.drawn())).not.toContain('unity gateway smart router');
+  } finally {
+    releaseReader();
+  }
+  await completionObserved;
+  await readerFinished;
+  expect(finished).toBe(true);
+  await band.unmount();
 });
 
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
