@@ -234,7 +234,7 @@ def test_workspace_compares_commands_without_hidden_setup(
     pytest.importorskip("pyte")
     Image = pytest.importorskip("PIL.Image")
     config = tmp_path / "databrickscfg"
-    config.write_text("")
+    config.write_text("[unit-test]\ntoken = example\n")
     monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
     # Control workspace setup and command execution; retain real scanning and rendering.
     captures = iter(
@@ -287,16 +287,144 @@ def test_workspace_compares_commands_without_hidden_setup(
 FAKE_PAT = "dapi" + "0123456789abcdef" * 2
 
 
-def test_recording_blocks_secrets_in_intermediate_screen_even_when_host_redaction_requested(
+@pytest.mark.parametrize(
+    "host", ["dbc-a1b2c3d4.cloud.databricks.com", "dbc-a1b2c3d4.azuredatabricks.net"]
+)
+def test_workspace_host_redaction_covers_every_rendered_frame_and_output(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host: str
+) -> None:
+    pytest.importorskip("pyte")
+    Image = pytest.importorskip("PIL.Image")
+    config = tmp_path / "databrickscfg"
+    config.write_text("[unit-test]\ntoken = example\n")
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+    command = f"ug doctor --workspace https://{host}"
+
+    def capture(cmd: str, env: dict[str, str], **kwargs: Any) -> list[tuple[float, bytes]]:
+        if not kwargs.get("typed", True):
+            return [
+                (0.0, b"Databricks auth already available for https://" + host[:8].encode()),
+                (0.4, host[8:13].encode() + b"\x1b[32m" + host[13:].encode() + b"\x1b[0m"),
+                (0.8, b"\x1b[2J\x1b[Hsetup complete"),
+            ]
+        return recorder.typing_chunks(cmd) + [(5.0, b"done")]
+
+    monkeypatch.setattr(recorder, "capture_command", capture)
+    render_screen = recorder.render_screen
+    rendered = []
+
+    def inspect_screen(screen: Any, **kwargs: Any) -> Any:
+        rendered.append(recorder.frozen_display(screen))
+        return render_screen(screen, **kwargs)
+
+    monkeypatch.setattr(recorder, "render_screen", inspect_screen)
+    out = tmp_path / "out"
+    args = [
+        "--workspace",
+        "--profile",
+        "unit-test",
+        "--command",
+        command,
+        "--venv-cache",
+        str(tmp_path / "cache"),
+        "--sleep",
+        "0",
+        "--allow-identical",
+        "--out",
+        str(out),
+        "--redact-host",
+    ]
+    assert recorder.main(args) == 0
+    assert rendered and all("dbc-a1b2" not in screen for screen in rendered)
+    assert all(
+        host not in path.read_text() for path in out.iterdir() if path.suffix in {".txt", ".json"}
+    )
+    assert host not in json.loads((out / "manifest.json").read_text())["commands"][0]
+    assert "********" in (out / "before.txt").read_text()
+    for path in out.iterdir():
+        if path.suffix in {".gif", ".png"}:
+            with Image.open(path) as image:
+                image.verify()
+
+
+def test_recording_blocks_host_without_redaction(
     recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     pytest.importorskip("pyte")
     chunks = [(0.0, b"dbc-a1b2c3d4.cloud.databricks.com"), (0.4, b"\x1b[2J\x1b[Hclean")]
     monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
     out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="databricks-host"):
+        recorder.main([*_record_args(tmp_path), "--out", str(out)])
+    assert not list(out.iterdir())
+
+
+def test_host_assembled_by_cursor_controls_fails_closed(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("pyte")
+    chunks = [(0.0, b"\x1b[1;14Hcloud.databricks.com\x1b[1;1Hdbc-a1b2c3d4.")]
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
+    out = tmp_path / "out"
+    with pytest.raises(SystemExit, match="databricks-host"):
+        recorder.main([*_record_args(tmp_path), "--out", str(out), "--redact-host"])
+    assert not list(out.iterdir())
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        FAKE_PAT,
+        "Bearer dbc-a1b2c3d4.cloud.databricks.com",
+        "a@dbc-a1b2c3d4.cloud.databricks.com",
+        "eyJabc.def.ghi",
+        "?o=123",
+    ],
+)
+def test_recording_blocks_non_host_secrets_with_redaction(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, secret: str
+) -> None:
+    pytest.importorskip("pyte")
+    chunks = [(0.0, secret.encode()), (0.4, b"\x1b[2J\x1b[Hclean")]
+    monkeypatch.setattr(recorder, "capture_command", lambda *a, **kw: list(chunks))
+    out = tmp_path / "out"
     with pytest.raises(SystemExit, match="no images were rendered"):
         recorder.main([*_record_args(tmp_path), "--out", str(out), "--redact-host"])
-    assert not list(out.glob("*.gif")) and not list(out.glob("*.png"))
+    assert not list(out.iterdir())
+
+
+@pytest.mark.parametrize(
+    "config_text",
+    [
+        "[unit-test]\nauth_type = databricks-cli\n",
+        "[other]\ntoken = example\n",
+        "[DEFAULT]\ntoken = example\n[unit-test]\nhost = example\n",
+    ],
+)
+def test_workspace_requires_profile_pat_before_building_venvs(
+    recorder: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_text: str
+) -> None:
+    config = tmp_path / "databrickscfg"
+    config.write_text(config_text)
+    monkeypatch.setenv("DATABRICKS_CONFIG_FILE", str(config))
+    installs = []
+    monkeypatch.setattr(recorder, "venv_for_sha", lambda *args: installs.append(args))
+    with pytest.raises(SystemExit, match="token = <PAT>"):
+        recorder.main([*_record_args(tmp_path), "--workspace", "--profile", "unit-test"])
+    assert installs == []
+
+
+def test_pat_profile_default_section_is_accepted(record: Any, tmp_path: Path) -> None:
+    config = tmp_path / "databrickscfg"
+    config.write_text("[DEFAULT]\ntoken = example\n")
+    record.check_profile_pat(config, "DEFAULT")
+
+
+def test_command_secret_overlapping_host_is_not_redacted_away(record: Any) -> None:
+    with pytest.raises(SystemExit, match="bearer-token"):
+        record.check_commands_for_secrets(
+            ["ug Bearer dbc-a1b2c3d4.cloud.databricks.com"], redact_host=True
+        )
 
 
 def test_skip_reason_secret_scan_blocks_before_any_write(publish: Any) -> None:

@@ -1208,8 +1208,11 @@ fails before anything is recorded or installed), sandbox isolation, shared frame
 cropping (including transient content),
 the identical-output gate (record exits with code 3 and publishing refuses an
 all-identical manifest), workspace-mode comparison excluding hidden setup while
-retaining it in recordings/transcripts, renderer fairness, ANSI/GIF/PNG/text output, secret
-gates for recordings, publishing, and skip reasons, the test/YAML-only skip
+retaining it in recordings/transcripts, early PAT-profile key checks, renderer fairness,
+ANSI/GIF/PNG/text output, host masking before rendering (including split/colored
+output and typed commands), manifest sanitization, and secret gates for recordings,
+publishing, and skip reasons. These scans do not guarantee that arbitrary sensitive
+content is absent; live workspace recording is not covered. Tests also check the test/YAML-only skip
 classifier, release asset naming, creation races, and a failed upload preserving
 the previous demo body block and labels while exiting nonzero, PR body block and
 `NO_PR_DEMO_NEEDED_RATIONALE=` line transforms

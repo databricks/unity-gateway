@@ -26,6 +26,7 @@ back to a non-pty pipe capture with FORCE_COLOR=1.
 from __future__ import annotations
 
 import argparse
+import configparser
 import datetime
 import errno
 import json
@@ -143,14 +144,40 @@ def find_secrets(text: str) -> list[tuple[str, str]]:
 
 def redact_hosts(text: str) -> str:
     """Replace Databricks workspace hostnames with a neutral placeholder."""
-    return HOST_PATTERN.sub("https://<workspace>", text)
+    return HOST_PATTERN.sub("<workspace>", text)
 
 
 def sanitize_capture(text: str, *, redact_host: bool) -> tuple[str, list[tuple[str, str]]]:
-    """Redact hosts when allowed, then return remaining secret matches."""
+    """Check other secrets before replacing hosts so overlapping matches cannot disappear."""
+    remaining = [(kind, value) for kind, value in find_secrets(text) if kind != "databricks-host"]
     if redact_host:
         text = redact_hosts(text)
-    return text, find_secrets(text)
+    else:
+        remaining = find_secrets(text)
+    return text, remaining
+
+
+def redact_recording_hosts(chunks: list[tuple[float, bytes]]) -> list[tuple[float, bytes]]:
+    """Mask host bytes across chunks and ANSI color sequences before replaying any frame."""
+    raw = bytearray(b"".join(data for _, data in chunks))
+    ansi = re.compile(rb"\x1b\[[0-?]*[ -/]*[@-~]")
+    positions = []
+    pos = 0
+    for match in ansi.finditer(raw):
+        positions.extend(range(pos, match.start()))
+        pos = match.end()
+    positions.extend(range(pos, len(raw)))
+    # Host names are ASCII; latin-1 keeps each byte aligned with its raw position.
+    visible = bytes(raw[i] for i in positions).decode("latin-1")
+    for match in HOST_PATTERN.finditer(visible):
+        for i in positions[match.start() : match.end()]:
+            raw[i] = ord("*")
+    result = []
+    offset = 0
+    for timestamp, data in chunks:
+        result.append((timestamp, bytes(raw[offset : offset + len(data)])))
+        offset += len(data)
+    return result
 
 
 def build_sandbox_env(
@@ -531,23 +558,28 @@ def shared_render_rows(recordings: list[list[tuple[float, bytes]]], *, rows: int
     return min(rows, max(6, used + 1))
 
 
-def check_recording_for_secrets(chunks: list[tuple[float, bytes]], *, rows: int, cols: int) -> None:
-    """Reject secrets in the raw capture or any screen that could be rendered.
-
-    Host redaction applies to text only, so it must never exempt image content.
-    """
+def check_recording_for_secrets(
+    chunks: list[tuple[float, bytes]], *, rows: int, cols: int, allow_hosts: bool = False
+) -> None:
+    """Reject secrets in the raw capture or any screen that could be rendered."""
     raw = b"".join(data for _, data in chunks).decode("utf-8", errors="replace")
     raw = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw)
     texts = [raw]
     for _, screen in screen_snapshots(chunks, rows=rows, cols=cols):
         lines = frozen_display(screen).splitlines()
         texts.extend(("\n".join(lines), "".join(line.rstrip() for line in lines)))
-    kinds = sorted({kind for text in texts for kind, _ in find_secrets(text)})
+    kinds = sorted(
+        {
+            kind
+            for text in texts
+            for kind, _ in find_secrets(text)
+            if not (allow_hosts and kind == "databricks-host")
+        }
+    )
     if kinds:
         raise SystemExit(
             "recording looks like it contains secrets; no images were rendered or published "
-            f"(detected: {', '.join(kinds)}). Change the command and retry. "
-            "--redact-host does not redact images."
+            f"(detected: {', '.join(kinds)}). Change the command and retry."
         )
 
 
@@ -603,6 +635,24 @@ def resolve_revisions(base: str | None, head: str | None) -> tuple[str, str, lis
     return base_sha, head_sha, notes
 
 
+def check_profile_pat(config_path: Path, profile: str) -> None:
+    """Check for the token key in the selected profile without inspecting its value."""
+    parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
+    try:
+        with config_path.open(encoding="utf-8") as config:
+            parser.read_file(config)
+    except (configparser.Error, OSError, UnicodeError):
+        raise SystemExit(
+            f"Cannot read Databricks config {config_path}; check its format and permissions."
+        ) from None
+    if not parser.has_section(profile) or not parser.has_option(profile, "token"):
+        raise SystemExit(
+            f"Workspace recording uses --use-pat: profile {profile!r} needs its own "
+            "token = <PAT> entry. OAuth/databricks-cli profiles cannot be used; "
+            "select a profile with a personal access token."
+        )
+
+
 def setup_command(*, workspace: bool, profile: str | None) -> str:
     """Hidden `ug configure` run inside the sandbox before the shown commands.
 
@@ -614,7 +664,7 @@ def setup_command(*, workspace: bool, profile: str | None) -> str:
         return ""
     cmd = "ug configure --agents claude --verbose low"
     if profile:
-        cmd += f" --profile {profile} --use-pat"
+        cmd += f" --profile {shlex.quote(profile)} --use-pat"
     else:
         warn("workspace mode without --profile may prompt for OAuth inside the recording")
     return cmd
@@ -667,8 +717,14 @@ def make_sandbox(sandbox_dir: Path) -> tuple[str, str]:
     return str(home), str(bin_dir)
 
 
-def write_manifest(out_dir: Path, payload: dict[str, object]) -> None:
-    (out_dir / "manifest.json").write_text(json.dumps(payload, indent=2) + "\n")
+def write_manifest(out_dir: Path, payload: dict[str, object], *, redact_host: bool) -> None:
+    text, remaining = sanitize_capture(json.dumps(payload, indent=2), redact_host=redact_host)
+    if remaining:
+        kinds = ", ".join(sorted({kind for kind, _ in remaining}))
+        raise SystemExit(
+            f"manifest looks like it contains secrets (detected: {kinds}); not written"
+        )
+    (out_dir / "manifest.json").write_text(text + "\n")
 
 
 def parse_commands(args: argparse.Namespace) -> list[str]:
@@ -687,9 +743,9 @@ def check_commands_for_secrets(commands: list[str], *, redact_host: bool) -> Non
     for command in commands:
         _, remaining = sanitize_capture(command, redact_host=redact_host)
         if remaining:
-            listing = "\n".join(f"  - {kind}: {value}" for kind, value in remaining)
+            kinds = ", ".join(sorted({kind for kind, _ in remaining}))
             raise SystemExit(
-                f"command looks like it contains secrets; not recording:\n{listing}\n"
+                f"command looks like it contains secrets; not recording (detected: {kinds}). "
                 "Re-run with --redact-host only for workspace-hostname matches."
             )
 
@@ -727,11 +783,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="opt in to real-workspace mode using the developer's Databricks config",
     )
-    parser.add_argument("--profile", help="Databricks CLI profile for workspace mode (--use-pat)")
+    parser.add_argument(
+        "--profile",
+        help="workspace profile with its own token = <PAT> entry; OAuth profiles do not work",
+    )
     parser.add_argument(
         "--redact-host",
         action="store_true",
-        help="replace workspace hostnames in text captures instead of failing on them",
+        help="redact workspace hostnames in recordings and text instead of failing on them",
     )
     parser.add_argument(
         "--allow-identical",
@@ -752,6 +811,16 @@ def main(argv: list[str] | None = None) -> int:
     commands = parse_commands(args)
     check_commands_for_secrets(commands, redact_host=args.redact_host)
 
+    workspace_config = None
+    if args.workspace:
+        workspace_config = str(
+            Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
+        )
+        if not Path(workspace_config).exists():
+            raise SystemExit(f"--workspace needs {workspace_config} to exist")
+        if args.profile:
+            check_profile_pat(Path(workspace_config), args.profile)
+
     stage_start = time.monotonic()
     base_sha, head_sha, notes = resolve_revisions(args.base, args.head)
     for note in notes:
@@ -765,14 +834,6 @@ def main(argv: list[str] | None = None) -> int:
         if temp_root.is_relative_to(REPO_ROOT):
             temp_root = REPO_ROOT.parent
         out_dir = Path(tempfile.mkdtemp(prefix="ug-pr-demo-", dir=temp_root)).resolve()
-
-    workspace_config = None
-    if args.workspace:
-        workspace_config = os.environ.get("DATABRICKS_CONFIG_FILE") or str(
-            Path.home() / ".databrickscfg"
-        )
-        if not Path(workspace_config).exists():
-            raise SystemExit(f"--workspace needs {workspace_config} to exist")
 
     setup = setup_command(workspace=args.workspace, profile=args.profile)
     cache = venv_cache_root(args.venv_cache)
@@ -829,9 +890,26 @@ def main(argv: list[str] | None = None) -> int:
 
         recordings[side] = (venv_bin, chunks, segments)
 
-    for _, chunks, _ in recordings.values():
-        check_recording_for_secrets(chunks, rows=args.rows, cols=args.cols)
+    # Scan the original first so redaction cannot conceal overlapping token/email matches.
+    for _, chunks, segments in recordings.values():
+        for recording in [chunks, *segments]:
+            check_recording_for_secrets(
+                recording, rows=args.rows, cols=args.cols, allow_hosts=args.redact_host
+            )
+    if args.redact_host:
+        for side, (venv_bin, _, segments) in recordings.items():
+            segments = [redact_recording_hosts(segment) for segment in segments]
+            chunks = [chunk for segment in segments for chunk in segment]
+            recordings[side] = (venv_bin, chunks, segments)
+        # Fail closed if terminal control sequences constructed a host on screen that
+        # the raw-stream redactor could not recognize.
+        for _, chunks, segments in recordings.values():
+            for recording in [chunks, *segments]:
+                check_recording_for_secrets(recording, rows=args.rows, cols=args.cols)
 
+    display_commands = (
+        [redact_hosts(command) for command in commands] if args.redact_host else commands
+    )
     if not args.allow_identical:
         command_offset = 1 if setup else 0
         before_texts = [
@@ -842,14 +920,14 @@ def main(argv: list[str] | None = None) -> int:
             final_display(segment, rows=args.rows, cols=args.cols)
             for segment in recordings["after"][2][command_offset:]
         ]
-        identical = compare_sides(commands, before_texts, after_texts)
+        identical = compare_sides(display_commands, before_texts, after_texts)
         if len(identical) == len(commands):
             print(
                 "error: BEFORE and AFTER output are identical for every command; "
                 "the demo would show no change:",
                 file=sys.stderr,
             )
-            for command in commands:
+            for command in display_commands:
                 print(f"  - {command}", file=sys.stderr)
             print(
                 "Pick commands whose output differs between the merge-base and HEAD "
@@ -905,7 +983,7 @@ def main(argv: list[str] | None = None) -> int:
         {
             "base_sha": base_sha,
             "head_sha": head_sha,
-            "commands": commands,
+            "commands": display_commands,
             "mode": "workspace" if args.workspace else "offline",
             "redact_host": args.redact_host,
             "allow_identical": args.allow_identical,
@@ -916,6 +994,7 @@ def main(argv: list[str] | None = None) -> int:
             "recorder": "built-in pty + pyte + pillow",
             "results": results,
         },
+        redact_host=args.redact_host,
     )
     print(f"done in {time.monotonic() - stage_start:.1f}s")
     print(f"Output directory: {out_dir}")

@@ -109,7 +109,10 @@ ROOT=$(git rev-parse --show-toplevel)
    before proceeding:
 
    - Workspace mode runs hidden `ug configure --profile <name> --use-pat` setup.
-     Do not let it mask the behavior under review or replace visible setup.
+     The selected profile must have its own `token = <PAT>` entry in
+     `DATABRICKS_CONFIG_FILE` or `~/.databrickscfg`; OAuth/`databricks-cli` profiles
+     do not work. The recorder checks for the key, not whether the PAT is valid.
+     Do not let hidden setup mask the behavior under review or replace visible setup.
    - The sandbox isolates HOME, sets `UG_SKIP_OS_SETTINGS=1`, and drops inherited
      variables. Apply required config/version settings explicitly to the launch.
      Stop if the changed behavior needs native capabilities the sandbox disables.
@@ -118,9 +121,11 @@ ROOT=$(git rev-parse --show-toplevel)
      after output. Stop if the recorder cannot preserve the required evidence.
 
    `--base` / `--head` override revisions; `--rows` / `--cols` resize the terminal.
-   `--redact-host` redacts text only, not images; a host in an image blocks the
-   run. Set `OUT` to the printed `Output directory:` path. Output defaults to a
-   fresh temporary directory outside the checkout; `--out` overrides it.
+   `--redact-host` masks recognized workspace hosts before rendering images and
+   transcripts and redacts them in the manifest. A host that cannot be safely
+   redacted still blocks recording; other secret classes always block it. Set
+   `OUT` to the printed `Output directory:` path. Output defaults to a fresh
+   temporary directory outside the checkout; `--out` overrides it.
 
    Exit code 3 means all BEFORE/AFTER output is identical. Retry with commands
    that show the change, at most 3 valid live attempts total. For supplied
