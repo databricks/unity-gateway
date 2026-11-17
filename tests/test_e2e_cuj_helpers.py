@@ -749,49 +749,185 @@ def test_assert_models_maps_native_aliases():
         assert_models([CLAUDE_HAIKU_MODEL, "system.ai.claude-sonnet-4-6"], CLAUDE_HAIKU_MODEL)
 
 
+def _mcp_native_records(task, agent):
+    calls, results = [], []
+    for service, tool in mcp_registration.SERVICES.items():
+        if agent == CLAUDE:
+            calls.append(
+                {
+                    "type": "tool_use",
+                    "id": tool,
+                    "name": f"mcp__{mcp_registration.registered_name(service)}__{tool}",
+                    "input": {"run_id": task.run_id},
+                }
+            )
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool,
+                    "content": json.dumps({"result": task.expected[tool]}),
+                }
+            )
+        else:
+            calls.append(
+                {
+                    "type": "function_call",
+                    "call_id": tool,
+                    "namespace": f"mcp__{mcp_registration.registered_name(service).replace('-', '_')}",
+                    "name": tool,
+                    "arguments": json.dumps({"run_id": task.run_id}),
+                }
+            )
+            results.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": tool,
+                    "output": "Wall time: 0.1 seconds\nOutput:\n"
+                    + json.dumps({"result": task.expected[tool]}),
+                }
+            )
+    if agent == CLAUDE:
+        records = [
+            {"type": "user", "sessionId": "s", "message": {"content": task.prompt}},
+            {
+                "type": "assistant",
+                "sessionId": "s",
+                "message": {"role": "assistant", "model": CLAUDE_HAIKU_MODEL, "content": calls},
+            },
+            {"type": "user", "message": {"content": results}},
+            {
+                "type": "assistant",
+                "sessionId": "s",
+                "message": {
+                    "role": "assistant",
+                    "id": "answer",
+                    "model": CLAUDE_HAIKU_MODEL,
+                    "stop_reason": "end_turn",
+                    "content": [{"type": "text", "text": task.value}],
+                },
+            },
+        ]
+    else:
+        records = [
+            {"type": "session_meta", "payload": {"id": "s", "source": "cli"}},
+            {"type": "turn_context", "payload": {"turn_id": "t", "model": "gpt-5"}},
+            {"type": "event_msg", "payload": {"type": "task_started", "turn_id": "t"}},
+            {"type": "event_msg", "payload": {"type": "user_message", "message": task.prompt}},
+            *({"type": "response_item", "payload": part} for part in calls + results),
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "t",
+                    "last_agent_message": task.value,
+                },
+            },
+        ]
+    return records, calls, results
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_mcp_completion_reads_full_native_receipts_without_an_assistant_copy(monkeypatch, agent):
+    task = mcp_registration.McpFixtureTask()
+    records, _, _ = _mcp_native_records(task, agent)
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": records})
+
+    assert all(receipt not in task.prompt for receipt in task.expected.values())
+    assert task._receipts(agent, records) == task.expected
+    assert task.completed(None, agent)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
 @pytest.mark.parametrize(
-    "shape",
-    ["bare", "native_keys", "raw_result_string", "raw_result_object"],
+    "damage",
+    [
+        "truncated_receipt",
+        "extra_result_field",
+        "wrong_server",
+        "wrong_tool",
+        "wrong_run_id",
+        "wrong_call_id",
+        "missing_result",
+        "result_before_call",
+        "missing_completion",
+        "failure_answer",
+        "wrong_prompt",
+        "child_session",
+    ],
 )
-def test_mcp_receipts_accept_native_keys_and_raw_tool_results(shape):
+def test_mcp_completion_rejects_incomplete_or_unrelated_native_evidence(monkeypatch, agent, damage):
     task = mcp_registration.McpFixtureTask()
-    native = {tool: key for key, tool in task.aliases.items()}
-    observed = {
-        "bare": dict(task.expected),
-        "native_keys": {native[tool]: value for tool, value in task.expected.items()},
-        "raw_result_string": {
-            tool: json.dumps({"result": value}) for tool, value in task.expected.items()
-        },
-        "raw_result_object": {tool: {"result": value} for tool, value in task.expected.items()},
-    }[shape]
-
-    assert task._receipts(observed) == task.expected
-
-
-def test_mcp_receipts_reject_wrong_extra_or_duplicate_receipts():
-    task = mcp_registration.McpFixtureTask()
-    describe, read = task.expected
-    native = {tool: key for key, tool in task.aliases.items()}
-
-    assert task._receipts({**task.expected, read: "0" * 64}) != task.expected
-    assert task._receipts({**task.expected, "extra": "x"}) != task.expected
-    assert (
-        task._receipts(
-            {describe: {"result": task.expected[describe], "x": 1}, read: task.expected[read]}
+    records, calls, results = _mcp_native_records(task, agent)
+    call, result = calls[-1], results[-1]
+    content_key = "content" if agent == CLAUDE else "output"
+    if damage == "truncated_receipt":
+        result[content_key] = result[content_key].replace(
+            task.expected["read_fixture"], task.expected["read_fixture"][:-1]
         )
-        != task.expected
-    )
-    assert task._receipts({**task.expected, native[describe]: task.expected[describe]}) is None
-    assert task._receipts(["not", "a", "mapping"]) is None
+    elif damage == "extra_result_field":
+        result[content_key] = json.dumps(
+            {"result": task.expected["read_fixture"], "error": "failed"}
+        )
+    elif damage == "wrong_server":
+        key = "name" if agent == CLAUDE else "namespace"
+        call[key] = call[key].replace("fixture_reader", "fixture_decoy")
+    elif damage == "wrong_tool":
+        call["name"] += "_other"
+    elif damage == "wrong_run_id":
+        call["input" if agent == CLAUDE else "arguments"] = (
+            {"run_id": "other"} if agent == CLAUDE else '{"run_id":"other"}'
+        )
+    elif damage == "wrong_call_id":
+        result["tool_use_id" if agent == CLAUDE else "call_id"] = "other"
+    elif damage == "missing_result":
+        result.clear()
+    elif damage == "result_before_call":
+        if agent == CLAUDE:
+            records[1], records[2] = records[2], records[1]
+        else:
+            records[4:8] = records[6:8] + records[4:6]
+    elif damage == "missing_completion":
+        records.pop()
+    elif damage == "failure_answer":
+        answer = f"Could not {task.value}: timeout"
+        if agent == CLAUDE:
+            records[-1]["message"]["content"] = [{"type": "text", "text": answer}]
+        else:
+            records[-1]["payload"]["last_agent_message"] = answer
+    elif damage == "wrong_prompt":
+        if agent == CLAUDE:
+            records[0]["message"]["content"] = "other prompt"
+        else:
+            records[3]["payload"]["message"] = "other prompt"
+    elif damage == "child_session" and agent == CODEX:
+        records[0]["payload"]["source"] = {"subagent": {}}
+    path = "session/subagents/child.jsonl" if damage == "child_session" and agent == CLAUDE else "s"
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {path: records})
+
+    assert not task.completed(None, agent)
 
 
-def test_mcp_completion_accepts_a_fenced_reply(monkeypatch):
+def test_mcp_completion_rejects_failed_claude_tool_results(monkeypatch):
     task = mcp_registration.McpFixtureTask()
-    reply = "```json\n" + json.dumps(task.expected) + "\n```"
-    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": []})
-    monkeypatch.setattr(mcp_registration, "assistant_answers", lambda agent, records: [reply])
+    records, _, results = _mcp_native_records(task, CLAUDE)
+    results[-1]["is_error"] = True
+    monkeypatch.setattr(mcp_registration, "agent_sessions", lambda session, agent: {"s": records})
 
-    assert task.completed(None, "claude")
+    assert not task.completed(None, CLAUDE)
+
+
+@pytest.mark.parametrize("agent", [CLAUDE, CODEX])
+def test_mcp_completion_does_not_pool_results_from_different_sessions(monkeypatch, agent):
+    task = mcp_registration.McpFixtureTask()
+    first, _, first_results = _mcp_native_records(task, agent)
+    second, _, second_results = _mcp_native_records(task, agent)
+    first_results[0].clear()
+    second_results[1].clear()
+    monkeypatch.setattr(
+        mcp_registration, "agent_sessions", lambda session, agent: {"s1": first, "s2": second}
+    )
+
+    assert not task.completed(None, agent)
 
 
 @pytest.mark.parametrize(
