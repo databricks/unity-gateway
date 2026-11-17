@@ -1062,6 +1062,7 @@ test_ug_claude_headless.py              # script prompts, models, caller setting
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_codex_relayed.py                # access-token login and simple ChatGPT-relay inference
 test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, GLM/Kimi/DeepSeek, unknown model, TUI /model switch
@@ -1226,6 +1227,18 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
+The Codex relay check (`test_ug_codex_relayed.py`) uses a fresh home to run
+`codex login --with-access-token`, passing the credential on stdin. It then launches
+`ug codex --provider <relayed OpenAI MPS>` with the same access token and asks `gpt-6-luna`
+for a short random reply without tools. It requires a completed turn with exactly that answer
+and a forwarded `/v1/responses` request that completes with HTTP 200.
+
+This deliberately covers only token login and relay inference. File-tool execution, desktop
+configure/revert, desktop inference, managed-file conflict refusal, and browser sign-in are
+outside this check. CI runs it in the `codex-relay` job on protected Linux with allowlisted
+egress, separately from the full Linux/Windows journeys. Select it locally with
+`--codex-version 0.156.0 -- -m 'live and codex and codex_relay'`.
+
 MPS CUJs select preprovisioned services:
 
 - Claude (direct API key): `main.ucode.dont_delete_ci_company_anthropic_mps` in
@@ -1299,13 +1312,20 @@ MPS CUJs select preprovisioned services:
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
+- Codex (relayed ChatGPT subscription): `main.ucode.ci_e2e_openai_relay_mps` (a relayed
+  `{"openai":{"relayed":{}}}` MPS that must exist on the e2e workspace), which also requires
+  `CODEX_ACCESS_TOKEN`: a Codex access token (ChatGPT Business/Enterprise admin console) that the
+  test passes to native login on stdin and sets in the relay launch environment.
+  CI supplies this environment variable from the repository secret `CODEX_OAUTH_TOKEN`.
+  Renew the secret before it expires. The ChatGPT workspace IP allowlist must cover both the
+  runner's login egress and the gateway's inference egress.
 - Codex and Copilot (OpenAI): `main.ucode.ci_openai_mps`, using its allowed `gpt-6-luna` model.
 - Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
   target (`--antigravity-provider`, `--antigravity-provider-models`).
 - Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-6-luna` model.
 - Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-6-luna` model.
 
-Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
+Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` / `--codex-relayed-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
 `--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
@@ -1383,7 +1403,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **88 live cases** (including 12 marked TUI journeys) and **8 installation
+There are **89 live cases** (including 12 marked TUI journeys) and **8 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
@@ -1575,8 +1595,10 @@ Installation jobs need no workspace credentials. The dedicated direct-Anthropic 
 use the staging SP described above. Other live jobs for same-repository PRs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
-uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
-cannot receive those secrets.
+uses) for the relayed hybrid CUJ. The dedicated `codex-relay` job maps `CODEX_OAUTH_TOKEN`
+to `CODEX_ACCESS_TOKEN` and uses `databricks-protected-runner-group` / `linux-ubuntu-latest`
+with the internal package proxies. It is required by the integration gate. Fork PRs run
+installation checks only because they cannot receive those secrets.
 
 CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
 Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file

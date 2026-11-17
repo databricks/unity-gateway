@@ -634,8 +634,27 @@ jobs:
       AGENT: ${{ matrix.agent }}
       CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || inputs.codex_version || '0.156.0' }}
       # Smoke cases already ran on this OS in the smoke job; don't repeat them here.
-      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
+      TEST_MARKER: live and ${{ matrix.agent }} and not soft_fail and not smoke and not anthropic_mps and not codex_relay and ${{ matrix.smart_routing && 'codex_smart_routing' || 'not codex_smart_routing' }}
       ARTIFACT_NAME: integration-full-${{ matrix.agent }}-${{ matrix.os }}${{ matrix.smart_routing && '-smart-routing' || '' }}
+    steps: *live-steps
+
+  codex-relay:
+    name: Codex relay login and inference
+    needs: workspace
+    runs-on:
+      group: databricks-protected-runner-group
+      labels: linux-ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple
+      NPM_REGISTRY: https://npm-proxy.cloud.databricks.com
+      UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}
+      DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}
+      CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}
+      DEPENDENCY: ${{ inputs.dependency }}
+      AGENT: codex
+      TEST_MARKER: live and codex and codex_relay
+      ARTIFACT_NAME: integration-codex-relay
     steps: *live-steps
 
   # See tests/integration/README.md#soft-fail-tests for supported cases and restoration criteria.
@@ -938,7 +957,7 @@ jobs:
   cujs:
     name: All integration tests
     if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
-    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj]
+    needs: [installation, installation-windows, headless-windows, cowork-inference-windows, cowork-inference-macos, workspace, smoke, full, codex-relay, anthropic-mps, antigravity, managed, codex-desktop-macos, codex-desktop-windows, dedicated-cuj-plan, dedicated-cuj]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
