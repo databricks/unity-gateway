@@ -81,7 +81,3 @@ SOURCE_OPENAI_TARGET = "gpt-6-luna"
 SOURCE_CLAUDE_PROVIDER_MODEL = f"{SOURCE_ANTHROPIC_PROVIDER}.{SOURCE_ANTHROPIC_TARGET}"
 SOURCE_CODEX_PROVIDER_MODEL = f"{SOURCE_OPENAI_PROVIDER}.{SOURCE_OPENAI_TARGET}"
 SOURCE_COPILOT_DEFAULT_MODEL = "system.ai.gpt-6-luna"
-# The hosted catalog wildcard every CUJ9 agent also publishes; its expansion changes
-# over time, so tests assert its presence, never a hardcoded model list.
-SYSTEM_AI_MODEL_PREFIX = "system.ai."
-SYSTEM_AI_WILDCARD = f"{SYSTEM_AI_MODEL_PREFIX}*"

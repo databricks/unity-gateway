@@ -68,7 +68,7 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 The 14 mixed-source cases in `test_cuj9_model_sources.py` use
 `https://dbc-93fdd3cb-4b13.cloud.databricks.com`, workspace `7474659962444308`.
 They cover native discovery and default inference for Claude Code, Codex,
-and Copilot CLI, explicit inference on every pinned expanded model, and one routed
+and Copilot CLI, explicit inference on every expanded model, and one routed
 Claude child. Smart routing is enabled only for Claude Code. Codex and Copilot
 tasks must send no routing requests.
 
@@ -76,27 +76,21 @@ Copilot explicit inference on each source model is currently skipped (gap): the 
 rejects the provider-service `gpt-6-luna` request with a 400 on `mlflow/v1/responses`.
 Re-enable it once that route is fixed (AIGTWY-5588).
 
-| Agent | Explicit MPS deep link | Explicit model service | Wildcards |
+| Agent | Explicit MPS deep link | Explicit model service | Wildcard |
 | --- | --- | --- | --- |
-| Claude Code | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.models.claude_sonnet` | `ug_e2e.other_models.*` includes both aliases; `system.ai.*` adds the hosted catalog |
-| Codex | `ug_e2e.providers.openai.gpt-6-luna` | `ug_e2e.models.gpt_luna` | `ug_e2e.other_models.*` includes only `codex_decoy`; `system.ai.*` adds the hosted catalog |
-| Copilot CLI | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `system.ai.gpt-6-luna` (hosted) | `ug_e2e.providers.openai.*` adds the qualified GPT model; `system.ai.*` adds the hosted catalog |
+| Claude Code | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.models.claude_sonnet` | `ug_e2e.other_models.*` includes both aliases |
+| Codex | `ug_e2e.providers.openai.gpt-6-luna` | `ug_e2e.models.gpt_luna` | `ug_e2e.other_models.*` includes only `codex_decoy` |
+| Copilot CLI | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `system.ai.gpt-6-luna` (hosted) | `ug_e2e.providers.openai.*` adds the qualified GPT model |
 
 Each source contributes distinct models, so wildcard expansion cannot hide a
-missing explicit source. `system.ai.*` expands to the hosted catalog, which
-changes over time, so the tests never hardcode its expansion: they keep exact
-checks for the pinned models and require each agent's picker or registry to
-contain at least one additional `system.ai.`-prefixed model from that expansion.
-Claude and Codex default to their custom model services;
+missing explicit source. Claude and Codex default to their custom model services;
 Copilot defaults to the hosted GPT service. Copilot requires names such as
 `gpt-6-luna`; aliases such as `gpt_luna` are incompatible with its model classifier.
 Custom-model inference is covered by Claude and Codex.
 
-Claude and Codex discovery cases compare the pinned native picker rows exactly
-and check the `system.ai.*` expansion in Claude's configured picker registry
-(`availableModels`) and Codex's app-server `model/list`. Copilot checks the
-active per-session registry's pinned model IDs and wire providers plus one
-expanded hosted model, without archiving its credentials. This
+Claude and Codex discovery cases compare exact native picker inventories; Codex
+also checks its app-server `model/list`. Copilot checks the active per-session
+registry's model IDs and wire providers without archiving its credentials. This
 is registry and completed-task coverage, not a Copilot picker assertion. Every
 explicit-model task requires a completed native answer containing a hidden file
 value and successful recorded inference on the exact model. The routing case uses
@@ -104,8 +98,7 @@ the TUI request recorder to pair `routes:select` with an HTTP 200 response selec
 an offered source model. It also requires completed child and parent answers.
 
 The workspace directly publishes CodingAgentConfig
-`coding-agent-configs/d55f1e06-54bf-42cd-9b2c-19db77da968f`, created on 2026-11-16
-and extended with `system.ai.*` on 2026-11-17,
+`coding-agent-configs/d55f1e06-54bf-42cd-9b2c-19db77da968f`, created on 2026-11-16,
 with the sources and defaults above. Claude is the default agent, tracing is off
 for all three agents, and Copilot VS Code integration is off. The suite reads and
 validates this live configuration; it does not load a local configuration artifact.
@@ -129,9 +122,8 @@ without both variables, this case is not live CI coverage.
 Direct API probes on 2026-11-16 verified inference with the Anthropic catalog's
 `anthropic-aigw-e6dfbcac-ug_e2e.other_models.codex_decoy` alias when the request
 includes `x-databricks-use-coding-agent-mode: true`, which UG sets automatically.
-11 of the 14 cases are active; the three
-`test_sources_copilot_inference_on_each_source_model` cases are skipped (gap)
-pending AIGTWY-5588. The qualified OpenAI provider
+11 of the 14 cases are active; the three `test_sources_copilot_inference_on_each_source_model`
+cases are skipped (gap) pending AIGTWY-5588. The qualified OpenAI provider
 model succeeds at `/ai-gateway/codex/v1/responses`, but Copilot's configured
 `/ai-gateway/mlflow/v1/responses` path rejects its native API type.
 
