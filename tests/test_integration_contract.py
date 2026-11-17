@@ -419,6 +419,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
         "inputs.codex_version || '0.156.0' }}"
@@ -501,7 +502,7 @@ def test_latest_harness_slack_notification(
         "NOTIFY_NAME": "Latest harness test",
         "NOTIFY_RESULT": result,
         "CLAUDE_VERSION": claude_version,
-        "CODEX_VERSION": "0.154.0",
+        "CODEX_VERSION": "0.156.0",
         "GITHUB_REPOSITORY": "databricks/unity-gateway",
         "GITHUB_RUN_ID": "123",
         "GITHUB_API_URL": "https://api.github.com",
@@ -543,7 +544,7 @@ def test_latest_harness_slack_notification(
         assert not posted
         return
     runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
-    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.156.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
@@ -665,8 +666,10 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!({MEMBER_ONLY} ||" in reject
-    assert "Prior contributors can run integration tests on their own PR" in reject
+    assert f"!{MEMBER_ONLY}" in reject
+    # Integration runs PR code with CI secrets, so a contributor can't start it on their own PR.
+    assert "CONTRIBUTOR" not in workflow
+    assert "only Databricks org members can run integration tests" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize

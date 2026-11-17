@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode import metrics
+from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.smart_routing.rationale import format_rationale
 from ucode.ug_headers import ug_headers
 from ucode.workspace import workspace_headers
@@ -201,6 +203,9 @@ def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, st
     return [(model, harness) for model in dict.fromkeys(models)]
 
 
+@metrics.timed(
+    metrics.ROUTING_DECISION_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def select_route(
     workspace: str,
     token: str,
@@ -208,6 +213,7 @@ def select_route(
     route_options: Iterable[tuple[str, str | None]],
     *,
     router_name: str,
+    provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
 ) -> tuple[RoutingDecision | None, str | None]:
     """POST one ``routes:select`` request and return the router's pick.
@@ -217,6 +223,7 @@ def select_route(
     pick that was not offered is rejected. Returns ``(decision, error)``; a
     failed call yields ``(None, reason)`` so callers can fail open.
     """
+    metrics.annotate(routing_trigger=metrics.routing_trigger())
     offered_routes = tuple(route_options)
     body = {
         "route_options": [
@@ -231,15 +238,20 @@ def select_route(
         headers={
             **ug_headers(),
             **workspace_headers(workspace),
+            **({MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else {}),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
         method="POST",
     )
+    request_started = time.perf_counter()
+    status = None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", None)
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        status = exc.code
         detail = ""
         try:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -251,6 +263,17 @@ def select_route(
         return None, reason
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
         return None, f"router request failed: {exc}"
+    finally:
+        metrics.record(
+            metrics.HTTP_REQUEST_DURATION_MS,
+            (time.perf_counter() - request_started) * 1000,
+            workspace=workspace,
+            api_operation=metrics.api_operation(request.full_url),
+            http_method="POST",
+            http_status_code=status,
+            attempt=1,
+        )
+        metrics.annotate(http_status_code=status)
 
     model = _selected_model(payload)
     if model is None:
@@ -298,7 +321,8 @@ def resolve_spawn_route(
         ),
         default_task_label,
     )
-    decision, reason = decision_fn(task)
+    with metrics.subagent_routing():
+        decision, reason = decision_fn(task)
     if decision is None:
         logging.getLogger(__name__).debug(
             "Smart Router could not route subagent: %s", reason or "no routing decision"

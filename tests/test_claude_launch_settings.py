@@ -102,7 +102,9 @@ def test_windows_relayed_settings_and_proxy_are_cleaned_up(
     cache = SimpleNamespace(stop=Mock())
     client = SimpleNamespace(close=Mock())
     monkeypatch.setattr(claude, "_ensure_subscription_login", lambda: None)
-    monkeypatch.setattr(gateway_proxy, "start_relay_proxy", lambda *args: (server, cache, client))
+    monkeypatch.setattr(
+        gateway_proxy, "start_relay_proxy", lambda *args, **_kwargs: (server, cache, client)
+    )
     seen = []
     caller = {
         "hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "echo caller"}]}]}

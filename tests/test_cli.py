@@ -888,7 +888,6 @@ class TestSubcommandRouting:
             (["fix this"], True, None, None, True),
             (["fix this"], False, None, None, False),
             (["update"], False, None, None, False),
-            ([], False, None, "catalog.schema.service", False),
         ],
     )
     def test_codex_and_claude_share_smart_routing_policy(
@@ -906,8 +905,7 @@ class TestSubcommandRouting:
         assert options.launch_smart_routing is expected
 
     @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
-    def test_external_models_gate_allows_provider_routing(self, tool, expected, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
+    def test_provider_routing_is_supported_for_claude_only(self, tool, expected):
         options = cli_mod._launch_options(
             tool,
             [],
@@ -1968,6 +1966,31 @@ class TestManagedClaudeModelDiscovery:
         assert calls["configure"].call_args.kwargs["picker_catalog"] is None
         assert "ENABLE_CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY" not in os.environ
 
+    @pytest.mark.parametrize("needs_relay", [True, False])
+    def test_managed_static_model_services_launch_relayed_when_one_is_relay_backed(
+        self, needs_relay
+    ):
+        # No provider: the static list names a model service that routes to a subscription relay,
+        # so the launch swaps credentials (relayed) while the admin's list stays the source.
+        services = ["main.default.claude-anthropic-sonnet-5-5", "main.default.oss-large"]
+        managed = {"enabled_agents": {"claude": {"model_config": {"model_services": services}}}}
+        seen: list[list] = []
+
+        def need_relay(state):
+            seen.append(state.get("claude_static_models"))
+            return needs_relay
+
+        with (
+            _launch_policy_patches(managed) as calls,
+            patch("ucode.cli.claude_agent.static_models_need_subscription_relay", need_relay),
+        ):
+            result = runner.invoke(app, ["claude"])
+
+        assert result.exit_code == 0, result.output
+        assert seen == [services]
+        assert calls["configure"].call_args.kwargs["relayed"] is needs_relay
+        assert calls["configure"].call_args.kwargs["provider"] is None
+
     MPS_CONFIG = {
         "enabled_agents": {
             "claude": {
@@ -2186,7 +2209,6 @@ class TestManagedClaudeModelDiscovery:
         calls["launch"].assert_not_called()
 
     def test_saved_provider_scoped_catalog_for_routed_launch(self, monkeypatch):
-        monkeypatch.setenv("ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS", "1")
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
         calls = self._invoke(monkeypatch, None)
 
@@ -6651,6 +6673,14 @@ class TestConfigureScopeFlags:
 
     ARGS = ["configure", "--agents", "claude,codex", "--workspace", "https://first.databricks.com"]
 
+    @pytest.fixture(autouse=True)
+    def _no_published_agent_config(self, monkeypatch):
+        # The workspace publishes no agent configuration, so --global merges.
+        from ucode import published_agent_config
+
+        monkeypatch.setattr(published_agent_config, "sign_in", lambda *a, **kw: "token")
+        monkeypatch.setattr(published_agent_config, "fetch_published", lambda *a, **kw: None)
+
     @staticmethod
     def _configure(extra=(), *, args=None):
         with (
@@ -6810,6 +6840,52 @@ class TestConfigureScopeFlags:
         assert result.exit_code == 0, _strip_ansi(result.output)
         mock_single.assert_called_once()
         assert "config_scope" not in cli_mod.load_full_state()
+
+    @pytest.mark.parametrize("signed_in", [True, False], ids=["signed_in", "signed_out"])
+    def test_global_scope_keeps_gateway_auth_for_a_relay_backed_static_list(self, signed_in):
+        # A relay is per-user, so a signed-in administrator's `--global` run must not go relayed:
+        # write_tool_config would reject it and fail the machine-wide setup.
+        relayed_calls: list[bool] = []
+
+        def configure_tool(_tool, state, _model=None, **kwargs):
+            relayed_calls.append(kwargs.get("relayed", False))
+            return state
+
+        with (
+            self._single_agent_env({"enabled_agents": {}}),
+            patch(
+                "ucode.cli._configure_shared_workspace_states",
+                return_value=[
+                    {
+                        "workspace": "https://first.databricks.com",
+                        "claude_static_models": ["main.default.relayed", "system.ai.kimi"],
+                    }
+                ],
+            ),
+            patch("ucode.agents.desktop.mdm.configure"),
+            patch(
+                "ucode.agents.resolve_launch_model",
+                side_effect=lambda _tool, state, _model: (state, "system.ai.kimi"),
+            ),
+            patch("ucode.agents.check_gateway_endpoint", return_value=True),
+            patch("ucode.agents.configure_tool", side_effect=configure_tool),
+            patch("ucode.agents.claude.get_databricks_token", return_value="tok"),
+            patch("ucode.agents.claude.model_services_need_subscription_relay", return_value=True),
+            patch("ucode.agents.claude._has_subscription_login", return_value=signed_in),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "configure",
+                    "--agent",
+                    "claude",
+                    "--workspace",
+                    "https://first.databricks.com",
+                    "--global",
+                ],
+            )
+        assert result.exit_code == 0, _strip_ansi(result.output)
+        assert relayed_calls == [False]
 
     @pytest.mark.parametrize("managed", [True, False], ids=["managed_config", "picker"])
     def test_workspace_paths_refuse_before_configuring(self, tmp_path, managed):

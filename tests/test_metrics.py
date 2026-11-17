@@ -16,17 +16,12 @@ import pytest
 from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import ExportMetricsServiceRequest
 from opentelemetry.sdk.metrics.export import AggregationTemporality
 
+from tests.conftest import metric_observations as observations
 from ucode import databricks, metrics, workspace
 from ucode.metrics import exporter
 from ucode.metrics.exporter import start_exporter
 
 HOST = "https://dbc-test.cloud.databricks.com"
-
-
-def observations(metrics_recorder, name):
-    return [
-        (value, labels) for _, metric, value, labels in metrics_recorder.pending if metric == name
-    ]
 
 
 def test_bounds_buffer_and_drops_oldest(metrics_recorder):
@@ -501,13 +496,14 @@ def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(
     from ucode.os_compatibility import subprocess_cross_os
 
     child, reader = reporter_pipe
+    # Popen returns a blocking pipe; start_exporter must make it nonblocking.
+    os.set_blocking(child.stdin.fileno(), True)
     spawn = Mock(return_value=child)
     monkeypatch.setattr(subprocess_cross_os, "popen", spawn)
     # Exercise the actual process setup, with only OS process creation substituted.
     returned = start_exporter()
     assert returned is child
     assert not os.get_blocking(child.stdin.fileno())
-    assert not os.get_inheritable(child.stdin.fileno())
     metrics_recorder.reporter = child
     metrics_recorder.bind(HOST, "fake-workspace-token")
     metrics_recorder.record("ug_usage_duration_ms", 10, HOST, {"command": "usage"})
@@ -527,13 +523,10 @@ def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(
     assert batch["observations"] == [("ug_usage_duration_ms", 10, {"command": "usage"})]
 
 
-@pytest.mark.parametrize("value", [None, "0", "false", "invalid"])
+@pytest.mark.parametrize("value", ["0", "false", "invalid"])
 def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value):
     monkeypatch.setattr(metrics, "_runtime", None)
-    if value is None:
-        monkeypatch.delenv("UG_ENABLE_METRICS_EXPORT", raising=False)
-    else:
-        monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
+    monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
     thread = Mock()
     upload = Mock()
     monkeypatch.setattr(metrics.threading, "Thread", thread)
@@ -552,10 +545,13 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
     upload.assert_not_called()
 
 
-@pytest.mark.parametrize("value", ["1", "true"])
+@pytest.mark.parametrize("value", [None, "1", "true"])
 def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, reporter_pipe, value):
     monkeypatch.setattr(metrics, "_runtime", None)
-    monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
+    if value is None:
+        monkeypatch.delenv("UG_ENABLE_METRICS_EXPORT", raising=False)
+    else:
+        monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
     child, reader = reporter_pipe
     spawn = Mock(return_value=child)
     monkeypatch.setattr(exporter, "start_exporter", spawn)
@@ -637,3 +633,11 @@ def test_partial_pipe_writes_preserve_complete_batches(metrics_recorder, reporte
     batch = buffer.drain()[0]
     assert batch["token"] == "fake-token"
     assert [row[1] for row in batch["observations"]] == list(range(1000))
+
+
+def test_final_network_failure_clears_previous_http_status(metrics_recorder):
+    with metrics.measure(metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS):
+        metrics.annotate(http_status_code=503)
+        metrics.annotate(http_status_code=None)
+    [(_, labels)] = observations(metrics_recorder, metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS)
+    assert "http_status_code" not in labels

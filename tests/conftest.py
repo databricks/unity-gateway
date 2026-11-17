@@ -135,6 +135,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
+    # A developer's own machine may use a published agent configuration; tests opt in explicitly.
+    monkeypatch.setattr(
+        managed_files_mod,
+        "PUBLISHED_AGENT_CONFIG_MARKER_PATH",
+        tmp_path / "etc" / "agents-state.json",
+    )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
@@ -261,6 +267,10 @@ def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
     return dict(e2e_state_for(e2e_workspace))
+
+
+def metric_observations(recorder, name):
+    return [(value, labels) for _, metric, value, labels in recorder.pending if metric == name]
 
 
 @pytest.fixture

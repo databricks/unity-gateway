@@ -31,6 +31,11 @@ def test_explicit_global_desktop_scope_is_command_local(monkeypatch, flags, fail
         return 0
 
     monkeypatch.setattr(cli, "_configure_workspace_command", configure_workspace)
+    # The workspace publishes no agent configuration, so --global merges.
+    from ucode import published_agent_config
+
+    monkeypatch.setattr(published_agent_config, "sign_in", lambda *a, **kw: "token")
+    monkeypatch.setattr(published_agent_config, "fetch_published", lambda *a, **kw: None)
     result = CliRunner().invoke(
         cli.app,
         ["configure", "--agents", "claude", "--workspace", "https://workspace.example", *flags],
