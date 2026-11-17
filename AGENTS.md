@@ -184,6 +184,11 @@ In that mode native always stays on the static row's alias (the launch passes it
 `staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
 holds the chosen main model in memory and its `$.store` preference and resolves the
 real target from it. Main-model switches never run native `/model`.
+The main-model chooser opens only after the person confirms the Auto row in `/model` and
+the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
+on Esc. The bare `/model` command only records the person's request for the pane (an
+open closed at once) so a narrower terminal still places it; below 110 columns a toast
+points to `/model auto`.
 Native confirms the row as its picker closes, before the chooser opens, so that confirmation
 reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
 no notice (a plugin's system notice is drawn only in verbose mode) and the prompt hint row's

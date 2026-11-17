@@ -14,7 +14,8 @@ Under Auto it starts with `Auto (<main model>)`; with the static catalog row, th
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
 only place that names the main model: native's `/model` confirmation for the static row reads
 `Auto on: subagents smart-routed`, and a main-model save appends no transcript notice.
-The Auto chooser reads and saves effort through native `/effort`; the mod rewrites those rows
+The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
+picker closes, or on `/model auto`. The Auto chooser reads and saves effort through native `/effort`; the mod rewrites those rows
 (its own, by origin) to `<local-command-caveat>` rows, which native does not draw, so they do
 not appear as commands the person typed. A typed `/effort` is unchanged.
 The count also includes background agents after the parent turn ends and refreshes within

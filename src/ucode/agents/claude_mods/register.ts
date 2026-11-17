@@ -92,12 +92,13 @@ async function initStaticVariant($: EngineInterface, auto: AutoPicker): Promise<
 
 type AutoPickerState = {model?: string; drafts: Record<string,string>; native: Record<string,string | undefined>};
 
-async function openMainModel($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: 'auto-main', title: AUTO_MAIN_TITLE, focus: true, closeOnEscape: true, rows: 18 });
+async function openMainModel($: EngineInterface): Promise<boolean> {
+  const opened = await $.ui.open({ id: 'auto-main', title: AUTO_MAIN_TITLE, focus: true, closeOnEscape: true, rows: 18 });
   $.ui.invalidate('ui.render');
+  return opened.isPlaced;
 }
 
-async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoPickerState, queryEffort = true): Promise<void> {
+async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoPickerState, queryEffort = true): Promise<boolean> {
   state.model = await mainModel($, auto);
   state.drafts = {};
   // Native commands cannot run inside another command.run hook. Query after
@@ -110,7 +111,7 @@ async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: Auto
     if (status.text) state.native[model] = status.text;
     $.ui.invalidate('ui.render');
   });
-  await openMainModel($);
+  return openMainModel($);
 }
 
 type RoutingSyncState = {model?: string; failedModel?: string};
@@ -383,12 +384,15 @@ export function register(on: On, options: PluginOptions): void {
         throw error;
       }
       if (internalCommand) return result;
-      // Panel commands return an opaque ref, before their transcript is appended.
-      // Place the pane while this still carries the user's command context; the
-      // confirmation below focuses it after /model closes or dismisses it on Esc.
-      // Direct /model <name> commands have no panel handoff. In particular,
-      // never reopen a pane after their manual-model confirmation closed it.
-      if ((!e.args.trim() && typeof result.ref === 'number') || (e.args.trim() && await autoSelected($, auto))) {
+      if (!e.args.trim() && typeof result.ref === 'number') {
+        // The panel returns before the person picks a row. Its confirmation opens
+        // the chooser only for Auto, after the picker closes and without the person's
+        // command context, which narrow terminals require to place the pane. Opening
+        // and closing it here records that context without showing the pane.
+        await $.ui.open({id:'auto-main', title:AUTO_MAIN_TITLE});
+        await $.ui.close({id:'auto-main'});
+      } else if (e.args.trim() && await autoSelected($, auto)) {
+        // Direct /model auto. Never reopen after a manual-model confirmation closed it.
         await chooseMainModel($, auto, pickerState, false);
       }
       return result;
@@ -633,7 +637,7 @@ export function register(on: On, options: PluginOptions): void {
         && selected === manualOffRequest.autoModel ? manualOffRequest : undefined;
       const request = requested ?? restored;
       if (!internalSwitch && setModel) manualOffRequest = requested;
-      // Close the provisional pane before forwarding the native confirmation.
+      // Close any chooser before forwarding the native confirmation.
       // Forwarding first can dismiss /model and expose the pane for one frame.
       const dismiss = !internalSwitch && (keptModel || (setModel && !await autoSelected($, auto)));
       if (dismiss) {
@@ -779,7 +783,10 @@ export function register(on: On, options: PluginOptions): void {
           if (choosing) return;
           choosing = true;
           try {
-            await chooseMainModel($, auto, pickerState);
+            if (!await chooseMainModel($, auto, pickerState)) {
+              await $.ui.close({ id: 'auto-main' });
+              $.ui.toast('Auto is on. Widen the terminal or run /model auto to choose your main model.');
+            }
           } finally {
             choosing = false;
           }

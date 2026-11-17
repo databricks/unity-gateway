@@ -51,6 +51,7 @@ function staticCatalogSession(on: On, initial: string, saved?: string) {
   const writes: string[] = [];
   const runs: readonly string[][] = [];
   const opened: string[] = [];
+  const shown = new Set<string>();
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
     writes.push(e.name);
@@ -81,14 +82,23 @@ function staticCatalogSession(on: On, initial: string, saved?: string) {
   });
   on('ui.open', ($, e) => {
     opened.push(e.id);
+    shown.add(e.id);
     return { value: { isPlaced: true } };
   });
-  on('ui.close', () => ({ value: undefined }));
+  on('ui.close', ($, e) => {
+    shown.delete(e.id);
+    return { value: undefined };
+  });
   on('ui.toast', () => ({ value: undefined }));
   on('ui.invalidate', () => ({ value: undefined }));
   const clock = mock.clock(on);
   on('session.start', () => ({ cwd: '/work' }));
-  return { env, writes, runs, opened, store, commands, clock, selected: () => selected };
+  return {
+    env, writes, runs, opened, store, commands, clock,
+    selected: () => selected,
+    select: (model: string) => { selected = model; },
+    chooserOpen: () => shown.has('auto-main'),
+  };
 }
 
 test('the static catalog Auto row activates routing and reuses its own alias as the custom option', { options: OPTIONS }, async ($, on) => {
@@ -279,8 +289,8 @@ test('a native Auto confirmation landing after the pane save stays neutral and k
   const sent = captureSteps(on);
   const rows = captureAppends(on);
   await $.session.start(START);
-  // The /model panel places the pane at once; its confirmation may arrive after the pick.
-  await $.command.run({ command: 'model', args: '' });
+  // /model auto opens the chooser at once; its confirmation may arrive after the pick.
+  await $.command.run({ command: 'model', args: 'auto' });
   const pane = await mountChooser($);
   await pane.press({ key: 'auto-main-model-1' });
   await session.clock.advance(0);
@@ -416,4 +426,56 @@ test('the hidden effort read still feeds the chooser its native level', { option
   await $.session.append(commandRow('<local-command-stdout>Current effort level: high (currently high)</local-command-stdout>', mod));
   const drawn = JSON.stringify(await (await mountChooser($)).drawn());
   expect(drawn).not.toContain('model default');
+});
+
+// Native 2.1.325's /model returns its panel ref while the picker is still up, before
+// the person picks a row; only the Auto row's confirmation may open the chooser.
+const commandOutput = (text: string) => commandRow(`<local-command-stdout>${text}`, { kind: 'engine' });
+
+test('opening /model without a pick leaves the chooser closed', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  await $.session.start(START);
+  await $.command.run({ command: 'model', args: '' });
+  await session.clock.advance(0);
+  expect(session.chooserOpen()).toBe(false);
+});
+
+test('picking a non-Auto model in /model never opens the chooser', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  await $.session.start(START);
+  await $.command.run({ command: 'model', args: '' });
+  session.select('system.ai.claude-opus-5');
+  await $.session.append(commandOutput('Set model to Claude Opus 5'));
+  await session.clock.advance(0);
+  expect(session.chooserOpen()).toBe(false);
+});
+
+test('cancelling /model never opens the chooser', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  await $.session.start(START);
+  await $.command.run({ command: 'model', args: '' });
+  await $.session.append(commandOutput(`Kept model as \`${DEFAULT_ALIAS}\``));
+  await session.clock.advance(0);
+  expect(session.chooserOpen()).toBe(false);
+});
+
+test('picking Auto in /model opens the chooser once its confirmation arrives', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, 'system.ai.claude-opus-5');
+  await $.session.start(START);
+  await $.command.run({ command: 'model', args: '' });
+  expect(session.chooserOpen()).toBe(false);
+  session.select(DEFAULT_ALIAS);
+  await $.session.append(SET_STATIC);
+  expect(session.chooserOpen()).toBe(false);
+  await session.clock.advance(0);
+  expect(session.chooserOpen()).toBe(true);
+  expect(JSON.stringify(await (await mountChooser($)).drawn())).toContain('Auto: choose your main model');
+});
+
+test('/model auto opens the chooser directly', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  await $.session.start(START);
+  expect(session.chooserOpen()).toBe(false);
+  await $.command.run({ command: 'model', args: 'auto' });
+  expect(session.chooserOpen()).toBe(true);
 });
