@@ -23,12 +23,24 @@ WS = "https://example.cloud.databricks.com"
 UG = "/usr/local/bin/ug"
 
 
+def _wire(config: dict) -> dict:
+    """``config`` as the server sends it: a ``claude_code`` or ``codex`` variant goes inside
+    ``agent_native_config``."""
+    config = dict(config)
+    native = {
+        variant: config.pop(variant) for variant in ("claude_code", "codex") if variant in config
+    }
+    if native:
+        config["agent_native_config"] = native
+    return config
+
+
 def _raw_config(*, claude_config: dict | None = None, codex_config: dict | None = None) -> dict:
     agents = []
     if claude_config is not None:
-        agents.append({"agent": "CODING_AGENT_CLAUDE_CODE", "config": claude_config})
+        agents.append({"agent": "CODING_AGENT_CLAUDE_CODE", "config": _wire(claude_config)})
     if codex_config is not None:
-        agents.append({"agent": "CODING_AGENT_CODEX", "config": codex_config})
+        agents.append({"agent": "CODING_AGENT_CODEX", "config": _wire(codex_config)})
     return {"default_agent": "CODING_AGENT_CLAUDE_CODE", "enabled_agents": agents}
 
 

@@ -1,7 +1,8 @@
 # Ownership table for Codex's managed settings.
 #
-# Each [[requirements]] entry is a key in the agent configuration's `codex.requirements`, and
-# each [[config]] entry a key in `codex.config`. Every key not listed passes through unchanged.
+# Each [[requirements]] entry is a key in the agent configuration's
+# `agent_native_config.codex.requirements`, and each [[config]] entry a key in
+# `agent_native_config.codex.config`. Every key not listed passes through unchanged.
 #
 # Fields are the same as in claude.toml. One extra class:
 #   shared_table  The admin and UG both add named entries to the table. The admin's entries

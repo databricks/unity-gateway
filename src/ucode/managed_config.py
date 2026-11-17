@@ -100,8 +100,10 @@ AGENT_NAME_TO_TOOL: dict[str, str] = {
 # uses ``mcp_servers.sources``, so builds that can't read ``sources`` refuse it and keep their cache.
 MAX_SPEC_VERSION = 2
 
-# The variants of AgentConfig's `agent_native_config` oneof, by proto field name. Proto JSON puts
-# the variant directly on AgentConfig, so the normalized agent entry keeps it under the same key.
+# AgentConfig's `agent_native_config` field, an `AgentNativeConfig` message whose `agent` oneof
+# holds one variant per agent, by proto field name. The normalized agent entry keeps each variant
+# under its own key.
+AGENT_NATIVE_CONFIG_FIELD = "agent_native_config"
 AGENT_NATIVE_CONFIG_VARIANTS = ("claude_code", "codex")
 
 # The last authoritative read's outcome, persisted alongside the config so a launch can replay it
@@ -199,9 +201,8 @@ class AgentConfig:
     vscode_integration_enabled: bool | None = None
     # Harness-native settings delivered verbatim into the agent's managed settings file.
     settings: dict | None = None
-    # The `agent_native_config` oneof, keyed by the variant's proto field name (`claude_code`,
-    # `codex`, ...) and kept verbatim. The server rejects an entry that sets it together with
-    # `agent_native_settings`.
+    # `agent_native_config`'s variant, keyed by its proto field name (`claude_code`, `codex`, ...)
+    # and kept verbatim. It may be set together with `agent_native_settings`.
     native_config: dict[str, dict] | None = None
 
     @classmethod
@@ -213,10 +214,11 @@ class AgentConfig:
         agent_models = AgentModels.from_wire(
             config_dict.get("default_models"), config_dict.get("models")
         )
+        native = _as_dict(config_dict.get(AGENT_NATIVE_CONFIG_FIELD))
         native_config = {
             variant: value
             for variant in AGENT_NATIVE_CONFIG_VARIANTS
-            if (value := _as_dict(config_dict.get(variant)))
+            if (value := _as_dict(native.get(variant)))
         }
         return cls(
             http_headers=headers or None,

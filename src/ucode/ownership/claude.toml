@@ -1,7 +1,8 @@
 # Ownership table for Claude Code's managed settings.
 #
 # Each [[managed_settings]] entry is a key in the agent configuration's
-# `claude_code.managed_settings` (`agent_native_settings` counts the same). A managed run layers:
+# `agent_native_config.claude_code.managed_settings` (`agent_native_settings` counts the same).
+# A managed run layers:
 #   UG defaults < admin settings < feature requirements < gateway requirements
 # Every key not listed passes through unchanged.
 #

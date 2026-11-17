@@ -147,7 +147,7 @@ class TestRoundTrip:
         }
         raw = serialize_managed_config(manifest)
         assert raw["enabled_agents"][0]["config"] == {
-            "claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}
+            "agent_native_config": {"claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}}
         }
         assert normalize_managed_config(raw) == manifest
 

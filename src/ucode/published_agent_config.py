@@ -142,7 +142,9 @@ def _agent_entry(manifest: dict, tool: str) -> dict:
 
 
 def _native(entry: dict, variant: str, field: str) -> dict | None:
-    """``field`` of the entry's ``agent_native_config`` variant, e.g. ``codex.requirements``."""
+    """``field`` of the entry's ``agent_native_config`` variant, e.g. ``codex.requirements``.
+
+    The normalized entry keeps each variant under its own key."""
     value = (entry.get(variant) or {}).get(field)
     return value if isinstance(value, dict) else None
 
@@ -205,8 +207,8 @@ def claude_ug_values(
 
 def claude_native_settings(entry: dict) -> dict | None:
     """The admin's Claude Code settings: ``agent_native_settings`` and
-    ``claude_code.managed_settings``. The server accepts only one per entry; if both arrive, the
-    newer field wins key by key."""
+    ``agent_native_config.claude_code.managed_settings``. An entry may set both; the newer field
+    wins key by key."""
     legacy = entry.get("agent_native_settings")
     current = _native(entry, "claude_code", "managed_settings")
     if not isinstance(current, dict):

@@ -49,14 +49,32 @@ agent configuration instead of fetching it.
 | Field | Agent | Written to | Developers can override |
 | --- | --- | --- | --- |
 | `agent_native_settings` | Claude Code | `managed-settings.json` | No |
-| `claude_code.managed_settings` | Claude Code | `managed-settings.json` | No |
-| `codex.config` | Codex | `/etc/codex/config.toml` | Yes |
-| `codex.requirements` | Codex | `/etc/codex/requirements.toml` | No |
+| `agent_native_config.claude_code.managed_settings` | Claude Code | `managed-settings.json` | No |
+| `agent_native_config.codex.config` | Codex | `/etc/codex/config.toml` | Yes |
+| `agent_native_config.codex.requirements` | Codex | `/etc/codex/requirements.toml` | No |
 
-`agent_native_config` has one variant per agent, such as `claude_code` and `codex`. The server
-doesn't check what the native fields contain: `ug` decides what is written, from the ownership
-tables below. The server rejects an entry that sets both `agent_native_settings` and
-`agent_native_config`. `ug` writes whichever is set.
+Each agent's `config` takes one `agent_native_config` object, which sets one variant named for
+the agent, such as `claude_code` or `codex`. This page shortens the paths, for example to
+`codex.requirements`. For example:
+
+```json
+{
+  "agent": "CODING_AGENT_CODEX",
+  "config": {
+    "agent_native_config": {
+      "codex": {
+        "requirements": {"allowed_sandbox_modes": ["read-only", "workspace-write"]},
+        "config": {"approval_policy": "on-request"}
+      }
+    }
+  }
+}
+```
+
+The server doesn't check what the native fields contain: `ug` decides what is written, from the
+ownership tables below. A Claude Code entry may set both `agent_native_settings` and
+`agent_native_config.claude_code.managed_settings`. `ug` merges them, and
+`claude_code.managed_settings` wins on a key both set.
 
 Each field is a JSON object. Codex fields have the same structure as the TOML file. Values are
 written as given, including `null` for Claude Code. Codex drops `null` values, because TOML has no
