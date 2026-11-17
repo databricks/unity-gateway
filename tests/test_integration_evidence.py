@@ -152,28 +152,66 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 )
 @pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
+@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
+@pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE",
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+    ],
+    ids=["unset", "whitespace"],
+)
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
-    extra_command, missing_message, guard_style
+    extra_command, missing_message, guard_style, write_output, selected, condition
 ):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
     branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
     suffix = "" if guard_style == "exit" else " }"
-    guard = (
-        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-        f"{{ Write-Output {missing_message}{branch}"
-    )
+    guard = f"if ({condition}) {{ {write_output}{missing_message}{branch}"
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
         f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
-        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+        f"{selected} 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
     )
-    expected_guard = guard.replace(missing_message, '"SMART_ROUTER_ENV_UNSET"')
+    expected_guard = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        f'{{ Write-Output "SMART_ROUTER_ENV_UNSET"{branch}'
+    )
     expected = (command, f"{expected_guard} {command[2:]}{suffix}")
     if extra_command or "$" in missing_message:
         with pytest.raises(AssertionError, match="unexpected command approval"):
             codex_command_approval_pending(screen, expected)
     else:
         assert codex_command_approval_pending(screen, expected)
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "[string]::IsNullOrWhiteSpace($env:OTHER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -and "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrWhiteSpace($(Remove-Item important.txt)) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+    ],
+    ids=["other-variable", "wrong-operator", "command-substitution"],
+)
+def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition):
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    expected = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        '{ Write-Output "ENV_UNSET" } else { ' + command + " }"
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f'  $ if ({condition}) {{ Write-Output "ENV_UNSET" }} else {{ {command} }}\n\n'
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    with pytest.raises(AssertionError, match="unexpected command approval"):
+        codex_command_approval_pending(screen, expected)
 
 
 @pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])

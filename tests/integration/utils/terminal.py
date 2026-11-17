@@ -49,9 +49,18 @@ def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
 
 
 def _normalize_smart_router_env_guard(command: str) -> str:
+    whitespace_guard = (
+        "if ([string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)) "
+    )
+    if command.startswith(whitespace_guard):
+        command = (
+            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+            + command.removeprefix(whitespace_guard)
+        )
     return re.sub(
-        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
-        r'\1"ENV_UNSET"\2',
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1Write-Output "ENV_UNSET"\2',
         command,
         count=1,
     )
@@ -65,7 +74,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
     if "Press enter to confirm or esc to cancel" not in dialog:
         return False
     command = re.search(
-        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>\ufffd][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
         dialog,
     )
     expected_commands = (
@@ -112,6 +121,8 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    if rows and rows[-1] == "Earlier in this session (0)":
+        rows.pop()
     if not rows:
         return False
     completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
@@ -131,6 +142,11 @@ class TerminalScreen(pyte.Screen):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        # Copilot sends the private form (`CSI ? 6 n`), which pyte's Stream passes as `private=True`
+        # but Screen.report_device_status does not accept.
+        super().report_device_status(mode, **kwargs)
 
     @property
     def display(self):

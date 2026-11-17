@@ -263,6 +263,12 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             )
         assert "- agent: codex\n            smart_routing: true" in jobs["managed"]
         full |= routing
+        relay = _collect_integration_cases(_ci_marker_expression(jobs["codex-relay"], agent))
+        assert relay == {
+            "test_ug_codex_relayed.py::test_ug_codex_relayed_completes_inference_through_the_relay"
+        }
+        assert not (smoke | full) & relay
+        full |= relay
     # Full skips smoke cases only because smoke runs them on the same OS matrix.
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
@@ -275,6 +281,22 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         assert not selected & staging
         selected |= staging
     assert selected == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
+    jobs = _integration_jobs()
+    relay = jobs["codex-relay"]
+    assert "group: databricks-protected-runner-group" in relay
+    assert "labels: linux-ubuntu-latest" in relay
+    assert "CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}" in relay
+    assert "CODEX_ACCESS_TOKEN" not in jobs["full"]
+    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in relay
+    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in relay
+    assert "steps: *live-steps" in relay
+    assert "continue-on-error:" not in relay
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-relay" in {name.strip() for name in needs.group(1).split(",")}
 
 
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
@@ -419,6 +441,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
         "inputs.codex_version || '0.156.0' }}"
@@ -501,7 +524,7 @@ def test_latest_harness_slack_notification(
         "NOTIFY_NAME": "Latest harness test",
         "NOTIFY_RESULT": result,
         "CLAUDE_VERSION": claude_version,
-        "CODEX_VERSION": "0.154.0",
+        "CODEX_VERSION": "0.156.0",
         "GITHUB_REPOSITORY": "databricks/unity-gateway",
         "GITHUB_RUN_ID": "123",
         "GITHUB_API_URL": "https://api.github.com",
@@ -543,7 +566,7 @@ def test_latest_harness_slack_notification(
         assert not posted
         return
     runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
-    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.156.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
@@ -594,6 +617,7 @@ FORK_GUARD = (
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
     "anthropic-mps",
+    "codex-relay",
     "cowork-inference-windows",
     "cowork-inference-macos",
     "workspace",
@@ -1179,6 +1203,7 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "codex-relay",
         "antigravity",
         "managed",
         "codex-desktop-macos",
@@ -1203,6 +1228,7 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "codex-relay",
             "antigravity",
             "managed",
             "codex-desktop-macos",

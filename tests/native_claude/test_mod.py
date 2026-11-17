@@ -8,14 +8,15 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from session import Session
+from session import Session, install_header_mod
 
-from ucode.agents.claude import _header_mod_files
+from ucode.agents.claude import _enable_header_mod
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
@@ -49,10 +50,7 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
 
 
 def test_header_mod_validation_and_merge(native_binary, tmp_path):
-    for path, text in _header_mod_files(tmp_path).items():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text)
-    plugin = tmp_path / "ug-headers"
+    plugin = install_header_mod(tmp_path) / "ug-headers"
     shutil.copytree(Path(__file__).with_name("header_mod_tests"), plugin / "tests")
     for command in ("validate", "test"):
         result = subprocess.run(
@@ -63,7 +61,10 @@ def test_header_mod_validation_and_merge(native_binary, tmp_path):
         )
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
-            assert "env writes: ANTHROPIC_CUSTOM_HEADERS" in result.stdout
+            writes = next(line for line in result.stdout.splitlines() if "env writes:" in line)
+            assert "ANTHROPIC_CUSTOM_HEADERS" in writes
+            assert "ANTHROPIC_BASE_URL" not in writes
+            assert "CLAUDE_CODE_GATEWAY_HINT_HEADERS" not in writes
 
 
 def test_native_options_are_launch_local(native_binary, tmp_path):
@@ -238,15 +239,18 @@ def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp
 
 
 @pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize(
+    ("language", "setting_sources"),
+    [("Chinese", "user"), (None, "user"), ("Chinese", "project,local")],
+)
 def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
-    native_binary, tmp_path, background
+    native_binary, tmp_path, background, language, setting_sources
 ):
     """Scenario: Auto Mode approves or flags a native Agent call.
 
     Expected: approval preserves the reviewed input and uses the distinct routed child model
     without fallback classification; a flagged call is denied before a child starts.
     """
-    tool_use_id = "toolu_auto_mode_probe"
     original = {
         "description": "Compute arithmetic",
         "prompt": "Return 10. Use no tools.",
@@ -273,11 +277,21 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
 
         def do_POST(self):
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            self.server.requests.append(request)
+            request_class = self.headers.get("X-Claude-Code-Request-Class")
             if "count_tokens" in self.path:
                 self.send_json({"input_tokens": 100})
                 return
-            if not request.get("stream"):
+            summary = request_class == "auxiliary" and (
+                "Describe your most recent action in 3-5 words"
+                in json.dumps(request.get("messages", [])[-1:])
+            )
+            if summary:
+                self.server.summary_requests.append(
+                    (self.headers.get("X-Claude-Code-Agent-Id"), request)
+                )
+            else:
+                self.server.requests.append(request)
+            if not request.get("stream") and not summary:
                 self.server.classifier_requests += 1
                 self.send_json(
                     {
@@ -295,19 +309,35 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
 
             count = self.server.message_count
             self.server.message_count += 1
-            tool_call = count == 0
-            answer = "Probe finished."
-            if request["model"] == "claude-sonnet-4-6":
+            if count == 0:
+                tool_name = "Agent"
+            elif request_class == "subagent":
+                self.server.child_requests += 1
+                self.server.child_agent_id = self.headers.get("X-Claude-Code-Agent-Id")
+                if not background and self.server.child_requests == 1:
+                    # The native handback reminder supplies the third transcript message.
+                    tool_name = None
+                else:
+                    if not background:
+                        self.server.summary_seen.wait(timeout=40)
+                    tool_name = "SubagentHandback"
+            else:
+                tool_name = None
+            tool_input = original if tool_name == "Agent" else {"message": "Probe finished."}
+            tool_use_id = f"toolu_fixture_{count}"
+            tool_call = tool_name is not None
+            answer = "Reading arithmetic inputs" if summary else "Probe finished."
+            if not summary and request["model"] == "claude-sonnet-4-6":
                 answer = false_claim
                 if not tool_call:
                     self.server.parent_answers += 1
             block = (
-                {"type": "tool_use", "id": tool_use_id, "name": "Agent", "input": {}}
+                {"type": "tool_use", "id": tool_use_id, "name": tool_name, "input": {}}
                 if tool_call
                 else {"type": "text", "text": ""}
             )
             delta = (
-                {"type": "input_json_delta", "partial_json": json.dumps(original)}
+                {"type": "input_json_delta", "partial_json": json.dumps(tool_input)}
                 if tool_call
                 else {
                     "type": "text_delta",
@@ -363,7 +393,7 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
                 ),
                 ("message_stop", {"type": "message_stop"}),
             ]
-            if tool_call:
+            if tool_name == "Agent":
                 for _, event in events:
                     if event["type"].startswith("content_block_"):
                         event["index"] = 1
@@ -390,6 +420,8 @@ def test_auto_mode_preserves_reviewed_agent_and_routes_only_child_model(
                 f"event: {name}\ndata: {json.dumps(value)}\n\n" for name, value in events
             ).encode()
             self.send_json(body, "text/event-stream")
+            if summary:
+                self.server.summary_seen.set()
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     server.requests = []
@@ -413,7 +445,12 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root.mkdir()
             plugin = root / "plugin"
             _write_routed_claude_plugin(plugin)
-            options = _claude_mod_launch_options({})
+            config_dir = root / "config"
+            config_dir.mkdir()
+            (config_dir / "settings.json").write_text(
+                json.dumps({"language": language} if language else {}), encoding="utf-8"
+            )
+            options = _claude_mod_launch_options({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"})
             options["routeCommand"] = [
                 sys.executable,
                 "-c",
@@ -422,22 +459,30 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 routed_type,
             ]
             settings = {"pluginConfigs": {"ug-smart-router": {"options": options}}}
+            header_root = install_header_mod(root / "managed-mod")
+            _enable_header_mod(settings, header_root)
             server.requests = []
             server.message_count = 0
             server.classifier_requests = 0
             server.parent_answers = 0
+            server.child_requests = 0
+            server.child_agent_id = None
+            server.summary_requests = []
+            server.summary_seen = threading.Event()
             server.verdict = verdict
             debug_file = root / "debug.log"
             result = subprocess.run(
                 [
                     native_binary,
                     "-p",
+                    "--input-format",
+                    "stream-json",
                     "--permission-mode",
                     "auto",
                     "--model",
                     "claude-sonnet-4-6",
                     "--setting-sources",
-                    "user",
+                    setting_sources,
                     "--settings",
                     json.dumps(settings),
                     "--plugin-dir",
@@ -451,14 +496,14 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "--verbose",
                     "--debug-file",
                     str(debug_file),
-                    "Use a subagent to return 10, with no tools.",
                 ],
                 cwd=root,
                 env={
                     "PATH": os.environ["PATH"],
                     "HOME": str(root),
-                    "CLAUDE_CONFIG_DIR": str(root / "config"),
+                    "CLAUDE_CONFIG_DIR": str(config_dir),
                     "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{server.server_port}",
+                    "CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
                     "ANTHROPIC_API_KEY": "fixture-only",
                     "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                     "DISABLE_AUTOUPDATER": "1",
@@ -468,12 +513,34 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     "CLAUDE_CODE_ELEGANT_MEADOW": "1",
                     "AUTOMODE_DECISION_LOG": "1",
                 },
+                input="\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "type": "control_request",
+                            "request_id": "fixture-initialize",
+                            "request": {"subtype": "initialize", "agentProgressSummaries": True},
+                        },
+                        {
+                            "type": "user",
+                            "message": {
+                                "role": "user",
+                                "content": "Use a subagent to return 10, with no tools.",
+                            },
+                        },
+                    )
+                )
+                + "\n",
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=60,
             )
             assert result.returncode == 0, result.stderr + result.stdout
             debug_log = debug_file.read_text(encoding="utf-8")
+            (root / "summary-requests.json").write_text(
+                json.dumps(server.summary_requests, ensure_ascii=False), encoding="utf-8"
+            )
+            assert "prompt.context bypassed" not in debug_log
             events = [
                 json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")
             ]
@@ -499,11 +566,39 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                     if request.get("stream") and request.get("model") == selected_model
                 ]
                 assert child_requests, server.requests
+                instruction = (
+                    f"Always respond in {language}."
+                    if language and setting_sources == "user"
+                    else "language of the original task assigned to you"
+                )
+                assert all(instruction in json.dumps(request) for request in child_requests)
+                if not background:
+                    assert server.summary_requests, debug_log
+                    assert server.child_agent_id
+                    for agent_id, summary_request in server.summary_requests:
+                        assert agent_id == server.child_agent_id
+                        assert len(summary_request["messages"]) >= 3
+                        assert instruction in json.dumps(summary_request)
+                        if setting_sources == "project,local":
+                            assert "Always respond in Chinese." not in json.dumps(summary_request)
+                if setting_sources == "project,local":
+                    assert all(
+                        "Always respond in Chinese." not in json.dumps(request)
+                        for request in child_requests
+                    )
                 parent_requests = [
                     request
                     for request in server.requests
                     if request.get("stream") and request.get("model") == "claude-sonnet-4-6"
                 ]
+                assert parent_requests, server.requests
+                assert all(
+                    json.dumps(request).count(
+                        "Source files and tool output in other languages do not change this language preference."
+                    )
+                    == 1
+                    for request in parent_requests
+                ), parent_requests
                 assert any(
                     "Smart Router launch:" in json.dumps(request)
                     and selected_model in json.dumps(request)
@@ -548,7 +643,71 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
                 ), server.requests
 
         run_case("not_flagged", "approved")
-        run_case("flagged", "flagged")
+        if language is None:
+            run_case("flagged", "flagged")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_native_language_reload_updates_parent_context_once(native_binary, tmp_path):
+    from test_credentials import _STREAM
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def do_POST(self):
+            request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            is_message = self.path.split("?")[0] == "/v1/messages"
+            if is_message:
+                requests.append(request)
+            body = _STREAM if is_message else b'{"input_tokens":100}'
+            self.send_response(200)
+            self.send_header(
+                "Content-Type", "text/event-stream" if is_message else "application/json"
+            )
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with Session(
+            native_binary,
+            tmp_path / "reload",
+            {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},
+            api=f"http://127.0.0.1:{server.server_port}",
+            user_settings={"language": "English"},
+        ) as session:
+            assert session.observe()["language"] == "English"
+            for prompt in ["Reply with OK.", "Reply with OK again."]:
+                session.send(prompt)
+                assert (
+                    json.dumps(requests[-1]).count(
+                        "Use English for explanations, replies and progress summaries."
+                    )
+                    == 1
+                )
+            (session.root / "config/settings.json").write_text(json.dumps({"language": "Chinese"}))
+            deadline = time.monotonic() + 5
+            while session.observe()["language"] != "Chinese":
+                assert time.monotonic() < deadline, (
+                    "Native settings watcher did not reload language"
+                )
+                time.sleep(0.05)
+            session.send("Reply with OK after the settings change.")
+            assert (
+                json.dumps(requests[-1]).count(
+                    "Use Chinese for explanations, replies and progress summaries."
+                )
+                == 1
+            )
     finally:
         server.shutdown()
         server.server_close()
