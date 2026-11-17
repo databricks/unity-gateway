@@ -1894,6 +1894,20 @@ def write_tool_config(
                 is True
             )
         ),
+        # Managed smart routing whose configure-time environment resolves to the
+        # Auto config version serves Auto from the static catalog itself. The
+        # managed config carries no version of its own; this is the version the
+        # admin selected for configure (SMART_ROUTER_CONFIG_VERSION).
+        managed_auto_catalog=(
+            not (provider or parent_schema or relayed)
+            and resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
+            == "1"
+            and (managed_manifest or {})
+            .get("enabled_agents", {})
+            .get(AGENT_CLAUDE, {})
+            .get("smart_routing_enabled")
+            is True
+        ),
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -2292,6 +2306,7 @@ def _reconcile_managed_settings(
     withdrawn_denies: list | None = None,
     passthrough_leaves: list | None = None,
     auto_picker: bool = False,
+    managed_auto_catalog: bool = False,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -2362,6 +2377,7 @@ def _reconcile_managed_settings(
             AUTO_CUSTOM_MODEL_ENV_KEYS,
             add_picker_entry,
             is_auto_model,
+            picker_has_auto_row,
             picker_is_configured,
         )
 
@@ -2372,7 +2388,13 @@ def _reconcile_managed_settings(
         if "modelPicker" in picker_keys and (
             _explicit_configure or picker_is_configured(managed_before)
         ):
-            desired_settings = add_picker_entry(desired_settings)
+            # Managed smart routing with the Auto config version keeps the static
+            # catalog's replacement picker and adds one Auto row to it; every
+            # other case exposes Auto through the native custom-model option.
+            static_auto_row = (
+                managed_auto_catalog if _explicit_configure else picker_has_auto_row(managed_before)
+            )
+            desired_settings = add_picker_entry(desired_settings, static_auto_row=static_auto_row)
             before_env = managed_before.get("env")
             before_env = before_env if isinstance(before_env, dict) else {}
             desired_env = desired_settings.get("env")

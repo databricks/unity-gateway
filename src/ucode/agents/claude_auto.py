@@ -72,11 +72,17 @@ def model_available(model: str, settings: dict) -> bool:
     )
 
 
-def add_picker_entry(settings: dict) -> dict:
+def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:
     """Install immutable aliases and one native custom row at explicit configure.
 
     Aliases are not modelPicker rows: identical labels would create duplicate rows.
     The mod changes only the process-local custom option, never shared profiles.
+
+    With ``static_auto_row`` (a managed static catalog under the Auto config
+    version), the picker keeps ``replaceBuiltInOptions`` as the catalog wrote it
+    and appends a single Auto row for the default variant instead of exposing the
+    custom option. The mod's in-process custom option still drives main-model
+    switching; aliases stay in ``modelOverrides`` and ``availableModels``.
     """
     picker = settings.get("modelPicker")
     if not isinstance(picker, dict) or not isinstance(picker.get("options", []), list):
@@ -130,9 +136,38 @@ def add_picker_entry(settings: dict) -> dict:
         overrides[variant] = row["model"]
         if isinstance(allowed, list) and allowed:
             allowed.append(variant)
-    # Replacement pickers suppress Claude's native custom-model option.
-    result["modelPicker"]["replaceBuiltInOptions"] = False
+    if static_auto_row:
+        # One Auto row, for the same default variant picker_config prefers.
+        env_values = result.get("env")
+        preferred = env_values.get("ANTHROPIC_MODEL") if isinstance(env_values, dict) else None
+        default_row = next(
+            (row for row in available if preferred in (row["model"], auto_variant(row))),
+            available[0],
+        )
+        result["modelPicker"]["options"] = [
+            *rows,
+            {
+                "model": auto_variant(default_row),
+                "label": "Auto",
+                "description": AUTO_DESCRIPTION,
+            },
+        ]
+    else:
+        # Replacement pickers suppress Claude's native custom-model option.
+        result["modelPicker"]["replaceBuiltInOptions"] = False
     return result
+
+
+def picker_has_auto_row(settings: dict) -> bool:
+    """Whether a replacement picker already carries the single static Auto row."""
+    picker = settings.get("modelPicker")
+    if not isinstance(picker, dict) or picker.get("replaceBuiltInOptions", False) is not True:
+        return False
+    options = picker.get("options")
+    return isinstance(options, list) and any(
+        isinstance(row, dict) and isinstance(row.get("model"), str) and is_auto_model(row["model"])
+        for row in options
+    )
 
 
 def picker_is_configured(settings: dict) -> bool:
@@ -145,7 +180,7 @@ def picker_is_configured(settings: dict) -> bool:
     custom = env.get("ANTHROPIC_CUSTOM_MODEL_OPTION")
     if custom and (not isinstance(custom, str) or not is_auto_model(custom)):
         return False
-    if picker.get("replaceBuiltInOptions", False):
+    if picker.get("replaceBuiltInOptions", False) and not picker_has_auto_row(settings):
         return False
     return any(
         isinstance(alias, str)

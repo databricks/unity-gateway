@@ -14,6 +14,11 @@ These journeys require authenticated live CI; collection is not a live pass.
 
 Focused regressions cover managed routing with Auto off at configure, non-routing
 configure retaining its replacement picker, and explicit Auto configure opt-in.
+Managed routing configured under the Auto config version keeps the static catalog's
+replacement picker with exactly one Auto row (default-variant alias, matching
+`modelOverrides` and `availableModels` entries); the launch serves that configured
+catalog to the mod without a custom-model slot, and both installed modes survive
+ordinary launches byte-identically.
 Ordinary and Auto launches preserve managed bytes and invoke no further privileged
 writes, with or without write access. Existing suites also cover fresh OFF session
 controls and native manual-model startup with feedback required through the next main turn. The native
@@ -21,7 +26,9 @@ case deliberately fails inference without credentials and checks state only.
 Rollout ownership and restoration share the existing known-version test matrix.
 The full-screen Auto alias assertion remains disabled pending native Claude support
 for friendly header and `/status` names. Cancellation, effort and context-window
-edge cases still lack dedicated live coverage.
+edge cases still lack dedicated live coverage. Native acceptance of the mod's
+re-pointed custom option during `/model auto` main-model switching under a
+replacement picker is untested here and needs live validation.
 
 Profile discovery component checks in `test_databricks.py::TestGetDatabricksProfiles`
 require local metadata listing without validating unrelated workspaces, preserve PAT

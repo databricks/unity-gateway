@@ -540,8 +540,15 @@ SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
 
 When workspace managed config enables Claude smart routing, ordinary `ug configure`
 already provisions Auto aliases and sets `modelPicker.replaceBuiltInOptions=false`
-for UG-owned pickers, regardless of its config version. Launch configuration controls
-Auto visibility. Without managed routing or explicit Auto opt-in, configure keeps
+for UG-owned pickers, regardless of its config version. When the configure-time
+environment also selects the Auto config version (`SMART_ROUTER_CONFIG_VERSION`
+above; the managed config itself carries no version), configure keeps
+`replaceBuiltInOptions=true` on the UG-owned static catalog and serves Auto from
+one row inside it: the default variant's alias labeled "Auto", with its
+`modelOverrides` mapping and both the alias and its target admitted by
+`availableModels`. That static-catalog mode is written at configure only; launches
+preserve whichever installed mode the file carries and never install or convert it.
+Without managed routing or explicit Auto opt-in, configure keeps
 `replaceBuiltInOptions=true`.
 
 UG preserves pickers owned by other managers, including Isaac. Their manager must
@@ -579,11 +586,17 @@ alias because Claude 2.1.290 does not expose a model-name display hook.
 
 This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
 wrapper. Configure writes these fixed aliases only for UG-owned model
-pickers, preserving foreign administrator pickers and custom model options. It enables
-Claude's native custom-model row (`replaceBuiltInOptions: false`). This also exposes
+pickers, preserving foreign administrator pickers and custom model options. In the
+default Auto mode it enables
+Claude's native custom-model row (`replaceBuiltInOptions: false`); under managed
+routing with the Auto config version it keeps the replacement static catalog
+(`replaceBuiltInOptions: true`) and shows Auto as one row inside it instead. This also exposes
 native built-in choices when no `availableModels` restriction is configured; existing
 `availableModels` and `deniedModels` policies still apply. The mod points that one row at the current Auto variant within each process; it never rewrites a
-shared capability profile. Launch settings supply the catalog and routing baseline;
+shared capability profile. In the static-catalog mode the mod re-points its
+process-local custom option for `/model auto` main-model switching, but the native
+checkmark cannot follow those variant switches because the catalog row is immutable.
+Launch settings supply the catalog and routing baseline;
 the routing mod resolves the selected variant to its real model before inference. No synthetic model ID is sent to the gateway. Selecting
 an ordinary model switches off routing through UG's existing atomic session
 controls. Launches do not edit managed files or install a custom status-line script.

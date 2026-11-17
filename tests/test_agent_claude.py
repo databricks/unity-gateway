@@ -1609,12 +1609,13 @@ class TestWriteToolConfigManagedSettings:
 
     @pytest.mark.parametrize("can_write", [False, True])
     @pytest.mark.parametrize(
-        ("managed_routing", "configure_auto"), [(True, False), (False, False), (False, True)]
+        ("managed_routing", "configure_auto"),
+        [(True, False), (False, False), (False, True), (True, True)],
     )
     def test_auto_picker_survives_ordinary_launch(
         self, tmp_path, monkeypatch, can_write, managed_routing, configure_auto
     ):
-        from ucode.agents.claude_auto import picker_is_configured
+        from ucode.agents.claude_auto import is_auto_model, picker_is_configured
 
         path, writes = self._sudo_counting_env(tmp_path, monkeypatch)
         monkeypatch.setattr(
@@ -1633,9 +1634,28 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setattr(claude, "_explicit_configure", True)
         claude.write_tool_config(state, state["claude_static_models"][0])
         configured_auto = managed_routing or configure_auto
+        # Managed routing under the Auto config version keeps the static catalog's
+        # replacement picker and serves Auto from one row inside it.
+        static_catalog = managed_routing and configure_auto
         managed = json.loads(path.read_text())
         assert picker_is_configured(managed) is configured_auto
-        assert managed["modelPicker"]["replaceBuiltInOptions"] is (not configured_auto)
+        assert managed["modelPicker"]["replaceBuiltInOptions"] is (
+            not configured_auto or static_catalog
+        )
+        auto_rows = [
+            row
+            for row in managed["modelPicker"]["options"]
+            if isinstance(row, dict) and is_auto_model(row.get("model", ""))
+        ]
+        assert len(auto_rows) == (1 if static_catalog else 0)
+        if static_catalog:
+            assert auto_rows[0]["label"] == "Auto"
+            alias = auto_rows[0]["model"]
+            assert managed["modelOverrides"][alias] == "system.ai.claude-sonnet-4-6"
+            assert managed["availableModels"] == [
+                "system.ai.claude-sonnet-4-6",
+                alias,
+            ]
         installed = path.read_bytes()
         write_count = len(writes)
         monkeypatch.setattr(claude, "_explicit_configure", False)
@@ -1646,6 +1666,103 @@ class TestWriteToolConfigManagedSettings:
             assert picker_is_configured(json.loads(path.read_text())) is configured_auto
             assert path.read_bytes() == installed
             assert len(writes) == write_count
+
+    def test_static_auto_row_adds_one_row_and_keeps_replacement_picker(self):
+        from ucode.agents.claude_auto import (
+            AUTO_DESCRIPTION,
+            add_picker_entry,
+            auto_variant,
+            is_auto_model,
+        )
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        haiku = "system.ai.claude-haiku-4-5"
+        settings = {
+            "env": {"ANTHROPIC_MODEL": haiku},
+            "availableModels": [sonnet, haiku],
+            "enforceAvailableModels": True,
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [
+                    {"model": sonnet, "label": "Sonnet 5.5"},
+                    {"model": haiku, "label": "Haiku 4.5"},
+                ],
+            },
+        }
+        result = add_picker_entry(settings, static_auto_row=True)
+        assert result["modelPicker"]["replaceBuiltInOptions"] is True
+        options = result["modelPicker"]["options"]
+        assert [row["model"] for row in options if not is_auto_model(row["model"])] == [
+            sonnet,
+            haiku,
+        ]
+        auto_rows = [row for row in options if is_auto_model(row["model"])]
+        # Exactly one Auto row, pointing at the variant of the configured default model.
+        assert len(auto_rows) == 1
+        assert auto_rows[0]["model"] == auto_variant({"model": haiku})
+        assert auto_rows[0]["label"] == "Auto"
+        assert auto_rows[0]["description"] == AUTO_DESCRIPTION
+        sonnet_variant = auto_variant({"model": sonnet})
+        haiku_variant = auto_variant({"model": haiku})
+        assert result["modelOverrides"] == {sonnet_variant: sonnet, haiku_variant: haiku}
+        assert result["availableModels"] == [sonnet, haiku, sonnet_variant, haiku_variant]
+        assert result["enforceAvailableModels"] is True
+        # The input settings are not mutated.
+        assert "modelOverrides" not in settings
+
+    def test_custom_slot_mode_still_replaces_built_in_options(self):
+        from ucode.agents.claude_auto import add_picker_entry, auto_variant
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        settings = {
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": sonnet, "label": "Sonnet 5.5"}],
+            },
+        }
+        result = add_picker_entry(settings)
+        assert result["modelPicker"]["replaceBuiltInOptions"] is False
+        assert all(
+            not row["model"].startswith("ug-auto") for row in result["modelPicker"]["options"]
+        )
+        assert result["modelOverrides"] == {auto_variant({"model": sonnet}): sonnet}
+
+    def test_picker_is_configured_recognizes_only_installed_auto_modes(self):
+        from ucode.agents.claude_auto import (
+            add_picker_entry,
+            picker_has_auto_row,
+            picker_is_configured,
+        )
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        static = add_picker_entry(
+            {
+                "availableModels": [sonnet],
+                "modelPicker": {
+                    "replaceBuiltInOptions": True,
+                    "options": [{"model": sonnet, "label": "Sonnet"}],
+                },
+            },
+            static_auto_row=True,
+        )
+        assert picker_has_auto_row(static) is True
+        assert picker_is_configured(static) is True
+        # A foreign replacement picker without the Auto row never counts as configured.
+        foreign = {
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": sonnet, "label": "Sonnet"}],
+            },
+            "modelOverrides": {f"ug-auto-{sonnet}": sonnet},
+        }
+        assert picker_has_auto_row(foreign) is False
+        assert picker_is_configured(foreign) is False
+        # The custom-slot mode keeps being recognized.
+        custom = add_picker_entry({"modelPicker": {"options": [{"model": sonnet}]}})
+        assert picker_has_auto_row(custom) is False
+        assert picker_is_configured(custom) is True
+        # Without any Auto provision neither mode is configured.
+        assert picker_is_configured({"modelPicker": {"options": [{"model": sonnet}]}}) is False
 
     def test_reapply_unchanged_config_invokes_no_sudo(self, tmp_path, monkeypatch):
         # Repeated `ug claude` launches with an unchanged config and an intact managed file must

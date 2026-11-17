@@ -639,6 +639,80 @@ class TestV2Launch:
             auto_variant(rows[0]): models[0]
         }
 
+    def test_auto_launch_serves_configured_static_catalog_row(self, tmp_path, monkeypatch):
+        """A managed static Auto catalog drives the mod without a custom-model slot.
+
+        Configure wrote the replacement picker with one Auto row (the default
+        variant) plus per-main-model aliases; the launch recognizes it as Auto's
+        source and keeps the managed file untouched.
+        """
+        from ucode.agents.claude_auto import auto_variant, is_auto_model, picker_has_auto_row
+
+        models = ["team.models.admin", "system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        rows = [{"model": model} for model in models]
+        rows[0]["behavesAs"] = "claude-opus-4-8[1m]"
+        aliases = {auto_variant(row): row["model"] for row in rows}
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                {
+                    "availableModels": [*models, *aliases],
+                    "enforceAvailableModels": True,
+                    "modelOverrides": aliases,
+                    "modelPicker": {
+                        "replaceBuiltInOptions": True,
+                        "options": [
+                            *rows,
+                            {
+                                "model": auto_variant(rows[0]),
+                                "label": "Auto",
+                                "description": "Delivers frontier-model quality.",
+                            },
+                        ],
+                    },
+                }
+            )
+        )
+        before = managed.read_bytes()
+        assert picker_has_auto_row(json.loads(before)) is True
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        assert managed.read_bytes() == before
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        auto = json.loads(options["autoPicker"])
+        assert auto["mainModel"] == models[0]
+        assert auto["model"] == auto_variant(rows[0])
+        assert [row["model"] for row in auto["models"]] == models
+        assert {row["autoModel"] for row in auto["models"]} == set(aliases)
+        # The managed aliases stay in the managed file; launch settings carry no copies.
+        assert not any(is_auto_model(k) for k in captured.get("modelOverrides", {}))
+
     def test_subagent_only_launch_keeps_the_forwarded_model(self, tmp_path, monkeypatch):
         model = "system.ai.claude-opus-5-5"
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)

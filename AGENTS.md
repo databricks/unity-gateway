@@ -129,7 +129,18 @@ launches preserve installed Auto picker metadata independently of their Auto fla
 Configure provisions Auto aliases and sets `modelPicker.replaceBuiltInOptions=false`
 for UG-owned pickers when managed Claude `smart_routing_enabled` is true, regardless
 of its config version, or when Auto is explicitly enabled. Otherwise it keeps replacement
-enabled. Launch configuration controls Auto visibility. Configure preserves foreign admin
+enabled. When managed Claude `smart_routing_enabled` is true AND the configure-time
+environment resolves to the Auto config version (`SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
+or `ENABLE_SMART_ROUTER_AUTO_MODE=1`; the managed config itself carries no version),
+configure keeps `replaceBuiltInOptions=true` on the UG-owned static catalog and serves
+Auto from one row inside it: the default variant's alias with label `Auto`, its
+`modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
+is written at configure only — launches preserve whichever installed mode the file
+carries, and a launch's own version selection never installs or converts the catalog.
+The mod still re-points its in-process custom option for `/model auto` main-model
+switching; the native checkmark cannot follow those variant switches because the
+static row is immutable. Launch configuration controls Auto visibility. Configure
+preserves foreign admin
 picker/custom option settings. Inline effort controls read native `/effort status` and save through `/effort`;
 Claude owns model-specific capabilities and defaults.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
