@@ -501,7 +501,7 @@ def test_latest_harness_slack_notification(
         "NOTIFY_NAME": "Latest harness test",
         "NOTIFY_RESULT": result,
         "CLAUDE_VERSION": claude_version,
-        "CODEX_VERSION": "0.154.0",
+        "CODEX_VERSION": "0.156.0",
         "GITHUB_REPOSITORY": "databricks/unity-gateway",
         "GITHUB_RUN_ID": "123",
         "GITHUB_API_URL": "https://api.github.com",
@@ -543,7 +543,7 @@ def test_latest_harness_slack_notification(
         assert not posted
         return
     runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
-    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.156.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"

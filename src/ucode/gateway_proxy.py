@@ -358,6 +358,19 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 headers.update(self.workspace_selector)
             return headers
 
+        attempt = 1
+
+        def trace_transport(name: str, _info: dict[str, Any]) -> None:
+            log_proxy_diagnostic(
+                "upstream_transport",
+                request_id=diagnostic_id,
+                attempt=attempt,
+                phase=name,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+
+        extensions = {"trace": trace_transport} if _diagnostics_enabled() else None
+
         try:
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
@@ -365,14 +378,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             log_proxy_diagnostic(
                 "upstream_request_start",
                 request_id=diagnostic_id,
-                attempt=1,
+                attempt=attempt,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
-            with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+            with self.client.stream(
+                self.command, url, headers=headers, content=body, extensions=extensions
+            ) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=1,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
@@ -399,17 +414,20 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if self._on_refresh_failure(exc):
                     return
             headers = request_headers(self.cache.token)
+            attempt = 2
             log_proxy_diagnostic(
                 "upstream_request_start",
                 request_id=diagnostic_id,
-                attempt=2,
+                attempt=attempt,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
-            with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+            with self.client.stream(
+                self.command, url, headers=headers, content=body, extensions=extensions
+            ) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=2,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )

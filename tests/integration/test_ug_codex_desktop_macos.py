@@ -29,7 +29,8 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
     provider, records exactly that answer in a completed turn whose model is the managed system.ai
     GPT default. Onboarding is skipped through its visible buttons with mouse clicks and the prompt
     is typed with real keystrokes; nothing is seeded. GUI rendering of other screens, MCP, tracing
-    and revert while the app runs are not covered.
+    and revert while the app runs are not covered. A subsequent click on an absent label fails
+    with the native accessibility tree before the fatal error, captured in command evidence.
     """
     session = live_session
     marker = fresh_id()
@@ -53,14 +54,40 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
             assert time.monotonic() < deadline, "The app never recorded the completed turn"
             time.sleep(1)
 
-    sessions = agent_sessions(session, "codex").values()
-    origins = [
-        (record["payload"]["originator"], record["payload"]["model_provider"])
-        for records in sessions
-        for record in records
-        if record.get("type") == "session_meta"
-    ]
-    assert origins == [("Codex Desktop", "Databricks")], origins
-    answers = [answer for records in sessions for answer in assistant_answers("codex", records)]
-    assert [answer.strip() for answer in answers] == [marker], answers
-    assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)
+        sessions = agent_sessions(session, "codex").values()
+        origins = [
+            (record["payload"]["originator"], record["payload"]["model_provider"])
+            for records in sessions
+            for record in records
+            if record.get("type") == "session_meta"
+        ]
+        assert origins == [("Codex Desktop", "Databricks")], origins
+        answers = [answer for records in sessions for answer in assistant_answers("codex", records)]
+        assert [answer.strip() for answer in answers] == [marker], answers
+        assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)
+
+        missing_click = session.run(
+            "click",
+            str(app.proc.pid),
+            "AXButton",
+            "__ug_missing_target__",
+            binary=app.client,
+            ok=False,
+            timeout=60,
+        )
+        assert missing_click.returncode != 0
+        lines = missing_click.stderr.split("\n")
+        assert lines[0] == f"Accessibility tree at failed click (PID {app.proc.pid}):", lines
+        fatal_index = next(
+            (
+                index
+                for index, line in enumerate(lines)
+                if "Fatal error: No AXButton labelled __ug_missing_target__" in line
+            ),
+            None,
+        )
+        assert fatal_index is not None, lines
+        tree_rows = [line for line in lines[1:fatal_index] if line]
+        assert tree_rows, lines
+        assert all(len(row.split("\t")) == 4 for row in tree_rows), tree_rows
+        assert any(row.split("\t")[0].startswith("AX") for row in tree_rows), tree_rows

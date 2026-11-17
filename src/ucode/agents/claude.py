@@ -89,6 +89,7 @@ from ucode.managed_files import (
     managed_writes_allowed,
     mark_managed_file_verified,
     plan_settings_passthrough,
+    published_agent_config_used,
     read_managed_file,
     reconcile_managed_file,
     reconcile_privileged_files,
@@ -135,6 +136,7 @@ from ucode.state import (
 )
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.ug_headers import published_agent_config_headers_warning
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import (
     SELECTOR_HEADER_NAMES,
@@ -2284,10 +2286,11 @@ def _remove_header_mod() -> None:
         print_warning(f"Couldn't remove ug's Claude header mod at {root}: {exc}")
 
 
-def header_mod_active() -> bool:
+def header_mod_active(*, require_current: bool = False) -> bool:
     """Whether a header mod is installed and enabled, so ``UG_HEADERS`` reaches Claude.
 
     That is ug's own mod, or another installer's copy enabled in the managed settings.
+    ``require_current`` requires ug's current files for its language-context hooks.
     """
     root = claude_header_mod_root()
     path = _managed_settings_path()
@@ -2299,7 +2302,7 @@ def header_mod_active() -> bool:
         if not isinstance(plugins, dict):
             return False
         # TODO: remove once other installers use ug to update managed settings.
-        if any(
+        if not require_current and any(
             key.startswith(_HEADER_MOD_PREFIX) and key != CLAUDE_HEADER_MOD_ID and value is True
             for key, value in plugins.items()
         ):
@@ -3034,6 +3037,21 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     raise SystemExit(returncode)
 
 
+def _warn_if_launch_headers_dropped() -> None:
+    """Say so when this launch's ``UG_HEADERS`` can't reach Claude: no header mod is enabled."""
+    if not os.environ.get(UG_HEADERS_ENV_VAR, "").strip() or header_mod_active():
+        return
+    if published_agent_config_used():
+        # A managed run doesn't install the header mod, so `ug configure` can't help here.
+        print_warning(published_agent_config_headers_warning("Claude Code"))
+        return
+    print_warning(
+        "Claude Code won't send your `ug --header` / UG_HEADERS headers: no header mod is "
+        "enabled or ug's is out of date, and a launch never changes machine-wide files. Run "
+        "`ug configure` without UG_SKIP_OS_SETTINGS or `--user`."
+    )
+
+
 def launch(
     state: dict,
     tool_args: list[str],
@@ -3044,12 +3062,7 @@ def launch(
     binary = SPEC["binary"]
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
-    if os.environ.get(UG_HEADERS_ENV_VAR, "").strip() and not header_mod_active():
-        print_warning(
-            "Claude Code won't send your `ug --header` / UG_HEADERS headers: no header mod is enabled "
-            "or ug's is out of date, and a launch never changes machine-wide files. Run `ug configure` "
-            "without UG_SKIP_OS_SETTINGS or `--user`."
-        )
+    _warn_if_launch_headers_dropped()
     if workspace and os.environ.get(GATEWAY_MODEL_DISCOVERY_ENV_VAR) == "1":
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
@@ -3083,6 +3096,12 @@ def launch(
     )
     routing_setup_failed = False
     if options.launch_smart_routing:
+        if not header_mod_active(require_current=True):
+            print_warning(
+                "Cannot verify Smart Router language inheritance: it requires the current UG "
+                "managed mod. Run `ug configure` without `--user` or UG_SKIP_OS_SETTINGS. "
+                "Routing continues."
+            )
         try:
             smart_routing_v2.launch_claude(
                 state,

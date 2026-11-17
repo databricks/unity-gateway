@@ -16,6 +16,19 @@ from ucode.constants import UG_HEADERS_ENV_VAR
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _SESSION_HEADERS: ContextVar[str | None] = ContextVar("ug_session_headers", default=None)
 
+# The gateway records this header's value as the request's coding agent, ahead of User-Agent.
+CODING_AGENT_HEADER = "Databricks-Custom-Coding-Agent"
+
+
+def without_header(value: str, name: str) -> str:
+    """``UG_HEADERS`` text ``value`` without its lines for header ``name``, in any case."""
+    key = name.casefold()
+    return "\n".join(
+        line
+        for line in value.splitlines()
+        if line.strip() and line.partition(":")[0].strip().casefold() != key
+    )
+
 
 @contextmanager
 def scoped_ug_headers(value: str) -> Iterator[None]:
@@ -39,6 +52,15 @@ def parse_header_line(line: str) -> tuple[str, str] | None:
     if not separator or not _HEADER_NAME_RE.fullmatch(name) or not value:
         return None
     return (name, value) if _is_sendable_value(value) else None
+
+
+def published_agent_config_headers_warning(display: str) -> str:
+    """Why ``display`` drops a launch's headers on a machine with a managed run."""
+    return (
+        f"{display} won't send your `ug --header` / UG_HEADERS headers: this machine's settings come "
+        "from your workspace's published agent configuration, which doesn't support per-launch "
+        "headers. Ask your admin to add them to the agent configuration's `http_headers`."
+    )
 
 
 def ug_headers(value: str | None = None) -> dict[str, str]:

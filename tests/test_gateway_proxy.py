@@ -482,7 +482,7 @@ class _FakeClient:
         self.sent_tokens: list[str | None] = []
         self.sent_headers: list[dict] = []
 
-    def stream(self, _method, _url, headers, content):
+    def stream(self, _method, _url, headers, content, extensions=None):
         self.sent_tokens.append(headers.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER))
         self.sent_headers.append(headers)
         return self._responses.pop(0)
@@ -552,6 +552,47 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
+    def test_transport_failure_omits_exception_message_and_returns_502_without_retry(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.delenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, raising=False)
+
+        class FailingClient:
+            calls = 0
+
+            def stream(self, *args, extensions, **kwargs):
+                self.calls += 1
+                error = httpx.ReadTimeout("private-upstream-error")
+                extensions["trace"]("http11.receive_response_headers.failed", {"exception": error})
+                raise error
+
+        client = FailingClient()
+        cache = _FakeCache()
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+
+        logged = capsys.readouterr().err
+        events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
+        assert [event["event"] for event in events] == [
+            "request_start",
+            "upstream_request_start",
+            "upstream_transport",
+            "upstream_request_error",
+        ]
+        transport = events[2]
+        assert transport["phase"] == "http11.receive_response_headers.failed"
+        assert transport["attempt"] == 1
+        assert transport["elapsed_ms"] >= 0
+        assert len({event["request_id"] for event in events}) == 1
+        assert events[-1]["error_type"] == "ReadTimeout"
+        assert "private-upstream-error" not in logged
+        assert bytes(output.data).startswith(b"HTTP/1.0 502 ")
+        assert b"gateway proxy upstream error" in output.data
+        assert b"private-upstream-error" not in output.data
+        assert client.calls == 1
+        assert cache.refreshed == 0
+
     def test_diagnostics_separate_token_preparation_from_upstream_attempts(
         self, monkeypatch, capsys
     ):

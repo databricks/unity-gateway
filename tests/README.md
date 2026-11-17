@@ -303,7 +303,8 @@ skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the pic
 Claude/Codex, skills, MCP restore, Desktop and Cowork are skipped, and an installation in a
 user's home folder is rejected, an agent failure fails the run only after the other agents and MCP setup; `TestPerUserPaths` in `test_managed_files.py` and
 `test_user_profiles_dir` in `test_system_cross_os.py` cover the location check), the `global_flag` tests in `test_agent_claude.py` and `test_agent_codex.py` (only the
-managed file is written; relay, legacy Codex and platforms without one fail), and
+managed file is written, plus Codex's machine-wide model catalog for a static list; relay, legacy
+Codex and platforms without one fail), and
 `test_mcp.py` (no user-scope MCP fallback).
 `TestConfigureSharedStateMcpCleanup::test_explicit_configure_switch_restores_saved_mcp_entries` covers
 a `--global` workspace switch followed by a normal configure of the same workspace; these
@@ -341,13 +342,15 @@ Record-shape assertions live here; missing/unreadable reader behavior is covered
 the CLI tests below. Filesystem failure cases cover directory creation, opening, and locking.
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing and unreadable sessions,
-and `--decision` hit/miss; local component checks only. Four native logs-pane tests cover
-rendering/background refresh, reader errors and recovery including truncated output, missing
-configuration, and launch gating with a fake logs reader. Exact styling and missing-width
-fallback are not asserted; interactive pane and live-session coverage remain absent.
-The refresh case holds a reader pending while foreground/background spawns complete and
-checks that parallel spawns queue a refresh. Ordinary turns, resumed/denied spawns, and
-closed panes do not trigger reads.
+and `--decision` hit/miss; local component checks only. Native logs-pane tests cover rendering and
+launch gating with a fake logs reader, drill-down into preview-only decision details (metadata,
+stale-request handling, Back navigation, detail-load failures and their error envelopes), reader
+errors and recovery including truncated output, missing configuration, and refreshes on turn
+completions and new subagent spawns while the pane is open. Exact styling and missing-width
+fallback are not asserted; interactive pane and live-session coverage remain absent. The refresh
+case holds a reader pending while turn completion/status cleanup and foreground/background spawns
+proceed, and checks that parallel spawns queue one rerun; resumed/denied spawns and closed panes do
+not trigger reads.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -364,7 +367,19 @@ needing every file, an unreadable mod folder, and non-UTF-8 managed settings. It
 headless configure (installing beside an existing managed file, skipping without one, and a
 terminal hint when sudo needs a password), and the Windows install and removal under Program Files. `native_claude/test_mod.py` validates the mod and runs its merge tests
 (`native_claude/header_mod_tests`). Claude re-reading `ANTHROPIC_CUSTOM_HEADERS` per request was
-checked by hand on Claude 2.1.304; no automated test sends a request through the installed mod.
+checked by hand on Claude 2.1.304. The existing organization mod reads the effective language and adds shared context only in routed
+sessions, without rewriting Agent inputs or changing HTTP transport. It preserves other context,
+translation targets, quotations and code identifiers, and follows the assigned task when the
+language setting is absent. Unchanged prompts add no repeated instruction; language changes
+refresh cached child context and the parent's preference. Native tests cover a same-session
+English-to-Chinese settings reload, unchanged-turn deduplication, routing toggles, Chinese,
+unset and excluded user settings, approved foreground/background calls and one denial per mode.
+They require the selected child model, unchanged reviewed inputs and no fallback classifier.
+Language inheritance requires the current UG organization mod installed by `ug configure`
+without `--user` or `UG_SKIP_OS_SETTINGS`. Launches do not elevate or update managed files.
+A missing, outdated or unverified third-party mod produces a routing-launch warning; routing
+continues unchanged.
+These controlled-provider checks establish instruction delivery, not generated-language compliance.
 
 The required Isaac feedback form and background delivery notifications need manual
 validation using the released Isaac skill and existing capture/retry CLI. Check
@@ -474,6 +489,10 @@ The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
+Enabled Codex presets check `x-codex-turn-metadata` on successful parent and child
+inference: the recipe matches the router selector, `/root` has state `on`, and the
+child's `agent_name` ends in `__sr_on`. Both retain the matching legacy recipe
+header and omit the payload field; disabled Codex presets omit routing metadata fields.
 
 Codex startup checks in `test_e2e_cuj_helpers.py` replay the 0.154/0.165 prompt layouts
 and delayed hook review. The driver waits for the model/directory footer before typing;
@@ -566,6 +585,12 @@ cover Desktop token-only stdout, explicit workspace/profile arguments, interacti
 browser recovery, bounded login/lock waits, cancellation, and lock contention.
 Recovery regressions check token recheck before browser login, lock release after
 success/failure, one shared deadline, and network/CLI failures at each recovery stage.
+macOS CLI discovery regressions in `test_databricks.py::TestDatabricksCliResolution`
+cover Homebrew and user-local installs with a Dock-style PATH.
+They preserve existing PATH selection and keep fallback searches macOS-only.
+`test_desktop_auth.py` also checks token fetch through the resolved user-local CLI.
+These component checks control filesystem/version or auth subprocess boundaries;
+they do not establish native Dock launch or live sign-in coverage.
 Proxy bridge coverage checks that OAuth U2M discovery retains an authentication action
 alongside normal tools, without opening a browser. It covers per-request metadata lookup,
 recovery on the next operation after a failed lookup, PAT/non-U2M exclusion, pagination,
@@ -965,6 +990,17 @@ authorization, and one-shot `sudo -n` with disconnected stdin. These are compone
 privileged writes replaced by temporary-file operations, not automated Isaac, real sudo-policy, or
 live telemetry-export coverage.
 
+`TestCodexManagedConfig` in `test_agent_codex.py` covers Codex's machine-wide model catalog: a
+static list writes `/etc/codex/ug-model-catalog.json` and names it in the managed file; dropping the
+list or adding a provider or UC location removes both; a failed catalog write leaves the managed
+file unchanged; revert keeps the catalog while the managed file still names it; and a launch with
+no terminal rewrites a changed or dropped list but leaves a metadata-only change alone. The real
+backup/revert flow also covers a second user dropping or replacing the list, restoring the original
+catalog before its TOML reference, catalog rollback after TOML write/verification failure, failed
+rollback diagnostics, failed-revert retry, and preservation of later catalog edits. Privileged
+writes are replaced by temporary-file operations, so real sudo and Codex reading the catalog are not
+covered here.
+
 `test_configure_managed_writes.py` covers a headless `ug configure` writing Claude's managed
 `apiKeyHelper`, `ANTHROPIC_BASE_URL`, and custom headers (new and existing file) and installing the
 header mod, a headless launch still leaving the file alone, a denied write failing configure with
@@ -1109,6 +1145,9 @@ runs the marked off through Claude, the mod and the real CLI.
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete
 dialog cannot borrow the confirmation footer from a previous dialog.
+Windows cases cover the ConPTY replacement selection marker and both the `-not`
+and `IsNullOrWhiteSpace` checks of the two session environment variables. Extra
+commands, substitutions, other variables, and different conditions remain rejected.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers
@@ -1133,11 +1172,10 @@ managed default), that those launches
 skip the routed launch path (no Smart Router skills or hooks) and the hook-review note, and that
 Claude, routing versions, `--disable-smart-routing`, plain launches, and native subcommands do
 not warn. The live Codex managed-default journey also requires the workspace warning text.
-With `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS=1`, Claude can route through a Model Provider
-Service; Codex, and Claude without the gate, still reject provider launches with routing enabled.
-`test_cli.py` checks the gate in `_launch_options` and that a saved Claude provider fetches its
-provider-scoped catalog for a routed launch. These tests mock dispatch; they do not verify
-catalog delivery to the router or a live routed provider launch.
+Claude smart routing supports Model Provider Services by default; Codex provider launches
+remain unsupported. `test_cli.py` checks Claude's default provider routing and that a saved
+Claude provider fetches its provider-scoped catalog for a routed launch. These tests mock
+dispatch; they do not verify catalog delivery to the router or a live routed provider launch.
 
 The toggle integration journeys retain the legacy routing-only and orchestration cases and
 add the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only
@@ -1614,7 +1652,14 @@ working, backend crash/restart, EOF/reset reconnect diagnostics, local authentic
 idle shutdown, and live login diagnostics with native line endings. Multi-workspace selectors use separate backends, and session headers
 reach authentication worker threads without changing another session's headers.
 Credential resolution is replaced only in the PAT provider component
-check. These tests do not establish live gateway or native Windows coverage.
+check. On Windows, an observer uses the native console and window APIs to verify
+the actual backend has no visible console window, then the client completes a tool call.
+Isolated Python environments run with `pythonw.exe` present and absent. The backend
+keeps `python.exe` and a hidden console so auth subprocesses inherit it. A real external
+bearer command supplies fresh credentials for repeated tool calls and records its
+own console visibility; every observed auth subprocess must also have no visible window.
+The external bearer path also has cross-platform process coverage.
+These tests do not establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
@@ -1641,7 +1686,10 @@ Copilot schema wildcards use UC model-service entries and the existing Copilot c
 which includes Claude, GPT, and supported open models while filtering incompatible APIs.
 Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
 and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
-wire APIs and Claude limits. These checks use controlled discovery responses.
+wire APIs and Claude limits. Provider wildcard checks also cover by-tool catalog selection:
+Claude expands from the Anthropic catalog and Codex from the Codex catalog whatever the
+service's provider type, while other tools keep provider-based selection.
+These checks use controlled discovery responses.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering

@@ -33,6 +33,7 @@ Tests live in `tests/`.
   - Agent configs and launch headers are built from the saved `workspace_id` (`selector_headers`).
   - Add a test beside `tests/test_workspace_selection.py::TestHelperArgv` for each new helper or client.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
+- Every child process inherits `UG_HEADERS`, including an agent started from another agent's session. The gateway records `Databricks-Custom-Coding-Agent` ahead of `User-Agent`, so the root callback drops an inherited one when it launches an agent (bare `ug` or `_AGENT_LAUNCH_COMMANDS` in `cli.py`); helper subcommands such as `mcp-proxy` keep it, since they run under the agent their parent launched. Add a new agent command outside `TOOL_ALIASES` to `_AGENT_LAUNCH_COMMANDS`, or it reports the parent's agent.
 - Add or update focused tests for behavior changes.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Only members/owners may request a run that executes PR code with CI secrets (as in `fork-integration.yml`), after reviewing the changes. Review commands that run no PR code (`ug-review.yml`) may also let GitHub-classified `CONTRIBUTOR`s request their own PR; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
@@ -236,6 +237,23 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 
 </details>
 
+A managed run is `ug configure --global` on a workspace that publishes an agent configuration.
+It doesn't follow the tables above. It runs as root and rebuilds each supported agent's
+machine-wide files from scratch. It reads the agent configuration and the agent's ownership table
+in `src/ucode/ownership/<agent>.toml`, and the code lives in `published_agent_config.py`. To
+support another agent, add its ownership table, its file builder in `published_agent_config.py`,
+and its tests.
+
+- When a change makes ug write, strip, or reserve an agent key, update the matching table entry.
+  Then run `uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md`.
+  Otherwise `tests/test_ownership.py` fails.
+- The run leaves the marker file `/etc/unitygateway/agents-state.json`. While the marker file
+  exists (`managed_files.published_agent_config_used()`), every other run skips the machine-wide
+  files, as `UG_SKIP_OS_SETTINGS` does, and reads the agent configuration that the managed run
+  saved.
+- Without the marker file, a workspace with no agent configuration makes `--global` merge as the
+  tables describe.
+
 Claude Desktop third-party profiles live under `Claude-3p/configLibrary` in
 `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on current Windows releases,
 and `~/.config` on Linux. Windows can initialize the directory before first launch when Claude's registered MSIX package and executable are present. Linux requires Desktop to have opened once.
@@ -347,7 +365,7 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | `model_providers.Databricks` | Merge | Merge | Provider block: name, gateway base URL, wire API, `ug` auth command; other keys left alone. A relayed (ChatGPT subscription) provider sets `requires_openai_auth` instead of the auth command and skips the managed file |
 | `http_headers` | Merge | Merge | In `[model_providers.Databricks]`; merge `ug`'s routing headers by name, admin headers added under managed config. `UG_HEADERS` names not already present are added to the launch's `-c` flags only, never a file. On a host that serves several workspaces, the workspace selector headers are added last |
 | `model_provider`, `model_providers.DatabricksRelay` (app) | Ignore | Ignore | In `~/.codex/config.toml`, only for a relayed (ChatGPT subscription) provider, for Codex desktop, and only by `ug configure` (like Claude Desktop): a loopback relay block with the MPS header served by the login service. Its own name keeps a managed `Databricks` provider from merging into it, and marks it as ug's to replace or remove; a user-defined `model_provider` is left alone |
-| `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list |
+| `model_catalog_json` | Create/replace | Create/replace | In `~/.codex/config.toml`; `ug`'s own catalog reference, for a static model list. On Linux and macOS, without a provider or UC location, the managed file also names `ug`'s root-owned `/etc/codex/ug-model-catalog.json` |
 | `otel.trace_exporter` | Ignore | Create/replace | In `~/.codex/config.toml` when the config enables tracing, for Codex desktop; another exporter and other telemetry settings left alone |
 | `mcp_servers` | Ignore | Merge | Managed file; add/update the config's MCP server entries, other entries left alone. A same-name entry in `~/.codex/config.toml` of the other transport (stdio vs HTTP) is removed, since Codex would merge the two into an invalid entry |
 | Smart Router and Smart Router Orchestrator hooks | Merge | Merge | Launch-only `PreToolUse`, plus `UserPromptSubmit` and compact `SessionStart` with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; Codex combines them with its native hook sources and applies project trust; `features.hooks` is enabled for a smart-routed launch |

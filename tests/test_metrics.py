@@ -523,13 +523,10 @@ def test_detached_handoff_keeps_token_off_argv_and_does_not_wait(
     assert batch["observations"] == [("ug_usage_duration_ms", 10, {"command": "usage"})]
 
 
-@pytest.mark.parametrize("value", [None, "0", "false", "invalid"])
+@pytest.mark.parametrize("value", ["0", "false", "invalid"])
 def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value):
     monkeypatch.setattr(metrics, "_runtime", None)
-    if value is None:
-        monkeypatch.delenv("UG_ENABLE_METRICS_EXPORT", raising=False)
-    else:
-        monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
+    monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
     thread = Mock()
     upload = Mock()
     monkeypatch.setattr(metrics.threading, "Thread", thread)
@@ -548,10 +545,13 @@ def test_export_disabled_creates_no_buffer_thread_or_uploader(monkeypatch, value
     upload.assert_not_called()
 
 
-@pytest.mark.parametrize("value", ["1", "true"])
+@pytest.mark.parametrize("value", [None, "1", "true"])
 def test_export_enabled_collects_and_hands_off_metrics(monkeypatch, reporter_pipe, value):
     monkeypatch.setattr(metrics, "_runtime", None)
-    monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
+    if value is None:
+        monkeypatch.delenv("UG_ENABLE_METRICS_EXPORT", raising=False)
+    else:
+        monkeypatch.setenv("UG_ENABLE_METRICS_EXPORT", value)
     child, reader = reporter_pipe
     spawn = Mock(return_value=child)
     monkeypatch.setattr(exporter, "start_exporter", spawn)
