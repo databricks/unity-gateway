@@ -827,6 +827,10 @@ class TestSubcommandRouting:
             (["-c", "developer_instructions=x", "--", "fix the parser"], True),
             (["-c", "developer_instructions=x", "--", "-c", "model=y"], True),
             (["-c", "developer_instructions=x", "exec", "fix the parser"], False),
+            (
+                ["-c", "developer_instructions=x", "--", "app-server", "--listen", "ws://h:1"],
+                True,
+            ),
         ],
     )
     def test_codex_config_overrides_keep_inherited_smart_routing(
@@ -944,7 +948,6 @@ class TestSubcommandRouting:
             (["-c", "developer_instructions=x", "fix this"], True, True),
             (["-c", "developer_instructions=x", "fix this"], False, False),
             (["-c", "developer_instructions=x", "exec", "fix this"], False, False),
-            (["-c", "a=1", "app-server", "--listen", "ws://127.0.0.1:1"], False, False),
         ],
     )
     def test_codex_config_overrides_do_not_change_the_launch_shape(
@@ -955,6 +958,26 @@ class TestSubcommandRouting:
             tool_args,
             smart_routing_enabled=True,
             explicit_prompt=explicit_prompt,
+            user_pinned_model=None,
+            provider=None,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (["-c", "a=1", "app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (["app-server", "generate-ts", "--out", "ts"], False),
+        ],
+    )
+    def test_codex_app_server_launch_routes(self, tool_args, expected):
+        options = cli_mod._launch_options(
+            "codex",
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
             user_pinned_model=None,
             provider=None,
         )

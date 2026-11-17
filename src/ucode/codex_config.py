@@ -189,3 +189,9 @@ def split_codex_config_overrides(tool_args: list[str]) -> tuple[list[str], list[
         else:
             rest.append(arg)
     return overrides, rest
+
+
+def is_codex_app_server_launch(tool_args: list[str]) -> bool:
+    """Whether the arguments run Codex's app-server itself, not one of its subcommands."""
+    _, rest = split_codex_config_overrides(tool_args)
+    return rest[:1] == ["app-server"] and (len(rest) == 1 or rest[1].startswith("-"))

@@ -422,6 +422,57 @@ class TestLaunchCodex:
         assert stopped == [True]
         assert processes[0].terminated is True
 
+    def test_app_server_launch_runs_the_given_command_with_routing_settings(self, monkeypatch):
+        launches = []
+        monkeypatch.setattr(codex, "ug_version", lambda: "0.1.0")
+        monkeypatch.setattr(codex, "agent_version", lambda binary: "0.148.0")
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setattr(
+            v2.subprocess, "Popen", lambda *_args, **_kw: pytest.fail("started another process")
+        )
+
+        def hand_off(argv):
+            launches.append(argv)
+            raise SystemExit(0)
+
+        monkeypatch.setattr(v2, "exec_or_spawn", hand_off)
+        app_server_args = [
+            "-c",
+            'model="gpt-5-5"',
+            "app-server",
+            "--listen",
+            "ws://127.0.0.1:4310",
+        ]
+
+        with pytest.raises(SystemExit):
+            v2.launch_codex(
+                {"workspace": WS, "profile": "myprof", "codex_models": ["system.ai.gpt-5-6-sol"]},
+                app_server_args,
+                binary="codex",
+                start_model="gpt-start",
+                render_overlay=codex.render_overlay,
+            )
+
+        [argv] = launches
+        assert argv[0] == "codex"
+        assert argv[-len(app_server_args) :] == app_server_args
+        routing_args = argv[1 : -len(app_server_args)]
+        assert set(routing_args[0::2]) == {"--config"}
+        config = tomllib.loads("\n".join(routing_args[1::2]))
+        assert "model" not in config
+        assert config["model_provider"] == "Databricks"
+        assert config["features"]["hooks"] is True
+        [spawn_hook] = config["hooks"]["PreToolUse"]
+        assert "codex-router-hook route-subagent" in spawn_hook["hooks"][0]["command"]
+        assert config["responses_api_metadata"]["smart_router_recipe_name"] == (
+            v2.routing.configured_router_name()
+        )
+        assert config["shell_environment_policy"]["set"] == {
+            "UCODE_SESSION_ENV_FILE": os.environ["UCODE_SESSION_ENV_FILE"],
+            "UCODE_SMART_ROUTER_PYTHON": os.environ["UCODE_SMART_ROUTER_PYTHON"],
+        }
+        assert os.environ[v2.OAUTH_TOKEN_ENV_VAR] == "token"
+
     def test_managed_http_headers_reach_app_server_config(self, monkeypatch):
         # Smart routing rebuilds the overlay and passes it to the app-server as `-c` overrides that
         # replace the whole provider block, so the admin headers must be threaded through here too —

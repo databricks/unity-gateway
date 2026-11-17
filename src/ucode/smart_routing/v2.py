@@ -22,6 +22,7 @@ from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
     custom_catalog_path,
+    is_codex_app_server_launch,
     split_codex_config_overrides,
 )
 from ucode.config_io import (
@@ -48,6 +49,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.launcher import exec_or_spawn
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -887,6 +889,7 @@ def launch_codex(
     start_model: str | None,
     render_overlay: Callable[..., dict],
 ) -> NoReturn:
+    app_server_launch = is_codex_app_server_launch(tool_args)
     workspace = state.get("workspace")
     if not workspace:
         raise RuntimeError(
@@ -908,7 +911,7 @@ def launch_codex(
     custom_oauth = state.get("custom_oauth")
     overlay = render_overlay(
         workspace,
-        start_model,
+        None if app_server_launch else start_model,
         state.get("profile"),
         use_pat=bool(state.get("use_pat")),
         custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
@@ -937,6 +940,9 @@ def launch_codex(
         SESSION_PYTHON_ENV_VAR
     ]
     config_args = codex_config_args(overlay)
+    if app_server_launch:
+        # The caller owns this app-server's address, model and clients, so run its command as is.
+        exec_or_spawn([binary, *config_args, *tool_args])
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
     app_server_url = _loopback_websocket_url(app_port)
