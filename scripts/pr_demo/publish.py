@@ -9,6 +9,10 @@ adds the `pr-demo-recorded` label. Publishing also removes any stale
 `no-pr-demo-needed` label. `--dry-run` prints the new PR body block without
 any network write.
 
+A failed asset upload changes nothing on the pull request: the previous demo
+body block, the skip rationale line, and both labels are preserved, and the
+command exits with an error after printing manual upload instructions.
+
 Every skip path also updates the PR body: it carries exactly one plain
 `NO_PR_DEMO_NEEDED_RATIONALE=<rationale>` line (top-level, outside any code
 fence) plus the `no-pr-demo-needed` label. `--mark-no-demo-needed` without
@@ -343,7 +347,7 @@ def publish_assets(out_dir: Path, head_sha: str, pr: int, repo_slug: str, *, dry
             "--title",
             "pr-demo assets",
             "--notes",
-            "Auto-managed by scripts/pr_demo; assets are for open PRs and are deleted when PRs close.",
+            "Auto-managed by scripts/pr_demo; assets are kept after PRs close or merge so demos stay viewable.",
             "--target",
             "main",
             *repo_args,
@@ -636,7 +640,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         publish_assets(out_dir, head_sha, pr, repo_slug, dry_run=False)
-        uploaded = True
     except (
         subprocess.CalledProcessError,
         OSError,
@@ -645,10 +648,15 @@ def main(argv: list[str] | None = None) -> int:
         KeyError,
         TypeError,
     ) as error:
-        uploaded = False
         print(manual_upload_instructions(pr, head_sha, out_dir, repo_slug), file=sys.stderr)
         detail = error.stderr if isinstance(error, subprocess.CalledProcessError) else str(error)
         print(f"release upload failed: {detail}", file=sys.stderr)
+        print(
+            "The PR body block, rationale line, and labels are unchanged; "
+            "publish again once the assets are uploaded.",
+            file=sys.stderr,
+        )
+        return 1
 
     current_body = json.loads(gh("pr", "view", str(pr), "--json", "body").stdout)["body"]
     new_body = apply_pr_block(current_body, block)
@@ -672,9 +680,8 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
     remove_label(pr, NO_DEMO_LABEL)
-    status = "published" if uploaded else "pending manual upload"
-    print(f"{status}: {asset_url(repo_slug, pr, head_sha[:7], 'before.gif')}")
-    print(f"{status}: {asset_url(repo_slug, pr, head_sha[:7], 'after.gif')}")
+    print(f"published: {asset_url(repo_slug, pr, head_sha[:7], 'before.gif')}")
+    print(f"published: {asset_url(repo_slug, pr, head_sha[:7], 'after.gif')}")
     print(f"PR #{pr} body updated and labeled {LABEL} (when the label exists)")
     return 0
 

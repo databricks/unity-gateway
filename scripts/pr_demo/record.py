@@ -694,6 +694,24 @@ def check_commands_for_secrets(commands: list[str], *, redact_host: bool) -> Non
             )
 
 
+def resolve_out_dir(out_path: str) -> Path:
+    """Reject an output directory inside the checkout; return it resolved.
+
+    Symlinks are resolved before the comparison, so a link pointing into the
+    checkout is rejected too. The check runs before the output directory is
+    created or any virtualenv is installed, keeping generated demo evidence out
+    of later commits.
+    """
+    out_dir = Path(out_path).expanduser().resolve()
+    if out_dir == REPO_ROOT or out_dir.is_relative_to(REPO_ROOT):
+        raise SystemExit(
+            f"output directory {out_dir} is inside the checkout ({REPO_ROOT}); "
+            "generated demo evidence must not be committed. "
+            "Pass a directory outside the repository."
+        )
+    return out_dir
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--command", action="append", help="a shell command to record; repeatable")
@@ -701,7 +719,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base", help="BEFORE ref (default: merge-base origin/main HEAD)")
     parser.add_argument("--head", help="AFTER ref (default: HEAD)")
     parser.add_argument(
-        "--out", help="output directory (default: a new temporary directory outside the checkout)"
+        "--out",
+        help="output directory outside the checkout (default: a new temporary directory)",
     )
     parser.add_argument(
         "--workspace",
@@ -739,9 +758,7 @@ def main(argv: list[str] | None = None) -> int:
         warn(note)
 
     if args.out:
-        out_dir = Path(args.out).resolve()
-        if out_dir.is_relative_to(REPO_ROOT):
-            warn(f"output directory {out_dir} is inside the checkout and may be committed")
+        out_dir = resolve_out_dir(args.out)
         out_dir.mkdir(parents=True, exist_ok=True)
     else:
         temp_root = Path(tempfile.gettempdir()).resolve()

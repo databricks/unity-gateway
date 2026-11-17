@@ -9,7 +9,7 @@ Record the same `ug` commands against the merge-base with `origin/main` (BEFORE)
 and the PR head (AFTER), show both gifs in the PR description, and label the PR
 `pr-demo-recorded`. The built-in recorder uses a pty, pyte, and Pillow, with
 per-commit virtualenvs and a sandboxed HOME. Images are public release assets in
-`databricks/unity-gateway`. Cleanup deletes them after the PR closes; the text
+`databricks/unity-gateway` and are kept after the PR merges or closes; the text
 diff stays in the PR body.
 
 ## Live demo requirement
@@ -146,8 +146,10 @@ ROOT=$(git rev-parse --show-toplevel)
 
 ## Failure handling
 
-- If release upload fails, publish.py prints manual upload instructions and still
-  updates the PR body and label; pass those instructions on to the developer.
+- If release upload fails, publish.py prints manual upload instructions and exits
+  with an error, leaving the previous demo body block, rationale line, and labels
+  unchanged; pass those instructions on to the developer and publish again once
+  the assets are uploaded.
 - If adding the label fails, tell the developer a maintainer should run
   `gh label create pr-demo-recorded` once.
 - The label is informational and is not removed on new pushes. Re-running
