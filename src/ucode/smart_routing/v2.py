@@ -58,7 +58,7 @@ from ucode.skills import (
     install_skill,
     uninstall_agent_skill,
 )
-from ucode.smart_routing import claude_routing, orchestrator, routing, session_log
+from ucode.smart_routing import claude_routing, codex_statusline, orchestrator, routing, session_log
 from ucode.smart_routing.claude_hooks import (
     FIRST_PROMPT_SOCKET_ENV,
     ROUTE_SUBAGENT_MOD_EVENT,
@@ -885,6 +885,7 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    codex_version: str = "unknown",
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -935,6 +936,8 @@ def launch_codex(
     overlay[f"shell_environment_policy.set.{SESSION_PYTHON_ENV_VAR}"] = os.environ[
         SESSION_PYTHON_ENV_VAR
     ]
+    statusline_config = codex_statusline.launch_config(codex_version, session_env_path)
+    config_io.deep_merge_dict(overlay, statusline_config)
     config_args = codex_config_args(overlay)
     first_prompt = first_prompt_routing_enabled(agent=AGENT_CODEX)
     app_port = _free_port()
@@ -981,7 +984,18 @@ def launch_codex(
                 }
             )
         tui = subprocess_cross_os.popen(
-            [binary, *provider_args, "--remote", tui_url, "--model", start_model, *tool_args]
+            [
+                binary,
+                *provider_args,
+                *codex_config_args(
+                    {key: value for key, value in statusline_config.items() if key != "mcp_servers"}
+                ),
+                "--remote",
+                tui_url,
+                "--model",
+                start_model,
+                *tool_args,
+            ]
         )
         try:
             returncode = tui.wait()

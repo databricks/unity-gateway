@@ -1,5 +1,13 @@
 # Integration tests
 
+The experimental Codex footer has offline protocol, process-isolation, and launcher
+coverage in `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`.
+The stable CI baseline does not exercise this new renderer. Test it with pinned
+Codex `0.171.0-alpha.12` using the
+[footer validation steps](../../docs/codex-smart-router-statusline.md). A native
+footer or resource read alone does not establish gateway inference or routed-child
+coverage. Keep the stable rollout gated on validation of the actual stable build.
+
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not

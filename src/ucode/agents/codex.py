@@ -2108,6 +2108,7 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
+        codex_version=agent_version(binary),
     )
 
 

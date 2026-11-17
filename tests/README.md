@@ -1,5 +1,15 @@
 # Test suites and user journeys
 
+`test_codex_statusline.py` covers the experimental footer's version boundary,
+live control-file reads, ON/OFF/UNKNOWN recovery, per-thread display inputs, MCP
+advertisement and protocol errors, and isolation between two real stdio provider
+processes. `test_codex_smart_routing_v2.py` checks that both POSIX and Windows
+launches wire the provider into the app-server and its selection into the terminal,
+with first-prompt routing on or off. Stable 0.169.0 and alpha.11 receive no new
+fields. These are offline component checks; native alpha UI and credentialed
+gateway validation are separate, as described in the
+[validation guide](../docs/codex-smart-router-statusline.md).
+
 `test_security_scan_request.py` verifies the default-branch Security Scan's request
 validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
 This prerequisite installs the producer and reusable consumer without making existing CI
