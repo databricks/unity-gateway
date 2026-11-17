@@ -1,5 +1,21 @@
 # Test suites and user journeys
 
+Auto main-model confirmation regressions in `native_claude/mod_tests/auto-static.test.ts`
+require a transcript notice naming the saved model after Enter, including repeated picks,
+delayed native confirmations, and nonstatic alias acceptance. Cancellation emits no save
+notice. A manual Claude 2.1.325 TUI check verified the notice in normal mode; these component
+tests do not establish gateway inference coverage.
+
+The Auto chooser uses the compact native question modal. Component cases cover model
+selection, cancellation, pagination, invalid typed answers with a visible retry message,
+stale answers, and unchanged native effort output.
+The chooser neither renders effort controls nor runs effort commands.
+
+Static Auto cache-warning cases compare the held main model when entering Auto and ask
+before saving a different model with existing context. They cover unchanged models,
+fresh sessions, inactive preference edits, cancellation, stale answers, and other hooks'
+blocks and confirmation requests. These component checks do not measure cache hits or cost.
+
 Claude Auto's existing CUJ 4 selector journey verifies the managed default, manual
 OFF and Auto ON transitions, and completed inference on the newly selected main model.
 It retains the configured managed picker, aliases and allowlist, and requires the

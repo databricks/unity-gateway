@@ -2071,6 +2071,22 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
+Auto main-model confirmation component tests (`../native_claude/mod_tests/auto-static.test.ts`)
+check the saved-model transcript notice, repeated picks, delayed native confirmations,
+nonstatic alias acceptance, and cancellation without a save notice. Manual native TUI
+verification on Claude 2.1.325 covered normal-mode visibility. This is not an authenticated
+gateway inference check or an automated integration journey.
+
+The Auto chooser's native component tests cover compact modal selection, cancellation,
+pagination, invalid typed answers with a visible retry message, stale answers, and
+preservation of native effort output. The chooser has no
+effort controls or internal effort commands.
+
+The same component suite covers static Auto cache warnings at the final main-model choice,
+including unchanged models, fresh sessions, inactive preference edits, cancellation, stale
+answers, and preserved hook decisions. Native TUI checks use a controlled local response
+fixture to populate token accounting; they do not establish gateway cache hits or cost.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.

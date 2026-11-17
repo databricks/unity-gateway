@@ -18,17 +18,10 @@ import { mergeExtraBody } from './extra-body.ts';
 import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedback } from './isaac-feedback.ts';
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
-import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
-import { AUTO_KEPT_PREFIX, AUTO_MAIN_DESCRIPTION, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_PREFIX, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoStatus, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
-const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
-const EFFORT_COMMAND_ECHO = /^<command-name>\/effort<\/command-name>/;
-const COMMAND_OUTPUT = /^<local-command-std(?:out|err)>/;
-// Native 2.1.325 draws no user row that carries a local-command caveat; the
-// mod's own /effort reads and saves are not the person's commands.
-const HIDDEN_COMMAND_ROW = '<local-command-caveat>ug-smart-router ran /effort internally for the Auto chooser; this is not the user\'s command.</local-command-caveat>';
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
 function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
@@ -88,30 +81,6 @@ async function initStaticVariant($: EngineInterface, auto: AutoPicker): Promise<
   if (auto.variant) return;
   const saved = auto.preferSaved ? await $.store.get(auto.storeKey) : undefined;
   auto.variant = auto.models.find(row => row.model === saved)?.model ?? auto.mainModel;
-}
-
-type AutoPickerState = {model?: string; drafts: Record<string,string>; native: Record<string,string | undefined>};
-
-async function openMainModel($: EngineInterface): Promise<boolean> {
-  const opened = await $.ui.open({ id: 'auto-main', title: AUTO_MAIN_TITLE, focus: true, closeOnEscape: true, rows: 18 });
-  $.ui.invalidate('ui.render');
-  return opened.isPlaced;
-}
-
-async function chooseMainModel($: EngineInterface, auto: AutoPicker, state: AutoPickerState, queryEffort = true): Promise<boolean> {
-  state.model = await mainModel($, auto);
-  state.drafts = {};
-  // Native commands cannot run inside another command.run hook. Query after
-  // that command releases the turn, then refresh the inline controls.
-  if (queryEffort) $.clock.after(0, async () => {
-    if (!await autoSelected($, auto)) return;
-    const model = await selectedModel($, auto);
-    if (state.native[model]) return;
-    const status = await $.command.run({command:'effort', args:'status'});
-    if (status.text) state.native[model] = status.text;
-    $.ui.invalidate('ui.render');
-  });
-  return openMainModel($);
 }
 
 type RoutingSyncState = {model?: string; failedModel?: string};
@@ -273,7 +242,9 @@ async function runInternalModel($: EngineInterface, internalModels: string[], mo
 export function register(on: On, options: PluginOptions): void {
   const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   const routingSync: RoutingSyncState = {};
-  let choosing = false;
+  let pendingChooser: object | undefined;
+  let reopenChooser: (() => void) | undefined;
+  let awaitingModelChoice = false;
   let switchingAuto = false;
   const internalModels: string[] = [];
   let sessionActive = true;
@@ -282,9 +253,6 @@ export function register(on: On, options: PluginOptions): void {
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
   // The main model a public /model command enters the static Auto row with.
   let staticEntry: string | undefined;
-  const pickerState: AutoPickerState = {drafts:{}, native:{}};
-  // The mod's own /effort echo was hidden; its output row follows.
-  let hideEffortOutput = false;
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
@@ -312,6 +280,8 @@ export function register(on: On, options: PluginOptions): void {
 
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, ($, e, next) => {
     sessionActive = false;
+    pendingChooser = undefined;
+    awaitingModelChoice = false;
     manualOffRequest = undefined;
     clearAutoSave();
     internalModels.length = 0;
@@ -343,6 +313,8 @@ export function register(on: On, options: PluginOptions): void {
     });
     on('session.append', {door:'prompt'}, ($, e, next) => {
       if (!e.agentId && !e.message.isMeta) {
+        pendingChooser = undefined;
+        awaitingModelChoice = false;
         manualOffRequest = undefined;
         clearAutoSave();
       }
@@ -355,105 +327,22 @@ export function register(on: On, options: PluginOptions): void {
       if (resolveAutoModel(auto, e.requested_model) !== to || !auto.models.some(row => row.autoModel === to)) return result;
       const settings = await $.settings.read();
       const usage = await $.session.usage();
-      return sameAutoTarget(auto, e.from_model, e.to_model, settings.modelOverrides, usage.context?.window)
+      const target = isStaticAuto(auto, to)
+        ? auto.models.find(row => row.model === (staticEntry ?? auto.variant))?.autoModel ?? to
+        : to;
+      return sameAutoTarget(auto, e.from_model, target, settings.modelOverrides, usage.context?.window)
         ? {...result, permissionDecision:'allow'} : result;
     });
-    on('command.run', { command: 'model' }, async ($, e, next) => {
-      const internalCommand = internalModels.includes(e.args)
-        && (switchingAuto || (e.origin?.kind === 'plugin' && e.origin.name === 'ug-smart-router'));
-      let entry: string | undefined;
-      if (!internalCommand) {
-        manualOffRequest = undefined;
-        clearAutoSave();
-        entry = await entryMainModel($, auto);
-        staticEntry = entry;
-        await customAutoRow($, auto, entry);
-      }
-      let command = e;
-      publicAutoEcho = undefined;
-      if (e.args.trim().toLowerCase() === 'auto') {
-        const model = entry ?? await entryMainModel($, auto);
-        command = { ...e, args: auto.staticModel ?? auto.models.find((row) => row.model === model)!.autoModel };
-        publicAutoEcho = { model: command.args, args: e.args, origin: e.origin };
-      }
-      let result;
-      try {
-        result = await next(command);
-      } catch (error) {
-        publicAutoEcho = undefined;
-        throw error;
-      }
-      if (internalCommand) return result;
-      if (!e.args.trim() && typeof result.ref === 'number') {
-        // The panel returns before the person picks a row. Its confirmation opens
-        // the chooser only for Auto, after the picker closes and without the person's
-        // command context, which narrow terminals require to place the pane. Opening
-        // and closing it here records that context without showing the pane.
-        await $.ui.open({id:'auto-main', title:AUTO_MAIN_TITLE});
-        await $.ui.close({id:'auto-main'});
-      } else if (e.args.trim() && await autoSelected($, auto)) {
-        // Direct /model auto. Never reopen after a manual-model confirmation closed it.
-        await chooseMainModel($, auto, pickerState, false);
-      }
-      return result;
-    });
-    on('command.run', {command:'effort'}, async ($, e, next) => {
-      const result = await next(e);
-      if (result.text) pickerState.native[await selectedModel($, auto)] = result.text;
-      $.ui.invalidate('ui.render');
-      return result;
-    });
-    on('ui.focus', {requestId:'auto-main'}, async ($, e, next) => {
-      const row = auto.models.find((_, index) => e.element === 'auto-main-model-' + index);
-      if (row && pickerState.model !== row.model) {
-        pickerState.model = row.model;
-        $.ui.invalidate('ui.render');
-      }
-      return next(e);
-    });
-    on('ui.scroll', {requestId:'auto-main'}, async ($, e, next) => {
-      // Overflow makes the native pane consume arrows as one-row scrolls.
-      // Keep those keys on the model list; wheel and page scrolling stay native.
-      if (feedback.paneId === 'auto-main') return next(e);
-      if (e.origin.kind !== 'person' || e.pointer || Math.abs(e.by) !== 1) return next(e);
-      const current = Math.max(0, auto.models.findIndex(row => row.model === pickerState.model));
-      const index = Math.max(0, Math.min(auto.models.length - 1, current + e.by));
-      const key = 'auto-main-model-' + index;
-      const focused = await $.ui.focus({requestId:'auto-main', key});
-      if (focused.deny) return next(e);
-      await $.ui.scroll({in:'auto-main', to:{key}, block:'nearest'});
-      return {};
-    });
-    on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-      if (e.requestId !== 'auto-main' || feedback.paneId === 'auto-main') return next(e);
-      const { Box, Text, Button } = $.ui.resolve(e);
-      const layers = await Promise.all([
-        $.settings.read({source:'user'}), $.settings.read({source:'project'}),
-        $.settings.read({source:'local'}), $.settings.read({source:'flag'}), $.settings.read({source:'policy'}),
-      ]);
-      const environment = await $.env.get('CLAUDE_CODE_EFFORT_LEVEL');
-      const active = await autoSelected($, auto);
-      const model = pickerState.model ?? await mainModel($, auto);
-      const row = auto.models.find(row => row.model === model) ?? auto.models[0];
-      // Native effort follows the selected model: the static row for every main model.
-      const effortModel = auto.staticModel ?? row.autoModel;
-      const profile = effortProfile(effortModel, layers, environment, pickerState.native[effortModel]);
-      const effort = pickerState.drafts[row.model] ?? profile.level;
-      const editable = active && profile.levels.length > 0 && !profile.locked;
-      const adjust = (delta: number) => {
-        if (!editable) return;
-        const index = Math.max(0, Math.min(profile.levels.length - 1, profile.levels.indexOf(effort) + delta));
-        pickerState.drafts[row.model] = profile.levels[index];
-        $.ui.invalidate('ui.render');
-      };
-      const save = async (selected: AutoPicker['models'][number]) => {
+    on('command.run', { command: ['model', 'auto'] }, async ($, e, next) => {
+      const save = async (selected: AutoPicker['models'][number], chooserRequest: object) => {
         if (autoSave) return;
         manualOffRequest = undefined;
-        const draft = pickerState.drafts[selected.model];
         const active = await autoSelected($, auto);
         if (autoSave) return;
         const baseline = await selectedModel($, auto);
-        const previousMain = await mainModel($, auto);
+        const previousMain = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
+        if (pendingChooser !== chooserRequest || !sessionActive) return;
+        pendingChooser = undefined;
         pendingSelection?.cancel();
         const request: AutoSaveRequest = {
           model: selected.autoModel, baseline, phase:'running',
@@ -463,7 +352,7 @@ export function register(on: On, options: PluginOptions): void {
               await customAutoRow($, auto, await entryMainModel($, auto));
               if (autoSave === request) {
                 clearAutoSave();
-                await openMainModel($);
+                scheduleChooser();
               }
               return;
             }
@@ -473,35 +362,27 @@ export function register(on: On, options: PluginOptions): void {
                 throw new Error('Claude did not accept the selected main model.');
               }
               if (autoSave !== request) return;
-              if (active && typeof draft === 'string' && EFFORT_LEVELS.includes(draft)) {
-                const result = await $.command.run({command:'effort', args:draft});
-                if (autoSave !== request) return;
-                if (result.text && /failed|not supported|invalid|not available/i.test(result.text)) throw new Error(result.text);
-                if (result.text) pickerState.native[auto.staticModel ?? selected.autoModel] = result.text;
-              }
               await customAutoRow($, auto, selected.model);
               if (autoSave !== request) return;
               if (auto.staticModel) {
                 auto.variant = selected.model;
                 // A native confirmation still pending from the /model that opened
-                // this pane must not restore the main model it started from.
+                // this chooser must not restore the main model it started from.
                 staticEntry = undefined;
               }
               await $.store.set(auto.storeKey, selected.model);
               if (autoSave !== request) return;
               await syncAutoRouting($, options, auto, routingSync);
               if (autoSave !== request) return;
-              await $.ui.close({ id: 'auto-main' });
               $.ui.invalidate('ui.render');
-              // Static saves switch no native model; the prompt hint row names the new one.
-              if (!auto.staticModel) $.ui.toast(`Auto (${selected.label}) saved`);
+              $.ui.log(autoStatus(selected.model));
             } catch (error) {
               if (autoSave !== request) return;
               if (auto.staticModel) auto.variant = previousMain;
               if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
               if (autoSave !== request) return;
-              await openMainModel($);
-              $.ui.toast(`Could not save Auto: ${String(error)}. Check /model and /effort, then retry.`);
+              scheduleChooser();
+              $.ui.toast(`Could not save Auto: ${String(error)}. Check /model, then retry.`);
               $.ui.invalidate('ui.render');
             } finally {
               if (autoSave === request) {
@@ -515,6 +396,22 @@ export function register(on: On, options: PluginOptions): void {
         const run = async () => {
           if (autoSave !== request) return;
           try {
+            if (active && auto.staticModel && selected.model !== previousMain) {
+              const usage = await $.session.usage();
+              if (autoSave !== request) return;
+              if ((usage.context?.tokens ?? 0) > 0) {
+                const answer = await $.ui.ask(
+                  `Switch the main model to ${selected.label}? The new model will re-read the full conversation, which may use more tokens.`,
+                  {header:'Switch model', options:['Yes, switch model', 'No, go back']},
+                ).catch(() => undefined);
+                if (autoSave !== request) return;
+                if (answer !== 'Yes, switch model') {
+                  request.confirmation = 'cancelled';
+                  await request.finish();
+                  return;
+                }
+              }
+            }
             // The static row stays selected; only the main model it stands for changes.
             if (active && !auto.staticModel && selected.autoModel !== baseline) {
               // Native /model validates only the current custom option without discovery.
@@ -536,73 +433,109 @@ export function register(on: On, options: PluginOptions): void {
             if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
             if (autoSave !== request) return;
             clearAutoSave();
-            await openMainModel($);
-            $.ui.toast(`Could not save Auto: ${String(error)}. Check /model and /effort, then retry.`);
+            scheduleChooser();
+            $.ui.toast(`Could not save Auto: ${String(error)}. Check /model, then retry.`);
             $.ui.invalidate('ui.render');
           }
         };
-        if (active) {
-          await $.ui.close({id:'auto-main'});
-          if (autoSave === request) pendingSelection = $.clock.after(0, run);
-        } else {
-          await run();
-        }
+        await run();
       };
-      const symbols: Record<string,string> = {low:'○',medium:'◐',high:'●',xhigh:'◉',max:'✦',auto:'○'};
-      const hint = !active ? 'Select Auto in /model to adjust effort'
-        : !profile.levels.length ? `Effort not supported for ${row.label}`
-        : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!pickerState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
-      return Box({ flexDirection: 'column', children: [
-        Text({ bold: true, children: [AUTO_MAIN_TITLE] }),
-        Text({ dimColor: true, children: [AUTO_MAIN_DESCRIPTION] }),
-        Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
-          Button({key:'auto-main-model-' + index,
-            plain:true, autoFocus:item.model === model ? true : undefined,
-            label:`${item.model === model ? '❯' : ' '} ${item.label}`, onPress:() => save(item)}))}),
-        Box({flexDirection:'row', marginY:1, children:[
-          Text({children:[hint, ...(editable ? [
-            Text({dimColor:true,children:[' · h/l to adjust effort']}),
-          ] : [])]}),
-          ...(editable ? [
-            // Keep pane shortcuts mounted without Claude's automatic button captions.
-            Box({width:0,height:0,overflow:'hidden',children:[
-              Button({key:'auto-effort-less',plain:true,hotkey:'h',label:'Lower effort',onPress:() => adjust(-1)}),
-              Button({key:'auto-effort-more',plain:true,hotkey:'l',label:'Raise effort',onPress:() => adjust(1)}),
-            ]}),
-          ] : []),
-        ]}),
-        Text({dimColor:true,children:['Enter to save · Esc to cancel']}),
-      ] });
+
+      function scheduleChooser(): void {
+        if (pendingChooser || !sessionActive) return;
+        const request = {};
+        pendingChooser = request;
+        pendingSelection?.cancel();
+        pendingSelection = $.clock.after(0, async () => {
+          const baseline = await selectedModel($, auto);
+          const current = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
+          const rows = [...auto.models.filter(row => row.model === current), ...auto.models.filter(row => row.model !== current)];
+          const labels = rows.map(row => rows.filter(other => other.label === row.label).length > 1 || ['More models', 'Cancel'].includes(row.label)
+            ? `${row.label} (${row.model})` : row.label);
+          const pageSize = rows.length > 4 ? 3 : 4;
+          let offset = 0;
+          let question = AUTO_MAIN_TITLE;
+          try {
+            while (pendingChooser === request && sessionActive) {
+              const choices = labels.slice(offset, offset + pageSize);
+              if (rows.length > 4) choices.push('More models');
+              if (choices.length === 1) choices.push('Cancel');
+              const answer = await $.ui.ask(question, {header:'Main model', options:choices}).catch(() => undefined);
+              if (pendingChooser !== request || !sessionActive || await selectedModel($, auto) !== baseline) return;
+              if (answer === undefined || answer === 'Cancel') return;
+              if (answer === 'More models' && rows.length > 4) {
+                offset = offset + pageSize >= rows.length ? 0 : offset + pageSize;
+                question = AUTO_MAIN_TITLE;
+                continue;
+              }
+              const index = choices.indexOf(answer);
+              if (index < 0) {
+                question = `${AUTO_MAIN_TITLE}\n\nInvalid model. Choose a model from the list.`;
+                continue;
+              }
+              const selected = rows[offset + index];
+              await save(selected, request);
+              return;
+            }
+          } finally {
+            if (pendingChooser === request) pendingChooser = undefined;
+          }
+        });
+      }
+      reopenChooser = scheduleChooser;
+      if (e.command === 'auto') {
+        if (pendingChooser) return {};
+        clearAutoSave();
+        scheduleChooser();
+        return {};
+      }
+      const internalCommand = internalModels.includes(e.args)
+        && (switchingAuto || (e.origin?.kind === 'plugin' && e.origin.name === 'ug-smart-router'));
+      let entry: string | undefined;
+      if (!internalCommand) {
+        pendingChooser = undefined;
+        manualOffRequest = undefined;
+        clearAutoSave();
+        awaitingModelChoice = true;
+        entry = await entryMainModel($, auto);
+        staticEntry = entry;
+        await customAutoRow($, auto, entry);
+      }
+      let command = e;
+      publicAutoEcho = undefined;
+      if (e.args.trim().toLowerCase() === 'auto') {
+        const model = entry ?? await entryMainModel($, auto);
+        command = { ...e, args: auto.staticModel ?? auto.models.find((row) => row.model === model)!.autoModel };
+        publicAutoEcho = { model: command.args, args: e.args, origin: e.origin };
+      }
+      let result;
+      try {
+        result = await next(command);
+      } catch (error) {
+        publicAutoEcho = undefined;
+        throw error;
+      }
+      if (internalCommand) return result;
+      if (!e.args.trim() && typeof result.ref === 'number' && envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) {
+        await $.ui.open({id:'auto-main', title:'Smart Router feedback'});
+        await $.ui.close({id:'auto-main'});
+      }
+      if (e.args.trim().toLowerCase() === 'auto' && awaitingModelChoice && await autoSelected($, auto)) {
+        awaitingModelChoice = false;
+        scheduleChooser();
+      }
+      return result;
     });
     on('command.describe', { command: ['auto', 'smart-router', 'smart-router-orchestrator'] }, ($, e, next) =>
       next({ ...e, isHidden: true }));
     on('skill.prompt', { skill: ['smart-router', 'smart-router-orchestrator'] }, () =>
       ({ text: 'Routing is controlled only by the user selecting Auto in /model. Do not change routing controls through a skill.' }));
-    on('command.run', { command: 'auto' }, async ($) => {
-      if (choosing) return {};
-      clearAutoSave();
-      choosing = true;
-      try {
-        await chooseMainModel($, auto, pickerState);
-      } finally {
-        choosing = false;
-      }
-      return {};
-    });
     // The native confirmation also fires when Auto was already selected. A model
     // change hook alone misses that first-use/reselection case. Defer the next
     // native question until the model picker has closed; never self-dispatch /auto.
     on('session.append', { door: 'command' }, async ($, e, next) => {
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
-      // The chooser reads and saves effort through native /effort. Those rows are
-      // the mod's, not the person's: keep them in the transcript but draw nothing.
-      const ownCommand = e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router';
-      const effortEcho = ownCommand && EFFORT_COMMAND_ECHO.test(text);
-      const effortOutput = ownCommand && hideEffortOutput && COMMAND_OUTPUT.test(text);
-      if (effortEcho || effortOutput) hideEffortOutput = effortEcho;
-      const hidden = effortEcho || effortOutput
-        ? {...e, message: {...e.message, content: [{type: 'text' as const, text: HIDDEN_COMMAND_ROW}]}} : undefined;
       const keptModel = text.startsWith(MODEL_KEPT_PREFIX);
       const setModel = text.startsWith(MODEL_SET_PREFIX);
       const cancelledModel = MODEL_SWITCH_CANCELLED.test(text.replace(/^<local-command-stdout>/, ''));
@@ -641,6 +574,8 @@ export function register(on: On, options: PluginOptions): void {
       // Forwarding first can dismiss /model and expose the pane for one frame.
       const dismiss = !internalSwitch && (keptModel || (setModel && !await autoSelected($, auto)));
       if (dismiss) {
+        pendingChooser = undefined;
+        awaitingModelChoice = false;
         pendingSelection?.cancel();
         await $.ui.close({ id: 'auto-main' });
         if (setModel && !request) await syncAutoRouting($, options, auto, routingSync);
@@ -658,8 +593,7 @@ export function register(on: On, options: PluginOptions): void {
         || (!e.agentId && e.origin.kind === 'engine' && autoSave?.model === echoModel))
         && auto.models.some((row) => row.autoModel === echoModel);
       if (pendingEcho) publicAutoEcho = undefined;
-      // Native confirms the static row before the chooser opens, so whichever order
-      // the save lands in, its confirmation names no main model.
+      // Native confirms Auto before the chooser saves, so only the save names a main model.
       const staticConfirmation = Boolean(selected && isStaticAuto(auto, selected));
       const autoConfirmation = !(setModel || keptModel) ? undefined
         : staticConfirmation && auto.variant ? auto.models.find(row => row.model === auto.variant)
@@ -667,10 +601,10 @@ export function register(on: On, options: PluginOptions): void {
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? formatAutoConfirmation(block.text, staticConfirmation ? undefined : autoConfirmation.model, setModel) : block.text,
+            : autoConfirmation ? formatAutoConfirmation(block.text, setModel) : block.text,
         } : block) },
       } : e;
-      const result = await next(hidden ?? confirmation);
+      const result = await next(confirmation);
       if (saving) {
         if (saving.phase === 'waiting') $.clock.after(0, saving.finish);
         return result;
@@ -741,7 +675,6 @@ export function register(on: On, options: PluginOptions): void {
               showStatusBand();
               $.ui.invalidate('ui.render');
             };
-            // Native panes first opened by a person remain placeable at 110 columns.
             feedback.paneId = 'auto-main';
             if (!feedback.openRoutingOff) throw new Error('Feedback controls are unavailable.');
             const error = await feedback.openRoutingOff();
@@ -759,38 +692,13 @@ export function register(on: On, options: PluginOptions): void {
         });
         return result;
       }
-      if (EFFORT_STATUS.test(text)) {
-        pickerState.native[await selectedModel($, auto)] = text;
-        $.clock.after(0, async () => {
-          if (!(await $.ui.panes()).some(pane => pane.id === 'auto-main')) return;
-          await $.ui.open({id:'auto-main', title:AUTO_MAIN_TITLE, focus:true, closeOnEscape:true, rows:18});
-          const index = Math.max(0, auto.models.findIndex(row => row.model === pickerState.model));
-          await $.ui.focus({requestId:'auto-main', key:'auto-main-model-' + index});
-        });
-        $.ui.invalidate('ui.render');
-      }
       if (dismiss && setModel) $.ui.invalidate('ui.render');
       if (internalSwitch || dismiss) return result;
-      if (setModel) {
-        pendingSelection?.cancel();
-        pendingSelection = $.clock.after(0, async () => {
-          await syncAutoRouting($, options, auto, routingSync);
-          $.ui.invalidate('ui.render');
-          if (!await autoSelected($, auto)) {
-            await $.ui.close({ id: 'auto-main' });
-            return;
-          }
-          if (choosing) return;
-          choosing = true;
-          try {
-            if (!await chooseMainModel($, auto, pickerState)) {
-              await $.ui.close({ id: 'auto-main' });
-              $.ui.toast('Auto is on. Widen the terminal or run /model auto to choose your main model.');
-            }
-          } finally {
-            choosing = false;
-          }
-        });
+      if (setModel && awaitingModelChoice) {
+        awaitingModelChoice = false;
+        await syncAutoRouting($, options, auto, routingSync);
+        $.ui.invalidate('ui.render');
+        if (await autoSelected($, auto)) reopenChooser?.();
       }
       return result;
     });

@@ -52,25 +52,20 @@ export function sameAutoTarget(auto: AutoPicker, from: string, to: string, overr
 
 const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2([^\n<]*)/;
 
-// Copy for the main-model pane that entering Auto opens, and its confirmation.
-// Auto routes only subagents (it is unavailable with first-prompt routing).
 export const AUTO_MAIN_TITLE = 'Auto: choose your main model';
-export const AUTO_MAIN_DESCRIPTION = "Subagents are now smart-routed. Pick the model for your main agent; it isn't routed.";
 export const AUTO_SET_PREFIX = 'Auto on: ';
 export const AUTO_KEPT_PREFIX = 'Auto still on: ';
 
-// The static Auto row's confirmation names no main model: native writes it before the
-// chooser opens, and the prompt hint row names the main model.
-function autoStatus(mainModel: string | undefined, setModel: boolean): string {
-  const main = mainModel === undefined ? '' : ` · main agent on \`${mainModel.replace(/^system\.ai\./, '')}\``;
-  return `${setModel ? AUTO_SET_PREFIX : AUTO_KEPT_PREFIX}subagents smart-routed${main}`;
+export function autoStatus(mainModel: string): string {
+  return `Auto mode: main model ${mainModel.replace(/^system\.ai\./, '')}, subagents smart routed.`;
 }
 
-export function formatAutoConfirmation(text: string, mainModel: string | undefined, setModel: boolean): string {
+// Native confirms Auto before the chooser saves the main model.
+export function formatAutoConfirmation(text: string, setModel: boolean): string {
   return text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
     const suffix = details.trim().replace(/^and /, '')
       .replace(/^saved as your default for new sessions\b/, '').trim();
-    return `<local-command-stdout>${autoStatus(mainModel, setModel)}`
+    return `<local-command-stdout>${setModel ? AUTO_SET_PREFIX : AUTO_KEPT_PREFIX}subagents smart-routed`
       + (suffix ? `\n${suffix[0].toUpperCase()}${suffix.slice(1)}` : '');
   });
 }

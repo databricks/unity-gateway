@@ -579,20 +579,22 @@ alone does not enable routing. A known version overrides this flag.
 
 The native `/model` picker includes **Auto**:
 “Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
-enables UG's existing subagent router and opens the complete native main-agent model selector.
-`/model auto` selects Auto and opens the same selector without a model request. All available models
-appear in catalog order in one scrollable list.
+enables UG's existing subagent router and opens a compact main-model modal above the prompt.
+`/model auto` selects Auto and opens the same modal without a model request. The current model
+appears first, followed by the remaining models in catalog order. Larger catalogs use
+**More models** to cycle through pages. No wider terminal is required.
 
 With the Auto config version, fresh sessions start in Auto with the managed default
 model, or the first available model if no default is configured. An explicit ordinary model
 stays selected and disables routing; resume keeps native model precedence.
 Claude's standard model display is retained.
 A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosing
-a main model through `/model auto` switches the underlying native Auto variant and its
-native context profile immediately, keeping the checkmark on Auto.
-Use h/l in `/model auto` to adjust effort inline. UG reads Claude’s native effort status
-and saves through `/effort`; it does not maintain a model capability table.
-Escape preserves the current selection. Each running session keeps its
+a main model through `/model auto` changes the model used by the main agent,
+keeping the checkmark on Auto. The chooser has no effort controls; use native `/effort`
+to change effort separately.
+Invalid typed answers show a message and reopen the chooser. Escape preserves the
+current selection; Claude also treats an empty typed submission as cancellation.
+Each running session keeps its
 own selected profile, even when another session saves a different preference.
 Model-switch echoes and confirmations use Auto. Native `/status` and the header for non-Claude models still show the internal
 alias because Claude 2.1.290 does not expose a model-name display hook.

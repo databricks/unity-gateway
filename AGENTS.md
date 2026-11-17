@@ -184,16 +184,24 @@ In that mode native always stays on the static row's alias (the launch passes it
 `staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
 holds the chosen main model in memory and its `$.store` preference and resolves the
 real target from it. Main-model switches never run native `/model`.
+Entering static Auto compares the held main model with the current model for cache warnings,
+not the static alias's default target. Keeping the same main model skips the native warning.
+Saving a different main model while Auto is active asks for confirmation before changing
+the saved preference when the session has context. Cancellation keeps the current
+main model and reopens the chooser. This check includes cold contexts and does not claim
+that a warm cache exists. Other hooks' blocks and explicit confirmation requests still apply.
 The main-model chooser opens only after the person confirms the Auto row in `/model` and
 the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
-on Esc. The bare `/model` command only records the person's request for the pane (an
-open closed at once) so a narrower terminal still places it; below 110 columns a toast
-points to `/model auto`.
+on Esc. The chooser uses a compact native modal above the prompt, including in narrow
+terminals. The current model appears first; larger catalogs use a More models choice
+to cycle through pages. It has no effort controls and runs no `/effort` commands.
 Native confirms the row as its picker closes, before the chooser opens, so that confirmation
 reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
-no notice (a plugin's system notice is drawn only in verbose mode) and the prompt hint row's
-`Auto (<main model>)` names the main model. The chooser's own `/effort` reads and saves are
-rewritten to `<local-command-caveat>` rows, which native does not draw. A fresh launch
+a visible `$.ui.log` notice after saving the chosen model, such as
+`Auto mode: main model claude-opus-5-5, subagents smart routed.` Native prefixes this notice
+with the plugin name. `$.session.append` system and user-meta rows are hidden in normal mode.
+The prompt hint row's `Auto (<main model>)` also names the main model. Native `/effort`
+continues to work independently. A fresh launch
 without a launch-only model starts on the stored main model; a per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.
 Native context window and effort follow the static row (the default variant) for every
@@ -201,8 +209,7 @@ main model; the mod's prompt hint row names the held main model, not the row's a
 Launch configuration controls Auto visibility; an installed static Auto row
 counts as that configuration for smart-routed launches. Configure
 preserves foreign admin
-picker/custom option settings. Inline effort controls read native `/effort status` and save through `/effort`;
-Claude owns model-specific capabilities and defaults.
+picker/custom option settings. Claude owns model-specific effort capabilities and defaults.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
 permits only aliases whose real targets are allowed. Configure removes stale UG
 aliases and sets `modelPicker.replaceBuiltInOptions` false only for UG-owned
