@@ -283,8 +283,11 @@ class TestModelSources(BaseCujTest):
             ]
             session.record("sources-copilot-models.json", models)
             assert len(models) == len(COPILOT_MODELS), models
-            assert {row["id"]: row["provider"] for row in models} == COPILOT_MODELS, models
-            assert all(row["wireModel"] == row["id"] for row in models), models
+            # A hosted service is listed under its label, without the `system.ai.` prefix.
+            assert {row["wireModel"]: row["provider"] for row in models} == COPILOT_MODELS, models
+            assert all(
+                row["id"] == row["wireModel"].removeprefix("system.ai.") for row in models
+            ), models
             tui.submit(task.prompt)
 
             def completed(screen):
