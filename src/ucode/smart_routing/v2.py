@@ -658,7 +658,7 @@ def _is_claude_target_model(value: object) -> bool:
     return value.removesuffix("[1m]") == CLAUDE_TARGET_MODEL.removesuffix("[1m]")
 
 
-def _claude_print_mode(tool_args: list[str]) -> bool:
+def claude_print_mode(tool_args: list[str]) -> bool:
     """Whether Claude runs headless with ``-p``/``--print``, judged before Claude's ``--``."""
     if "--" in tool_args:
         tool_args = tool_args[: tool_args.index("--")]
@@ -732,8 +732,13 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
     default_model: str | None = None,
+    auto_mode: bool | None = None,
 ) -> NoReturn:
-    """Launch Claude in the first-prompt routing PTY wrapper."""
+    """Launch Claude in the first-prompt routing PTY wrapper.
+
+    ``auto_mode`` is the launch layer's Auto decision (the Auto config version, or the
+    installed static Auto row); ``None`` reads the resolved Auto flag.
+    """
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
@@ -766,11 +771,12 @@ def launch_claude(
     settings, remaining = compose_settings(tool_args)
     # Auto's native model selection collects Isaac feedback before disabling routing.
     # Explicit first-prompt presets retain their own launch behavior.
-    auto_picker = (
-        resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) == "1"
-        and not route_first_prompt
-        and not _claude_print_mode(remaining)
-    )
+    if auto_mode is None:
+        auto_mode = (
+            resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
+            == "1"
+        )
+    auto_picker = auto_mode and not route_first_prompt and not claude_print_mode(remaining)
     from ucode.agents.claude import _managed_settings_path
     from ucode.agents.claude_auto import (
         add_picker_entry,
@@ -870,7 +876,7 @@ def launch_claude(
                 auto_config["preferSaved"] = not (launch_model or default_model)
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
-    if route_first_prompt and _claude_print_mode(remaining):
+    if route_first_prompt and claude_print_mode(remaining):
         # Print mode has no TUI for the PTY router to drive, so route the prompt before launch.
         route_first_prompt = False
         if (
@@ -943,6 +949,11 @@ def launch_claude(
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
+            if auto_picker:
+                # An installed static Auto row enters Auto without the Auto version; the
+                # launch-only settings env carries the flag, so the mod's options, its
+                # session toggles and Claude's environment agree for this session.
+                env[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] = "1"
             mod_options = {
                 **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
                 "routeCommand": route_command,
@@ -989,7 +1000,7 @@ def launch_claude(
                 str(plugin_dir),
                 *remaining,
             ]
-            if _claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
+            if claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
                 returncode = claude_answer_delivery.run(
                     argv, session_path=session_path, stdin_prompt=stdin_prompt
                 )

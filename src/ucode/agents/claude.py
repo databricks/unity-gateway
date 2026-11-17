@@ -3155,7 +3155,24 @@ def launch(
         if options.launch_model and not pinned_model
         else None
     )
-    if resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) != "1":
+    from ucode.agents.claude_auto import static_auto_model
+
+    managed_path = _managed_settings_path()
+    managed = read_json_safe(managed_path) if managed_path is not None else {}
+    auto_mode = resolve_environment(agent=AGENT_CLAUDE).get(
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR
+    ) == "1" or (
+        # The static catalog `ug configure` installed serves Auto from its own row, so a
+        # smart-routed launch enters Auto without selecting the Auto config version. The
+        # developer's own ENABLE_SMART_ROUTER_AUTO_MODE=0 opts out; first-prompt routing
+        # and print mode keep their own launch behavior, as for the Auto version.
+        options.launch_smart_routing
+        and not options.auto_mode_opted_out
+        and static_auto_model(managed) is not None
+        and not smart_routing_v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
+        and not smart_routing_v2.claude_print_mode(tool_args)
+    )
+    if not auto_mode:
         from ucode.agents.claude_auto import (
             AUTO_CUSTOM_MODEL_ENV_KEYS,
             auto_model_target,
@@ -3163,8 +3180,6 @@ def launch(
             model_available,
         )
 
-        managed_path = _managed_settings_path()
-        managed = read_json_safe(managed_path) if managed_path is not None else {}
         managed_env = managed.get("env")
         managed_env = managed_env if isinstance(managed_env, dict) else {}
         saved = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
@@ -3205,6 +3220,7 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 launch_model=pinned_model,
                 default_model=session_model,
+                auto_mode=auto_mode,
                 compose_settings=functools.partial(
                     _compose_v2_settings, server_side_web_search=server_side_search
                 ),

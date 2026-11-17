@@ -72,6 +72,7 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
@@ -3892,9 +3893,11 @@ def _launch_options(
     user_pinned_model: str | None,
     provider: str | None,
     launch_model: str | None = None,
+    auto_mode_opted_out: bool = False,
 ) -> LaunchOptions:
     return LaunchOptions(
         launch_model=launch_model,
+        auto_mode_opted_out=auto_mode_opted_out,
         # Pinned models for providers are resolved above through the provider-specific launch path.
         user_pinned_model=user_pinned_model if provider is None else None,
         launch_smart_routing=_routes_launch(
@@ -3979,6 +3982,11 @@ def _launch_tool(
         tool = normalize_tool(tool_name)
         metrics.start_agent(tool, preflight_skipped=skip_preflight)
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
+        # Before any version applies: only a developer's own ENABLE_SMART_ROUTER_AUTO_MODE=0
+        # opts out of an installed static Auto row; a preset's materialized "0" does not.
+        auto_mode_opted_out = (
+            not routing_chosen and os.environ.get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR) == "0"
+        )
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
             os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
@@ -4508,6 +4516,7 @@ def _launch_tool(
             # Copilot picks its start model from its own catalog; the admin's or budget pick leads.
             # session_model is set for claude only.
             launch_model=managed_model if tool == "copilot" else session_model,
+            auto_mode_opted_out=auto_mode_opted_out,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):

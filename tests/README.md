@@ -29,6 +29,13 @@ the stored main model unless the launch passed a launch-only one, and that an ea
 per-model Auto alias still starts Auto; the launch test checks `staticModel`,
 `preferSaved` and `--model` with the static alias. The native picker checkmark itself
 is not exercised live.
+A plain smart-routed launch with that static row installed enters Auto without the
+Auto version (`test_agent_claude.py` checks the launch layer's `auto_mode` decision for
+installed, developer opt-out, non-static and routing-off cases; `test_cli.py` checks that
+only a developer's own `ENABLE_SMART_ROUTER_AUTO_MODE=0`, not a version preset, opts
+out; `test_claude_smart_routing_v2.py` checks the mod's flag and `autoPicker`, the static
+alias `--model`, and launch-only/forwarded `--model` precedence). No live journey covers
+this plain-launch entry yet.
 Ordinary and Auto launches preserve managed bytes and invoke no further privileged
 writes, with or without write access. Existing suites also cover fresh OFF session
 controls and native manual-model startup with feedback required through the next main turn. The native

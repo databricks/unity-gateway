@@ -1086,6 +1086,41 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
+    @pytest.mark.parametrize(
+        ("launch_args", "launch_env", "opted_out"),
+        [
+            ([], {}, False),
+            ([], {"ENABLE_SMART_ROUTER_AUTO_MODE": "0"}, True),
+            (
+                [],
+                {
+                    "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+                    "SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                },
+                False,
+            ),
+            (["--enable-smart-routing"], {"ENABLE_SMART_ROUTER_AUTO_MODE": "0"}, False),
+        ],
+        ids=["managed-default", "developer-opt-out", "version-owns-flag", "enable-flag-owns-flag"],
+    )
+    def test_only_a_developer_auto_mode_zero_opts_out_of_the_installed_auto_row(
+        self, monkeypatch, launch_args, launch_env, opted_out
+    ):
+        """Version presets materialize Auto "0" themselves; only the developer's own flag counts."""
+        for name, value in launch_env.items():
+            monkeypatch.setenv(name, value)
+        managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        observed = []
+
+        with _launch_policy_patches(managed) as calls:
+            calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
+                (options.launch_smart_routing, options.auto_mode_opted_out)
+            )
+            result = runner.invoke(app, ["claude", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert observed == [(True, opted_out)]
+
     @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
     @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])
     def test_codex_routing_version_requires_upgrade_or_explicit_disable(

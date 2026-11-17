@@ -12,6 +12,9 @@ class LaunchOptions:
     launch_smart_routing: bool = False
     user_pinned_model: str | None = None
     launch_model: str | None = None
+    # The developer's own environment set ENABLE_SMART_ROUTER_AUTO_MODE=0 (not a version
+    # preset), which keeps an installed static Auto row from starting the launch in Auto.
+    auto_mode_opted_out: bool = False
 
 
 def explicit_model_arg_value(tool_args: list[str]) -> str | None:

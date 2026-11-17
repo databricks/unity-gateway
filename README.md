@@ -565,7 +565,14 @@ and must already admit Auto. A foreign custom-model slot also prevents Auto.
 Changing machine-wide picker settings can require sudo; launching `ug claude` does
 not install or rewrite those settings.
 
-Existing versions, including `subagent_orch_v0_claude_only`, keep Auto hidden
+Once configure has installed the static Auto row (managed routing configured with the
+Auto config version), a plain smart-routed `ug claude` starts in Auto without any
+selector: the installed row is the opt-in. Set `ENABLE_SMART_ROUTER_AUTO_MODE=0` in your
+own environment (with no `SMART_ROUTER_CONFIG_VERSION`) to launch without Auto; a
+version's own `"0"` does not opt out. `--disable-smart-routing`, an explicit `--model`,
+a budget recommendation and resume keep their precedence as in any Auto launch.
+
+Without that installed row, existing versions, including `subagent_orch_v0_claude_only`, keep Auto hidden
 and retain their Smart Router controls. `ENABLE_SMART_ROUTER_AUTO_MODE=1` enables
 the picker for an already smart-routed launch without a version selector; the flag
 alone does not enable routing. A known version overrides this flag.

@@ -4138,6 +4138,62 @@ class TestClaudeLaunch:
         assert json.loads(user_path.read_text())["model"] == saved
         assert "modelOverrides" not in json.loads(settings_path.read_text())
 
+    @pytest.mark.parametrize(
+        ("static_row", "routed", "opted_out", "auto_mode"),
+        [
+            (True, True, False, True),
+            (True, True, True, False),
+            (False, True, False, False),
+            (True, False, False, None),
+        ],
+        ids=["installed-row", "developer-opt-out", "non-static-install", "routing-off"],
+    )
+    def test_installed_static_auto_row_starts_smart_routed_launch_in_auto(
+        self, monkeypatch, tmp_path, static_row, routed, opted_out, auto_mode
+    ):
+        """A plain smart-routed launch enters Auto from the static row configure installed."""
+        from ucode.agents.claude_auto import add_picker_entry
+
+        sonnet = "system.ai.claude-sonnet-5-5"
+        base = {
+            "env": {"ANTHROPIC_MODEL": sonnet},
+            "availableModels": [sonnet],
+            "modelPicker": {
+                "replaceBuiltInOptions": True,
+                "options": [{"model": sonnet, "label": "Sonnet 5.5"}],
+            },
+        }
+        managed = add_picker_entry(base, static_auto_row=static_row)
+        managed_path = tmp_path / "managed-settings.json"
+        managed_path.write_text(json.dumps(managed))
+        before = managed_path.read_bytes()
+        for name in ("ENABLE_SMART_ROUTER_AUTO_MODE", "SMART_ROUTER_CONFIG_VERSION"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_: "token")
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
+        )
+        launch_v2 = Mock()
+        monkeypatch.setattr(v2, "launch_claude", launch_v2)
+
+        claude.launch(
+            {"workspace": WS},
+            [],
+            options=LaunchOptions(launch_smart_routing=routed, auto_mode_opted_out=opted_out),
+        )
+
+        if auto_mode is None:
+            launch_v2.assert_not_called()
+            assert len(calls) == 1
+        else:
+            assert launch_v2.call_args.kwargs["auto_mode"] is auto_mode
+        assert managed_path.read_bytes() == before
+
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
         monkeypatch.setattr(v2, "launch_claude", Mock())
@@ -4309,6 +4365,7 @@ class TestClaudeLaunch:
             user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
             launch_model=None,
             default_model=None,
+            auto_mode=False,
             compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,

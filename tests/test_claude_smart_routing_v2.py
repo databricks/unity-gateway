@@ -719,6 +719,140 @@ class TestV2Launch:
         # The managed aliases stay in the managed file; launch settings carry no copies.
         assert not any(is_auto_model(k) for k in captured.get("modelOverrides", {}))
 
+    @pytest.mark.parametrize(
+        ("launch_model", "tool_args", "expected_model"),
+        [
+            (None, [], None),
+            ("system.ai.claude-sonnet-5", [], "system.ai.claude-sonnet-5"),
+            (None, ["--model", "claude-haiku-4-5"], "claude-haiku-4-5"),
+        ],
+        ids=["plain", "launch-model", "forwarded-model"],
+    )
+    def test_installed_static_auto_row_enters_auto_without_the_auto_version(
+        self, tmp_path, monkeypatch, launch_model, tool_args, expected_model
+    ):
+        """The launch layer's Auto decision drives the mod even when the resolved flag is "0"."""
+        from ucode.agents.claude_auto import add_picker_entry, auto_variant
+
+        models = ["system.ai.claude-opus-5-5", "system.ai.claude-sonnet-5", "claude-haiku-4-5"]
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                add_picker_entry(
+                    {
+                        "env": {"ANTHROPIC_MODEL": models[0]},
+                        "availableModels": models,
+                        "modelPicker": {
+                            "replaceBuiltInOptions": True,
+                            "options": [{"model": model} for model in models],
+                        },
+                    },
+                    static_auto_row=True,
+                )
+            )
+        )
+        before = managed.read_bytes()
+        static_alias = auto_variant({"model": models[0]})
+        # The managed default version materializes Auto "0"; the installed row still wins.
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured["argv"] = argv
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                list(tool_args),
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=launch_model,
+                auto_mode=True,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        assert exc.value.code == 0
+        assert managed.read_bytes() == before
+        assert os.environ["ENABLE_SMART_ROUTER_AUTO_MODE"] == "0"
+        assert captured["env"]["ENABLE_SMART_ROUTER_AUTO_MODE"] == "1"
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == "1"
+        auto = json.loads(options["autoPicker"])
+        assert auto["staticModel"] == static_alias
+        argv = captured["argv"]
+        assert argv[argv.index("--model") + 1] == (expected_model or static_alias)
+        assert argv.count("--model") == 1
+        assert auto["preferSaved"] is (launch_model is None)
+
+    @pytest.mark.parametrize("auto_mode", [False, None])
+    def test_static_auto_row_without_launch_auto_decision_stays_ordinary(
+        self, tmp_path, monkeypatch, auto_mode
+    ):
+        from ucode.agents.claude_auto import add_picker_entry
+
+        models = ["system.ai.claude-opus-5-5"]
+        managed = tmp_path / "managed-settings.json"
+        managed.write_text(
+            json.dumps(
+                add_picker_entry(
+                    {
+                        "availableModels": models,
+                        "modelPicker": {
+                            "replaceBuiltInOptions": True,
+                            "options": [{"model": models[0]}],
+                        },
+                    },
+                    static_auto_row=True,
+                )
+            )
+        )
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        captured = {}
+
+        def fake_popen(argv, **_kwargs):
+            captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", fake_popen)
+        with pytest.raises(SystemExit):
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                [],
+                binary="claude",
+                user_settings_path=tmp_path / "settings.json",
+                launch_model=None,
+                auto_mode=auto_mode,
+                compose_settings=lambda args: ({}, list(args)),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+
+        options = captured["pluginConfigs"][v2.CLAUDE_ROUTING_PLUGIN_NAME]["options"]
+        assert "autoPicker" not in options
+        assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == "0"
+        assert "ENABLE_SMART_ROUTER_AUTO_MODE" not in captured["env"]
+
     def test_subagent_only_launch_keeps_the_forwarded_model(self, tmp_path, monkeypatch):
         model = "system.ai.claude-opus-5-5"
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
