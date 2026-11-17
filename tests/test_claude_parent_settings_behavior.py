@@ -67,3 +67,29 @@ def test_revert_keeps_an_administrator_value(env):
     claude.write_tool_config(dict(STATE), MODEL)
     claude.revert_managed_settings()
     assert _managed(env) == {KEY: "replace"}
+
+
+def test_revert_keeps_an_administrator_value_set_after_configure(env):
+    claude.write_tool_config(dict(STATE), MODEL)
+    doc = _managed(env)
+    doc[KEY] = "replace"
+    env.managed.write_text(json.dumps(doc), encoding="utf-8")
+    claude.write_tool_config({**STATE, "claude_http_headers": {"x-team": "a"}}, MODEL)
+    doc = _managed(env)
+    doc["env"]["KEEP"] = "1"
+    env.managed.write_text(json.dumps(doc), encoding="utf-8")
+
+    claude.revert_managed_settings()
+    assert _managed(env) == {KEY: "replace", "env": {"KEEP": "1"}}
+
+
+def test_revert_removes_merge_after_a_launch_rewrite_and_an_external_edit(env):
+    claude.write_tool_config(dict(STATE), MODEL)
+    claude.request_explicit_configure(False)
+    claude.write_tool_config({**STATE, "claude_http_headers": {"x-team": "a"}}, MODEL)
+    doc = _managed(env)
+    doc["env"]["KEEP"] = "1"
+    env.managed.write_text(json.dumps(doc), encoding="utf-8")
+
+    claude.revert_managed_settings()
+    assert _managed(env) == {"env": {"KEEP": "1"}}

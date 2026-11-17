@@ -452,8 +452,16 @@ def revert_managed_settings() -> str:
     # out with ug's entries. When an admin has since added to the list, put the guard back: a
     # non-empty list without it turns the guard off.
     guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
+    removes_parent_settings_merge = _ug_added_parent_settings_merge()
 
     def dump(settings: dict) -> str:
+        # Value-aware rather than an owned path: an admin's later "replace" must survive revert.
+        if (
+            removes_parent_settings_merge
+            and settings.get(CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0])
+            == CLAUDE_PARENT_SETTINGS_BEHAVIOR
+        ):
+            del settings[CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0]]
         prepend = settings.get("prependPlugins")
         if guard_listed and isinstance(prepend, list) and prepend:
             if _CLAUDE_GUARD_MOD_ID not in prepend:
@@ -465,6 +473,15 @@ def revert_managed_settings() -> str:
     )
     _remove_header_mod()
     return status
+
+
+def _ug_added_parent_settings_merge() -> bool:
+    snapshots = managed_file_snapshots("claude", _parse_managed_settings)
+    key = CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0]
+    return (
+        key not in (snapshots.original_before_ug or {})
+        and (snapshots.last_applied_by_ug or {}).get(key) == CLAUDE_PARENT_SETTINGS_BEHAVIOR
+    )
 
 
 def _managed_prepend_plugins() -> list:
@@ -2352,7 +2369,6 @@ def _reconcile_managed_settings(
         desired_settings.setdefault(
             CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0], CLAUDE_PARENT_SETTINGS_BEHAVIOR
         )
-        owned_paths = [*owned_paths, CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH]
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
