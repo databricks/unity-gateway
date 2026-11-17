@@ -141,6 +141,11 @@ class TerminalScreen(pyte.Screen):
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
 
+    def report_device_status(self, mode, private=False, **kwargs):
+        # Copilot sends the private form (`CSI ? 6 n`), which pyte's Stream passes as `private=True`
+        # but Screen.report_device_status does not accept.
+        super().report_device_status(mode, **kwargs)
+
     @property
     def display(self):
         # pyte's own display indexes char[0], which raises on the empty cell a stray zero-width

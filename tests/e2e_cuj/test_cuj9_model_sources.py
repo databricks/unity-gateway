@@ -69,9 +69,9 @@ CODEX_MODELS = {
     SOURCE_CODEX_ALIAS: "Codex_Decoy",
 }
 COPILOT_MODELS = {
-    SOURCE_CLAUDE_PROVIDER_MODEL: "dbx-anthropic",
-    SOURCE_COPILOT_DEFAULT_MODEL: "dbx-responses",
-    SOURCE_CODEX_PROVIDER_MODEL: "dbx-responses",
+    SOURCE_CLAUDE_PROVIDER_MODEL: "databricks",
+    SOURCE_COPILOT_DEFAULT_MODEL: "databricks-responses",
+    SOURCE_CODEX_PROVIDER_MODEL: "databricks-responses",
 }
 
 
@@ -157,7 +157,7 @@ def _assert_no_routes(recorder, checkpoint):
 
 def _assert_copilot_inference(recorder, checkpoint, task, model):
     """The shared CUJ inference helper only knows Claude/Codex endpoint paths."""
-    anthropic = COPILOT_MODELS[model] == "dbx-anthropic"
+    anthropic = COPILOT_MODELS[model] == "databricks"
     path = "/ai-gateway/anthropic/v1/messages" if anthropic else "/ai-gateway/mlflow/v1/responses"
     requests = [
         request
@@ -178,7 +178,10 @@ def _assert_copilot_selection(session, task, model):
         if any(task.value in answer for answer in copilot.assistant_answers(records))
     ]
     assert len(records) == 1, "Expected exactly one Copilot session completing this file task"
-    assert copilot.selected_models(records[0]) == [f"{COPILOT_MODELS[model]}/{model}"]
+    # Copilot labels a hosted service without its `system.ai.` prefix and records the selection
+    # at session start and again on the model change, so compare the distinct refs.
+    ref = f"{COPILOT_MODELS[model]}/{model.removeprefix('system.ai.')}"
+    assert set(copilot.selected_models(records[0])) == {ref}
 
 
 @pytest.mark.usefixtures("source_contract")
