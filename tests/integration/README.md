@@ -16,6 +16,9 @@ checks run on both platforms. These are not live GitHub or credentialed integrat
 
 The trusted scan producer's component coverage and staged enforcement are documented in
 the [main test guide](../README.md). This prerequisite does not change integration authorization.
+`../test_security_scan_request.py` checks CI metadata refresh when the requested event carries
+the PR title, lookup failures, and preserved PR identity checks with controlled API responses,
+not live webhook delivery.
 
 `../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
 discovery, implicit PAT classification, and the separate selected-workspace authentication check at controlled
