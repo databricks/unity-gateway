@@ -70,7 +70,7 @@ before their existing installed `ug configure`, then compare the entire profile 
 JSON with the expected structure and values. This includes model labels, helper arguments and
 refresh settings, headers, discovery settings, and CUJ1's OTLP fields. The profile uses either
 the published Databricks-hosted Claude models or the Anthropic provider service and selected model.
-CUJ2 requires `Claude Haiku 4.5` for its dated Anthropic target, including when discovery
+CUJ2 requires `Claude Haiku 5.5` for its `claude-haiku-5-5` Anthropic target, including when discovery
 echoes that target ID as the display name. Actual and expected profile JSON are retained in
 `desktop-profile.json` for failures.
 Both also require the personal profile's bytes to survive and metadata to retain its entry.
@@ -86,6 +86,10 @@ CUJ2's Claude and Codex MPS inference cases ask for a short greeting. Each requi
 native parent turn matching that prompt, a nonempty answer, the expected provider/model and
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
+
+A separate CUJ2 Claude TUI case checks default Model Provider Service support with the
+first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
+both route-selection requests, plus completed parent and child turns.
 
 CUJ2's OpenAI MPS, `ug_e2e.providers.openai`, must expose only `gpt-6-luna`, with both
 Responses and Chat Completions native APIs; its workspace's Codex default must match.
@@ -135,10 +139,14 @@ file task. Assertions require a new native child transcript containing the value
 a correlated spawn-routing decision and successful child inference on the
 router's selected model when routing is enabled. Disabled routing requires no router
 requests, new routing decisions, recipe metadata, or orchestrator context. Claude's parent
-and child inference payloads carry the launch recipe in `smart_router_recipe_name`
-without a recipe header; Codex retains the recipe header. This tests requested delegation, not automatic orchestrator delegation.
-Claude's recipe is compared with the recorded routing request's selector rather than
-a hardcoded default recipe name.
+and child inference payloads carry the launch recipe in `smart_router_recipe_name`.
+Codex carries the recipe in `x-codex-turn-metadata`, with `smart_router_state: "on"`
+for `/root` and an `agent_name` ending in `__sr_on` for the child. Claude omits
+the legacy recipe header; Codex retains it with the same recipe and omits the
+payload recipe field. Each agent's recipe must match the recorded routing request's
+selector rather than a hardcoded default. Disabled Codex presets omit both routing
+fields from native metadata.
+This tests requested delegation, not automatic orchestrator delegation.
 The wait uses the child's answer directly; parent-answer reconstruction is reserved for first-prompt tasks.
 Offline checks reject parent-only answers and accept child answers before the parent replies.
 Offline evidence regressions do not establish a live CUJ pass.
