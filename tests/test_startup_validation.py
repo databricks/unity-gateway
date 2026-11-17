@@ -219,7 +219,7 @@ def test_codex_notification_is_async_once_and_keeps_connection_open(message, tmp
                             "method": "warning",
                             "params": {"message": message},
                         } in [json.loads(frame) for frame in received]
-                    assert '{"method":"initialized"}' in received
+                    assert {"method": "initialized"} in [json.loads(frame) for frame in received]
                     await asyncio.sleep(0.2)
                     await tui.send('{"id":2,"result":{}}')
                     assert await asyncio.wait_for(tui.recv(), 1) == '{"id":2,"result":{}}'
