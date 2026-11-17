@@ -104,7 +104,6 @@ function staticCatalogSession(on: On, initial: string, saved?: string, contextTo
   return {
     env, writes, runs, opened, store, commands, clock, choices, answers, chooser,
     selected: () => selected,
-    select: (model: string) => { selected = model; },
   };
 }
 
@@ -223,22 +222,13 @@ test('a per-model Auto alias saved by an earlier version still starts Auto', { o
   // Reselecting Auto from /model moves native onto the static row and keeps the main model.
   await $.command.run({ command: 'model', args: 'auto' });
   expect(session.selected()).toBe(DEFAULT_ALIAS);
-  await $.session.append({
-    door: 'command',
-    message: { role: 'user', isMeta: false, content: [{ type: 'text', text: `<local-command-stdout>Set model to ${DEFAULT_ALIAS}` }] },
-    origin: { kind: 'engine' },
-  } as never);
+
   await step($, DEFAULT_ALIAS);
   expect(sent).toEqual([OTHER, OTHER]);
 });
 
-// Records native command rows and the mod's visible transcript output.
-function captureAppends(on: On): string[] {
+function captureNotices(on: On): string[] {
   const rows: string[] = [];
-  on('session.append', ($, e, next) => {
-    rows.push(e.message.content.map((block: any) => block.text ?? '').join('\n'));
-    return next(e);
-  });
   on('ui.log', ($, e) => {
     expect(e.to).toBe('transcript');
     rows.push(e.text);
@@ -247,13 +237,6 @@ function captureAppends(on: On): string[] {
   return rows;
 }
 
-const SET_STATIC = {
-  door: 'command',
-  message: { role: 'user', isMeta: false, content: [{ type: 'text', text: `<local-command-stdout>Set model to \`${DEFAULT_ALIAS}\`` }] },
-  origin: { kind: 'engine' },
-} as never;
-// Native confirms Auto before the main-model chooser completes.
-const NEUTRAL = '<local-command-stdout>Auto on: subagents smart-routed';
 const savedConfirmation = (model: string) => `Auto mode: main model ${model.replace(/^system\.ai\./, '')}, subagents smart routed.`;
 
 const ENTER_AUTO = {
@@ -274,8 +257,7 @@ test('entering static Auto keeps Haiku without the native cache warning', { opti
   await $.session.start(START);
   await $.command.run({command:'model', args:''});
   expect((await $.classic.PreModelSwitch(ENTER_AUTO)).permissionDecision).toBe('allow');
-  session.select(DEFAULT_ALIAS);
-  await $.session.append(SET_STATIC);
+  await $.command.run({command:'model', args:'auto'});
   session.answers.push('Haiku 4.5');
   await session.clock.advance(0);
   expect(questions).toEqual([]);
@@ -285,7 +267,7 @@ test('entering static Auto keeps Haiku without the native cache warning', { opti
 for (const answer of ['Yes, switch model', 'No, go back', undefined]) {
   test(`changing Auto's main model with existing context requires confirmation: ${answer ?? 'dismissed'}`, { options: OPTIONS }, async ($, on) => {
     const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER, 1000);
-    const rows = captureAppends(on);
+    const rows = captureNotices(on);
     const questions: string[] = [];
     on('tool.call', {tool:'AskUserQuestion'}, ($, e, next) => {
     if (e.questions[0].header === 'Main model') return next(e);
@@ -325,7 +307,7 @@ test('a fresh Auto model change needs no context warning', { options: OPTIONS },
 
 test('a confirmation overtaken by a new model command cannot save the old choice', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER, 1000);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   let started: () => void;
   let release: () => void;
   const ready = new Promise<void>(resolve => { started = resolve; });
@@ -376,62 +358,17 @@ for (const decision of ['deny', 'ask'] as const) {
 test('choosing a main model confirms the saved model and sends the new one', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   await $.session.start(START);
   await $.command.run({ command: 'model', args: 'auto' });
-  await $.session.append(SET_STATIC);
-  expect(rows).toEqual([NEUTRAL]);
+  expect(rows).toEqual([]);
 
   session.answers.push('Haiku 4.5');
   await session.clock.advance(0);
-  expect(rows).toEqual([NEUTRAL, savedConfirmation(OTHER)]);
+  expect(rows).toEqual([savedConfirmation(OTHER)]);
   await step($, DEFAULT_ALIAS);
   await step($, DEFAULT_ALIAS, 'child');
   expect(sent).toEqual([OTHER, OTHER]);
-});
-
-test('a late native Auto confirmation preserves the saved model confirmation', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession(on, DEFAULT_ALIAS);
-  const sent = captureSteps(on);
-  const rows = captureAppends(on);
-  await $.session.start(START);
-  // /model auto opens the chooser at once; its confirmation may arrive after the pick.
-  await $.command.run({ command: 'model', args: 'auto' });
-  session.answers.push('Haiku 4.5');
-  await session.clock.advance(0);
-  await $.session.append(SET_STATIC);
-  await session.clock.advance(0);
-
-  expect(rows).toEqual([savedConfirmation(OTHER), NEUTRAL]);
-  expect(session.choices).toHaveLength(1);
-  expect(session.store[AUTO.storeKey]).toBe(OTHER);
-  await step($, DEFAULT_ALIAS);
-  await step($, DEFAULT_ALIAS, 'child');
-  expect(sent).toEqual([OTHER, OTHER]);
-});
-
-test('nonstatic Auto confirms a changed main model only after native accepts it', {
-  options: { ...OPTIONS, autoPicker: JSON.stringify({ ...AUTO, staticModel: undefined }) },
-}, async ($, on) => {
-  const session = staticCatalogSession(on, DEFAULT_ALIAS);
-  const rows = captureAppends(on);
-  await $.session.start(START);
-  await $.command.run({ command: 'model', args: 'auto' });
-  await $.session.append(SET_STATIC);
-  expect(rows).toEqual([NEUTRAL]);
-
-  session.answers.push('Haiku 4.5');
-  await session.clock.advance(0);
-  expect(rows).toEqual([NEUTRAL]);
-  await $.session.append({
-    ...SET_STATIC,
-    message: { role: 'user', isMeta: false, content: [{ type: 'text', text: `<local-command-stdout>Set model to \`${OTHER_ALIAS}\`` }] },
-    origin: { kind: 'plugin', name: 'ug-smart-router' },
-  } as never);
-  await session.clock.advance(0);
-
-  expect(rows).toEqual([NEUTRAL, NEUTRAL, savedConfirmation(OTHER)]);
-  expect(session.store[AUTO.storeKey]).toBe(OTHER);
 });
 
 // The tail the mod hands the engine for the prompt hint row under the input.
@@ -471,23 +408,19 @@ test('a fresh static Auto session names the saved main model in the hint row', {
   expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
 });
 
-// Native 2.1.325's order, from a live transcript: /model returns its panel ref,
-// native appends the static row's confirmation as its picker closes, and only
-// then does the person pick a main model in the mod's chooser.
-test('each /model main-model save confirms the newly selected model', { options: OPTIONS }, async ($, on) => {
+test('each /model auto main-model save confirms the newly selected model', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   const hint = await hintTail($, on);
   await $.session.start(START);
 
   for (const [model, label] of [[OTHER, 'Haiku 4.5'], [MAIN, 'Sonnet 5']] as const) {
     rows.length = 0;
-    await $.command.run({ command: 'model', args: '' });
-    await $.session.append(SET_STATIC);
+    await $.command.run({ command: 'model', args: 'auto' });
     session.answers.push(label);
     await session.clock.advance(0);
-    expect(rows).toEqual([NEUTRAL, savedConfirmation(model)]);
+    expect(rows).toEqual([savedConfirmation(model)]);
     expect(await hint()).toBe(`Auto (${label}) · smart router ON`);
     sent.length = 0;
     await step($, DEFAULT_ALIAS);
@@ -500,40 +433,17 @@ test('each /model main-model save confirms the newly selected model', { options:
 test('leaving the chooser without a pick appends no notice and keeps the main model', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
   const sent = captureSteps(on);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   const hint = await hintTail($, on);
   await $.session.start(START);
-  await $.command.run({ command: 'model', args: '' });
-  await $.session.append(SET_STATIC);
+  await $.command.run({ command: 'model', args: 'auto' });
   await session.clock.advance(0);
 
-  expect(rows).toEqual([NEUTRAL]);
+  expect(rows).toEqual([]);
   expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
   await step($, DEFAULT_ALIAS);
   expect(sent).toEqual([OTHER]);
 });
-
-function commandRow(text: string, origin: unknown) {
-  return { door: 'command', message: { role: 'user', isMeta: false, content: [{ type: 'text', text }] }, origin } as never;
-}
-
-test('native effort command output is preserved while Auto is active', { options: OPTIONS }, async ($, on) => {
-  staticCatalogSession(on, DEFAULT_ALIAS);
-  const rows = captureAppends(on);
-  await $.session.start(START);
-  const echo = '<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args>status</command-args>';
-  const output = '<local-command-stdout>Current effort level: low</local-command-stdout>';
-  for (const origin of [{kind:'composer'}, {kind:'plugin', name:'ug-smart-router'}]) {
-    rows.length = 0;
-    await $.session.append(commandRow(echo, origin));
-    await $.session.append(commandRow(output, origin));
-    expect(rows).toEqual([echo, output]);
-  }
-});
-
-// Native 2.1.325's /model returns its panel ref while the picker is still up, before
-// the person picks a row; only the Auto row's confirmation may open the chooser.
-const commandOutput = (text: string) => commandRow(`<local-command-stdout>${text}`, { kind: 'engine' });
 
 test('opening /model without a pick leaves the chooser closed', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
@@ -543,36 +453,12 @@ test('opening /model without a pick leaves the chooser closed', { options: OPTIO
   expect(session.choices).toEqual([]);
 });
 
-test('picking a non-Auto model in /model never opens the chooser', { options: OPTIONS }, async ($, on) => {
+test('a direct non-Auto model command never opens the chooser', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   await $.session.start(START);
-  await $.command.run({ command: 'model', args: '' });
-  session.select('system.ai.claude-opus-5');
-  await $.session.append(commandOutput('Set model to Claude Opus 5'));
+  await $.command.run({ command: 'model', args: 'system.ai.claude-opus-5' });
   await session.clock.advance(0);
   expect(session.choices).toEqual([]);
-});
-
-test('cancelling /model never opens the chooser', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession(on, DEFAULT_ALIAS);
-  await $.session.start(START);
-  await $.command.run({ command: 'model', args: '' });
-  await $.session.append(commandOutput(`Kept model as \`${DEFAULT_ALIAS}\``));
-  await session.clock.advance(0);
-  expect(session.choices).toEqual([]);
-});
-
-test('picking Auto in /model opens the chooser once its confirmation arrives', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession(on, 'system.ai.claude-opus-5');
-  await $.session.start(START);
-  await $.command.run({ command: 'model', args: '' });
-  expect(session.choices).toEqual([]);
-  session.select(DEFAULT_ALIAS);
-  await $.session.append(SET_STATIC);
-  expect(session.choices).toEqual([]);
-  await session.clock.advance(0);
-  expect(session.choices).toHaveLength(1);
-  expect(session.choices[0].question).toBe('Auto: choose your main model');
 });
 
 test('/model auto opens the chooser directly', { options: OPTIONS }, async ($, on) => {
@@ -595,7 +481,7 @@ test('the compact chooser pages through every model with at most four options', 
   options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
 }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   session.answers.push('More models', 'More models', 'More models', 'Model 11');
@@ -627,7 +513,7 @@ for (const answer of ['Sonnet 5', 'Cancel']) {
     options:{...OPTIONS, autoPicker:JSON.stringify({...AUTO, models:[AUTO.models[0]]})},
   }, async ($, on) => {
     const session = staticCatalogSession(on, DEFAULT_ALIAS);
-    const rows = captureAppends(on);
+    const rows = captureNotices(on);
     await $.session.start(START);
     await $.command.run({command:'auto', args:''});
     session.answers.push(answer);
@@ -662,7 +548,7 @@ test('duplicate and navigation labels identify their actual model', {
 for (const answer of [undefined, 'Cancel']) {
   test(`an invalid typed model shows an error before ${answer ?? 'dismissal'}`, {options:OPTIONS}, async ($, on) => {
     const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
-    const rows = captureAppends(on);
+    const rows = captureNotices(on);
     await $.session.start(START);
     await $.command.run({command:'auto', args:''});
     session.answers.push('unavailable model', answer);
@@ -677,7 +563,7 @@ for (const answer of [undefined, 'Cancel']) {
 
 test('a valid choice after an invalid typed model saves once', {options:OPTIONS}, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   session.answers.push('unavailable model', 'Haiku 4.5');
@@ -692,7 +578,7 @@ test('repeated invalid typed models preserve the current page until cancellation
   options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
 }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   session.answers.push('More models', 'unavailable model', 'another unavailable model', undefined);
@@ -709,7 +595,7 @@ test('repeated invalid typed models preserve the current page until cancellation
 
 test('dismissing the chooser does not show an invalid-model error', {options:OPTIONS}, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   await session.clock.advance(0);
@@ -719,10 +605,10 @@ test('dismissing the chooser does not show an invalid-model error', {options:OPT
   expect(rows).toEqual([]);
 });
 
-for (const interrupt of ['model', 'prompt', 'end'] as const) {
+for (const interrupt of ['model', 'end'] as const) {
   test(`an old chooser answer after a new ${interrupt} cannot save`, {options:OPTIONS}, async ($, on) => {
     const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
-    const rows = captureAppends(on);
+    const rows = captureNotices(on);
     let release: () => void;
     let started: () => void;
     const ready = new Promise<void>(resolve => { started = resolve; });
@@ -735,7 +621,6 @@ for (const interrupt of ['model', 'prompt', 'end'] as const) {
     const choosing = session.clock.advance(0);
     await ready;
     if (interrupt === 'model') await $.command.run({command:'model', args:MAIN});
-    if (interrupt === 'prompt') await $.session.append({door:'prompt', message:{role:'user', isMeta:false, content:[{type:'text', text:'Continue'}]}, origin:{kind:'composer'}} as never);
     if (interrupt === 'end') await $.session.end({reason:'prompt_input_exit'});
     rows.length = 0;
     release!();
@@ -745,9 +630,9 @@ for (const interrupt of ['model', 'prompt', 'end'] as const) {
   });
 }
 
-test('direct /model auto keeps the entry model before a delayed native confirmation', {options:OPTIONS}, async ($, on) => {
+test('direct /model auto keeps the entry model without a cache warning', {options:OPTIONS}, async ($, on) => {
   const session = staticCatalogSession(on, OTHER, undefined, 1000);
-  const rows = captureAppends(on);
+  const rows = captureNotices(on);
   let warned = false;
   on('tool.call', {tool:'AskUserQuestion'}, ($, e, next) => {
     if (e.questions[0].header === 'Main model') return next(e);
@@ -761,8 +646,6 @@ test('direct /model auto keeps the entry model before a delayed native confirmat
   expect(session.choices[0].options[0].label).toBe('Haiku 4.5');
   expect(warned).toBe(false);
   expect(session.store[AUTO.storeKey]).toBe(OTHER);
-  await $.session.append(SET_STATIC);
-  await session.clock.advance(0);
   expect(session.choices).toHaveLength(1);
-  expect(rows).toEqual([savedConfirmation(OTHER), NEUTRAL]);
+  expect(rows).toEqual([savedConfirmation(OTHER)]);
 });

@@ -2073,14 +2073,18 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
 Auto main-model confirmation component tests (`../native_claude/mod_tests/auto-static.test.ts`)
-check the saved-model transcript notice, repeated picks, delayed native confirmations,
-nonstatic alias acceptance, and cancellation without a save notice. Manual native TUI
-verification on Claude 2.1.325 covered normal-mode visibility. This is not an authenticated
+check the saved-model transcript notice, repeated picks through `/model auto`,
+and cancellation without a save notice. Manual native TUI
+verification on Claude 2.1.290 and 2.1.325 covered normal-mode selection and the saved-model
+notice. This is not an authenticated
 gateway inference check or an automated integration journey.
 
 The Auto chooser's native component tests cover compact modal selection, cancellation,
-pagination, invalid typed answers with a visible retry message, stale answers, and
-preservation of native effort output. The chooser has no
+pagination, invalid typed answers with a visible retry message, and stale answers after
+a model command or session end. Claude 2.1.290's plugin test runner lacks a
+`session.append` implementation, so these component tests do not cover picker-confirmation
+ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
+preservation, or prompt interruption. The chooser has no
 effort controls or internal effort commands.
 
 The same component suite covers static Auto cache warnings at the final main-model choice,
