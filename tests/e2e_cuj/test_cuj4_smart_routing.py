@@ -398,7 +398,7 @@ class TestCujSmartRouting(BaseCujTest):
                     )
 
                 tui.wait_for(
-                    lambda s: "Choose your main model" in s and main_model_focused(s, label),
+                    lambda s: "Auto: choose your main model" in s and main_model_focused(s, label),
                     "the Auto selector focused on the current main model",
                 )
                 arrow = "\x1b[B" if direction == 1 else "\x1b[A"
@@ -410,7 +410,7 @@ class TestCujSmartRouting(BaseCujTest):
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
-                        "Choose your main model" not in s
+                        "Auto: choose your main model" not in s
                         and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                         and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
                         and _smart_router_hint_shown(tui, enabled=True)
@@ -436,7 +436,8 @@ class TestCujSmartRouting(BaseCujTest):
                 tui.submit("/model auto")
                 tui.wait_for(
                     lambda s: (
-                        "Choose your main model" in s and main_model_focused(s, alternate_label)
+                        "Auto: choose your main model" in s
+                        and main_model_focused(s, alternate_label)
                     ),
                     "the current Auto main model",
                 )
@@ -450,7 +451,7 @@ class TestCujSmartRouting(BaseCujTest):
                 tui.send("\r", "save the unchanged Auto main model")
                 tui.wait_for(
                     lambda s: (
-                        "Choose your main model" not in s
+                        "Auto: choose your main model" not in s
                         and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the unchanged Auto selection saved without reopening its selector",

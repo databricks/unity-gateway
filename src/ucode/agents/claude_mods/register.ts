@@ -19,7 +19,7 @@ import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
-import { autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_PREFIX, AUTO_MAIN_DESCRIPTION, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
@@ -88,7 +88,7 @@ async function initStaticVariant($: EngineInterface, auto: AutoPicker): Promise<
 type AutoPickerState = {model?: string; drafts: Record<string,string>; native: Record<string,string | undefined>};
 
 async function openMainModel($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: 'auto-main', title: 'Choose your main model', focus: true, closeOnEscape: true, rows: 18 });
+  await $.ui.open({ id: 'auto-main', title: AUTO_MAIN_TITLE, focus: true, closeOnEscape: true, rows: 18 });
   $.ui.invalidate('ui.render');
 }
 
@@ -509,8 +509,8 @@ export function register(on: On, options: PluginOptions): void {
               if (autoSave !== request) return;
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
-              if (confirmation && /^(?:Set model to |Set to Auto mode )/.test(confirmation)) request.confirmation = 'accepted';
-              else if (confirmation && (/^(?:Kept model as |Kept Auto mode )/.test(confirmation) || MODEL_SWITCH_CANCELLED.test(confirmation))) request.confirmation = 'cancelled';
+              if (confirmation && (confirmation.startsWith('Set model to ') || confirmation.startsWith(AUTO_SET_PREFIX))) request.confirmation = 'accepted';
+              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_PREFIX) || MODEL_SWITCH_CANCELLED.test(confirmation))) request.confirmation = 'cancelled';
               else if (confirmation) throw new Error(confirmation);
               request.phase = 'waiting';
               if (!request.confirmation) return;
@@ -538,8 +538,8 @@ export function register(on: On, options: PluginOptions): void {
         : !profile.levels.length ? `Effort not supported for ${row.label}`
         : `${symbols[effort] ?? '○'} ${effort[0].toUpperCase() + effort.slice(1)} effort${!pickerState.drafts[row.model] && profile.note ? ` (${profile.note})` : ''}`;
       return Box({ flexDirection: 'column', children: [
-        Text({ bold: true, children: ['Choose your main model'] }),
-        Text({ dimColor: true, children: ["Subagents are smart routed. Your main agent isn't; choose its model below."] }),
+        Text({ bold: true, children: [AUTO_MAIN_TITLE] }),
+        Text({ dimColor: true, children: [AUTO_MAIN_DESCRIPTION] }),
         Box({flexDirection:'column', marginTop:1, children:auto.models.map((item,index) =>
           Button({key:'auto-main-model-' + index,
             plain:true, autoFocus:item.model === model ? true : undefined,
@@ -737,7 +737,7 @@ export function register(on: On, options: PluginOptions): void {
         pickerState.native[await selectedModel($, auto)] = text;
         $.clock.after(0, async () => {
           if (!(await $.ui.panes()).some(pane => pane.id === 'auto-main')) return;
-          await $.ui.open({id:'auto-main', title:'Choose your main model', focus:true, closeOnEscape:true, rows:18});
+          await $.ui.open({id:'auto-main', title:AUTO_MAIN_TITLE, focus:true, closeOnEscape:true, rows:18});
           const index = Math.max(0, auto.models.findIndex(row => row.model === pickerState.model));
           await $.ui.focus({requestId:'auto-main', key:'auto-main-model-' + index});
         });

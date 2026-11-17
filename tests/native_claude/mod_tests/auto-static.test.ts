@@ -124,10 +124,11 @@ test('/model auto opens the main-model chooser listing every catalog row', { opt
     surface: 'terminal',
     component: 'Pane',
     requestId: 'auto-main',
-    props: { title: 'Choose your main model', isFocused: true, bodyColumns: 80, rows: 18, view: {} },
+    props: { title: 'Auto: choose your main model', isFocused: true, bodyColumns: 80, rows: 18, view: {} },
   } as never);
   const drawn = JSON.stringify(await pane.drawn());
-  expect(drawn).toContain('Choose your main model');
+  expect(drawn).toContain('Auto: choose your main model');
+  expect(drawn).toContain("Subagents are now smart-routed. Pick the model for your main agent; it isn't routed.");
   expect(drawn).toContain('Sonnet 5');
   expect(drawn).toContain('Haiku 4.5');
   // The current main model carries the focus marker.
@@ -167,7 +168,7 @@ function mountChooser($: any) {
     surface: 'terminal',
     component: 'Pane',
     requestId: 'auto-main',
-    props: { title: 'Choose your main model', isFocused: true, bodyColumns: 80, rows: 18, view: {} },
+    props: { title: 'Auto: choose your main model', isFocused: true, bodyColumns: 80, rows: 18, view: {} },
   } as never);
 }
 
