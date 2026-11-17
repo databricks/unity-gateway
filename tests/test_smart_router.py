@@ -19,10 +19,35 @@ from ucode.smart_routing import session_env, v2
 runner = CliRunner()
 
 
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_subagent_audit_mismatch_is_silent(monkeypatch, caplog, agent):
+    caplog.set_level("DEBUG", logger="ucode.cli")
+    audit = Mock(
+        return_value={
+            "matches_router_decision": False,
+            "requested_model": "requested",
+            "model": "launched",
+        }
+    )
+    monkeypatch.setattr(f"ucode.smart_routing.{agent}_routing.record_subagent_start", audit)
+    result = runner.invoke(
+        cli.app,
+        [f"{agent}-router-hook", "record-subagent"],
+        input="{}",
+        env={"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"},
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout == result.stderr == ""
+    audit.assert_called_once_with({})
+    assert "router requested requested" in caplog.text
+    assert "started launched" in caplog.text
+
+
 @pytest.fixture(autouse=True)
 def _checkout_skill_bundle(monkeypatch):
     # An editable Python install can still contain an older wheel's copied skill resources.
     monkeypatch.setattr(skills, "_skills_source", lambda: Path(__file__).parents[1] / "skills")
+    monkeypatch.setattr(session_env, "CONTROLS_READ_RETRY_SECONDS", 0)
 
 
 @pytest.mark.parametrize("agent", ["claude", "codex"])
@@ -144,6 +169,13 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
 
         denied.setattr(target, write_step, fail_session_write)
         for flag in ("--disable-smart-routing", "--enable-smart-routing"):
+            current = (
+                {}
+                if flag == "--disable-smart-routing"
+                else dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
+            )
+            session_file.write_text(json.dumps(current))
+            before = session_file.read_bytes()
             result = runner.invoke(cli.app, ["codex", flag], env=env)
             assert result.exit_code == 1
             output = " ".join(result.output.split())
@@ -156,6 +188,7 @@ def test_launcher_flags_control_routing_hook(tmp_path, monkeypatch, write_step, 
             assert session_file.read_bytes() == before
             assert not list(session_file.parent.glob(".env.json.*.tmp"))
 
+    session_file.write_text("{}")
     assert runner.invoke(cli.app, ["codex", "--disable-smart-routing"], env=env).exit_code == 0
     assert runner.invoke(cli.app, hook_args, input=payload, env=env).exit_code == 0
     route.assert_not_called()

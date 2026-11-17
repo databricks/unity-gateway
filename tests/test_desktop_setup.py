@@ -738,6 +738,23 @@ def test_subscription_relay_uses_direct_gateway_and_combined_helper(desktop, mon
     )
 
 
+def test_relay_for_cli_model_services_keeps_desktop_on_gateway_auth(desktop, monkeypatch):
+    # Relay-backed model services in a static list are CLI-only: Desktop has no per-model proxy.
+    monkeypatch.setattr(
+        desktop_setup.shutil, "which", lambda binary: pytest.fail("no relay helper expected")
+    )
+    state = {
+        "workspace": "https://workspace.example",
+        "profile": "chosen-profile",
+        "claude_relayed": True,
+        "claude_relayed_for_model_services": True,
+    }
+
+    desktop_setup.configure_claude_desktop(state)
+
+    assert "--relay" not in configured_profile(desktop)["inferenceCredentialHelperArgs"]
+
+
 def test_subscription_relay_without_claude_code_preserves_profiles(desktop, monkeypatch, capsys):
     before = (desktop / "_meta.json").read_bytes()
     monkeypatch.setattr(desktop_setup.shutil, "which", lambda binary: None)

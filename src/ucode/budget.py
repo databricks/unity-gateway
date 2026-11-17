@@ -1,4 +1,4 @@
-"""Workspace-authenticated AI Gateway budget spend-status client."""
+"""Workspace-authenticated Unity Gateway budget spend-status client."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ _BUDGET_SPEND_STATUS_PAGE_SIZE = 100
 
 @dataclass(frozen=True)
 class BudgetLimitStatus:
-    """The caller's live spend against one AI Gateway budget threshold."""
+    """The caller's live spend against one Unity Gateway budget threshold."""
 
     budget_id: str
     scope_type: str
@@ -70,7 +70,7 @@ def list_current_user_budget_spend_statuses(
     *,
     timeout: int = 10,
 ) -> tuple[list[BudgetLimitStatus], str | None]:
-    """List the caller's spend against blocking AI Gateway budget thresholds."""
+    """List the caller's spend against blocking Unity Gateway budget thresholds."""
     base_url = databricks.workspace_origin(workspace) + _BUDGET_SPEND_STATUS_API_PATH
     statuses: list[BudgetLimitStatus] = []
     page_token: str | None = None

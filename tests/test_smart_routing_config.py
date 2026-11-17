@@ -283,6 +283,15 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
     }
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
+    controls = tmp_path / "controls.json"
+    controls.write_text("{invalid")
+    source = {session_env.SESSION_ENV_VAR: str(controls), "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1"}
+    assert session_env.effective_environment(source, agent=agent) == source
+    assert capsys.readouterr() == ("", "")
+
+
 @pytest.mark.parametrize("shell_value", ["0", "1"])
 @pytest.mark.parametrize(
     ("version", "harnesses"),

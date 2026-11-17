@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -25,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth
+from ucode import custom_oauth, metrics
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -58,6 +60,11 @@ from ucode.agents import (
 )
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
+from ucode.agents.model_sources import (
+    SCHEMA_MODEL_CATALOGS,
+    is_model_source_wildcard,
+    resolve_model_sources,
+)
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
@@ -65,9 +72,9 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR,
     ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
+    MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
 )
@@ -117,6 +124,7 @@ from ucode.managed_config import (
     AGENT_ENUM_TO_TOOL,
     ManagedConfigResult,
     ManagedPolicyInstallDenied,
+    export_mdm_os,
     get_managed_config,
     get_model_recommendation,
     load_managed_state,
@@ -124,7 +132,9 @@ from ucode.managed_config import (
     managed_state_workspace,
     normalize_managed_config,
     refresh_managed_config,
+    request_mdm_os,
     revert_machine_policy,
+    save_requested_mdm_os,
 )
 from ucode.managed_files import (
     MANAGED_FILES_SUPPORTED_OSES,
@@ -155,6 +165,7 @@ from ucode.managed_resolve import (
     managed_unservable_models,
     recommended_agent,
     resolve_state,
+    set_static_model_list,
 )
 from ucode.mcp import (
     CONFIG_WRITABLE_MCP_CLIENTS,
@@ -209,6 +220,7 @@ from ucode.state import (
     aliased_workspace_key,
     clear_state,
     current_workspace_key,
+    get_managed_model_source_expansions,
     get_model_location,
     get_provider_service,
     is_self_managed,
@@ -219,6 +231,7 @@ from ucode.state import (
     save_config_scope,
     save_state,
     set_current_workspace,
+    set_managed_model_source_expansions,
     set_model_location,
     set_provider_service,
     set_user_mcp_reconcile_pending,
@@ -226,7 +239,7 @@ from ucode.state import (
     workspace_self_managed_agents,
 )
 from ucode.string_utils import is_valid_catalog_schema, is_valid_catalog_schema_name
-from ucode.ug_headers import parse_header_line
+from ucode.ug_headers import CODING_AGENT_HEADER, parse_header_line, without_header
 from ucode.ui import (
     console,
     heading,
@@ -586,7 +599,7 @@ def configure_shared_state(
     clear_custom_oauth: bool = False,
     claude_server_side_web_search: bool | None = None,
 ) -> dict:
-    """Log into Databricks, verify AI Gateway, fetch model lists, persist state.
+    """Log into Databricks, verify Unity Gateway, fetch model lists, persist state.
 
     If tools is provided, only fetch models for those tools. Otherwise fetch all.
     If force_login is True, always run databricks auth login (used by explicit configure).
@@ -599,7 +612,7 @@ def configure_shared_state(
     entries (e.g. DEFAULT and a named profile both pointing at the same host)
     don't error out. If ``None``, we resolve it from the host after login.
     If skip_preflight is True, skip the entire preflight block below — auth
-    validation, the AI Gateway probe, and model discovery — trusting a prior
+    validation, the Unity Gateway probe, and model discovery — trusting a prior
     ``ug configure``. The PAT/bearer is already exported (``apply_pat_environment``
     in ``_launch_tool``) and the gateway was verified by that earlier configure.
     Only the local profile resolution and the shared state assembly still run;
@@ -632,7 +645,7 @@ def configure_shared_state(
     # each path below resolves it once, where a host->profile lookup is reliable
     # (the skip branch trusts the prior configure; the preflight resolves after
     # login). --skip-preflight persists exactly this and returns, trusting a prior
-    # `ug configure` — it already validated auth + the AI Gateway and saved the
+    # `ug configure` — it already validated auth + the Unity Gateway and saved the
     # model lists (carried over by load_state, left untouched).
     state = load_state()
     state["workspace"] = workspace
@@ -648,8 +661,13 @@ def configure_shared_state(
         destination = load_full_state().get("workspaces", {}).get(key, {})
         # managed_mcp_servers records what the source workspace delivered to user scope.
         # Keep it until reconciliation removes registrations the destination no longer wants.
-        # The server-side web search choice is likewise per workspace.
-        for field in ("mcp_servers", "mcp_clients", CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY):
+        # The web search choice and managed source expansions are likewise per workspace.
+        for field in (
+            "mcp_servers",
+            "mcp_clients",
+            CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
+            MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
+        ):
             if field in destination:
                 state[field] = destination[field]
             else:
@@ -715,7 +733,7 @@ def configure_shared_state(
 
     login_kwargs = {"workspace_id": workspace_id} if workspace_id else {}
     # ── Preflight (bypassed above under --skip-preflight): validate Databricks
-    #    auth + the AI Gateway, then discover the available models. ──
+    #    auth + the Unity Gateway, then discover the available models. ──
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
     elif use_pat:
@@ -747,7 +765,7 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity AI Gateway..."):
+    with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
         # The listing is independent of the probe, so overlap the two round trips. The probe still
@@ -814,7 +832,7 @@ def configure_shared_state(
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
         # back empty (workspace without UC model-services, or the listing
-        # failed), fall back to the per-family AI Gateway listing for that
+        # failed), fall back to the per-family Unity Gateway listing for that
         # family only.
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
@@ -1078,6 +1096,7 @@ def _launch_workspace_state(workspace: str | None) -> dict:
             # A dry run saves nothing, so carry the workspace for this run.
             host, workspace_id = split_workspace_key(target)
             state = {**state, "workspace": host}
+            state.pop(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY, None)
             if workspace_id:
                 state["workspace_id"] = workspace_id
             else:
@@ -1086,6 +1105,33 @@ def _launch_workspace_state(workspace: str | None) -> dict:
         # Rewrite this user's agent settings for the new workspace, as a first launch does.
         state.pop("available_tools", None)
     return state
+
+
+def _expand_managed_model_sources(
+    managed: dict,
+    state: dict,
+    tool: str,
+    *,
+    fallbacks: dict[str, list[str]] | None = None,
+) -> tuple[dict, dict[str, list[str]]]:
+    sources = managed_static_models(managed, tool) or []
+    wildcards = [source for source in sources if is_model_source_wildcard(source)]
+    if tool not in SCHEMA_MODEL_CATALOGS or not wildcards:
+        return managed, {}
+    token = get_databricks_token(state["workspace"], _get_catalog_profile(state))
+    expanded, live_expansions = resolve_model_sources(
+        sources, tool, state["workspace"], token, fallbacks=fallbacks
+    )
+    if not expanded:
+        # Every wildcard failed to expand. An empty static list reads as unset, which would
+        # silently replace the admin's allow-list with workspace discovery; fail closed instead.
+        raise RuntimeError(
+            f"Could not expand managed model sources ({', '.join(wildcards)}); refusing to fall "
+            "back to workspace discovery. Check service access and compatible models, then retry."
+        )
+    managed = copy.deepcopy(managed)
+    set_static_model_list(managed["enabled_agents"][tool]["model_config"], expanded)
+    return managed, live_expansions
 
 
 # The agents whose `ug configure --agent` reads and installs the policy and applies its MCP and skills.
@@ -1130,6 +1176,7 @@ def _setup_single_agent(
     state = states[0]
     parent_schema = None
     managed = None
+    live_expansions: dict[str, list[str]] | None = None
     if apply_managed and tool in _FRESH_POLICY_AGENTS:
         # Explicit configure always reads the workspace policy fresh, so it can install it.
         managed, _ = _refresh_configured_policy(state)
@@ -1141,6 +1188,7 @@ def _setup_single_agent(
     if apply_managed and tool in MODEL_LOCATION_TOOLS:
         _reject_disabled_agent(managed, tool)
         if managed is not None:
+            managed, live_expansions = _expand_managed_model_sources(managed, state, tool)
             state = resolve_state(managed, state, tool)
             if not managed_provider_service(managed, tool):
                 parent_schema = managed_unity_catalog_location(managed, tool)
@@ -1153,6 +1201,11 @@ def _setup_single_agent(
     state = configure_single_tool(
         tool, state, parent_schema=parent_schema, provider=provider, with_vscode=True
     )
+    if live_expansions is not None:
+        set_managed_model_source_expansions(state, tool, live_expansions)
+        persisted = dict(state)
+        persisted.pop("last_configured_tools", None)
+        save_state(persisted)
     state = _save_headless_model_source(
         state, [tool], model_location=model_location, provider=provider
     )
@@ -1451,8 +1504,21 @@ def _configure_workspace_command(
             return 0
         configured_tools: list[str] = []
         failed_tools: list[str] = []
+        failure_reasons: dict[str, str] = {}
+        latest_configured: dict | None = None
         for tool_name in managed_tools:
-            resolved = resolve_state(managed, state, tool_name)
+            try:
+                expanded_managed, live_expansions = _expand_managed_model_sources(
+                    managed, state, tool_name
+                )
+            except RuntimeError as exc:
+                # One agent's failed wildcard expansion must not stop the others; the run still
+                # fails at the end (`_fail_machine_wide_run`), matching other per-tool failures.
+                print_warning(str(exc))
+                failed_tools.append(tool_name)
+                failure_reasons[tool_name] = str(exc)
+                continue
+            resolved = resolve_state(expanded_managed, state, tool_name)
             parent_schema = (
                 managed_unity_catalog_location(managed, tool_name)
                 if tool_name in MODEL_LOCATION_TOOLS
@@ -1465,6 +1531,7 @@ def _configure_workspace_command(
                 or check_gateway_endpoint(resolved, tool_name)
             ):
                 if not install_tool_binary(tool_name, strict=False):
+                    failure_reasons[tool_name] = "agent installation failed"
                     continue
                 configured = configure_selected_tools(
                     resolved,
@@ -1472,6 +1539,7 @@ def _configure_workspace_command(
                     install_ai_tools=not is_dry_run(),
                     parent_schemas={tool_name: parent_schema} if parent_schema else None,
                 )
+                latest_configured = configured
                 # Each iteration resolves from `state` and persists a copy, so carry the
                 # accumulated available_tools forward — otherwise the last agent's save drops
                 # the earlier ones, and the MCP reconcile below only sees that final agent.
@@ -1484,17 +1552,38 @@ def _configure_workspace_command(
                 last = configured.get("last_configured_tools")
                 if last is None or tool_name in last:
                     configured_tools.append(tool_name)
+                    set_managed_model_source_expansions(state, tool_name, live_expansions)
                     if tool_name == "claude":
                         from ucode.agents.desktop.setup import configure_claude_desktop
 
                         configure_claude_desktop(configured, parent_schema=parent_schema)
                 else:
                     failed_tools.append(tool_name)
+                    failure_reasons[tool_name] = "agent configuration failed"
+            else:
+                failure_reasons[tool_name] = "gateway endpoint unavailable"
         if not configured_tools:
+            details = "; ".join(
+                f"{TOOL_SPECS[name]['display']}: {reason}"
+                for name, reason in failure_reasons.items()
+            )
             raise RuntimeError(
                 "None of the coding agents enabled by your workspace configuration "
-                "are available on this workspace."
+                f"are available on this workspace. {details} "
+                "Check agent installation and workspace access, then retry."
             )
+        # The latest configured copy also contains agent-written state absent from `state`.
+        # Save it once with the successful tools' accumulated expansions.
+        assert latest_configured is not None
+        persisted = dict(latest_configured)
+        persisted.pop("last_configured_tools", None)
+        if MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY in state:
+            persisted[MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY] = state[
+                MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY
+            ]
+        else:
+            persisted.pop(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY, None)
+        save_state(persisted)
         registered_mcps: list[str] = []
         if not is_dry_run():
             resolved_mcps = _configure_managed_mcp_servers(managed)
@@ -1873,9 +1962,9 @@ def status() -> int:
                 "Model provider",
                 provider_service
                 or (
-                    f"Databricks AI Gateway ({location})"
+                    f"Databricks Unity Gateway ({location})"
                     if (location := get_model_location(effective_state, tool))
-                    else "Databricks AI Gateway"
+                    else "Databricks Unity Gateway"
                 ),
             ),
         ]
@@ -2187,6 +2276,7 @@ def agents_add(
             f"Added {TOOL_SPECS[tool]['display']} as self-managed. Run `ug {tool}` to use it."
         )
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2215,6 +2305,7 @@ def agents_remove(
         save_state(state)
         print_success(f"Removed {TOOL_SPECS[tool]['display']} from your self-managed list.")
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2256,6 +2347,7 @@ def agents_list_cmd() -> None:
             print_note("No agents set up for this workspace yet.")
         print_note("Add another agent to run it self-managed with `ug agents add <agent>`.")
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -2383,7 +2475,7 @@ def mcp_add(
             help="Register this comma-separated subset of MCP services (additively). Full names "
             "like `system.ai.github` work on their own; bare short names like `github` need "
             "--location to locate them. Omit --names to register the whole --location schema; "
-            'an empty `--names ""` adds nothing (no-op). V2 AI Gateway servers (not in the '
+            'an empty `--names ""` adds nothing (no-op). V2 Unity Gateway servers (not in the '
             "interactive picker) are added by naming them here: `vector-search:<catalog>.<schema>`, "
             "`uc-functions:<catalog>.<schema>`, `external:<connection>`, `genie-space:<id>`, or "
             "`app:<name>` (workspace access required).",
@@ -2489,6 +2581,7 @@ def mcp_add(
         added = True
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -2526,6 +2619,7 @@ def mcp_remove(
         remove_mcp_command(agents=requested_agents)
         _sync_claude_cowork_plugin()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -2558,6 +2652,7 @@ def mcp_list(
     try:
         list_mcp_command(agents=requested_agents)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -3052,6 +3147,7 @@ def auth_token_cmd(
                 workspace, profile, force_refresh=force_refresh, browser_login=browser_login
             )
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     # Write the bare token (with trailing newline) to stdout — nothing else may
@@ -3131,6 +3227,7 @@ def otel_headers_cmd(
         with redirect_stdout(sys.stderr):
             token = get_databricks_token(workspace, profile, force_refresh=force_refresh)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     sys.stdout.write(
@@ -3186,12 +3283,14 @@ def codex_router_hook_cmd(
     import json
     import sys
 
-    if not smart_routing_v2.smart_routing_enabled(
-        effective_environment(agent=AGENT_CODEX), default=False, agent=AGENT_CODEX
-    ):
+    try:
+        environment = effective_environment(agent=AGENT_CODEX, strict=True)
+    except (OSError, UnicodeError, ValueError):
         return
+    enabled = smart_routing_v2.smart_routing_enabled(environment, default=False, agent=AGENT_CODEX)
 
     from ucode.smart_routing.codex_routing import (
+        is_spawn_agent_tool,
         record_session_start,
         record_subagent_start,
         route_pre_tool_use,
@@ -3202,6 +3301,8 @@ def codex_router_hook_cmd(
     except ValueError:
         return
     if not isinstance(payload, dict):
+        return
+    if not enabled and event != "route-subagent":
         return
     if event == "session-start":
         record_session_start(payload)
@@ -3219,30 +3320,34 @@ def codex_router_hook_cmd(
                 )
             )
         elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Codex started "
-                        f"{record.get('model')}."
-                    }
-                )
+            logging.getLogger(__name__).debug(
+                "Smart Routing mismatch: router requested %s, but Codex started %s",
+                record.get("requested_model"),
+                record.get("model"),
             )
         # When matched is None the harness didn't report the subagent model —
         # the PreToolUse hook already injected the routed model, so emit nothing.
         return
-    if event != "route-subagent" or not host:
+    if event != "route-subagent":
         return
-    token = _router_hook_token(host, profile, use_pat)
-    if not token:
+    from ucode.smart_routing.codex_metadata import stamp_spawn
+
+    if not is_spawn_agent_tool(payload.get("tool_name")):
         return
-    output = route_pre_tool_use(
-        payload,
-        workspace=host,
-        token=token,
-        available_models=model or [],
-        audit_decision=True,
-    )
+    output = None
+    if enabled:
+        if not host:
+            return
+        token = _router_hook_token(host, profile, use_pat)
+        if token:
+            output = route_pre_tool_use(
+                payload,
+                workspace=host,
+                token=token,
+                available_models=model or [],
+                audit_decision=True,
+            )
+    output = stamp_spawn(payload, enabled=enabled, output=output)
     if output is not None:
         sys.stdout.write(json.dumps(output))
 
@@ -3295,6 +3400,7 @@ def claude_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     socket_path: Annotated[str | None, typer.Option("--socket")] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
@@ -3357,14 +3463,10 @@ def claude_router_hook_cmd(
                 )
             )
         elif matched is False:
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "systemMessage": "Smart Routing mismatch: router requested "
-                        f"{record.get('requested_model')}, but Claude Code started "
-                        f"{record.get('model')}."
-                    }
-                )
+            logging.getLogger(__name__).debug(
+                "Smart Routing mismatch: router requested %s, but Claude Code started %s",
+                record.get("requested_model"),
+                record.get("model"),
             )
         # When matched is None the harness didn't report the subagent model —
         # routing already injected the selected model, so emit nothing.
@@ -3379,6 +3481,7 @@ def claude_router_hook_cmd(
         workspace=host,
         token=token,
         available_models=model or [],
+        **({"provider": provider} if provider else {}),
         audit_decision=True,
         # Hooks persisted by earlier UG versions still call route-subagent and expect a
         # PreToolUse response; the mod's route-subagent-mod event takes the plain details.
@@ -3450,9 +3553,18 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if enabled is None:
         return False
     try:
-        session_env_path()
+        controls = session_env_path()
     except RuntimeError:
         return False
+    from ucode.smart_routing.session_env import session_routing_enabled
+
+    try:
+        unchanged = session_routing_enabled(controls) == enabled
+    except (OSError, UnicodeError, ValueError):
+        unchanged = False
+    if unchanged:
+        print_success(f"Smart Router is already {'on' if enabled else 'off'} for this session")
+        return True
     if (
         not enabled
         and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
@@ -3468,6 +3580,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     try:
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
@@ -3742,10 +3855,8 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
-    """Smart routing with a Model Provider Service: Claude only, behind the external-models gate."""
-    return not provider or (
-        tool == "claude" and os.environ.get(ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS_ENV_VAR) == "1"
-    )
+    """Whether smart routing supports this agent and provider combination."""
+    return not provider or tool == "claude"
 
 
 def _routes_launch(
@@ -3763,7 +3874,7 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services require the external-models gate.
+        # Model Provider Services are supported for Claude only.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
@@ -3866,6 +3977,7 @@ def _launch_tool(
     previous = {}
     try:
         tool = normalize_tool(tool_name)
+        metrics.start_agent(tool, preflight_skipped=skip_preflight)
         routing_chosen = routing_already_chosen or smart_routing_config.known_version()
         previous = smart_routing_v2.apply_config(agent=tool)
         if not custom_oauth_cli_enabled(custom_oauth):
@@ -3895,6 +4007,9 @@ def _launch_tool(
             apply_pat_environment(existing)
         needs_auto_configure = not existing.get("workspace") or tool not in (
             existing.get("available_tools") or []
+        )
+        metrics.start_agent(
+            tool, preflight_skipped=skip_preflight, first_time_setup=needs_auto_configure
         )
         # Refuse an agent the managed config doesn't enable before installing or configuring it, so
         # a blocked launch never downloads the agent first. Reading the config needs a known
@@ -3975,6 +4090,10 @@ def _launch_tool(
             raise RuntimeError("--model-location must be `<catalog>.<schema>`.")
         # Checked before discovery, which can take tens of seconds, so a blocked launch fails fast.
         _reject_disabled_agent(managed, tool)
+        if managed is not None:
+            managed, _ = _expand_managed_model_sources(
+                managed, state, tool, fallbacks=get_managed_model_source_expansions(state, tool)
+            )
         managed_provider = managed_provider_service(managed or {}, tool)
         managed_parent_schema = (
             managed_unity_catalog_location(managed or {}, tool)
@@ -4136,6 +4255,10 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CLAUDE and not provider and not parent_schema:
+            # A static model list (no provider) can still name a model service that routes to a
+            # subscription relay; that launch must swap credentials like a relayed provider.
+            relayed = claude_agent.static_models_need_subscription_relay(state)
         # Managed defaults choose models without limiting the selected source's catalog.
         should_fetch_claude_picker_catalog = (
             tool == "claude"
@@ -4390,6 +4513,7 @@ def _launch_tool(
         with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -4409,7 +4533,7 @@ SkipPreflightOption = Annotated[
     bool,
     typer.Option(
         "--skip-preflight",
-        help="Skip the per-launch Databricks auth + AI Gateway re-validation (and the "
+        help="Skip the per-launch Databricks auth + Unity Gateway re-validation (and the "
         "Databricks CLI minimum-version check), trusting a prior `ug configure`.",
     ),
 ]
@@ -4432,6 +4556,9 @@ WorkspaceOption = Annotated[
 
 
 _PROMPT_SUFFIX_KEY = "ucode_explicit_prompt_suffix"
+
+# Subcommands that launch an agent; a bare `ug` launches one too.
+_AGENT_LAUNCH_COMMANDS = frozenset({*TOOL_ALIASES, "cursor"})
 
 
 class _PromptAwareCommand(TyperCommand):
@@ -4483,21 +4610,41 @@ def default(
         typer.Option(
             "--header",
             help="Extra `Name: value` header for this launch's Claude Code, Codex, and ug "
-            "Databricks requests (repeatable). A header already sent keeps its value.",
+            "Databricks requests (repeatable). A header already sent keeps its value. An agent "
+            "launch drops a Databricks-Custom-Coding-Agent inherited through UG_HEADERS; pass "
+            "it here to set one.",
         ),
     ] = None,
 ) -> None:
-    """Configure and launch coding agents through Databricks AI Gateway."""
+    """Configure and launch coding agents through Databricks Unity Gateway."""
+    command = ctx.invoked_subcommand or "launch"
+    metrics.set_command(command)
+    if ctx.invoked_subcommand is None:
+        metrics.start_agent("unknown")
+    elif command in TOOL_ALIASES:
+        metrics.start_agent(TOOL_ALIASES[command])
+    elif command == "cursor":
+        metrics.start_agent("cursor")
     for number, line in enumerate(header or [], 1):
         if parse_header_line(line) is None:
             # Name only the flag's position: the value may be a token.
             print_err(f"--header #{number}: expected `Name: value` with a valid name and value.")
             raise typer.Exit(1)
-    if header:
-        existing = os.environ.get(UG_HEADERS_ENV_VAR, "")
-        os.environ[UG_HEADERS_ENV_VAR] = "\n".join(filter(None, [existing, *header]))
+    inherited = os.environ.get(UG_HEADERS_ENV_VAR, "")
+    existing = inherited
+    if ctx.invoked_subcommand is None or ctx.invoked_subcommand in _AGENT_LAUNCH_COMMANDS:
+        # An inherited coding agent names whatever launched ug, such as an Isaac Claude Code
+        # session, not the agent this launch starts; without it the gateway reads ug's User-Agent.
+        existing = without_header(inherited, CODING_AGENT_HEADER)
+    if header or existing != inherited:
+        merged = "\n".join(filter(None, [existing, *(header or [])]))
+        if merged:
+            os.environ[UG_HEADERS_ENV_VAR] = merged
+        else:
+            os.environ.pop(UG_HEADERS_ENV_VAR, None)
     if ctx.invoked_subcommand != "revert":
         set_config_scope(load_config_scope())
+    ctx.call_on_close(export_mdm_os())
     if ctx.invoked_subcommand is not None:
         return
     set_dry_run(dry_run)
@@ -4511,6 +4658,7 @@ def default(
         # `print_err(str(exc))` printing the exit code — a bare, meaningless "ERROR 1".
         raise
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -4650,6 +4798,7 @@ def codex_cmd(
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from exc
     # Read before the flag applies the version, which consumes the selector.
@@ -4737,7 +4886,7 @@ def claude_cmd(
         bool | None,
         typer.Option(
             "--enable-smart-routing/--disable-smart-routing",
-            help="Enable or disable AI Gateway subagent model routing and Smart Router "
+            help="Enable or disable Unity Gateway subagent model routing and Smart Router "
             "Orchestrator for this Claude Code launch or session.",
         ),
     ] = None,
@@ -4752,6 +4901,7 @@ def claude_cmd(
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from exc
     with _smart_routing_v2_flag(
@@ -4964,6 +5114,7 @@ def cursor_cmd(ctx: typer.Context) -> None:
         print_success("Starting Cursor Agent")
         cursor.launch(load_state(), ctx.args)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -5090,7 +5241,7 @@ def configure(
         bool | None,
         typer.Option(
             "--enable-server-side-web-search/--disable-server-side-web-search",
-            help="Claude Code: use the AI Gateway's server-side web search instead of ug's "
+            help="Claude Code: use the Unity Gateway's server-side web search instead of ug's "
             "`web_search` MCP, saved for later `ug claude` launches. Omit to keep the saved "
             "choice (off by default).",
         ),
@@ -5159,6 +5310,15 @@ def configure(
             "The choice is saved for later commands.",
         ),
     ] = False,
+    mdm: Annotated[
+        bool,
+        typer.Option(
+            "--mdm",
+            help="Mark this machine as provisioned through MDM in the machine-wide Unity Gateway "
+            "managed settings; `ug` then adds `mdm` to its User-Agent and sets MDM_OS. Configure "
+            "without it clears the mark. Ignored with --user.",
+        ),
+    ] = False,
     verbose: Annotated[
         str,
         typer.Option(
@@ -5168,7 +5328,7 @@ def configure(
         ),
     ] = "normal",
 ) -> None:
-    """Configure workspace URL and AI Gateway."""
+    """Configure workspace URL and Unity Gateway."""
     if ctx.invoked_subcommand is not None:
         return
     if verbose not in ("normal", "low"):
@@ -5181,6 +5341,7 @@ def configure(
             raise RuntimeError("Use either --global or --user, not both.")
         scope = "user" if user_scope else "global"
         set_config_scope(scope)
+        request_mdm_os(mdm)
         if global_scope:
             _check_machine_wide_only_request(
                 mcp=mcp, enable_databricks_ai_tools=enable_databricks_ai_tools
@@ -5190,6 +5351,7 @@ def configure(
                 agent, agents = _drop_per_user_agents(agent, agents)
                 if agent is None and agents == "":
                     # Every requested agent has only per-user settings: nothing to write.
+                    save_requested_mdm_os()
                     return
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
@@ -5388,6 +5550,7 @@ def configure(
         ):
             configure_mcp_command()
             _sync_claude_cowork_plugin()
+        save_requested_mdm_os()
         save_config_scope(scope)
     except typer.Exit:
         # `typer.Exit` subclasses RuntimeError, so it has to be re-raised ahead of the handler
@@ -5396,6 +5559,7 @@ def configure(
         # meaningless "ERROR 0".
         raise
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     except KeyboardInterrupt:
@@ -5403,6 +5567,7 @@ def configure(
         raise typer.Exit(130) from None
     finally:
         set_machine_wide_only(False)
+        request_mdm_os(None)
 
 
 # Only these agents have machine-wide settings; every other agent is configured per user.
@@ -5537,6 +5702,7 @@ def export_cmd(
     try:
         export_command(file_path=file_path)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5547,6 +5713,7 @@ def status_cmd() -> None:
     try:
         status()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5558,6 +5725,7 @@ def revert_cmd() -> None:
     try:
         result = revert()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     raise typer.Exit(result)
@@ -5571,11 +5739,13 @@ def doctor_cmd() -> None:
     try:
         doctor()
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
 
 @app.command("usage", rich_help_panel="Usage")
+@metrics.timed(metrics.UG_USAGE_DURATION_MS, label_args={"show_all": "show_all"})
 def usage_cmd(
     show_all: Annotated[
         bool, typer.Option("--all", help="Show all applicable budget limits.")
@@ -5586,6 +5756,7 @@ def usage_cmd(
         install_databricks_cli()
         usage_report(show_all=show_all)
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
@@ -5667,6 +5838,7 @@ def upgrade_cmd() -> None:
             print_err(f"Upgrade failed (exit code {exc.returncode}); `ucode` was not removed.")
         raise typer.Exit(1) from None
     except RuntimeError as exc:
+        metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
 
