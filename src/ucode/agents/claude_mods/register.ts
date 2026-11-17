@@ -242,9 +242,12 @@ export function register(on: On, options: PluginOptions): void {
   registerSubagentRouting(on, options);
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', async ($, e, next) => {
-    await refreshRoutingLogsPane($, options);
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
-    return next(e);
+    const result = await next(e);
+    // Start the reader after turn completion, as the spawn hook does, so a slow read cannot
+    // hold up completion or status cleanup.
+    void refreshRoutingLogsPane($, options).catch(() => {});
+    return result;
   });
 }

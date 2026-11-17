@@ -57,12 +57,12 @@ router or model-quality measurements. Guidance identifies the launched model wit
 unsolicited comparisons with the requested model; comparisons remain available when asked.
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
-The four logs-pane component tests group rendering/background refresh, reader failures
+The logs-pane component tests group rendering/background refresh, reader failures
 including truncated output, missing configuration, and launch gating. Their controlled reader
 does not establish live pane coverage; exact styling and missing-width fallback are not asserted.
-The pending-reader case checks nonblocking subagent startup, queued refreshes for parallel
-spawns, and no reads on ordinary turns or resumed/denied spawns. Missing/unreadable log behavior
-is covered through the CLI tests; the redundant
+The pending-reader cases check that turn completion/status cleanup and subagent startup are
+nonblocking, parallel spawns queue refreshes, and resumed/denied spawns or closed panes do not
+trigger reads. Missing/unreadable log behavior is covered through the CLI tests; the redundant
 direct-reader case and UUID failure injection were removed.
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
