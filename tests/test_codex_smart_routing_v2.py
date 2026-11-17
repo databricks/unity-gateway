@@ -317,7 +317,7 @@ class TestLaunchCodex:
                     "codex_models": ["system.ai.gpt-5-6-sol"],
                     "oss_models": ["system.ai.glm-5-2"],
                 },
-                ["--search"],
+                ["-c", 'developer_instructions="be brief"', "--search"],
                 binary="codex",
                 start_model="gpt-start",
                 render_overlay=codex.render_overlay,
@@ -371,7 +371,9 @@ class TestLaunchCodex:
             "shell_environment_policy.set.UCODE_SMART_ROUTER_PYTHON="
             + json.dumps(os.environ["UCODE_SMART_ROUTER_PYTHON"])
         ) in config_values
-        assert processes[0].argv[-2:] == [
+        assert processes[0].argv[-4:] == [
+            "-c",
+            'developer_instructions="be brief"',
             "--listen",
             "ws://127.0.0.1:41001",
         ]
@@ -383,6 +385,8 @@ class TestLaunchCodex:
             "ws://127.0.0.1:41002",
             "--model",
             "gpt-start",
+            "-c",
+            'developer_instructions="be brief"',
             "--search",
         ]
         if platform_name == "nt":

@@ -66,6 +66,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.codex_config import split_codex_config_overrides
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -3680,7 +3681,7 @@ def _disable_smart_routing_for_subcommand(tool: str, ctx: Any) -> Iterator[None]
     must therefore suppress the flag for the whole ucode launch flow. An
     explicit prompt after `--` remains eligible for routing.
     """
-    if _smart_routing_launch_shape(tool, ctx.args, _has_explicit_prompt(ctx)):
+    if _smart_routing_launch_shape(tool, ctx.args, _has_explicit_prompt(ctx, tool)):
         yield
         return
     previous = smart_routing_v2.disable_smart_routing()
@@ -3933,6 +3934,8 @@ def _should_launch_smart_routing(
 
 def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt: bool) -> bool:
     """Whether the forwarded arguments represent an interactive launch."""
+    if tool == AGENT_CODEX:
+        _, tool_args = split_codex_config_overrides(tool_args)
     if not tool_args or explicit_prompt:
         return True
     return tool == "claude" and tool_args[0].startswith("-")
@@ -4070,7 +4073,7 @@ def _launch_tool(
         # every ug line from here on must go to stderr instead.
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
-        explicit_prompt = _has_explicit_prompt(ctx)
+        explicit_prompt = _has_explicit_prompt(ctx, tool)
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
         # launch model and should therefore win in the launch summary.
@@ -4658,12 +4661,15 @@ class _PromptAwareCommand(TyperCommand):
         return super().parse_args(ctx, args)
 
 
-def _has_explicit_prompt(ctx: typer.Context) -> bool:
+def _has_explicit_prompt(ctx: typer.Context, tool: str) -> bool:
     suffix = ctx.meta.get(_PROMPT_SUFFIX_KEY)
     if not isinstance(suffix, tuple):
         return False
-    suffix_args = list(suffix)
-    return ctx.args == suffix_args and len(suffix_args) <= 1
+    args, suffix_args = ctx.args, list(suffix)
+    if tool == AGENT_CODEX:
+        _, args = split_codex_config_overrides(args)
+        _, suffix_args = split_codex_config_overrides(suffix_args)
+    return args == suffix_args and len(suffix_args) <= 1
 
 
 @app.callback(invoke_without_command=True)

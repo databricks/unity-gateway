@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import pytest
 import tomlkit
 
 from ucode.agents import codex
-from ucode.codex_config import codex_config_args, strip_hook_trust_state
+from ucode.codex_config import (
+    codex_config_args,
+    split_codex_config_overrides,
+    strip_hook_trust_state,
+)
 
 WS = "https://example.databricks.com"
 
@@ -96,6 +101,29 @@ args = ["codex-token"]
         pre_tool_override = next(arg for arg in args if arg.startswith("hooks.PreToolUse="))
         assert "route-subagent" in pre_tool_override
         assert 'model_provider="Databricks"' in args
+
+
+class TestSplitCodexConfigOverrides:
+    @pytest.mark.parametrize(
+        ("tool_args", "overrides", "rest"),
+        [
+            ([], [], []),
+            (["-c", "model=x", "fix this"], ["-c", "model=x"], ["fix this"]),
+            (
+                ["--config", "a=1", "exec", "--config=b=2", "fix"],
+                ["--config", "a=1", "--config=b=2"],
+                ["exec", "fix"],
+            ),
+            (
+                ["-c", "a=1", "app-server", "--listen", "ws://127.0.0.1:1"],
+                ["-c", "a=1"],
+                ["app-server", "--listen", "ws://127.0.0.1:1"],
+            ),
+            (["--search", "-c"], ["-c"], ["--search"]),
+        ],
+    )
+    def test_separates_overrides_from_the_rest(self, tool_args, overrides, rest):
+        assert split_codex_config_overrides(tool_args) == (overrides, rest)
 
 
 class TestStripHookTrustState:

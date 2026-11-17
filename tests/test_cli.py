@@ -820,6 +820,32 @@ class TestSubcommandRouting:
         assert observed == [None]
         assert os.environ[cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
 
+    @pytest.mark.parametrize(
+        ("launch_args", "routed"),
+        [
+            (["-c", "developer_instructions=x"], True),
+            (["-c", "developer_instructions=x", "--", "fix the parser"], True),
+            (["-c", "developer_instructions=x", "--", "-c", "model=y"], True),
+            (["-c", "developer_instructions=x", "exec", "fix the parser"], False),
+        ],
+    )
+    def test_codex_config_overrides_keep_inherited_smart_routing(
+        self, monkeypatch, launch_args, routed
+    ):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        observed = []
+
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: observed.append(
+                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
+            ),
+        ):
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert observed == ["1" if routed else None]
+
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
     def test_native_subcommand_suppresses_inherited_subagent_routing(
         self, monkeypatch, tool, subcommand
@@ -869,6 +895,12 @@ class TestSubcommandRouting:
                 ["--model", "gpt-5.6-sol", "fix the parser"],
                 False,
             ),
+            (
+                ["codex", "-c", "developer_instructions=x", "--", "fix the parser"],
+                ["-c", "developer_instructions=x", "fix the parser"],
+                True,
+            ),
+            (["claude", "-c", "--", "doctor"], ["-c", "doctor"], False),
         ],
     )
     def test_agent_records_prompt_separator(self, args, forwarded, has_separator):
@@ -878,7 +910,7 @@ class TestSubcommandRouting:
         assert result.exit_code == 0, result.output
         ctx = mock_launch.call_args.args[1]
         assert ctx.args == forwarded
-        assert cli_mod._has_explicit_prompt(ctx) is has_separator
+        assert cli_mod._has_explicit_prompt(ctx, args[0]) is has_separator
 
     @pytest.mark.parametrize("tool", ["codex", "claude"])
     @pytest.mark.parametrize(
@@ -900,6 +932,31 @@ class TestSubcommandRouting:
             explicit_prompt=explicit_prompt,
             user_pinned_model=model,
             provider=provider,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
+        ("tool_args", "explicit_prompt", "expected"),
+        [
+            (["-c", "developer_instructions=x"], False, True),
+            (["--config", "a=1", "--config=b=2"], False, True),
+            (["-c", "developer_instructions=x", "fix this"], True, True),
+            (["-c", "developer_instructions=x", "fix this"], False, False),
+            (["-c", "developer_instructions=x", "exec", "fix this"], False, False),
+            (["-c", "a=1", "app-server", "--listen", "ws://127.0.0.1:1"], False, False),
+        ],
+    )
+    def test_codex_config_overrides_do_not_change_the_launch_shape(
+        self, tool_args, explicit_prompt, expected
+    ):
+        options = cli_mod._launch_options(
+            "codex",
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=explicit_prompt,
+            user_pinned_model=None,
+            provider=None,
         )
 
         assert options.launch_smart_routing is expected

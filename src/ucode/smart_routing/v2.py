@@ -22,6 +22,7 @@ from ucode.codex_config import (
     codex_config_args,
     custom_catalog_models,
     custom_catalog_path,
+    split_codex_config_overrides,
 )
 from ucode.config_io import (
     APP_DIR,
@@ -945,9 +946,11 @@ def launch_codex(
 
     # Preserve the user's normal CODEX_HOME (including MCP servers, skills, and
     # preferences) and layer only ucode's gateway settings at CLI precedence.
+    # Forwarded overrides also configure the app-server, as they would a local Codex session.
+    forwarded_overrides, _ = split_codex_config_overrides(tool_args)
     metrics.agent_handoff()
     app_server = subprocess_cross_os.popen(
-        [binary, "app-server", *config_args, "--listen", app_server_url],
+        [binary, "app-server", *config_args, *forwarded_overrides, "--listen", app_server_url],
         env=os.environ.copy(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from enum import StrEnum
+from itertools import islice
 from pathlib import Path
 
 import tomlkit
@@ -173,3 +174,18 @@ def codex_config_args(config: dict) -> list[str]:
         else:
             args.extend(["--config", f"{key}={_toml_value(value)}"])
     return args
+
+
+def split_codex_config_overrides(tool_args: list[str]) -> tuple[list[str], list[str]]:
+    """Split Codex arguments into its ``-c``/``--config`` overrides and everything else."""
+    overrides: list[str] = []
+    rest: list[str] = []
+    args = iter(tool_args)
+    for arg in args:
+        if arg in {"-c", "--config"}:
+            overrides += [arg, *islice(args, 1)]
+        elif arg.startswith("--config="):
+            overrides.append(arg)
+        else:
+            rest.append(arg)
+    return overrides, rest
