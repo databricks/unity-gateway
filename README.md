@@ -91,12 +91,13 @@ is missing (macOS and Linux). On a workspace with a managed config, which can't 
 Antigravity yet, run `ug agents add antigravity` to use it self-managed.
 
 `ug copilot` lists every Claude and GPT model you can use on the workspace in
-Copilot's `/model` picker, and you can switch between them mid-session. Claude
+Copilot's `/model` picker, by readable names such as "Claude Opus 5.5", and you can
+switch between them mid-session. Claude
 models use the Anthropic Messages API, GPT-5 and newer use Responses, and older
 GPT models use Chat Completions. Gemini and open-source models aren't offered, except under
 `--model-location` (below).
 `ug copilot --model claude-opus-5-5` (or `system.ai.claude-opus-5-5`, or Copilot's
-own `dbx-anthropic/system.ai.claude-opus-5-5`) picks the model a session starts on;
+own `databricks/claude-opus-5-5`) picks the model a session starts on;
 an unknown or unsupported model fails before Copilot starts and lists the
 available ones. ug passes Copilot a per-session model registry, so your own
 `~/.copilot/providers.json` and `COPILOT_PROVIDER_*` settings apply only to plain
@@ -111,6 +112,13 @@ each gateway request, so OAuth sessions keep working past token expiry without a
 restart, and no Databricks token is written to disk. If the Databricks sign-in itself expires,
 Copilot shows a "Databricks sign-in expired" error; run `databricks auth login` and
 restart `ug copilot`. Proxy errors are logged to `~/.ucode/logs/copilot-proxy.log`.
+
+So that AI Gateway's usage table can tell sessions and subagents apart, the proxy sends each request
+a `session-id` header: the UUID of the session you resume with `--session-id` or `--resume`, or for
+a new session a new one that ug passes to Copilot as `--session-id`. A session picked another way
+(by name, `--continue`) gets an id of that launch only. A subagent's requests also get a
+`thread-id` of that session and the subagent. Copilot Chat in VS Code sends its chat's id as
+`session-id`.
 
 `ug copilot --provider <catalog>.<schema>.<name>` routes the session through a Model Provider
 Service instead, and `/model` lists that service's models: Claude models of an Anthropic or

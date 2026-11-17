@@ -359,6 +359,7 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+@metrics.http_result
 def _http_get_bytes(
     url: str,
     token: str,
@@ -381,9 +382,15 @@ def _http_get_bytes(
     request_headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
+    operation = metrics.api_operation(url)
     for attempt in range(max_retries + 1):
+        request_started = time.perf_counter()
+        status = None
+        if attempt:
+            metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
+                status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
                 if failure is None:
@@ -394,6 +401,7 @@ def _http_get_bytes(
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             return body, None
         except urllib_error.HTTPError as exc:
+            status = exc.code
             body = ""
             try:
                 body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -426,6 +434,17 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
+
+        finally:
+            metrics.record(
+                metrics.HTTP_REQUEST_DURATION_MS,
+                (time.perf_counter() - request_started) * 1000,
+                api_operation=operation,
+                http_method="GET",
+                attempt=metrics.attempt_number(attempt + 1),
+                http_status_code=status,
+            )
+            metrics.annotate(http_status_code=status)
 
         delay = _http_get_retry_delay(retry_after, attempt)
         _debug(
@@ -467,6 +486,7 @@ def _http_get_json(
         return None, f"response was not valid JSON ({exc.msg})"
 
 
+@metrics.http_result
 def _http_send_json(
     method: str,
     url: str,
@@ -497,8 +517,11 @@ def _http_send_json(
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
+    request_started = time.perf_counter()
+    status = None
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
+            status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
         if failure is not None:
@@ -514,6 +537,7 @@ def _http_send_json(
         except json.JSONDecodeError as exc:
             return None, f"response was not valid JSON ({exc.msg})"
     except urllib_error.HTTPError as exc:
+        status = exc.code
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -536,6 +560,16 @@ def _http_send_json(
         # URLError, and would otherwise escape the caller's error handling.
         _debug(f"{method} {url}", f"OSError: {exc}")
         return None, f"network error: {exc}"
+    finally:
+        metrics.record(
+            metrics.HTTP_REQUEST_DURATION_MS,
+            (time.perf_counter() - request_started) * 1000,
+            api_operation=metrics.api_operation(url),
+            http_method=method,
+            attempt=1,
+            http_status_code=status,
+        )
+        metrics.annotate(http_status_code=status)
 
 
 def _http_post_json(
@@ -985,7 +1019,9 @@ def _refresh_windows_path() -> None:
     clear_databricks_cli_cache()
 
 
+@metrics.timed(metrics.DEPENDENCY_INSTALL_DURATION_MS, dependency="databricks_cli")
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
+    metrics.annotate(action="update" if brew_subcommand == "upgrade" else "install")
     system = platform.system()
     try:
         if system == "Windows":
@@ -1294,9 +1330,13 @@ def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | 
 
 def list_profile_entries() -> list[dict]:
     """Return raw profile dicts ({"name", "host", "auth_type", ...}) from
-    `databricks auth profiles`.
+    `databricks auth profiles --skip-validate`.
 
-    Each non-PAT profile is returned individually — duplicate hosts (multiple
+    Only local metadata is needed here. Validating every profile would contact unrelated
+    workspaces and refresh their credentials before ug checks the selected workspace's auth.
+    The returned ``valid`` field is not an authentication result and must not be used as one.
+
+    Each profile is returned individually — duplicate hosts (multiple
     profiles pointing at the same workspace) appear as separate entries so the
     workspace picker can offer each profile by name. Order matches the CLI's
     own ordering.
@@ -1308,7 +1348,7 @@ def list_profile_entries() -> list[dict]:
     """
     try:
         result = run(
-            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--skip-validate", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -1325,7 +1365,17 @@ def list_profile_entries() -> list[dict]:
     except json.JSONDecodeError as exc:
         _debug("list_profile_entries", f"json decode error: {exc.msg}")
         return []
-    return [p for p in profiles if isinstance(p, dict)]
+    entries = [p for p in profiles if isinstance(p, dict)]
+    # The CLI infers implicit PAT auth only during validation. Retain ug's PAT
+    # filtering and explicit --use-pat support without contacting those hosts.
+    missing_auth_type = [p for p in entries if not p.get("auth_type")]
+    if missing_auth_type and (config := _read_databrickscfg()) is not None:
+        for entry in missing_auth_type:
+            name = entry.get("name")
+            if isinstance(name, str) and config.has_section(name):
+                if config.get(name, "token", fallback="").strip():
+                    entry["auth_type"] = "pat"
+    return entries
 
 
 def get_databricks_profiles() -> list[tuple[str, str]]:
@@ -1404,21 +1454,26 @@ def profile_auth_type(profile: str) -> str | None:
     return None
 
 
-def _read_databrickscfg_token(profile: str) -> str | None:
-    """Read the static ``token`` value for a profile from ``~/.databrickscfg``.
-
-    `databricks auth token` only knows OAuth caches; for PAT profiles the PAT
-    itself is the credential, stored in the config file. The parser's default
-    section is pointed at a name that never appears in the file so a token in
-    ``[DEFAULT]`` does not leak into every named profile."""
+def _read_databrickscfg() -> configparser.ConfigParser | None:
+    """Read profiles without inheriting credentials from the ``[DEFAULT]`` profile."""
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
     try:
         if not parser.read(cfg_path, encoding="utf-8"):
             return None
-    except (configparser.Error, OSError):
+    except (configparser.Error, OSError, UnicodeError):
         return None
-    if not parser.has_section(profile):
+    return parser
+
+
+def _read_databrickscfg_token(profile: str) -> str | None:
+    """Read the static PAT from its own profile, including ``[DEFAULT]`` when selected.
+
+    `databricks auth token` only knows OAuth caches; for PAT profiles the PAT
+    itself is the credential, stored in the config file.
+    """
+    parser = _read_databrickscfg()
+    if parser is None or not parser.has_section(profile):
         return None
     token = (parser.get(profile, "token", fallback="") or "").strip()
     return token or None
@@ -1470,6 +1525,7 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
+@metrics.timed(metrics.DATABRICKS_LOGIN_DURATION_MS, login_method="cli")
 def run_databricks_login(
     workspace: str, profile: str | None = None, *, workspace_id: str | None = None
 ) -> None:
@@ -1482,6 +1538,7 @@ def run_databricks_login(
     ``workspace_id`` selects the workspace on a host that serves several. With no profile on that
     host yet, the login names a new one: without a name the CLI saves none outside a terminal, and
     its own default is shared by every workspace of the account."""
+    metrics.mark_login()
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
     print_note("A browser may open for `databricks auth login`.")
@@ -1737,21 +1794,35 @@ def _browser_login(
             return "", None
         try:
             # Keep login output off the helper's token-only stdout.
-            subprocess_cross_os.run(
-                [
-                    databricks_cli_path(),
-                    "auth",
-                    "login",
-                    "--host",
-                    workspace,
-                    *_profile_args(profile),
-                ],
-                timeout=remaining,
-                stdin=subprocess.DEVNULL,
-                stdout=sys.stderr,
-                stderr=sys.stderr,
-                env=env,
-            )
+            metrics.mark_login()
+            with metrics.measure(
+                metrics.DATABRICKS_LOGIN_DURATION_MS,
+                workspace=workspace,
+                operation=metrics.DATABRICKS_LOGIN_OPERATION,
+                login_method="cli",
+            ):
+                result = subprocess_cross_os.run(
+                    [
+                        databricks_cli_path(),
+                        "auth",
+                        "login",
+                        "--host",
+                        workspace,
+                        *_profile_args(profile),
+                    ],
+                    timeout=remaining,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stderr,
+                    stderr=sys.stderr,
+                    env=env,
+                )
+                metrics.annotate(process_exit_code=result.returncode)
+                if result.returncode:
+                    metrics.failure(
+                        metrics.DATABRICKS_LOGIN_OPERATION,
+                        subprocess.CalledProcessError(result.returncode, result.args),
+                        login_method="cli",
+                    )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         return fetch()
@@ -1774,6 +1845,7 @@ def _get_databricks_token_for_profile(
                 f"profile={profile or '<none>'}",
             )
             if memoized.token:
+                metrics.annotate(in_process_cache_hit=True)
                 return memoized.token
             if not browser_login:
                 raise RuntimeError(memoized.error)
@@ -1790,6 +1862,7 @@ def _get_databricks_token_for_profile(
                     f"profile={profile or '<none>'}",
                 )
                 if memoized.token:
+                    metrics.annotate(in_process_cache_hit=True)
                     return memoized.token
                 if not browser_login:
                     raise RuntimeError(memoized.error)
@@ -1948,6 +2021,9 @@ def _fetch_databricks_token_for_profile(
     return token
 
 
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
 def get_databricks_token(
     workspace: str,
     profile: str | None = None,
@@ -1963,6 +2039,7 @@ def get_databricks_token(
     # same short-circuit baked into ``build_auth_shell_command``.
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     if bearer:
+        metrics.annotate(token_source="environment")
         metrics.bind(workspace, bearer)
         _debug("get_databricks_token", "using DATABRICKS_BEARER env var")
         return bearer
@@ -1973,6 +2050,7 @@ def get_databricks_token(
     # running process, so the command is re-run on every fetch instead.
     command = os.environ.get("DATABRICKS_BEARER_COMMAND", "").strip()
     if command:
+        metrics.annotate(token_source="command")
         token = _bearer_from_command(command)
         metrics.bind(workspace, token)
         return token
@@ -2315,6 +2393,7 @@ _MODEL_SERVICES_PAGE_RETRIES = 4
 _NOT_FOUND_REASON_MARKERS = ("http 404", "not_found")
 
 
+@metrics.http_result
 def _get_model_services_page(
     url: str, token: str, *, retries: int = _MODEL_SERVICES_PAGE_RETRIES
 ) -> tuple[dict | list | None, str | None]:
@@ -2326,7 +2405,12 @@ def _get_model_services_page(
     payload: dict | list | None = None
     reason: str | None = None
     for attempt in range(retries):
-        payload, reason = _http_get_json(url, token, timeout=30)
+        if attempt:
+            metrics.record(
+                metrics.HTTP_RETRY_COUNT, 1, api_operation="model_services_list", http_method="GET"
+            )
+        with metrics.http_attempt(attempt + 1):
+            payload, reason = _http_get_json(url, token, timeout=30)
         if payload is not None:
             return payload, None
         _debug("model-services page", f"attempt {attempt + 1}/{retries} failed: {reason}")
@@ -2543,6 +2627,9 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
+@metrics.timed(
+    metrics.MODEL_SERVICE_DISCOVERY_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def discover_model_services(
     workspace: str, token: str
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
@@ -2561,6 +2648,7 @@ def discover_model_services(
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
     """
+    metrics.annotate(cache_hit=workspace in _MODEL_SERVICES_CACHE)
     ids, reason = list_model_services(workspace, token)
     if not ids:
         return {}, [], [], [], reason
@@ -2622,6 +2710,9 @@ def _managed_config_user_agent() -> str:
     return ucode_user_agent(ug_version(), *tokens)
 
 
+@metrics.timed(
+    metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
     """List the workspace's managed CodingAgentConfig(s) via the Unity Gateway."""
     url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}"
@@ -3999,6 +4090,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 )
 
 
+@metrics.timed(metrics.MODEL_SERVICE_ACCESS_CHECK_DURATION_MS)
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
     base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
