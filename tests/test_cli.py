@@ -6673,6 +6673,14 @@ class TestConfigureScopeFlags:
 
     ARGS = ["configure", "--agents", "claude,codex", "--workspace", "https://first.databricks.com"]
 
+    @pytest.fixture(autouse=True)
+    def _no_published_agent_config(self, monkeypatch):
+        # The workspace publishes no agent configuration, so --global merges.
+        from ucode import published_agent_config
+
+        monkeypatch.setattr(published_agent_config, "sign_in", lambda *a, **kw: "token")
+        monkeypatch.setattr(published_agent_config, "fetch_published", lambda *a, **kw: None)
+
     @staticmethod
     def _configure(extra=(), *, args=None):
         with (

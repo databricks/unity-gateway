@@ -1705,6 +1705,28 @@ class TestCodexLaunch:
             "X-New": "1",
         }
 
+    def test_managed_run_drops_ug_headers_once_with_a_warning(self, monkeypatch):
+        warnings: list[str] = []
+        monkeypatch.setenv("UG_HEADERS", "X-New: 1")
+        monkeypatch.setattr(codex, "published_agent_config_used", lambda: True)
+        monkeypatch.setattr(codex, "print_warning_err", warnings.append)
+        monkeypatch.setattr(codex, "_warned_published_agent_config_headers", False)
+        monkeypatch.setattr(
+            codex,
+            "render_overlay",
+            lambda *a, **k: {
+                "model_providers": {"Databricks": {"http_headers": {"X-Team": "eng"}}}
+            },
+        )
+
+        first = codex._render_launch_overlay(WS)
+        codex._render_launch_overlay(WS)
+
+        # The provider is locked in requirements.toml, so Codex would ignore the header anyway.
+        assert first["model_providers"]["Databricks"]["http_headers"] == {"X-Team": "eng"}
+        assert len(warnings) == 1
+        assert "published agent configuration" in warnings[0]
+
     def test_provider_discovery_uses_custom_oauth_token(self, tmp_path, monkeypatch):
         self._patch(tmp_path, monkeypatch)
         catalog_path = tmp_path / "models.json"
