@@ -64,8 +64,8 @@ def _normalize_smart_router_env_guard(command: str) -> str:
             + command.removeprefix(whitespace_guard)
         )
     return re.sub(
-        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
-        r'\1"ENV_UNSET"\2',
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1Write-Output "ENV_UNSET"\2',
         command,
         count=1,
     )
@@ -149,6 +149,11 @@ class TerminalScreen(pyte.Screen):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        # Copilot sends the private form (`CSI ? 6 n`), which pyte's Stream passes as `private=True`
+        # but Screen.report_device_status does not accept.
+        super().report_device_status(mode, **kwargs)
 
     @property
     def display(self):

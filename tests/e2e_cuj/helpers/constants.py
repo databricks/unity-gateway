@@ -5,6 +5,7 @@ from pathlib import Path
 
 CLAUDE = "claude"
 CODEX = "codex"
+COPILOT = "copilot"
 MANAGED_PATHS = (
     Path("/etc/claude-code/managed-settings.json"),
     Path("/etc/codex/managed_config.toml"),
@@ -69,3 +70,14 @@ FIXTURE_NOTES_SKILL_NAME = "ug_e2e.skills.fixture-notes"
 FIXTURE_CATALOG_LOOKUP_SKILL_NAME = "ug_e2e.skills.fixture-catalog-lookup"
 FIXTURE_DECOY_SKILL_NAME = "ug_e2e.other_skills.fixture-decoy"
 SKILLS_LOCATION = "ug_e2e.skills"
+
+SOURCE_SCHEMA = "ug_e2e.other_models"
+SOURCE_CLAUDE_ALIAS = f"{SOURCE_SCHEMA}.claude_decoy"
+SOURCE_CODEX_ALIAS = f"{SOURCE_SCHEMA}.codex_decoy"
+SOURCE_ANTHROPIC_PROVIDER = "ug_e2e.providers.anthropic"
+SOURCE_OPENAI_PROVIDER = "ug_e2e.providers.openai"
+SOURCE_ANTHROPIC_TARGET = "claude-haiku-5-5"
+SOURCE_OPENAI_TARGET = "gpt-6-luna"
+SOURCE_CLAUDE_PROVIDER_MODEL = f"{SOURCE_ANTHROPIC_PROVIDER}.{SOURCE_ANTHROPIC_TARGET}"
+SOURCE_CODEX_PROVIDER_MODEL = f"{SOURCE_OPENAI_PROVIDER}.{SOURCE_OPENAI_TARGET}"
+SOURCE_COPILOT_DEFAULT_MODEL = "system.ai.gpt-6-luna"

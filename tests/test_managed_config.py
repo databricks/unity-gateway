@@ -126,6 +126,68 @@ class TestNormalize:
         }
         assert "agent_native_settings" not in agents["codex"]
 
+    def test_agent_native_config_variants(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {
+                        "agent_native_config": {
+                            "claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}
+                        }
+                    },
+                },
+                {
+                    "agent": "CODING_AGENT_CODEX",
+                    "config": {
+                        "agent_native_config": {
+                            "codex": {
+                                "config": {"model_reasoning_effort": "high"},
+                                "requirements": {"allowed_sandbox_modes": ["read-only"]},
+                            }
+                        }
+                    },
+                },
+            ]
+        }
+        agents = normalize_managed_config(raw)["enabled_agents"]
+        assert agents["claude"] == {"claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}}
+        assert agents["codex"] == {
+            "codex": {
+                "config": {"model_reasoning_effort": "high"},
+                "requirements": {"allowed_sandbox_modes": ["read-only"]},
+            }
+        }
+
+    def test_flat_variants_outside_agent_native_config_are_ignored(self):
+        # Fields 13 and 14 held the variants directly on AgentConfig; the server reserves them now.
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {"claude_code": {"managed_settings": {"cleanupPeriodDays": 7}}},
+                }
+            ]
+        }
+        assert "claude_code" not in normalize_managed_config(raw)["enabled_agents"]["claude"]
+
+    def test_both_native_fields_are_kept(self):
+        raw = {
+            "enabled_agents": [
+                {
+                    "agent": "CODING_AGENT_CLAUDE_CODE",
+                    "config": {
+                        "agent_native_settings": {"a": 1},
+                        "agent_native_config": {"claude_code": {"managed_settings": {"b": 2}}},
+                    },
+                }
+            ]
+        }
+        assert normalize_managed_config(raw)["enabled_agents"]["claude"] == {
+            "agent_native_settings": {"a": 1},
+            "claude_code": {"managed_settings": {"b": 2}},
+        }
+
     def test_non_object_settings_are_dropped(self):
         raw = {
             "enabled_agents": [

@@ -63,6 +63,70 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
   --collect-only tests/e2e_cuj
 ```
 
+## Model sources in CUJ9
+
+`test_cuj9_model_sources.py` uses
+`https://dbc-93fdd3cb-4b13.cloud.databricks.com`, workspace `7474659962444308`.
+Its 14 cases cover native discovery and default inference for Claude Code, Codex,
+and Copilot CLI, explicit inference on every expanded model, and one routed
+Claude child. Smart routing is enabled only for Claude Code. Codex and Copilot
+tasks must send no routing requests.
+
+Copilot explicit inference on each source model is currently skipped (gap): the gateway
+rejects the provider-service `gpt-6-luna` request with a 400 on `mlflow/v1/responses`.
+Re-enable it once that route is fixed (AIGTWY-5588).
+
+| Agent | Explicit MPS deep link | Explicit model service | Wildcard |
+| --- | --- | --- | --- |
+| Claude Code | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `ug_e2e.models.claude_sonnet` | `ug_e2e.other_models.*` includes both aliases |
+| Codex | `ug_e2e.providers.openai.gpt-6-luna` | `ug_e2e.models.gpt_luna` | `ug_e2e.other_models.*` includes only `codex_decoy` |
+| Copilot CLI | `ug_e2e.providers.anthropic.claude-haiku-5-5` | `system.ai.gpt-6-luna` (hosted) | `ug_e2e.providers.openai.*` adds the qualified GPT model |
+
+Each source contributes distinct models, so wildcard expansion cannot hide a
+missing explicit source. Claude and Codex default to their custom model services;
+Copilot defaults to the hosted GPT service. Copilot requires names such as
+`gpt-6-luna`; aliases such as `gpt_luna` are incompatible with its model classifier.
+Custom-model inference is covered by Claude and Codex.
+
+Claude and Codex discovery cases compare exact native picker inventories; Codex
+also checks its app-server `model/list`. Copilot checks the active per-session
+registry's model IDs and wire providers without archiving its credentials. This
+is registry and completed-task coverage, not a Copilot picker assertion. Every
+explicit-model task requires a completed native answer containing a hidden file
+value and successful recorded inference on the exact model. The routing case uses
+the TUI request recorder to pair `routes:select` with an HTTP 200 response selecting
+an offered source model. It also requires completed child and parent answers.
+
+The workspace directly publishes CodingAgentConfig
+`coding-agent-configs/d55f1e06-54bf-42cd-9b2c-19db77da968f`, created on 2026-11-16,
+with the sources and defaults above. Claude is the default agent, tracing is off
+for all three agents, and Copilot VS Code integration is off. The suite reads and
+validates this live configuration; it does not load a local configuration artifact.
+The CUJ service principal needs access to the workspace and named services.
+Tests never change the published configuration, services, or grants.
+
+Direct API probes on 2026-11-16 verified inference with the Anthropic catalog's
+`anthropic-aigw-e6dfbcac-ug_e2e.other_models.codex_decoy` alias when the request
+includes `x-databricks-use-coding-agent-mode: true`, which UG sets automatically.
+11 of the 14 cases are active; the three `test_sources_copilot_inference_on_each_source_model`
+cases are skipped (gap) pending AIGTWY-5588. The qualified OpenAI provider
+model succeeds at `/ai-gateway/codex/v1/responses`, but Copilot's configured
+`/ai-gateway/mlflow/v1/responses` path rejects its native API type.
+
+Use a clean disposable POSIX runner and the normal CUJ service-principal
+variables. Install the checkout's `ug`, Databricks CLI `1.17.0`, Claude Code
+`2.1.290`, Codex `0.156.0`, and Copilot CLI `1.0.91` on PATH. CI installs the
+pinned Copilot CLI only for this automatically discovered shard.
+
+```bash
+uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
+  --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj9_model_sources.py -v
+```
+
+Collection and offline checks establish suite structure only. No live CUJ9 pass
+is claimed until the published configuration and agent journeys have been
+validated together. Direct API probes do not establish native agent or TUI coverage.
+
 CUJ1, CUJ2 and CUJ3 share Desktop setup that seeds the same personal profile and metadata in an
 isolated Linux profile path. CUJ1 and CUJ2's configuration cases read their dedicated workspaces'
 published CodingAgentConfig without `UCODE_MANAGED_CONFIG_STUB`. They enable this profile path

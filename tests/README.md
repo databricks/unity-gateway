@@ -399,13 +399,15 @@ Record-shape assertions live here; missing/unreadable reader behavior is covered
 the CLI tests below. Filesystem failure cases cover directory creation, opening, and locking.
 `test_smart_router_logs_cli.py` covers the hidden `ug smart-router-logs` JSON reader:
 overview shape/order, malformed/foreign-version/unknown-type line skipping, missing and unreadable sessions,
-and `--decision` hit/miss; local component checks only. Four native logs-pane tests cover
-rendering/background refresh, reader errors and recovery including truncated output, missing
-configuration, and launch gating with a fake logs reader. Exact styling and missing-width
-fallback are not asserted; interactive pane and live-session coverage remain absent.
-The refresh case holds a reader pending while foreground/background spawns complete and
-checks that parallel spawns queue a refresh. Ordinary turns, resumed/denied spawns, and
-closed panes do not trigger reads.
+and `--decision` hit/miss; local component checks only. Native logs-pane tests cover rendering and
+launch gating with a fake logs reader, drill-down into preview-only decision details (metadata,
+stale-request handling, Back navigation, detail-load failures and their error envelopes), reader
+errors and recovery including truncated output, missing configuration, and refreshes on turn
+completions and new subagent spawns while the pane is open. Exact styling and missing-width
+fallback are not asserted; interactive pane and live-session coverage remain absent. The refresh
+case holds a reader pending while turn completion/status cleanup and foreground/background spawns
+proceed, and checks that parallel spawns queue one rerun; resumed/denied spawns and closed panes do
+not trigger reads.
 
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
@@ -1296,6 +1298,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
+| `test_sources_{claude,codex}_discovers_mixed_models_and_uses_custom_default` in CUJ9 | Configure mixed model sources, inspect native discovery, and complete a TUI task on the custom default | Exact Claude/Codex picker inventories, Codex model/list, native completed answers and paired exact-model HTTP 200 responses |
+| `test_sources_copilot_discovers_mixed_models_and_uses_service_default` in CUJ9 | Configure mixed model sources, inspect the live registry, and complete a TUI task on the hosted GPT default | Exact active registry IDs and wire providers, a native completed answer, paired exact-model HTTP 200 inference, and registry removal on exit |
+| `test_sources_{claude,codex,copilot}_inference_on_each_source_model` in CUJ9 | Run an explicit headless file task on every expanded source model | Each provider deep link, custom service, schema wildcard and provider wildcard contribution serves a hidden-value task; Codex and Copilot never route |
+| `test_sources_claude_routing_response_selects_an_expanded_source` in CUJ9 | Delegate a real TUI task with Claude-only managed smart routing | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference`, `test_cuj_claude_mps_smart_routing_header` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, Claude TUI, and Claude smart-routing cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; inference cases record the MPS target header, model, paired HTTP 200, and completed greeting. The smart-routing case checks the managed MPS header on first-prompt and delegated-task router requests, their HTTP 200 responses, and completed native turns. Request IDs correlate greeting traffic. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
@@ -1750,8 +1756,15 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+component coverage. CUJ9 collects 14 installed-agent cases for mixed sources and qualified MPS
+inference, with smart routing only for Claude Code. The workspace directly publishes
+its configuration as of 2026-11-16; tests validate it without a local configuration
+artifact. Claude and Codex use custom defaults, while Copilot uses hosted
+`system.ai.gpt-6-luna`. 11 of the 14 cases are active; the three
+`test_sources_copilot_inference_on_each_source_model` cases are skipped (gap) pending
+investigation (AIGTWY-5588) of a gateway 400 on `mlflow/v1/responses` for the
+provider-service GPT luna model. These are implemented assertions, not a live pass. See the
+[CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).
 
 Copilot CLI registry label checks cover human-readable labels for qualified catalog models,
 duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names

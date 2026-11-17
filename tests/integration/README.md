@@ -37,7 +37,8 @@ Toggle approvals accept only the requested command or its exact environment-vari
 on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
 remain rejected.
 PowerShell guard matching recognizes the fixed `-not` and `IsNullOrWhiteSpace` checks
-of both session variables, including ConPTY's replacement selection marker. Component
+of both session variables, a literal missing-variable message with or without `Write-Output`,
+and ConPTY's replacement selection marker. Component
 tests reject extra commands, substitutions, other variables, and different conditions.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
@@ -70,12 +71,12 @@ router or model-quality measurements. Guidance identifies the launched model wit
 unsolicited comparisons with the requested model; comparisons remain available when asked.
 Native registration checks cover model-catalog guidance in routing-only and orchestration
 modes, retained host Usage notes, and unchanged descriptions when routing is off.
-The four logs-pane component tests group rendering/background refresh, reader failures
+The logs-pane component tests group rendering/background refresh, reader failures
 including truncated output, missing configuration, and launch gating. Their controlled reader
 does not establish live pane coverage; exact styling and missing-width fallback are not asserted.
-The pending-reader case checks nonblocking subagent startup, queued refreshes for parallel
-spawns, and no reads on ordinary turns or resumed/denied spawns. Missing/unreadable log behavior
-is covered through the CLI tests; the redundant
+The pending-reader cases check that turn completion/status cleanup and subagent startup are
+nonblocking, parallel spawns queue refreshes, and resumed/denied spawns or closed panes do not
+trigger reads. Missing/unreadable log behavior is covered through the CLI tests; the redundant
 direct-reader case and UUID failure injection were removed.
 
 Windows and macOS Cowork desktop coverage, installation detection, and required
@@ -2208,8 +2209,20 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+component coverage. Dedicated CUJ9 adds 14 installed-agent cases for mixed sources and
+qualified MPS inference on its separate workspace. Smart routing is enabled only for
+Claude Code. The workspace directly publishes its configuration as of 2026-11-16;
+tests validate it without a local configuration artifact. Claude and Codex use custom
+defaults, while Copilot uses hosted `system.ai.gpt-6-luna`. 11 of the 14 cases are active;
+the three Copilot per-source inference cases are skipped (gap) pending AIGTWY-5588.
+These are implemented assertions, not a live pass. See the
+[CUJ9 published configuration and run command](../e2e_cuj/README.md#model-sources-in-cuj9).
+
+| CUJ9 journey | Observable evidence |
+| --- | --- |
+| Claude, Codex, and Copilot discovery and defaults | Exact native Claude/Codex picker inventories, Codex model/list, active Copilot registry IDs and wire providers, followed by completed native TUI tasks on custom Claude/Codex or hosted Copilot defaults and exact-model HTTP 200 inference |
+| Explicit inference on every source model | Hidden-value tasks on MPS deep links, custom model services, schema wildcards and a provider wildcard; Codex and Copilot send no routing request |
+| Claude-only delegated task | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
 
 Antigravity MCP web-search evidence compares homepage slash variants and ignores
 `utm_source` attribution while retaining the completed-call and official-URL checks.
