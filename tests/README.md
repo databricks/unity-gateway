@@ -1215,6 +1215,30 @@ Shared native transcript parsing is checked by `test_integration_agent_helpers.p
 `test_integration_evidence.py`. These component checks protect existing journey evidence;
 they do not establish live agent coverage.
 
+`test_pr_demo.py` exercises the contributor `pr-demo` recorder and publisher
+with controlled git, GitHub, install, and command boundaries. It checks output
+location (an explicit `--out` inside the checkout, including through symlinks,
+fails before anything is recorded or installed), sandbox isolation, shared frame
+cropping (including transient content),
+the identical-output gate (record exits with code 3 and publishing refuses an
+all-identical manifest), workspace-mode comparison excluding hidden setup while
+retaining it in recordings/transcripts, early missing-profile checks, `--use-pat` only for PAT profiles, the OAuth
+`~/.databricks` sandbox link, renderer fairness,
+ANSI/GIF/PNG/text output, host masking before rendering (including split/colored
+output and typed commands), manifest sanitization, and secret gates for recordings,
+publishing, and skip reasons. These scans do not guarantee that arbitrary sensitive
+content is absent; live workspace recording is not covered. Tests also check the test/YAML-only skip
+classifier, release asset naming, creation races, and a failed upload preserving
+the previous demo body block and labels while exiting nonzero, PR body block and
+`NO_PR_DEMO_NEEDED_RATIONALE=` line transforms
+(insert, in-place replace, dedupe, idempotency, removal, one-line normalization),
+and matching skill discovery frontmatter. Release assets are kept after a PR
+merges or closes; no deletion coverage exists or is required. Renderer
+cases use `importorskip` for pyte and Pillow; run them with
+`uv run --with pyte --with pillow pytest tests/test_pr_demo.py`. They do not run
+real ug commands or use the network. `test_packaging.py` builds the wheel and
+checks that contributor-only files are excluded and shipped skills are present.
+
 ## CUJ coverage matrix
 
 These are **implemented assertions**, not a claim that every version passes.
