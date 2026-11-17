@@ -59,11 +59,11 @@ export const AUTO_MAIN_DESCRIPTION = "Subagents are now smart-routed. Pick the m
 export const AUTO_SET_PREFIX = 'Auto on: ';
 export const AUTO_KEPT_PREFIX = 'Auto still on: ';
 
-// Without a main model, the confirmation precedes the chooser that names it.
-export function autoStatus(mainModel: string | undefined, setModel: boolean): string {
-  const main = mainModel === undefined ? 'choose your main model'
-    : `main agent on \`${mainModel.replace(/^system\.ai\./, '')}\``;
-  return `${setModel ? AUTO_SET_PREFIX : AUTO_KEPT_PREFIX}subagents smart-routed · ${main}`;
+// The static Auto row's confirmation names no main model: native writes it before the
+// chooser opens, and the prompt hint row names the main model.
+function autoStatus(mainModel: string | undefined, setModel: boolean): string {
+  const main = mainModel === undefined ? '' : ` · main agent on \`${mainModel.replace(/^system\.ai\./, '')}\``;
+  return `${setModel ? AUTO_SET_PREFIX : AUTO_KEPT_PREFIX}subagents smart-routed${main}`;
 }
 
 export function formatAutoConfirmation(text: string, mainModel: string | undefined, setModel: boolean): string {

@@ -251,31 +251,30 @@ const SET_STATIC = {
   message: { role: 'user', isMeta: false, content: [{ type: 'text', text: `<local-command-stdout>Set model to \`${DEFAULT_ALIAS}\`` }] },
   origin: { kind: 'engine' },
 } as never;
-const CHOSE_OTHER = 'Auto on: subagents smart-routed · main agent on `claude-haiku-4-5`';
-const KEPT_MAIN = 'Auto on: subagents smart-routed · main agent on `claude-sonnet-5`';
-const CHOOSE = '<local-command-stdout>Auto on: subagents smart-routed · choose your main model';
+// Native writes this row as its picker closes, before the chooser opens; it names
+// no main model in either order, and the prompt hint row names the main model.
+const NEUTRAL = '<local-command-stdout>Auto on: subagents smart-routed';
 
-test('choosing a main model after entering Auto confirms and sends the new one', { options: OPTIONS }, async ($, on) => {
+test('choosing a main model after entering Auto keeps the confirmation neutral and sends the new one', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
   const rows = captureAppends(on);
   await $.session.start(START);
-  // Entering Auto confirms before the chooser names the main model.
   await $.command.run({ command: 'model', args: 'auto' });
   await $.session.append(SET_STATIC);
-  expect(rows).toEqual([CHOOSE]);
+  expect(rows).toEqual([NEUTRAL]);
 
   const pane = await mountChooser($);
   await pane.press({ key: 'auto-main-model-1' });
   await session.clock.advance(0);
-  // The transcript then names the main model just chosen.
-  expect(rows.at(-1)).toBe(CHOSE_OTHER);
+  // The save appends no notice: a plugin's system notice is not drawn outside verbose mode.
+  expect(rows).toEqual([NEUTRAL]);
   await step($, DEFAULT_ALIAS);
   await step($, DEFAULT_ALIAS, 'child');
   expect(sent).toEqual([OTHER, OTHER]);
 });
 
-test('a native Auto confirmation landing after the pane save keeps the new main model', { options: OPTIONS }, async ($, on) => {
+test('a native Auto confirmation landing after the pane save stays neutral and keeps the new main model', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
   const rows = captureAppends(on);
@@ -288,7 +287,7 @@ test('a native Auto confirmation landing after the pane save keeps the new main 
   await $.session.append(SET_STATIC);
   await session.clock.advance(0);
 
-  expect(rows).toEqual([CHOSE_OTHER, '<local-command-stdout>' + CHOSE_OTHER]);
+  expect(rows).toEqual([NEUTRAL]);
   expect(session.store[AUTO.storeKey]).toBe(OTHER);
   await step($, DEFAULT_ALIAS);
   await step($, DEFAULT_ALIAS, 'child');
@@ -335,14 +334,14 @@ test('a fresh static Auto session names the saved main model in the hint row', {
 // Native 2.1.325's order, from a live transcript: /model returns its panel ref,
 // native appends the static row's confirmation as its picker closes, and only
 // then does the person pick a main model in the mod's chooser.
-test('the /model confirmation never names the previous main model', { options: OPTIONS }, async ($, on) => {
+test('the /model confirmation never names a main model; the hint row follows the pick', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
   const rows = captureAppends(on);
   const hint = await hintTail($, on);
   await $.session.start(START);
 
-  for (const [index, model, notice] of [[1, OTHER, CHOSE_OTHER], [0, MAIN, KEPT_MAIN]] as const) {
+  for (const [index, model, label] of [[1, OTHER, 'Haiku 4.5'], [0, MAIN, 'Sonnet 5']] as const) {
     rows.length = 0;
     await $.command.run({ command: 'model', args: '' });
     await $.session.append(SET_STATIC);
@@ -351,12 +350,70 @@ test('the /model confirmation never names the previous main model', { options: O
     await pane.press({ key: `auto-main-model-${index}` });
     await session.clock.advance(0);
     await pane.unmount();
-    expect(rows).toEqual([CHOOSE, notice]);
+    expect(rows).toEqual([NEUTRAL]);
+    expect(await hint()).toBe(`Auto (${label}) · smart router ON`);
     sent.length = 0;
     await step($, DEFAULT_ALIAS);
     await step($, DEFAULT_ALIAS, 'child');
     expect(sent).toEqual([model, model]);
     expect(session.store[AUTO.storeKey]).toBe(model);
   }
-  expect(await hint()).toBe('Auto (Sonnet 5) · smart router ON');
+});
+
+test('leaving the chooser without a pick appends no notice and keeps the main model', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
+  const sent = captureSteps(on);
+  const rows = captureAppends(on);
+  const hint = await hintTail($, on);
+  await $.session.start(START);
+  await $.command.run({ command: 'model', args: '' });
+  await $.session.append(SET_STATIC);
+  await session.clock.advance(0);
+  await (await mountChooser($)).unmount();
+  await session.clock.advance(0);
+
+  expect(rows).toEqual([NEUTRAL]);
+  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
+  await step($, DEFAULT_ALIAS);
+  expect(sent).toEqual([OTHER]);
+});
+
+const EFFORT_ECHO = '<command-name>/effort</command-name>\n            <command-message>effort</command-message>\n            <command-args>status</command-args>';
+const EFFORT_OUTPUT = '<local-command-stdout>Current effort level: low (Quick, straightforward implementation with minimal overhead)</local-command-stdout>';
+const HIDDEN = /^<local-command-caveat>[^<]*<\/local-command-caveat>$/;
+
+function commandRow(text: string, origin: unknown) {
+  return { door: 'command', message: { role: 'user', isMeta: false, content: [{ type: 'text', text }] }, origin } as never;
+}
+
+// Native 2.1.325 draws no user row carrying a local-command caveat; it draws the
+// echo and the stdout of every other command row.
+test("the mod's own /effort rows are hidden but a typed /effort status still shows", { options: OPTIONS }, async ($, on) => {
+  staticCatalogSession(on, DEFAULT_ALIAS);
+  const rows = captureAppends(on);
+  await $.session.start(START);
+  const mod = { kind: 'plugin', name: 'ug-smart-router' };
+  await $.session.append(commandRow(EFFORT_ECHO, mod));
+  await $.session.append(commandRow(EFFORT_OUTPUT, mod));
+  await $.session.append(commandRow(EFFORT_ECHO.replace('status', 'high'), mod));
+  await $.session.append(commandRow('<local-command-stdout>Set effort level to high</local-command-stdout>', mod));
+  expect(rows).toHaveLength(4);
+  for (const row of rows) expect(row).toMatch(HIDDEN);
+
+  rows.length = 0;
+  const person = { kind: 'composer' };
+  await $.session.append(commandRow(EFFORT_ECHO, person));
+  await $.session.append(commandRow(EFFORT_OUTPUT, person));
+  expect(rows).toEqual([EFFORT_ECHO, EFFORT_OUTPUT]);
+});
+
+test('the hidden effort read still feeds the chooser its native level', { options: OPTIONS }, async ($, on) => {
+  staticCatalogSession(on, DEFAULT_ALIAS);
+  await $.session.start(START);
+  const mod = { kind: 'plugin', name: 'ug-smart-router' };
+  await $.command.run({ command: 'auto', args: '' });
+  await $.session.append(commandRow(EFFORT_ECHO, mod));
+  await $.session.append(commandRow('<local-command-stdout>Current effort level: high (currently high)</local-command-stdout>', mod));
+  const drawn = JSON.stringify(await (await mountChooser($)).drawn());
+  expect(drawn).not.toContain('model default');
 });

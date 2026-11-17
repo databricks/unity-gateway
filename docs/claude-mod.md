@@ -11,7 +11,12 @@ each `/smart-router on|off`, and hides once the next prompt's turn completes. Th
 input with the permission mode) carries `smart router ON` or `smart router OFF`, followed by
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
-model the mod holds, not the row's default-variant alias, and updates on each switch.
+model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
+only place that names the main model: native's `/model` confirmation for the static row reads
+`Auto on: subagents smart-routed`, and a main-model save appends no transcript notice.
+The Auto chooser reads and saves effort through native `/effort`; the mod rewrites those rows
+(its own, by origin) to `<local-command-caveat>` rows, which native does not draw, so they do
+not appear as commands the person typed. A typed `/effort` is unchanged.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

@@ -19,11 +19,16 @@ import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
-import { AUTO_KEPT_PREFIX, AUTO_MAIN_DESCRIPTION, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoStatus, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_PREFIX, AUTO_MAIN_DESCRIPTION, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
+const EFFORT_COMMAND_ECHO = /^<command-name>\/effort<\/command-name>/;
+const COMMAND_OUTPUT = /^<local-command-std(?:out|err)>/;
+// Native 2.1.325 draws no user row that carries a local-command caveat; the
+// mod's own /effort reads and saves are not the person's commands.
+const HIDDEN_COMMAND_ROW = '<local-command-caveat>ug-smart-router ran /effort internally for the Auto chooser; this is not the user\'s command.</local-command-caveat>';
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
 function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
@@ -276,10 +281,9 @@ export function register(on: On, options: PluginOptions): void {
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
   // The main model a public /model command enters the static Auto row with.
   let staticEntry: string | undefined;
-  // The static Auto row was confirmed without a main model; the chooser's save or
-  // dismissal names it.
-  let staticChoicePending = false;
   const pickerState: AutoPickerState = {drafts:{}, native:{}};
+  // The mod's own /effort echo was hidden; its output row follows.
+  let hideEffortOutput = false;
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
@@ -331,17 +335,9 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   if (auto) {
-    on('ui.close', {id:'auto-main'}, async ($, e, next) => {
+    on('ui.close', {id:'auto-main'}, ($, e, next) => {
       if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
-      if (e.origin.kind === 'person') {
-        clearAutoSave();
-        if (staticChoicePending) {
-          staticChoicePending = false;
-          const kept = await mainModel($, auto);
-          await $.session.append({message:{type:'system', content:[{type:'text', text:autoStatus(kept, true)}]}})
-            .catch(() => $.ui.toast(`Auto (${auto.models.find(row => row.model === kept)?.label ?? kept}) kept`));
-        }
-      }
+      if (e.origin.kind === 'person') clearAutoSave();
       return next(e);
     });
     on('session.append', {door:'prompt'}, ($, e, next) => {
@@ -368,7 +364,6 @@ export function register(on: On, options: PluginOptions): void {
       if (!internalCommand) {
         manualOffRequest = undefined;
         clearAutoSave();
-        staticChoicePending = false;
         entry = await entryMainModel($, auto);
         staticEntry = entry;
         await customAutoRow($, auto, entry);
@@ -487,7 +482,6 @@ export function register(on: On, options: PluginOptions): void {
                 // A native confirmation still pending from the /model that opened
                 // this pane must not restore the main model it started from.
                 staticEntry = undefined;
-                staticChoicePending = false;
               }
               await $.store.set(auto.storeKey, selected.model);
               if (autoSave !== request) return;
@@ -495,14 +489,8 @@ export function register(on: On, options: PluginOptions): void {
               if (autoSave !== request) return;
               await $.ui.close({ id: 'auto-main' });
               $.ui.invalidate('ui.render');
-              // Static saves switch no native model, so no native confirmation names
-              // the new main model; record it where the entry confirmation was.
-              if (auto.staticModel) {
-                // The save is already committed; a refused or failed notice must not roll it back.
-                await $.session.append({message:{type:'system', content:[{type:'text', text:autoStatus(selected.model, true)}]}})
-                  .catch(() => $.ui.toast(`Auto (${selected.label}) saved`));
-              }
-              else $.ui.toast(`Auto (${selected.label}) saved`);
+              // Static saves switch no native model; the prompt hint row names the new one.
+              if (!auto.staticModel) $.ui.toast(`Auto (${selected.label}) saved`);
             } catch (error) {
               if (autoSave !== request) return;
               if (auto.staticModel) auto.variant = previousMain;
@@ -603,6 +591,14 @@ export function register(on: On, options: PluginOptions): void {
     on('session.append', { door: 'command' }, async ($, e, next) => {
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
+      // The chooser reads and saves effort through native /effort. Those rows are
+      // the mod's, not the person's: keep them in the transcript but draw nothing.
+      const ownCommand = e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router';
+      const effortEcho = ownCommand && EFFORT_COMMAND_ECHO.test(text);
+      const effortOutput = ownCommand && hideEffortOutput && COMMAND_OUTPUT.test(text);
+      if (effortEcho || effortOutput) hideEffortOutput = effortEcho;
+      const hidden = effortEcho || effortOutput
+        ? {...e, message: {...e.message, content: [{type: 'text' as const, text: HIDDEN_COMMAND_ROW}]}} : undefined;
       const keptModel = text.startsWith(MODEL_KEPT_PREFIX);
       const setModel = text.startsWith(MODEL_SET_PREFIX);
       const cancelledModel = MODEL_SWITCH_CANCELLED.test(text.replace(/^<local-command-stdout>/, ''));
@@ -620,9 +616,6 @@ export function register(on: On, options: PluginOptions): void {
         ? internalModels.indexOf(selected) : -1;
       const internalSwitch = Boolean(saving) || internalIndex >= 0;
       if (internalIndex >= 0) internalModels.splice(internalIndex, 1);
-      // Native confirms the static row as its picker closes, before the chooser
-      // opens: a public entry confirmation must not name the main model yet.
-      const pendingChoice = !internalSwitch && setModel && Boolean(staticEntry) && Boolean(selected && isStaticAuto(auto, selected));
       if (setModel || keptModel || cancelledModel) {
         // A public selection of the static Auto row enters it with the main model
         // the /model command started from; switches never change the native row.
@@ -661,17 +654,19 @@ export function register(on: On, options: PluginOptions): void {
         || (!e.agentId && e.origin.kind === 'engine' && autoSave?.model === echoModel))
         && auto.models.some((row) => row.autoModel === echoModel);
       if (pendingEcho) publicAutoEcho = undefined;
+      // Native confirms the static row before the chooser opens, so whichever order
+      // the save lands in, its confirmation names no main model.
+      const staticConfirmation = Boolean(selected && isStaticAuto(auto, selected));
       const autoConfirmation = !(setModel || keptModel) ? undefined
-        : selected && isStaticAuto(auto, selected) && auto.variant ? auto.models.find(row => row.model === auto.variant)
+        : staticConfirmation && auto.variant ? auto.models.find(row => row.model === auto.variant)
         : auto.models.find(row => row.autoModel === selected);
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? formatAutoConfirmation(block.text, pendingChoice && !dismiss ? undefined : autoConfirmation.model, setModel) : block.text,
+            : autoConfirmation ? formatAutoConfirmation(block.text, staticConfirmation ? undefined : autoConfirmation.model, setModel) : block.text,
         } : block) },
       } : e;
-      const result = await next(confirmation);
-      if (pendingChoice && !dismiss && autoConfirmation) staticChoicePending = true;
+      const result = await next(hidden ?? confirmation);
       if (saving) {
         if (saving.phase === 'waiting') $.clock.after(0, saving.finish);
         return result;
