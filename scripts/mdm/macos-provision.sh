@@ -13,7 +13,7 @@
 #   $6  Service principal OAuth client secret
 #
 # The token is used for this run only; developers sign in with their own
-# OAuth. Needs access to PyPI, GitHub, astral.sh and downloads.claude.ai.
+# OAuth. Needs access to PyPI, GitHub, astral.sh, nodejs.org and npmjs.org.
 
 set -euo pipefail
 umask 022
@@ -21,8 +21,8 @@ export HOME=/var/root
 export PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 WORKSPACE="${4%/}"
 PREFIX=/usr/local/unity-gateway
-CLAUDE_RELEASES=https://downloads.claude.ai/claude-code-releases
-CODEX_RELEASES=https://github.com/openai/codex/releases/latest/download
+NODE_VERSION=22.23.5
+NODE_SHA256=89fadefd7798158d8990ca9ed7dbb58f8ca7593adb92fe3da8a445db99415533
 UG_REPO=https://github.com/databricks/unity-gateway
 UV_URL=https://astral.sh/uv/install.sh
 CLI_URL=https://raw.githubusercontent.com
@@ -36,6 +36,8 @@ export UV_TOOL_DIR="$PREFIX/tools"
 export UV_TOOL_BIN_DIR=/usr/local/bin
 export UV_PYTHON_INSTALL_DIR="$PREFIX/python"
 export UV_PYTHON_PREFERENCE=only-managed
+# ug's npm installer must put agents on every user's PATH, not in root's home.
+export npm_config_prefix=/usr/local
 mkdir -p /usr/local/bin
 
 # Get ug from git
@@ -58,41 +60,15 @@ if [ ! -x /usr/local/bin/databricks ]; then
   curl -fsSL "$CLI_URL" | sh
 fi
 
-# Download into a private temporary directory, not fixed /tmp paths
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
-# Install Claude Code
-if [ ! -x /usr/local/bin/claude ]; then
-  case "$(uname -m)" in
-    arm64) platform=darwin-arm64 ;;
-    *) platform=darwin-x64 ;;
-  esac
-  version="$(curl -fsSL "$CLAUDE_RELEASES/latest")"
-  base="$CLAUDE_RELEASES/$version"
-  checksum="$(curl -fsSL "$base/manifest.json" \
-    | plutil -extract "platforms.$platform.checksum" raw -o - -)"
-  curl -fsSL -o "$tmp/claude" "$base/$platform/claude"
-  echo "$checksum  $tmp/claude" | shasum -a 256 -c -
-  install -m 755 "$tmp/claude" /usr/local/bin/claude
-fi
-
-# Install Codex from its release package, which also includes the
-# codex-code-mode-host helper Code Mode needs next to codex.
-if [ ! -x "$PREFIX/codex/bin/codex" ]; then
-  case "$(uname -m)" in
-    arm64) target=aarch64-apple-darwin ;;
-    *) target=x86_64-apple-darwin ;;
-  esac
-  package="codex-package-$target.tar.gz"
-  curl -fsSL -o "$tmp/$package" "$CODEX_RELEASES/$package"
-  curl -fsSL "$CODEX_RELEASES/codex-package_SHA256SUMS" \
-    | grep "  $package\$" | (cd "$tmp" && shasum -a 256 -c -)
-  mkdir -p "$PREFIX/codex"
-  tar -xzf "$tmp/$package" -C "$PREFIX/codex"
-  ln -sfn "$PREFIX/codex/bin/codex" /usr/local/bin/codex
-  ln -sfn "$PREFIX/codex/bin/codex-code-mode-host" \
-    /usr/local/bin/codex-code-mode-host
+# ug configure installs missing agents with npm; provide a shared Node.js runtime.
+if ! command -v node >/dev/null || ! command -v npm >/dev/null; then
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' EXIT
+  package="node-v$NODE_VERSION.pkg"
+  /usr/bin/curl -fsSL -o "$tmp/$package" \
+    "https://nodejs.org/dist/v$NODE_VERSION/$package"
+  printf '%s  %s\n' "$NODE_SHA256" "$tmp/$package" | /usr/bin/shasum -a 256 -c -
+  /usr/sbin/installer -pkg "$tmp/$package" -target /
 fi
 
 # Get short lived credential; curl reads the client id and secret from
@@ -109,8 +85,9 @@ if ! DATABRICKS_BEARER="$(printf '%s' "$resp" \
 fi
 export DATABRICKS_BEARER
 
-ug configure --global --workspace "$WORKSPACE" \
+/usr/local/bin/ug configure --global --mdm --workspace "$WORKSPACE" \
   --agents claude,codex </dev/null
+unset DATABRICKS_BEARER resp
 
 # Aliases for every user's interactive zsh and bash shells. The block is
 # rewritten on each run, which restores it if a macOS update resets
