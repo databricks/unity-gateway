@@ -609,7 +609,7 @@ class TestV2ModelPickerDiscovery:
     """modelPicker takes priority over gateway model discovery for smart routing."""
 
     @staticmethod
-    def _launch(monkeypatch, tmp_path, *, picker_catalog):
+    def _launch(monkeypatch, tmp_path, *, picker_catalog, provider=None):
         user_settings = tmp_path / "settings.json"
         user_settings.write_text(json.dumps({"model": "opus"}))
         monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
@@ -639,7 +639,7 @@ class TestV2ModelPickerDiscovery:
 
         with pytest.raises(SystemExit) as exc:
             v2.launch_claude(
-                {"workspace": "https://example.com"},
+                {"workspace": "https://example.com", "_claude_launch_provider": provider},
                 [],
                 binary="claude",
                 user_settings_path=user_settings,
@@ -650,6 +650,41 @@ class TestV2ModelPickerDiscovery:
             )
         assert exc.value.code == 0
         return discovery_calls
+
+    @pytest.mark.parametrize(
+        ("provider", "model", "expected"),
+        [
+            (None, "databricks-claude-opus-4-8", "system.ai.claude-opus-4-8"),
+            (
+                "main.default.anthropic-mps",
+                "anthropic.claude-opus-4-8",
+                "main.default.anthropic-mps.anthropic.claude-opus-4-8",
+            ),
+            (
+                "main.default.anthropic-mps",
+                "main.default.anthropic-mps.anthropic.claude-opus-4-8",
+                "main.default.anthropic-mps.anthropic.claude-opus-4-8",
+            ),
+        ],
+    )
+    def test_startup_validation_preserves_provider_identity(
+        self, tmp_path, monkeypatch, provider, model, expected
+    ):
+        validation_start = Mock()
+        monkeypatch.setattr(v2.startup_validation, "start", validation_start)
+        monkeypatch.setenv(routing.ROUTER_NAME_ENV_VAR, "chosen-recipe")
+        catalog = AnthropicModelCatalog(model_ids=[model], model_id_to_display_name={})
+
+        assert self._launch(monkeypatch, tmp_path, picker_catalog=catalog, provider=provider) == 0
+
+        validation_start.assert_called_once_with(
+            "https://example.com",
+            "token",
+            [(expected, "claude")],
+            router_name="chosen-recipe",
+            session_controls=Path(os.environ[v2.SESSION_ENV_VAR]),
+        )
+        assert catalog.model_ids == [model]
 
     def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
         discovery_calls = self._launch(
