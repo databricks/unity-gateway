@@ -147,6 +147,11 @@ def assert_no_bearer_on_disk(session) -> None:
         assert "OAUTH_TOKEN" not in text
 
 
+def copilot_ref(provider: str, model: str) -> str:
+    """The ``<provider>/<id>`` ref ug's Copilot registry gives ``model``: ids drop ``system.ai.``."""
+    return f"{provider}/{model.removeprefix('system.ai.')}"
+
+
 def copilot_selected_models(session) -> list[str]:
     """Every registry ref Copilot sessions under this home started on or switched to."""
     return [

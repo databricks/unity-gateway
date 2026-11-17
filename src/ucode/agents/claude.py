@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ucode import managed_resolve
+from ucode import managed_resolve, metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -2902,6 +2902,7 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
 
     try:
         with _claude_launch_argv(binary, tool_args, relayed=True) as argv:
+            metrics.agent_handoff()
             proc = subprocess_cross_os.popen(argv)
             try:
                 returncode = proc.wait()

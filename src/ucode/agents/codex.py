@@ -21,6 +21,7 @@ from xml.sax.saxutils import escape
 import tomlkit
 from tomlkit.exceptions import ParseError
 
+from ucode import metrics
 from ucode.codex_config import (
     catalog_slugs,
     codex_config_args,
@@ -1780,6 +1781,7 @@ def _launch_codex_with_otel_proxy(
             threading.Thread(target=otel[0].serve_forever, daemon=True).start()
             endpoint = f"http://{LOOPBACK_HOST}:{otel[0].server_address[1]}/v1/traces"
             otel_args = codex_config_args(_otel_proxy_overlay(endpoint))
+        metrics.agent_handoff()
         proc = subprocess_cross_os.popen([*base_argv, *otel_args, *tool_args])
         try:
             returncode = proc.wait()

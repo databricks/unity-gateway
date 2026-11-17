@@ -27,6 +27,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from ucode import metrics
+
 MAX_MODEL_NAME_LEN = 200
 CONFIRM_TIMEOUT_S = 3.0
 SWITCH_TIMEOUT_S = 6.0
@@ -392,6 +394,7 @@ def run_claude_pty(
             "Smart routing could not start its local prompt-routing socket; Claude was not launched."
         )
 
+    metrics.agent_handoff()
     pid, master_fd = pty.fork()
     if pid == 0:
         os.execvp(argv[0], argv)

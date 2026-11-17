@@ -84,6 +84,9 @@ def routing_hook_argv(state: dict, event: str) -> list[str]:
         argv += ["--profile", profile]
     if state.get("use_pat"):
         argv.append("--use-pat")
+    provider = state.get("_claude_launch_provider")
+    if isinstance(provider, str) and provider:
+        argv += ["--provider", provider]
     # The route-subagent hook resolves the router's chosen arm back to a routable
     # workspace id, so it needs the discovered claude model ids.
     claude_models = state.get("claude_models")
