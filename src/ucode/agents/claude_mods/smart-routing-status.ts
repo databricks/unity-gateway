@@ -8,6 +8,7 @@ const BANNER = 'unity gateway smart router'
 // completes. A prompt submitted while it shows arms the hide for that prompt's turn.
 const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
+const validation = { message: '', isHideArmed: false }
 
 export function showStatusBand(): void {
   band.isVisible = true
@@ -17,10 +18,12 @@ export function showStatusBand(): void {
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  if (!band.isHideArmed) return false
-  band.isVisible = false
+  const changed = band.isHideArmed || validation.isHideArmed
+  if (band.isHideArmed) band.isVisible = false
+  if (validation.isHideArmed) validation.message = ''
   band.isHideArmed = false
-  return true
+  validation.isHideArmed = false
+  return changed
 }
 
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
@@ -67,7 +70,10 @@ export async function watchStartupValidation($: EngineInterface): Promise<void> 
         if (complete || !result || !('message' in result)) return
         complete = true
         notice.cancel()
-        if (typeof result.message === 'string' && result.message) $.ui.toast(result.message)
+        if (typeof result.message === 'string' && result.message) {
+          validation.message = result.message
+          $.ui.invalidate('ui.render')
+        }
       } catch {}
     })
   } catch {}
@@ -78,6 +84,7 @@ export const registerStatusBand = (on: On): void => {
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
+    if (validation.message) validation.isHideArmed = true
     return next(e)
   })
 
@@ -99,7 +106,7 @@ export const registerStatusBand = (on: On): void => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible) return theirs
+    if (!band.isVisible && !validation.message) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
@@ -119,7 +126,15 @@ export const registerStatusBand = (on: On): void => {
       columnGap: 1,
       children: [Text({ bold: true, children: [BANNER] }), pill, trailer],
     })
-    const children = theirs ? [line, theirs] : [line]
+    const children = band.isVisible ? [line] : []
+    if (validation.message) children.push(Box({
+      flexDirection: 'column',
+      children: [
+        Text({ bold: true, color: 'yellow', children: ['Smart Router validation'] }),
+        Text({ children: [validation.message] }),
+      ],
+    }))
+    if (theirs) children.push(theirs)
     return Box({ flexDirection: 'column', children })
   })
 }
