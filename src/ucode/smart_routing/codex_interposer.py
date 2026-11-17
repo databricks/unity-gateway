@@ -247,6 +247,7 @@ async def _handle_tui(
             RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
         queued_frames: asyncio.Queue = asyncio.Queue()
+        initialized = asyncio.Event()
 
         def parse(frame) -> dict | None:
             if not isinstance(frame, str):
@@ -306,6 +307,8 @@ async def _handle_tui(
                         except TimeoutError:
                             log("[ROUTE] settings/update timed out; forwarding turn/start anyway")
                     await upstream.send(result.frame)
+                    if message is not None and message.get("method") == "initialized":
+                        initialized.set()
                 else:
                     await upstream.send(frame)
 
@@ -321,6 +324,7 @@ async def _handle_tui(
 
         async def notify_validation():
             assert session_controls is not None
+            await initialized.wait()
             path = startup_validation.result_path(session_controls)
             while True:
                 result = await asyncio.to_thread(read_json_safe, path)

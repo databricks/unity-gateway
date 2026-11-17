@@ -209,11 +209,17 @@ def test_codex_notification_is_async_once_and_keeps_connection_open(message, tmp
                     await tui.send('{"id":1,"result":{}}')
                     assert await asyncio.wait_for(tui.recv(), 1) == '{"id":1,"result":{}}'
                     validation.result_path(controls).write_text(json.dumps({"message": message}))
+                    with pytest.raises(TimeoutError):
+                        await asyncio.wait_for(tui.recv(), 0.15)
+                    await tui.send('{"method":"initialized"}')
+                    received = [await asyncio.wait_for(tui.recv(), 1)]
                     if message:
-                        assert json.loads(await asyncio.wait_for(tui.recv(), 1)) == {
+                        received.append(await asyncio.wait_for(tui.recv(), 1))
+                        assert {
                             "method": "warning",
                             "params": {"message": message},
-                        }
+                        } in [json.loads(frame) for frame in received]
+                    assert '{"method":"initialized"}' in received
                     await asyncio.sleep(0.2)
                     await tui.send('{"id":2,"result":{}}')
                     assert await asyncio.wait_for(tui.recv(), 1) == '{"id":2,"result":{}}'
