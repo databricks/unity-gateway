@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import shutil
 
 import pytest
@@ -15,7 +16,6 @@ from tests.integration.utils.evidence import (
     assert_no_session_registry_left,
     assert_no_terminal_api_error,
 )
-from tests.integration.utils.model_discovery import assert_picker_inventory
 from tests.integration.utils.provider_catalog import (
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
     parse_anthropic_provider_page,
@@ -40,6 +40,8 @@ from .helpers.constants import (
     SOURCE_OPENAI_PROVIDER,
     SOURCE_OPENAI_TARGET,
     SOURCE_SCHEMA,
+    SYSTEM_AI_MODEL_PREFIX,
+    SYSTEM_AI_WILDCARD,
 )
 from .helpers.evidence import (
     SessionEvidence,
@@ -84,12 +86,22 @@ def source_contract(cuj):
     configs = workspace.agent_configs(published)
     sources_and_defaults = {
         "CODING_AGENT_CLAUDE_CODE": (
-            [SOURCE_CLAUDE_PROVIDER_MODEL, CLAUDE_SONNET_MODEL_SERVICE, f"{SOURCE_SCHEMA}.*"],
+            [
+                SOURCE_CLAUDE_PROVIDER_MODEL,
+                CLAUDE_SONNET_MODEL_SERVICE,
+                f"{SOURCE_SCHEMA}.*",
+                SYSTEM_AI_WILDCARD,
+            ],
             CLAUDE_SONNET_MODEL_SERVICE,
             True,
         ),
         "CODING_AGENT_CODEX": (
-            [SOURCE_CODEX_PROVIDER_MODEL, CODEX_LUNA_MODEL_SERVICE, f"{SOURCE_SCHEMA}.*"],
+            [
+                SOURCE_CODEX_PROVIDER_MODEL,
+                CODEX_LUNA_MODEL_SERVICE,
+                f"{SOURCE_SCHEMA}.*",
+                SYSTEM_AI_WILDCARD,
+            ],
             CODEX_LUNA_MODEL_SERVICE,
             False,
         ),
@@ -98,6 +110,7 @@ def source_contract(cuj):
                 SOURCE_CLAUDE_PROVIDER_MODEL,
                 SOURCE_COPILOT_DEFAULT_MODEL,
                 f"{SOURCE_OPENAI_PROVIDER}.*",
+                SYSTEM_AI_WILDCARD,
             ],
             SOURCE_COPILOT_DEFAULT_MODEL,
             False,
@@ -155,6 +168,28 @@ def _assert_no_routes(recorder, checkpoint):
     ], "A source inference task unexpectedly invoked Smart Router"
 
 
+_PICKER_ROW = re.compile(r"(?m)^[ \t]*(?:[❯›>][ \t]*)?\d+[.)][ \t]+[^\n]+$")
+
+
+def _assert_pinned_picker_rows(screen, agent, pinned):
+    """Every pinned non-system source keeps a visible native picker row.
+
+    The `system.ai.*` wildcard expands to the hosted catalog, which changes over
+    time, so rows beyond the pinned sources are tolerated unnamed; the
+    per-agent registry checks cover the expansion itself.
+    """
+    assert agent in (CLAUDE, CODEX), agent
+    in_picker = claude.model_in_picker if agent == CLAUDE else codex.model_in_picker
+    rows = _PICKER_ROW.findall(screen)
+    assert rows, f"No numbered {agent} picker rows:\n{screen}"
+    matched: set[str] = set()
+    for row in rows:
+        hits = {model for model, label in pinned.items() if in_picker(row, model, label)}
+        assert len(hits) <= 1, f"Ambiguous {agent} picker row {row!r}: {sorted(hits)}"
+        matched |= hits
+    assert matched == set(pinned), (agent, sorted(pinned), sorted(matched))
+
+
 def _assert_copilot_inference(recorder, checkpoint, task, model):
     """The shared CUJ inference helper only knows Claude/Codex endpoint paths."""
     anthropic = COPILOT_MODELS[model] == "databricks"
@@ -193,11 +228,18 @@ class TestModelSources(BaseCujTest):
     def test_sources_claude_discovers_mixed_models_and_uses_custom_default(self, cuj):
         """Scenario: configure Claude, inspect /model, and complete a default-model file task.
 
-        Expected: the exact mixed-source picker includes the MPS deep link, custom service,
-        and both schema-wildcard models. The custom default serves the completed task.
+        Expected: the mixed-source picker keeps every pinned model visible — the MPS deep
+        link, custom service, and both schema-wildcard models — beside the `system.ai.*`
+        expansion, whose hosted entries change over time; the configured picker registry
+        must include at least one `system.ai.` model. The custom default serves the task.
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
+        available = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())[
+            "availableModels"
+        ]
+        session.record("sources-claude-available-models.json", available)
+        assert any(model.startswith(SYSTEM_AI_MODEL_PREFIX) for model in available), available
         task = claude_file_task(session)
         task.prompt += " Do not delegate."
         evidence = SessionEvidence(session.home, CLAUDE)
@@ -211,7 +253,7 @@ class TestModelSources(BaseCujTest):
                     for model, label in CLAUDE_MODELS.items()
                 )
             )
-            assert_picker_inventory(screen, CLAUDE, dict[str, str | None](CLAUDE_MODELS))
+            _assert_pinned_picker_rows(screen, CLAUDE, CLAUDE_MODELS)
             tui.submit(task.prompt)
             tui.task(evidence, task)
             tui.exit_normally()
@@ -224,13 +266,18 @@ class TestModelSources(BaseCujTest):
     def test_sources_codex_discovers_mixed_models_and_uses_custom_default(self, cuj):
         """Scenario: configure Codex, inspect model/list and /model, then complete a file task.
 
-        Expected: both inventories contain exactly the MPS deep link, custom service, and
-        compatible schema-wildcard model. The custom default serves inference without routing.
+        Expected: both inventories keep exactly the pinned MPS deep link, custom service,
+        and compatible schema-wildcard model, and model/list adds hosted `system.ai.*`
+        entries. The custom default serves inference without routing.
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
         models = session.codex_model_ids(["app-server", "--listen", "stdio://"])
-        assert len(models) == len(set(models)) and set(models) == set(CODEX_MODELS), models
+        assert len(models) == len(set(models)), models
+        assert {model for model in models if not model.startswith(SYSTEM_AI_MODEL_PREFIX)} == set(
+            CODEX_MODELS
+        ), models
+        assert any(model.startswith(SYSTEM_AI_MODEL_PREFIX) for model in models), models
         task = FileTask(session)
         evidence = SessionEvidence(session.home, CODEX)
         checkpoint = recorder.checkpoint()
@@ -243,7 +290,7 @@ class TestModelSources(BaseCujTest):
                     for model, label in CODEX_MODELS.items()
                 )
             )
-            assert_picker_inventory(screen, CODEX, dict[str, str | None](CODEX_MODELS))
+            _assert_pinned_picker_rows(screen, CODEX, CODEX_MODELS)
             tui.submit(task.prompt)
             tui.task(evidence, task)
             tui.exit_normally()
@@ -256,9 +303,10 @@ class TestModelSources(BaseCujTest):
     def test_sources_copilot_discovers_mixed_models_and_uses_service_default(self, cuj):
         """Scenario: configure Copilot, inspect its live registry, and complete a TUI file task.
 
-        Expected: the exact registry retains the Anthropic deep link, hosted service, and
-        provider-wildcard GPT on their native wires. The hosted default completes inference,
-        no routing occurs, and the credential-bearing registry is removed on exit.
+        Expected: the registry retains the pinned Anthropic deep link, hosted service, and
+        provider-wildcard GPT on their native wires, and the `system.ai.*` expansion adds
+        hosted models beyond them. The hosted default completes inference, no routing
+        occurs, and the credential-bearing registry is removed on exit.
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
@@ -282,9 +330,20 @@ class TestModelSources(BaseCujTest):
                 for row in registry["models"]
             ]
             session.record("sources-copilot-models.json", models)
-            assert len(models) == len(COPILOT_MODELS), models
-            # A hosted service is listed under its label, without the `system.ai.` prefix.
-            assert {row["wireModel"]: row["provider"] for row in models} == COPILOT_MODELS, models
+            assert len(models) == len({row["wireModel"] for row in models}), models
+            # The `system.ai.*` wildcard expands to the hosted catalog, which changes over
+            # time, so only the pinned sources are compared exactly. A hosted service is
+            # listed under its label, without the `system.ai.` prefix.
+            assert {
+                row["wireModel"]: row["provider"]
+                for row in models
+                if row["wireModel"] in COPILOT_MODELS
+            } == COPILOT_MODELS, models
+            assert any(
+                row["wireModel"].startswith(SYSTEM_AI_MODEL_PREFIX)
+                and row["wireModel"] not in COPILOT_MODELS
+                for row in models
+            ), models
             assert all(
                 row["id"] == row["wireModel"].removeprefix("system.ai.") for row in models
             ), models
@@ -436,7 +495,13 @@ class TestModelSources(BaseCujTest):
         assert options and all(option["harness"] == CLAUDE for option in options), options
         offered = {option["model"] for option in options}
         expected_options = {claude.discovery_model_id(model) for model in CLAUDE_MODELS}
-        assert offered <= expected_options, offered
+        # The `system.ai.*` expansion may also be offered under its own catalog ids.
+        unexpected = (
+            offered
+            - expected_options
+            - {option for option in offered if SYSTEM_AI_MODEL_PREFIX in option}
+        )
+        assert not unexpected, offered
         response = recorder.response_for(route)
         assert response.status_code == 200, response.status_code
         selections = response.payload["route_selection"]
