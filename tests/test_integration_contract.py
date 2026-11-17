@@ -419,6 +419,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
         "inputs.codex_version || '0.156.0' }}"
