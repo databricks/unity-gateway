@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from copy import deepcopy
 
 from ucode.databricks import AnthropicModelCatalog
@@ -70,6 +71,95 @@ def model_available(model: str, settings: dict) -> bool:
     return (not allowed or any(matches(entry) for entry in allowed)) and not (
         isinstance(denied, list) and any(matches(entry) for entry in denied)
     )
+
+
+def remove_auto_configuration(
+    settings: dict,
+    *,
+    alias_targets: Mapping[str, str] | None = None,
+    model_policy: dict | None = None,
+) -> dict:
+    """Remove UG Auto metadata while retaining permitted real-model selections."""
+    result = deepcopy(settings)
+    overrides = settings.get("modelOverrides")
+    overrides = overrides if isinstance(overrides, dict) else {}
+
+    def resolve(alias: str) -> str | None:
+        target = None
+        for source in (alias_targets or {}, overrides):
+            for key in (alias, alias + "[1m]"):
+                if key in source:
+                    target = source[key]
+                    break
+            else:
+                continue
+            break
+        else:
+            target = auto_model_target(alias)
+        if (
+            isinstance(target, str)
+            and target.strip()
+            and not is_auto_model(target)
+            and model_available(target, {"deniedModels": settings.get("deniedModels")})
+            and model_available(target, model_policy or {})
+        ):
+            return target
+        return None
+
+    def is_alias(value: object) -> bool:
+        return isinstance(value, str) and is_auto_model(value)
+
+    if isinstance(result.get("modelOverrides"), dict):
+        result["modelOverrides"] = {
+            key: value for key, value in result["modelOverrides"].items() if not is_alias(key)
+        }
+    picker = result.get("modelPicker")
+    if isinstance(picker, dict) and isinstance(picker.get("options"), list):
+        picker["options"] = [
+            row
+            for row in picker["options"]
+            if not (isinstance(row, dict) and is_alias(row.get("model")))
+        ]
+    allowed = result.get("availableModels")
+    if isinstance(allowed, list) and any(is_alias(model) for model in allowed):
+        remaining = [model for model in allowed if not is_alias(model)]
+        if not remaining:
+            remaining = list(
+                dict.fromkeys(target for alias in allowed if (target := resolve(alias)))
+            )
+            if not remaining:
+                raise ValueError(
+                    "Cannot remove Claude Auto aliases without making availableModels "
+                    "unrestricted. Configure an explicit permitted real-model list, then retry."
+                )
+        result["availableModels"] = remaining
+
+    def repair_selection(document: dict, key: str) -> None:
+        value = document.get(key)
+        if isinstance(value, str) and is_auto_model(value):
+            target = resolve(value)
+            if target and model_available(target, result):
+                document[key] = target
+            else:
+                document.pop(key)
+
+    repair_selection(result, "model")
+    env = result.get("env")
+    if isinstance(env, dict):
+        if is_alias(env.get("ANTHROPIC_CUSTOM_MODEL_OPTION")):
+            for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
+                env.pop(key, None)
+        for key in (
+            "ANTHROPIC_MODEL",
+            "ANTHROPIC_DEFAULT_MODEL",
+            "ANTHROPIC_SMALL_FAST_MODEL",
+            *(
+                f"ANTHROPIC_DEFAULT_{family}_MODEL"
+                for family in ("OPUS", "SONNET", "HAIKU", "FABLE")
+            ),
+        ):
+            repair_selection(env, key)
+    return result
 
 
 def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:

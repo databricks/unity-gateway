@@ -147,8 +147,9 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         """Scenario: configure Claude, then launch without source overrides or discovery flags.
 
         Expected: native discovery caches system.ai models as raw IDs or recognized Claude
-        gateway aliases and shows a discovered picker entry. After saving a personal Auto
-        selection, restarting without Auto completes inference on the same real main model.
+        gateway aliases and shows a discovered picker entry. Reconfigure with the Auto version,
+        save a personal Auto selection, then restart without Auto and complete inference on the
+        same real main model.
         """
         session = live_session
         request_recorder.configure_session(
@@ -172,7 +173,17 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         main_model = session.workspace_state()["claude_models"]["sonnet"]
         supported = set(session.workspace_state()["claude_models"].values())
         session.env["SMART_ROUTER_CONFIG_VERSION"] = SUBAGENT_AUTO_V0_CLAUDE_ONLY
-        request_recorder.prepare_launch()
+        request_recorder.configure_session(
+            session,
+            [
+                "configure",
+                "--agents",
+                CLAUDE,
+                "--skip-upgrade",
+                "--disable-databricks-ai-tools",
+            ],
+        )
+        evidence = SessionEvidence(session.home, CLAUDE)
         with Terminal(session, "case-07-personal-auto", [CLAUDE]) as tui:
             tui.boot()
             tui.submit("/model " + main_model)
@@ -197,7 +208,6 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
                 "saved Auto model",
             )
             task = claude_file_task(session)
-            evidence = SessionEvidence(session.home, CLAUDE)
             checkpoint = request_recorder.checkpoint()
             tui.submit(task.prompt)
             tui.task(evidence, task)
@@ -212,12 +222,12 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         session.env.pop("SMART_ROUTER_CONFIG_VERSION")
         request_recorder.prepare_launch()
         checkpoint = request_recorder.checkpoint()
+        evidence = SessionEvidence(session.home, CLAUDE)
         with Terminal(
             session, "case-07-restart-without-auto", [CLAUDE, "--disable-smart-routing"]
         ) as tui:
             tui.boot()
             task = claude_file_task(session)
-            evidence = SessionEvidence(session.home, CLAUDE)
             tui.submit(task.prompt)
             tui.task(evidence, task)
             evidence.assert_applied(task, supported, expected=main_model)

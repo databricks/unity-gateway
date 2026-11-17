@@ -566,8 +566,12 @@ not install or rewrite those settings.
 
 An installed Auto row does not enable Auto on a later launch without the version.
 Ordinary launches preserve machine-wide picker metadata, so an old row can remain
-visible until you reconfigure without the Auto version. It does not activate the
-Auto mod. Saved Auto aliases resolve to their real models outside Auto.
+visible until you reconfigure without the Auto version. Each `ug configure` removes
+UG Auto aliases and picker entries unless that exact version and effective smart
+routing are enabled. `ug revert` also removes them, including aliases restored from
+backups. Cleanup preserves unrelated settings and resolves a saved Auto selection
+to a permitted real model when possible. Both commands respect their configuration
+scope. An installed row does not activate the Auto mod by itself.
 `--disable-smart-routing`, an explicit `--model`, a budget recommendation and resume
 retain their precedence. Other versions keep their existing Smart Router controls.
 

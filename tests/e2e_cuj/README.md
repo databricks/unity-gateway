@@ -187,7 +187,9 @@ and checks that the save notice names the selected model. The managed replacemen
 picker contains one Auto row; only regular model rows supply alternate inference targets.
 The journey completes a real main-model file task with paired gateway request/response
 evidence, saves the unchanged main model without a cache warning after that task, and
-requires byte-identical managed settings. The existing main/subagent journey also includes Auto
+requires byte-identical managed settings across model selections. Launch may retarget only
+the gateway URL and auth helper host to the recording proxy; all other configured settings
+must remain identical. The existing main/subagent journey also includes Auto
 and verifies its correlated routing decision, real model IDs, and completed answers.
 The selector journey has its own class-scoped user session so its saved main-model
 preference cannot change later preset journeys. Its native evidence baseline is captured
@@ -261,7 +263,9 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   -k test_smart_router_preset -v
 ```
 
-CUJ 7's existing Claude discovery case also saves an Auto selection on the unmanaged
+CUJ 7's existing Claude discovery case reconfigures with the Auto version after its
+ordinary discovery launch, removing UG's earlier replacement picker. The Auto launch
+keeps its aliases in launch settings. It saves an Auto selection on the unmanaged
 workspace, completes a main-model file task, then restarts with routing disabled.
 The restart must complete another task on the same real model with paired successful
 HTTP evidence and no router request. It never seeds Auto aliases in shared settings.

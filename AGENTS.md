@@ -167,9 +167,18 @@ explicit model arguments and native resume retain precedence over startup Auto.
 Fresh Auto session controls start OFF; native startup initializes the selected state
 without treating a manual-model launch as a feedback-gated user disable. Ordinary
 launches preserve installed Auto picker metadata without enabling the feature.
-Removing the visible Auto picker entry requires explicit configure without the Auto version.
-Unused alias mappings may remain; they do not enable Auto.
-Configure provisions Auto aliases only with the Auto version. For a UG-owned picker
+Explicit configure removes UG Auto aliases and picker metadata unless the exact Auto
+version is selected and routing remains enabled. Revert removes them after restoring
+backups, including aliases that a restored backup reintroduces. Cleanup respects user,
+global, skip-OS and published-managed scopes, leaves foreign settings untouched, and
+resolves a native saved Auto model to its allowed real target before removing its mapping.
+An alias-only allowlist remains restrictive; unresolved targets fail before cleanup writes.
+Revert retains captured alias targets in the existing UG state until cleanup succeeds, so
+a failed native write can retry after source mappings were restored away. Live mappings
+override retained targets; the final restored policy still determines allowed targets.
+Ordinary launches and session toggles do not perform this cleanup.
+Configure provisions Auto aliases only with the exact Auto version and effective routing
+enabled. For a UG-owned picker
 without managed smart routing, it sets `modelPicker.replaceBuiltInOptions=false`.
 When managed Claude `smart_routing_enabled` is true AND the configure-time selector
 is `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
@@ -302,6 +311,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list. A static list naming a model service whose primary destination is a subscription-relay MPS makes Claude Code CLI launch relayed for a user already signed in to a Claude subscription (credential swap, no `apiKeyHelper`; others keep gateway auth with a sign-in note) with the list still owning the picker; Claude Desktop keeps gateway auth for it (CLI-only for now) |
+| UG Auto metadata and saved selection | Merge | Merge | Explicit configure outside eligible Auto and revert remove UG-reserved aliases from `modelOverrides`, `availableModels`, and picker rows, plus an Auto custom-model environment triplet. Saved Auto `model` and Anthropic model environment values resolve to permitted real targets or are removed. Cleanup also covers native `settings.json` within the command's scope; unrelated models, aliases and policy remain unchanged. Launches and toggles do not clean these fields |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone. `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1` makes one launch strip the bare rule and hide `web_search` in its inline `--settings`; a managed, drop-in or user `WebSearch` deny makes it keep ug's MCP. The managed file never gets the deny; `ug configure --enable-server-side-web-search` (saved as `claude_server_side_web_search`) makes an explicit configure remove an existing bare one unless the admin's settings request it |
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |

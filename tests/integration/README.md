@@ -5,6 +5,12 @@ Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
 `../test_agent_claude.py`; live configure-to-launch validation remains a gap.
 
+CUJ7 reconfigures with the Auto version before its personal Auto launch. Component tests
+in `../test_cli.py` verify that this launch does not reinstall a shared replacement picker
+after reconfigure removes UG's ordinary discovery picker. Ordinary launches, other versions,
+an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
+The live journey retains saved-model restart, successful inference, and no-router assertions.
+
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
@@ -2078,6 +2084,13 @@ and cancellation without a save notice. Manual native TUI
 verification on Claude 2.1.290 and 2.1.325 covered normal-mode selection and the saved-model
 notice. This is not an authenticated
 gateway inference check or an automated integration journey.
+
+Auto cleanup component tests cover the copy-on-write transformation, configure/revert
+ordering, restored private and managed backups, saved native model resolution, restrictive
+allowlists, command scopes, symlink preflight, retry after a failed native write even when
+restore has removed the source mapping (with and without workspace state), and the
+exact-version plus effective-routing provisioning gate. These cases exercise temporary
+settings through the real Python lifecycle; they do not establish live gateway coverage.
 
 The Auto chooser's native component tests cover compact modal selection, cancellation,
 pagination, invalid typed answers with a visible retry message, and stale answers after

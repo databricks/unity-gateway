@@ -59,6 +59,7 @@ def _machine(monkeypatch, tmp_path):
     monkeypatch.setattr(codex, "agent_version", lambda *_a, **_k: "0.166.0")
     monkeypatch.setattr(machine, "agent_version", lambda *_a, **_k: "0.166.0")
     monkeypatch.setattr(claude, "managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
     monkeypatch.setattr(
         managed_files_mod, "CODEX_SYSTEM_REQUIREMENTS_PATH", tmp_path / "codex" / "req.toml"
     )
@@ -476,6 +477,7 @@ def writes(monkeypatch):
 
     saved: list[tuple] = []
     monkeypatch.setattr(machine, "reconcile_privileged_files", fake_reconcile)
+    monkeypatch.setattr(claude, "reconcile_privileged_files", fake_reconcile)
     monkeypatch.setattr(machine, "save_managed_state", lambda *a, **k: saved.append((a, k)))
     monkeypatch.setattr(machine, "has_machine_privileges", lambda: True)
     monkeypatch.setattr(machine, "get_databricks_token", lambda host, profile: "token")
@@ -730,6 +732,37 @@ def _configure(*args: str):
 
 
 class TestGlobalCli:
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_codex_only_configure_cleans_existing_claude_auto(
+        self, monkeypatch, writes, global_cli, dry_run
+    ):
+        raw = _raw_config(codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(managed_files_mod, "published_agent_config_used", lambda: True)
+        path = claude.managed_settings_path()
+        path.parent.mkdir(parents=True)
+        original = {"modelOverrides": {"ug-auto-old": "main", "admin": "keep"}, "other": True}
+        path.write_text(json.dumps(original))
+        native = claude.CLAUDE_USER_SETTINGS_PATH
+        native.parent.mkdir(parents=True, exist_ok=True)
+        native.write_text(json.dumps({"model": "ug-auto-old"}))
+        result = _configure("--agent", "codex", *(["--dry-run"] if dry_run else []))
+        assert result.exit_code == 0, result.output
+        expected = original if dry_run else {"modelOverrides": {"admin": "keep"}, "other": True}
+        assert json.loads(path.read_text()) == expected
+        assert json.loads(native.read_text()) == {"model": "ug-auto-old"}
+
+    def test_auto_cleanup_failure_uses_write_exit_code(self, monkeypatch, writes, global_cli):
+        monkeypatch.setattr(
+            machine, "get_managed_config", lambda host, token: (_raw_config(codex_config={}), None)
+        )
+        path = claude.managed_settings_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"availableModels": ["ug-auto-unknown"]}))
+        result = _configure("--agent", "codex")
+        assert result.exit_code == machine.EXIT_WRITE, result.output
+        assert "Cannot remove Claude Auto settings" in result.output
+
     def test_published_config_rebuilds_and_provisions_desktop(
         self, monkeypatch, writes, global_cli
     ):
@@ -1183,3 +1216,31 @@ class TestAuthTokenUsesSavedChoices:
         }
         calls = self._invoke(monkeypatch, state, WS)
         assert calls == [("custom", "cid", "oauth-profile")]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_published_claude_auto_aliases_follow_exact_version(monkeypatch, enabled):
+    if enabled:
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+    else:
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+    alias = "ug-auto-old"
+    manifest = _manifest(
+        _raw_config(
+            claude_config={
+                "agent_native_settings": {
+                    "modelOverrides": {alias: "real", "admin": "foreign"},
+                    "modelPicker": {
+                        "options": [{"model": alias, "label": "Auto"}, {"model": "real"}]
+                    },
+                },
+            }
+        )
+    )
+    document = machine.build_claude(manifest, WS).doc
+    assert document["modelOverrides"] == (
+        {alias: "real", "admin": "foreign"} if enabled else {"admin": "foreign"}
+    )
+    assert [row["model"] for row in document["modelPicker"]["options"]] == (
+        [alias, "real"] if enabled else ["real"]
+    )

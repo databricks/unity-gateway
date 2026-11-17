@@ -482,6 +482,101 @@ def revert_managed_settings() -> str:
     return status
 
 
+def auto_configuration_enabled() -> bool:
+    return auto_mode_enabled() and smart_routing_v2.smart_routing_enabled(
+        None, default=False, agent=AGENT_CLAUDE
+    )
+
+
+def _auto_configuration_files() -> tuple[dict[Path, dict], Path | None]:
+    managed_path = None if managed_settings_skipped() else _managed_settings_path()
+    paths = [] if machine_wide_only() else [CLAUDE_USER_SETTINGS_PATH, CLAUDE_SETTINGS_PATH]
+    if managed_path is not None:
+        paths.append(managed_path)
+    documents = {}
+    for path in paths:
+        try:
+            text = (
+                read_managed_file(path)
+                if path == managed_path
+                else (path.read_text(encoding="utf-8") if path.exists() else None)
+            )
+            if text is not None:
+                documents[path] = _parse_managed_settings(text)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"Cannot read Claude Auto settings at {path}: {exc}") from exc
+    return documents, managed_path
+
+
+def _auto_model_targets(documents: dict[Path, dict]) -> dict[str, str]:
+    from ucode.agents.claude_auto import is_auto_model
+
+    targets = {}
+    for document in documents.values():
+        overrides = document.get("modelOverrides")
+        if isinstance(overrides, dict):
+            targets.update(
+                (alias, target)
+                for alias, target in overrides.items()
+                if isinstance(alias, str) and is_auto_model(alias) and isinstance(target, str)
+            )
+    return targets
+
+
+def auto_model_targets() -> dict[str, str]:
+    """Capture mappings before revert restores files that may contain the saved model's target."""
+    documents, _ = _auto_configuration_files()
+    return _auto_model_targets(documents)
+
+
+def cleanup_auto_configuration(*, alias_targets: dict[str, str] | None = None) -> None:
+    """Remove UG Auto settings in the command's scope, preserving all other settings."""
+    from ucode.agents.claude_auto import remove_auto_configuration
+
+    if is_dry_run():
+        return
+    documents, managed_path = _auto_configuration_files()
+    targets = {**(alias_targets or {}), **_auto_model_targets(documents)}
+    cleaned = {}
+    try:
+        for path, document in documents.items():
+            if path != CLAUDE_USER_SETTINGS_PATH:
+                cleaned[path] = remove_auto_configuration(document, alias_targets=targets)
+        if CLAUDE_USER_SETTINGS_PATH in documents:
+            policy = {
+                **cleaned.get(CLAUDE_SETTINGS_PATH, {}),
+                **cleaned.get(managed_path, {}),
+            }
+            cleaned[CLAUDE_USER_SETTINGS_PATH] = remove_auto_configuration(
+                documents[CLAUDE_USER_SETTINGS_PATH], alias_targets=targets, model_policy=policy
+            )
+    except ValueError as exc:
+        raise RuntimeError(f"Cannot remove Claude Auto settings: {exc}") from exc
+    changed = {path: document for path, document in cleaned.items() if document != documents[path]}
+    for path in changed:
+        if path.is_symlink():
+            raise RuntimeError(
+                f"Cannot remove Claude Auto settings through symlink {path}. "
+                "Remove its Auto settings at the link target and retry."
+            )
+    ordered_paths = sorted(changed, key=lambda path: path != CLAUDE_USER_SETTINGS_PATH)
+    for path in ordered_paths:
+        document = changed[path]
+        try:
+            if path == managed_path:
+                reconcile_privileged_files(
+                    {path: _dump_managed_settings(document)}, display="Claude Code"
+                )
+            else:
+                mode = path.stat().st_mode & 0o777
+                atomic_write_json(path, document)
+                path.chmod(mode)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Could not remove Claude Auto settings at {path}: {exc}. Fix the file and retry."
+            ) from exc
+
+
 def _managed_prepend_plugins() -> list:
     """The managed file's ``prependPlugins`` list, or an empty one."""
     path = _managed_settings_path()
@@ -1910,6 +2005,13 @@ def write_tool_config(
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
+        if _explicit_configure and not auto_configuration_enabled():
+            from ucode.agents.claude_auto import remove_auto_configuration
+
+            try:
+                merged = remove_auto_configuration(merged)
+            except ValueError as exc:
+                raise RuntimeError(f"Cannot remove Claude Auto settings: {exc}") from exc
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
@@ -1992,14 +2094,14 @@ def write_tool_config(
             *(["WebSearch"] if withdraws_web_search else []),
         ],
         passthrough_leaves=passthrough.record(),
-        auto_picker=not (provider or parent_schema or relayed) and auto_mode_enabled(),
+        auto_picker=not (provider or parent_schema or relayed) and auto_configuration_enabled(),
         # Managed smart routing whose configure-time environment resolves to the
         # Auto config version serves Auto from the static catalog itself. The
         # managed config carries no version of its own; this is the version the
         # admin selected for configure (SMART_ROUTER_CONFIG_VERSION).
         managed_auto_catalog=(
             not (provider or parent_schema or relayed)
-            and auto_mode_enabled()
+            and auto_configuration_enabled()
             and (managed_manifest or {})
             .get("enabled_agents", {})
             .get(AGENT_CLAUDE, {})

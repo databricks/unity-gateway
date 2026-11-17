@@ -223,6 +223,7 @@ from ucode.state import (
     aliased_workspace_key,
     clear_state,
     current_workspace_key,
+    get_claude_auto_revert_targets,
     get_managed_model_source_expansions,
     get_model_location,
     get_provider_service,
@@ -233,6 +234,7 @@ from ucode.state import (
     remove_self_managed_agent,
     save_config_scope,
     save_state,
+    set_claude_auto_revert_targets,
     set_current_workspace,
     set_managed_model_source_expansions,
     set_model_location,
@@ -2070,6 +2072,12 @@ def revert() -> int:
     from ucode.agents.desktop.setup import revert_desktop
 
     state = load_state()
+    auto_targets = {
+        **get_claude_auto_revert_targets(),
+        **claude_agent.auto_model_targets(),
+    }
+    if auto_targets:
+        set_claude_auto_revert_targets(auto_targets)
     desktop_result = revert_desktop()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
@@ -2116,6 +2124,7 @@ def revert() -> int:
         else restore_file(spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool)))
         for tool, spec in TOOL_SPECS.items()
     }
+    claude_agent.cleanup_auto_configuration(alias_targets=auto_targets)
     pi_settings_restored = restore_file(
         PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
     )
@@ -4474,6 +4483,19 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
+        launch_only_auto_picker = (
+            tool == AGENT_CLAUDE
+            and smart_routing_config.auto_mode_enabled()
+            and not smart_routing_v2.claude_print_mode(ctx.args)
+            and _routes_launch(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=provider,
+            )
+        )
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
         if (
@@ -4482,6 +4504,7 @@ def _launch_tool(
             and not provider
             and not parent_schema
             and family_defaults is None
+            and not launch_only_auto_picker
         ):
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
@@ -5474,6 +5497,8 @@ def configure(
                     return
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
+        if not claude_agent.auto_configuration_enabled():
+            claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -5821,6 +5846,13 @@ def _configure_global_from_agent_config(
                 ) from exc
             # The preview still shows the files, with this installation's paths in them.
             print_warning(f"A real run would stop here: {exc}")
+        if not claude_agent.auto_configuration_enabled():
+            try:
+                claude_agent.cleanup_auto_configuration()
+            except RuntimeError as exc:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_WRITE, str(exc)
+                ) from exc
         published_agent_config.run(
             key=key,
             raw=raw,

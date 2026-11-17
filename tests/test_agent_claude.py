@@ -1855,10 +1855,12 @@ class TestWriteToolConfigManagedSettings:
             assert len(writes) == write_count
 
     @pytest.mark.parametrize("managed_routing", [False, True])
+    @pytest.mark.parametrize("disable", ["without_version", "routing_off"])
     def test_reconfigure_without_auto_version_removes_auto_picker(
-        self, tmp_path, monkeypatch, managed_routing
+        self, tmp_path, monkeypatch, managed_routing, disable
     ):
         from ucode.agents.claude_auto import is_auto_model, picker_is_configured
+        from ucode.smart_routing import config
 
         path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
         monkeypatch.setattr(
@@ -1873,13 +1875,25 @@ class TestWriteToolConfigManagedSettings:
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
         claude.write_tool_config(state, state["claude_static_models"][0])
         assert picker_is_configured(json.loads(path.read_text()))
-        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION")
-        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
-        claude.write_tool_config(state, state["claude_static_models"][0])
+        if disable == "without_version":
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION")
+            monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+            claude.write_tool_config(state, state["claude_static_models"][0])
+        else:
+            with config.version_scope():
+                previous = v2.override_smart_routing(False, agent="claude")
+                try:
+                    claude.write_tool_config(state, state["claude_static_models"][0])
+                finally:
+                    v2.restore_smart_routing_env(previous)
         settings = json.loads(path.read_text())
         assert not picker_is_configured(settings)
         assert settings["modelPicker"]["replaceBuiltInOptions"] is True
         assert not any(is_auto_model(row["model"]) for row in settings["modelPicker"]["options"])
+        assert not any(is_auto_model(alias) for alias in settings.get("modelOverrides", {}))
+        assert not any(is_auto_model(model) for model in settings.get("availableModels", []))
+        assert not is_auto_model(settings["env"].get("ANTHROPIC_MODEL", ""))
+        assert "ANTHROPIC_CUSTOM_MODEL_OPTION" not in settings["env"]
 
     def test_static_auto_row_adds_one_row_and_keeps_replacement_picker(self):
         from ucode.agents.claude_auto import (
@@ -5965,3 +5979,221 @@ class TestGetFamilyDefaults:
         managed_file(json.dumps({"modelPicker": self.PICKER, "env": self.WRITER_ENV}))
         state, kwargs = source
         assert claude.get_family_defaults(state, **{**self.NO_SOURCE, **kwargs}) is None
+
+
+class TestAutoConfigurationCleanup:
+    @pytest.fixture
+    def files(self, tmp_path, monkeypatch):
+        import ucode.config_io as config_io
+
+        monkeypatch.setattr(config_io, "_dry_run", False)
+        managed = tmp_path / "managed.json"
+        private = claude.CLAUDE_SETTINGS_PATH
+        native = claude.CLAUDE_USER_SETTINGS_PATH
+        private.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed)
+        monkeypatch.setattr(
+            claude,
+            "reconcile_privileged_files",
+            lambda files, **kw: [path.write_text(text) for path, text in files.items()],
+        )
+        return managed, private, native
+
+    def test_cleans_all_files_and_repairs_native_selection_under_managed_policy(self, files):
+        managed, private, native = files
+        alias, target = "ug-auto-old", "team.models.main"
+        managed.write_text(
+            json.dumps(
+                {
+                    "modelOverrides": {alias: target, "admin": "team.models.admin"},
+                    "modelPicker": {
+                        "replaceBuiltInOptions": True,
+                        "options": [
+                            {"model": alias, "label": "Auto"},
+                            {"model": target, "label": "Main"},
+                        ],
+                    },
+                    "availableModels": [alias],
+                    "enforceAvailableModels": True,
+                    "env": {
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION": alias,
+                        "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME": "Auto",
+                        "OTHER": "keep",
+                    },
+                }
+            )
+        )
+        private.write_text(json.dumps({"modelOverrides": {alias: "wrong-target"}, "theme": "dark"}))
+        native.write_text(json.dumps({"model": alias, "theme": "light"}))
+        native.chmod(0o640)
+
+        claude.cleanup_auto_configuration()
+
+        result = json.loads(managed.read_text())
+        assert result["modelOverrides"] == {"admin": "team.models.admin"}
+        assert result["modelPicker"] == {
+            "replaceBuiltInOptions": True,
+            "options": [{"model": target, "label": "Main"}],
+        }
+        assert result["availableModels"] == [target]
+        assert result["enforceAvailableModels"] is True
+        assert result["env"] == {"OTHER": "keep"}
+        assert json.loads(private.read_text()) == {"modelOverrides": {}, "theme": "dark"}
+        assert json.loads(native.read_text()) == {"model": target, "theme": "light"}
+        if os.name != "nt":
+            assert native.stat().st_mode & 0o777 == 0o640
+        before = [path.read_bytes() for path in files]
+        claude.cleanup_auto_configuration()
+        assert [path.read_bytes() for path in files] == before
+
+    def test_native_selection_cannot_escape_managed_allowlist(self, files):
+        managed, private, native = files
+        managed.write_text(json.dumps({"availableModels": ["allowed"]}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "forbidden"}}))
+        native.write_text(json.dumps({"model": "ug-auto-old", "theme": "dark"}))
+        claude.cleanup_auto_configuration()
+        assert json.loads(native.read_text()) == {"theme": "dark"}
+
+    def test_native_alias_only_allowlist_remains_restrictive(self, files):
+        _, _, native = files
+        native.write_text(
+            json.dumps(
+                {
+                    "model": "ug-auto-old",
+                    "availableModels": ["ug-auto-old"],
+                    "modelOverrides": {"ug-auto-old": "target"},
+                }
+            )
+        )
+        claude.cleanup_auto_configuration()
+        assert json.loads(native.read_text()) == {
+            "model": "target",
+            "availableModels": ["target"],
+            "modelOverrides": {},
+        }
+
+    @pytest.mark.skipif(os.name == "nt", reason="symlinks require Windows privileges")
+    @pytest.mark.parametrize("has_auto", [False, True])
+    def test_symlink_only_blocks_required_cleanup_before_any_writes(self, files, has_auto):
+        managed, private, native = files
+        managed.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "target"}}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "target"}}))
+        target = native.with_name("native-target.json")
+        target.write_text(json.dumps({"model": "ug-auto-old" if has_auto else "regular"}))
+        native.symlink_to(target)
+        before = [path.read_bytes() for path in files]
+        assert claude.auto_model_targets() == {"ug-auto-old": "target"}
+        if has_auto:
+            with pytest.raises(RuntimeError, match="symlink.*Remove its Auto settings"):
+                claude.cleanup_auto_configuration()
+            assert [path.read_bytes() for path in files] == before
+        else:
+            claude.cleanup_auto_configuration()
+            assert native.is_symlink()
+            assert native.read_bytes() == before[-1]
+            assert json.loads(private.read_text()) == {"modelOverrides": {}}
+
+    def test_failed_native_write_keeps_mappings_for_retry(self, files, monkeypatch):
+        managed, private, native = files
+        managed.write_text(json.dumps({"modelOverrides": {"ug-auto-opaque": "custom.main"}}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-opaque": "custom.main"}}))
+        native.write_text(json.dumps({"model": "ug-auto-opaque"}))
+        before = [path.read_bytes() for path in files]
+        real_write = claude.atomic_write_json
+
+        def fail_native(path, document):
+            if path == native:
+                raise OSError("write failed")
+            real_write(path, document)
+
+        monkeypatch.setattr(claude, "atomic_write_json", fail_native)
+        with pytest.raises(RuntimeError, match="write failed"):
+            claude.cleanup_auto_configuration()
+        assert [path.read_bytes() for path in files] == before
+        monkeypatch.setattr(claude, "atomic_write_json", real_write)
+        claude.cleanup_auto_configuration()
+        assert json.loads(native.read_text()) == {"model": "custom.main"}
+        assert json.loads(managed.read_text()) == {"modelOverrides": {}}
+        assert json.loads(private.read_text()) == {"modelOverrides": {}}
+
+    @pytest.mark.parametrize("scope", ["user", "global", "skip_os", "published", "dry_run"])
+    def test_respects_command_scope(self, files, monkeypatch, scope):
+        import ucode.config_io as config_io
+
+        managed, private, native = files
+        for path in files:
+            path.write_text(json.dumps({"modelOverrides": {"ug-auto-old": "target"}, "other": 1}))
+        before = {path: path.read_bytes() for path in files}
+        if scope == "user":
+            monkeypatch.setattr(managed_files, "_config_scope", "user")
+        elif scope == "global":
+            monkeypatch.setattr(managed_files, "_machine_wide_only", True)
+        elif scope == "skip_os":
+            monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        elif scope == "published":
+            monkeypatch.setattr(managed_files, "published_agent_config_used", lambda: True)
+        else:
+            monkeypatch.setattr(config_io, "_dry_run", True)
+        claude.cleanup_auto_configuration()
+        for path in files:
+            retained = (
+                scope == "dry_run"
+                or (path == managed and scope in {"user", "skip_os", "published"})
+                or (path != managed and scope == "global")
+            )
+            assert (path.read_bytes() == before[path]) is retained
+
+    def test_invalid_allowlist_fails_before_any_file_changes(self, files):
+        managed, private, native = files
+        managed.write_text(json.dumps({"availableModels": ["ug-auto-unresolved"]}))
+        private.write_text(json.dumps({"modelOverrides": {"ug-auto-other": "target"}}))
+        native.write_text(json.dumps({"model": "ug-auto-other"}))
+        before = [path.read_bytes() for path in files]
+        with pytest.raises(RuntimeError, match="Cannot remove Claude Auto settings"):
+            claude.cleanup_auto_configuration()
+        assert [path.read_bytes() for path in files] == before
+
+    @pytest.mark.parametrize(
+        "version", [None, "", "unknown", "subagent_only_v0", "subagent_auto_v0_claude_only"]
+    )
+    def test_only_exact_version_can_retain_auto(self, monkeypatch, version):
+        if version is not None:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
+        assert claude.auto_configuration_enabled() is (version == "subagent_auto_v0_claude_only")
+
+    def test_resolved_routing_off_overrides_exact_version(self, monkeypatch):
+        from ucode.smart_routing import config
+
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+        with config.version_scope():
+            previous = v2.override_smart_routing(False, agent="claude")
+            try:
+                assert config.auto_mode_enabled()
+                assert not claude.auto_configuration_enabled()
+            finally:
+                v2.restore_smart_routing_env(previous)
+
+
+@pytest.mark.parametrize("external_edit", [False, True])
+def test_auto_cleanup_follows_managed_backup_restore(tmp_path, monkeypatch, external_edit):
+    path, _ = TestWriteToolConfigManagedSettings()._sudo_counting_env(tmp_path, monkeypatch)
+    original = {
+        "modelOverrides": {"ug-auto-baseline": "target", "admin": "foreign"},
+        "company": "keep",
+    }
+    path.write_text(json.dumps(original))
+    claude.write_tool_config({"workspace": WS, "claude_models": {}}, None)
+    if external_edit:
+        document = json.loads(path.read_text())
+        document["newAdminKey"] = "preserve"
+        path.write_text(json.dumps(document))
+    targets = claude.auto_model_targets()
+    claude.revert_managed_settings()
+    claude.cleanup_auto_configuration(alias_targets=targets)
+    restored = json.loads(path.read_text())
+    assert restored["modelOverrides"] == {"admin": "foreign"}
+    assert restored["company"] == "keep"
+    if external_edit:
+        assert restored["newAdminKey"] == "preserve"

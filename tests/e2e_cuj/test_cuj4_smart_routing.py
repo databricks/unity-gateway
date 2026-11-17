@@ -340,7 +340,8 @@ class TestCujAutoModelPicker(BaseCujTest):
 
         Expected: Auto starts with the managed default and ON in its band and footer.
         Both show OFF for a regular model and ON after selecting a different Auto main model.
-        Launch and model selections preserve the configured managed settings.
+        Launch preserves model metadata while retargeting the recording proxy.
+        Model selections preserve the launched managed settings.
         The selected alternate main model then completes real inference. The existing
         preset journey also exercises Auto main/subagent inference and routing decisions.
         """
@@ -353,7 +354,6 @@ class TestCujAutoModelPicker(BaseCujTest):
             default = configs[CLAUDE]["default_models"]["default_model"]
             settings = json.loads(MANAGED_PATHS[0].read_text())
             assert settings["modelPicker"]["replaceBuiltInOptions"] is True
-            managed_before = MANAGED_PATHS[0].read_bytes()
             picker_rows = settings["modelPicker"]["options"]
             auto_rows = [row for row in picker_rows if row["model"].startswith("ug-auto-")]
             assert len(auto_rows) == 1 and auto_rows[0]["label"] == "Auto"
@@ -377,6 +377,20 @@ class TestCujAutoModelPicker(BaseCujTest):
             evidence = SessionEvidence(session.home, CLAUDE)
             with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
                 tui.boot(timeout=150)
+                expected_settings = {
+                    **settings,
+                    "apiKeyHelper": settings["apiKeyHelper"].replace(
+                        workspace.url.rstrip("/"), recorder.url
+                    ),
+                    "env": {
+                        **settings["env"],
+                        "ANTHROPIC_BASE_URL": settings["env"]["ANTHROPIC_BASE_URL"].replace(
+                            workspace.url.rstrip("/"), recorder.url
+                        ),
+                    },
+                }
+                managed_before = MANAGED_PATHS[0].read_bytes()
+                assert json.loads(managed_before) == expected_settings
                 tui.wait_for(
                     lambda s: (
                         f"Auto ({label})" in "\n".join(s.splitlines()[-4:])
