@@ -50,8 +50,16 @@ MANAGED_FINGERPRINT_VERSION = 1
 # Written by a managed run: `ug configure --global` on a workspace that publishes an agent
 # configuration. While it exists, the machine-wide files come from that published agent
 # configuration, and every other run leaves them alone.
-PUBLISHED_AGENT_CONFIG_MARKER_PATH = Path("/etc/unitygateway/agents-state.json")
-CODEX_SYSTEM_REQUIREMENTS_PATH = Path("/etc/codex/requirements.toml")
+PUBLISHED_AGENT_CONFIG_MARKER_PATH = (
+    system_cross_os.windows_program_data_dir() / "UnityGateway" / "agents-state.json"
+    if sys.platform == "win32"
+    else Path("/etc/unitygateway/agents-state.json")
+)
+CODEX_SYSTEM_REQUIREMENTS_PATH = (
+    system_cross_os.windows_program_data_dir() / "OpenAI" / "Codex" / "requirements.toml"
+    if sys.platform == "win32"
+    else Path("/etc/codex/requirements.toml")
+)
 CODEX_SYSTEM_CONFIG_PATH = Path("/etc/codex/config.toml")
 _MISSING = object()
 _managed_write_batch: tuple[str, ...] = ()
@@ -204,13 +212,23 @@ def published_agent_config_marker() -> dict | None:
 
     Only a root-owned regular file counts, so a developer can't create or forge one.
     """
-    if current_os() not in (OS.LINUX, OS.MACOS):
+    if current_os() not in MANAGED_FILES_SUPPORTED_OSES:
         return None
+    path = PUBLISHED_AGENT_CONFIG_MARKER_PATH
+    if current_os() is OS.WINDOWS:
+        if any(
+            folder.is_symlink() or folder.is_junction() for folder in (path, path.parent)
+        ) or not all(
+            system_cross_os.windows_admin_owned_path(folder) for folder in (path.parent, path)
+        ):
+            return None
     try:
-        info = PUBLISHED_AGENT_CONFIG_MARKER_PATH.lstat()
+        info = path.lstat()
     except OSError:
         return None
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    if current_os() is not OS.WINDOWS and (info.st_uid != 0 or info.st_mode & 0o022):
         return None
     try:
         data = json.loads(PUBLISHED_AGENT_CONFIG_MARKER_PATH.read_text(encoding="utf-8"))
@@ -1830,6 +1848,8 @@ def _privileged_remove(path: Path) -> None:
         _sudo_remove(path)
         return
     _validate_windows_target(path)
+    if not system_cross_os.is_admin():
+        raise PermissionError("administrator rights are required")
     path.unlink(missing_ok=True)
 
 
@@ -1838,6 +1858,7 @@ def _windows_managed_targets() -> tuple[Path, ...]:
         windows_claude_managed_settings_path(),
         windows_codex_managed_settings_path(),
         UNITY_GATEWAY_MANAGED_SETTINGS_PATH,
+        PUBLISHED_AGENT_CONFIG_MARKER_PATH,
     )
 
 
@@ -1847,14 +1868,14 @@ def _validate_windows_target(path: Path) -> None:
     }
     if path not in {*_windows_managed_targets(), *header_mod_files}:
         raise RuntimeError(f"Refusing unexpected managed-settings target: {path}")
-    if path.is_symlink():
-        raise RuntimeError(f"Refusing to replace symlinked managed settings: {path}")
+    if path.is_symlink() or path.is_junction():
+        raise RuntimeError(f"Refusing to replace linked managed settings: {path}")
     if path == windows_codex_managed_settings_path():
         # Standard users can create folders under ProgramData; a linked one would redirect us.
         for folder in (path.parent, path.parent.parent):
             if folder.is_symlink() or folder.is_junction():
                 raise RuntimeError(f"Refusing to write managed settings through link {folder}")
-    elif path == UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+    elif path in (UNITY_GATEWAY_MANAGED_SETTINGS_PATH, PUBLISHED_AGENT_CONFIG_MARKER_PATH):
         if path.parent.is_symlink() or path.parent.is_junction():
             raise RuntimeError(f"Refusing to write managed settings through link {path.parent}")
 
@@ -1916,13 +1937,15 @@ def _windows_replace(path: Path, desired_text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path == windows_codex_managed_settings_path():
         _secure_windows_codex_folders(path)
-    elif path == UNITY_GATEWAY_MANAGED_SETTINGS_PATH:
+    elif path in (UNITY_GATEWAY_MANAGED_SETTINGS_PATH, PUBLISHED_AGENT_CONFIG_MARKER_PATH):
         _secure_windows_leaf_folder(path.parent)
     _validate_windows_target(path)  # a folder may have been created or swapped for a link meanwhile
     fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as tmp:
             tmp.write(desired_text)
+        if path == PUBLISHED_AGENT_CONFIG_MARKER_PATH:
+            _run_windows_icacls(Path(tmp_name), "/setowner", _WINDOWS_ADMINISTRATORS_SID)
         os.replace(tmp_name, path)
     except BaseException:
         with suppress(FileNotFoundError):

@@ -1,7 +1,7 @@
 # Admin-managed agent settings reference
 
 A managed run is `ug configure --global` on a workspace that publishes an agent configuration. It
-rebuilds each supported agent's machine-wide files from that configuration. It runs as root, often
+rebuilds each supported agent's machine-wide files from that configuration. It runs as root on Linux and macOS, or as administrator on Windows, often
 from an MDM policy, a provisioning script, or a fleet tool. This page lists the files, fields, exit codes, report outcomes,
 and keys that Unity Gateway owns. For why it works this way, see
 [About admin-managed agent settings](admin-managed-settings-explained.md).
@@ -18,6 +18,19 @@ The supported agents are Claude Code and Codex.
 | Codex | `/etc/codex/ug-model-catalog.json` and `/etc/codex/managed_config.toml`, only for a static model list | No |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json`: the saved agent configuration | — |
 | Unity Gateway | `/etc/unitygateway/agents-state.json`: the marker file | — |
+
+On Windows, Claude Code uses `C:\Program Files\ClaudeCode\managed-settings.json`.
+Codex uses `C:\ProgramData\OpenAI\Codex\requirements.toml`. Unity Gateway saves the
+configuration and marker under `C:\ProgramData\UnityGateway`. The Windows known folders
+supply these roots, including installations on another drive. Configure requires an elevated
+terminal or a provisioning process running as SYSTEM. An elevated `ug revert` removes the files;
+an ordinary developer revert leaves them.
+
+Codex on Windows has no machine-wide `config.toml` or `managed_config.toml` layer.
+A published `codex.config` with effective values, or `default_models.default_model`, exits 2
+before any writes. These defaults require per-user provisioning. A static model list applies
+through `ug codex` only; configure reports that it cannot enforce the list for bare `codex`.
+Claude Desktop MDM provisioning remains macOS-only.
 
 The run builds each agent file from these layers. A later layer replaces an earlier one:
 

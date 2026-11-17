@@ -1255,6 +1255,34 @@ class TestWindowsManagedWrites:
         )
         return managed_files.windows_claude_managed_settings_path()
 
+    def test_published_marker_is_secured_and_replaced_atomically(self, windows, monkeypatch):
+        path = managed_files.PUBLISHED_AGENT_CONFIG_MARKER_PATH
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        acl_calls = []
+        monkeypatch.setattr(
+            managed_files,
+            "_run_windows_icacls",
+            lambda target, *args: acl_calls.append((target, args)),
+        )
+        managed_files._windows_replace(path, '{"workspace": "old"}')
+        managed_files._windows_replace(path, '{"workspace": "new"}')
+        assert json.loads(path.read_text()) == {"workspace": "new"}
+        assert any(target == path.parent and "/inheritance:r" in args for target, args in acl_calls)
+        assert any(
+            target.parent == path.parent
+            and target.name.endswith(".tmp")
+            and args == ("/setowner", "*S-1-5-32-544")
+            for target, args in acl_calls
+        )
+        assert list(path.parent.iterdir()) == [path]
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: False)
+        with pytest.raises(PermissionError, match="administrator"):
+            managed_files._privileged_remove(path)
+        assert path.exists()
+        monkeypatch.setattr(managed_files.system_cross_os, "is_admin", lambda: True)
+        managed_files._privileged_remove(path)
+        assert not path.exists()
+
     def _reconcile(self, path, text):
         return managed_files.reconcile_managed_file(
             path,

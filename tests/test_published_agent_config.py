@@ -47,6 +47,8 @@ def _raw_config(*, claude_config: dict | None = None, codex_config: dict | None 
 @pytest.fixture(autouse=True)
 def _machine(monkeypatch, tmp_path):
     """Fixed binaries and versions, and machine-wide paths under tmp_path."""
+    monkeypatch.setattr(managed_files_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
+    monkeypatch.setattr(cli_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
     # `ug configure` sets these process-wide; restore them so later test files start clean.
     for module, name in (
         (config_io_mod, "_dry_run"),
@@ -1183,3 +1185,82 @@ class TestAuthTokenUsesSavedChoices:
         }
         calls = self._invoke(monkeypatch, state, WS)
         assert calls == [("custom", "cid", "oauth-profile")]
+
+
+class TestWindowsManagedRun:
+    @pytest.fixture(autouse=True)
+    def windows(self, monkeypatch):
+        monkeypatch.setattr(managed_files_mod, "current_os", lambda: managed_files_mod.OS.WINDOWS)
+
+    @pytest.mark.parametrize("elevated", [True, False])
+    def test_privileges_use_elevation_without_sudo(self, monkeypatch, elevated):
+        monkeypatch.setattr(machine.system_cross_os, "is_admin", lambda: elevated)
+        monkeypatch.setattr(machine, "_running_as_root", lambda: True)
+        assert machine.has_machine_privileges() is elevated
+        if elevated:
+            machine.check_privileges()
+        else:
+            with pytest.raises(machine.ManagedRunError, match="Run as administrator") as error:
+                machine.check_privileges()
+            assert error.value.code == machine.EXIT_PRIVILEGES
+
+    def test_windows_cli_enters_managed_run(self, monkeypatch, writes, global_cli):
+        monkeypatch.setattr(cli_mod, "current_os", lambda: managed_files_mod.OS.WINDOWS)
+        raw = _raw_config(claude_config={}, codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--agents", "claude,codex")
+        assert result.exit_code == 0, result.output
+        written, _ = writes
+        assert claude.managed_settings_path() in written
+        assert managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH in written
+        assert managed_files_mod.CODEX_SYSTEM_CONFIG_PATH not in written
+        assert managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH in written
+
+    def test_codex_writes_only_native_requirements(self):
+        plans = machine.plan_agents(
+            _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, None
+        )
+        assert set(plans[0].files) == {managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH}
+        doc = tomllib.loads(next(iter(plans[0].files.values())))
+        assert doc["model_provider"] == codex.CODEX_MODEL_PROVIDER_NAME
+        assert "env_http_headers" in doc["model_providers"][codex.CODEX_MODEL_PROVIDER_NAME]
+        assert machine.agent_paths("codex") == [managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH]
+
+    def test_unsupported_codex_defaults_fail_before_writes(self):
+        manifest = _manifest(
+            _raw_config(codex_config={"codex": {"config": {"approval_policy": "on-request"}}})
+        )
+        with pytest.raises(machine.ManagedRunError, match="no machine-wide config.toml") as error:
+            machine.plan_agents(manifest, WS, ["codex"], {}, None)
+        assert error.value.code == machine.EXIT_USAGE
+
+    def test_static_catalog_is_explicitly_launch_only(self):
+        manifest = _manifest(_raw_config(codex_config={"models": {"sources": ["gpt-5"]}}))
+        plan = machine.plan_agents(manifest, WS, ["codex"], {}, None)[0]
+        assert set(plan.files) == {managed_files_mod.CODEX_SYSTEM_REQUIREMENTS_PATH}
+        assert any("`ug codex` only" in warning for warning in plan.warnings)
+
+    @pytest.mark.parametrize("trusted", [True, False])
+    def test_marker_requires_protected_windows_acl(self, monkeypatch, tmp_path, trusted):
+        path = tmp_path / "agents-state.json"
+        path.write_text(json.dumps({"workspace": WS}))
+        monkeypatch.setattr(managed_files_mod, "PUBLISHED_AGENT_CONFIG_MARKER_PATH", path)
+        monkeypatch.setattr(machine.system_cross_os, "windows_admin_owned_path", lambda _p: trusted)
+        assert managed_files_mod.published_agent_config_marker() == (
+            {"workspace": WS} if trusted else None
+        )
+
+    @pytest.mark.parametrize(
+        "owner,users,expected",
+        [
+            ("BA", "0x1200a9", True),
+            ("SY", "FRFX", True),
+            ("BA", "FA", False),
+            ("S-1-5-21-123", "FR", False),
+        ],
+    )
+    def test_marker_acl_validation(self, owner, users, expected):
+        from ucode.os_compatibility.system_cross_os import _windows_policy_sddl_is_trusted
+
+        sddl = f"O:{owner}D:PAI(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;{users};;;BU)"
+        assert _windows_policy_sddl_is_trusted(sddl) is expected

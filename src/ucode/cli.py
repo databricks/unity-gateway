@@ -194,6 +194,7 @@ from ucode.mcp import (
 from ucode.mcp import managed_mcp_servers as load_managed_mcp_servers
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.browser_cross_os import open_in_browser
+from ucode.os_compatibility.system_cross_os import is_admin
 from ucode.skills_download import (
     configure_location_skills_download_command,
     configure_selected_skills_download_command,
@@ -2051,11 +2052,12 @@ def _revert_published_agent_config() -> str | None:
 
     # Only root removes them. `sudo -n` also succeeds for a developer with passwordless or
     # recently used sudo, whose own revert must leave the organization's files.
-    if not _running_as_root():
+    if not (is_admin() if current_os() is OS.WINDOWS else _running_as_root()):
         print_note(
             "This machine's machine-wide settings come from a published agent configuration, so "
             "`ug revert` leaves them. It still reverts your own settings. An administrator can "
-            "remove them with `sudo ug revert`."
+            "remove them by running `ug revert` as administrator on Windows, or `sudo ug revert` "
+            "on Linux and macOS."
         )
         return "managed, left as is"
     try:
@@ -5720,11 +5722,11 @@ def _configure_global_from_agent_config(
     from ucode.agents.desktop.setup import configure_claude_desktop, revert_claude_desktop_mdm
 
     try:
-        if current_os() not in (OS.LINUX, OS.MACOS):
+        if current_os() not in (OS.LINUX, OS.MACOS, OS.WINDOWS):
             if from_file is not None:
                 raise published_agent_config.ManagedRunError(
                     published_agent_config.EXIT_USAGE,
-                    "--from-file previews macOS and Linux files only.",
+                    "--from-file previews Linux, macOS, and Windows files only.",
                 )
             return
         try:

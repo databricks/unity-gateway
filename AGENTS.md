@@ -238,7 +238,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 </details>
 
 A managed run is `ug configure --global` on a workspace that publishes an agent configuration.
-It doesn't follow the tables above. It runs as root and rebuilds each supported agent's
+It doesn't follow the tables above. It runs as root (or an elevated administrator on Windows) and rebuilds each supported agent's
 machine-wide files from scratch. It reads the agent configuration and the agent's ownership table
 in `src/ucode/ownership/<agent>.toml`, and the code lives in `published_agent_config.py`. To
 support another agent, add its ownership table, its file builder in `published_agent_config.py`,
@@ -247,7 +247,12 @@ and its tests.
 - When a change makes ug write, strip, or reserve an agent key, update the matching table entry.
   Then run `uv run python -m ucode.ownership --write docs/admin-managed-settings-reference.md`.
   Otherwise `tests/test_ownership.py` fails.
-- The run leaves the marker file `/etc/unitygateway/agents-state.json`. While the marker file
+- On Windows, the run writes Claude settings under Program Files and Codex requirements
+  under ProgramData/OpenAI/Codex. Codex has no Windows machine-wide defaults/catalog
+  layer: effective `codex.config` and default-model settings fail before writes; static
+  lists apply through `ug codex` only. Desktop MDM stays macOS-only.
+- The run leaves the marker file `/etc/unitygateway/agents-state.json`
+  (`ProgramData/UnityGateway/agents-state.json` on Windows). While the marker file
   exists (`managed_files.published_agent_config_used()`), every other run skips the machine-wide
   files, as `UG_SKIP_OS_SETTINGS` does, and reads the agent configuration that the managed run
   saved.
