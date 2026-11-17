@@ -235,3 +235,60 @@ test('a per-model Auto alias saved by an earlier version still starts Auto', { o
   await step($, DEFAULT_ALIAS);
   expect(sent).toEqual([OTHER, OTHER]);
 });
+
+// Records the text of every row the mod hands the engine.
+function captureAppends(on: On): string[] {
+  const rows: string[] = [];
+  on('session.append', ($, e, next) => {
+    rows.push(e.message.content.map((block: any) => block.text ?? '').join('\n'));
+    return next(e);
+  });
+  return rows;
+}
+
+const SET_STATIC = {
+  door: 'command',
+  message: { role: 'user', isMeta: false, content: [{ type: 'text', text: `<local-command-stdout>Set model to \`${DEFAULT_ALIAS}\`` }] },
+  origin: { kind: 'engine' },
+} as never;
+const CHOSE_OTHER = 'Auto on: subagents smart-routed · main agent on `claude-haiku-4-5`';
+
+test('choosing a main model after entering Auto confirms and sends the new one', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  const sent = captureSteps(on);
+  const rows = captureAppends(on);
+  await $.session.start(START);
+  // Entering Auto confirms the main model it started from (Sonnet).
+  await $.command.run({ command: 'model', args: 'auto' });
+  await $.session.append(SET_STATIC);
+  expect(rows).toEqual(['<local-command-stdout>Auto on: subagents smart-routed · main agent on `claude-sonnet-5`']);
+
+  const pane = await mountChooser($);
+  await pane.press({ key: 'auto-main-model-1' });
+  await session.clock.advance(0);
+  // The transcript then names the main model just chosen.
+  expect(rows.at(-1)).toBe(CHOSE_OTHER);
+  await step($, DEFAULT_ALIAS);
+  await step($, DEFAULT_ALIAS, 'child');
+  expect(sent).toEqual([OTHER, OTHER]);
+});
+
+test('a native Auto confirmation landing after the pane save keeps the new main model', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  const sent = captureSteps(on);
+  const rows = captureAppends(on);
+  await $.session.start(START);
+  // The /model panel places the pane at once; its confirmation may arrive after the pick.
+  await $.command.run({ command: 'model', args: '' });
+  const pane = await mountChooser($);
+  await pane.press({ key: 'auto-main-model-1' });
+  await session.clock.advance(0);
+  await $.session.append(SET_STATIC);
+  await session.clock.advance(0);
+
+  expect(rows).toEqual([CHOSE_OTHER, '<local-command-stdout>' + CHOSE_OTHER]);
+  expect(session.store[AUTO.storeKey]).toBe(OTHER);
+  await step($, DEFAULT_ALIAS);
+  await step($, DEFAULT_ALIAS, 'child');
+  expect(sent).toEqual([OTHER, OTHER]);
+});

@@ -19,7 +19,7 @@ import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
-import { AUTO_KEPT_PREFIX, AUTO_MAIN_DESCRIPTION, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_PREFIX, AUTO_MAIN_DESCRIPTION, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoStatus, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
@@ -472,14 +472,26 @@ export function register(on: On, options: PluginOptions): void {
               }
               await customAutoRow($, auto, selected.model);
               if (autoSave !== request) return;
-              if (auto.staticModel) auto.variant = selected.model;
+              if (auto.staticModel) {
+                auto.variant = selected.model;
+                // A native confirmation still pending from the /model that opened
+                // this pane must not restore the main model it started from.
+                staticEntry = undefined;
+              }
               await $.store.set(auto.storeKey, selected.model);
               if (autoSave !== request) return;
               await syncAutoRouting($, options, auto, routingSync);
               if (autoSave !== request) return;
               await $.ui.close({ id: 'auto-main' });
               $.ui.invalidate('ui.render');
-              $.ui.toast(`Auto (${selected.label}) saved`);
+              // Static saves switch no native model, so no native confirmation names
+              // the new main model; record it where the entry confirmation was.
+              if (auto.staticModel) {
+                // The save is already committed; a refused or failed notice must not roll it back.
+                await $.session.append({message:{type:'system', content:[{type:'text', text:autoStatus(selected.model, true)}]}})
+                  .catch(() => $.ui.toast(`Auto (${selected.label}) saved`));
+              }
+              else $.ui.toast(`Auto (${selected.label}) saved`);
             } catch (error) {
               if (autoSave !== request) return;
               if (auto.staticModel) auto.variant = previousMain;

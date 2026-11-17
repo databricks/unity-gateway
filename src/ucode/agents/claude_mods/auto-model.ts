@@ -59,12 +59,16 @@ export const AUTO_MAIN_DESCRIPTION = "Subagents are now smart-routed. Pick the m
 export const AUTO_SET_PREFIX = 'Auto on: ';
 export const AUTO_KEPT_PREFIX = 'Auto still on: ';
 
+export function autoStatus(mainModel: string, setModel: boolean): string {
+  const model = mainModel.replace(/^system\.ai\./, '');
+  return `${setModel ? AUTO_SET_PREFIX : AUTO_KEPT_PREFIX}subagents smart-routed · main agent on \`${model}\``;
+}
+
 export function formatAutoConfirmation(text: string, mainModel: string, setModel: boolean): string {
   return text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
-    const model = mainModel.replace(/^system\.ai\./, '');
     const suffix = details.trim().replace(/^and /, '')
       .replace(/^saved as your default for new sessions\b/, '').trim();
-    return `<local-command-stdout>${setModel ? AUTO_SET_PREFIX : AUTO_KEPT_PREFIX}subagents smart-routed · main agent on \`${model}\``
+    return `<local-command-stdout>${autoStatus(mainModel, setModel)}`
       + (suffix ? `\n${suffix[0].toUpperCase()}${suffix.slice(1)}` : '');
   });
 }
