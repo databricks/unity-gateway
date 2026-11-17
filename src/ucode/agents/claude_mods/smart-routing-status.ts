@@ -73,6 +73,12 @@ export async function watchStartupValidation($: EngineInterface): Promise<void> 
         if (typeof result.message === 'string' && result.message) {
           validation.message = result.message
           $.ui.invalidate('ui.render')
+          await $.session.append({
+            message: {
+              type: 'system',
+              content: [{ type: 'text', text: 'Smart Router validation\n' + result.message }],
+            },
+          })
         }
       } catch {}
     })
@@ -129,9 +135,12 @@ export const registerStatusBand = (on: On): void => {
     const children = band.isVisible ? [line] : []
     if (validation.message) children.push(Box({
       flexDirection: 'column',
+      borderStyle: 'round',
+      borderColor: 'yellow',
+      paddingX: 1,
       children: [
-        Text({ bold: true, color: 'yellow', children: ['Smart Router validation'] }),
-        Text({ children: [validation.message] }),
+        Text({ color: 'yellow', children: [validation.message.split(/(?<=\.)\s/, 1)[0]] }),
+        Text({ dimColor: true, children: ['Ctrl+O for Smart Router validation details'] }),
       ],
     }))
     if (theirs) children.push(theirs)
