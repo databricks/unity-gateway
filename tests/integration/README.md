@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
+real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
+failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
+exercise live sudo or Codex startup.
+
 `../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
 fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
 checks run on both platforms. These are not live GitHub or credentialed integration checks.
@@ -26,6 +31,9 @@ approval dialogs, preserving the sandbox.
 Toggle approvals accept only the requested command or its exact environment-variable guard
 on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
 remain rejected.
+PowerShell guard matching recognizes the fixed `-not` and `IsNullOrWhiteSpace` checks
+of both session variables, including ConPTY's replacement selection marker. Component
+tests reject extra commands, substitutions, other variables, and different conditions.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
@@ -98,11 +106,17 @@ It replaces the obsolete stdio-only expectation; this checks configuration, not 
 Native mod component tests in `../native_claude/test_mod.py` cover 100 distinct animal names
 before numbered reuse, stable names during routing and in parallel cards, and unchanged
 execution inputs and row controls. They cover a lone call's decision under its Agent row,
-parallel calls as cards above the parent's next reply in call order, calls
+and parallel calls as cards above the parent's next reply in call order.
 `../test_gateway_proxy.py` covers concurrent 401/403 refresh sharing and retry
 behavior with controlled authentication and transport boundaries. The local-socket
 proxy suite also covers refresh/retry wiring; these checks do not establish live
-provider latency or token renewal behavior.
+provider latency or token renewal behavior. The existing organization mod's shared-context coverage reads
+Claude's effective language and adds context only in routed sessions, without a language proxy. It checks
+English, Chinese, unset and excluded user settings while retaining Auto Mode approvals,
+denials and the routed model. Generated-language compliance remains a live-model check:
+inspect child replies and native progress summaries with foreign-language source files
+and explicit translation requests. A native same-session settings reload check separately
+verifies that parent requests receive the changed preference without repeated instructions.
 
 `../test_configure_managed_writes.py` covers `ug revert` output after Claude/Codex managed-file
 deletion fails, its nonzero exit, and retention of the file, backup, and ug state. These component
@@ -312,7 +326,9 @@ service needs a user session), the GUI, or inference.
 `test_ug_codex_desktop_macos.py` covers the GUI and inference on macOS only: after the same managed
 configure it opens the pinned ChatGPT desktop app, answers onboarding and sends a prompt through
 Accessibility clicks and real keystrokes, and requires the exact answer on screen and in the
-app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model.
+app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. It then clicks an
+absent label in the same app and requires a nonzero helper exit with the native four-column
+accessibility tree captured before the fatal error in command evidence.
 `scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
 macOS desktop CI job does, so a local run never drives a developer's installed app.
 
@@ -332,8 +348,8 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
-The smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` and checks that both
-first-prompt and subagent route selections carry the managed MPS header and return HTTP 200.
+The smart-routing case checks that Claude's default Model Provider Service support carries the
+managed MPS header on both first-prompt and subagent route selections, which return HTTP 200.
 File, skill, MCP and subagent tasks retain their expected-value checks.
 The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
@@ -354,6 +370,10 @@ The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
+Enabled Codex presets check `x-codex-turn-metadata` on successful parent and child
+inference: the recipe matches the router selector, `/root` has state `on`, and the
+child's `agent_name` ends in `__sr_on`. Both retain the matching legacy recipe
+header and omit the payload field; disabled Codex presets omit routing metadata fields.
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
@@ -714,6 +734,12 @@ as UID 10001; it does not replace the unrun real-workspace configure journey.
 
 ## Shared agent helpers
 
+`utils/mcp.py` refreshes Codex's static `/mcp verbose` inventory while servers
+are starting, within a single 120-second deadline. It still requires both connected
+servers and their exact tools; the CUJ then calls both tools and verifies their receipts.
+Offline checks in `../test_integration_terminal_screen.py` cover stale startup snapshots,
+connection/tool failures, and permanent startup. They do not establish live MCP coverage.
+
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
 parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
 through them without changing existing journey commands or completion assertions.
@@ -844,6 +870,11 @@ the shared deadline, and network/CLI failures at each recovery stage. Invalid to
 output stays out of helper errors and streams.
 Shared CLI discovery checks pin the newest absolute binary through recovery and
 reject a missing CLI before token fetch or browser login.
+`../test_databricks.py::TestDatabricksCliResolution` also checks macOS Homebrew and
+user-local discovery with a Dock-style PATH, preserving an existing
+PATH installation and leaving other platforms unchanged. A Desktop auth component
+case checks token fetch through the resolved user-local binary. Filesystem/version
+or auth subprocess boundaries are controlled; native Dock launch remains untested.
 They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 
@@ -1456,6 +1487,14 @@ Each run writes a new `.integration-runs/<timestamp>/` directory containing:
 - `artifacts/`: command arguments, exit codes, timeout status, redacted output,
   app-server protocol diagnostics, and TUI transcripts/rendered screens plus
   keystroke actions and routing logs. No credential files are archived.
+  Claude subagent launch/off/back-on journeys also write `claude-response-protocol.json`
+  on success and failure, after the recorder's existing bounded drain. It includes the
+  metadata for the full inference history, including pending responses, with request sequence,
+  HTTP status, parse state, and allowlisted content block types and stop reasons.
+  It excludes request and response text and tool names or arguments. A `tool_use` block does not
+  identify a named tool or establish which service caused a protocol failure.
+  It reports recorder status, including the existing synthetic 502 for interrupted upstreams,
+  and cannot diagnose truncated protocol bodies because their partial structure is discarded.
 - `wheels/`: the tested wheel when built from the checkout; replay it with
   `--ug-wheel`. For release installations, `installed.txt` records the resolution.
 
@@ -1903,6 +1942,11 @@ disconnects and transport exception classes. Each event includes a Unix timestam
 preparation. Subtract an attempt's start `elapsed_ms` from its header `elapsed_ms` to measure the
 upstream wait. The gap after rejected headers also includes draining the response and refreshing
 credentials. The logger excludes request headers, bodies and credentials.
+`upstream_transport` events add HTTPX phase names, such as `connection.connect_tcp.started`,
+`connection.start_tls.complete`, `http11.send_request_body.complete`, and
+`http11.receive_response_headers.started`. Match their request ID and attempt number to
+distinguish connection or send stalls from a wait for upstream headers. Trace payloads,
+including headers and exception messages, are excluded.
 Antigravity's native stream-json events remain in headless
 command `stdout`; its raw native logs are not archived. These diagnostics do not
 change agent timeouts, task retries or success assertions.
@@ -2099,7 +2143,15 @@ Proxy startup has component coverage in `../test_mcp_proxy_cli.py` and shared-pr
 coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend processes
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
-shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.
+shutdown, and sign-in output with native line endings. On Windows, an observer
+checks the actual backend has no visible console window using native console and
+window APIs, followed by successful client tool calls using a real external bearer
+command. The command returns fresh credentials and records its own console visibility;
+auth subprocesses must have no visible window too. Isolated Python environments run
+with `pythonw.exe` present and absent, while the backend keeps `python.exe` and a
+hidden console that its auth subprocesses inherit. The external bearer path also has
+cross-platform process coverage. These component checks do not
+establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before
@@ -2124,7 +2176,10 @@ Copilot schema wildcards use UC model-service entries and the existing Copilot c
 which includes Claude, GPT, and supported open models while filtering incompatible APIs.
 Component tests cover Claude MPS picker labels, Codex MPS labels with dotted versions,
 and mixed hosted/provider wildcard models reaching Copilot's registry with their full IDs,
-wire APIs and Claude limits. These checks use controlled discovery responses.
+wire APIs and Claude limits. Provider wildcard checks also cover by-tool catalog selection:
+Claude expands from the Anthropic catalog and Codex from the Codex catalog whatever the
+service's provider type, while other tools keep provider-based selection.
+These checks use controlled discovery responses.
 Claude picker description checks cover static and discovered gateway aliases with seven- and
 eight-digit hashes, clean fallback descriptions, preserved explicit descriptions, request IDs and
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering

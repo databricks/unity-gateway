@@ -9,6 +9,7 @@ export const register: Register = (on, options) => {
   });
   on('command.run', {command: 'routing-probe'}, async ($) => ({text: JSON.stringify({
     revision: 'initial', options,
+    language: (await $.settings.read()).language ?? null,
     route: (options.routeCommand as readonly string[]).length
       ? await $.process.run(options.routeCommand as readonly string[], {stdin: '{}', timeoutMs: 10000})
       : null,

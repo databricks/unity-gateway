@@ -11,6 +11,7 @@ import threading
 import time
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import Mock
 from urllib.parse import parse_qs
 
 import pytest
@@ -1556,6 +1557,7 @@ class TestListProviderServiceModels:
             ("anthropic", (None, "HTTP 403 Forbidden"), ([], "HTTP 403 Forbidden")),
             ("openai", ({"models": [{"slug": "gpt-5.5"}]}, None), (["gpt-5.5"], None)),
             ("openai", ({"models": []}, None), ([], None)),
+            ("microsoft_foundry", ({"models": []}, None), ([], None)),
         ],
     )
     def test_reports_failures_but_not_empty_listings(
@@ -5019,7 +5021,8 @@ class TestDatabricksCliResolution:
     the version-read subprocess directly — no real Databricks CLI is needed."""
 
     @pytest.fixture(autouse=True)
-    def _fresh_databricks_cli_cache(self):
+    def _fresh_databricks_cli_cache(self, monkeypatch):
+        monkeypatch.setattr(db_mod.sys, "platform", "win32" if os.name == "nt" else "linux")
         clear_databricks_cli_cache()
         yield
         clear_databricks_cli_cache()
@@ -5082,6 +5085,50 @@ class TestDatabricksCliResolution:
         exe = tmp_path / "databricks.exe"
         exe.write_text("matches PATHEXT's .exe")
         assert db_mod._iter_databricks_executables() == [str(exe)]
+
+    @pytest.mark.parametrize("directory", ["/opt/homebrew/bin", "/usr/local/bin", "~/.local/bin"])
+    def test_macos_discovers_cli_outside_gui_path(self, monkeypatch, tmp_path, directory):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("HOME", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path / "Mac User"))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        gui_path = "/usr/bin:/bin:/usr/sbin:/sbin"
+        monkeypatch.setenv("PATH", gui_path)
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        candidate = os.path.join(os.path.expanduser(directory), name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value == candidate)
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", lambda value: (1, 20, 0))
+
+        assert databricks_cli_path() == os.path.abspath(candidate)
+        assert os.environ.get("PATH") == gui_path
+
+    def test_macos_preserves_cli_found_on_path(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("PATHEXT", ".exe")
+        name = "databricks.exe" if os.name == "nt" else "databricks"
+        configured = str(tmp_path / name)
+        homebrew = os.path.join("/opt/homebrew/bin", name)
+        monkeypatch.setattr(db_mod.os.path, "isfile", lambda value: value in {configured, homebrew})
+        monkeypatch.setattr(db_mod.os, "access", lambda value, mode: True)
+        probes = Mock(side_effect=lambda value: (1, 0, 0) if value == configured else (1, 20, 0))
+        monkeypatch.setattr(db_mod, "_read_databricks_cli_version", probes)
+
+        assert databricks_cli_path() == configured
+        probes.assert_called_once_with(configured)
+
+    @pytest.mark.parametrize("platform", ["linux", "win32"])
+    def test_standard_macos_locations_are_not_searched_on_other_platforms(
+        self, monkeypatch, platform
+    ):
+        monkeypatch.setattr(db_mod.sys, "platform", platform)
+        monkeypatch.setenv("PATH", "")
+        files = Mock(return_value=True)
+        monkeypatch.setattr(db_mod.os.path, "isfile", files)
+
+        assert db_mod._iter_databricks_executables() == []
+        files.assert_not_called()
 
     # -- _discover_databricks_clis -------------------------------------------
 
@@ -6894,4 +6941,180 @@ class TestSharedHostProfiles:
         db_mod.run_databricks_login("https://dbc-1.cloud.databricks.com")
         assert calls == [
             ["databricks", "auth", "login", "--host", "https://dbc-1.cloud.databricks.com"]
+        ]
+
+
+class TestModelServicesNeedSubscriptionRelay:
+    """A static model-service list launches relayed when a service routes to a relayed MPS."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_cache(self):
+        db_mod.clear_model_services_cache()
+        yield
+        db_mod.clear_model_services_cache()
+
+    @staticmethod
+    def _service(name: str, *destinations: dict) -> dict:
+        return {
+            "name": f"model-services/{name}",
+            "config": {"routing": {"destinations": list(destinations)}},
+        }
+
+    @staticmethod
+    def _external(mps: str, traffic: int = 100) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_EXTERNAL_FOUNDATION_MODEL",
+            "traffic_percentage": traffic,
+            "external_model_config": {"model_provider_service": f"model-provider-services/{mps}"},
+        }
+
+    @staticmethod
+    def _hosted(model: str) -> dict:
+        return {
+            "destination_type": "DESTINATION_TYPE_PAY_PER_TOKEN_FOUNDATION_MODEL",
+            "traffic_percentage": 100,
+            "pay_per_token_config": {"model": f"models/{model}"},
+        }
+
+    @staticmethod
+    def _mps(name: str, *, relayed: bool, provider_type: str = "anthropic") -> dict:
+        return {"name": name, "provider_type": provider_type, "relayed": relayed}
+
+    def _patch(
+        self,
+        monkeypatch,
+        services: dict,
+        relayed: set[str],
+        *,
+        openai: frozenset[str] = frozenset(),
+    ) -> list[tuple[str, float]]:
+        calls: list[tuple[str, float]] = []
+
+        def get_service(name, _ws, _token, *, timeout):
+            calls.append((name, timeout))
+            return (services.get(name), None if name in services else "404")
+
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, _ws, _token, *, timeout: (
+                self._mps(
+                    name,
+                    relayed=name in relayed,
+                    provider_type="openai" if name in openai else "anthropic",
+                ),
+                None,
+            ),
+        )
+        return calls
+
+    def test_service_on_a_relayed_provider_needs_the_relay(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.oss": self._service(
+                    "main.default.oss", self._hosted("system.ai.kimi")
+                ),
+                "main.default.sonnet": self._service(
+                    "main.default.sonnet", self._external("main.default.anthropic")
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        assert db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.oss", "main.default.sonnet[1m]"]
+        )
+        # Lookups use the short relay timeout, not the 30s default.
+        assert {timeout for _name, timeout in calls} == {db_mod._RELAY_LOOKUP_TIMEOUT_S}
+
+    def test_hosted_api_key_and_missing_services_are_not_relayed(self, monkeypatch):
+        calls = self._patch(
+            monkeypatch,
+            {
+                "main.default.keyed": self._service(
+                    "main.default.keyed",
+                    self._external("main.default.keyed-mps"),
+                    # Idle or deleted destinations on a relayed provider don't count.
+                    self._external("main.default.anthropic", traffic=0),
+                    {**self._external("main.default.anthropic"), "is_deleted": True},
+                ),
+            },
+            {"main.default.anthropic"},
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert (
+            lookup("https://ws", "tok", "system.ai.claude-sonnet-5-5")
+            is db_mod.RelayLookup.NOT_RELAYED
+        )
+        assert lookup("https://ws", "tok", "main.default.keyed") is db_mod.RelayLookup.NOT_RELAYED
+        assert lookup("https://ws", "tok", "main.default.gone") is db_mod.RelayLookup.UNKNOWN
+        # system.* ids are never looked up, and a confirmed answer is cached.
+        lookup("https://ws", "tok", "main.default.keyed")
+        assert [name for name, _timeout in calls] == ["main.default.keyed", "main.default.gone"]
+
+    def test_relayed_openai_provider_does_not_need_the_claude_relay(self, monkeypatch):
+        self._patch(
+            monkeypatch,
+            {
+                "main.default.gpt": self._service(
+                    "main.default.gpt", self._external("main.default.chatgpt")
+                )
+            },
+            {"main.default.chatgpt"},
+            openai=frozenset({"main.default.chatgpt"}),
+        )
+        assert not db_mod.model_services_need_subscription_relay(
+            "https://ws", "tok", ["main.default.gpt"]
+        )
+
+    def test_failed_lookup_waits_before_retrying_then_recovers(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        outcomes = iter([(None, "503"), (service, None)])
+        calls: list[str] = []
+
+        def get_service(name, *_a, timeout):
+            calls.append(name)
+            return next(outcomes)
+
+        now = [1000.0]
+        monkeypatch.setattr(db_mod.time, "monotonic", lambda: now[0])
+        monkeypatch.setattr(db_mod, "get_model_service", get_service)
+        monkeypatch.setattr(
+            db_mod,
+            "get_model_provider_service",
+            lambda name, *_a, timeout: (self._mps(name, relayed=True), None),
+        )
+        lookup = db_mod.model_service_relay_lookup
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        # Within the retry window the failure is reused, so a per-request caller isn't stalled.
+        now[0] += db_mod._RELAY_LOOKUP_RETRY_AFTER_S - 1
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.UNKNOWN
+        assert calls == ["main.default.sonnet"]
+        now[0] += 2
+        assert lookup("https://ws", "tok", "main.default.sonnet") is db_mod.RelayLookup.RELAYED
+        assert calls == ["main.default.sonnet", "main.default.sonnet"]
+
+    def test_failed_provider_lookup_is_unknown(self, monkeypatch):
+        service = self._service("main.default.sonnet", self._external("main.default.anthropic"))
+        monkeypatch.setattr(db_mod, "get_model_service", lambda *_a, timeout: (service, None))
+        monkeypatch.setattr(
+            db_mod, "get_model_provider_service", lambda *_a, timeout: (None, "timeout")
+        )
+        assert (
+            db_mod.model_service_relay_lookup("https://ws", "tok", "main.default.sonnet")
+            is db_mod.RelayLookup.UNKNOWN
+        )
+
+    def test_relay_candidates_are_custom_three_part_names(self):
+        models = [
+            "system.ai.kimi",
+            "main.default.sonnet[1m]",
+            "main.default.mps.claude-sonnet-5-5",
+            "claude-sonnet-5-5",
+            "main.default.oss",
+        ]
+        assert db_mod.relay_candidate_model_services(models) == [
+            "main.default.sonnet[1m]",
+            "main.default.oss",
         ]

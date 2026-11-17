@@ -10,7 +10,9 @@ back verbatim.
 With relayed OSS-routing on, the proxy picks per request by the requested model:
 Databricks-hosted ids (system.ai / OSS) take the gateway-auth path while relayed
 subscription models keep the OAuth passthrough, so one Claude Code session can use
-both.
+both. A customer Unity Catalog model service (``catalog.schema.name``) may route to a
+relayed provider, so it keeps the OAuth passthrough plus the swap header and drops the
+model-provider-service header, letting the service's own routing pick the destination.
 
 The gateway-auth proxy serves agents that can only hold a static credential
 (Copilot CLI): the agent authenticates to the proxy with a per-session secret,
@@ -269,6 +271,14 @@ def is_databricks_routed_model(model: str | None) -> bool:
     return "." in model or model.startswith("databricks-")
 
 
+def is_uc_model_service(model: str | None) -> bool:
+    """True when ``model`` names a customer Unity Catalog model service (``catalog.schema.name``,
+    not ``system.*`` or ``databricks-*``)."""
+    if not model or model.startswith(("system.", "databricks-")):
+        return False
+    return model.count(".") >= 2
+
+
 def _request_model(body: bytes | None) -> str | None:
     """The ``model`` field of a JSON request body, or None when absent/unparseable."""
     if not body:
@@ -348,6 +358,19 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 headers.update(self.workspace_selector)
             return headers
 
+        attempt = 1
+
+        def trace_transport(name: str, _info: dict[str, Any]) -> None:
+            log_proxy_diagnostic(
+                "upstream_transport",
+                request_id=diagnostic_id,
+                attempt=attempt,
+                phase=name,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+            )
+
+        extensions = {"trace": trace_transport} if _diagnostics_enabled() else None
+
         try:
             # First attempt with the current token.
             token, generation = self.cache.token_snapshot()
@@ -355,14 +378,16 @@ class _ProxyHandler(BaseHTTPRequestHandler):
             log_proxy_diagnostic(
                 "upstream_request_start",
                 request_id=diagnostic_id,
-                attempt=1,
+                attempt=attempt,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
-            with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+            with self.client.stream(
+                self.command, url, headers=headers, content=body, extensions=extensions
+            ) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=1,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
@@ -389,17 +414,20 @@ class _ProxyHandler(BaseHTTPRequestHandler):
                 if self._on_refresh_failure(exc):
                     return
             headers = request_headers(self.cache.token)
+            attempt = 2
             log_proxy_diagnostic(
                 "upstream_request_start",
                 request_id=diagnostic_id,
-                attempt=2,
+                attempt=attempt,
                 elapsed_ms=round((time.monotonic() - started) * 1000),
             )
-            with self.client.stream(self.command, url, headers=headers, content=body) as resp:
+            with self.client.stream(
+                self.command, url, headers=headers, content=body, extensions=extensions
+            ) as resp:
                 log_proxy_diagnostic(
                     "upstream_headers",
                     request_id=diagnostic_id,
-                    attempt=2,
+                    attempt=attempt,
                     status=resp.status_code,
                     elapsed_ms=round((time.monotonic() - started) * 1000),
                 )
@@ -506,9 +534,27 @@ class _ProxyHandler(BaseHTTPRequestHandler):
         raise AttributeError(name)
 
 
+# A UC model service keeps the relay credentials but must not be pinned to the launch's
+# model provider service: its own routing chooses the destination.
+_MODEL_SERVICE_ROUTE_STRIP = frozenset({MODEL_PROVIDER_SERVICE_HEADER.lower()})
+
+
 class _RelayProxyHandler(_ProxyHandler):
+    # Set by the server factory: ``(model, databricks_token)`` -> True when the UC model service
+    # routes to a subscription-relay MPS. The gateway rejects relayed requests to any other MPS,
+    # so only those services may keep the relay credentials.
+    routes_to_subscription_relay: Callable[[str, str], bool] | None = None
+
+    def _is_relay_backed_model_service(self, model: str | None) -> bool:
+        if not model or not is_uc_model_service(model) or self.routes_to_subscription_relay is None:
+            return False
+        return self.routes_to_subscription_relay(model, self.cache.token)
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
-        if is_databricks_routed_model(_request_model(body)):
+        model = _request_model(body)
+        if self._is_relay_backed_model_service(model):
+            return self.token_header, _MODEL_SERVICE_ROUTE_STRIP, "relay-model-service"
+        if is_databricks_routed_model(model):
             return AUTHORIZATION_HEADER, _DATABRICKS_ROUTE_STRIP, "databricks"
         return self.token_header, frozenset(), "relay"
 
@@ -779,9 +825,18 @@ def start_relay_proxy(
     *,
     agent: str = AGENT_CLAUDE,
     fallback_on_bind_error: bool = True,
+    routes_to_subscription_relay: Callable[[str, str], bool] | None = None,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
-    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``)."""
+    """Start ``agent``'s subscription relay proxy (see ``_RELAY_ROUTES``).
+
+    ``routes_to_subscription_relay(model, databricks_token)`` tells Claude's proxy which UC model
+    services keep the relay credentials; without it they all take the gateway-auth path."""
     upstream_path, handler_type = _RELAY_ROUTES[agent]
+    handler_attrs = (
+        {"routes_to_subscription_relay": staticmethod(routes_to_subscription_relay)}
+        if routes_to_subscription_relay
+        else None
+    )
     return _start_proxy(
         workspace,
         token_provider,
@@ -791,6 +846,7 @@ def start_relay_proxy(
         handler_type=handler_type,
         force_refresh_near_expiry=False,
         fallback_on_bind_error=fallback_on_bind_error,
+        handler_attrs=handler_attrs,
     )
 
 
