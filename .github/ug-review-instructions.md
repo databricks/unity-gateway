@@ -22,6 +22,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
+   Treat agent prompts and delegation guidance as behavior changes. Split unrelated guidance
+   from a correctness fix when combining them would change an ongoing experiment.
+   Keep screenshots, recordings, per-run provenance, and one-off output produced solely as review
+   evidence in PR attachments or descriptions. Keep product documentation, reusable tools, and
+   genuine test fixtures in the repository.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
@@ -52,6 +57,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
    Reuse available backend canonical identifiers to avoid duplicating parsing rules across
    installed client versions.
+   Before adding client-side routing or provider rate-limit policy, consider whether the gateway
+   can own the decision consistently across clients. Name the debugging and version-skew costs
+   of duplicating policy; do not require unavailable backend behavior as an immediate replacement.
+   For features that depend on backend fields or flags, check evidence from the target workspace
+   and document activation prerequisites. A working fallback does not demonstrate the new feature.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
@@ -60,6 +70,12 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
+   Recheck expiring state after slow routing or network operations before using it to deny work;
+   a cooldown snapshot taken before the request can already be stale.
+   For review-evidence tooling, reject output paths inside the checkout, including symlink
+   aliases, before writes or dependency installation. Publish success labels and replace PR
+   evidence only after uploads succeed. On failure, preserve prior evidence, rationale, and
+   labels, and return failure.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
