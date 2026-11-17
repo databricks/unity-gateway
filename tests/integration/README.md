@@ -1,5 +1,10 @@
 # Integration tests
 
+`../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
+real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
+failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
+exercise live sudo or Codex startup.
+
 `../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
 fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
 checks run on both platforms. These are not live GitHub or credentialed integration checks.
@@ -26,6 +31,9 @@ approval dialogs, preserving the sandbox.
 Toggle approvals accept only the requested command or its exact environment-variable guard
 on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
 remain rejected.
+PowerShell guard matching recognizes the fixed `-not` and `IsNullOrWhiteSpace` checks
+of both session variables, including ConPTY's replacement selection marker. Component
+tests reject extra commands, substitutions, other variables, and different conditions.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
 changes directories. The follow-up asks for a new receipt and identifies the old answer.
@@ -335,8 +343,8 @@ must be provisioned accordingly outside the tests. Both CUJ2 inference cases ask
 for a short greeting and require a
 completed parent turn matching the submitted prompt with a nonempty answer, plus the expected
 provider/model and paired HTTP 200. Random IDs correlate requests; answers need not repeat them.
-The smart-routing case enables `ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS` and checks that both
-first-prompt and subagent route selections carry the managed MPS header and return HTTP 200.
+The smart-routing case checks that Claude's default Model Provider Service support carries the
+managed MPS header on both first-prompt and subagent route selections, which return HTTP 200.
 File, skill, MCP and subagent tasks retain their expected-value checks.
 The config equality also accounts for the workspace's fixture
 skill name as data; skill download and invocation are not covered.
@@ -357,6 +365,10 @@ The shared preset CUJ runs both agents for every version and derives routing and
 orchestration assertions from each agent's resolved flags. Both must complete a native
 child task. `subagent_orch_v0_claude_only` routes Claude's child; Codex uses the managed
 default without routing requests, new router decisions, recipe headers, or orchestrator context.
+Enabled Codex presets check `x-codex-turn-metadata` on successful parent and child
+inference: the recipe matches the router selector, `/root` has state `on`, and the
+child's `agent_name` ends in `__sr_on`. Both retain the matching legacy recipe
+header and omit the payload field; disabled Codex presets omit routing metadata fields.
 
 Agent-specific smart-routing preset component checks cover shared base presets, explicit agent mappings,
 complete per-agent validation, session precedence, and preserving the preset selector
@@ -847,6 +859,11 @@ the shared deadline, and network/CLI failures at each recovery stage. Invalid to
 output stays out of helper errors and streams.
 Shared CLI discovery checks pin the newest absolute binary through recovery and
 reject a missing CLI before token fetch or browser login.
+`../test_databricks.py::TestDatabricksCliResolution` also checks macOS Homebrew and
+user-local discovery with a Dock-style PATH, preserving an existing
+PATH installation and leaving other platforms unchanged. A Desktop auth component
+case checks token fetch through the resolved user-local binary. Filesystem/version
+or auth subprocess boundaries are controlled; native Dock launch remains untested.
 They replace external authentication and do not establish native Desktop
 GUI or browser-login coverage; this integration suite does not launch Desktop.
 
@@ -2115,7 +2132,15 @@ Proxy startup has component coverage in `../test_mcp_proxy_cli.py` and shared-pr
 coverage in `../test_mcp_proxy_shared.py`. The latter runs real relay/backend processes
 against a local HTTP MCP peer, checking concurrent session isolation, credentials,
 headers, EOF/reset disconnect diagnostics, crash recovery, local authentication, idle
-shutdown, and sign-in output with native line endings. These component checks do not establish live gateway or native Windows coverage.
+shutdown, and sign-in output with native line endings. On Windows, an observer
+checks the actual backend has no visible console window using native console and
+window APIs, followed by successful client tool calls using a real external bearer
+command. The command returns fresh credentials and records its own console visibility;
+auth subprocesses must have no visible window too. Isolated Python environments run
+with `pythonw.exe` present and absent, while the backend keeps `python.exe` and a
+hidden console that its auth subprocesses inherit. The external bearer path also has
+cross-platform process coverage. These component checks do not
+establish live gateway or Desktop GUI coverage.
 
 Desktop connector component checks cover `toolSearchEnabled: true`, native stdio registration,
 removal of plugin MCP declarations on repeated setup, preserved skills/hooks, registration before

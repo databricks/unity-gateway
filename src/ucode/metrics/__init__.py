@@ -345,7 +345,7 @@ def begin(command: str, started: float | None = None) -> None:
     global _runtime
     from ucode.env import env_bool
 
-    if not env_bool("UG_ENABLE_METRICS_EXPORT"):
+    if "UG_ENABLE_METRICS_EXPORT" in os.environ and not env_bool("UG_ENABLE_METRICS_EXPORT"):
         return
     runtime = Recorder(command, time.perf_counter() if started is None else started)
     if command in _AGENT_SESSION_COMMANDS:
