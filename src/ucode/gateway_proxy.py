@@ -85,6 +85,7 @@ _DEFAULT_TTL_S = 3600
 # and exception class names — never headers, bodies, or credentials.
 _DIAGNOSTICS_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS"
 _DIAGNOSTICS_FILE_ENV = "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE"
+_DIAGNOSTICS_FILE_LOCK = threading.Lock()
 
 
 def _diagnostics_enabled() -> bool:
@@ -98,8 +99,10 @@ def log_proxy_diagnostic(event: str, **fields: object) -> None:
     line = f"[ucode-relay] {json.dumps(payload, sort_keys=True, separators=(',', ':'))}\n"
     if path := os.environ.get(_DIAGNOSTICS_FILE_ENV):
         try:
-            with open(path, "a", encoding="utf-8") as log:
-                log.write(line)
+            # Windows append writes on separate file handles are not atomic.
+            with _DIAGNOSTICS_FILE_LOCK:
+                with open(path, "a", encoding="utf-8") as log:
+                    log.write(line)
             return
         except OSError:
             # Keep diagnostic evidence if the destination becomes unavailable.
