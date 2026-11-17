@@ -59,8 +59,8 @@ def _normalize_smart_router_env_guard(command: str) -> str:
             + command.removeprefix(whitespace_guard)
         )
     return re.sub(
-        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
-        r'\1"ENV_UNSET"\2',
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1Write-Output "ENV_UNSET"\2',
         command,
         count=1,
     )
