@@ -2,7 +2,7 @@
 
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
-The configure-time managed-routing and Auto opt-in matrix has component coverage in
+The configure-time managed-routing and exact Auto-version matrix has component coverage in
 `../test_agent_claude.py`; live configure-to-launch validation remains a gap.
 
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with

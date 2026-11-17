@@ -372,3 +372,46 @@ def test_auto_flag_alone_does_not_enable_routing():
     assert not v2.smart_routing_enabled(
         {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
     )
+
+
+@pytest.mark.parametrize("version", [None, "", "unknown_v99", *config._VERSIONS])
+@pytest.mark.parametrize("legacy_flag", ["0", "1"])
+def test_auto_requires_exact_version(version, legacy_flag):
+    env = {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: legacy_flag}
+    if version is not None:
+        env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = version
+    assert config.auto_mode_enabled(env) is (version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+
+
+def test_version_scope_retains_identity_without_reapplying_flags(monkeypatch):
+    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    with config.version_scope():
+        previous = config.apply_config(agent=AGENT_CLAUDE)
+        try:
+            monkeypatch.setenv(ENABLE_SUBAGENT_ROUTING_ENV_VAR, "0")
+            with config.version_scope():
+                assert config.auto_mode_enabled()
+                assert not config.auto_mode_enabled({})
+                assert (
+                    config.resolve_environment(agent=AGENT_CLAUDE)[ENABLE_SUBAGENT_ROUTING_ENV_VAR]
+                    == "0"
+                )
+        finally:
+            v2.restore_smart_routing_env(previous)
+    monkeypatch.delenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+    assert not config.auto_mode_enabled()
+
+
+@pytest.mark.parametrize("override", ["", "unknown_v99", config.SUBAGENT_ONLY_V0])
+def test_nested_version_scope_overrides_and_restores_identity(monkeypatch, override):
+    monkeypatch.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    with config.version_scope():
+        monkeypatch.delenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
+        with pytest.raises(RuntimeError, match="stop"):
+            with monkeypatch.context() as inner:
+                inner.setenv(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, override)
+                with config.version_scope():
+                    assert not config.auto_mode_enabled()
+                    raise RuntimeError("stop")
+        assert config.auto_mode_enabled()
+    assert not config.auto_mode_enabled()

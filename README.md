@@ -544,18 +544,17 @@ SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug configure --agent cl
 SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only ug claude
 ```
 
-When workspace managed config enables Claude smart routing, ordinary `ug configure`
-already provisions Auto aliases and sets `modelPicker.replaceBuiltInOptions=false`
-for UG-owned pickers, regardless of its config version. When the configure-time
-environment also selects the Auto config version (`SMART_ROUTER_CONFIG_VERSION`
-above; the managed config itself carries no version), configure keeps
+Auto requires this version for both configure and launch. The version derives
+`ENABLE_SMART_ROUTER_AUTO_MODE` internally; setting that flag directly does not enable Auto.
+Managed smart routing alone does not opt into Auto.
+
+With the Auto version and managed Claude smart routing, configure keeps
 `replaceBuiltInOptions=true` on the UG-owned static catalog and serves Auto from
-one row inside it, listed first after Claude's native Default row: the default variant's alias labeled "Auto", with its
-`modelOverrides` mapping and both the alias and its target admitted by
-`availableModels`. That static-catalog mode is written at configure only; launches
-preserve whichever installed mode the file carries and never install or convert it.
-Without managed routing or explicit Auto opt-in, configure keeps
-`replaceBuiltInOptions=true`.
+one row inside it, listed first after Claude's native Default row. The row uses the
+default variant's alias, with its `modelOverrides` mapping and aliases and targets
+in `availableModels`. With the Auto version but no managed routing, configure exposes
+Auto through the native custom-model slot. Without the Auto version, configure
+keeps the ordinary replacement picker.
 
 UG preserves pickers owned by other managers, including Isaac. Their manager must
 set `modelPicker.replaceBuiltInOptions=false` to expose Auto's native custom-model slot.
@@ -565,17 +564,12 @@ and must already admit Auto. A foreign custom-model slot also prevents Auto.
 Changing machine-wide picker settings can require sudo; launching `ug claude` does
 not install or rewrite those settings.
 
-Once configure has installed the static Auto row (managed routing configured with the
-Auto config version), a plain smart-routed `ug claude` starts in Auto without any
-selector: the installed row is the opt-in. Set `ENABLE_SMART_ROUTER_AUTO_MODE=0` in your
-own environment (with no `SMART_ROUTER_CONFIG_VERSION`) to launch without Auto; a
-version's own `"0"` does not opt out. `--disable-smart-routing`, an explicit `--model`,
-a budget recommendation and resume keep their precedence as in any Auto launch.
-
-Without that installed row, existing versions, including `subagent_orch_v0_claude_only`, keep Auto hidden
-and retain their Smart Router controls. `ENABLE_SMART_ROUTER_AUTO_MODE=1` enables
-the picker for an already smart-routed launch without a version selector; the flag
-alone does not enable routing. A known version overrides this flag.
+An installed Auto row does not enable Auto on a later launch without the version.
+Ordinary launches preserve machine-wide picker metadata, so an old row can remain
+visible until you reconfigure without the Auto version. It does not activate the
+Auto mod. Saved Auto aliases resolve to their real models outside Auto.
+`--disable-smart-routing`, an explicit `--model`, a budget recommendation and resume
+retain their precedence. Other versions keep their existing Smart Router controls.
 
 The native `/model` picker includes **Auto**:
 “Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
@@ -626,7 +620,7 @@ The Auto flow hides the old `/smart-router` command. The Smart Router band and
 footer show ON in Auto and OFF after an ordinary model selection.
 The Codex integration is unchanged.
 
-Fresh managed launches start in Auto with the managed default model. Resume uses
+Fresh launches using the Auto version start in Auto with the managed default model. Resume uses
 Claude's native model precedence without UG injecting a new Auto selection. A configured
 `ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
 uses the exact Claude ID or an explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
@@ -755,8 +749,9 @@ The version takes precedence over conflicting legacy flags. Once the agent is se
 UG expands its mapping into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
 `ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_SMART_ROUTER_AUTO_MODE` for the launched session. When the version is
-unset or empty, these legacy flags retain their existing behavior, including
-first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. Unknown versions are ignored:
+unset or empty, the routing and orchestrator flags retain their existing behavior,
+including first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. The Auto flag is
+derived only from its config version and cannot enable Auto independently. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.
 `--disable-smart-routing` and session on/off controls apply after expansion;
 `--enable-smart-routing` and workspace smart routing keep a known version.

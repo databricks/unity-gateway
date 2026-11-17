@@ -68,7 +68,14 @@ from ucode.smart_routing.claude_hooks import (
     sync_smart_routing_hooks,
 )
 from ucode.smart_routing.codex_hooks import merge_pre_tool_use_hooks, routing_models
-from ucode.smart_routing.config import apply_config, apply_enabled_version, resolve_environment
+from ucode.smart_routing.config import (
+    SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+    apply_config,
+    apply_enabled_version,
+    auto_mode_enabled,
+    resolve_environment,
+    selected_version,
+)
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
 from ucode.ui import print_note, print_warning
 
@@ -374,8 +381,14 @@ def _routed_claude_agent_definitions(model_ids: list[str]) -> dict[str, dict[str
     }
 
 
-def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
+def _claude_mod_launch_options(
+    env: Mapping[str, str] | None = None, *, config_version: str | None = None
+) -> dict:
     source = resolve_environment(env, agent=AGENT_CLAUDE)
+    version = selected_version(env) if config_version is None else config_version
+    source[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] = (
+        "1" if version == SUBAGENT_AUTO_V0_CLAUDE_ONLY else "0"
+    )
     isaac = shutil.which("isaac")
     return {
         **{key: source.get(key, "") for key in SMART_ROUTING_ENV_KEYS},
@@ -731,13 +744,8 @@ def launch_claude(
     launch_model_args: Callable[[list[str], str | None], list[str]],
     model_name: Callable[[str], str],
     default_model: str | None = None,
-    auto_mode: bool | None = None,
 ) -> NoReturn:
-    """Launch Claude in the first-prompt routing PTY wrapper.
-
-    ``auto_mode`` is the launch layer's Auto decision (the Auto config version, or the
-    installed static Auto row); ``None`` reads the resolved Auto flag.
-    """
+    """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
     from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
@@ -770,12 +778,9 @@ def launch_claude(
     settings, remaining = compose_settings(tool_args)
     # Auto's native model selection collects Isaac feedback before disabling routing.
     # Explicit first-prompt presets retain their own launch behavior.
-    if auto_mode is None:
-        auto_mode = (
-            resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
-            == "1"
-        )
-    auto_picker = auto_mode and not route_first_prompt and not claude_print_mode(remaining)
+    auto_picker = (
+        auto_mode_enabled() and not route_first_prompt and not claude_print_mode(remaining)
+    )
     from ucode.agents.claude import _managed_settings_path
     from ucode.agents.claude_auto import (
         add_picker_entry,
@@ -901,6 +906,7 @@ def launch_claude(
     if not isinstance(env, dict):
         raise RuntimeError("Claude settings 'env' must be an object for smart routing.")
     env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
+    env[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] = "1" if auto_mode_enabled() else "0"
     env[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] = (
         "1" if orchestrator.feature_enabled(agent=AGENT_CLAUDE) else "0"
     )
@@ -948,13 +954,11 @@ def launch_claude(
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
-            if auto_picker:
-                # An installed static Auto row enters Auto without the Auto version; the
-                # launch-only settings env carries the flag, so the mod's options, its
-                # session toggles and Claude's environment agree for this session.
-                env[ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR] = "1"
             mod_options = {
-                **_claude_mod_launch_options({**resolve_environment(agent=AGENT_CLAUDE), **env}),
+                **_claude_mod_launch_options(
+                    {**resolve_environment(agent=AGENT_CLAUDE), **env},
+                    config_version=selected_version(),
+                ),
                 "routeCommand": route_command,
                 "logsCommand": [route_command[0], "smart-router-logs"],
             }

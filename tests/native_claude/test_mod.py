@@ -225,7 +225,7 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
     env = {
         "ENABLE_SMART_ROUTING_V2": "0",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
-        "ENABLE_SMART_ROUTER_AUTO_MODE": "1",
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
         "ISAAC_SMART_ROUTER_FEEDBACK": "1",
         "ISAAC_LAUNCH_MODE": "cli",
         "PYTHONPATH": str(Path(__file__).parents[2] / "src"),

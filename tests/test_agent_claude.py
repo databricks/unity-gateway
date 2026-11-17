@@ -1789,12 +1789,13 @@ class TestWriteToolConfigManagedSettings:
         return managed_path, sudo_writes
 
     @pytest.mark.parametrize("can_write", [False, True])
+    @pytest.mark.parametrize("managed_routing", [False, True])
     @pytest.mark.parametrize(
-        ("managed_routing", "configure_auto"),
-        [(True, False), (False, False), (False, True), (True, True)],
+        "configure_version",
+        [None, "", "unknown_v99", "subagent_orch_v0_claude_only", "subagent_auto_v0_claude_only"],
     )
     def test_auto_picker_survives_ordinary_launch(
-        self, tmp_path, monkeypatch, can_write, managed_routing, configure_auto
+        self, tmp_path, monkeypatch, can_write, managed_routing, configure_version
     ):
         from ucode.agents.claude_auto import is_auto_model, picker_is_configured
 
@@ -1809,12 +1810,15 @@ class TestWriteToolConfigManagedSettings:
         state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
         ordinary_version = "subagent_orch_v0_claude_only"
         auto_version = "subagent_auto_v0_claude_only"
-        monkeypatch.setenv(
-            "SMART_ROUTER_CONFIG_VERSION", auto_version if configure_auto else ordinary_version
-        )
+        configure_auto = configure_version == auto_version
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        if configure_version is None:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", configure_version)
         monkeypatch.setattr(claude, "_explicit_configure", True)
         claude.write_tool_config(state, state["claude_static_models"][0])
-        configured_auto = managed_routing or configure_auto
+        configured_auto = configure_auto
         # Managed routing under the Auto config version keeps the static catalog's
         # replacement picker and serves Auto from one row inside it.
         static_catalog = managed_routing and configure_auto
@@ -1849,6 +1853,33 @@ class TestWriteToolConfigManagedSettings:
             assert picker_is_configured(json.loads(path.read_text())) is configured_auto
             assert path.read_bytes() == installed
             assert len(writes) == write_count
+
+    @pytest.mark.parametrize("managed_routing", [False, True])
+    def test_reconfigure_without_auto_version_removes_auto_picker(
+        self, tmp_path, monkeypatch, managed_routing
+    ):
+        from ucode.agents.claude_auto import is_auto_model, picker_is_configured
+
+        path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            claude,
+            "refresh_managed_config",
+            lambda *a, **kw: _managed_config_result(
+                {"enabled_agents": {"claude": {"smart_routing_enabled": managed_routing}}}
+            ),
+        )
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-4-6"]}
+        monkeypatch.setattr(claude, "_explicit_configure", True)
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        assert picker_is_configured(json.loads(path.read_text()))
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION")
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        claude.write_tool_config(state, state["claude_static_models"][0])
+        settings = json.loads(path.read_text())
+        assert not picker_is_configured(settings)
+        assert settings["modelPicker"]["replaceBuiltInOptions"] is True
+        assert not any(is_auto_model(row["model"]) for row in settings["modelPicker"]["options"])
 
     def test_static_auto_row_adds_one_row_and_keeps_replacement_picker(self):
         from ucode.agents.claude_auto import (
@@ -3758,6 +3789,12 @@ class TestResolveLaunchBinary:
 
 class TestClaudeLaunch:
     @pytest.fixture(autouse=True)
+    def _isolated_launch_settings(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", tmp_path / "ucode-settings.json")
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", tmp_path / "settings.json")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "managed.json")
+
+    @pytest.fixture(autouse=True)
     def _claude_on_windows_path(self, monkeypatch):
         if sys.platform != "win32":
             return
@@ -4111,7 +4148,10 @@ class TestClaudeLaunch:
             ("team.models.admin", "claude-sonnet-5-5[1m]"),
         ],
     )
-    def test_auto_alias_restarts_on_real_model(self, monkeypatch, tmp_path, target, behaves_as):
+    @pytest.mark.parametrize("version", [None, "subagent_auto_v0_claude_only"])
+    def test_auto_alias_restarts_on_real_model(
+        self, monkeypatch, tmp_path, target, behaves_as, version
+    ):
         from ucode.agents.claude_auto import auto_variant
 
         calls = []
@@ -4132,26 +4172,21 @@ class TestClaudeLaunch:
             claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
         )
         monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "0")
+        if version is None:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         claude.launch({"workspace": WS}, [], options=LaunchOptions())
         argv = calls[0]
         assert argv[argv.index("--model") + 1] == target
         assert json.loads(user_path.read_text())["model"] == saved
         assert "modelOverrides" not in json.loads(settings_path.read_text())
 
-    @pytest.mark.parametrize(
-        ("static_row", "routed", "opted_out", "auto_mode"),
-        [
-            (True, True, False, True),
-            (True, True, True, False),
-            (False, True, False, False),
-            (True, False, False, None),
-        ],
-        ids=["installed-row", "developer-opt-out", "non-static-install", "routing-off"],
-    )
-    def test_installed_static_auto_row_starts_smart_routed_launch_in_auto(
-        self, monkeypatch, tmp_path, static_row, routed, opted_out, auto_mode
+    @pytest.mark.parametrize("static_row", [False, True])
+    @pytest.mark.parametrize("routed", [False, True])
+    def test_installed_auto_row_cannot_enable_auto_without_the_version(
+        self, monkeypatch, tmp_path, static_row, routed
     ):
-        """A plain smart-routed launch enters Auto from the static row configure installed."""
         from ucode.agents.claude_auto import add_picker_entry
 
         sonnet = "system.ai.claude-sonnet-5-5"
@@ -4167,8 +4202,8 @@ class TestClaudeLaunch:
         managed_path = tmp_path / "managed-settings.json"
         managed_path.write_text(json.dumps(managed))
         before = managed_path.read_bytes()
-        for name in ("ENABLE_SMART_ROUTER_AUTO_MODE", "SMART_ROUTER_CONFIG_VERSION"):
-            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         monkeypatch.delenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, raising=False)
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: managed_path)
@@ -4178,20 +4213,23 @@ class TestClaudeLaunch:
         monkeypatch.setattr(
             claude, "exec_or_spawn", lambda argv: _capture_claude_launch(calls, argv)
         )
-        launch_v2 = Mock()
+        auto_decisions = []
+        launch_v2 = Mock(
+            side_effect=lambda *_a, **_kw: auto_decisions.append(claude.auto_mode_enabled())
+        )
         monkeypatch.setattr(v2, "launch_claude", launch_v2)
 
         claude.launch(
             {"workspace": WS},
             [],
-            options=LaunchOptions(launch_smart_routing=routed, auto_mode_opted_out=opted_out),
+            options=LaunchOptions(launch_smart_routing=routed),
         )
 
-        if auto_mode is None:
+        if not routed:
             launch_v2.assert_not_called()
             assert len(calls) == 1
         else:
-            assert launch_v2.call_args.kwargs["auto_mode"] is auto_mode
+            assert auto_decisions == [False]
         assert managed_path.read_bytes() == before
 
     def test_launch_default_model_is_inherited_by_smart_routing(self, monkeypatch):
@@ -4365,7 +4403,6 @@ class TestClaudeLaunch:
             user_settings_path=claude.CLAUDE_USER_SETTINGS_PATH,
             launch_model=None,
             default_model=None,
-            auto_mode=False,
             compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,

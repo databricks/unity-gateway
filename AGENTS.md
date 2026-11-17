@@ -152,29 +152,27 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
-Claude Auto visibility is opt-in through `ENABLE_SMART_ROUTER_AUTO_MODE=1` or the
-`subagent_auto_v0_claude_only` config version. Existing versions set the flag to `"0"`.
-A smart-routed interactive subagent-routing launch also enters Auto, with no selector,
-when the managed file carries the UG-owned static Auto row (`static_auto_model`): the
-Claude launch layer (`claude.launch`) derives this from installed state and passes
-`auto_mode` to `launch_claude`, which writes `ENABLE_SMART_ROUTER_AUTO_MODE=1` only into
-the launch settings env so the mod options, session toggles and Claude agree; the inherited
-environment and resolved version flags are not rewritten. Version presets (including
-the managed default version and `--enable-smart-routing`) own the flag and do not opt
-out; only a developer's own `ENABLE_SMART_ROUTER_AUTO_MODE=0` with no known selector
-(captured in `_launch_tool` before any version applies, as `auto_mode_opted_out`) keeps
-that launch out of Auto. Routing off, first-prompt routing and print mode never enter Auto.
+Claude Auto is enabled only by the `subagent_auto_v0_claude_only` config version.
+`ENABLE_SMART_ROUTER_AUTO_MODE` is an internal derived flag: that version sets it to
+`"1"` for Claude, and other versions set it to `"0"`. Setting the flag directly,
+managed smart routing alone, and an installed static Auto row cannot enable Auto.
+Capture the selected version in a scoped Python context before materializing its
+flags and consuming the environment selector. Restore that context on every exit;
+do not leave the selector in child environments, where it could reapply a preset
+over a session's routing overrides. Only an eligible exact-version launch supplies
+`autoPicker` to the native mod. Routing off, first-prompt routing and print mode
+never enter Auto.
 Fresh Auto launches use the managed default model, or the first available model;
 explicit model arguments and native resume retain precedence over startup Auto.
 Fresh Auto session controls start OFF; native startup initializes the selected state
 without treating a manual-model launch as a feedback-gated user disable. Ordinary
-launches preserve installed Auto picker metadata independently of their Auto flag.
-Configure provisions Auto aliases and sets `modelPicker.replaceBuiltInOptions=false`
-for UG-owned pickers when managed Claude `smart_routing_enabled` is true, regardless
-of its config version, or when Auto is explicitly enabled. Otherwise it keeps replacement
-enabled. When managed Claude `smart_routing_enabled` is true AND the configure-time
-environment resolves to the Auto config version (`SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
-or `ENABLE_SMART_ROUTER_AUTO_MODE=1`; the managed config itself carries no version),
+launches preserve installed Auto picker metadata without enabling the feature.
+Removing the visible Auto picker entry requires explicit configure without the Auto version.
+Unused alias mappings may remain; they do not enable Auto.
+Configure provisions Auto aliases only with the Auto version. For a UG-owned picker
+without managed smart routing, it sets `modelPicker.replaceBuiltInOptions=false`.
+When managed Claude `smart_routing_enabled` is true AND the configure-time selector
+is `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
 configure keeps `replaceBuiltInOptions=true` on the UG-owned static catalog and serves
 Auto from one row inside it, first among UG's rows (below Claude's native Default row): the default variant's alias with label `Auto`, its
 `modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
@@ -206,8 +204,7 @@ without a launch-only model starts on the stored main model; a per-model alias s
 natively (an earlier version's saved selection) still counts as Auto with that model.
 Native context window and effort follow the static row (the default variant) for every
 main model; the mod's prompt hint row names the held main model, not the row's alias.
-Launch configuration controls Auto visibility; an installed static Auto row
-counts as that configuration for smart-routed launches. Configure
+The config version controls Auto activation; installed picker metadata does not. Configure
 preserves foreign admin
 picker/custom option settings. Claude owns model-specific effort capabilities and defaults.
 Claude Auto configures immutable per-main-model aliases in `modelOverrides` and

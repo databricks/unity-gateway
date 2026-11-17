@@ -54,6 +54,31 @@ test('session start carries the launch recipe and forwards the event and result'
   expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
 });
 
+test('an Auto flag without a launch picker leaves model and effort commands native', {
+  options: { ...ROUTED, ENABLE_SMART_ROUTER_AUTO_MODE: '1' },
+}, async ($, on) => {
+  const { env } = setup(on);
+  env.ENABLE_SMART_ROUTER_AUTO_MODE = '1';
+  const registered: string[] = [];
+  const commands: { command: string; args: string }[] = [];
+  on('session.start', () => ({ cwd: '/work' }));
+  on('command.register', ($, e) => {
+    registered.push(e.name);
+    return { value: undefined };
+  });
+  on('command.run', ($, e) => {
+    commands.push({ command: e.command, args: e.args });
+    return { ref: 1, text: `native ${e.command} ${e.args}` };
+  });
+  on('ui.invalidate', () => ({ value: undefined }));
+  await $.session.start(start);
+
+  expect((await $.command.run({ command: 'model', args: 'sonnet' })).text).toBe('native model sonnet');
+  expect((await $.command.run({ command: 'effort', args: 'high' })).text).toBe('native effort high');
+  expect(commands).toEqual([{ command: 'model', args: 'sonnet' }, { command: 'effort', args: 'high' }]);
+  expect(registered).not.toContain('auto');
+});
+
 test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on, { pinned: 'CLAUDE_CODE_EXTRA_BODY' });
 

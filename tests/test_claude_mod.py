@@ -144,8 +144,12 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_V2": "",
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
-        "ENABLE_SMART_ROUTER_AUTO_MODE": "",
-        "unset": [key for key in SMART_ROUTING_ENV_KEYS if key != "ENABLE_SMART_ROUTING_V2"],
+        "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "unset": [
+            key
+            for key in SMART_ROUTING_ENV_KEYS
+            if key not in ("ENABLE_SMART_ROUTING_V2", "ENABLE_SMART_ROUTER_AUTO_MODE")
+        ],
         "recipe": "stable",
         "routeCommand": [],
         "logsCommand": [],
@@ -153,3 +157,17 @@ def test_launch_options_preserve_empty_and_absent_values():
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
     }
+
+
+@pytest.mark.parametrize("version", [None, "", "unknown_v99", *config._VERSIONS])
+def test_mod_auto_flag_is_derived_only_from_version(version):
+    env = {"ENABLE_SMART_ROUTER_AUTO_MODE": "1"}
+    if version is not None:
+        env["SMART_ROUTER_CONFIG_VERSION"] = version
+    before = env.copy()
+    options = v2._claude_mod_launch_options(env)
+    assert options["ENABLE_SMART_ROUTER_AUTO_MODE"] == (
+        "1" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY else "0"
+    )
+    assert "ENABLE_SMART_ROUTER_AUTO_MODE" not in options["unset"]
+    assert env == before

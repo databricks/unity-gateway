@@ -1086,40 +1086,46 @@ class TestSubcommandRouting:
         assert observed == [(tool in routed_tools, expected_env)]
         assert _routing_env() == env_before
 
+    @pytest.mark.parametrize("bare", [False, True])
     @pytest.mark.parametrize(
-        ("launch_args", "launch_env", "opted_out"),
+        ("version", "legacy_flag", "enabled", "disabled"),
         [
-            ([], {}, False),
-            ([], {"ENABLE_SMART_ROUTER_AUTO_MODE": "0"}, True),
-            (
-                [],
-                {
-                    "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
-                    "SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                },
-                False,
-            ),
-            (["--enable-smart-routing"], {"ENABLE_SMART_ROUTER_AUTO_MODE": "0"}, False),
+            (None, "1", False, False),
+            ("", "1", False, False),
+            ("unknown_v99", "1", False, False),
+            (smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, "1", False, False),
+            (smart_routing_config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, "0", True, False),
+            (smart_routing_config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, "1", False, True),
         ],
-        ids=["managed-default", "developer-opt-out", "version-owns-flag", "enable-flag-owns-flag"],
     )
-    def test_only_a_developer_auto_mode_zero_opts_out_of_the_installed_auto_row(
-        self, monkeypatch, launch_args, launch_env, opted_out
+    def test_auto_version_survives_materialization_and_does_not_leak(
+        self, monkeypatch, bare, version, legacy_flag, enabled, disabled
     ):
-        """Version presets materialize Auto "0" themselves; only the developer's own flag counts."""
-        for name, value in launch_env.items():
-            monkeypatch.setenv(name, value)
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", legacy_flag)
+        if version is None:
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+        else:
+            monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", version)
         managed = {"enabled_agents": {"claude": {"smart_routing_enabled": True}}}
+        monkeypatch.setattr("ucode.cli.install_databricks_cli", lambda *a, **k: None)
+        monkeypatch.setattr("ucode.cli.refresh_managed_config", lambda state: (managed, False))
+        before = _routing_env()
         observed = []
-
         with _launch_policy_patches(managed) as calls:
             calls["launch"].side_effect = lambda *_args, options, **_kwargs: observed.append(
-                (options.launch_smart_routing, options.auto_mode_opted_out)
+                options.launch_smart_routing and smart_routing_config.auto_mode_enabled()
             )
-            result = runner.invoke(app, ["claude", *launch_args])
-
-        assert result.exit_code == 0, result.output
-        assert observed == [(True, opted_out)]
+            args = [] if bare else ["claude"]
+            if disabled:
+                args = ["claude", "--disable-smart-routing"]
+            result = runner.invoke(app, args)
+            assert result.exit_code == 0, result.output
+            assert observed == [enabled]
+            assert _routing_env() == before
+            monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+            result = runner.invoke(app, [] if bare else ["claude"])
+            assert result.exit_code == 0, result.output
+            assert observed == [enabled, False]
 
     @pytest.mark.parametrize("installed_version", ["0.156.0", "0.163.0"])
     @pytest.mark.parametrize("recovery", ["decline", "upgrade", "disable", "managed-default"])

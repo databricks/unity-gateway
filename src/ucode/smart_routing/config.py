@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Iterator, Mapping, MutableMapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -148,6 +150,32 @@ def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) 
 
 
 _validate_versions(_VERSIONS)
+
+
+_selected_version: ContextVar[str] = ContextVar("smart_router_config_version", default="")
+
+
+def selected_version(env: Mapping[str, str] | None = None) -> str:
+    """Read a selector or the current launch's already-consumed selector."""
+    source = os.environ if env is None else env
+    if env is not None or SMART_ROUTER_CONFIG_VERSION_ENV_VAR in source:
+        return source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
+    return _selected_version.get()
+
+
+@contextmanager
+def version_scope() -> Iterator[None]:
+    """Retain version identity for this call without reapplying its routing flags."""
+    token = _selected_version.set(selected_version())
+    try:
+        yield
+    finally:
+        _selected_version.reset(token)
+
+
+def auto_mode_enabled(env: Mapping[str, str] | None = None) -> bool:
+    """Whether this launch selected Claude Auto's configuration version."""
+    return selected_version(env) == SUBAGENT_AUTO_V0_CLAUDE_ONLY
 
 
 def resolve_environment(env: Mapping[str, str] | None = None, *, agent: str) -> dict[str, str]:

@@ -38,7 +38,6 @@ from ucode.constants import (
     AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     LOOPBACK_HOST,
     MCP_CLEANUP_SCOPES,
     MCP_USER_SCOPE,
@@ -127,7 +126,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.config import resolve_environment
+from ucode.smart_routing.config import auto_mode_enabled
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import (
     CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
@@ -1991,26 +1990,14 @@ def write_tool_config(
             *(["WebSearch"] if withdraws_web_search else []),
         ],
         passthrough_leaves=passthrough.record(),
-        auto_picker=(
-            not (provider or parent_schema or relayed)
-            and (
-                resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
-                == "1"
-                or (managed_manifest or {})
-                .get("enabled_agents", {})
-                .get(AGENT_CLAUDE, {})
-                .get("smart_routing_enabled")
-                is True
-            )
-        ),
+        auto_picker=not (provider or parent_schema or relayed) and auto_mode_enabled(),
         # Managed smart routing whose configure-time environment resolves to the
         # Auto config version serves Auto from the static catalog itself. The
         # managed config carries no version of its own; this is the version the
         # admin selected for configure (SMART_ROUTER_CONFIG_VERSION).
         managed_auto_catalog=(
             not (provider or parent_schema or relayed)
-            and resolve_environment(agent=AGENT_CLAUDE).get(ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR)
-            == "1"
+            and auto_mode_enabled()
             and (managed_manifest or {})
             .get("enabled_agents", {})
             .get(AGENT_CLAUDE, {})
@@ -3155,23 +3142,9 @@ def launch(
         if options.launch_model and not pinned_model
         else None
     )
-    from ucode.agents.claude_auto import static_auto_model
-
     managed_path = _managed_settings_path()
     managed = read_json_safe(managed_path) if managed_path is not None else {}
-    auto_mode = resolve_environment(agent=AGENT_CLAUDE).get(
-        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR
-    ) == "1" or (
-        # The static catalog `ug configure` installed serves Auto from its own row, so a
-        # smart-routed launch enters Auto without selecting the Auto config version. The
-        # developer's own ENABLE_SMART_ROUTER_AUTO_MODE=0 opts out; first-prompt routing
-        # and print mode keep their own launch behavior, as for the Auto version.
-        options.launch_smart_routing
-        and not options.auto_mode_opted_out
-        and static_auto_model(managed) is not None
-        and not smart_routing_v2.first_prompt_routing_enabled(agent=AGENT_CLAUDE)
-        and not smart_routing_v2.claude_print_mode(tool_args)
-    )
+    auto_mode = auto_mode_enabled() and options.launch_smart_routing
     if not auto_mode:
         from ucode.agents.claude_auto import (
             AUTO_CUSTOM_MODEL_ENV_KEYS,
@@ -3220,7 +3193,6 @@ def launch(
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
                 launch_model=pinned_model,
                 default_model=session_model,
-                auto_mode=auto_mode,
                 compose_settings=functools.partial(
                     _compose_v2_settings, server_side_web_search=server_side_search
                 ),
