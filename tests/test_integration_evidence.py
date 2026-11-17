@@ -152,6 +152,7 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 )
 @pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
+@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
 @pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
 @pytest.mark.parametrize(
     "condition",
@@ -163,12 +164,12 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
     ids=["unset", "whitespace"],
 )
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
-    extra_command, missing_message, guard_style, selected, condition
+    extra_command, missing_message, guard_style, write_output, selected, condition
 ):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
     branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
     suffix = "" if guard_style == "exit" else " }"
-    guard = f"if ({condition}) {{ Write-Output {missing_message}{branch}"
+    guard = f"if ({condition}) {{ {write_output}{missing_message}{branch}"
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
         f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
