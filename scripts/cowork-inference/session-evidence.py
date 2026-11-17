@@ -33,7 +33,11 @@ def databricks_urls(text):
     urls = set()
     for url in re.findall(r"https?://[^\s)<>\]`*\"']+", text):
         url = url.rstrip(".,;:/")
-        if urlparse(url).hostname in DATABRICKS_HOSTS:
+        try:
+            hostname = urlparse(url).hostname
+        except ValueError:  # e.g. an unclosed IPv6 bracket in search text
+            continue
+        if hostname in DATABRICKS_HOSTS:
             urls.add(url)
     return urls
 

@@ -289,6 +289,16 @@ def test_mcp_search_requires_a_shared_official_databricks_url(mcp_evidence):
     assert result["url"] == "https://www.databricks.com"
 
 
+def test_mcp_search_ignores_malformed_urls_beside_an_official_one(mcp_evidence):
+    records, task = mcp_evidence
+    _search_result(records)["content"] = [
+        {"type": "text", "text": "https://[invalid https://www.databricks.com/"}
+    ]
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["url"] == "https://www.databricks.com"
+
+
 def _search_call(records):
     return records[1]["message"]["content"][0]
 
