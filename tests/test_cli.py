@@ -4324,8 +4324,9 @@ class TestAntigravityAllowAllProviderModel:
 
 class TestRevert:
     @pytest.fixture(autouse=True)
-    def _keep_real_desktop_profiles(self):
-        # Real Desktop revert deletes UG's profile from the developer's home directory.
+    def _stub_desktop_revert(self):
+        # Real Desktop revert edits the developer's Desktop profile, Cowork, Claude Code
+        # plugin, and MDM state; the Desktop test modules cover that behavior.
         with patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"):
             yield
 
