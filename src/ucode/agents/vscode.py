@@ -1,4 +1,4 @@
-"""VS Code: install ug's model extension so Copilot Chat can use the workspace's AI Gateway models.
+"""VS Code: install ug's model extension so Copilot Chat can use the workspace's Unity Gateway models.
 
 Configure-only, like Cursor (it stays out of `agents.__init__._MODULES`): `ug configure --agents
 vscode` packs the extension that ships with ug into a vsix, together with a `ug-config.json` that
@@ -22,7 +22,6 @@ import socket
 import subprocess
 import tempfile
 import zipfile
-from collections import Counter
 from pathlib import Path
 from typing import cast
 from xml.sax.saxutils import escape
@@ -34,6 +33,7 @@ from ucode.agents.copilot import (
     copilot_catalog,
     location_catalog,
     managed_http_headers,
+    model_labels,
     provider_service_catalog,
     resolve_copilot_model,
     unservable_static_models,
@@ -44,7 +44,6 @@ from ucode.databricks import build_auth_shell_command
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
-from ucode.string_utils import model_picker_label
 from ucode.ui import console, print_heading, print_kv, print_note, print_warning
 from ucode.workspace import workspace_headers
 
@@ -218,17 +217,8 @@ def model_entries(
 
 
 def _entries(catalog: list[CopilotModel], provider: str | None) -> list[dict[str, object]]:
-    if provider:
-        # A service's targets are the provider's own ids, which is what its users know it by, and
-        # several of them differ only by a region the label would drop.
-        return [_model_entry(model, model.id) for model in catalog]
-    labels = {model: model_picker_label(claude_model_name(model.id)) for model in catalog}
-    counts = Counter(labels.values())
-    # As in Codex's picker: two models with the same label show their full ids instead.
-    return [
-        _model_entry(model, model.id if counts[label] > 1 else label)
-        for model, label in labels.items()
-    ]
+    labels = model_labels(catalog, provider_service=provider)
+    return [_model_entry(model, labels[model]) for model in catalog]
 
 
 def managed_default_model(state: dict, catalog: list[CopilotModel]) -> str | None:
@@ -368,14 +358,15 @@ def auth_command(state: dict) -> str:
 def next_steps() -> list[str]:
     """What to do in VS Code once the extension is installed, for this OS."""
     restart = (
-        "quit it (Cmd+Q) and open it again"
+        # Closing every window leaves VS Code running on macOS.
+        "Quit VS Code with Cmd+Q, even if no window is open, and open it again."
         if current_os() is OS.MACOS
-        else "close every VS Code window and open it again"
+        else "Close every VS Code window and open VS Code again."
     )
     return [
-        # An open window keeps running the extension build it loaded, and configure reinstalls
-        # every time. A restart covers every open window at once.
-        f"1. If VS Code is open, {restart}.",
+        # A running VS Code keeps the extension build it loaded, even in a new window, and
+        # configure reinstalls every time.
+        f"1. {restart}",
         "2. Open Chat, click the model picker, and choose a Databricks model.",
     ]
 

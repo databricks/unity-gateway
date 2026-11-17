@@ -18,6 +18,7 @@ public static class CapabilityWindow {
 '@
 . "$PSScriptRoot/diagnostics.ps1"
 . "$PSScriptRoot/prepare-task.ps1"
+. "$PSScriptRoot/model-picker.ps1"
 $evidence = $OutputDirectory
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 $report = [ordered]@{ capability = $Capability; passed = $false; submitted = $false }
@@ -129,7 +130,7 @@ try {
     $newTask = Find-Control -Names @('New', 'New task', 'New Task')
     if ($newTask) { Invoke-Control $newTask }
     $configuration = Get-Content (Join-Path (Split-Path $evidence -Parent) 'configuration.json') -Raw | ConvertFrom-Json
-    $null = Wait-Control -Names @("Model: $($configuration.targetModelLabel)")
+    $report.initialModel = Select-CoworkModel -Root $script:window -Label $configuration.targetModelLabel
     $report.model = $configuration.targetModel
     $editor = Wait-Control -Names @('Write your prompt to Claude')
     Save-UI 'new-task'

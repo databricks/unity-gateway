@@ -1,11 +1,12 @@
 # UG review
 
-Add either `ug-review` or `code-review` to an in-repository PR, or have an
-organization member or owner post exactly `/ug-review` on any PR, to run
+Add either `ug-review` or `code-review` to an in-repository PR, mark an
+in-repository draft PR ready for review, or have an organization member or owner
+post exactly `/ug-review` on any PR, to run
 [Open Code Review](https://github.com/alibaba/open-code-review) with the UG rubric.
-Label triggers do not run on fork PRs, whose `pull_request` events cannot access
-the gateway secret; use the member comment instead. Findings become inline review
-comments. OCR always posts a summary comment, so the workflow deletes it when every
+Label and ready-for-review triggers do not run on fork PRs, whose `pull_request`
+events cannot access the gateway secret; use the member comment instead. Findings
+become inline review comments. OCR always posts a summary comment, so the workflow deletes it when every
 finding was posted inline; Polly posts the overall review. The summary stays only
 when it holds findings GitHub would not accept inline.
 
@@ -38,10 +39,10 @@ the review is incomplete or does not match the requested head commit.
 
 The job fetches `auth.py`, `AGENTS.md`, and the rubric from the default branch
 before the action re-checks out the workspace. Comment events run the
-default-branch workflow, and the action checks out the default branch. Label
-events use the PR's workflow definition, and the action checks out the PR merge
-ref; they are restricted to in-repository branches. OCR reads the diff through Git
-and never installs dependencies or executes PR code.
+default-branch workflow, and the action checks out the default branch. Label and
+ready-for-review events use the PR's workflow definition, and the action checks out
+the PR merge ref; they are restricted to in-repository branches. OCR reads the
+diff through Git and never installs dependencies or executes PR code.
 
 ## Verification
 
@@ -55,14 +56,15 @@ the **UG Review** run for successful gateway authentication and a complete revie
 then verify that an actionable finding appears inline on the changed lines.
 Use a small deliberate logic bug on a disposable PR to test positive findings,
 and remove it afterward. Remove and re-add a label, or post a new comment, to rerun.
-Existing labels, label removal, label edits, and ordinary pushes do not request
-another review.
+Marking a draft PR ready for review requests one review; a PR opened as ready
+does not. Existing labels, label removal, label edits, and ordinary pushes do not
+request another review.
 
 ## Polly review
 
-The same triggers (`ug-review` or `code-review` label on an in-repo PR, or a member
-`/ug-review` comment) also start **Polly AI Review** (`.github/workflows/polly-review.yml`),
-ported from Omnigent's `polly-review.yml`. It runs Omnigent's `examples/polly` reviewer from
+The same triggers (`ug-review` or `code-review` label on an in-repo PR, an in-repo
+draft marked ready for review, or a member `/ug-review` comment) also start
+**Polly AI Review** (`.github/workflows/polly-review.yml`), ported from Omnigent's `polly-review.yml`. It runs Omnigent's `examples/polly` reviewer from
 a pinned Omnigent commit against a frozen PR diff and posts one summary comment, skipping a
 head commit that already has a Polly review. The runner, service principal, and gateway
 token are the same as above; Omnigent's providers point at the gateway's

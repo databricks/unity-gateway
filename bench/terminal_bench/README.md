@@ -43,7 +43,7 @@ sequenceDiagram
 	participant host as Runner host
 	participant env as Task directory
 	participant agent as ug and agent CLI
-	participant gateway as AI Gateway
+	participant gateway as Unity Gateway
 	host->>env: Copy environment/app/ and run environment/setup.py
 	host->>host: bench_auth.py mints a token
 	host->>agent: ug configure, then ug claude or ug codex with instruction.md

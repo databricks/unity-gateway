@@ -34,7 +34,7 @@ const matches = (presented: string, secret: string) =>
   presented.length === secret.length && timingSafeEqual(Buffer.from(presented), Buffer.from(secret));
 
 /**
- * A loopback OTLP receiver: traces go to the workspace's AI Gateway with a fresh token and `headers`, and logs and
+ * A loopback OTLP receiver: traces go to the workspace's Unity Gateway with a fresh token and `headers`, and logs and
  * metrics, which the gateway doesn't take, get an empty success.
  */
 export const startReceiver = (
@@ -72,7 +72,7 @@ export const startReceiver = (
     }
     const reply = Buffer.from(await answer.arrayBuffer());
     if (!answer.ok) {
-      log(`AI Gateway refused traces (${answer.status}): ${reply.toString("utf8").slice(0, 300)}`);
+      log(`Unity Gateway refused traces (${answer.status}): ${reply.toString("utf8").slice(0, 300)}`);
     }
     response.writeHead(answer.status, { "Content-Type": answer.headers.get("content-type") ?? contentType }).end(reply);
   };

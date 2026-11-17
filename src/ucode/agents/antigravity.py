@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import unquote
 
+from ucode import metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -531,6 +532,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             tool_args = _with_model_arg(
                 tool_args, _selection_id(binary, env, launch_model, catalog)
             )
+        metrics.agent_handoff()
         proc = subprocess_cross_os.popen([binary, *tool_args], env=env)
         returncode = _wait_for_exit(proc)
     finally:

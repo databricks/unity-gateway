@@ -18,8 +18,13 @@ import pytest
 from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
+from ucode.databricks import RelayLookup
 from ucode.smart_routing import claude_routing, v2
-from ucode.state import MANAGED_OVERLAY_KEY
+from ucode.state import (
+    CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
+    MANAGED_OVERLAY_KEY,
+    desktop_uses_claude_subscription_relay,
+)
 from ucode.telemetry import client_platform
 
 
@@ -654,26 +659,264 @@ class TestRenderOverlay:
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
-    def test_static_models_skipped_when_relayed(self):
-        # When using relayed inference, static models are ignored.
+    def test_static_models_skipped_when_relayed_through_a_provider(self):
+        # A relayed Model Provider Service supplies the catalog; static models are ignored.
         static = ["system.ai.claude-opus-4-8"]
         overlay, _ = claude.render_overlay(
-            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+            WS,
+            "s4",
+            provider="main.default.anthropic",
+            relayed=True,
+            relayed_base_url="http://localhost:8000",
+            static_models=static,
         )
         assert "availableModels" not in overlay
         assert "modelPicker" not in overlay
 
+    @pytest.mark.parametrize("source", ["static", "discovered"])
+    def test_picker_description_hides_gateway_prefix_without_changing_model(self, source):
+        glm = "anthropic-aigw-77df06ae-system.ai.glm-5-3-flash"
+        gpt = "anthropic-aigw-c442a48e-system.ai.gpt-6-1-sol"
+        short_gpt = "anthropic-aigw-c442a48-system.ai.gpt-6-1-sol[1m]"
+        plain = "system.ai.claude-haiku-5-5"
+        models = [glm, gpt, short_gpt, plain]
+        kwargs = (
+            {"static_models": models}
+            if source == "static"
+            else {
+                "picker_catalog": db_mod.AnthropicModelCatalog(
+                    model_ids=models, model_id_to_display_name={}
+                )
+            }
+        )
+
+        overlay, _ = claude.render_overlay(WS, "s4", **kwargs)
+
+        options = overlay["modelPicker"]["options"]
+        assert [option["model"] for option in options] == [glm, f"{gpt}[1m]", short_gpt, plain]
+        assert options[0]["description"] == "Managed by your organization (system.ai.glm-5-3-flash)"
+        assert (
+            options[1]["description"] == "Managed by your organization (system.ai.gpt-6-1-sol[1m])"
+        )
+        assert options[2]["description"] == options[1]["description"]
+        assert "description" not in options[3]
+        if source == "static":
+            assert overlay["availableModels"] == models
+            assert all("behavesAs" not in option for option in options)
+
+    def test_picker_preserves_explicit_description_for_gateway_alias(self):
+        model = "anthropic-aigw-1234abcd-system.ai.claude-haiku-5-5"
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=[model],
+            model_id_to_display_name={model: "Claude Haiku 5.5"},
+            model_id_to_description={model: "For quick tasks"},
+        )
+
+        overlay, _ = claude.render_overlay(WS, "s4", picker_catalog=catalog)
+
+        assert overlay["modelPicker"]["options"] == [
+            {
+                "model": model,
+                "label": "Claude Haiku 5.5",
+                "description": "For quick tasks",
+                "behavesAs": "claude-haiku-5-5",
+            }
+        ]
+
+    def test_static_models_kept_when_relayed_without_a_provider(self):
+        # A static list naming a relay-backed model service launches relayed, and the admin's
+        # list still owns the picker and allow-list.
+        static = ["main.default.claude-anthropic-sonnet-5-5", "main.default.oss-large"]
+        overlay, _ = claude.render_overlay(
+            WS, "s4", relayed=True, relayed_base_url="http://localhost:8000", static_models=static
+        )
+        assert overlay["availableModels"] == static
+        assert overlay["modelPicker"]["replaceBuiltInOptions"] is True
+        assert "apiKeyHelper" not in overlay
+        assert "Databricks-Model-Provider-Service" not in overlay["env"]["ANTHROPIC_CUSTOM_HEADERS"]
+
     def test_static_models_label_is_prettified(self):
-        # Picker labels drop the ``system.ai.`` prefix and are title-cased with a dotted version.
         static = [
             "system.ai.claude-opus-4-8",
             "system.ai.glm-5-3",
             "system.ai.kimi-k3",
             "databricks-custom-model",
+            "main.default.lilly-personal-anthropic.claude-haiku-5-5",
+            "main.default.lilly-personal-anthropic.claude-opus-5-5",
+            "main.default.lilly-personal-anthropic.claude-sonnet-5-5",
         ]
         overlay, _ = claude.render_overlay(WS, "s4", static_models=static)
         labels = [opt["label"] for opt in overlay["modelPicker"]["options"]]
-        assert labels == ["Claude Opus 4.8", "GLM 5.3", "Kimi K3", "Databricks Custom Model"]
+        assert labels == [
+            "Claude Opus 4.8",
+            "GLM 5.3",
+            "Kimi K3",
+            "Databricks Custom Model",
+            "Claude Haiku 5.5",
+            "Claude Opus 5.5",
+            "Claude Sonnet 5.5",
+        ]
+        assert overlay["availableModels"] == static
+        assert [opt["model"] for opt in overlay["modelPicker"]["options"]] == static
+
+
+class TestStaticModelsNeedSubscriptionRelay:
+    _STATE = {
+        "workspace": WS,
+        "claude_static_models": ["main.default.relayed", "main.default.oss", "system.ai.kimi"],
+    }
+
+    @pytest.fixture(autouse=True)
+    def _no_managed_settings(self, monkeypatch):
+        monkeypatch.setattr(claude, "_relay_blocking_managed_settings", lambda: [])
+
+    def _relay_backed(
+        self, monkeypatch, *, signed_in: bool = True, unknown: frozenset[str] = frozenset()
+    ) -> list[str]:
+        looked_up: list[str] = []
+        monkeypatch.delenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, raising=False)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_k: "token")
+
+        def lookup(_ws, _token, model):
+            looked_up.append(model)
+            if model in unknown:
+                return RelayLookup.UNKNOWN
+            if model == "main.default.relayed":
+                return RelayLookup.RELAYED
+            return RelayLookup.NOT_RELAYED
+
+        monkeypatch.setattr(claude, "model_service_relay_lookup", lookup)
+        monkeypatch.setattr(claude, "_has_subscription_login", lambda: signed_in)
+        return looked_up
+
+    def test_hosted_only_lists_make_no_request(self, monkeypatch):
+        monkeypatch.setattr(
+            claude, "get_databricks_token", lambda *_a, **_k: pytest.fail("no lookup needed")
+        )
+        state = {"workspace": WS, "claude_static_models": ["system.ai.claude-sonnet-5-5"]}
+        assert not claude.static_models_need_subscription_relay(state)
+        assert not claude.static_models_need_subscription_relay({"workspace": WS})
+
+    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys):
+        looked_up = self._relay_backed(monkeypatch)
+        assert claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
+        assert looked_up == ["main.default.relayed", "main.default.oss"]
+        assert "claude auth login" not in capsys.readouterr().out
+
+    def test_user_without_a_subscription_login_keeps_gateway_auth(self, monkeypatch, capsys):
+        # The list is shared, so a user who isn't signed in keeps the rest of it rather than
+        # being sent to a browser login; configure names only the relay-backed service.
+        self._relay_backed(monkeypatch, signed_in=False)
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
+        out = capsys.readouterr().out
+        assert "claude auth login" in out
+        assert "main.default.relayed" in out
+        assert "main.default.oss" not in out
+
+    def test_sign_in_note_is_shown_only_on_configure(self, monkeypatch, capsys):
+        self._relay_backed(monkeypatch, signed_in=False)
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE))
+        assert "claude auth login" not in capsys.readouterr().out
+
+    def test_oauth_token_env_counts_as_signed_in(self, monkeypatch):
+        self._relay_backed(monkeypatch, signed_in=False)
+        monkeypatch.setenv(claude.CLAUDE_CODE_OAUTH_TOKEN_ENV_VAR, "sk-ant-oat01-test")
+        monkeypatch.setattr(
+            claude, "_has_subscription_login", lambda: pytest.fail("env token is enough")
+        )
+        assert claude.static_models_need_subscription_relay(dict(self._STATE))
+
+    def test_managed_auth_keeps_gateway_auth_instead_of_blocking(self, monkeypatch, capsys):
+        # ug's own managed apiKeyHelper (or an enterprise one) would make the relayed write fail,
+        # so the user stays on gateway auth with the way out named.
+        self._relay_backed(monkeypatch)
+        monkeypatch.setattr(claude, "_relay_blocking_managed_settings", lambda: ["apiKeyHelper"])
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
+        out = capsys.readouterr().out
+        assert "apiKeyHelper" in out
+        assert "ug revert" in out
+
+    def test_configure_saves_the_result_and_launch_reuses_it(self, monkeypatch):
+        looked_up = self._relay_backed(monkeypatch)
+        state = dict(self._STATE)
+        assert claude.static_models_need_subscription_relay(state, configuring=True)
+        assert state[claude.CLAUDE_RELAY_DETECTION_KEY]["relay_backed"] == ["main.default.relayed"]
+        looked_up.clear()
+        assert claude.static_models_need_subscription_relay(state)
+        assert looked_up == []
+
+    def test_launch_looks_up_again_when_the_list_changes_or_the_result_is_old(self, monkeypatch):
+        looked_up = self._relay_backed(monkeypatch)
+        state = dict(self._STATE)
+        claude.static_models_need_subscription_relay(state, configuring=True)
+        changed = {**state, "claude_static_models": ["main.default.relayed"]}
+        looked_up.clear()
+        claude.static_models_need_subscription_relay(changed)
+        assert looked_up == ["main.default.relayed"]
+
+        state[claude.CLAUDE_RELAY_DETECTION_KEY]["checked_at"] -= (
+            claude._RELAY_DETECTION_REUSE_S + 1
+        )
+        looked_up.clear()
+        claude.static_models_need_subscription_relay(state)
+        assert looked_up == ["main.default.relayed", "main.default.oss"]
+
+    def test_failed_lookup_warns_and_isnt_saved(self, monkeypatch, capsys):
+        self._relay_backed(monkeypatch, unknown=frozenset({"main.default.relayed"}))
+        state = dict(self._STATE)
+        assert not claude.static_models_need_subscription_relay(state)
+        assert "Couldn't check whether main.default.relayed" in capsys.readouterr().out
+        assert claude.CLAUDE_RELAY_DETECTION_KEY not in state
+
+    @pytest.mark.parametrize("signed_in", [True, False])
+    def test_global_configure_keeps_gateway_auth(self, monkeypatch, signed_in):
+        # `ug configure --global` can't write a relay, so a signed-in administrator mustn't turn
+        # the machine-wide (and MDM) setup relayed.
+        self._relay_backed(monkeypatch, signed_in=signed_in)
+        monkeypatch.setattr(
+            claude, "get_databricks_token", lambda *_a, **_k: pytest.fail("no lookup needed")
+        )
+        managed_files.set_machine_wide_only(True)
+        try:
+            assert not claude.static_models_need_subscription_relay(
+                dict(self._STATE), configuring=True
+            )
+        finally:
+            managed_files.set_machine_wide_only(False)
+
+    def test_no_relay_backed_service_skips_the_login_check(self, monkeypatch):
+        self._relay_backed(monkeypatch)
+        monkeypatch.setattr(
+            claude, "model_service_relay_lookup", lambda *_a: RelayLookup.NOT_RELAYED
+        )
+        monkeypatch.setattr(
+            claude, "_has_subscription_login", lambda: pytest.fail("no login check needed")
+        )
+        assert not claude.static_models_need_subscription_relay(dict(self._STATE))
+
+    def test_auth_failure_keeps_gateway_auth(self, monkeypatch):
+        def fail(*_a, **_k):
+            raise RuntimeError("expired")
+
+        monkeypatch.setattr(claude, "get_databricks_token", fail)
+        state = {"workspace": WS, "claude_static_models": ["main.default.sonnet"]}
+        assert not claude.static_models_need_subscription_relay(state)
+
+
+class TestRelayBlockingManagedSettings:
+    def test_skipped_or_missing_managed_settings_dont_block(self, monkeypatch):
+        monkeypatch.setattr(claude, "managed_settings_skipped", lambda: True)
+        assert claude._relay_blocking_managed_settings() == []
+        monkeypatch.setattr(claude, "managed_settings_skipped", lambda: False)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        assert claude._relay_blocking_managed_settings() == []
+
+    def test_reports_auth_keys_that_override_the_relay(self, monkeypatch, tmp_path):
+        path = tmp_path / "managed-settings.json"
+        path.write_text(json.dumps({"apiKeyHelper": "ug helper"}), encoding="utf-8")
+        monkeypatch.setattr(claude, "managed_settings_skipped", lambda: False)
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: path)
+        assert claude._relay_blocking_managed_settings() == ["apiKeyHelper"]
 
 
 class TestRenderOverlayOtelTracing:
@@ -2531,10 +2774,32 @@ class TestWriteToolConfigManagedSettings:
         assert managed_writes == []
         assert warns == []
 
-    def test_relayed_fails_on_conflicting_managed_auth(self, monkeypatch):
+    def test_relayed_without_a_provider_is_marked_cli_only(self, monkeypatch):
+        # A relayed launch from relay-backed model services is CLI-only, so Desktop keeps gateway
+        # auth; a later non-relayed configure clears the marker.
+        self._patch(monkeypatch, [], [])
+        monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
+        monkeypatch.setattr(claude, "_managed_relayed_conflicts", lambda path: [])
+        state = {"workspace": WS, "codex_models": []}
+        state = claude.write_tool_config(state, "main.default.relayed-sonnet", relayed=True)
+        assert state[CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY] is True
+        assert not desktop_uses_claude_subscription_relay(state)
+
+        state = claude.write_tool_config(state, "main.default.relayed-sonnet")
+        assert CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY not in state
+
+    @pytest.mark.parametrize(
+        "managed_auth",
+        [
+            {"apiKeyHelper": "enterprise-helper"},
+            {"env": {"ANTHROPIC_API_KEY": "enterprise-key"}},
+            {"env": {"ANTHROPIC_AUTH_TOKEN": "enterprise-token"}},
+        ],
+    )
+    def test_relayed_fails_on_conflicting_managed_auth(self, monkeypatch, managed_auth):
         private_writes: list = []
         managed_writes: list = []
-        existing = {str(FAKE_MANAGED_PATH): {"apiKeyHelper": "enterprise-helper"}}
+        existing = {str(FAKE_MANAGED_PATH): managed_auth}
         self._patch(monkeypatch, private_writes, managed_writes, existing)
         monkeypatch.setattr(claude, "relayed_proxy_base_url", lambda state: "http://127.0.0.1:9999")
         state = {"workspace": WS, "codex_models": []}
@@ -3326,7 +3591,29 @@ class TestClaudeLaunch:
         assert os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
         assert calls == [(state, "claude", ["--debug"])]
 
-    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("options", "tool_args", "model_args"),
+        [
+            (LaunchOptions(), ["--debug"], []),
+            (
+                LaunchOptions(user_pinned_model="main.default.relayed"),
+                ["--debug"],
+                ["--model", "main.default.relayed"],
+            ),
+            (
+                LaunchOptions(launch_model="system.ai.kimi"),
+                ["--debug"],
+                ["--model", "system.ai.kimi"],
+            ),
+            # A model forwarded to Claude Code after `--` wins over ug's own.
+            (
+                LaunchOptions(user_pinned_model="main.default.relayed"),
+                ["--model", "system.ai.kimi"],
+                [],
+            ),
+        ],
+    )
+    def test_relayed_launch_uses_refresh_proxy(self, monkeypatch, options, tool_args, model_args):
         calls: list[tuple] = []
 
         class Server:
@@ -3353,7 +3640,8 @@ class TestClaudeLaunch:
             def wait(self):
                 return 0
 
-        def start_relay_proxy(workspace, token_provider, port):
+        def start_relay_proxy(workspace, token_provider, port, *, routes_to_subscription_relay):
+            assert callable(routes_to_subscription_relay)
             calls.append(("proxy", workspace, port, token_provider(False)))
             return Server(), Cache(), Client()
 
@@ -3375,8 +3663,8 @@ class TestClaudeLaunch:
                     "claude_relayed": True,
                     "relayed_proxy_port": 12345,
                 },
-                ["--debug"],
-                options=LaunchOptions(),
+                tool_args,
+                options=options,
             )
 
         assert exc.value.code == 0
@@ -3386,6 +3674,11 @@ class TestClaudeLaunch:
             12345,
             f"tok:{WS}:test:False",
         )
+        argv = next(call[1] for call in calls if call[0] == "popen")
+        model_flags = [arg for arg in argv if arg == "--model"]
+        assert len(model_flags) == (1 if model_args or "--model" in tool_args else 0)
+        if model_args:
+            assert argv[argv.index("--model") : argv.index("--model") + 2] == model_args
         assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
 
     def test_smart_routing_on_windows_uses_native_binary(self, monkeypatch, tmp_path):
@@ -3942,7 +4235,7 @@ class TestBuildClaudeArgv:
         assert set(merged["permissions"]["deny"]) == {denied_tool, "Bash(rm:*)", "WebSearch"}
         assert len(merged["permissions"]["deny"]) == 3
         assert merged["permissions"]["allow"] == ["Read"]
-        assert merged["apiKeyHelper"] == "gateway-helper"
+        assert merged["apiKeyHelper"] == ("" if launch_mode == "relayed" else "gateway-helper")
         assert argv[-4:] == ["--disallowedTools", "Write", "--print", "Read the release notes"]
         assert args == original_args
         assert (settings_path.read_bytes(), caller_file.read_bytes()) == original_files
@@ -4006,9 +4299,43 @@ class TestBuildClaudeArgv:
         src = argv[argv.index("--setting-sources") + 1]
         assert src == claude._RELAYED_SETTING_SOURCES
         assert "user" not in src
-        # ucode's own settings file is still passed.
+        # ucode's gateway credentials are composed into the per-launch settings.
         assert "--settings" in argv
-        assert str(claude.CLAUDE_SETTINGS_PATH) in argv
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["apiKeyHelper"] == ""
+
+    def test_relayed_always_suppresses_credentials_and_keeps_preferences(
+        self, tmp_path, monkeypatch
+    ):
+        gateway_settings = tmp_path / "ucode-settings.json"
+        gateway_settings.write_text(
+            json.dumps(
+                {
+                    "apiKeyHelper": "gateway-helper",
+                    "env": {"ANTHROPIC_BASE_URL": "http://localhost"},
+                }
+            )
+        )
+        monkeypatch.setattr(claude, "CLAUDE_SETTINGS_PATH", gateway_settings)
+        args = [
+            "--settings",
+            json.dumps(
+                {"apiKeyHelper": "caller", "model": "example", "statusLine": {"type": "command"}}
+            ),
+        ]
+
+        argv = claude._build_claude_argv("claude", args, relayed=True)
+
+        settings = json.loads(argv[argv.index("--settings") + 1])
+        assert settings["apiKeyHelper"] == ""
+        assert settings["env"] == {
+            "ANTHROPIC_BASE_URL": "http://localhost",
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_AUTH_TOKEN": "",
+        }
+        assert settings["model"] == "example"
+        assert settings["statusLine"] == {"type": "command"}
+        assert argv[argv.index("--setting-sources") + 1] == "project,local"
 
     def test_relayed_with_caller_settings_keeps_setting_sources(self, monkeypatch):
         # Even when composing a caller --settings, relayed still excludes user scope.
@@ -4226,6 +4553,7 @@ class TestServerSideWebSearchOptIn:
 
     @pytest.fixture(params=["_normal", "_routing"])
     def launch_settings(self, request, monkeypatch):
+        monkeypatch.setattr(claude, "header_mod_active", lambda *, require_current=False: True)
         return lambda **kwargs: getattr(self, request.param)(monkeypatch, **kwargs)
 
     @pytest.mark.parametrize("env", [None, "0", "false", "NO", "off"])
@@ -4549,12 +4877,14 @@ class TestHasSubscriptionLogin:
         calls = self._status(monkeypatch, '{"loggedIn": true, "authMethod": "claude.ai"}')
 
         assert claude._has_subscription_login() is True
-        # Same scopes as the relayed session, so a user-scope apiKeyHelper can't mask the login.
+        # Same scopes as the relayed session, with credentials forced to the subscription path.
         assert calls == [
             [
                 claude.SPEC["binary"],
                 "--setting-sources",
                 "project,local",
+                "--settings",
+                '{"apiKeyHelper":"","env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_API_KEY":""}}',
                 "auth",
                 "status",
                 "--json",

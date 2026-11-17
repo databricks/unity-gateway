@@ -1,5 +1,5 @@
 """Databricks workspace integration: CLI auth, token retrieval, model
-discovery, AI Gateway checks, and URL builders."""
+discovery, Unity Gateway checks, and URL builders."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
+from ucode import metrics
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -44,6 +45,7 @@ from ucode.constants import (
 )
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
+from ucode.string_utils import unqualified_model_name
 from ucode.telemetry import ucode_user_agent, ug_version
 from ucode.ug_headers import ug_headers
 from ucode.ui import (
@@ -70,7 +72,7 @@ UNIX_DATABRICKS_INSTALL_URL = (
     "https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh"
 )
 WINDOWS_DATABRICKS_WINGET_PACKAGE = "Databricks.DatabricksCLI"
-AI_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
+UNITY_GATEWAY_DOCS_URL = "https://docs.databricks.com/aws/en/ai-gateway/overview-beta"
 ANTHROPIC_MODELS_PATH = "/ai-gateway/anthropic/v1/models"
 # v1.0.0 is the release that ships `databricks aitools`.
 MIN_DATABRICKS_CLI_VERSION = (1, 0, 0)
@@ -120,7 +122,7 @@ _ANTHROPIC_MODEL_DISCOVERY_SETUP_MAX_RETRIES = 2
 
 @dataclass(frozen=True)
 class AnthropicModelCatalog:
-    """Models advertised by AI Gateway's Anthropic endpoint."""
+    """Models advertised by Unity Gateway's Anthropic endpoint."""
 
     model_ids: list[str]
     model_id_to_display_name: dict[str, str]
@@ -357,6 +359,7 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+@metrics.http_result
 def _http_get_bytes(
     url: str,
     token: str,
@@ -379,9 +382,15 @@ def _http_get_bytes(
     request_headers = {**ug_headers(), **workspace_headers(url), "Authorization": f"Bearer {token}"}
     request_headers.update(headers or {})
     request = urllib_request.Request(url, headers=request_headers)
+    operation = metrics.api_operation(url)
     for attempt in range(max_retries + 1):
+        request_started = time.perf_counter()
+        status = None
+        if attempt:
+            metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
             with urllib_request.urlopen(request, timeout=timeout) as response:
+                status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
                 if failure is None:
@@ -392,6 +401,7 @@ def _http_get_bytes(
             _debug(f"GET {url}", f"HTTP 200, {len(body)} bytes")
             return body, None
         except urllib_error.HTTPError as exc:
+            status = exc.code
             body = ""
             try:
                 body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -424,6 +434,17 @@ def _http_get_bytes(
             if attempt == max_retries:
                 return None, reason
             retry_after = None
+
+        finally:
+            metrics.record(
+                metrics.HTTP_REQUEST_DURATION_MS,
+                (time.perf_counter() - request_started) * 1000,
+                api_operation=operation,
+                http_method="GET",
+                attempt=metrics.attempt_number(attempt + 1),
+                http_status_code=status,
+            )
+            metrics.annotate(http_status_code=status)
 
         delay = _http_get_retry_delay(retry_after, attempt)
         _debug(
@@ -465,6 +486,7 @@ def _http_get_json(
         return None, f"response was not valid JSON ({exc.msg})"
 
 
+@metrics.http_result
 def _http_send_json(
     method: str,
     url: str,
@@ -495,8 +517,11 @@ def _http_send_json(
         request_headers["Content-Type"] = "application/json"
     request_headers.update(headers or {})
     request = urllib_request.Request(url, data=body_bytes, method=method, headers=request_headers)
+    request_started = time.perf_counter()
+    status = None
     try:
         with urllib_request.urlopen(request, timeout=timeout) as response:
+            status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
         if failure is not None:
@@ -512,6 +537,7 @@ def _http_send_json(
         except json.JSONDecodeError as exc:
             return None, f"response was not valid JSON ({exc.msg})"
     except urllib_error.HTTPError as exc:
+        status = exc.code
         body = ""
         try:
             body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
@@ -534,6 +560,16 @@ def _http_send_json(
         # URLError, and would otherwise escape the caller's error handling.
         _debug(f"{method} {url}", f"OSError: {exc}")
         return None, f"network error: {exc}"
+    finally:
+        metrics.record(
+            metrics.HTTP_REQUEST_DURATION_MS,
+            (time.perf_counter() - request_started) * 1000,
+            api_operation=metrics.api_operation(url),
+            http_method=method,
+            attempt=1,
+            http_status_code=status,
+        )
+        metrics.annotate(http_status_code=status)
 
 
 def _http_post_json(
@@ -650,7 +686,7 @@ def _per_user_block_threshold(entry: dict) -> Decimal | None:
 
 
 def list_workspace_budgets(workspace: str, token: str) -> tuple[list[dict], str | None]:
-    """List the AI Gateway budgets that apply to this workspace.
+    """List the Unity Gateway budgets that apply to this workspace.
 
     Returns ``(budgets, reason)`` where each budget is
     ``{"id", "display_name", "has_per_user_block", "per_user_threshold"}``. ``reason`` is None on
@@ -806,7 +842,7 @@ def _parse_databricks_cli_version(output: str) -> tuple[int, int, int] | None:
 
 
 def _iter_databricks_executables() -> list[str]:
-    """Scan every directory on PATH for a `databricks` executable, in PATH order.
+    """Scan PATH, falling back to standard macOS installs when no CLI is found.
 
     A machine can have more than one `databricks` on PATH (e.g. a stale
     ``~/.local/bin/databricks`` shadowing a newer Homebrew install); this is the
@@ -816,6 +852,7 @@ def _iter_databricks_executables() -> list[str]:
     (e.g. a symlink), and deduping by realpath is `_discover_databricks_clis`'s
     job. On POSIX a candidate must have the execute bit; on Windows PATHEXT is
     honored (a matching filename is runnable — there's no execute bit to test).
+    macOS GUI apps inherit a PATH without Homebrew or user-local install directories.
     """
     if os.name == "nt":
         exts = tuple(e for e in os.environ.get("PATHEXT", "").split(os.pathsep) if e) or (
@@ -832,16 +869,25 @@ def _iter_databricks_executables() -> list[str]:
         def perms_ok(path: str) -> bool:
             return os.access(path, os.X_OK)
 
+    search_groups = [os.environ.get("PATH", "").split(os.pathsep)]
+    if sys.platform == "darwin":
+        search_groups.append(
+            ["/opt/homebrew/bin", "/usr/local/bin", os.path.expanduser("~/.local/bin")]
+        )
+
     found: list[str] = []
     seen_dirs: set[str] = {""}  # seed with "" so empty PATH entries are skipped
-    for directory in os.environ.get("PATH", "").split(os.pathsep):
-        if directory in seen_dirs:
-            continue
-        seen_dirs.add(directory)
-        for ext in exts:
-            candidate = os.path.join(directory, f"databricks{ext}")
-            if os.path.isfile(candidate) and perms_ok(candidate):
-                found.append(os.path.abspath(candidate))
+    for directories in search_groups:
+        for directory in directories:
+            if directory in seen_dirs:
+                continue
+            seen_dirs.add(directory)
+            for ext in exts:
+                candidate = os.path.join(directory, f"databricks{ext}")
+                if os.path.isfile(candidate) and perms_ok(candidate):
+                    found.append(os.path.abspath(candidate))
+        if found:
+            return found
     return found
 
 
@@ -870,7 +916,7 @@ _DISCOVERED_DATABRICKS_CLIS_ORDERED: list[tuple[str, tuple[int, int, int] | None
 def _discover_databricks_clis(
     *, use_cache: bool = True
 ) -> list[tuple[str, tuple[int, int, int] | None]]:
-    """Find every distinct `databricks` binary on PATH, ordered best-first.
+    """Find distinct `databricks` binaries in the search locations, ordered best-first.
 
     Dedupes by ``os.path.realpath`` (first PATH-order occurrence wins), so the
     same binary reachable via more than one PATH entry is only probed once.
@@ -921,9 +967,10 @@ def databricks_cli_path() -> str:
     ``~/.local/bin/databricks`` shadowing a newer Homebrew install), and
     `shutil.which` only ever returns the first match — which may be the wrong
     one. Discovery instead orders every binary newest-first, so the front entry
-    is the one to run; its absolute path means a shadowing install or a
-    minimal-PATH launcher (e.g. a desktop GUI) can't cause the wrong binary to
-    run. Falls back to the bare name only when nothing is discovered at all —
+    is the one to run. If PATH has no CLI on macOS, discovery checks standard
+    Homebrew and user-local install directories for desktop GUI helpers.
+    Its absolute path prevents later PATH changes from selecting another binary.
+    Falls back to the bare name only when nothing is discovered at all —
     running it then raises FileNotFoundError, which callers surface as "CLI not
     installed". Cached via discovery — call ``clear_databricks_cli_cache()`` to
     force re-resolution (e.g. after installing/upgrading the CLI).
@@ -941,7 +988,7 @@ def clear_databricks_cli_cache() -> None:
 
 
 def databricks_cli_installed() -> bool:
-    """Whether any `databricks` binary was found on PATH."""
+    """Whether any `databricks` binary was discovered."""
     return bool(_discover_databricks_clis())
 
 
@@ -983,7 +1030,9 @@ def _refresh_windows_path() -> None:
     clear_databricks_cli_cache()
 
 
+@metrics.timed(metrics.DEPENDENCY_INSTALL_DURATION_MS, dependency="databricks_cli")
 def _run_databricks_cli_installer(brew_subcommand: str = "install") -> None:
+    metrics.annotate(action="update" if brew_subcommand == "upgrade" else "install")
     system = platform.system()
     try:
         if system == "Windows":
@@ -1292,9 +1341,13 @@ def check_databricks_auth(workspace: str, profile: str | None = None) -> bool | 
 
 def list_profile_entries() -> list[dict]:
     """Return raw profile dicts ({"name", "host", "auth_type", ...}) from
-    `databricks auth profiles`.
+    `databricks auth profiles --skip-validate`.
 
-    Each non-PAT profile is returned individually — duplicate hosts (multiple
+    Only local metadata is needed here. Validating every profile would contact unrelated
+    workspaces and refresh their credentials before ug checks the selected workspace's auth.
+    The returned ``valid`` field is not an authentication result and must not be used as one.
+
+    Each profile is returned individually — duplicate hosts (multiple
     profiles pointing at the same workspace) appear as separate entries so the
     workspace picker can offer each profile by name. Order matches the CLI's
     own ordering.
@@ -1306,7 +1359,7 @@ def list_profile_entries() -> list[dict]:
     """
     try:
         result = run(
-            [databricks_cli_path(), "auth", "profiles", "--output", "json"],
+            [databricks_cli_path(), "auth", "profiles", "--skip-validate", "--output", "json"],
             check=False,
             capture_output=True,
             text=True,
@@ -1323,7 +1376,17 @@ def list_profile_entries() -> list[dict]:
     except json.JSONDecodeError as exc:
         _debug("list_profile_entries", f"json decode error: {exc.msg}")
         return []
-    return [p for p in profiles if isinstance(p, dict)]
+    entries = [p for p in profiles if isinstance(p, dict)]
+    # The CLI infers implicit PAT auth only during validation. Retain ug's PAT
+    # filtering and explicit --use-pat support without contacting those hosts.
+    missing_auth_type = [p for p in entries if not p.get("auth_type")]
+    if missing_auth_type and (config := _read_databrickscfg()) is not None:
+        for entry in missing_auth_type:
+            name = entry.get("name")
+            if isinstance(name, str) and config.has_section(name):
+                if config.get(name, "token", fallback="").strip():
+                    entry["auth_type"] = "pat"
+    return entries
 
 
 def get_databricks_profiles() -> list[tuple[str, str]]:
@@ -1402,21 +1465,26 @@ def profile_auth_type(profile: str) -> str | None:
     return None
 
 
-def _read_databrickscfg_token(profile: str) -> str | None:
-    """Read the static ``token`` value for a profile from ``~/.databrickscfg``.
-
-    `databricks auth token` only knows OAuth caches; for PAT profiles the PAT
-    itself is the credential, stored in the config file. The parser's default
-    section is pointed at a name that never appears in the file so a token in
-    ``[DEFAULT]`` does not leak into every named profile."""
+def _read_databrickscfg() -> configparser.ConfigParser | None:
+    """Read profiles without inheriting credentials from the ``[DEFAULT]`` profile."""
     cfg_path = Path(os.environ.get("DATABRICKS_CONFIG_FILE") or "~/.databrickscfg").expanduser()
     parser = configparser.ConfigParser(default_section="@ucode-no-defaults@", interpolation=None)
     try:
         if not parser.read(cfg_path, encoding="utf-8"):
             return None
-    except (configparser.Error, OSError):
+    except (configparser.Error, OSError, UnicodeError):
         return None
-    if not parser.has_section(profile):
+    return parser
+
+
+def _read_databrickscfg_token(profile: str) -> str | None:
+    """Read the static PAT from its own profile, including ``[DEFAULT]`` when selected.
+
+    `databricks auth token` only knows OAuth caches; for PAT profiles the PAT
+    itself is the credential, stored in the config file.
+    """
+    parser = _read_databrickscfg()
+    if parser is None or not parser.has_section(profile):
         return None
     token = (parser.get(profile, "token", fallback="") or "").strip()
     return token or None
@@ -1468,6 +1536,7 @@ def apply_pat_environment(state: dict) -> None:
     ensure_pat_bearer(state.get("profile"))
 
 
+@metrics.timed(metrics.DATABRICKS_LOGIN_DURATION_MS, login_method="cli")
 def run_databricks_login(
     workspace: str, profile: str | None = None, *, workspace_id: str | None = None
 ) -> None:
@@ -1480,6 +1549,7 @@ def run_databricks_login(
     ``workspace_id`` selects the workspace on a host that serves several. With no profile on that
     host yet, the login names a new one: without a name the CLI saves none outside a terminal, and
     its own default is shared by every workspace of the account."""
+    metrics.mark_login()
     print_section("Databricks Login")
     print_kv("Workspace", workspace)
     print_note("A browser may open for `databricks auth login`.")
@@ -1735,21 +1805,35 @@ def _browser_login(
             return "", None
         try:
             # Keep login output off the helper's token-only stdout.
-            subprocess_cross_os.run(
-                [
-                    databricks_cli_path(),
-                    "auth",
-                    "login",
-                    "--host",
-                    workspace,
-                    *_profile_args(profile),
-                ],
-                timeout=remaining,
-                stdin=subprocess.DEVNULL,
-                stdout=sys.stderr,
-                stderr=sys.stderr,
-                env=env,
-            )
+            metrics.mark_login()
+            with metrics.measure(
+                metrics.DATABRICKS_LOGIN_DURATION_MS,
+                workspace=workspace,
+                operation=metrics.DATABRICKS_LOGIN_OPERATION,
+                login_method="cli",
+            ):
+                result = subprocess_cross_os.run(
+                    [
+                        databricks_cli_path(),
+                        "auth",
+                        "login",
+                        "--host",
+                        workspace,
+                        *_profile_args(profile),
+                    ],
+                    timeout=remaining,
+                    stdin=subprocess.DEVNULL,
+                    stdout=sys.stderr,
+                    stderr=sys.stderr,
+                    env=env,
+                )
+                metrics.annotate(process_exit_code=result.returncode)
+                if result.returncode:
+                    metrics.failure(
+                        metrics.DATABRICKS_LOGIN_OPERATION,
+                        subprocess.CalledProcessError(result.returncode, result.args),
+                        login_method="cli",
+                    )
         except (OSError, subprocess.TimeoutExpired) as exc:
             _debug("auth login", f"exception: {type(exc).__name__}: {exc}")
         return fetch()
@@ -1772,6 +1856,7 @@ def _get_databricks_token_for_profile(
                 f"profile={profile or '<none>'}",
             )
             if memoized.token:
+                metrics.annotate(in_process_cache_hit=True)
                 return memoized.token
             if not browser_login:
                 raise RuntimeError(memoized.error)
@@ -1788,6 +1873,7 @@ def _get_databricks_token_for_profile(
                     f"profile={profile or '<none>'}",
                 )
                 if memoized.token:
+                    metrics.annotate(in_process_cache_hit=True)
                     return memoized.token
                 if not browser_login:
                     raise RuntimeError(memoized.error)
@@ -1946,6 +2032,9 @@ def _fetch_databricks_token_for_profile(
     return token
 
 
+@metrics.timed(
+    metrics.DATABRICKS_TOKEN_FETCH_DURATION_MS, token_source="cli", in_process_cache_hit=False
+)
 def get_databricks_token(
     workspace: str,
     profile: str | None = None,
@@ -1961,6 +2050,8 @@ def get_databricks_token(
     # same short-circuit baked into ``build_auth_shell_command``.
     bearer = os.environ.get("DATABRICKS_BEARER", "").strip()
     if bearer:
+        metrics.annotate(token_source="environment")
+        metrics.bind(workspace, bearer)
         _debug("get_databricks_token", "using DATABRICKS_BEARER env var")
         return bearer
 
@@ -1970,18 +2061,24 @@ def get_databricks_token(
     # running process, so the command is re-run on every fetch instead.
     command = os.environ.get("DATABRICKS_BEARER_COMMAND", "").strip()
     if command:
-        return _bearer_from_command(command)
+        metrics.annotate(token_source="command")
+        token = _bearer_from_command(command)
+        metrics.bind(workspace, token)
+        return token
 
     _log_auth_diagnostics()
     # See has_valid_databricks_auth: resolve the profile from the host when
     # the caller didn't supply one, so duplicate-host cfgs don't break us.
     profile = profile or find_profile_name_for_host(workspace)
-    return _get_databricks_token_for_profile(
+    token = _get_databricks_token_for_profile(
         workspace,
         profile,
         force_refresh=force_refresh,
         browser_login=browser_login,
     )
+
+    metrics.bind(workspace, token)
+    return token
 
 
 def _extract_apps_payload(payload: object) -> list[dict]:
@@ -2004,7 +2101,7 @@ class PermissionDeniedError(RuntimeError):
     It deliberately does NOT try to distinguish a consumer-only identity (no `workspace-access`
     entitlement) from a workspace user missing a grant on a specific resource: no service exposes
     a signal that reliably tells them apart. The `workspace-access` entitlement is enforced with a
-    named 403 only on guarded AI Gateway / Model Serving *inference* and model-listing paths (which
+    named 403 only on guarded Unity Gateway / Model Serving *inference* and model-listing paths (which
     ucode already exercises at model setup, so a consumer is gated there) — NOT on the Apps / UC /
     Vector Search listing calls the MCP flow uses, which return an empty list or a generic ACL
     denial for a consumer."""
@@ -2211,7 +2308,7 @@ _OSS_MODEL_FAMILIES = ("kimi-", "glm-", "deepseek-")
 # Claude Code family alias (ANTHROPIC_DEFAULT_<FAMILY>_MODEL). Add an entry to
 # support a new family in both discovery paths (`claude-<family>-*` via the
 # model-services listing and either `databricks-claude-<family>-*` or
-# `system.ai.claude-<family>-*` via the AI Gateway).
+# `system.ai.claude-<family>-*` via the Unity Gateway).
 ANTHROPIC_FAMILIES = ("fable", "opus", "sonnet", "haiku")
 
 
@@ -2262,7 +2359,7 @@ def model_token_limits(model_id: str) -> dict[str, int] | None:
 
 @dataclass(frozen=True)
 class ModelServiceEntry:
-    """One ``system.ai.*`` model service and the API types it advertises.
+    """One Unity Catalog model service and the API types it advertises.
 
     ``api_types`` is advisory: the gateway serves some models on routes they don't list, so callers
     use it to exclude non-chat models, never to pick a route."""
@@ -2278,18 +2375,18 @@ def _model_service_api_types(service: dict) -> tuple[str, ...]:
     return tuple(t for t in api_types if isinstance(t, str))
 
 
-def _model_service_id(service: dict) -> str | None:
-    """Extract the `system.ai.<model-name>` id from one model-service entry.
+def _model_service_id(service: dict, *, parent_schema: str | None = None) -> str | None:
+    """Extract a model-service id in ``parent_schema`` (``system.ai`` by default).
 
-    Returns None for services in any other schema, so user/internal model
-    services don't leak into the family buckets."""
+    Returns None for services in any other schema."""
     name = service.get("name")
     if not isinstance(name, str):
         return None
     name = name.strip()
     if name.startswith(_MODEL_SERVICE_NAME_PREFIX):
         name = name[len(_MODEL_SERVICE_NAME_PREFIX) :]
-    if not name.startswith(_MODEL_SERVICE_REQUIRED_PREFIX):
+    prefix = f"{parent_schema}." if parent_schema is not None else _MODEL_SERVICE_REQUIRED_PREFIX
+    if not name.startswith(prefix):
         return None
     return name or None
 
@@ -2307,6 +2404,7 @@ _MODEL_SERVICES_PAGE_RETRIES = 4
 _NOT_FOUND_REASON_MARKERS = ("http 404", "not_found")
 
 
+@metrics.http_result
 def _get_model_services_page(
     url: str, token: str, *, retries: int = _MODEL_SERVICES_PAGE_RETRIES
 ) -> tuple[dict | list | None, str | None]:
@@ -2318,7 +2416,12 @@ def _get_model_services_page(
     payload: dict | list | None = None
     reason: str | None = None
     for attempt in range(retries):
-        payload, reason = _http_get_json(url, token, timeout=30)
+        if attempt:
+            metrics.record(
+                metrics.HTTP_RETRY_COUNT, 1, api_operation="model_services_list", http_method="GET"
+            )
+        with metrics.http_attempt(attempt + 1):
+            payload, reason = _http_get_json(url, token, timeout=30)
         if payload is not None:
             return payload, None
         _debug("model-services page", f"attempt {attempt + 1}/{retries} failed: {reason}")
@@ -2350,6 +2453,8 @@ def clear_model_services_cache() -> None:
     """Forget cached model-service listings (used by tests, and after a workspace switch)."""
     _MODEL_SERVICES_CACHE.clear()
     _MODEL_PROVIDER_SERVICES_CACHE.clear()
+    _RELAY_BACKED_MODEL_SERVICES_CACHE.clear()
+    _RELAY_LOOKUP_FAILED_AT.clear()
 
 
 def has_cached_model_provider_services(workspace: str, parent: str | None = None) -> bool:
@@ -2382,24 +2487,29 @@ def list_model_service_entries(
     workspace: str,
     token: str,
     *,
+    parent_schema: str | None = None,
     page_size: int = _MODEL_SERVICES_PAGE_SIZE,
     max_pages: int = 100,
     use_cache: bool = True,
 ) -> tuple[list[ModelServiceEntry], str | None]:
-    """List all `system.ai.*` model services via the UC model-services API.
+    """List model services in ``parent_schema`` (``system.ai`` by default) via the UC API.
 
     Pages through ``/api/2.1/unity-catalog/model-services`` scoped to the
-    ``system.ai`` schema (``parent=schemas/system.ai``) with a bounded
+    requested schema (``parent=schemas/<catalog>.<schema>``) with a bounded
     ``page_size`` (the endpoint 499s without one) and returns the de-duplicated
     entries sorted by id. Returns (entries, reason); reason is None on success,
     otherwise it describes why the list is empty (HTTP/network error or no
     services). Scoping matters: the unscoped metastore listing walks every schema
     across dozens of ~2s pages (~50s on a busy workspace) only to keep the same
-    ``system.ai.*`` subset — see ``_MODEL_SERVICE_PARENT_SCHEMA``.
+    requested schema's subset.
 
-    A successful result is memoized per workspace for the life of the process; pass
-    ``use_cache=False`` to force a fresh walk.
+    Successful default-schema results are memoized per workspace for the life of the process;
+    pass ``use_cache=False`` to force a fresh walk. Other schemas bypass that cache.
     """
+    parent = (
+        f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
+    )
+    use_cache = use_cache and parent == _MODEL_SERVICE_PARENT_SCHEMA
     if use_cache:
         cached = _MODEL_SERVICES_CACHE.get(workspace)
         if cached is not None:
@@ -2412,7 +2522,7 @@ def list_model_service_entries(
     last_reason: str | None = None
     for _ in range(max_pages):
         params: dict[str, str] = {
-            "parent": _MODEL_SERVICE_PARENT_SCHEMA,
+            "parent": parent,
             "page_size": str(page_size),
         }
         if page_token:
@@ -2427,7 +2537,7 @@ def list_model_service_entries(
         data = cast(dict, payload) if isinstance(payload, dict) else {}
         for service in data.get("model_services", []):
             if isinstance(service, dict):
-                model_id = _model_service_id(service)
+                model_id = _model_service_id(service, parent_schema=parent_schema)
                 if model_id and model_id not in entries:
                     entries[model_id] = ModelServiceEntry(
                         model_id, _model_service_api_types(service)
@@ -2530,6 +2640,9 @@ def discover_claude_models_unbucketed(workspace: str, token: str) -> tuple[list[
     return [m for m in ids if "claude-" in m.lower()], None
 
 
+@metrics.timed(
+    metrics.MODEL_SERVICE_DISCOVERY_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def discover_model_services(
     workspace: str, token: str
 ) -> tuple[dict[str, str], list[str], list[str], list[str], str | None]:
@@ -2548,6 +2661,7 @@ def discover_model_services(
     bucketing is by name substring because the model-services API does not
     expose per-model API dialects.
     """
+    metrics.annotate(cache_hit=workspace in _MODEL_SERVICES_CACHE)
     ids, reason = list_model_services(workspace, token)
     if not ids:
         return {}, [], [], [], reason
@@ -2583,7 +2697,7 @@ def discover_model_services(
 
 # --- Managed coding-agent config (admin-authored, developer-read) -----------
 
-# The workspace-admin authors a CodingAgentConfig via the AI Gateway; developers read it
+# The workspace-admin authors a CodingAgentConfig via the Unity Gateway; developers read it
 # (non-admin) through the List endpoint and apply it locally.
 _CODING_AGENT_CONFIGS_API_PATH = "/api/ai-gateway/v2/coding-agent-configs"
 
@@ -2609,8 +2723,11 @@ def _managed_config_user_agent() -> str:
     return ucode_user_agent(ug_version(), *tokens)
 
 
+@metrics.timed(
+    metrics.CODING_AGENT_CONFIG_FETCH_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list[dict], str | None]:
-    """List the workspace's managed CodingAgentConfig(s) via the AI Gateway."""
+    """List the workspace's managed CodingAgentConfig(s) via the Unity Gateway."""
     url = f"{workspace_origin(workspace)}{_CODING_AGENT_CONFIGS_API_PATH}"
     payload, reason = _http_get_json(
         url, token, timeout=30, headers={"User-Agent": _managed_config_user_agent()}
@@ -2629,7 +2746,7 @@ def fetch_managed_coding_agent_configs(workspace: str, token: str) -> tuple[list
 
 
 def fetch_model_recommendation(workspace: str, token: str) -> tuple[dict, str | None]:
-    """Ask the AI Gateway which agent and model the caller's budget tier allows.
+    """Ask the Unity Gateway which agent and model the caller's budget tier allows.
 
     The request takes no parameters: the server matches the caller's live spend against the managed
     config's budget tiers and resolves the agent first, then that agent's model.
@@ -2780,7 +2897,7 @@ def delete_coding_agent_config(workspace: str, token: str, name: str) -> str | N
 # --- MCP services (parallel to model services) -----------------------------
 
 
-# Canonical path segment of an AI Gateway MCP-services endpoint
+# Canonical path segment of a Unity Gateway MCP-services endpoint
 # (``https://<ws>/ai-gateway/mcp-services/<catalog>.<schema>.<service>``). This is
 # the single source of truth: URL building (below), connection-backed detection
 # (`mcp_connection_login.connection_from_url`), and URL-shape classification
@@ -2805,6 +2922,11 @@ def _mcp_service_full_name(service: dict, required_prefix: str | None) -> str | 
     return name
 
 
+# Prefixes the reason for a strict MCP listing that failed after its first page, so callers never
+# mistake a later page's HTTP 404 for a missing schema.
+INCOMPLETE_LISTING_PREFIX = "incomplete listing: "
+
+
 def list_mcp_services(
     workspace: str,
     token: str,
@@ -2815,6 +2937,7 @@ def list_mcp_services(
     on_services: Callable[[list[str]], None] | None = None,
     deadline: float | None = None,
     cancel_event: threading.Event | None = None,
+    strict: bool = False,
 ) -> tuple[list[str], str | None]:
     """List UC MCP services under ``parent`` (a ``<catalog>.<schema>`` ref).
 
@@ -2836,6 +2959,11 @@ def list_mcp_services(
 
     A non-None string indicates the listing call itself failed. Callers can inspect
     ``error`` for ``HTTP 404`` to distinguish "invalid location" from other failures.
+    A scoped listing whose later page fails returns the services it already has with no error,
+    unless ``strict`` is set. Strict mode reports every incomplete listing (a failed later page, a
+    repeated page token, the page limit, or a malformed body) so a caller that removes servers
+    missing from the listing never acts on a partial one. A later-page failure is prefixed with
+    ``incomplete listing:`` so it never reads as a missing schema (``HTTP 404``).
     """
     hostname = workspace_hostname(workspace)
     expected_prefix = parent + "." if parent is not None else None
@@ -2843,10 +2971,15 @@ def list_mcp_services(
     page_token: str | None = None
     seen_tokens: set[str] = set()
     for _ in range(max_pages):
+        stopped = None
         if cancel_event is not None and cancel_event.is_set():
-            return sorted(seen_names), "MCP listing cancelled"
-        if deadline is not None and time.monotonic() >= deadline:
-            return sorted(seen_names), "deadline exceeded while listing MCP services"
+            stopped = "MCP listing cancelled"
+        elif deadline is not None and time.monotonic() >= deadline:
+            stopped = "deadline exceeded while listing MCP services"
+        if stopped:
+            if strict and page_token:
+                stopped = f"{INCOMPLETE_LISTING_PREFIX}{stopped}"
+            return sorted(seen_names), stopped
         params: dict[str, str] = {"view": "BASIC"}
         if parent is not None:
             params["parent"] = f"schemas/{parent}"
@@ -2857,6 +2990,11 @@ def list_mcp_services(
         url = f"https://{hostname}/api/2.1/unity-catalog/mcp-services?{urlencode(params)}"
         timeout = max(1, min(10, int(deadline - time.monotonic() + 1))) if deadline else 30
         payload, reason = _http_get_json(url, token, timeout=timeout)
+        if strict and not isinstance(payload, dict):
+            failure = reason or "unexpected MCP listing response"
+            if page_token:
+                return sorted(seen_names), f"{INCOMPLETE_LISTING_PREFIX}{failure}"
+            return sorted(seen_names), failure
         if payload is None:
             # An interrupted metastore listing is incomplete, even if earlier pages
             # returned services. Keep the scoped caller's existing behavior.
@@ -2864,8 +3002,16 @@ def list_mcp_services(
                 return sorted(seen_names), reason
             break
         data = cast(dict, payload) if isinstance(payload, dict) else {}
+        services = data.get("mcp_services") or []
+        if not isinstance(services, list):
+            if strict:
+                failure = "unexpected MCP listing response"
+                if page_token:
+                    failure = f"{INCOMPLETE_LISTING_PREFIX}{failure}"
+                return sorted(seen_names), failure
+            services = []
         new_names: list[str] = []
-        for service in data.get("mcp_services") or []:
+        for service in services:
             if not isinstance(service, dict):
                 continue
             full_name = _mcp_service_full_name(service, expected_prefix)
@@ -2884,11 +3030,19 @@ def list_mcp_services(
         if not page_token:
             break
         if page_token in seen_tokens:
+            if strict:
+                return sorted(
+                    seen_names
+                ), f"{INCOMPLETE_LISTING_PREFIX}MCP listing repeated a page token"
             if parent is None:
                 return sorted(seen_names), "MCP listing repeated a page token"
             break
         seen_tokens.add(page_token)
     else:
+        if strict:
+            return sorted(
+                seen_names
+            ), f"{INCOMPLETE_LISTING_PREFIX}MCP listing exceeded {max_pages} pages"
         if parent is None:
             return sorted(seen_names), f"MCP listing exceeded {max_pages} pages"
     return sorted(seen_names), None
@@ -2926,7 +3080,7 @@ def get_mcp_service_user_credential(
 
 
 def mcp_service_needs_connection_login(workspace: str, token: str, full_name: str) -> bool:
-    """Whether an AI Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
+    """Whether a Unity Gateway mcp-service is backed by a per-user OAuth (U2M) connection, and so
     needs a one-time connection sign-in before it vends tools.
 
     Reads the service's ``config.source_connection.securable_kind`` via a per-service GET (the
@@ -3131,7 +3285,7 @@ def _provider_service_entry(raw_service: object) -> dict | None:
 
 
 def get_model_provider_service(
-    service_name: str, workspace: str, token: str
+    service_name: str, workspace: str, token: str, *, timeout: float = 30
 ) -> tuple[dict | None, str | None]:
     """Fetch one provider service by its full `catalog.schema.name`, bypassing the listing.
 
@@ -3141,13 +3295,131 @@ def get_model_provider_service(
     """
     origin = workspace_origin(workspace)
     url = f"{origin}/api/2.1/unity-catalog/model-provider-services/{service_name}"
-    payload, reason = _http_get_json(url, token, timeout=30)
+    payload, reason = _http_get_json(url, token, timeout=timeout)
     if payload is None:
         return None, reason
     entry = _provider_service_entry(payload)
     if entry is None:
         return None, "model-provider-service response had an unexpected shape"
     return entry, None
+
+
+def get_model_service(
+    service_name: str, workspace: str, token: str, *, timeout: float = 30
+) -> tuple[dict | None, str | None]:
+    """Fetch one model service, with its routing config, by full ``catalog.schema.name``."""
+    origin = workspace_origin(workspace)
+    url = f"{origin}/api/2.1/unity-catalog/model-services/{quote(service_name, safe='.')}"
+    payload, reason = _http_get_json(url, token, timeout=timeout)
+    if not isinstance(payload, dict):
+        return None, reason or "model-service response had an unexpected shape"
+    return payload, None
+
+
+def model_service_primary_providers(service: dict) -> list[str]:
+    """The Model Provider Services behind ``service``'s live primary destinations."""
+    routing = (service.get("config") or {}).get("routing") or {}
+    destinations = routing.get("destinations")
+    providers: list[str] = []
+    for destination in destinations if isinstance(destinations, list) else []:
+        if (
+            not isinstance(destination, dict)
+            or destination.get("is_deleted")
+            or not (destination.get("traffic_percentage") or 0) > 0
+        ):
+            continue
+        provider = (destination.get("external_model_config") or {}).get("model_provider_service")
+        if isinstance(provider, str) and provider:
+            providers.append(provider.removeprefix("model-provider-services/"))
+    return providers
+
+
+class RelayLookup(Enum):
+    """Whether a model service routes to a Claude subscription relay."""
+
+    RELAYED = "relayed"
+    NOT_RELAYED = "not_relayed"
+    UNKNOWN = "unknown"  # a lookup failed, so the answer isn't known yet
+
+
+# The relay proxy asks per request, so a slow or failing workspace mustn't stall each one.
+_RELAY_LOOKUP_TIMEOUT_S = 5
+_RELAY_LOOKUP_RETRY_AFTER_S = 60
+
+# Per-process memos keyed by (workspace, service): confirmed answers, and when a lookup last failed.
+_RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
+_RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
+
+
+def relay_candidate_model_services(models: list[str]) -> list[str]:
+    """The entries of ``models`` that name a customer model service (``catalog.schema.name``,
+    not ``system.*``), the only kind that can route to a subscription relay."""
+    candidates: list[str] = []
+    for model in models:
+        if not isinstance(model, str):
+            continue
+        parts = model.removesuffix("[1m]").split(".")
+        if len(parts) == 3 and parts[0] != "system":
+            candidates.append(model)
+    return candidates
+
+
+def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayLookup:
+    """Whether ``model`` routes to a Claude subscription relay: a live primary destination on an
+    Anthropic MPS with relayed auth.
+
+    Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
+    the Databricks token in the swap header). A relayed OpenAI (ChatGPT) MPS needs a different
+    credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
+    lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
+    """
+    if not relay_candidate_model_services([model]):
+        return RelayLookup.NOT_RELAYED
+    name = model.removesuffix("[1m]")
+    key = (workspace, name)
+    if key in _RELAY_BACKED_MODEL_SERVICES_CACHE:
+        return (
+            RelayLookup.RELAYED
+            if _RELAY_BACKED_MODEL_SERVICES_CACHE[key]
+            else RelayLookup.NOT_RELAYED
+        )
+    failed_at = _RELAY_LOOKUP_FAILED_AT.get(key)
+    if failed_at is not None and time.monotonic() - failed_at < _RELAY_LOOKUP_RETRY_AFTER_S:
+        return RelayLookup.UNKNOWN
+    lookup = _fetch_model_service_relay_lookup(name, workspace, token)
+    if lookup is RelayLookup.UNKNOWN:
+        _RELAY_LOOKUP_FAILED_AT[key] = time.monotonic()
+    else:
+        _RELAY_LOOKUP_FAILED_AT.pop(key, None)
+        _RELAY_BACKED_MODEL_SERVICES_CACHE[key] = lookup is RelayLookup.RELAYED
+    return lookup
+
+
+def model_services_need_subscription_relay(workspace: str, token: str, models: list[str]) -> bool:
+    """True when any model in ``models`` routes to a Claude subscription relay. An unknown answer
+    counts as not relayed, which keeps the gateway-auth behavior."""
+    return any(
+        model_service_relay_lookup(workspace, token, model) is RelayLookup.RELAYED
+        for model in models
+    )
+
+
+def _fetch_model_service_relay_lookup(name: str, workspace: str, token: str) -> RelayLookup:
+    service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
+    if service is None:
+        _debug("relay detection", f"{name}: {reason}")
+        return RelayLookup.UNKNOWN
+    lookup = RelayLookup.NOT_RELAYED
+    for provider in model_service_primary_providers(service):
+        entry, reason = get_model_provider_service(
+            provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
+        )
+        if entry is None:
+            _debug("relay detection", f"{provider}: {reason}")
+            lookup = RelayLookup.UNKNOWN
+        elif entry.get("relayed") and entry.get("provider_type") == "anthropic":
+            return RelayLookup.RELAYED
+    return lookup
 
 
 # The group every workspace user belongs to. USE_SCHEMA granted to it (directly or inherited from
@@ -3685,7 +3957,7 @@ def _get_anthropic_models_json(
 
 
 def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | None]:
-    """List every model id advertised by AI Gateway's Anthropic endpoint.
+    """List every model id advertised by Unity Gateway's Anthropic endpoint.
 
     Claude Code's native gateway discovery consumes this same catalog, so callers
     using that mode must not apply ucode's legacy ``databricks-claude-*`` family
@@ -3695,7 +3967,7 @@ def list_anthropic_models(workspace: str, token: str) -> tuple[list[str], str | 
     return catalog.model_ids, catalog.error_msg
 
 
-_NO_ANTHROPIC_MODEL_IDS = "AI Gateway returned no Anthropic model ids"
+_NO_ANTHROPIC_MODEL_IDS = "Unity Gateway returned no Anthropic model ids"
 
 
 def _positive_int(value: object) -> TypeGuard[int]:
@@ -3756,7 +4028,7 @@ def list_anthropic_model_catalog(
 
 
 def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], str | None]:
-    """Discover Claude families on this workspace's AI Gateway.
+    """Discover Claude families on this workspace's Unity Gateway.
 
     Returns (models_by_family, reason). reason is None on success; otherwise it
     describes why the dict is empty (HTTP error, network error, or no models
@@ -3784,16 +4056,16 @@ def discover_claude_models(workspace: str, token: str) -> tuple[dict[str, str], 
     if result:
         return result, None
     if not raw_ids:
-        return {}, "AI Gateway returned no Claude model ids"
+        return {}, "Unity Gateway returned no Claude model ids"
     sample = ", ".join(raw_ids[:5])
     families = ",".join(ANTHROPIC_FAMILIES)
     return {}, (
-        "AI Gateway returned model ids but none matched "
+        "Unity Gateway returned model ids but none matched "
         f"`*-claude-{{{families}}}-*` (got: {sample})"
     )
 
 
-def fetch_ai_gateway_claude_models(workspace: str, token: str) -> dict[str, str]:
+def fetch_unity_gateway_claude_models(workspace: str, token: str) -> dict[str, str]:
     """Backwards-compatible wrapper that discards the diagnostic reason."""
     models, _ = discover_claude_models(workspace, token)
     return models
@@ -3815,9 +4087,10 @@ _BARE_MODEL_NAME_PATTERN = re.compile(
 
 
 def bare_model_name(model: str) -> str:
-    """``model`` lowercased, without its catalog/schema or region prefix, ``anthropic.`` and
-    ``databricks-`` prefixes, or ``[...]`` hint."""
-    match = _BARE_MODEL_NAME_PATTERN.match(model.lower())
+    """``model`` lowercased, without its catalog/schema, provider service or region prefix,
+    ``anthropic.`` and ``databricks-`` prefixes, or ``[...]`` hint."""
+    name = unqualified_model_name(model.lower().split("[", 1)[0])
+    match = _BARE_MODEL_NAME_PATTERN.match(name)
     return match.group("name") if match else ""
 
 
@@ -3948,6 +4221,7 @@ _MODEL_SERVICE_EMPTY_DETAIL = (
 )
 
 
+@metrics.timed(metrics.MODEL_SERVICE_ACCESS_CHECK_DURATION_MS)
 def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
     base = f"{workspace_origin(workspace)}/api/2.1/unity-catalog/model-services"
     page_token: str | None = None
@@ -3970,7 +4244,7 @@ def _probe_model_services(workspace: str, token: str) -> GatewayProbe:
     return GatewayProbe(True, "reachable", conclusive=False)
 
 
-def _raise_ai_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
+def _raise_unity_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
     raise RuntimeError(
         f"Databricks rejected the access token for {workspace} ({reason}). "
         f"Try:\n"
@@ -3979,10 +4253,10 @@ def _raise_ai_gateway_auth_failure(workspace: str, reason: str) -> NoReturn:
     )
 
 
-def _raise_ai_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
+def _raise_unity_gateway_scope_failure(workspace: str, reason: str) -> NoReturn:
     raise RuntimeError(
         f"The access token for {workspace} is missing an OAuth scope required by the "
-        f"AI Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
+        f"Unity Gateway APIs ({reason}). Re-authenticate to mint a token with the needed "
         f"scopes:\n"
         f"  databricks auth login --host {workspace}"
     )
@@ -4026,9 +4300,9 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if isinstance(reason, WorkspaceSelectionReason):
         raise RuntimeError(reason)
     if _looks_like_definitive_auth_failure(reason):
-        _raise_ai_gateway_auth_failure(workspace, reason)
+        _raise_unity_gateway_auth_failure(workspace, reason)
     if _looks_like_scope_failure(reason):
-        _raise_ai_gateway_scope_failure(workspace, reason)
+        _raise_unity_gateway_scope_failure(workspace, reason)
     if _looks_like_permission_failure(reason):
         _raise_model_service_permission_failure(workspace, reason)
 
@@ -4042,11 +4316,11 @@ def probe_unity_gateway_capabilities(workspace: str, token: str) -> GatewayProbe
     if _is_not_found_reason(reason):
         raise RuntimeError(
             "Databricks Unity Gateway is not enabled on this workspace: model services "
-            f"({reason}) are not available. See {AI_GATEWAY_DOCS_URL}"
+            f"({reason}) are not available. See {UNITY_GATEWAY_DOCS_URL}"
         )
     raise RuntimeError(
         f"Could not verify Databricks Unity Gateway model services on {workspace} "
-        f"({reason}). See {AI_GATEWAY_DOCS_URL}"
+        f"({reason}). See {UNITY_GATEWAY_DOCS_URL}"
     )
 
 
@@ -4066,7 +4340,7 @@ def _looks_like_transient_failure(reason: str) -> bool:
 def _looks_like_definitive_auth_failure(reason: str) -> bool:
     """True when the token itself is rejected (expired or invalid).
 
-    Matches a 401, an invalid-token 400 (the AI Gateway's `Invalid Token`), or a
+    Matches a 401, an invalid-token 400 (the Unity Gateway's `Invalid Token`), or a
     403 whose body reports an invalid access token (Unity Catalog rejects a stale
     PAT this way, e.g. `HTTP 403 Forbidden: ...Invalid access token...`). A *plain*
     403 with no token-invalid wording is left to the scope and permission routing,
@@ -4105,12 +4379,12 @@ def _parse_decimal(value: object) -> Decimal | None:
 
 
 # ---------------------------------------------------------------------------
-# URL builders (AI Gateway v2 only — no fallback to /serving-endpoints)
+# URL builders (Unity Gateway v2 only — no fallback to /serving-endpoints)
 # ---------------------------------------------------------------------------
 
 
 def build_otel_traces_endpoint(workspace: str) -> str:
-    """Return the AI Gateway OTLP HTTP trace endpoint for ``workspace``."""
+    """Return the Unity Gateway OTLP HTTP trace endpoint for ``workspace``."""
     return f"{workspace.rstrip('/')}/ai-gateway/otel/v1/traces"
 
 
@@ -4160,18 +4434,23 @@ def _fetch_codex_model_catalog(
     return payload
 
 
-def list_provider_service_models(
-    workspace: str, token: str, service_name: str, provider_type: str
+def list_anthropic_provider_models(
+    workspace: str, token: str, service_name: str
 ) -> tuple[list[str], str | None]:
-    """The models the gateway lists for Model Provider Service ``service_name``, and why listing
+    """The Anthropic-catalog models the gateway lists for ``service_name``, and why listing
     failed. An empty listing is not a failure.
+    """
+    listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
+    reason = listing.error_msg
+    return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
 
-    Anthropic and Bedrock services list through the Anthropic models route, others through the
-    Codex model catalog."""
-    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
-        listing = list_anthropic_model_catalog(workspace, token, provider=service_name)
-        reason = listing.error_msg
-        return listing.model_ids, None if reason == _NO_ANTHROPIC_MODEL_IDS else reason
+
+def list_codex_provider_models(
+    workspace: str, token: str, service_name: str
+) -> tuple[list[str], str | None]:
+    """The Codex-catalog models the gateway lists for ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+    """
     try:
         catalog = _fetch_codex_model_catalog(
             workspace, token, source=CodexCatalogSource.PROVIDER, identifier=service_name
@@ -4181,6 +4460,20 @@ def list_provider_service_models(
     except RuntimeError as exc:
         return [], str(exc)
     return catalog_slugs(catalog), None
+
+
+def list_provider_service_models(
+    workspace: str, token: str, service_name: str, provider_type: str
+) -> tuple[list[str], str | None]:
+    """The models the gateway lists for Model Provider Service ``service_name``, and why listing
+    failed. An empty listing is not a failure.
+
+    Anthropic-API providers use the Anthropic catalog; other providers use the Codex catalog.
+    """
+
+    if provider_type in ANTHROPIC_API_PROVIDER_TYPES:
+        return list_anthropic_provider_models(workspace, token, service_name)
+    return list_codex_provider_models(workspace, token, service_name)
 
 
 def build_opencode_base_urls(workspace: str) -> dict[str, str]:

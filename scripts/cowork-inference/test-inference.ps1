@@ -26,6 +26,7 @@ function Wait-Control {
 }
 
 . "$PSScriptRoot/diagnostics.ps1"
+. "$PSScriptRoot/model-picker.ps1"
 
 $report = [ordered]@{}
 $process = $null
@@ -64,7 +65,7 @@ try {
     }
     $report.coworkActivated = $true
     $configuration = Get-Content (Join-Path $OutputDirectory 'configuration.json') -Raw | ConvertFrom-Json
-    $null = Wait-Control -Root $window -Names "Model: $($configuration.targetModelLabel)"
+    $report.initialModel = Select-CoworkModel -Root $window -Label $configuration.targetModelLabel
     $report.model = $configuration.targetModel
     $editor = Wait-Control -Root $window -Names 'Write your prompt to Claude'
     $prompt = 'Reply with only the digits for forty-eight thousand two hundred thirteen. Do not use tools.'
@@ -85,6 +86,10 @@ try {
             [Windows.Automation.AutomationElement]::NameProperty, 'Primary pane')
         $pane = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, $paneCondition)
         if (-not $pane) { continue }
+        $controls = $pane.FindAll([Windows.Automation.TreeScope]::Descendants,
+            [Windows.Automation.Condition]::TrueCondition)
+        $responseError = Get-CoworkResponseError -Names @($controls | ForEach-Object { $_.Current.Name })
+        if ($responseError) { throw $responseError }
         $responseCondition = [Windows.Automation.PropertyCondition]::new(
             [Windows.Automation.AutomationElement]::NameProperty, 'Claude responded: 48213')
         $finishedCondition = [Windows.Automation.PropertyCondition]::new(
@@ -149,4 +154,7 @@ try {
     $json = Protect-DiagnosticText $json
     $json | Set-Content -LiteralPath (Join-Path $OutputDirectory 'native-launch.json') -Encoding utf8
 }
-if ($report.error) { exit 1 }
+if ($report.error) {
+    Write-Error (Protect-DiagnosticText $report.error) -ErrorAction Continue
+    exit 1
+}

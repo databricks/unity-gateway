@@ -9,13 +9,14 @@ import runpy
 import subprocess
 import sys
 import textwrap
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
 import pytest
 
-from tests.integration.utils.harness import clean_environment
+from tests.integration.utils.harness import UserSession, clean_environment
 from tests.integration.utils.managed import assert_no_managed_config
 
 
@@ -36,6 +37,29 @@ def test_isolated_sessions_disable_antigravity_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("AGY_CLI_DISABLE_AUTO_UPDATE", "1")
 
     assert clean_environment(tmp_path)["AGY_CLI_DISABLE_AUTO_UPDATE"] == "true"
+
+
+def test_isolated_sessions_capture_proxy_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS", "0")
+    root, project = tmp_path / "session", tmp_path / "project"
+    root.mkdir()
+    project.mkdir()
+    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
+
+    started_ms = int(time.time() * 1000)
+    result = session.run(
+        "-c",
+        "from ucode.gateway_proxy import log_proxy_diagnostic; "
+        "log_proxy_diagnostic('request_start', request_id='diagnostic-check')",
+    )
+
+    prefix, payload = result.stderr.strip().split(" ", 1)
+    assert prefix == "[ucode-relay]"
+    event = json.loads(payload)
+    assert started_ms <= event.pop("timestamp_ms") <= int(time.time() * 1000)
+    assert event == {"event": "request_start", "request_id": "diagnostic-check"}
+    recorded = json.loads((session.artifacts / "command-1.json").read_text())
+    assert recorded["stderr"] == result.stderr
 
 
 def test_integration_ci_pins_a_skills_capable_databricks_cli():
@@ -226,8 +250,8 @@ def _collect_integration_cases(expression):
 def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     if agent == "codex":
         workflow = WORKFLOW.read_text()
-        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.154\.0", workflow)
-        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.154.0' }}" in workflow
+        assert re.search(r"codex_version:\n\s+description: [^\n]+\n\s+default: 0\.156\.0", workflow)
+        assert "  CODEX_VERSION: ${{ inputs.codex_version || '0.156.0' }}" in workflow
     jobs = _integration_jobs()
     selected = []
     for name in ("smoke", "full"):
@@ -247,7 +271,7 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             assert "smart_routing: [false]" in jobs[name]
             assert (
                 "CODEX_VERSION: ${{ matrix.smart_routing && '0.165.0' || "
-                "inputs.codex_version || '0.154.0' }}"
+                "inputs.codex_version || '0.156.0' }}"
             ) in jobs[name]
             assert "matrix.smart_routing && '-smart-routing' || ''" in jobs[name]
         for platform in ("ubuntu-22.04", "windows-latest"):
@@ -292,7 +316,10 @@ def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(
     assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in job
     assert "steps: *live-steps" in job
     assert "continue-on-error: ${{ matrix.agent == 'copilot' }}" in job
-    assert "timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || 40 }}" in job
+    assert (
+        "timeout-minutes: ${{ matrix.agent == 'copilot' && 30 || "
+        "matrix.os == 'windows-latest' && 85 || 40 }}"
+    ) in job
     assert "AGENT: ${{ matrix.agent }}" in job
     assert "ARTIFACT_NAME: integration-anthropic-mps-${{ matrix.agent }}-${{ matrix.os }}" in job
     selected = set()
@@ -378,6 +405,9 @@ def test_soft_fail_ci_selectors_preserve_coverage(job_name, agent, smart_routing
             "subagent_only_v1",
             "subagent_orch_v0",
         )
+    } | {
+        "test_ug_smart_routing_hooks.py::test_smart_router_routes_claude_subagent_at_launch"
+        "[subagent_only_v0-glm]"
     }
 
 
@@ -407,9 +437,10 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
-        "inputs.codex_version || '0.154.0' }}"
+        "inputs.codex_version || '0.156.0' }}"
     ) in job
 
 
@@ -489,7 +520,7 @@ def test_latest_harness_slack_notification(
         "NOTIFY_NAME": "Latest harness test",
         "NOTIFY_RESULT": result,
         "CLAUDE_VERSION": claude_version,
-        "CODEX_VERSION": "0.154.0",
+        "CODEX_VERSION": "0.156.0",
         "GITHUB_REPOSITORY": "databricks/unity-gateway",
         "GITHUB_RUN_ID": "123",
         "GITHUB_API_URL": "https://api.github.com",
@@ -531,7 +562,7 @@ def test_latest_harness_slack_notification(
         assert not posted
         return
     runpy.run_path(str(SLACK_NOTIFY), run_name="__main__")
-    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.154.0"
+    versions = f"Versions used: Claude Code {claude_version or 'unknown'}, Codex: 0.156.0"
     run_url = f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/123"
     if result == "success":
         expected = f"✅ Latest harness test succeeded. {versions}. Link to run {run_url}"
@@ -654,8 +685,10 @@ def test_fork_integration_runs_only_authorized_pr_heads():
     command = "startsWith(github.event.comment.body, '/integration-test ')"
     assert command in authorize and command in reject
     assert MEMBER_ONLY in authorize
-    assert f"!({MEMBER_ONLY} ||" in reject
-    assert "Prior contributors can run integration tests on their own PR" in reject
+    assert f"!{MEMBER_ONLY}" in reject
+    # Integration runs PR code with CI secrets, so a contributor can't start it on their own PR.
+    assert "CONTRIBUTOR" not in workflow
+    assert "only Databricks org members can run integration tests" in reject
     assert "set -euo pipefail" in authorize
     assert '[[ "$sha" =~ ^[0-9a-f]{40}$ ]]' in authorize
     assert "state=pending" in authorize
@@ -778,7 +811,9 @@ def test_ug_review_accepts_member_comments_and_in_repo_labels_with_trusted_check
     workflow = _workflow("ug-review.yml")
 
     assert re.search(r"(?m)^  issue_comment:\n    types: \[created\]\n", workflow)
-    assert re.search(r"(?m)^on:\n  pull_request:\n    types: \[labeled\]\n", workflow)
+    assert re.search(
+        r"(?m)^on:\n  pull_request:\n    types: \[labeled, ready_for_review\]\n", workflow
+    )
     assert (
         'contains(fromJSON(\'["ug-review", "code-review"]\'), github.event.label.name)' in workflow
     )
@@ -1072,6 +1107,63 @@ def test_cowork_ci_permissions_and_required_gate(job_name):
         integration = _workflow(caller).split("\n  integration:\n", 1)[1].split("\n  #", 1)[0]
         integration = re.split(r"\n  [a-z-]+:\n", integration, maxsplit=1)[0]
         assert "id-token:" not in integration
+
+
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_covers_each_claude_model_source(job_name):
+    job = _integration_jobs()[job_name]
+    assert "      fail-fast: false\n" in job
+    hosted = (
+        "            provider: ''\n            model: system.ai.claude-haiku-4-5\n"
+        "            relay: false\n"
+    )
+    relay = (
+        "            provider: main.ucode.ci_e2e_anthropic_relay_mps\n"
+        "            model: claude-haiku-4-5-20251001\n            relay: true\n"
+    )
+    legacy_anthropic = (
+        "            provider: main.ucode.ci_e2e_anthropic_nonrelay_mps\n"
+        "            model: claude-haiku-4-5-20251001\n            relay: false\n"
+    )
+    assert hosted in job
+    assert relay in job
+    # Windows runs the non-relay service in the staging anthropic-mps lane instead.
+    assert (legacy_anthropic in job) is job_name.endswith("macos")
+    for variable in ("PROVIDER", "MODEL", "RELAY"):
+        assert f"      UG_COWORK_{variable}: ${{{{ matrix.source.{variable.lower()} }}}}\n" in job
+    # Only the relay source receives the subscription token.
+    tokens = re.findall(r"(?m)^\s+CLAUDE_CODE_OAUTH_TOKEN: (.*)$", job)
+    assert tokens
+    assert set(tokens) == {"${{ matrix.source.relay && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}"}
+    artifact = "cowork-inference" if job_name.endswith("windows") else "cowork-inference-macos"
+    assert re.findall(r"(?m)^          name: (cowork-inference.*)$", job) == [
+        f"{artifact}-${{{{ matrix.source.id }}}}"
+    ]
+
+
+def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
+    jobs = _integration_jobs()
+    job = jobs["anthropic-mps"]
+    assert (
+        "      UG_COWORK_DESKTOP: ${{ github.event_name != 'merge_group' && "
+        "matrix.os == 'windows-latest' && matrix.agent == 'claude' }}\n"
+    ) in job
+    assert "      UG_COWORK_PROVIDER: main.ucode.dont_delete_ci_company_anthropic_mps\n" in job
+    assert "      UG_COWORK_MODEL: claude-haiku-4-5-20251001\n" in job
+    assert "      UG_COWORK_RELAY: false\n" in job
+    # The shared live steps reach every live job; only this lane opts in.
+    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_DESKTOP:" in body]
+    assert opted_in == ["anthropic-mps"]
+    workflow = (Path(__file__).parent.parent / ".github/workflows/integration.yml").read_text()
+    live_steps = workflow.split("    steps: &live-steps\n", 1)[1].split("\n\n", 1)[0]
+    desktop = live_steps.split("      - name: Install Claude Desktop\n", 1)[1]
+    gates = re.findall(r"(?m)^        if: (.*)$", desktop)
+    # Every Desktop step is skipped unless the lane opts in through the install step.
+    assert gates[0] == "${{ !cancelled() && env.UG_COWORK_DESKTOP == 'true' }}"
+    assert all("steps.desktop-" in gate for gate in gates[1:])
+    assert len(gates) == desktop.count("      - name: ") + 1
+    assert "DATABRICKS_BEARER_COMMAND=" in desktop
+    assert "name: cowork-inference-anthropic\n" in desktop
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")

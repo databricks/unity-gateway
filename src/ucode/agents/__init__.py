@@ -17,6 +17,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from ucode import metrics
 from ucode.config_io import ToolSpec, is_dry_run
 from ucode.constants import AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT
 from ucode.databricks import (
@@ -30,7 +31,12 @@ from ucode.databricks import (
 )
 from ucode.env import env_bool
 from ucode.managed_config import refresh_managed_config
-from ucode.managed_files import config_scope, machine_wide_only, managed_write_batch
+from ucode.managed_files import (
+    config_scope,
+    machine_wide_only,
+    managed_write_batch,
+    published_agent_config_used,
+)
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import get_model_location, get_provider_service, load_state, save_state
 from ucode.telemetry import agent_version
@@ -149,7 +155,9 @@ def normalize_tool(tool: str) -> str:
     return normalized
 
 
-def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool:
+def _update_installed_tool_binary(
+    tool: str, version: str | None = None, *, continued_with_fallback: bool = True
+) -> bool:
     spec = TOOL_SPECS[tool]
     binary = spec["binary"]
     package = spec["package"]
@@ -182,7 +190,16 @@ def _update_installed_tool_binary(tool: str, version: str | None = None) -> bool
         # Detach potentially incompatible metadata until the next validated refresh.
         codex.detach_app_model_catalog()
     try:
-        subprocess_cross_os.run(command, check=True, timeout=300, stdout=status_subprocess_stdout())
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="downgrade" if version else "update",
+            continued_with_fallback=continued_with_fallback,
+        ):
+            subprocess_cross_os.run(
+                command, check=True, timeout=300, stdout=status_subprocess_stdout()
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         print_warning(f"Could not update {spec['display']}; continuing.")
         return False
@@ -218,7 +235,7 @@ def ensure_minimum_version(
             )
         ):
             raise RuntimeError(version_error)
-        if not _update_installed_tool_binary(tool):
+        if not _update_installed_tool_binary(tool, continued_with_fallback=False):
             raise RuntimeError(version_error)
         version_error = version_check()
     if version_error:
@@ -250,7 +267,7 @@ def _maybe_downgrade_too_new_tool(tool: str) -> bool:
     installed, target = downgrade
     print_warning(
         f"{spec['display']} {installed} is newer than the latest version known to work "
-        f"with the Databricks AI Gateway ({target})."
+        f"with the Databricks Unity Gateway ({target})."
     )
     if prompt_yes_no(f"Downgrade {spec['display']} from {installed} to {target}?"):
         _update_installed_tool_binary(tool, version=target)
@@ -292,12 +309,19 @@ def install_tool_binary(
     if tool == "codex":
         codex.detach_app_model_catalog()
     try:
-        subprocess_cross_os.run(
-            ["npm", "install", "-g", package],
-            check=True,
-            timeout=300,
-            stdout=status_subprocess_stdout(),
-        )
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="install",
+            continued_with_fallback=not strict,
+        ):
+            subprocess_cross_os.run(
+                ["npm", "install", "-g", package],
+                check=True,
+                timeout=300,
+                stdout=status_subprocess_stdout(),
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically."
         if strict:
@@ -331,7 +355,14 @@ def _run_native_installer(tool: str, installer: Callable[[], None], *, strict: b
     print_section("Bootstrap")
     print_warning(f"`{spec['binary']}` was not found. Installing {spec['display']}...")
     try:
-        installer()
+        with metrics.measure(
+            metrics.DEPENDENCY_INSTALL_DURATION_MS,
+            operation=metrics.DEPENDENCY_INSTALL_OPERATION,
+            dependency=tool,
+            action="install",
+            continued_with_fallback=not strict,
+        ):
+            installer()
     except (RuntimeError, OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         message = f"Failed to install {spec['display']} automatically: {exc}"
         if strict:
@@ -382,6 +413,11 @@ def tool_version_error(tool: str) -> str | None:
     return _minimum_version_error(tool)
 
 
+@metrics.timed(
+    metrics.DEPENDENCY_SETUP_DURATION_MS,
+    label_args={"tool": "agent", "skip_cli_version_check": "cli_version_check_skipped"},
+    interactive_wait=False,
+)
 def ensure_bootstrap_dependencies(
     tool: str,
     *,
@@ -528,8 +564,11 @@ def resolve_gemini_provider_model(
 
 
 def refuse_user_scope_over_managed_files(tools: list[str]) -> None:
-    """Run by ``ug configure`` before any agent is configured; launches use the files present."""
-    if config_scope() != "user":
+    """Run by ``ug configure`` before any agent is configured; launches use the files present.
+
+    When the files come from a published agent configuration, the managed run owns them, so the
+    refusal doesn't apply."""
+    if config_scope() != "user" or published_agent_config_used():
         return
     for tool in tools:
         if tool == AGENT_CLAUDE:
@@ -552,7 +591,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     A workspace that publishes a managed config must install it machine-wide, so ``--user`` cannot
     apply. ``managed`` is the manifest from that read; None means no managed config is present.
     """
-    if config_scope() != "user" or managed is None:
+    if config_scope() != "user" or managed is None or published_agent_config_used():
         return
     raise RuntimeError(
         f"`ug configure --user` can't be used with {workspace}: it publishes a managed config, "
@@ -561,6 +600,7 @@ def refuse_user_scope_over_managed_config(workspace: str | None, managed: dict |
     )
 
 
+@metrics.timed(metrics.AGENT_CONFIGURATION_DURATION_MS, label_args={"tool": "agent"})
 def configure_tool(
     tool: str,
     state: dict,
@@ -575,6 +615,7 @@ def configure_tool(
     picker_catalog: AnthropicModelCatalog | None = None,
     derive_managed_model_inputs: bool = False,
 ) -> dict:
+    metrics.annotate(config_scope=config_scope())
     result: dict | tuple[dict, str]
     if tool == AGENT_CODEX:
         result = codex.write_tool_config(
@@ -811,8 +852,15 @@ def _configure_one(
         return configure_tool("codex", state)
     state, model = resolve_launch_model(tool, state, None)
     if tool == AGENT_CLAUDE:
-        # `ug configure` writes the managed model keys a plain launch would.
-        return configure_tool(tool, state, model, derive_managed_model_inputs=True)
+        # `ug configure` writes the managed model keys a plain launch would. A static list that
+        # names a subscription-relayed model service needs the relayed launch (credential swap).
+        return configure_tool(
+            tool,
+            state,
+            model,
+            relayed=claude.static_models_need_subscription_relay(state, configuring=True),
+            derive_managed_model_inputs=True,
+        )
     return configure_tool(tool, state, model)
 
 

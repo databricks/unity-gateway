@@ -9,7 +9,6 @@
           "model_services": [
             "system.ai.deepseek-v4-1-flash-1017",
             "system.ai.claude-sonnet-5-5",
-            "system.ai.glm-5-3-flash",
             "system.ai.claude-sonnet-4-6"
           ]
         },
