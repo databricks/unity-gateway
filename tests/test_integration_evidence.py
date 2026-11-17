@@ -1,10 +1,14 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
+import contextlib
 import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+import textwrap
+import xml.etree.ElementTree as ET
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from types import SimpleNamespace
 
@@ -1458,3 +1462,194 @@ def test_native_smart_router_evidence_requires_correlated_completed_result(actio
         codex.completed_smart_router_results(records, action)
     item["tool"] = "unrelated"
     assert codex.completed_smart_router_results(records, action) == []
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-assertion"])
+def test_antigravity_request_evidence_survives_test_outcome(tmp_path, failed):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+    log = session.home / antigravity.STATE_DIRECTORY / "log" / "cli-test.log"
+    url = "http://127.0.0.1:37805/ai-gateway/gemini/v1beta/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
+    outcome = (
+        pytest.raises(AssertionError, match="native status ERROR")
+        if failed
+        else contextlib.nullcontext()
+    )
+
+    with outcome:
+        with antigravity.record_requests(session):
+            log.parent.mkdir(parents=True)
+            log.write_text(f"Making Gateway streaming request to: {url}\n")
+            if failed:
+                raise AssertionError("native status ERROR")
+
+    artifact = session.artifacts / "antigravity-requests.json"
+    assert json.loads(artifact.read_text()) == {"urls": [url]}
+    assert log.read_text() == f"Making Gateway streaming request to: {url}\n"
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failed-assertion"])
+def test_antigravity_capture_error_preserves_the_original_failure(tmp_path, failed):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+    # A directory in place of a log makes the real reader raise on every platform.
+    log = session.home / antigravity.STATE_DIRECTORY / "log" / "cli-unreadable.log"
+    log.mkdir(parents=True)
+    failure = AssertionError("native status ERROR")
+
+    with pytest.raises(AssertionError if failed else OSError) as captured:
+        with antigravity.record_requests(session):
+            if failed:
+                raise failure
+
+    if failed:
+        assert captured.value is failure
+        assert any("Antigravity request capture also failed:" in note for note in failure.__notes__)
+
+
+def test_antigravity_request_capture_omits_sessions_without_native_logs(tmp_path):
+    session = UserSession(
+        tmp_path / "session", tmp_path, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    with antigravity.record_requests(session):
+        pass
+
+    assert list(session.artifacts.iterdir()) == []
+
+
+def test_antigravity_request_capture_in_pytest(tmp_path):
+    """Exercise the real pytest plugin with synthetic log inputs and no agent calls."""
+    integration = Path(__file__).parent / "integration"
+    (tmp_path / "pytest.ini").write_text("[pytest]\nmarkers =\n    antigravity\n")
+    (tmp_path / "conftest.py").write_text(
+        textwrap.dedent(
+            """\
+            import sys
+            from pathlib import Path
+
+            import pytest
+            from utils.agents import antigravity
+            from utils.harness import UserSession
+
+
+            @pytest.fixture
+            def session(request, tmp_path):
+                scenario = request.node.callspec.params["scenario"]
+                assert scenario != "unmarked", "An unmarked test requested an agent session"
+                return UserSession(
+                    tmp_path / "session", tmp_path, Path(sys.executable),
+                    Path.cwd() / "artifacts" / scenario,
+                )
+
+
+            @pytest.fixture
+            def prepare(request, scenario):
+                if scenario in ("unmarked", "no-logs"):
+                    return
+                user = request.getfixturevalue("session")
+                log = user.home / antigravity.STATE_DIRECTORY / "log" / "cli-test.log"
+                log.parent.mkdir(parents=True)
+                if "capture" in scenario:
+                    log.mkdir()
+                else:
+                    log.write_text(
+                        "Making Gateway streaming request to: http://127.0.0.1/models/example\\n"
+                    )
+                if scenario.startswith("setup-"):
+                    raise AssertionError("original setup failure")
+            """
+        )
+    )
+    (tmp_path / "test_capture.py").write_text(
+        textwrap.dedent(
+            """\
+            import pytest
+
+
+            @pytest.mark.parametrize(
+                "scenario",
+                [pytest.param(name, marks=pytest.mark.antigravity) for name in (
+                    "success", "no-logs", "call-failure", "setup-failure",
+                    "call-capture-failure", "setup-capture-failure", "capture-only-failure",
+                )] + ["unmarked"],
+            )
+            def test_capture(scenario, prepare):
+                if scenario.startswith("call-"):
+                    raise AssertionError("original call failure")
+            """
+        )
+    )
+    report = tmp_path / "results.xml"
+    environment = {
+        name: os.environ[name]
+        for name in ("PATH", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP")
+        if name in os.environ
+    }
+    environment.update(
+        {
+            "PYTHONPATH": os.pathsep.join((str(integration.parent.parent), str(integration))),
+            "PYTHONNOUSERSITE": "1",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+            "UG_INTEGRATION_AGENTS": "antigravity",
+        }
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-c",
+            str(tmp_path / "pytest.ini"),
+            "--confcutdir",
+            str(tmp_path),
+            "--rootdir",
+            str(tmp_path),
+            "-p",
+            "tests.integration.conftest",
+            "test_capture.py",
+            "-q",
+            "--tb=short",
+            "--junitxml=" + str(report),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    (tmp_path / "pytest-output.log").write_text(result.stdout + result.stderr)
+    assert result.returncode == pytest.ExitCode.TESTS_FAILED, result.stdout + result.stderr
+    cases = list(ET.parse(report).iter("testcase"))
+    assert len(cases) == 8, "pytest capture added a teardown outcome"
+    for case in cases:
+        scenario = case.get("name").removeprefix("test_capture[").removesuffix("]")
+        assert not case.findall("skipped"), scenario
+        expected_error = scenario.startswith("setup-")
+        expected_failure = scenario.startswith("call-") or scenario == "capture-only-failure"
+        assert len(case.findall("error")) == int(expected_error), (
+            "pytest capture added a teardown outcome",
+            scenario,
+        )
+        assert len(case.findall("failure")) == int(expected_failure), scenario
+        failure = case.find("error" if expected_error else "failure")
+        details = failure.text if failure is not None else ""
+        if scenario.startswith("setup-"):
+            assert "original setup failure" in details
+        elif scenario.startswith("call-"):
+            assert "original call failure" in details
+        if scenario in ("call-capture-failure", "setup-capture-failure"):
+            assert "Antigravity request capture also failed:" in details
+        elif scenario == "capture-only-failure":
+            assert "IsADirectoryError" in details or "PermissionError" in details
+        else:
+            assert "Antigravity request capture also failed:" not in details
+
+    for scenario in ("success", "call-failure", "setup-failure"):
+        artifact = tmp_path / "artifacts" / scenario / "antigravity-requests.json"
+        assert json.loads(artifact.read_text()) == {"urls": ["http://127.0.0.1/models/example"]}
+    assert list((tmp_path / "artifacts" / "no-logs").iterdir()) == []
+    assert not (tmp_path / "artifacts" / "unmarked").exists()
