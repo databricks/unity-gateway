@@ -174,8 +174,8 @@ def test_table_shows_header_and_row_with_stripped_model_prefix(log_dir):
     assert result.exit_code == 0
     lines = result.output.splitlines()
     assert lines[0] == "1 routed subagents this session (showing last 1)"
-    assert lines[2].split() == ["WHEN", "TASK", "MODEL", "ROUTING"]
-    assert lines[3].split(maxsplit=2)[:2] == ["just", "now"]
+    assert lines[2].split() == ["ID", "WHEN", "TASK", "MODEL", "ROUTING"]
+    assert lines[3].split(maxsplit=3)[1:3] == ["just", "now"]
     assert "inspect parser" in lines[3]
     assert "gpt-5-6-sol" in lines[3]
     assert "system.ai" not in lines[3]
@@ -188,11 +188,11 @@ def test_table_caps_rows_and_truncates_task(log_dir):
     result = table()
     lines = result.output.splitlines()
     assert lines[0] == "25 routed subagents this session (showing last 20)"
-    assert len(lines) == 3 + 20
+    assert len(lines) == 3 + 20 + 2
     assert "task 5 " in lines[3]
     assert "task 4 " not in result.output
-    assert all("…" in line for line in lines[3:])
-    assert max(len(line) for line in lines[3:]) < 120
+    assert all("…" in line for line in lines[3:23])
+    assert max(len(line) for line in lines[3:23]) < 130
 
 
 def test_table_empty_message(log_dir):
@@ -217,3 +217,102 @@ def test_unknown_harness_rejected(log_dir):
     result = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--harness", "gemini"])
     assert result.exit_code == 1
     assert "unknown harness" in json.loads(result.output)["error"]
+
+
+def test_table_has_id_column_and_hint(log_dir):
+    write_codex()
+    decision_id = json.loads((log_dir / "codex-c1.jsonl").read_text())["decision_id"]
+    lines = table().output.splitlines()
+    assert lines[3].split()[0] == decision_id[:8]
+    assert lines[-1] == "Show one: $smart-router logs --id <ID>"
+
+
+def detail(query):
+    return table("--decision", query)
+
+
+def test_detail_renders_all_fields_and_marks_selected(log_dir):
+    session_log.append_decision(
+        "codex",
+        payload("c1", tool_input={"subagent_type": "explorer"}),
+        "inspect parser",
+        routing.RoutingDecision(
+            "system.ai.databricks-gpt-5-6-sol",
+            "Needs depth. " * 20,
+            (("system.ai.databricks-gpt-5-6-sol", "codex"), ("system.ai.gpt-5-6-luna", "codex")),
+            "stable",
+        ),
+        "requested",
+        routing_ms=1234,
+    )
+    record = json.loads((log_dir / "codex-c1.jsonl").read_text())
+    result = detail(record["decision_id"])
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert lines[0] == "Prompt preview: inspect parser"
+    assert "Agent type: explorer" in lines
+    assert "Selected: gpt-5-6-sol" in lines
+    assert "Routing time: 1.2s" in lines
+    assert max(len(line) for line in lines) <= 90
+    assert lines[-2:] == ["● gpt-5-6-sol", "○ gpt-5-6-luna"]
+
+
+def test_detail_handles_missing_rationale_candidates_and_route_agent(log_dir):
+    log_dir.mkdir()
+    record = {
+        "v": 1,
+        "type": "decision",
+        "decision_id": "abcd1234",
+        "prompt": None,
+        "original": {"subagent_type": "ug-smart-router:ucode-route-x"},
+        "selected_model": "m",
+        "routing_ms": 50,
+        "rationale": "  ",
+        "candidates": None,
+    }
+    (log_dir / "codex-c1.jsonl").write_text(json.dumps(record) + "\n")
+    output = detail("abcd1234").output
+    assert "(prompt not recorded)" in output
+    assert "Agent type" not in output
+    assert "Routing time: 0.1s" in output
+    assert "No rationale returned." in output
+    assert output.endswith("Candidates:\n")
+
+
+def test_detail_prefix_matching(log_dir):
+    log_dir.mkdir()
+    ids = ["abcd1111" + "0" * 24, "abcd2222" + "0" * 24, "ffff3333" + "0" * 24]
+    (log_dir / "codex-c1.jsonl").write_text(
+        "".join(
+            json.dumps({"v": 1, "type": "decision", "decision_id": i, "selected_model": "m"}) + "\n"
+            for i in ids
+        )
+    )
+    assert detail(ids[0]).exit_code == 0
+    assert detail("ffff").exit_code == 0
+    ambiguous = detail("abcd")
+    assert ambiguous.exit_code == 1 and "ambiguous" in ambiguous.output
+    short = detail("ab")
+    assert short.exit_code == 1 and "at least 4" in short.output
+    missing = detail("eeee")
+    assert missing.exit_code == 1 and missing.output == "error: decision not found\n"
+    assert len(missing.output.splitlines()) == 1
+
+
+def test_json_decision_still_requires_exact_id(log_dir):
+    write_codex()
+    decision_id = json.loads((log_dir / "codex-c1.jsonl").read_text())["decision_id"]
+    result = runner.invoke(
+        cli.app,
+        [
+            "smart-router-logs",
+            "--session",
+            "c1",
+            "--harness",
+            "codex",
+            "--decision",
+            decision_id[:8],
+        ],
+    )
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {"v": 1, "error": "decision not found"}

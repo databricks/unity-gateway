@@ -188,7 +188,12 @@ def test_render_table_formats_age_and_collapses_whitespace(log_dir, decision):
     write({"session_id": "s1"}, decision, task="line one\n  line two")
     records = session_log.read_decisions("claude", "s1")
     at = records[0]["at"]
-    assert session_log.render_table(records, now=at + 7200).splitlines()[3].startswith("2h ago")
+    assert (
+        session_log.render_table(records, now=at + 7200)
+        .splitlines()[3]
+        .split("  ", 1)[1]
+        .startswith("2h ago")
+    )
     assert "line one" in session_log.render_table(records)
 
 

@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import textwrap
 import time
 import uuid
 from pathlib import Path
@@ -23,6 +24,9 @@ PREVIEW_CHARS = 160
 TABLE_MAX_ROWS = 20
 TABLE_TASK_WIDTH = 48
 TABLE_MODEL_WIDTH = 28
+ID_PREFIX_CHARS = 8
+MIN_ID_PREFIX_CHARS = 4
+DETAIL_WRAP_WIDTH = 80
 MODEL_PREFIXES = ("system.ai.", "databricks-")
 
 
@@ -171,6 +175,10 @@ def _age(at: object, now: float) -> str:
     return f"{seconds // 86400}d ago"
 
 
+def _short_id(decision_id: object) -> str:
+    return decision_id[:ID_PREFIX_CHARS] if isinstance(decision_id, str) else "?"
+
+
 def _truncate(text: str, width: int) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
@@ -195,13 +203,14 @@ def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> 
         routing_ms = summary["routing_ms"]
         rows.append(
             (
+                _short_id(summary["decision_id"]),
                 _age(summary["at"], now),
                 _truncate(task, TABLE_TASK_WIDTH),
                 _truncate(_short_model(summary["selected_model"]), TABLE_MODEL_WIDTH),
                 f"{routing_ms} ms" if isinstance(routing_ms, int | float) else "?",
             )
         )
-    headers = ("WHEN", "TASK", "MODEL", "ROUTING")
+    headers = ("ID", "WHEN", "TASK", "MODEL", "ROUTING")
     widths = [max(len(cell) for cell in column) for column in zip(headers, *rows, strict=True)]
     lines = [
         f"{len(records)} routed subagents this session (showing last {len(shown)})",
@@ -210,7 +219,57 @@ def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> 
             "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
             for row in (headers, *rows)
         ),
+        "",
+        "Show one: $smart-router logs --id <ID>",
     ]
+    return "\n".join(lines)
+
+
+def find_decision(records: list[dict[str, Any]], query: str) -> dict[str, Any]:
+    """Resolve an exact decision id, else a unique prefix of at least four characters."""
+    exact = next((r for r in records if r.get("decision_id") == query), None)
+    if exact is not None:
+        return exact
+    if len(query) < MIN_ID_PREFIX_CHARS:
+        raise LookupError(f"decision id must be at least {MIN_ID_PREFIX_CHARS} characters")
+    matches = [
+        r
+        for r in records
+        if isinstance(r.get("decision_id"), str) and r["decision_id"].startswith(query)
+    ]
+    if not matches:
+        raise LookupError("decision not found")
+    if len(matches) > 1:
+        raise LookupError(f"decision id prefix {query!r} is ambiguous; use more characters")
+    return matches[0]
+
+
+def render_detail(record: dict[str, Any]) -> str:
+    """Render one decision like the Claude logs detail view."""
+    prompt = record.get("prompt")
+    original = record.get("original")
+    preview = prompt.get("preview") if isinstance(prompt, dict) else None
+    subagent = original.get("subagent_type") if isinstance(original, dict) else None
+    if isinstance(subagent, str) and re.search(r"(^|:)ucode-route-", subagent):
+        subagent = None  # names a model, not a task type, so it would contradict the selection
+    selected = record.get("selected_model")
+    routing_ms = record.get("routing_ms")
+    rationale = record.get("rationale")
+    candidates = record.get("candidates")
+    lines = [f"Prompt preview: {preview or '(prompt not recorded)'}"]
+    if isinstance(subagent, str):
+        lines.append(f"Agent type: {subagent}")
+    lines.append(f"Selected: {_short_model(selected)}")
+    if isinstance(routing_ms, int | float):
+        lines.append(f"Routing time: {routing_ms / 1000:.1f}s")
+    rationale_text = rationale.strip() if isinstance(rationale, str) else ""
+    lines.append("Rationale:")
+    lines.extend(textwrap.wrap(rationale_text or "No rationale returned.", DETAIL_WRAP_WIDTH))
+    lines.append("Candidates:")
+    for candidate in candidates if isinstance(candidates, list) else []:
+        model = candidate.get("model") if isinstance(candidate, dict) else None
+        marker = "●" if model == selected else "○"
+        lines.append(f"{marker} {_short_model(model)}")
     return "\n".join(lines)
 
 
