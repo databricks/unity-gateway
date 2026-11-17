@@ -3674,8 +3674,11 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
             smart_routing_v2.restore_smart_routing_env(previous)
 
 
-# Omnigent matches the "Smart Router is [already] on|off for this session" replies and the exit codes
-# below exactly; update Omnigent if any of them change.
+# Omnigent matches these replies exactly; update Omnigent if either changes.
+_SMART_ROUTER_STATE_REPLY = "Smart Router is {state} for this session"
+_SMART_ROUTER_UNCHANGED_REPLY = "Smart Router is already {state} for this session"
+
+
 def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
     if enabled is None:
         return False
@@ -3685,12 +3688,13 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         return False
     from ucode.smart_routing.session_env import session_routing_enabled
 
+    state = "on" if enabled else "off"
     try:
         unchanged = session_routing_enabled(controls) == enabled
     except (OSError, UnicodeError, ValueError):
         unchanged = False
     if unchanged:
-        print_success(f"Smart Router is already {'on' if enabled else 'off'} for this session")
+        print_success(_SMART_ROUTER_UNCHANGED_REPLY.format(state=state))
         return True
     if (
         not enabled
@@ -3710,7 +3714,7 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
         metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
-    print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
+    print_success(_SMART_ROUTER_STATE_REPLY.format(state=state))
     return True
 
 
