@@ -141,3 +141,79 @@ def test_decision_miss_exits_1(log_dir):
     result = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--decision", "nope"])
     assert result.exit_code == 1
     assert json.loads(result.output) == {"v": 1, "error": "decision not found"}
+
+
+def write_codex(session_id="c1", task="inspect parser", model="system.ai.databricks-gpt-5-6-sol"):
+    session_log.append_decision(
+        "codex", payload(session_id), task, decision(model), "requested", routing_ms=1234
+    )
+
+
+def table(*args):
+    return runner.invoke(
+        cli.app,
+        ["smart-router-logs", "--session", "c1", "--harness", "codex", "--format", "table", *args],
+    )
+
+
+def test_harness_defaults_to_claude(log_dir):
+    write_codex()
+    assert read_overviews(session="c1") == []
+
+
+def test_codex_harness_reads_codex_log_as_json(log_dir):
+    write_codex()
+    result = runner.invoke(cli.app, ["smart-router-logs", "--session", "c1", "--harness", "codex"])
+    assert result.exit_code == 0
+    assert [o["preview"] for o in json.loads(result.output)["decisions"]] == ["inspect parser"]
+
+
+def test_table_shows_header_and_row_with_stripped_model_prefix(log_dir):
+    write_codex()
+    result = table()
+    assert result.exit_code == 0
+    lines = result.output.splitlines()
+    assert lines[0] == "1 routed subagents this session (showing last 1)"
+    assert lines[2].split() == ["WHEN", "TASK", "MODEL", "ROUTING"]
+    assert lines[3].split(maxsplit=2)[:2] == ["just", "now"]
+    assert "inspect parser" in lines[3]
+    assert "gpt-5-6-sol" in lines[3]
+    assert "system.ai" not in lines[3]
+    assert "1234 ms" in lines[3]
+
+
+def test_table_caps_rows_and_truncates_task(log_dir):
+    for index in range(25):
+        write_codex(task=f"task {index} " + "x" * 200)
+    result = table()
+    lines = result.output.splitlines()
+    assert lines[0] == "25 routed subagents this session (showing last 20)"
+    assert len(lines) == 3 + 20
+    assert "task 5 " in lines[3]
+    assert "task 4 " not in result.output
+    assert all("…" in line for line in lines[3:])
+    assert max(len(line) for line in lines[3:]) < 120
+
+
+def test_table_empty_message(log_dir):
+    result = table()
+    assert result.exit_code == 0
+    assert result.output == "No routed subagents recorded this session yet.\n"
+
+
+def test_table_error_is_one_plain_line(log_dir, monkeypatch):
+    def deny_read(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied", str(self))
+
+    write_codex()
+    monkeypatch.setattr(type(log_dir), "read_text", deny_read)
+    result = table()
+    assert result.exit_code == 1
+    assert result.output.startswith("error: cannot read session log at ")
+    assert len(result.output.splitlines()) == 1
+
+
+def test_unknown_harness_rejected(log_dir):
+    result = runner.invoke(cli.app, ["smart-router-logs", "--session", "s1", "--harness", "gemini"])
+    assert result.exit_code == 1
+    assert "unknown harness" in json.loads(result.output)["error"]

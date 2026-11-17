@@ -8,7 +8,7 @@ import urllib.error
 
 import pytest
 
-from ucode.smart_routing import codex_routing
+from ucode.smart_routing import codex_routing, session_log
 from ucode.smart_routing.codex_hooks import routing_models
 
 WS = "https://example.databricks.com"
@@ -534,3 +534,52 @@ def test_failed_subagent_routing_reports_reason_without_hook_response(monkeypatc
     assert "router returned HTTP 400: unsupported model" in caplog.text
     assert "private-bearer" not in caplog.text
     assert "Review the parser" not in caplog.text
+
+
+def test_audited_decision_is_appended_to_session_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(
+        codex_routing,
+        "request_routing_decision",
+        lambda *args, **kwargs: (
+            codex_routing.RoutingDecision(model="system.ai.gpt-5-6-sol"),
+            None,
+        ),
+    )
+
+    codex_routing.route_pre_tool_use(
+        {
+            "session_id": "root-session",
+            "tool_name": "collaborationspawn_agent",
+            "tool_input": {"task_name": "refactor", "message": "encrypted"},
+        },
+        workspace=WS,
+        token="token",
+        available_models=["system.ai.gpt-5-6-sol"],
+        audit_decision=True,
+    )
+
+    (record,) = session_log.read_decisions("codex", "root-session")
+    assert record["harness"] == "codex"
+    assert record["selected_model"] == "system.ai.gpt-5-6-sol"
+    assert isinstance(record["routing_ms"], int)
+
+
+def test_failed_routing_writes_no_session_log(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+    monkeypatch.setattr(session_log, "LOG_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(
+        codex_routing, "request_routing_decision", lambda *args, **kwargs: (None, "HTTP 500")
+    )
+
+    output = codex_routing.route_pre_tool_use(
+        {"session_id": "s1", "tool_name": "spawn_agent", "tool_input": {"message": "x"}},
+        workspace=WS,
+        token="token",
+        available_models=["system.ai.gpt-5-6-sol"],
+        audit_decision=True,
+    )
+
+    assert output is None
+    assert session_log.read_decisions("codex", "s1") == []

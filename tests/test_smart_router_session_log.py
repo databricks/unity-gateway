@@ -182,3 +182,16 @@ def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_pat
     assert log_dir.exists()
     claude_routing.clear_routing_artifacts()
     assert not log_dir.exists()
+
+
+def test_render_table_formats_age_and_collapses_whitespace(log_dir, decision):
+    write({"session_id": "s1"}, decision, task="line one\n  line two")
+    records = session_log.read_decisions("claude", "s1")
+    at = records[0]["at"]
+    assert session_log.render_table(records, now=at + 7200).splitlines()[3].startswith("2h ago")
+    assert "line one" in session_log.render_table(records)
+
+
+def test_render_table_tolerates_missing_fields():
+    text = session_log.render_table([{"v": 1, "type": "decision"}])
+    assert "(no task text)" in text

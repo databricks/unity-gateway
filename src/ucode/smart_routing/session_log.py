@@ -20,6 +20,10 @@ SCHEMA_VERSION = 1
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600
 PREVIEW_CHARS = 160
+TABLE_MAX_ROWS = 20
+TABLE_TASK_WIDTH = 48
+TABLE_MODEL_WIDTH = 28
+MODEL_PREFIXES = ("system.ai.", "databricks-")
 
 
 def session_log_path(harness: str, session_id: object) -> Path | None:
@@ -152,6 +156,62 @@ def overview(record: dict[str, Any]) -> dict[str, Any]:
         "selected_model": record.get("selected_model"),
         "routing_ms": record.get("routing_ms"),
     }
+
+
+def _age(at: object, now: float) -> str:
+    if not isinstance(at, int | float):
+        return "?"
+    seconds = max(0, int(now - at))
+    if seconds < 60:
+        return "just now"
+    if seconds < 3600:
+        return f"{seconds // 60}m ago"
+    if seconds < 86400:
+        return f"{seconds // 3600}h ago"
+    return f"{seconds // 86400}d ago"
+
+
+def _truncate(text: str, width: int) -> str:
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def _short_model(model: object) -> str:
+    if not isinstance(model, str):
+        return "?"
+    for prefix in MODEL_PREFIXES:
+        model = model.removeprefix(prefix)
+    return model
+
+
+def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> str:
+    """Render the most recent decisions as a fixed-width table for chat."""
+    if not records:
+        return "No routed subagents recorded this session yet."
+    now = time.time() if now is None else now
+    shown = records[-TABLE_MAX_ROWS:]
+    rows = []
+    for summary in map(overview, shown):
+        task = " ".join((summary["preview"] or "(no task text)").split())
+        routing_ms = summary["routing_ms"]
+        rows.append(
+            (
+                _age(summary["at"], now),
+                _truncate(task, TABLE_TASK_WIDTH),
+                _truncate(_short_model(summary["selected_model"]), TABLE_MODEL_WIDTH),
+                f"{routing_ms} ms" if isinstance(routing_ms, int | float) else "?",
+            )
+        )
+    headers = ("WHEN", "TASK", "MODEL", "ROUTING")
+    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows, strict=True)]
+    lines = [
+        f"{len(records)} routed subagents this session (showing last {len(shown)})",
+        "",
+        *(
+            "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
+            for row in (headers, *rows)
+        ),
+    ]
+    return "\n".join(lines)
 
 
 def clear_logs() -> None:
