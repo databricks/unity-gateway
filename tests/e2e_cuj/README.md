@@ -65,9 +65,9 @@ uv run pytest -c tests/e2e_cuj/pytest.ini --confcutdir=tests/e2e_cuj \
 
 ## Model sources in CUJ9
 
-The 14 mixed-source cases in `test_cuj9_model_sources.py` use
+`test_cuj9_model_sources.py` uses
 `https://dbc-93fdd3cb-4b13.cloud.databricks.com`, workspace `7474659962444308`.
-They cover native discovery and default inference for Claude Code, Codex,
+Its 14 cases cover native discovery and default inference for Claude Code, Codex,
 and Copilot CLI, explicit inference on every expanded model, and one routed
 Claude child. Smart routing is enabled only for Claude Code. Codex and Copilot
 tasks must send no routing requests.
@@ -104,20 +104,6 @@ for all three agents, and Copilot VS Code integration is off. The suite reads an
 validates this live configuration; it does not load a local configuration artifact.
 The CUJ service principal needs access to the workspace and named services.
 Tests never change the published configuration, services, or grants.
-
-An additional Foundry case uses an independently preconfigured workspace so the
-mixed-source workspace's exact contract remains unchanged. Set both
-`UG_CUJ9_FOUNDRY_WORKSPACE` to its URL and `UG_CUJ9_FOUNDRY_MPS` to the
-`catalog.schema.service` name. If both are unset, the case skips; a partial setup
-fails. The normal CUJ service principal must have access. The workspace must publish
-Claude with exactly `["<catalog>.<schema>.<service>.*"]` as its model sources. The
-service must be `microsoft_foundry` with explicit, nonempty, Anthropic Messages-only
-targets and at most one catalog page. The case compares the independently read catalog
-and generated allow-list to all qualified targets, then requires a completed hidden-value
-task and paired HTTP 200 inference on one qualified model. It does not cover Codex or
-inference on every Foundry target. Neither workspace configuration nor services are
-modified. CI passes the optional repository variables of the same names to the shard;
-without both variables, this case is not live CI coverage.
 
 Direct API probes on 2026-11-16 verified inference with the Anthropic catalog's
 `anthropic-aigw-e6dfbcac-ug_e2e.other_models.codex_decoy` alias when the request

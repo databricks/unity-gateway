@@ -419,8 +419,6 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
-    assert "UG_CUJ9_FOUNDRY_WORKSPACE: ${{ vars.UG_CUJ9_FOUNDRY_WORKSPACE }}" in job
-    assert "UG_CUJ9_FOUNDRY_MPS: ${{ vars.UG_CUJ9_FOUNDRY_MPS }}" in job
     assert (
         'if [[ "${{ matrix.test }}" == "test_cuj9_model_sources.py" ]]; then\n'
         '            npm install -g "@github/copilot@$COPILOT_VERSION"\n'

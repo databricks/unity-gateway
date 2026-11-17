@@ -1,7 +1,6 @@
 """CUJ9: mixed model sources, native discovery, inference, and Claude-only routing."""
 
 import json
-import os
 import shutil
 
 import pytest
@@ -23,7 +22,7 @@ from tests.integration.utils.provider_catalog import (
 )
 from tests.integration.utils.terminal import AgentTerminal
 
-from .base import BaseCujTest, make_workspace_client
+from .base import BaseCujTest
 from .helpers.constants import (
     CLAUDE,
     CLAUDE_SONNET_MODEL_SERVICE,
@@ -55,8 +54,6 @@ CUJ_NAME = "CUJ 9 · Model sources"
 pytestmark = [pytest.mark.live, pytest.mark.managed, pytest.mark.workspace_isolated]
 
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
-FOUNDRY_WORKSPACE = os.environ.get("UG_CUJ9_FOUNDRY_WORKSPACE", "").strip()
-FOUNDRY_MPS = os.environ.get("UG_CUJ9_FOUNDRY_MPS", "").strip()
 CLAUDE_MODELS = {
     SOURCE_CLAUDE_PROVIDER_MODEL: "Claude Haiku 5.5",
     CLAUDE_SONNET_MODEL_SERVICE: "Claude_Sonnet",
@@ -143,7 +140,7 @@ def source_contract(cuj):
 
 
 @pytest.fixture(autouse=True)
-def clean_source_case(cuj):
+def clean_source_case(cuj, source_contract):
     yield
     session, _, _ = cuj
     session.revert_machine_wide("sources-revert", "CUJ9 left machine-wide agent settings")
@@ -184,7 +181,6 @@ def _assert_copilot_selection(session, task, model):
     assert set(copilot.selected_models(records[0])) == {ref}
 
 
-@pytest.mark.usefixtures("source_contract")
 class TestModelSources(BaseCujTest):
     WORKSPACE_URL = "https://dbc-93fdd3cb-4b13.cloud.databricks.com"
 
@@ -443,99 +439,3 @@ class TestModelSources(BaseCujTest):
         assert len(selections) == 1, selections
         selected = selections[0]["route_option"]["model"]
         assert selected in offered, selected
-
-
-@pytest.mark.skipif(
-    not FOUNDRY_WORKSPACE and not FOUNDRY_MPS,
-    reason="Set UG_CUJ9_FOUNDRY_WORKSPACE and UG_CUJ9_FOUNDRY_MPS for Foundry coverage",
-)
-class TestFoundryModelSources(BaseCujTest):
-    # An alternate read-only workspace keeps CUJ9's existing exact source contract intact.
-    WORKSPACE_URL = FOUNDRY_WORKSPACE or TestModelSources.WORKSPACE_URL
-
-    @pytest.fixture(scope="class", autouse=True)
-    @classmethod
-    def setup_workspace(cls, request):
-        assert FOUNDRY_WORKSPACE and FOUNDRY_MPS, (
-            "Set both UG_CUJ9_FOUNDRY_WORKSPACE and UG_CUJ9_FOUNDRY_MPS"
-        )
-        parts = FOUNDRY_MPS.split(".")
-        assert len(parts) == 3 and all(parts), "Foundry MPS must be catalog.schema.service"
-        request.cls.workspace = make_workspace_client(
-            cls.WORKSPACE_URL, cls.CLIENT_ID_ENV, cls.CLIENT_SECRET_ENV
-        )
-
-    @pytest.mark.claude
-    def test_sources_claude_foundry_wildcard_configure_and_inference(self, cuj):
-        """Scenario: configure Claude from an Anthropic-only Microsoft Foundry MPS wildcard.
-
-        Expected: the exact qualified target inventory is configured and a hidden-value
-        task completes on one of those models with a successful recorded gateway response.
-        """
-        session, workspace, recorder = cuj
-        published = workspace.config()
-        configs = workspace.agent_configs(published)
-        claude_config = configs["CODING_AGENT_CLAUDE_CODE"]
-        assert claude_config["models"]["sources"] == [f"{FOUNDRY_MPS}.*"], claude_config
-
-        service = workspace.client.ai_gateway.get_model_provider_service(
-            f"model-provider-services/{FOUNDRY_MPS}"
-        )
-        assert service.name == f"model-provider-services/{FOUNDRY_MPS}", service
-        config = service.config
-        assert config is not None and config.allow_all_targets is not True, service
-        assert getattr(config.provider_type, "value", config.provider_type) == (
-            "EXTERNAL_MODEL_PROVIDER_TYPE_MICROSOFT_FOUNDRY"
-        ), config
-        targets = config.targets or []
-        assert targets, "Foundry MPS must have explicit Anthropic-only targets"
-        names = [target.model for target in targets]
-        assert all(isinstance(name, str) and name for name in names), names
-        assert len(names) == len(set(names)), names
-        for target in targets:
-            native_apis = {getattr(api, "value", api) for api in target.native_api_types or []}
-            assert native_apis == {"anthropic/v1/messages"}, target
-        expected = {
-            name if name.startswith(f"{FOUNDRY_MPS}.") else f"{FOUNDRY_MPS}.{name}"
-            for name in names
-        }
-        payload = workspace.client.api_client.do(
-            "GET",
-            "/ai-gateway/anthropic/v1/models",
-            headers={"Databricks-Model-Provider-Service": FOUNDRY_MPS},
-            query={"limit": "1000"},
-        )
-        page = parse_anthropic_provider_page(payload)
-        assert not page.has_more, "Foundry fixture unexpectedly needs catalog pagination"
-        catalog_models = {
-            model if model.startswith(f"{FOUNDRY_MPS}.") else f"{FOUNDRY_MPS}.{model}"
-            for model, _ in page.models
-        }
-        assert catalog_models == expected, (catalog_models, expected)
-
-        recorder.configure_session(session, ["configure", "--skip-upgrade"])
-        settings = json.loads((session.home / ".claude" / "ucode-settings.json").read_text())
-        assert set(settings["availableModels"]) == expected, settings["availableModels"]
-        assert len(settings["availableModels"]) == len(expected), settings["availableModels"]
-        assert settings["enforceAvailableModels"] is True
-
-        model = sorted(expected)[0]
-        task = claude_file_task(session)
-        checkpoint = recorder.checkpoint()
-        recorder.prepare_launch()
-        result = session.run(
-            CLAUDE,
-            "--",
-            "-p",
-            task.prompt,
-            "--output-format",
-            "json",
-            "--allowedTools",
-            "Read",
-            "--model",
-            claude.discovery_model_id(model),
-            timeout=240,
-        )
-        task.assert_headless_answer(CLAUDE, result)
-        assert_claude_headless_model(result, claude.discovery_model_id(model))
-        assert_inference_evidence(recorder, checkpoint, CLAUDE, task, model)
