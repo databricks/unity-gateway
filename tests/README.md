@@ -1744,7 +1744,8 @@ to refresh labels and the failed CI jobs. Later pushes need a new waiver; the ol
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
-# Smart Router startup validation
+
+## Smart Router startup validation
 
 `test_startup_validation.py` covers one background compatibility check, supported and
 unsupported menus, reasons and suggestions, transient and malformed responses, isolated
@@ -1753,4 +1754,3 @@ Real loopback WebSocket tests cover Codex's asynchronous warning and continued f
 Claude's native mod tests cover a single toast after the result arrives. Smart-routing launch
 tests preserve the resolved model/harness menu and prove delayed HTTP does not hold Codex startup.
 These component tests do not establish live Gateway or classifier compatibility.
-
