@@ -183,7 +183,9 @@ carries, and a launch's own version selection never installs or converts the cat
 In that mode native always stays on the static row's alias (the launch passes it as
 `staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
 holds the chosen main model in memory and its `$.store` preference and resolves the
-real target from it. Main-model switches never run native `/model`. A fresh launch
+real target from it. Main-model switches never run native `/model`.
+Native confirms the row as its picker closes, before the chooser opens, so that confirmation
+names no main model; the chooser's save (or an Escape) appends a notice naming it. A fresh launch
 without a launch-only model starts on the stored main model; a per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.
 Native context window and effort follow the static row (the default variant) for every

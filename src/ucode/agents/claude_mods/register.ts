@@ -276,6 +276,9 @@ export function register(on: On, options: PluginOptions): void {
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
   // The main model a public /model command enters the static Auto row with.
   let staticEntry: string | undefined;
+  // The static Auto row was confirmed without a main model; the chooser's save or
+  // dismissal names it.
+  let staticChoicePending = false;
   const pickerState: AutoPickerState = {drafts:{}, native:{}};
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
@@ -328,10 +331,16 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   if (auto) {
-    on('ui.close', {id:'auto-main'}, ($, e, next) => {
+    on('ui.close', {id:'auto-main'}, async ($, e, next) => {
       if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
       if (e.origin.kind === 'person') {
         clearAutoSave();
+        if (staticChoicePending) {
+          staticChoicePending = false;
+          const kept = await mainModel($, auto);
+          await $.session.append({message:{type:'system', content:[{type:'text', text:autoStatus(kept, true)}]}})
+            .catch(() => $.ui.toast(`Auto (${auto.models.find(row => row.model === kept)?.label ?? kept}) kept`));
+        }
       }
       return next(e);
     });
@@ -359,6 +368,7 @@ export function register(on: On, options: PluginOptions): void {
       if (!internalCommand) {
         manualOffRequest = undefined;
         clearAutoSave();
+        staticChoicePending = false;
         entry = await entryMainModel($, auto);
         staticEntry = entry;
         await customAutoRow($, auto, entry);
@@ -477,6 +487,7 @@ export function register(on: On, options: PluginOptions): void {
                 // A native confirmation still pending from the /model that opened
                 // this pane must not restore the main model it started from.
                 staticEntry = undefined;
+                staticChoicePending = false;
               }
               await $.store.set(auto.storeKey, selected.model);
               if (autoSave !== request) return;
@@ -609,6 +620,9 @@ export function register(on: On, options: PluginOptions): void {
         ? internalModels.indexOf(selected) : -1;
       const internalSwitch = Boolean(saving) || internalIndex >= 0;
       if (internalIndex >= 0) internalModels.splice(internalIndex, 1);
+      // Native confirms the static row as its picker closes, before the chooser
+      // opens: a public entry confirmation must not name the main model yet.
+      const pendingChoice = !internalSwitch && setModel && Boolean(staticEntry) && Boolean(selected && isStaticAuto(auto, selected));
       if (setModel || keptModel || cancelledModel) {
         // A public selection of the static Auto row enters it with the main model
         // the /model command started from; switches never change the native row.
@@ -653,10 +667,11 @@ export function register(on: On, options: PluginOptions): void {
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? formatAutoConfirmation(block.text, autoConfirmation.model, setModel) : block.text,
+            : autoConfirmation ? formatAutoConfirmation(block.text, pendingChoice && !dismiss ? undefined : autoConfirmation.model, setModel) : block.text,
         } : block) },
       } : e;
       const result = await next(confirmation);
+      if (pendingChoice && !dismiss && autoConfirmation) staticChoicePending = true;
       if (saving) {
         if (saving.phase === 'waiting') $.clock.after(0, saving.finish);
         return result;

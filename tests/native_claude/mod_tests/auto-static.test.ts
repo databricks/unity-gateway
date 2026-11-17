@@ -252,16 +252,18 @@ const SET_STATIC = {
   origin: { kind: 'engine' },
 } as never;
 const CHOSE_OTHER = 'Auto on: subagents smart-routed · main agent on `claude-haiku-4-5`';
+const KEPT_MAIN = 'Auto on: subagents smart-routed · main agent on `claude-sonnet-5`';
+const CHOOSE = '<local-command-stdout>Auto on: subagents smart-routed · choose your main model';
 
 test('choosing a main model after entering Auto confirms and sends the new one', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
   const rows = captureAppends(on);
   await $.session.start(START);
-  // Entering Auto confirms the main model it started from (Sonnet).
+  // Entering Auto confirms before the chooser names the main model.
   await $.command.run({ command: 'model', args: 'auto' });
   await $.session.append(SET_STATIC);
-  expect(rows).toEqual(['<local-command-stdout>Auto on: subagents smart-routed · main agent on `claude-sonnet-5`']);
+  expect(rows).toEqual([CHOOSE]);
 
   const pane = await mountChooser($);
   await pane.press({ key: 'auto-main-model-1' });
@@ -328,4 +330,33 @@ test('a fresh static Auto session names the saved main model in the hint row', {
   const hint = await hintTail($, on);
   await $.session.start(START);
   expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
+});
+
+// Native 2.1.325's order, from a live transcript: /model returns its panel ref,
+// native appends the static row's confirmation as its picker closes, and only
+// then does the person pick a main model in the mod's chooser.
+test('the /model confirmation never names the previous main model', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  const sent = captureSteps(on);
+  const rows = captureAppends(on);
+  const hint = await hintTail($, on);
+  await $.session.start(START);
+
+  for (const [index, model, notice] of [[1, OTHER, CHOSE_OTHER], [0, MAIN, KEPT_MAIN]] as const) {
+    rows.length = 0;
+    await $.command.run({ command: 'model', args: '' });
+    await $.session.append(SET_STATIC);
+    await session.clock.advance(0);
+    const pane = await mountChooser($);
+    await pane.press({ key: `auto-main-model-${index}` });
+    await session.clock.advance(0);
+    await pane.unmount();
+    expect(rows).toEqual([CHOOSE, notice]);
+    sent.length = 0;
+    await step($, DEFAULT_ALIAS);
+    await step($, DEFAULT_ALIAS, 'child');
+    expect(sent).toEqual([model, model]);
+    expect(session.store[AUTO.storeKey]).toBe(model);
+  }
+  expect(await hint()).toBe('Auto (Sonnet 5) · smart router ON');
 });
