@@ -69,7 +69,7 @@ jobs:
           delimiter="ug-review-policy-$(openssl rand -hex 16)"
           {
             echo "background<<$delimiter"
-            echo 'Apply every relevant priority in the shared UG rubric below before reporting findings. Check rollout evidence, state after slow requests, and review-evidence publication when affected; report only concrete gaps.'
+            echo 'Use the shared UG rubric as the review checklist. Apply every relevant priority and report only concrete gaps.'
             cat AGENTS.md .github/ug-review-instructions.md
             echo "$delimiter"
           } >> "$GITHUB_OUTPUT"

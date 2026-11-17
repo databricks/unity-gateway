@@ -376,9 +376,8 @@ jobs:
           read both in full with their own tools and apply them. Include both
           absolute paths and this requirement in every reviewer task. If either cannot
           be read, report an incomplete review and the failure; do not claim a clean review.
-          Apply every relevant rubric priority, including backend activation evidence,
-          expiring state after slow requests, and review-evidence publication when affected.
-          Pass this requirement to every reviewer; report only concrete gaps.
+          Use `{rubric}` as the review checklist. Apply every relevant priority and
+          report only concrete gaps. Pass this requirement to every reviewer.
           Apply the rubric's terse voice to findings; keep the required summary and
           test table complete. Do not invent findings to fill a review category.
 

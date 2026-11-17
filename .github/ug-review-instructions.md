@@ -72,10 +72,6 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    rules in one authoritative definition and derive repeated tables/checks when practical.
    Recheck expiring state after slow routing or network operations before using it to deny work;
    a cooldown snapshot taken before the request can already be stale.
-   For review-evidence tooling, reject output paths inside the checkout, including symlink
-   aliases, before writes or dependency installation. Publish success labels and replace PR
-   evidence only after uploads succeed. On failure, preserve prior evidence, rationale, and
-   labels, and return failure.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
@@ -93,6 +89,10 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    policy, who can authorize privileged runs, and whether required checks cover the intended head
    and merge-queue events. Do not assume a passing skipped job establishes enforcement. Keep
    necessary rollout/admin instructions in the repository rather than only in a PR description.
+   For review-evidence tooling, reject output paths inside the checkout, including symlink
+   aliases, before writes or dependency installation. Publish success labels and replace PR
+   evidence only after uploads succeed. On failure, preserve prior evidence, rationale, and
+   labels, and return failure.
 
 ## Voice and tone
 
