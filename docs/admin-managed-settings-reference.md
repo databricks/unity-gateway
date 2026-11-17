@@ -15,6 +15,7 @@ The supported agents are Claude Code and Codex.
 | Claude Code | `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `/etc/claude-code/managed-settings.json` on Linux | No |
 | Codex | `/etc/codex/requirements.toml` | No |
 | Codex | `/etc/codex/config.toml` | Yes |
+| Codex | `/etc/codex/ug-model-catalog.json` and `/etc/codex/managed_config.toml`, only for a static model list | No |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json`: the saved agent configuration | — |
 | Unity Gateway | `/etc/unitygateway/agents-state.json`: the marker file | — |
 
@@ -25,6 +26,7 @@ The run builds each agent file from these layers. A later layer replaces an earl
 | `managed-settings.json` | Unity Gateway defaults, `agent_native_settings` and `claude_code.managed_settings`, feature settings, gateway settings |
 | `requirements.toml` | `codex.requirements`, the gateway provider |
 | `config.toml` | `codex.config`, `model` from `default_models.default_model` |
+| `managed_config.toml` | Only `model_catalog_json`, naming `ug-model-catalog.json` |
 
 While the marker file exists, no other `ug` run writes these files, and other runs read the saved
 agent configuration instead of fetching it.
@@ -34,7 +36,7 @@ agent configuration instead of fetching it.
 | Field | Claude Code | Codex |
 | --- | --- | --- |
 | `default_models` | Each family pin becomes `env.ANTHROPIC_DEFAULT_<FAMILY>_MODEL` | `default_model` becomes `model` in `config.toml` |
-| `models.model_services` | Becomes `availableModels`, `enforceAvailableModels`, and `modelPicker`. A family with no pin gets the newest model of that family in the list | Resolved per developer by `ug codex` |
+| `models.sources`, `models.model_services` | Becomes `availableModels`, `enforceAvailableModels`, and `modelPicker`. A family with no pin gets the newest model of that family in the list | Becomes `ug-model-catalog.json`, which `managed_config.toml` names, so every user and a bare `codex` get only these models |
 | `models.unity_catalog_location` | Adds the `Databricks-Model-Service-Parent-Schema` header. Models are resolved per developer by `ug claude` | Resolved per developer by `ug codex` |
 | `models.model_provider_service` | Adds the `Databricks-Model-Provider-Service` header. Family pins become `env.ANTHROPIC_DEFAULT_<FAMILY>_MODEL` | Resolved per developer by `ug codex` |
 | `http_headers` | Added to `env.ANTHROPIC_CUSTOM_HEADERS` | Added to the provider's `http_headers` |
@@ -188,7 +190,7 @@ Check the tables for the `ug` version that your fleet runs.
 | --- | --- | --- | --- | --- | --- |
 | `model_provider` | Reserved |  | Yes |  | Unity Gateway locks the provider to the gateway. |
 | `model_providers` | Reserved |  | Yes |  | Unity Gateway defines the gateway provider. |
-| `model_catalog_json` | Reserved |  | No |  | `ug codex` builds a model catalog for each developer, and a required one would replace it. |
+| `model_catalog_json` | Reserved |  | No |  | Use `models.sources`. Unity Gateway names its model catalog in managed_config.toml. |
 | `models.new_thread` | Reserved |  | No |  | The default model comes from `default_models.default_model`. |
 | `config_server` | Reserved |  | No |  | It would let another server outrank Unity Gateway's requirements. |
 | `otel.trace_exporter` | Reserved while a feature is on | `tracing` | No |  | It would replace the exporter `ug codex` points at its tracing proxy. |
@@ -203,7 +205,7 @@ Check the tables for the `ug` version that your fleet runs.
 | `model_provider` | Reserved |  | No |  | Unity Gateway sets it in requirements.toml, so a value here has no effect. |
 | `model_providers.Databricks` | Reserved |  | No |  | Unity Gateway sets it in requirements.toml, so a value here has no effect. |
 | `model` | Reserved |  | Yes |  | The default model comes from `default_models.default_model`. |
-| `model_catalog_json` | Reserved |  | No |  | `ug codex` builds a model catalog for each developer. |
+| `model_catalog_json` | Reserved |  | No |  | Use `models.sources`. Unity Gateway names its model catalog in managed_config.toml. |
 | `mcp_servers` | Shared table |  | Yes |  | Unity Gateway registers its MCP servers for each developer. Your entries with the same names are dropped. |
 
 <!-- END GENERATED OWNERSHIP TABLES -->

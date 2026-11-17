@@ -28,7 +28,7 @@ note = "Unity Gateway defines the gateway provider."
 path = "model_catalog_json"
 class = "reserved"
 in_managed_file = false
-note = "`ug codex` builds a model catalog for each developer, and a required one would replace it."
+note = "Use `models.sources`. Unity Gateway names its model catalog in managed_config.toml."
 
 [[requirements]]
 path = "models.new_thread"
@@ -89,7 +89,7 @@ note = "The default model comes from `default_models.default_model`."
 path = "model_catalog_json"
 class = "reserved"
 in_managed_file = false
-note = "`ug codex` builds a model catalog for each developer."
+note = "Use `models.sources`. Unity Gateway names its model catalog in managed_config.toml."
 
 [[config]]
 path = "mcp_servers"

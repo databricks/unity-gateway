@@ -72,7 +72,10 @@ anything a launch passes with `-c`, so the per-launch routing headers travel in 
 variables that the provider names in `env_http_headers`. The lock first appears in Codex 0.156.0.
 
 `/etc/codex/managed_config.toml` would also work, but Codex calls it legacy, and its values outrank
-the settings that `ug codex` passes per launch.
+the settings that `ug codex` passes per launch. So the run writes it only for a static model list:
+there it names the model catalog `/etc/codex/ug-model-catalog.json`, the one setting that must
+outrank the developer's, because `requirements.toml` can't name a catalog. `ug codex` passes the
+same list per launch, so the catalog changes nothing for it.
 
 ## Unpublishing leaves the files in place
 

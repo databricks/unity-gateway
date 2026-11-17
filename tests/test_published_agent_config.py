@@ -11,6 +11,7 @@ import pytest
 from typer.testing import CliRunner
 
 import ucode.cli as cli_mod
+import ucode.config_io as config_io_mod
 import ucode.databricks as databricks_mod
 import ucode.managed_config as managed_config_mod
 import ucode.managed_files as managed_files_mod
@@ -34,6 +35,13 @@ def _raw_config(*, claude_config: dict | None = None, codex_config: dict | None 
 @pytest.fixture(autouse=True)
 def _machine(monkeypatch, tmp_path):
     """Fixed binaries and versions, and machine-wide paths under tmp_path."""
+    # `ug configure` sets these process-wide; restore them so later test files start clean.
+    for module, name in (
+        (config_io_mod, "_dry_run"),
+        (claude, "_explicit_configure"),
+        (codex, "_explicit_configure"),
+    ):
+        monkeypatch.setattr(module, name, getattr(module, name))
     monkeypatch.setattr(databricks_mod, "ug_binary", lambda: UG)
     monkeypatch.setattr(claude, "agent_version", lambda *_a, **_k: "2.1.300")
     monkeypatch.setattr(codex, "agent_version", lambda *_a, **_k: "0.166.0")
@@ -45,9 +53,9 @@ def _machine(monkeypatch, tmp_path):
     monkeypatch.setattr(
         managed_files_mod, "CODEX_SYSTEM_CONFIG_PATH", tmp_path / "codex" / "config.toml"
     )
-    monkeypatch.setattr(machine, "LEGACY_CODEX_MANAGED_CONFIG_PATH", tmp_path / "codex" / "mc.toml")
+    monkeypatch.setattr(machine, "CODEX_MANAGED_CONFIG_PATH", tmp_path / "codex" / "mc.toml")
     monkeypatch.setattr(
-        machine, "LEGACY_CODEX_MODEL_CATALOG_PATH", tmp_path / "codex" / "ug-model-catalog.json"
+        machine, "CODEX_MANAGED_CATALOG_PATH", tmp_path / "codex" / "ug-model-catalog.json"
     )
     monkeypatch.setattr(
         managed_files_mod, "UNITY_GATEWAY_MANAGED_SETTINGS_PATH", tmp_path / "ug" / "ms.json"
@@ -294,34 +302,125 @@ class TestCodexFiles:
     @pytest.mark.parametrize(("dry_run", "verb"), [(True, "Would remove"), (False, "Removed")])
     def test_plan_removes_legacy_ug_managed_config(self, monkeypatch, dry_run, verb):
         monkeypatch.setattr(machine, "is_dry_run", lambda: dry_run)
-        machine.LEGACY_CODEX_MANAGED_CONFIG_PATH.parent.mkdir(parents=True)
-        machine.LEGACY_CODEX_MANAGED_CONFIG_PATH.write_text('model_provider = "Databricks"\n')
+        machine.CODEX_MANAGED_CONFIG_PATH.parent.mkdir(parents=True)
+        machine.CODEX_MANAGED_CONFIG_PATH.write_text('model_provider = "Databricks"\n')
         [plan] = machine.plan_agents(
             _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, None
         )
-        assert plan.files[machine.LEGACY_CODEX_MANAGED_CONFIG_PATH] is None
+        assert plan.files[machine.CODEX_MANAGED_CONFIG_PATH] is None
         assert any(
-            w.startswith(f"{verb} {machine.LEGACY_CODEX_MANAGED_CONFIG_PATH}")
-            for w in plan.warnings
+            w.startswith(f"{verb} {machine.CODEX_MANAGED_CONFIG_PATH}") for w in plan.warnings
         )
 
     @pytest.mark.parametrize("named", [True, False], ids=["named", "not-named"])
     def test_plan_removes_the_catalog_the_legacy_file_names(self, named):
         # An earlier `ug configure` wrote its model catalog beside managed_config.toml.
-        catalog = machine.LEGACY_CODEX_MODEL_CATALOG_PATH
+        catalog = machine.CODEX_MANAGED_CATALOG_PATH
         catalog.parent.mkdir(parents=True)
         catalog.write_text("{}\n")
         reference = f'model_catalog_json = "{catalog}"\n' if named else ""
-        machine.LEGACY_CODEX_MANAGED_CONFIG_PATH.write_text(
-            f'model_provider = "Databricks"\n{reference}'
-        )
+        machine.CODEX_MANAGED_CONFIG_PATH.write_text(f'model_provider = "Databricks"\n{reference}')
         [plan] = machine.plan_agents(
             _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, None
         )
-        assert plan.files[machine.LEGACY_CODEX_MANAGED_CONFIG_PATH] is None
+        assert plan.files[machine.CODEX_MANAGED_CONFIG_PATH] is None
         assert (catalog in plan.files) is named
         if named:
             assert plan.files[catalog] is None
+
+    @pytest.fixture
+    def catalog(self, monkeypatch):
+        built: list[list[str]] = []
+
+        def prepare(binary, names):
+            built.append(list(names))
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+        return built
+
+    def _static(self, models=("cat.sch.gpt-a", "cat.sch.gpt-b")):
+        return _manifest(_raw_config(codex_config={"models": {"sources": list(models)}}))
+
+    def test_static_list_writes_the_catalog_then_its_reference(self, catalog):
+        [plan] = machine.plan_agents(self._static(), WS, ["codex"], {}, None)
+        paths = list(plan.files)
+        cat, ref = machine.CODEX_MANAGED_CATALOG_PATH, machine.CODEX_MANAGED_CONFIG_PATH
+        assert paths.index(cat) < paths.index(ref)
+        assert json.loads(plan.files[cat]) == {
+            "models": [{"slug": "cat.sch.gpt-a"}, {"slug": "cat.sch.gpt-b"}]
+        }
+        assert tomllib.loads(plan.files[ref]) == {"model_catalog_json": str(cat)}
+        assert catalog == [["cat.sch.gpt-a", "cat.sch.gpt-b"]]
+        # Removal order: the reference before the catalog it names.
+        recorded = machine._written_paths(plan)
+        assert recorded.index(ref) < recorded.index(cat)
+
+    @pytest.mark.parametrize(
+        "models", [{"model_provider_service": "cat.sch.mps"}, {"unity_catalog_location": "cat.sch"}]
+    )
+    def test_discovered_models_write_no_catalog(self, catalog, models):
+        manifest = _manifest(_raw_config(codex_config={"models": models}))
+        [plan] = machine.plan_agents(manifest, WS, ["codex"], {}, None)
+        assert machine.CODEX_MANAGED_CONFIG_PATH not in plan.files
+        assert machine.CODEX_MANAGED_CATALOG_PATH not in plan.files
+        assert catalog == []
+
+    def test_a_dropped_list_removes_both_files_this_run_wrote(self, catalog):
+        cat, ref = machine.CODEX_MANAGED_CATALOG_PATH, machine.CODEX_MANAGED_CONFIG_PATH
+        cat.parent.mkdir(parents=True)
+        cat.write_text("{}\n")
+        ref.write_text(f'model_catalog_json = "{cat}"\n')
+        previous = {"agents": {"codex": {"paths": [str(ref), str(cat)]}}}
+        [plan] = machine.plan_agents(
+            _manifest(_raw_config(codex_config={})), WS, ["codex"], {}, previous
+        )
+        assert list(plan.files)[-2:] == [ref, cat]
+        assert plan.files[ref] is None and plan.files[cat] is None
+        assert not plan.warnings
+
+    def test_another_writers_managed_config_is_left_alone(self, catalog):
+        ref = machine.CODEX_MANAGED_CONFIG_PATH
+        ref.parent.mkdir(parents=True)
+        ref.write_text('approval_policy = "never"\n')
+        [plan] = machine.plan_agents(self._static(), WS, ["codex"], {}, None)
+        assert ref not in plan.files
+        assert machine.CODEX_MANAGED_CATALOG_PATH not in plan.files
+        assert any("isn't enforced for every user" in w for w in plan.warnings)
+        assert catalog == []
+
+    def test_an_earlier_configures_file_is_replaced_by_the_reference(self, catalog):
+        ref = machine.CODEX_MANAGED_CONFIG_PATH
+        ref.parent.mkdir(parents=True)
+        ref.write_text('model_provider = "Databricks"\nmodel = "old"\n')
+        [plan] = machine.plan_agents(self._static(), WS, ["codex"], {}, None)
+        assert tomllib.loads(plan.files[ref]) == {
+            "model_catalog_json": str(machine.CODEX_MANAGED_CATALOG_PATH)
+        }
+        assert any(w.startswith("Replaced") for w in plan.warnings)
+
+    def test_a_catalog_that_wont_build_stops_the_run(self, monkeypatch):
+        def fail(binary, names):
+            raise RuntimeError("Could not build the managed Codex model catalog locally.")
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", fail)
+        with pytest.raises(machine.ManagedRunError) as exc:
+            machine.plan_agents(self._static(), WS, ["codex"], {}, None)
+        assert exc.value.code == machine.EXIT_USAGE
+
+    def test_the_marker_records_the_files_and_revert_removes_them(
+        self, monkeypatch, writes, catalog
+    ):
+        written, _ = writes
+        raw = _raw_config(codex_config={"models": {"sources": ["cat.sch.gpt-a"]}})
+        _run(raw, agents=["codex"])
+        cat, ref = machine.CODEX_MANAGED_CATALOG_PATH, machine.CODEX_MANAGED_CONFIG_PATH
+        assert cat.exists() and ref.exists()
+        marker = json.loads(written[managed_files_mod.PUBLISHED_AGENT_CONFIG_MARKER_PATH])
+        assert marker["agents"]["codex"]["paths"][-2:] == [str(ref), str(cat)]
+        monkeypatch.setattr(machine, "published_agent_config_marker", lambda: marker)
+        machine.revert_machine()
+        assert not cat.exists() and not ref.exists()
 
     def test_old_codex_is_warned(self, monkeypatch):
         monkeypatch.setattr(machine, "agent_version", lambda *_a, **_k: "0.150.0")
