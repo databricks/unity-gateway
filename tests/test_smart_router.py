@@ -225,3 +225,28 @@ def test_omni_launches_turn_routing_off_without_a_reason(tmp_path, launch_mode, 
     assert result.exit_code == (0 if turned_off else 2), result.output
     saved = json.loads(session_file.read_text())
     assert saved == (dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0") if turned_off else {})
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_session_controls_reply_with_the_session_state(tmp_path, agent):
+    session_file = tmp_path / "env.json"
+    session_file.write_text("{}")
+    env = {session_env.SESSION_ENV_VAR: str(session_file)}
+    replies = []
+
+    for flag in (
+        "--disable-smart-routing",
+        "--disable-smart-routing",
+        "--enable-smart-routing",
+        "--enable-smart-routing",
+    ):
+        result = runner.invoke(cli.app, [agent, flag], env=env)
+        assert result.exit_code == 0, result.output
+        replies.append(" ".join(result.output.split()))
+
+    assert replies == [
+        "✔ Smart Router is off for this session",
+        "✔ Smart Router is already off for this session",
+        "✔ Smart Router is on for this session",
+        "✔ Smart Router is already on for this session",
+    ]
