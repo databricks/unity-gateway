@@ -428,6 +428,7 @@ test('turn completion and status cleanup do not wait for the open-pane reader', 
   on('session.id', () => ({ value: 'session-one' }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
   on('ui.panes', () => { paneChecks++; return { value: [{ id: pane.requestId }] }; });
   on('process.run', async () => {
