@@ -182,8 +182,12 @@ An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns
 to Auto and verifies both show ON. It observes the chosen main-model row before
-pressing Enter to save, then completes a real main-model file task with paired gateway
-request/response evidence. The existing main/subagent journey also includes Auto
+pressing Enter to save in the compact numbered chooser, with the current model first,
+and checks that the save notice names the selected model. The managed replacement
+picker contains one Auto row; only regular model rows supply alternate inference targets.
+The journey completes a real main-model file task with paired gateway request/response
+evidence, saves the unchanged main model without a cache warning after that task, and
+requires byte-identical managed settings. The existing main/subagent journey also includes Auto
 and verifies its correlated routing decision, real model IDs, and completed answers.
 Component tests independently verify the preset values. The resulting expectations are:
 

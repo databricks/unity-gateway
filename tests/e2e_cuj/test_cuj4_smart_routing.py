@@ -352,15 +352,26 @@ class TestCujSmartRouting(BaseCujTest):
         ):
             default = configs[CLAUDE]["default_models"]["default_model"]
             settings = json.loads(MANAGED_PATHS[0].read_text())
-            assert settings["modelPicker"]["replaceBuiltInOptions"] is False
+            assert settings["modelPicker"]["replaceBuiltInOptions"] is True
             managed_before = MANAGED_PATHS[0].read_bytes()
-            rows = settings["modelPicker"]["options"]
+            picker_rows = settings["modelPicker"]["options"]
+            auto_rows = [row for row in picker_rows if row["model"].startswith("ug-auto-")]
+            assert len(auto_rows) == 1 and auto_rows[0]["label"] == "Auto"
+            assert settings["modelOverrides"][auto_rows[0]["model"]] == default
+            rows = [row for row in picker_rows if not row["model"].startswith("ug-auto-")]
             row = next(row for row in rows if row["model"] == default)
             label = row["label"].removeprefix("Claude ")
-            index = rows.index(row)
-            direction = 1 if index + 1 < len(rows) else -1
-            alternate = rows[index + direction]
+            alternate = next(row for row in rows if row["model"] != default)
             alternate_label = alternate["label"].removeprefix("Claude ")
+            neighbor_label = next(
+                row["label"].removeprefix("Claude ")
+                for row in rows
+                if row["model"] != alternate["model"]
+            )
+            saved_notice = (
+                f"Auto mode: main model {alternate['model'].removeprefix('system.ai.')}, "
+                "subagents smart routed."
+            )
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
             with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
@@ -391,26 +402,26 @@ class TestCujSmartRouting(BaseCujTest):
                 )
                 tui.submit("/model auto")
 
-                def main_model_focused(screen, label):
-                    return any(
-                        re.search(r"│\s*❯\s+" + re.escape(label) + r"\s*$", line)
-                        for line in screen.splitlines()
+                def main_model_focused(label):
+                    return re.search(
+                        r"\d+\.\s+" + re.escape(label) + r"\s*$",
+                        tui.selected_line(after="Auto: choose your main model"),
                     )
 
                 tui.wait_for(
-                    lambda s: "Auto: choose your main model" in s and main_model_focused(s, label),
+                    lambda s: "Auto: choose your main model" in s and main_model_focused(label),
                     "the Auto selector focused on the current main model",
                 )
-                arrow = "\x1b[B" if direction == 1 else "\x1b[A"
-                tui.send(arrow, "focus " + alternate_label + " as the Auto main model")
+                tui.send("\x1b[B", "focus " + alternate_label + " as the Auto main model")
                 tui.wait_for(
-                    lambda s: main_model_focused(s, alternate_label),
+                    lambda s: main_model_focused(alternate_label),
                     "the selected Auto main model before saving",
                 )
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
                         "Auto: choose your main model" not in s
+                        and saved_notice in " ".join(s.split())
                         and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                         and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
                         and _smart_router_hint_shown(tui, enabled=True)
@@ -436,26 +447,24 @@ class TestCujSmartRouting(BaseCujTest):
                 tui.submit("/model auto")
                 tui.wait_for(
                     lambda s: (
-                        "Auto: choose your main model" in s
-                        and main_model_focused(s, alternate_label)
+                        "Auto: choose your main model" in s and main_model_focused(alternate_label)
                     ),
                     "the current Auto main model",
                 )
-                back = "\x1b[A" if direction == 1 else "\x1b[B"
-                tui.send(back, "focus the previous main model")
-                tui.wait_for(lambda s: main_model_focused(s, label), "main picker keyboard focus")
-                tui.send(arrow, "return to the unchanged Auto main model")
-                tui.wait_for(
-                    lambda s: main_model_focused(s, alternate_label), "the unchanged model"
-                )
+                tui.send("\x1b[B", "focus another main model without selecting it")
+                tui.wait_for(lambda s: main_model_focused(neighbor_label), "another model's focus")
+                tui.send("\x1b[A", "return to the unchanged Auto main model")
+                tui.wait_for(lambda s: main_model_focused(alternate_label), "the unchanged model")
                 tui.send("\r", "save the unchanged Auto main model")
                 tui.wait_for(
                     lambda s: (
                         "Auto: choose your main model" not in s
+                        and saved_notice in " ".join(s.split())
                         and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the unchanged Auto selection saved without reopening its selector",
                 )
+                assert "re-read the full conversation" not in " ".join(tui.visible.split())
                 tui.exit_normally()
             assert MANAGED_PATHS[0].read_bytes() == managed_before
 
