@@ -7,7 +7,10 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -112,3 +115,237 @@ def popen(args: list[str] | str, **kwargs: Any) -> subprocess.Popen[Any]:
         ),
         **kwargs,
     )
+
+
+# Commands `run_bounded` is waiting on, so a signal handler can end them before the process dies.
+_RUNNING_TREES: set[subprocess.Popen[Any]] = set()
+# Reentrant: a signal handler on the thread that holds it may call `end_running_trees`.
+_RUNNING_TREES_LOCK = threading.RLock()
+# After ending a tree, how long to wait for its output pipes to close. Short, so a pipe held by
+# a process that escaped the tree adds little to the caller's timeout.
+_DRAIN_SECONDS = 0.5
+# How long the Windows fallback waits for `taskkill /T`.
+_TASKKILL_SECONDS = 2.0
+# Windows Job Objects holding each `run_bounded` tree, so ending one reaches every descendant
+# even after the direct child exited.
+_TREE_JOBS: dict[subprocess.Popen[Any], int] = {}
+_JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+_JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+
+
+def _kernel32() -> Any:
+    """kernel32 with the Job Object signatures declared, so 64-bit handles are not truncated."""
+    if sys.platform != "win32":
+        raise OSError("Job Objects are Windows-only")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
+
+def _assign_job(proc: subprocess.Popen[Any]) -> int | None:
+    """Put ``proc`` in a new kill-on-close Job Object; return its handle, or None on failure.
+
+    Assignment fails, for example, inside an older nested job that forbids breakaway; the tree
+    is then ended with ``taskkill /T`` instead."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _IoCounters(ctypes.Structure):
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
+
+        class _BasicLimits(ctypes.Structure):
+            _fields_ = [
+                ("PerProcessUserTimeLimit", ctypes.c_int64),
+                ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32),
+                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t),
+                ("PriorityClass", ctypes.c_uint32),
+                ("SchedulingClass", ctypes.c_uint32),
+            ]
+
+        class _ExtendedLimits(ctypes.Structure):
+            _fields_ = [
+                ("BasicLimitInformation", _BasicLimits),
+                ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                ("PeakJobMemoryUsed", ctypes.c_size_t),
+            ]
+
+        kernel32 = _kernel32()
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        limits = _ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if kernel32.SetInformationJobObject(
+            job,
+            _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+            ctypes.byref(limits),
+            ctypes.sizeof(limits),
+        ) and kernel32.AssignProcessToJobObject(job, int(proc._handle)):
+            return int(job)
+        kernel32.CloseHandle(job)
+    except Exception:
+        pass
+    return None
+
+
+def _close_job(job: int, *, terminate: bool) -> None:
+    """Close a tree's Job Object, ending every process still in it first if ``terminate``."""
+    try:
+        kernel32 = _kernel32()
+        if terminate:
+            kernel32.TerminateJobObject(job, 1)
+        kernel32.CloseHandle(job)
+    except Exception:
+        pass
+
+
+def run_bounded(
+    args: list[str], *, timeout: float, check: bool = False, **kwargs: Any
+) -> subprocess.CompletedProcess[Any]:
+    """Like ``run(args, capture_output=True, timeout=timeout)``, but a timeout ends the whole tree.
+
+    ``subprocess.run`` kills only the direct child on a timeout, then waits for its output pipes
+    to close. A wrapper's own child (the interpreter behind a Windows ``.cmd`` shim, or a shell
+    script that does not ``exec``) keeps them open, so ``run`` waits as long as that child runs.
+    The command gets its own process group (Windows) or session (POSIX), with no stdin unless the
+    caller passes one, and is not meant to be interactive."""
+    kwargs = _with_text_defaults(kwargs)
+    kwargs.setdefault("stdin", subprocess.DEVNULL)
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            kwargs.get("creationflags", 0) | subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    else:
+        kwargs["start_new_session"] = True
+    proc = subprocess.Popen(
+        _resolved_args(args), stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs
+    )
+    if os.name == "nt" and (job := _assign_job(proc)) is not None:
+        _TREE_JOBS[proc] = job
+    with _RUNNING_TREES_LOCK:
+        _RUNNING_TREES.add(proc)
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _end_tree(proc)
+            # Forgotten before the drain reaps it, so a signal handler never ends it again.
+            _forget_tree(proc)
+            try:
+                stdout, stderr = proc.communicate(timeout=_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired:
+                # Something that left the tree still holds the pipes; stop waiting for it.
+                stdout = stderr = None
+            raise subprocess.TimeoutExpired(
+                proc.args, timeout, output=stdout, stderr=stderr
+            ) from None
+        except BaseException:
+            _end_tree(proc)
+            _forget_tree(proc)
+            raise
+    finally:
+        _forget_tree(proc)
+        if (job := _TREE_JOBS.pop(proc, None)) is not None:
+            # Kill-on-close: whatever the command left running ends with it.
+            _close_job(job, terminate=False)
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                stream.close()
+    returncode = proc.wait()
+    if check and returncode:
+        raise subprocess.CalledProcessError(returncode, proc.args, stdout, stderr)
+    return subprocess.CompletedProcess(proc.args, returncode, stdout, stderr)
+
+
+def _forget_tree(proc: subprocess.Popen[Any]) -> None:
+    with _RUNNING_TREES_LOCK:
+        _RUNNING_TREES.discard(proc)
+
+
+def end_running_trees(*, blocking: bool = True) -> None:
+    """End every command ``run_bounded`` is waiting on, e.g. before this process exits by signal.
+
+    ``blocking=False`` (from a signal handler) never waits for another thread holding the
+    registry's lock; it reads a best-effort snapshot instead."""
+    if _RUNNING_TREES_LOCK.acquire(blocking=blocking):
+        try:
+            running = list(_RUNNING_TREES)
+        finally:
+            _RUNNING_TREES_LOCK.release()
+    else:
+        try:
+            running = list(_RUNNING_TREES)
+        except RuntimeError:  # changed size while copying
+            running = []
+    for proc in running:
+        _end_tree(proc)
+
+
+def _end_tree(proc: subprocess.Popen[Any]) -> None:
+    if os.name == "nt":
+        if (job := _TREE_JOBS.pop(proc, None)) is not None:
+            # Reaches a descendant that still holds the pipes after the direct child exited.
+            _close_job(job, terminate=True)
+            return
+        if proc.poll() is not None:
+            return
+        from ucode.os_compatibility.system_cross_os import windows_system32_dir
+
+        try:
+            subprocess.run(
+                [str(windows_system32_dir() / "taskkill.exe"), "/F", "/T", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=_TASKKILL_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    elif proc.returncode is None:
+        # The session leader's pid is its process group id. Until this process reaps the leader
+        # (``returncode`` is then set), its pid can't be reused, so the group is still its own.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass

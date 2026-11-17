@@ -242,3 +242,73 @@ def test_other_arguments_delegate_to_cli_unchanged(monkeypatch, argv) -> None:
     entrypoint.main()
 
     assert calls == [["ug", *argv]]
+
+
+@pytest.mark.parametrize("command", ["ug", "ucode"])
+def test_auth_token_cache_hit_skips_cli_imports(tmp_path: Path, command: str) -> None:
+    """A cached `auth-token` bearer is printed before the full CLI or ``ucode.metrics`` loads."""
+    import base64
+    import os
+    import time
+
+    workspace = "https://example.cloud.databricks.com"
+    claims = json.dumps({"exp": time.time() + 3600}).encode()
+    token = f"h.{base64.urlsafe_b64encode(claims).decode().rstrip('=')}.s"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("DATABRICKS_", "UCODE_"))
+    }
+    env.update(HOME=str(tmp_path), USERPROFILE=str(tmp_path))
+    seed = (
+        "from ucode import token_cache\n"
+        f"token_cache.write({workspace!r}, 'p', {token!r})\n"
+        f"assert token_cache.lookup({workspace!r}, 'p') == ({token!r}, False)\n"
+    )
+    subprocess.run([sys.executable, "-c", seed], env=env, check=True, timeout=60)
+    guarded = ("ucode.cli", "typer", "ucode.databricks", "ucode.metrics", *_LAZY_MODULES)
+    probe = (
+        "import json, sys\n"
+        f"sys.argv = [{command!r}, 'auth-token', '--host', {workspace!r}, '--profile', 'p']\n"
+        "from ucode.entrypoint import main\nmain()\n"
+        f"print(json.dumps([m for m in {list(guarded)!r} if m in sys.modules]))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+
+    assert result.returncode == 0, result.stderr
+    printed, loaded = result.stdout.splitlines()
+    assert printed == token
+    assert json.loads(loaded) == []
+
+
+def test_auth_token_cache_miss_runs_the_instrumented_cli(monkeypatch) -> None:
+    """A cache miss falls through to ``ucode.cli.main`` inside the command metrics span."""
+    from ucode import auth_token_log, cli, metrics, token_cache
+
+    argv = ["auth-token", "--host", "https://example.cloud.databricks.com"]
+    events: list[object] = []
+    monkeypatch.setattr(sys, "argv", ["ug", *argv])
+    monkeypatch.setattr(auth_token_log, "log_if_killed", lambda args: None)
+    monkeypatch.setattr(auth_token_log, "set_stage", lambda stage, **_: events.append(stage))
+    monkeypatch.setattr(token_cache, "fast_path_token", lambda args: None)
+    monkeypatch.setattr(metrics, "begin", lambda command, started=None: events.append(command))
+    monkeypatch.setattr(metrics, "finish", lambda: events.append("finish"))
+    monkeypatch.setattr(cli, "main", lambda: events.append(sys.argv[1:]))
+
+    entrypoint.main()
+
+    assert events == [
+        "checking the token cache",
+        "loading the ug CLI",
+        metrics.COMMAND_OPERATION,
+        argv,
+        "finish",
+    ]

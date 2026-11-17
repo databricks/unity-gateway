@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -403,3 +405,212 @@ class TestShellCommand:
         assert subprocess_cross_os.shell_command(["/opt/my ug/ug", "route"]) == (
             "'/opt/my ug/ug' route"
         )
+
+
+def _alive(pid: int) -> bool:
+    if os.name == "nt":
+        from ucode.os_compatibility.system_cross_os import windows_system32_dir
+
+        listing = subprocess.run(
+            [
+                str(windows_system32_dir() / "tasklist.exe"),
+                "/FI",
+                f"PID eq {pid}",
+                "/FO",
+                "CSV",
+                "/NH",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        return f'"{pid}"' in listing.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _wrapper_argv(pid_file, *, wrapper_exits: bool = False) -> list[str]:
+    """A command whose own child holds the output pipes, like the python behind a `.cmd` shim.
+
+    With ``wrapper_exits`` the wrapper exits once its child has started, leaving the child
+    holding the pipes alone."""
+    child = (
+        "import os, sys, time\nopen(sys.argv[1], 'w').write(str(os.getpid()))\ntime.sleep(120)\n"
+    )
+    wrapper = (
+        "import os, subprocess, sys, time\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}, sys.argv[1]])\n"
+        "while not os.path.exists(sys.argv[1]):\n"
+        "    time.sleep(0.05)\n"
+    )
+    if not wrapper_exits:
+        wrapper += "child.wait()\n"
+    return [sys.executable, "-c", wrapper, str(pid_file)]
+
+
+class TestRunBounded:
+    """`run_bounded` ends the whole process tree, so a wrapper's child can't hold its output open."""
+
+    def test_returns_output_and_status(self):
+        result = subprocess_cross_os.run_bounded(
+            [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+            timeout=60,
+            text=True,
+        )
+        assert (result.returncode, result.stdout.strip(), result.stderr.strip()) == (
+            0,
+            "out",
+            "err",
+        )
+        with pytest.raises(subprocess.CalledProcessError):
+            subprocess_cross_os.run_bounded(
+                [sys.executable, "-c", "raise SystemExit(3)"], timeout=60, check=True
+            )
+
+    def test_timeout_ends_a_wrapper_and_its_child(self, tmp_path):
+        pid_file = tmp_path / "child.pid"
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess_cross_os.run_bounded(_wrapper_argv(pid_file), timeout=10, text=True)
+        # The child would hold the pipes for two minutes; plain subprocess.run waits for it.
+        assert time.monotonic() - started < 60
+        child = int(pid_file.read_text())
+        deadline = time.monotonic() + 30
+        while _alive(child) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(child)
+
+    def test_timeout_ends_a_child_its_exited_wrapper_left_behind(self, tmp_path):
+        # The direct child is gone but its child still holds the pipes: ending the tree must
+        # still reach it (a Job Object on Windows), and the drain must not add seconds.
+        pid_file = tmp_path / "child.pid"
+        timeout = 5.0
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess_cross_os.run_bounded(
+                _wrapper_argv(pid_file, wrapper_exits=True), timeout=timeout, text=True
+            )
+        assert time.monotonic() - started < timeout + 2.0
+        child = int(pid_file.read_text())
+        deadline = time.monotonic() + 30
+        while _alive(child) and time.monotonic() < deadline:
+            time.sleep(0.2)
+        assert not _alive(child)
+
+    def test_end_running_trees_ends_a_command_in_flight(self, tmp_path):
+        pid_file = tmp_path / "child.pid"
+        outcome: list[object] = []
+
+        def run() -> None:
+            try:
+                outcome.append(
+                    subprocess_cross_os.run_bounded(_wrapper_argv(pid_file), timeout=120)
+                )
+            except BaseException as exc:  # surfaced below
+                outcome.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        deadline = time.monotonic() + 60
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert pid_file.exists(), "the wrapper never started its child"
+        subprocess_cross_os.end_running_trees()
+        thread.join(timeout=60)
+        assert not thread.is_alive()
+        (result,) = outcome
+        assert isinstance(result, subprocess.CompletedProcess)
+        assert result.returncode != 0
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+    def test_reaped_command_is_never_signalled_again(self, monkeypatch):
+        # Once reaped, the leader's pid (its group id) may belong to an unrelated process.
+        proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        proc.wait()
+        killed: list[int] = []
+        monkeypatch.setattr(subprocess_cross_os.os, "killpg", lambda pgid, sig: killed.append(pgid))
+        subprocess_cross_os._end_tree(proc)
+        assert killed == []
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+    def test_timed_out_command_is_forgotten_before_it_is_reaped(self, monkeypatch):
+        # A signal handler arriving while the drain reaps the command must not end it again.
+        registered: list[bool] = []
+        real_end_tree = subprocess_cross_os._end_tree
+
+        def end_tree(proc):
+            real_end_tree(proc)
+            real_communicate = proc.communicate
+
+            def communicate(*args, **kwargs):
+                registered.append(proc in subprocess_cross_os._RUNNING_TREES)
+                return real_communicate(*args, **kwargs)
+
+            proc.communicate = communicate
+
+        monkeypatch.setattr(subprocess_cross_os, "_end_tree", end_tree)
+        with pytest.raises(subprocess.TimeoutExpired):
+            subprocess_cross_os.run_bounded(
+                [sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.5
+            )
+        assert registered == [False]
+        assert subprocess_cross_os._RUNNING_TREES == set()
+
+    def test_windows_tree_end_uses_the_job_even_after_the_wrapper_exited(self, monkeypatch):
+        closed: list[tuple[int, bool]] = []
+        killed: list[object] = []
+
+        class Exited:
+            pid = 1
+
+            def poll(self) -> int:
+                return 0
+
+            def kill(self) -> None:
+                pass
+
+        exited = Exited()
+        monkeypatch.setattr(subprocess_cross_os.os, "name", "nt")
+        monkeypatch.setattr(
+            subprocess_cross_os,
+            "_close_job",
+            lambda job, *, terminate: closed.append((job, terminate)),
+        )
+        monkeypatch.setattr(subprocess_cross_os.subprocess, "run", killed.append)
+        monkeypatch.setattr(subprocess_cross_os, "_TREE_JOBS", {exited: 42})
+        subprocess_cross_os._end_tree(exited)
+        assert closed == [(42, True)]
+        assert subprocess_cross_os._TREE_JOBS == {}
+        # Without a job (assignment failed), an exited wrapper has no tree left to taskkill.
+        subprocess_cross_os._end_tree(exited)
+        assert closed == [(42, True)]
+        assert killed == []
+
+    def test_non_blocking_end_does_not_wait_for_a_held_lock(self, monkeypatch):
+        # From the SIGTERM handler: another thread holding the registry lock must not stall it.
+        ended: list[object] = []
+        sentinel = object()
+        monkeypatch.setattr(subprocess_cross_os, "_end_tree", ended.append)
+        monkeypatch.setattr(subprocess_cross_os, "_RUNNING_TREES", {sentinel})
+        held, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with subprocess_cross_os._RUNNING_TREES_LOCK:
+                held.set()
+                release.wait(timeout=60)
+
+        thread = threading.Thread(target=hold)
+        thread.start()
+        try:
+            assert held.wait(timeout=60)
+            started = time.monotonic()
+            subprocess_cross_os.end_running_trees(blocking=False)
+            assert time.monotonic() - started < 5
+            assert ended == [sentinel]
+        finally:
+            release.set()
+            thread.join(timeout=60)
