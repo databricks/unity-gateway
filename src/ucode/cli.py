@@ -5819,6 +5819,15 @@ def _configure_global_from_agent_config(
                 ) from exc
             # The preview still shows the files, with this installation's paths in them.
             print_warning(f"A real run would stop here: {exc}")
+        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
+        if not dry_run and from_file is None:
+            # Install missing enabled agents as the merge does, before the build checks versions.
+            for tool_name in selected:
+                if tool_name in enabled:
+                    try:
+                        install_tool_binary(tool_name, strict=False)
+                    except RuntimeError as exc:
+                        print_warning(str(exc))
         published_agent_config.run(
             key=key,
             raw=raw,
@@ -5828,7 +5837,6 @@ def _configure_global_from_agent_config(
             profile=profile,
             token=token,
         )
-        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
         if from_file is None and "claude" in selected:
             if "claude" in enabled:
                 # Best effort, as before: a Desktop failure warns without failing the run. A dry
