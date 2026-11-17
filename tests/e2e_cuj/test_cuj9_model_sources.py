@@ -1,6 +1,7 @@
 """CUJ9: mixed model sources, native discovery, inference, and Claude-only routing."""
 
 import json
+import re
 import shutil
 
 import pytest
@@ -42,11 +43,11 @@ from .helpers.constants import (
 )
 from .helpers.evidence import (
     SessionEvidence,
-    _request_contains_task,
     assert_claude_headless_model,
     assert_inference_evidence,
     assert_served,
     claude_file_task,
+    message_text,
 )
 from .helpers.terminal import Terminal
 
@@ -152,6 +153,22 @@ def _assert_no_routes(recorder, checkpoint):
     ], "A source inference task unexpectedly invoked Smart Router"
 
 
+def _copilot_request_contains_task(request, agent, task):
+    """Copilot prefixes each user turn with a `<current_datetime>` block (its session log's
+    `transformedContent`), so the shared exact-match helper never sees the bare prompt."""
+    field = "messages" if agent == CLAUDE else "input"
+    entries = request.payload.get(field)
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("role") == "user":
+            text = message_text(entry.get("content", ""))
+            text = re.sub(r"\A<current_datetime>.*?</current_datetime>\s*", "", text, flags=re.S)
+            if text == task.prompt:
+                return True
+    return False
+
+
 def _assert_copilot_inference(recorder, checkpoint, task, model):
     """The shared CUJ inference helper only knows Claude/Codex endpoint paths."""
     anthropic = COPILOT_MODELS[model] == "databricks"
@@ -161,7 +178,7 @@ def _assert_copilot_inference(recorder, checkpoint, task, model):
         for request in recorder.requests_after(checkpoint)
         if request.method == "POST"
         and request.path == path
-        and _request_contains_task(request, CLAUDE if anthropic else CODEX, task)
+        and _copilot_request_contains_task(request, CLAUDE if anthropic else CODEX, task)
     ]
     assert requests, f"No Copilot inference at {path} contained the exact task prompt"
     for request in requests:
