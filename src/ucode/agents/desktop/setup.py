@@ -30,11 +30,6 @@ from ucode.workspace import workspace_headers, workspace_id_args
 _CLAUDE_MODEL_PATTERN = re.compile(r"\bclaude-", re.IGNORECASE)
 
 
-def _sentence(exc: BaseException) -> str:
-    """``exc``'s message ending in exactly one period, to sit before another sentence."""
-    return f"{str(exc).rstrip().rstrip('.')}."
-
-
 def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -> None:
     if sys.platform not in ("darwin", "win32", "linux"):
         return
@@ -62,9 +57,7 @@ def configure_claude_desktop(state: dict, *, parent_schema: str | None = None) -
             return
         _configure_claude_desktop_user_level(state, parent_schema=parent_schema)
     except Exception as exc:  # noqa: BLE001 -- Desktop must not block Claude Code setup
-        print_warning(
-            f"Could not configure Claude Desktop: {_sentence(exc)} Claude Code setup is unchanged."
-        )
+        print_warning(f"Could not configure Claude Desktop: {exc}. Claude Code setup is unchanged.")
 
 
 def configure_claude_code_plugin(mcp_servers: list[dict]) -> None:
@@ -99,8 +92,7 @@ def configure_claude_cowork(
         configured = configure_cowork(state, mcp_servers, sync_plugin=sync_plugin)
     except Exception as exc:  # noqa: BLE001 -- Cowork must not block Claude Code setup
         print_warning(
-            f"Could not configure Claude Desktop workspace plugin: {_sentence(exc)} "
-            "Claude Code setup is unchanged."
+            f"Could not configure Claude Desktop workspace plugin: {exc}. Claude Code setup is unchanged."
         )
         return
     if configured:
