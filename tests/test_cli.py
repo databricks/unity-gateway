@@ -4323,6 +4323,12 @@ class TestAntigravityAllowAllProviderModel:
 
 
 class TestRevert:
+    @pytest.fixture(autouse=True)
+    def _keep_real_desktop_profiles(self):
+        # Real Desktop revert deletes UG's profile from the developer's home directory.
+        with patch("ucode.agents.desktop.setup.revert_desktop", return_value="unchanged"):
+            yield
+
     def test_invalid_routing_config_does_not_block_revert(self, monkeypatch):
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "unsupported_v99")
         monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
