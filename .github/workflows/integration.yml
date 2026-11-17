@@ -920,10 +920,8 @@ jobs:
           uv tool install .
           npm install -g \
             "@anthropic-ai/claude-code@$CLAUDE_VERSION" \
-            "@openai/codex@$CODEX_VERSION"
-          if [[ "${{ matrix.test }}" == "test_cuj9_model_sources.py" ]]; then
-            npm install -g "@github/copilot@$COPILOT_VERSION"
-          fi
+            "@openai/codex@$CODEX_VERSION" \
+            "@github/copilot@$COPILOT_VERSION"
       - name: Run ${{ matrix.test }}
         run: |
           uv run --with pexpect==4.9.0 --with pyte==0.8.2 \
