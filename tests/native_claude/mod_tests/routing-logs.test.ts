@@ -605,6 +605,7 @@ test('turn completion and status cleanup do not wait for the open-pane reader', 
     plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
   } as const;
   on('session.id', () => ({ value: 'session-one' }));
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
   on('ui.open', () => ({ value: { isPlaced: true } }));
