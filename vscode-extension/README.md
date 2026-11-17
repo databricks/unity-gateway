@@ -12,6 +12,10 @@ workspace, run `ug configure --agents copilot` again and quit VS Code fully (on 
 window open): a running VS Code keeps the build it loaded, even in a new window. A first install shows its models
 in a window that is already open.
 
+The extension also runs in VS Code's Agents window (`code --agents`), which otherwise turns off any extension
+whose manifest doesn't declare `capabilities.agentsWindow.supported`; its models are listed there before you pick a
+project.
+
 The models need Copilot Chat, which VS Code turns off in a profile that never finished its chat setup. The
 extension then offers, once per profile, to turn it on (what + in the model picker does), and lists the models as
 soon as Copilot Chat starts, with no restart.

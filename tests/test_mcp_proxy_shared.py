@@ -11,11 +11,13 @@ import io
 import json
 import os
 import queue
+import shlex
 import signal
 import socket
 import struct
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -37,10 +39,11 @@ class _Client:
         *,
         workspace="https://component.example",
         workspace_id=None,
+        executable=sys.executable,
     ):
         self.process = subprocess.Popen(
             [
-                sys.executable,
+                executable,
                 "-c",
                 "from ucode.entrypoint import main; main()",
                 "mcp-proxy",
@@ -230,15 +233,23 @@ def clients(tmp_path):
         header="",
         profile="component",
         bearer="component-bearer",
+        bearer_command="",
         workspace="https://component.example",
         workspace_id=None,
+        executable=sys.executable,
     ):
         client = _Client(
-            {**env, "UG_HEADERS": header, "DATABRICKS_BEARER": bearer},
+            {
+                **env,
+                "UG_HEADERS": header,
+                "DATABRICKS_BEARER": bearer,
+                "DATABRICKS_BEARER_COMMAND": bearer_command,
+            },
             url,
             profile,
             workspace=workspace,
             workspace_id=workspace_id,
+            executable=executable,
         )
         started.append(client)
         return client
@@ -261,6 +272,142 @@ def _endpoints(tmp_path):
         json.loads(path.read_text())
         for path in (tmp_path / ".ucode" / "mcp-proxy").glob("*/endpoint.json")
     ]
+
+
+@pytest.fixture
+def bearer_helper(tmp_path):
+    helper = tmp_path / "external bearer.py"
+    observations = tmp_path / "bearer observations.jsonl"
+    helper.write_text(
+        """
+import json
+import os
+import sys
+import uuid
+from pathlib import Path
+
+visible = None
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetConsoleWindow.argtypes = []
+    kernel32.GetConsoleWindow.restype = wintypes.HWND
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    visible = bool(user32.IsWindowVisible(kernel32.GetConsoleWindow()))
+
+bearer = "component-" + uuid.uuid4().hex
+with Path(sys.argv[1]).open("a", encoding="utf-8") as output:
+    output.write(json.dumps({"bearer": bearer, "visible": visible}) + "\\n")
+print(bearer)
+""",
+        encoding="utf-8",
+    )
+    return helper, observations
+
+
+def test_backend_fetches_external_bearer_for_each_request(clients, peer, bearer_helper):
+    helper, observations = bearer_helper
+    argv = [sys.executable, str(helper), str(observations)]
+    command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
+    client = clients(peer[0] + "/mcp", bearer="", bearer_command=command)
+    client.initialize()
+    first = client.call("first")
+    second = client.call("second", 3)
+    assert first["value"] == "first"
+    assert second["value"] == "second"
+    assert first["authorization"] != second["authorization"]
+    minted = {
+        f"Bearer {json.loads(line)['bearer']}" for line in observations.read_text().splitlines()
+    }
+    assert first["authorization"] in minted
+    assert second["authorization"] in minted
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows console visibility")
+@pytest.mark.parametrize("has_pythonw", [True, False], ids=["pythonw-present", "pythonw-absent"])
+def test_backend_has_no_visible_windows_console(
+    clients, peer, tmp_path, bearer_helper, has_pythonw
+):
+    environment = tmp_path / "python"
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(environment)],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    (environment / "Lib" / "site-packages" / "dependencies.pth").write_text(
+        f"import site; site.addsitedir({sysconfig.get_path('purelib')!r})\n", encoding="utf-8"
+    )
+    pythonw = environment / "Scripts" / "pythonw.exe"
+    assert pythonw.is_file()
+    if not has_pythonw:
+        pythonw.unlink()
+    executable = str(environment / "Scripts" / "python.exe")
+    helper, observations = bearer_helper
+    command = subprocess.list2cmdline([executable, str(helper), str(observations)])
+    client = clients(peer[0] + "/mcp", bearer="", bearer_command=command, executable=executable)
+    try:
+        client.initialize()
+    finally:
+        for backend_log in tmp_path.glob(".ucode/mcp-proxy/*/backend.log"):
+            print(backend_log.read_text(encoding="utf-8", errors="replace"))
+    (metadata,) = _endpoints(tmp_path)
+    probe = """
+import ctypes
+import sys
+from ctypes import wintypes
+
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.GetConsoleWindow.argtypes = []
+kernel32.GetConsoleWindow.restype = wintypes.HWND
+kernel32.AttachConsole.argtypes = [wintypes.DWORD]
+kernel32.AttachConsole.restype = wintypes.BOOL
+kernel32.FreeConsole.argtypes = []
+kernel32.FreeConsole.restype = wintypes.BOOL
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+user32.IsWindowVisible.argtypes = [wintypes.HWND]
+user32.IsWindowVisible.restype = wintypes.BOOL
+
+assert kernel32.FreeConsole(), "console observer could not detach its own console"
+attached = kernel32.AttachConsole(int(sys.argv[1]))
+if attached:
+    try:
+        window = kernel32.GetConsoleWindow()
+        assert not user32.IsWindowVisible(window), "MCP backend has a visible Windows console"
+    finally:
+        kernel32.FreeConsole()
+else:
+    error = ctypes.get_last_error()
+    assert error == 6, f"AttachConsole failed with {error}, expected ERROR_INVALID_HANDLE (6)"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", probe, str(metadata["pid"])],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stderr
+    initial_fetches = len(observations.read_text().splitlines())
+    first = client.call("no visible console")
+    second = client.call("still no visible console", 3)
+    assert first["value"] == "no visible console"
+    assert second["value"] == "still no visible console"
+    assert first["authorization"] != second["authorization"]
+    fetches = [json.loads(line) for line in observations.read_text().splitlines()[initial_fetches:]]
+    assert len(fetches) >= 2
+    assert all(fetch["visible"] is False for fetch in fetches), fetches
+    minted = {f"Bearer {fetch['bearer']}" for fetch in fetches}
+    assert first["authorization"] in minted
+    assert second["authorization"] in minted
 
 
 def test_concurrent_agents_share_backend_with_distinct_sessions(clients, peer, tmp_path):

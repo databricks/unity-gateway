@@ -22,6 +22,18 @@ try {
             throw 'Diagnostic redaction assertion failed'
         }
     }
+    $responseError = 'Claude responded: API Error: Request rejected (429)'
+    if ((Get-CoworkResponseError @('Start task', "$responseError known-fixture-token")) -cne "$responseError [REDACTED]") {
+        throw 'Cowork API error must retain the provider status and redact credentials'
+    }
+    foreach ($name in @('Claude responded: 48213', 'You said: Claude responded: API Error: 429', 'API Error: 429')) {
+        if ($null -ne (Get-CoworkResponseError @($name))) {
+            throw 'Only an assistant API error may stop inference'
+        }
+    }
+    if ($null -ne (Get-CoworkResponseError @())) {
+        throw 'An empty conversation has no API error'
+    }
 } finally {
     $env:DATABRICKS_BEARER = $savedBearer
     $env:CLAUDE_CODE_OAUTH_TOKEN = $savedOAuthToken

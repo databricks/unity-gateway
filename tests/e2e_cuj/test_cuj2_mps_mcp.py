@@ -318,7 +318,6 @@ class TestCuj2ClaudeSmartRouting(_Cuj2Base):
         )
         _assert_configured_files(session, workspace.url)
         settings = {
-            "ENABLE_SMART_ROUTING_ON_EXTERNAL_MODELS": "1",
             "SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0",
         }
         previous = {key: session.env.get(key) for key in settings}

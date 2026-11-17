@@ -16,6 +16,19 @@ from ucode.constants import UG_HEADERS_ENV_VAR
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 _SESSION_HEADERS: ContextVar[str | None] = ContextVar("ug_session_headers", default=None)
 
+# The gateway records this header's value as the request's coding agent, ahead of User-Agent.
+CODING_AGENT_HEADER = "Databricks-Custom-Coding-Agent"
+
+
+def without_header(value: str, name: str) -> str:
+    """``UG_HEADERS`` text ``value`` without its lines for header ``name``, in any case."""
+    key = name.casefold()
+    return "\n".join(
+        line
+        for line in value.splitlines()
+        if line.strip() and line.partition(":")[0].strip().casefold() != key
+    )
+
 
 @contextmanager
 def scoped_ug_headers(value: str) -> Iterator[None]:
