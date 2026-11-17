@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -25,6 +26,8 @@ TABLE_MAX_ROWS = 20
 TABLE_TASK_WIDTH = 48
 TABLE_MODEL_WIDTH = 28
 ID_PREFIX_CHARS = 8
+MAX_EPOCH_SECONDS = 8.64e12  # largest time a JavaScript Date accepts
+PROMPT_PLACEHOLDER = "(prompt not recorded)"
 MIN_ID_PREFIX_CHARS = 4
 DETAIL_WRAP_WIDTH = 80
 MODEL_PREFIXES = ("system.ai.", "databricks-")
@@ -175,6 +178,14 @@ def _age(at: object, now: float) -> str:
     return f"{seconds // 86400}d ago"
 
 
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _clean(text: str) -> str:
+    """Replace control characters, so recorded text cannot drive the terminal."""
+    return _CONTROL_CHARS.sub("\ufffd", text)
+
+
 def _short_id(decision_id: object) -> str:
     return decision_id[:ID_PREFIX_CHARS] if isinstance(decision_id, str) else "?"
 
@@ -188,26 +199,46 @@ def _short_model(model: object) -> str:
         return "?"
     for prefix in MODEL_PREFIXES:
         model = model.removeprefix(prefix)
-    return model
+    return _clean(model)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _is_listed(record: dict[str, Any]) -> bool:
+    """Mirror the Claude logs pane's row filter so both harnesses list the same records."""
+    summary = overview(record)
+    decision_id = summary["decision_id"]
+    preview = summary["preview"]
+    return (
+        isinstance(decision_id, str)
+        and bool(decision_id)
+        and _is_number(summary["at"])
+        and abs(summary["at"]) <= MAX_EPOCH_SECONDS
+        and (preview is None or isinstance(preview, str))
+        and isinstance(summary["selected_model"], str)
+        and _is_number(summary["routing_ms"])
+    )
 
 
 def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> str:
     """Render the most recent decisions as a fixed-width table for chat."""
+    records = [record for record in records if _is_listed(record)]
     if not records:
         return "No routed subagents recorded this session yet."
     now = time.time() if now is None else now
     shown = records[-TABLE_MAX_ROWS:]
     rows = []
     for summary in map(overview, shown):
-        task = " ".join((summary["preview"] or "(no task text)").split())
-        routing_ms = summary["routing_ms"]
+        task = _clean(" ".join((summary["preview"] or PROMPT_PLACEHOLDER).split()))
         rows.append(
             (
                 _short_id(summary["decision_id"]),
                 _age(summary["at"], now),
                 _truncate(task, TABLE_TASK_WIDTH),
                 _truncate(_short_model(summary["selected_model"]), TABLE_MODEL_WIDTH),
-                f"{routing_ms} ms" if isinstance(routing_ms, int | float) else "?",
+                f"{summary['routing_ms']} ms",
             )
         )
     headers = ("ID", "WHEN", "TASK", "MODEL", "ROUTING")
@@ -244,32 +275,57 @@ def find_decision(records: list[dict[str, Any]], query: str) -> dict[str, Any]:
     return matches[0]
 
 
-def render_detail(record: dict[str, Any]) -> str:
-    """Render one decision like the Claude logs detail view."""
+def _is_object(value: object) -> bool:
+    return isinstance(value, dict)
+
+
+def _is_detail_record(record: dict[str, Any]) -> bool:
+    """Mirror the Claude detail view's validation of a decision record."""
     prompt = record.get("prompt")
     original = record.get("original")
-    preview = prompt.get("preview") if isinstance(prompt, dict) else None
-    subagent = original.get("subagent_type") if isinstance(original, dict) else None
+    candidates = record.get("candidates")
+    return (
+        (
+            prompt is None
+            or (_is_object(prompt) and isinstance(prompt.get("preview", 0), str | None))
+        )
+        and (
+            original is None
+            or (_is_object(original) and isinstance(original.get("subagent_type", 0), str | None))
+        )
+        and isinstance(record.get("selected_model"), str)
+        and _is_number(record.get("routing_ms"))
+        and isinstance(record.get("rationale", 0), str | None)
+        and isinstance(candidates, list)
+        and all(_is_object(c) and isinstance(c.get("model"), str) for c in candidates)
+    )
+
+
+def render_detail(record: dict[str, Any]) -> str:
+    """Render one decision like the Claude logs detail view."""
+    if not _is_detail_record(record):
+        raise ValueError("Could not load this routing decision.")
+    prompt = record.get("prompt") or {}
+    original = record.get("original") or {}
+    preview = prompt.get("preview")
+    subagent = original.get("subagent_type")
     if isinstance(subagent, str) and re.search(r"(^|:)ucode-route-", subagent):
         subagent = None  # names a model, not a task type, so it would contradict the selection
-    selected = record.get("selected_model")
-    routing_ms = record.get("routing_ms")
-    rationale = record.get("rationale")
-    candidates = record.get("candidates")
-    lines = [f"Prompt preview: {preview or '(prompt not recorded)'}"]
+    selected = record["selected_model"]
+    rationale = (record["rationale"] or "").strip() or "No rationale returned."
+    lines = [
+        f"Prompt preview: {_clean(preview) if isinstance(preview, str) else PROMPT_PLACEHOLDER}"
+    ]
     if isinstance(subagent, str):
-        lines.append(f"Agent type: {subagent}")
+        lines.append(f"Agent type: {_clean(subagent)}")
     lines.append(f"Selected: {_short_model(selected)}")
-    if isinstance(routing_ms, int | float):
-        lines.append(f"Routing time: {routing_ms / 1000:.1f}s")
-    rationale_text = rationale.strip() if isinstance(rationale, str) else ""
+    lines.append(f"Routing time: {record['routing_ms'] / 1000:.1f}s")
     lines.append("Rationale:")
-    lines.extend(textwrap.wrap(rationale_text or "No rationale returned.", DETAIL_WRAP_WIDTH))
+    lines.extend(textwrap.wrap(_clean(rationale), DETAIL_WRAP_WIDTH))
     lines.append("Candidates:")
-    for candidate in candidates if isinstance(candidates, list) else []:
-        model = candidate.get("model") if isinstance(candidate, dict) else None
-        marker = "●" if model == selected else "○"
-        lines.append(f"{marker} {_short_model(model)}")
+    for candidate in record["candidates"]:
+        marker = "●" if candidate["model"] == selected else "○"
+        lines.append(f"{marker} {_short_model(candidate['model'])}")
     return "\n".join(lines)
 
 

@@ -268,7 +268,7 @@ def test_detail_handles_missing_rationale_candidates_and_route_agent(log_dir):
         "selected_model": "m",
         "routing_ms": 50,
         "rationale": "  ",
-        "candidates": None,
+        "candidates": [],
     }
     (log_dir / "codex-c1.jsonl").write_text(json.dumps(record) + "\n")
     output = detail("abcd1234").output
@@ -279,14 +279,36 @@ def test_detail_handles_missing_rationale_candidates_and_route_agent(log_dir):
     assert output.endswith("Candidates:\n")
 
 
+def valid_record(decision_id, **overrides):
+    return {
+        "v": 1,
+        "type": "decision",
+        "decision_id": decision_id,
+        "at": 1.0,
+        "prompt": {"preview": "p"},
+        "original": {"subagent_type": None},
+        "selected_model": "m",
+        "routing_ms": 5,
+        "rationale": None,
+        "candidates": [],
+        **overrides,
+    }
+
+
+def test_detail_rejects_record_the_claude_view_rejects(log_dir):
+    log_dir.mkdir()
+    bad = valid_record("abcd1234", prompt={"preview": 7})
+    (log_dir / "codex-c1.jsonl").write_text(json.dumps(bad) + "\n")
+    result = detail("abcd1234")
+    assert result.exit_code == 1
+    assert result.output == "error: Could not load this routing decision.\n"
+
+
 def test_detail_prefix_matching(log_dir):
     log_dir.mkdir()
     ids = ["abcd1111" + "0" * 24, "abcd2222" + "0" * 24, "ffff3333" + "0" * 24]
     (log_dir / "codex-c1.jsonl").write_text(
-        "".join(
-            json.dumps({"v": 1, "type": "decision", "decision_id": i, "selected_model": "m"}) + "\n"
-            for i in ids
-        )
+        "".join(json.dumps(valid_record(i)) + "\n" for i in ids)
     )
     assert detail(ids[0]).exit_code == 0
     assert detail("ffff").exit_code == 0
@@ -316,3 +338,48 @@ def test_json_decision_still_requires_exact_id(log_dir):
     )
     assert result.exit_code == 1
     assert json.loads(result.output) == {"v": 1, "error": "decision not found"}
+
+
+def test_table_lists_the_same_rows_as_the_claude_pane(log_dir):
+    log_dir.mkdir()
+    records = [
+        valid_record("aaaa0001", prompt={"preview": "kept"}),
+        valid_record("aaaa0002", prompt={"preview": 7}),
+        valid_record("aaaa0003", at="soon"),
+        valid_record("aaaa0004", routing_ms=None),
+        valid_record("aaaa0005", selected_model=None),
+        valid_record("", prompt={"preview": "no id"}),
+        valid_record("aaaa0007", prompt={"preview": None}),
+        valid_record("aaaa0008", prompt={"preview": "  "}),
+    ]
+    (log_dir / "codex-c1.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    lines = table().output.splitlines()
+    assert lines[0] == "3 routed subagents this session (showing last 3)"
+    assert [line.split()[0] for line in lines[3:6]] == ["aaaa0001", "aaaa0007", "aaaa0008"]
+    assert lines[4].count("(prompt not recorded)") == 1
+    assert "(prompt not recorded)" not in lines[5]  # whitespace is truthy, as in the Claude pane
+
+
+def test_detail_shows_placeholder_for_non_string_or_missing_preview(log_dir):
+    log_dir.mkdir()
+    (log_dir / "codex-c1.jsonl").write_text(
+        json.dumps(valid_record("abcd1234", prompt={"preview": None})) + "\n"
+    )
+    assert detail("abcd1234").output.startswith("Prompt preview: (prompt not recorded)\n")
+
+
+def test_terminal_escapes_never_reach_the_output(log_dir):
+    log_dir.mkdir()
+    esc = "\x1b[31mred\x1b]0;title\x07\x9b2J"
+    record = valid_record(
+        "abcd1234",
+        prompt={"preview": esc + " task…"},
+        original={"subagent_type": esc},
+        selected_model="system.ai." + esc,
+        rationale=esc + " because",
+        candidates=[{"model": esc, "harness": "codex"}],
+    )
+    (log_dir / "codex-c1.jsonl").write_text(json.dumps(record) + "\n")
+    for output in (table().output, detail("abcd1234").output):
+        assert not any(ord(c) < 32 and c != "\n" or 0x7F <= ord(c) <= 0x9F for c in output)
+    assert "task…" in table().output

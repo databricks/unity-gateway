@@ -184,19 +184,25 @@ def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_pat
     assert not log_dir.exists()
 
 
-def test_render_table_formats_age_and_collapses_whitespace(log_dir, decision):
-    write({"session_id": "s1"}, decision, task="line one\n  line two")
-    records = session_log.read_decisions("claude", "s1")
-    at = records[0]["at"]
-    assert (
-        session_log.render_table(records, now=at + 7200)
-        .splitlines()[3]
-        .split("  ", 1)[1]
-        .startswith("2h ago")
-    )
-    assert "line one" in session_log.render_table(records)
+def listed(**overrides):
+    return {
+        "v": 1,
+        "type": "decision",
+        "decision_id": "abcd1234",
+        "at": 1000.0,
+        "prompt": {"preview": "line one\n  line two"},
+        "selected_model": "m",
+        "routing_ms": 5,
+        **overrides,
+    }
 
 
-def test_render_table_tolerates_missing_fields():
+def test_render_table_formats_age_and_collapses_whitespace():
+    row = session_log.render_table([listed()], now=1000.0 + 7200).splitlines()[3]
+    assert row.split("  ", 1)[1].startswith("2h ago")
+    assert "line one line two" in row
+
+
+def test_render_table_with_no_listable_records_is_empty_message():
     text = session_log.render_table([{"v": 1, "type": "decision"}])
-    assert "(no task text)" in text
+    assert text == "No routed subagents recorded this session yet."

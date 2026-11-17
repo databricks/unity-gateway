@@ -3491,10 +3491,10 @@ def smart_router_logs_cmd(
         ) from exc
     if as_table and decision is not None:
         try:
-            found = session_log.find_decision(records, decision)
-        except LookupError as exc:
+            output = session_log.render_detail(session_log.find_decision(records, decision))
+        except (LookupError, ValueError) as exc:
             raise fail(str(exc)) from exc
-        sys.stdout.write(session_log.render_detail(found) + "\n")
+        sys.stdout.write(output + "\n")
         return
     if as_table:
         sys.stdout.write(session_log.render_table(records) + "\n")
