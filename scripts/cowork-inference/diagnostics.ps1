@@ -8,3 +8,13 @@ function Protect-DiagnosticText {
     $Text = $Text -replace '\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b', '[REDACTED]'
     return $Text
 }
+
+function Get-CoworkResponseError {
+    param([string[]]$Names)
+    foreach ($name in $Names) {
+        if ($name.StartsWith('Claude responded: API Error:')) {
+            return Protect-DiagnosticText $name
+        }
+    }
+    return $null
+}
