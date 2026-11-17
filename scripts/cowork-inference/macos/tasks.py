@@ -256,7 +256,10 @@ def approve_tool_permission(desktop, report):
         return  # Accessibility snapshots can time out; the next poll retries.
     for label in TOOL_PERMISSION_LABELS:
         if matches_labels(snapshot, label, enabled=True):
-            desktop.ui("click", label, wait_until_enabled=False)
+            try:
+                desktop.ui("click", label, wait_until_enabled=False)
+            except (RuntimeError, subprocess.TimeoutExpired):
+                return  # The prompt can close before the click; the next poll retries.
             report["toolPermission"] = label
             return
 

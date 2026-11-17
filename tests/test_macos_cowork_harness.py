@@ -854,6 +854,17 @@ def test_macos_mcp_task_approves_a_connector_prompt(tasks, label, monkeypatch):
     assert report.get("toolPermission") == label
 
 
+def test_macos_mcp_task_retries_when_the_prompt_closes_before_the_click(tasks):
+    def ui(*args, **kwargs):
+        if args[0] == "snapshot":
+            return json.dumps([["AXButton", "Allow once", "", "", "", "1", "0"]])
+        raise RuntimeError("no such control")
+
+    report = {}
+    tasks.approve_tool_permission(SimpleNamespace(ui=ui), report)
+    assert "toolPermission" not in report
+
+
 def test_macos_mcp_task_saves_recent_desktop_logs(tasks, tmp_path):
     logs = tmp_path / "Library/Logs/Claude-3p"
     logs.mkdir(parents=True)

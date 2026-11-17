@@ -299,6 +299,24 @@ def test_mcp_search_ignores_malformed_urls_beside_an_official_one(mcp_evidence):
     assert result["url"] == "https://www.databricks.com"
 
 
+def test_mcp_search_accepts_a_url_from_a_later_search(mcp_evidence):
+    records, task = mcp_evidence
+    first_call, first_result = _search_call(records), _search_result(records)
+    second_call = {**first_call, "id": "search-2"}
+    second_result = {
+        **first_result,
+        "tool_use_id": "search-2",
+        "content": [{"type": "text", "text": "https://databricks.com/product"}],
+    }
+    records[1]["message"]["content"].append(second_call)
+    records[2]["message"]["content"].append(second_result)
+    records[3]["message"]["content"] = [{"type": "text", "text": "https://databricks.com/product"}]
+    result = evaluate(records, task)
+    assert result["status"] == "passed", result
+    assert result["mcpToolId"] == "search-2"
+    assert result["url"] == "https://databricks.com/product"
+
+
 def _search_call(records):
     return records[1]["message"]["content"][0]
 

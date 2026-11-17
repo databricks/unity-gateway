@@ -56,20 +56,21 @@ def evaluate_mcp(answer, calls, results, task):
         call["id"]: databricks_urls(content_text(results[call["id"]].get("content", [])))
         for call in searches
     }
-    search = next((call for call in searches if found[call["id"]]), None)
-    if search is None:
+    if not any(found.values()):
         return {
             "status": "failed",
             "error": "No successful MCP web search returned an official Databricks URL",
             "answer": answer,
         }
-    shared = sorted(databricks_urls(answer) & found[search["id"]])
-    if not shared:
+    answer_urls = databricks_urls(answer)
+    search = next((call for call in searches if answer_urls & found[call["id"]]), None)
+    if search is None:
         return {
             "status": "failed",
             "error": "Completed answer does not repeat a Databricks URL from the search",
             "answer": answer,
         }
+    shared = sorted(answer_urls & found[search["id"]])
     return {
         "status": "passed",
         "answer": answer,
