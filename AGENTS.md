@@ -187,7 +187,8 @@ real target from it. Main-model switches never run native `/model`. A fresh laun
 without a launch-only model starts on the stored main model; a per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.
 Native context window and effort follow the static row (the default variant) for every
-main model. Launch configuration controls Auto visibility; an installed static Auto row
+main model; the mod's prompt hint row names the held main model, not the row's alias.
+Launch configuration controls Auto visibility; an installed static Auto row
 counts as that configuration for smart-routed launches. Configure
 preserves foreign admin
 picker/custom option settings. Inline effort controls read native `/effort status` and save through `/effort`;

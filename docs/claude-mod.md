@@ -10,6 +10,8 @@ Every routed launch includes the status band above the prompt. It shows at launc
 each `/smart-router on|off`, and hides once the next prompt's turn completes. The prompt hint row (the line under the
 input with the permission mode) carries `smart router ON` or `smart router OFF`, followed by
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
+Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
+model the mod holds, not the row's default-variant alias, and updates on each switch.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

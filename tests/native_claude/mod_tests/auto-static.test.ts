@@ -292,3 +292,40 @@ test('a native Auto confirmation landing after the pane save keeps the new main 
   await step($, DEFAULT_ALIAS, 'child');
   expect(sent).toEqual([OTHER, OTHER]);
 });
+
+// The tail the mod hands the engine for the prompt hint row under the input.
+async function hintTail($: any, on: On): Promise<() => Promise<unknown>> {
+  const tails: unknown[] = [];
+  on('agent.list', () => ({ value: [] }));
+  on('ui.render', { component: 'PromptHint' }, ($, e) => {
+    tails.push(e.props.tail);
+    return $.ui.resolve(e).Text({ children: ['hint'] });
+  });
+  return async () => {
+    tails.length = 0;
+    await $.ui.mount({ plugin: 'ug-smart-router', surface: 'terminal', component: 'PromptHint', props: { tail: '' } } as never);
+    return tails.at(-1);
+  };
+}
+
+test('the hint row names the main model chosen under the static Auto row', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  const hint = await hintTail($, on);
+  await $.session.start(START);
+  expect(await hint()).toBe('Auto (Sonnet 5) · smart router ON');
+
+  await $.command.run({ command: 'auto', args: '' });
+  await (await mountChooser($)).press({ key: 'auto-main-model-1' });
+  await session.clock.advance(0);
+
+  // Native still selects the default variant's alias; the row follows the mod's main model.
+  expect(session.selected()).toBe(DEFAULT_ALIAS);
+  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
+});
+
+test('a fresh static Auto session names the saved main model in the hint row', { options: OPTIONS }, async ($, on) => {
+  staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
+  const hint = await hintTail($, on);
+  await $.session.start(START);
+  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
+});
