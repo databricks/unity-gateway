@@ -170,9 +170,14 @@ Auto from one row inside it, first among UG's rows (below Claude's native Defaul
 `modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
 is written at configure only — launches preserve whichever installed mode the file
 carries, and a launch's own version selection never installs or converts the catalog.
-The mod still re-points its in-process custom option for `/model auto` main-model
-switching; the native checkmark cannot follow those variant switches because the
-static row is immutable. Launch configuration controls Auto visibility. Configure
+In that mode native always stays on the static row's alias (the launch passes it as
+`staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
+holds the chosen main model in memory and its `$.store` preference and resolves the
+real target from it. Main-model switches never run native `/model`. A fresh launch
+without a launch-only model starts on the stored main model; a per-model alias selected
+natively (an earlier version's saved selection) still counts as Auto with that model.
+Native context window and effort follow the static row (the default variant) for every
+main model. Launch configuration controls Auto visibility. Configure
 preserves foreign admin
 picker/custom option settings. Inline effort controls read native `/effort status` and save through `/effort`;
 Claude owns model-specific capabilities and defaults.

@@ -599,9 +599,10 @@ routing with the Auto config version it keeps the replacement static catalog
 (`replaceBuiltInOptions: true`) and shows Auto as one row inside it instead. This also exposes
 native built-in choices when no `availableModels` restriction is configured; existing
 `availableModels` and `deniedModels` policies still apply. The mod points that one row at the current Auto variant within each process; it never rewrites a
-shared capability profile. In the static-catalog mode the mod re-points its
-process-local custom option for `/model auto` main-model switching, but the native
-checkmark cannot follow those variant switches because the catalog row is immutable.
+shared capability profile. In the static-catalog mode native stays on the
+catalog's Auto row, so `/model` keeps Auto checked whichever main model you choose; the
+mod remembers the main model per workspace and starts a fresh session on it. Claude's
+context window and effort settings follow the Auto row's default model in that mode.
 Launch settings supply the catalog and routing baseline;
 the routing mod resolves the selected variant to its real model before inference. No synthetic model ID is sent to the gateway. Selecting
 an ordinary model switches off routing through UG's existing atomic session

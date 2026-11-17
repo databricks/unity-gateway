@@ -686,6 +686,7 @@ class TestV2Launch:
         captured = {}
 
         def fake_popen(argv, **_kwargs):
+            captured["argv"] = argv
             captured.update(json.loads(Path(argv[argv.index("--settings") + 1]).read_text()))
             return Mock(wait=lambda: 0)
 
@@ -708,6 +709,11 @@ class TestV2Launch:
         auto = json.loads(options["autoPicker"])
         assert auto["mainModel"] == models[0]
         assert auto["model"] == auto_variant(rows[0])
+        # Native stays on the immutable static row; the mod holds the main model and,
+        # without a launch-only model, restores the user's saved one.
+        assert auto["staticModel"] == auto_variant(rows[0])
+        assert auto["preferSaved"] is True
+        assert captured["argv"][captured["argv"].index("--model") + 1] == auto_variant(rows[0])
         assert [row["model"] for row in auto["models"]] == models
         assert {row["autoModel"] for row in auto["models"]} == set(aliases)
         # The managed aliases stay in the managed file; launch settings carry no copies.

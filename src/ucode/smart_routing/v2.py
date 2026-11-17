@@ -772,7 +772,12 @@ def launch_claude(
         and not _claude_print_mode(remaining)
     )
     from ucode.agents.claude import _managed_settings_path
-    from ucode.agents.claude_auto import add_picker_entry, is_auto_model, picker_is_configured
+    from ucode.agents.claude_auto import (
+        add_picker_entry,
+        is_auto_model,
+        picker_is_configured,
+        static_auto_model,
+    )
 
     if auto_picker:
         managed_path = _managed_settings_path()
@@ -852,6 +857,17 @@ def launch_claude(
         except ValueError as exc:
             print_warning(f"Skipped Claude Auto: {exc}")
             auto_picker = False
+        else:
+            static_model = static_auto_model(auto_settings or {})
+            if static_model and any(
+                row["autoModel"] == static_model for row in auto_config["models"]
+            ):
+                # The static catalog's Auto row is immutable: native stays on it so /model
+                # checks Auto, and the mod holds the main model. Without a launch-only
+                # model, the session starts on the user's saved main model.
+                auto_config["model"] = static_model
+                auto_config["staticModel"] = static_model
+                auto_config["preferSaved"] = not (launch_model or default_model)
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
     if route_first_prompt and _claude_print_mode(remaining):

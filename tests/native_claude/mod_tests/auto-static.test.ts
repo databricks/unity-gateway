@@ -3,6 +3,8 @@ import { expect, mock, test } from 'claude-code/testing';
 
 // The static catalog mode: configure kept `replaceBuiltInOptions: true` and the
 // native session model IS the catalog's single Auto row (the default variant alias).
+// Native keeps that row selected for every main model, so /model checks Auto; the
+// mod holds the main model (`staticModel` names the row, as the launch passes it).
 const MAIN = 'system.ai.claude-sonnet-5';
 const OTHER = 'system.ai.claude-haiku-4-5';
 const DEFAULT_ALIAS = 'ug-auto-111111111111-claude-sonnet-5';
@@ -13,6 +15,8 @@ const AUTO = {
   mainModel: MAIN,
   storeKey: 'main-model-static',
   description: DESCRIPTION,
+  staticModel: DEFAULT_ALIAS,
+  preferSaved: true,
   models: [
     { model: MAIN, label: 'Sonnet 5', autoModel: DEFAULT_ALIAS },
     { model: OTHER, label: 'Haiku 4.5', autoModel: OTHER_ALIAS },
@@ -32,7 +36,10 @@ const START = { surface: 'terminal', isInteractive: true, cwd: '/work' } as cons
 
 // The engine answers everything the Auto flow reads; the native session model is
 // the static Auto row's alias, as a replacement picker's selected row resolves to.
-function staticCatalogSession(on: On, selected: string) {
+function staticCatalogSession(on: On, initial: string, saved?: string) {
+  let selected = initial;
+  const store: Record<string, unknown> = saved ? { [AUTO.storeKey]: saved } : {};
+  const commands: { command: string; args: string }[] = [];
   const env: Record<string, string | undefined> = {
     ENABLE_SMART_ROUTING_V2: '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
@@ -55,15 +62,23 @@ function staticCatalogSession(on: On, selected: string) {
   on('settings.read', () => ({
     value: { modelOverrides: { [DEFAULT_ALIAS]: MAIN, [OTHER_ALIAS]: OTHER } },
   }));
-  on('store.get', () => ({ value: undefined }));
-  on('store.set', () => ({ value: undefined }));
+  on('store.get', ($, e) => ({ value: store[e.key] }));
+  on('store.set', ($, e) => {
+    store[e.key] = e.value;
+    return { value: undefined };
+  });
   on('fs.read', () => ({ value: '{}' }));
   on('process.run', ($, e) => {
     runs.push(e.argv);
     return { value: { exitCode: 0, stderr: '', stdout: '' } };
   });
   on('command.register', () => ({ value: undefined }));
-  on('command.run', () => ({ value: { ref: 1, text: '' } }));
+  on('command.run', ($, e) => {
+    commands.push({ command: e.command, args: e.args });
+    // Native /model <id> selects that model and appends its confirmation.
+    if (e.command === 'model' && e.args) selected = e.args;
+    return { value: { ref: 1, text: '' } };
+  });
   on('ui.open', ($, e) => {
     opened.push(e.id);
     return { value: { isPlaced: true } };
@@ -71,9 +86,9 @@ function staticCatalogSession(on: On, selected: string) {
   on('ui.close', () => ({ value: undefined }));
   on('ui.toast', () => ({ value: undefined }));
   on('ui.invalidate', () => ({ value: undefined }));
-  mock.clock(on);
+  const clock = mock.clock(on);
   on('session.start', () => ({ cwd: '/work' }));
-  return { env, writes, runs, opened };
+  return { env, writes, runs, opened, store, commands, clock, selected: () => selected };
 }
 
 test('the static catalog Auto row activates routing and reuses its own alias as the custom option', { options: OPTIONS }, async ($, on) => {
@@ -135,7 +150,7 @@ async function step($: any, model: string, agentId?: string): Promise<void> {
 }
 
 test('an unrouted subagent that inherits an Auto alias sends its real target', { options: OPTIONS }, async ($, on) => {
-  staticCatalogSession(on, OTHER_ALIAS);
+  staticCatalogSession(on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
   await $.session.start(START);
 
@@ -144,4 +159,78 @@ test('an unrouted subagent that inherits an Auto alias sends its real target', {
   await step($, DEFAULT_ALIAS, 'child');
   await step($, 'system.ai.claude-opus-5', 'child');
   expect(sent).toEqual([OTHER, MAIN, 'system.ai.claude-opus-5']);
+});
+
+function mountChooser($: any) {
+  return $.ui.mount({
+    plugin: 'ug-smart-router',
+    surface: 'terminal',
+    component: 'Pane',
+    requestId: 'auto-main',
+    props: { title: 'Choose your main model', isFocused: true, bodyColumns: 80, rows: 18, view: {} },
+  } as never);
+}
+
+test('switching the main model keeps the static Auto row selected', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS);
+  const sent = captureSteps(on);
+  await $.session.start(START);
+  await $.command.run({ command: 'auto', args: '' });
+  session.commands.length = 0;
+
+  const pane = await mountChooser($);
+  await pane.press({ key: 'auto-main-model-1' });
+  await session.clock.advance(0);
+
+  // No native /model switch: the checkmark stays on the one Auto row.
+  expect(session.commands.filter((c) => c.command === 'model')).toEqual([]);
+  expect(session.selected()).toBe(DEFAULT_ALIAS);
+  expect(session.env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe(DEFAULT_ALIAS);
+  expect(session.store[AUTO.storeKey]).toBe(OTHER);
+  // Main turns and unrouted children both send the chosen main model.
+  await step($, DEFAULT_ALIAS);
+  await step($, DEFAULT_ALIAS, 'child');
+  expect(sent).toEqual([OTHER, OTHER]);
+  expect(session.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+});
+
+test('a fresh static Auto session starts on the saved main model', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
+  const sent = captureSteps(on);
+  await $.session.start(START);
+
+  await step($, DEFAULT_ALIAS);
+  expect(sent).toEqual([OTHER]);
+  expect(session.selected()).toBe(DEFAULT_ALIAS);
+  await $.command.run({ command: 'auto', args: '' });
+  expect(JSON.stringify(await (await mountChooser($)).drawn())).toContain('❯ Haiku 4.5');
+});
+
+test('a launch-only main model outranks the saved one', { options: { ...OPTIONS, autoPicker: JSON.stringify({ ...AUTO, preferSaved: false }) } }, async ($, on) => {
+  staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
+  const sent = captureSteps(on);
+  await $.session.start(START);
+
+  await step($, DEFAULT_ALIAS);
+  expect(sent).toEqual([MAIN]);
+});
+
+test('a per-model Auto alias saved by an earlier version still starts Auto', { options: OPTIONS }, async ($, on) => {
+  const session = staticCatalogSession(on, OTHER_ALIAS);
+  const sent = captureSteps(on);
+  await $.session.start(START);
+
+  await step($, OTHER_ALIAS);
+  expect(sent).toEqual([OTHER]);
+  expect(session.runs.some((argv) => argv.includes('--enable-smart-routing'))).toBe(true);
+  // Reselecting Auto from /model moves native onto the static row and keeps the main model.
+  await $.command.run({ command: 'model', args: 'auto' });
+  expect(session.selected()).toBe(DEFAULT_ALIAS);
+  await $.session.append({
+    door: 'command',
+    message: { role: 'user', isMeta: false, content: [{ type: 'text', text: `<local-command-stdout>Set model to ${DEFAULT_ALIAS}` }] },
+    origin: { kind: 'engine' },
+  } as never);
+  await step($, DEFAULT_ALIAS);
+  expect(sent).toEqual([OTHER, OTHER]);
 });

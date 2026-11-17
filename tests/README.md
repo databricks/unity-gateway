@@ -23,6 +23,12 @@ ordinary launches byte-identically.
 The mod's component tests (`native_claude/mod_tests/auto-static.test.ts`) check that a
 subagent the router did not route, which inherits the session's Auto alias, sends the
 alias's real target model; live coverage of an unrouted child under Auto is a gap.
+They also check that choosing another main model keeps native on the static Auto row
+(no native `/model` switch) and sends the chosen model, that a fresh session restores
+the stored main model unless the launch passed a launch-only one, and that an earlier
+per-model Auto alias still starts Auto; the launch test checks `staticModel`,
+`preferSaved` and `--model` with the static alias. The native picker checkmark itself
+is not exercised live.
 Ordinary and Auto launches preserve managed bytes and invoke no further privileged
 writes, with or without write access. Existing suites also cover fresh OFF session
 controls and native manual-model startup with feedback required through the next main turn. The native

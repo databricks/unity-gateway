@@ -171,6 +171,19 @@ def picker_has_auto_row(settings: dict) -> bool:
     )
 
 
+def static_auto_model(settings: dict) -> str | None:
+    """The alias of a replacement picker's single static Auto row, if it has one."""
+    if not picker_has_auto_row(settings):
+        return None
+    return next(
+        row["model"]
+        for row in settings["modelPicker"]["options"]
+        if isinstance(row, dict)
+        and isinstance(row.get("model"), str)
+        and is_auto_model(row["model"])
+    )
+
+
 def picker_is_configured(settings: dict) -> bool:
     """Check the actual native source, including policy and immutable mapping."""
     picker = settings.get("modelPicker", {})

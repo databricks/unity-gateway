@@ -19,7 +19,7 @@ import { createIsaacFeedbackState, parseSmartRouterCommand, registerIsaacFeedbac
 import { isRoutingEnabled } from './routing-state.ts';
 import { registerRoutingLogs } from './routing-logs.ts';
 import { effortProfile, EFFORT_LEVELS } from './auto-effort.ts';
-import { autoTarget, formatAutoConfirmation, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const EFFORT_STATUS = /^<local-command-stdout>(?:Set effort level|Current effort level|Effort level)/i;
@@ -39,6 +39,7 @@ async function selectedModel($: EngineInterface, auto: AutoPicker): Promise<stri
 
 async function entryMainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
   const current = await selectedModel($, auto);
+  if (isStaticAuto(auto, current) && auto.variant) return auto.variant;
   const row = auto.models.find(row => row.model === current || row.autoModel === current);
   if (row) return row.model;
   const settings = await $.settings.read();
@@ -49,6 +50,7 @@ async function entryMainModel($: EngineInterface, auto: AutoPicker): Promise<str
 
 async function mainModel($: EngineInterface, auto: AutoPicker): Promise<string> {
   const awaitModel = await selectedModel($, auto);
+  if (isStaticAuto(auto, awaitModel) && auto.variant) return auto.variant;
   const active = auto.models.find((row) => row.autoModel === awaitModel);
   if (active) return active.model;
   const saved = await $.store.get(auto.storeKey);
@@ -62,9 +64,25 @@ async function autoSelected($: EngineInterface, auto: AutoPicker): Promise<boole
 
 async function customAutoRow($: EngineInterface, auto: AutoPicker, model: string): Promise<void> {
   const row = auto.models.find((row) => row.model === model)!;
-  await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION', row.autoModel);
+  // The static catalog's Auto row is the only Auto identity native selects.
+  await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION', auto.staticModel ?? row.autoModel);
   await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION_NAME', 'Auto');
   await $.env.set('ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION', auto.description);
+}
+
+// Static-catalog mode keeps native on the catalog's single Auto row and holds the
+// main model here. A per-model alias selected natively (saved by an earlier
+// version, or a resumed session) still counts as Auto with that main model.
+async function initStaticVariant($: EngineInterface, auto: AutoPicker): Promise<void> {
+  const selected = await selectedModel($, auto);
+  const legacy = isStaticAuto(auto, selected) ? undefined : auto.models.find(row => row.autoModel === selected);
+  if (legacy) {
+    auto.variant = legacy.model;
+    return;
+  }
+  if (auto.variant) return;
+  const saved = auto.preferSaved ? await $.store.get(auto.storeKey) : undefined;
+  auto.variant = auto.models.find(row => row.model === saved)?.model ?? auto.mainModel;
 }
 
 type AutoPickerState = {model?: string; drafts: Record<string,string>; native: Record<string,string | undefined>};
@@ -256,6 +274,8 @@ export function register(on: On, options: PluginOptions): void {
   let manualOffRequest: ManualOffRequest | undefined;
   let autoSave: AutoSaveRequest | undefined;
   let publicAutoEcho: { model: string; args: string; origin: PromptOrigin } | undefined;
+  // The main model a public /model command enters the static Auto row with.
+  let staticEntry: string | undefined;
   const pickerState: AutoPickerState = {drafts:{}, native:{}};
   let pendingSelection: { cancel: () => void } | undefined;
   const feedback = createIsaacFeedbackState();
@@ -271,6 +291,7 @@ export function register(on: On, options: PluginOptions): void {
     sessionActive = true;
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
+      if (auto.staticModel) await initStaticVariant($, auto);
       await customAutoRow($, auto, await mainModel($, auto));
       await syncAutoRouting($, options, auto, routingSync);
     }
@@ -339,13 +360,14 @@ export function register(on: On, options: PluginOptions): void {
         manualOffRequest = undefined;
         clearAutoSave();
         entry = await entryMainModel($, auto);
+        staticEntry = entry;
         await customAutoRow($, auto, entry);
       }
       let command = e;
       publicAutoEcho = undefined;
       if (e.args.trim().toLowerCase() === 'auto') {
         const model = entry ?? await entryMainModel($, auto);
-        command = { ...e, args: auto.models.find((row) => row.model === model)!.autoModel };
+        command = { ...e, args: auto.staticModel ?? auto.models.find((row) => row.model === model)!.autoModel };
         publicAutoEcho = { model: command.args, args: e.args, origin: e.origin };
       }
       let result;
@@ -404,7 +426,9 @@ export function register(on: On, options: PluginOptions): void {
       const active = await autoSelected($, auto);
       const model = pickerState.model ?? await mainModel($, auto);
       const row = auto.models.find(row => row.model === model) ?? auto.models[0];
-      const profile = effortProfile(row.autoModel, layers, environment, pickerState.native[row.autoModel]);
+      // Native effort follows the selected model: the static row for every main model.
+      const effortModel = auto.staticModel ?? row.autoModel;
+      const profile = effortProfile(effortModel, layers, environment, pickerState.native[effortModel]);
       const effort = pickerState.drafts[row.model] ?? profile.level;
       const editable = active && profile.levels.length > 0 && !profile.locked;
       const adjust = (delta: number) => {
@@ -436,7 +460,7 @@ export function register(on: On, options: PluginOptions): void {
             }
             request.phase = 'saving';
             try {
-              if (await selectedModel($, auto) !== (active ? selected.autoModel : baseline)) {
+              if (await selectedModel($, auto) !== (active ? auto.staticModel ?? selected.autoModel : baseline)) {
                 throw new Error('Claude did not accept the selected main model.');
               }
               if (autoSave !== request) return;
@@ -444,10 +468,11 @@ export function register(on: On, options: PluginOptions): void {
                 const result = await $.command.run({command:'effort', args:draft});
                 if (autoSave !== request) return;
                 if (result.text && /failed|not supported|invalid|not available/i.test(result.text)) throw new Error(result.text);
-                if (result.text) pickerState.native[selected.autoModel] = result.text;
+                if (result.text) pickerState.native[auto.staticModel ?? selected.autoModel] = result.text;
               }
               await customAutoRow($, auto, selected.model);
               if (autoSave !== request) return;
+              if (auto.staticModel) auto.variant = selected.model;
               await $.store.set(auto.storeKey, selected.model);
               if (autoSave !== request) return;
               await syncAutoRouting($, options, auto, routingSync);
@@ -457,6 +482,7 @@ export function register(on: On, options: PluginOptions): void {
               $.ui.toast(`Auto (${selected.label}) saved`);
             } catch (error) {
               if (autoSave !== request) return;
+              if (auto.staticModel) auto.variant = previousMain;
               if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
               if (autoSave !== request) return;
               await openMainModel($);
@@ -474,7 +500,8 @@ export function register(on: On, options: PluginOptions): void {
         const run = async () => {
           if (autoSave !== request) return;
           try {
-            if (active && selected.autoModel !== baseline) {
+            // The static row stays selected; only the main model it stands for changes.
+            if (active && !auto.staticModel && selected.autoModel !== baseline) {
               // Native /model validates only the current custom option without discovery.
               await customAutoRow($, auto, selected.model);
               if (autoSave !== request) return;
@@ -570,6 +597,12 @@ export function register(on: On, options: PluginOptions): void {
         ? internalModels.indexOf(selected) : -1;
       const internalSwitch = Boolean(saving) || internalIndex >= 0;
       if (internalIndex >= 0) internalModels.splice(internalIndex, 1);
+      if (setModel || keptModel || cancelledModel) {
+        // A public selection of the static Auto row enters it with the main model
+        // the /model command started from; switches never change the native row.
+        if (!internalSwitch && (setModel || keptModel) && selected && isStaticAuto(auto, selected) && staticEntry) auto.variant = staticEntry;
+        staticEntry = undefined;
+      }
       const previousAuto = routingSync.model;
       const manualModel = setModel && !internalSwitch ? await selectedModel($, auto) : undefined;
       const requested: ManualOffRequest | undefined = manualModel && previousAuto && auto.models.some(row => row.autoModel === previousAuto)
@@ -602,7 +635,9 @@ export function register(on: On, options: PluginOptions): void {
         || (!e.agentId && e.origin.kind === 'engine' && autoSave?.model === echoModel))
         && auto.models.some((row) => row.autoModel === echoModel);
       if (pendingEcho) publicAutoEcho = undefined;
-      const autoConfirmation = setModel || keptModel ? auto.models.find(row => row.autoModel === selected) : undefined;
+      const autoConfirmation = !(setModel || keptModel) ? undefined
+        : selected && isStaticAuto(auto, selected) && auto.variant ? auto.models.find(row => row.model === auto.variant)
+        : auto.models.find(row => row.autoModel === selected);
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)

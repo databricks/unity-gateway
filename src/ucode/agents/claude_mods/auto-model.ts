@@ -4,7 +4,18 @@ export type AutoPicker = {
   storeKey: string;
   description: string;
   models: { model: string; label: string; autoModel: string }[];
+  // Static-catalog mode: the immutable picker row's alias. Native keeps this
+  // alias selected, so /model checks Auto for every main model, and `variant`
+  // carries the session's main model instead of a per-model alias.
+  staticModel?: string;
+  // Start a static-catalog session on the saved main model (no launch-only model).
+  preferSaved?: boolean;
+  variant?: string;
 };
+
+export function isStaticAuto(auto: AutoPicker, model: string): boolean {
+  return Boolean(auto.staticModel) && matchesAutoModel(auto.staticModel!, model);
+}
 
 export function matchesAutoModel(configured: string, selected: string): boolean {
   // Native 2.1.323 strips the context suffix from selected Auto aliases.
@@ -16,7 +27,9 @@ export function resolveAutoModel(auto: AutoPicker, selected: string): string {
 }
 
 // The real model an Auto alias stands for, or undefined for any other model.
+// The static row stands for the session's main model.
 export function autoTarget(auto: AutoPicker, model: string): string | undefined {
+  if (isStaticAuto(auto, model) && auto.variant) return auto.variant;
   return auto.models.find(row => matchesAutoModel(row.autoModel, model))?.model;
 }
 
