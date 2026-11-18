@@ -269,7 +269,16 @@ class TestClientPlatform:
             r"\([a-z0-9_.-]+ [a-z0-9_.-]+; [a-z0-9_.-]+\)", telemetry.client_platform()
         )
 
-    def test_user_agent_keeps_gateway_prefix_and_appends_platform(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("mdm_os", "comment"),
+        [
+            (None, "(macos 15.1; arm64)"),
+            ("None", "(macos 15.1; arm64)"),
+            ("", "(macos 15.1; arm64)"),
+            ("Mac", "(macos 15.1; arm64; mdm)"),
+        ],
+    )
+    def test_user_agent_keeps_gateway_prefix_and_marks_mdm(self, monkeypatch, mdm_os, comment):
         self._host(
             monkeypatch,
             "darwin",
@@ -277,6 +286,10 @@ class TestClientPlatform:
             mac_ver=lambda: ("15.1.2", ("", "", ""), ""),
             _macos_translated=lambda: False,
         )
+        if mdm_os is None:
+            monkeypatch.delenv("MDM_OS", raising=False)
+        else:
+            monkeypatch.setenv("MDM_OS", mdm_os)
         ua = telemetry.ucode_user_agent("0.9.1", "claude/2.1.300")
-        assert ua == "ucode/0.9.1 claude/2.1.300 (macos 15.1; arm64)"
-        assert ua.startswith("ucode/0.9.1 claude/2.1.300")
+        assert ua == f"ucode/0.9.1 claude/2.1.300 {comment}"
+        assert ua.startswith("ucode/0.9.1 claude/2.1.300 (")

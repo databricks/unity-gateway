@@ -40,6 +40,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     privileged writer for an OS-managed agent config.
     """
     import ucode.agents as agents_mod
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -127,9 +128,20 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     # `ug configure` and `ug revert` set this for the rest of the process; start each test as a
     # launch-like run.
     monkeypatch.setattr(managed_files_mod, "_explicit_managed_command", None)
+    monkeypatch.setattr(managed_config_mod, "_requested_mdm_os", None)
+    monkeypatch.setattr(managed_config_mod, "_inherited_mdm_os", None)
+    # Set first so the undo also removes a value a test sets (delenv of an unset key records none).
+    monkeypatch.setenv("MDM_OS", "None")
+    monkeypatch.delenv("MDM_OS")
     monkeypatch.setattr(managed_files_mod, "_machine_wide_only", False)
     # The test interpreter lives in a developer's checkout; tests of the check itself override this.
     monkeypatch.setattr("ucode.cli._require_shared_installation", lambda: None)
+    # A developer's own machine may use a published agent configuration; tests opt in explicitly.
+    monkeypatch.setattr(
+        managed_files_mod,
+        "PUBLISHED_AGENT_CONFIG_MARKER_PATH",
+        tmp_path / "etc" / "agents-state.json",
+    )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
@@ -174,6 +186,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
     # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
     monkeypatch.delenv("UG_HEADERS", raising=False)
+    # The routing hooks copy harness headers from these, so the developer's own values would leak.
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(
+        codex_config_mod, "DEFAULT_CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml"
+    )
     # When the suite runs inside a ug smart-routing session, these ambient env vars
     # make smart_routing_enabled()/configured_router_name() read the host's live
     # routing state, leaking a Databricks-Smart-Router-Recipe header into
@@ -256,3 +274,25 @@ def e2e_state(e2e_workspace):
     """Full state dict mirroring what configure_shared_state produces."""
     # Copy so a test mutating its state cannot leak into the cached catalog.
     return dict(e2e_state_for(e2e_workspace))
+
+
+def metric_observations(recorder, name):
+    return [(value, labels) for _, metric, value, labels in recorder.pending if metric == name]
+
+
+@pytest.fixture
+def metrics_recorder(monkeypatch):
+    from unittest.mock import Mock
+
+    from ucode import metrics
+    from ucode.metrics import exporter
+
+    # Tests exercise collection and real SDK aggregation without sending developer telemetry.
+    runtime = metrics.Recorder("claude", metrics.time.perf_counter())
+    monkeypatch.setattr(metrics, "_runtime", runtime)
+    monkeypatch.setattr(exporter, "start_exporter", Mock(return_value=None))
+    yield runtime
+    runtime.stop.set()
+    runtime.wake.set()
+    if runtime.thread:
+        runtime.thread.join(timeout=2)

@@ -9,3 +9,5 @@ python -m venv "$runtime"
 PIP_CONFIG_FILE=/dev/null PIP_EXTRA_INDEX_URL='' "$runtime/bin/python" -m pip install \
   --disable-pip-version-check --index-url https://pypi.org/simple .
 echo "UG_COWORK_PYTHON=$runtime/bin/python" >> "$GITHUB_ENV"
+# UG writes its own path into Desktop's MCP connectors from PATH, as for an installed ug.
+echo "$runtime/bin" >> "$GITHUB_PATH"

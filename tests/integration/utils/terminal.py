@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+from pathlib import PurePath
 
 import pyte
 from pyte.screens import wcwidth  # wcwidth is only a pyte dependency
@@ -24,10 +25,42 @@ from .evidence import agent_sessions, assert_no_terminal_api_error, fresh_id
 SELECTED = "[›❯>]"
 
 
+def codex_trust_dialog_shown(screen: str, cwd: PurePath) -> bool:
+    """Whether Codex 0.156+ is asking to trust exactly the test project, with Trust selected."""
+    return (
+        bool(re.search(r"(?m)^\s*Folder access\s*$", screen))
+        and bool(re.search(rf"(?m)^\s*{re.escape(str(cwd))}\s*$", screen))
+        # Windows ConPTY captures the selection marker as U+FFFD.
+        and bool(re.search(r"(?m)^\s*[›❯>\ufffd]\s*1[.)]\s+Trust and continue\s*$", screen))
+    )
+
+
+def codex_session_footer_shown(screen: str, cwd: PurePath) -> bool:
+    """Whether Codex's prompt has its model/directory footer, which its startup draft lacks."""
+    return bool(
+        re.search(
+            rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
+            rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(cwd.name)}(?: · [^\n]*)?"
+            # Codex 0.156 appends a warning badge after the directory.
+            r"(?:[ \t]+⚠[ \t]+\d+ warnings? · f2 to view)?$",
+            screen,
+        )
+    )
+
+
 def _normalize_smart_router_env_guard(command: str) -> str:
+    whitespace_guard = (
+        "if ([string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)) "
+    )
+    if command.startswith(whitespace_guard):
+        command = (
+            "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+            + command.removeprefix(whitespace_guard)
+        )
     return re.sub(
-        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ Write-Output )(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
-        r'\1"ENV_UNSET"\2',
+        r"""^(if \(-not \$env:UCODE_SMART_ROUTER_PYTHON -or -not \$env:UCODE_SESSION_ENV_FILE\) \{ )(?:Write-Output )?(?:"[A-Z_]+"|'[A-Z_]+')(; exit 2 \}; | \} else \{ )""",
+        r'\1Write-Output "ENV_UNSET"\2',
         command,
         count=1,
     )
@@ -41,7 +74,7 @@ def codex_command_approval_pending(screen: str, expected_command: str | tuple[st
     if "Press enter to confirm or esc to cancel" not in dialog:
         return False
     command = re.search(
-        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
+        r"(?ms)^[ \t]*\$ (.*?)\n[ \t]*[›❯>\ufffd][ \t]*1\. Yes, proceed \(y\)[ \t]*$",
         dialog,
     )
     expected_commands = (
@@ -88,6 +121,8 @@ def _claude_background_tasks_complete(text):
     if menu is None:
         return False
     rows = [line.strip() for line in menu[1].splitlines() if line.strip()]
+    if rows and rows[-1] == "Earlier in this session (0)":
+        rows.pop()
     if not rows:
         return False
     completed = re.fullmatch(r"Completed \(([1-9][0-9]*)\)", rows[0])
@@ -107,6 +142,11 @@ class TerminalScreen(pyte.Screen):
         # Real TUIs query cursor position/device attributes during startup.
         # pyte replies according to the terminal state it has actually rendered.
         self.send(data)
+
+    def report_device_status(self, mode, private=False, **kwargs):
+        # Copilot sends the private form (`CSI ? 6 n`), which pyte's Stream passes as `private=True`
+        # but Screen.report_device_status does not accept.
+        super().report_device_status(mode, **kwargs)
 
     @property
     def display(self):
@@ -244,7 +284,13 @@ class TerminalProcess:
         self.agent = agent
         self.name = name
         self.command = command
-        env = {**session.env, "TERM": "xterm-256color"}
+        self.proxy_diagnostics = session.home / f"proxy-{fresh_id()}.log"
+        # Background proxy output can overwrite the native agent's prompt and footer.
+        env = {
+            **session.env,
+            "TERM": "xterm-256color",
+            "UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE": str(self.proxy_diagnostics),
+        }
         if agent == "codex":
             # Seed the sandbox choice so the Codex TUI skips its arrow-key picker.
             session.choose_codex_windows_sandbox()
@@ -282,6 +328,9 @@ class TerminalProcess:
                 "signalstatus": self.child.signalstatus,
                 "normal_exit_observed": self.ended and self.child.exitstatus == 0,
                 "routing_log": routing_log.read_text() if routing_log.is_file() else None,
+                "proxy_diagnostics": self.proxy_diagnostics.read_text(encoding="utf-8")
+                if self.proxy_diagnostics.is_file()
+                else None,
                 "agent_sessions": agent_sessions(self.session, self.agent)
                 if self.agent in ("claude", "codex", "copilot")
                 else {},
@@ -506,22 +555,7 @@ class AgentTerminal(TerminalProcess):
                 ),
                 (
                     "trust-directory",
-                    self.agent == "codex"
-                    and bool(
-                        re.search(
-                            rf"(?m)^\s*>\s+You are in "
-                            rf"{re.escape(str(self.session.cwd.parent))}[\\/][^\\/\r\n]*$",
-                            text,
-                        )
-                    )
-                    and (
-                        "Do you trust the contents of this directory?" in text
-                        or "directory allows project-local config, hooks, and exec policies to load."
-                        in text
-                    )
-                    and bool(re.search(rf"(?m)^\s*{SELECTED}\s*1[.)]\s+Yes, continue\s*$", text))
-                    and bool(re.search(r"(?m)^\s*2[.)]\s+No, quit\s*$", text))
-                    and "Press enter to continue" in text,
+                    self.agent == "codex" and codex_trust_dialog_shown(text, self.session.cwd),
                     "\r",
                 ),
             ]
@@ -550,11 +584,7 @@ class AgentTerminal(TerminalProcess):
                 + text
             )
             # Codex's startup draft precedes hook review and lacks the model/directory footer.
-            if self.agent == "codex" and not re.search(
-                rf"(?m)^[ \t]*[›❯>][ \t]+[^\n]*\n(?:[ \t]*\n)*"
-                rf"[ \t]*\S[^\n]* · [^\n]*{re.escape(self.session.cwd.name)}(?: · [^\n]*)?$",
-                text,
-            ):
+            if self.agent == "codex" and not codex_session_footer_shown(text, self.session.cwd):
                 ready_since = None
                 continue
             title = {

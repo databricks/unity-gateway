@@ -14,10 +14,12 @@ A service principal is used only while the Jamf policy runs, to download the wor
 
 1. A Jamf policy runs `macos-provision.sh` as root, with the workspace URL and the service
    principal's client id and secret as policy parameters.
-2. The script installs the tools under `/usr/local`, exchanges the credentials for a short-lived
-   token, and runs `ug configure --global`, which installs the workspace policy at
-   `/etc/unitygateway/managed-settings.json`. Neither the credentials nor the token are written to
-   disk.
+2. The script installs `ug`, the Databricks CLI and, if needed, Node.js/npm under `/usr/local`,
+   exchanges the credentials for a short-lived token, and runs
+   `ug configure --global --mdm --agents claude,codex`. Unity Gateway uses its built-in npm installer
+   for missing agents, with `npm_config_prefix=/usr/local` so their launchers go in `/usr/local/bin`.
+   It installs the workspace policy at `/etc/unitygateway/managed-settings.json` and records
+   `mdm_os: Mac` for MDM telemetry. Neither the credentials nor the token are written to disk.
 
    `ug` must be installed in a shared path such as `/usr/local/bin`, not under root's home
    directory: `ug configure` records the absolute path to `ug` in the machine-wide agent settings,
@@ -41,8 +43,8 @@ A service principal is used only while the Jamf policy runs, to download the wor
 
 - macOS 12 or later, enrolled in Jamf Pro.
 - Network access to the workspace URL, PyPI (`pypi.org`, `files.pythonhosted.org`), GitHub
-  (`github.com`, `raw.githubusercontent.com`), `astral.sh` and `downloads.claude.ai`. Check DNS or
-  proxy blocklists for these.
+  (`github.com`, `raw.githubusercontent.com`), `astral.sh`, `nodejs.org` and
+  `registry.npmjs.org`. Check DNS or proxy blocklists for these.
 - The Command Line Tools, or permission for the script to install them through `softwareupdate`
   (about 1 GB). `uv` needs `git` to install `ug`.
 
@@ -77,14 +79,22 @@ A service principal is used only while the Jamf policy runs, to download the wor
    **Parameter 6** `Client secret`.
 4. Save.
 
-The script installs Claude Code, Codex and the Databricks CLI only when they're missing, and
-reinstalls `ug` on each run. Codex comes from its release package, which includes the
-`codex-code-mode-host` helper that Code Mode needs: the package goes in
-`/usr/local/unity-gateway/codex`, with `codex` and `codex-code-mode-host` linked into
-`/usr/local/bin`. A Mac with an older Codex install outside that folder gets the package on the next
-run.
-The script doesn't update the agents or the CLI after the first install; to keep them current,
-modify the script to match how you update software on your Macs.
+The script reinstalls `ug` on each run and installs the Databricks CLI only when it's missing.
+If Node.js or npm is missing from the script's shared PATH, it installs the official Node.js
+22.23.5 package after checking its pinned SHA-256 checksum. Node.js 22 supports the macOS versions
+listed above.
+
+`ug configure` reuses existing agents on that PATH, or installs `@anthropic-ai/claude-code` and
+`@openai/codex` through npm for agents available in the workspace. It may configure only one agent
+when the workspace enables only that agent. There are no separate native agent downloads or Code
+Mode helper symlinks. A nonzero configure exit fails the policy.
+Existing agent versions are subject to Unity Gateway's compatibility checks; the script does not
+otherwise update Node.js, the agents or the Databricks CLI.
+
+Macs provisioned by the older script keep their native agent installations; this is not an automatic
+migration to npm. Before moving those Macs to npm, remove the old native installations through your
+software-management process, then rerun the policy. Do not rely on a native agent's updater running
+as root (`HOME=/var/root`) to migrate or maintain the shared installation.
 
 ## 3. Create the policy
 
@@ -105,11 +115,14 @@ Go to **Computers → Policies → New**:
 
 ## 4. Verify on a test Mac
 
-After the policy runs (check the computer's **History → Policy Logs**), as a user, with no sudo:
+After the policy runs (check the computer's **History → Policy Logs**), as a user, with no sudo.
+Check only the agents enabled in your workspace:
 
 ```bash
-ls -l /usr/local/bin/{ug,databricks,claude,codex,codex-code-mode-host}
-cat /etc/unitygateway/managed-settings.json      # your workspace's policy
+ls -l /usr/local/bin/{ug,databricks,node,npm,claude,codex}
+command claude --version
+command codex --version
+cat /etc/unitygateway/managed-settings.json      # workspace policy and "mdm_os": "Mac"
 alias claude codex                               # in a new terminal: the UG aliases
 claude
 ```

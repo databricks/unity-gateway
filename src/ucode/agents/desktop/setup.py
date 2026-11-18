@@ -22,7 +22,7 @@ from ucode.config_io import is_dry_run
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, MODEL_SERVICE_PARENT_SCHEMA_HEADER
 from ucode.databricks import build_tool_base_url, get_databricks_token, list_anthropic_model_catalog
 from ucode.managed_files import ManagedFileWriteUnavailable, machine_wide_only
-from ucode.state import get_provider_service
+from ucode.state import desktop_uses_claude_subscription_relay, get_provider_service
 from ucode.string_utils import model_picker_label
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import workspace_headers, workspace_id_args
@@ -125,14 +125,15 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
         raise RuntimeError("Claude Desktop profile configuration is unavailable on this platform.")
     if sys.platform != "darwin" and not can_initialize_claude_desktop_directory(directory):
         raise RuntimeError("Open Claude Desktop once, then run ug configure again.")
-    relayed = bool(state.get("claude_relayed"))
+    relayed = desktop_uses_claude_subscription_relay(state)
     claude_binary = None
     if relayed:
         claude_binary = shutil.which("claude")
         if not claude_binary or not os.path.isabs(claude_binary):
             raise RuntimeError("Install Claude Code before configuring subscription relay.")
-    if state.get("custom_oauth") or state.get("use_pat"):
-        raise RuntimeError("Desktop currently requires a Databricks CLI OAuth profile.")
+    if state.get("custom_oauth"):
+        raise RuntimeError("Desktop does not support custom OAuth profiles yet.")
+    use_pat = bool(state.get("use_pat"))
     workspace = state.get("workspace")
     profile = state.get("profile")
     if not isinstance(workspace, str) or not workspace:
@@ -154,6 +155,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
             "--profile",
             profile,
             *(["--relay", "--claude-binary", claude_binary] if claude_binary else []),
+            *(["--use-pat"] if use_pat else []),
         ],
         otel_headers_command=[
             os.path.abspath(sys.executable),
@@ -165,6 +167,7 @@ def _configure_claude_desktop_user_level(state: dict, *, parent_schema: str | No
             *workspace_id_args(workspace),
             "--profile",
             profile,
+            *(["--use-pat"] if use_pat else []),
         ],
         profile_key=profile,
     )

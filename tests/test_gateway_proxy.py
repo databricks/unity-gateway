@@ -124,6 +124,24 @@ class TestIsDatabricksRoutedModel:
         assert not gateway_proxy.is_databricks_routed_model("")
 
 
+class TestIsUcModelService:
+    def test_three_part_names_are_model_services(self):
+        for model in ("my_catalog.my_schema.my_model", "main.default.claude_seat_fallback"):
+            assert gateway_proxy.is_uc_model_service(model), model
+
+    def test_databricks_hosted_ids_are_not_model_services(self):
+        for model in (
+            "system.ai.claude-opus-4-8",
+            "system.ai.gpt-oss-120b",
+            "databricks-meta-llama-3-3-70b-instruct",
+        ):
+            assert not gateway_proxy.is_uc_model_service(model), model
+
+    def test_bare_and_missing_ids_are_not_model_services(self):
+        for model in ("claude-opus-4-1", "claude-3-7-sonnet-20250219", "a.b", "", None):
+            assert not gateway_proxy.is_uc_model_service(model), model
+
+
 class TestRequestModel:
     def test_extracts_model_from_json_body(self):
         assert gateway_proxy._request_model(b'{"model": "system.ai.x", "n": 1}') == "system.ai.x"
@@ -281,6 +299,53 @@ class TestRelayResponseClientDisconnect:
         assert capsys.readouterr().err == ""
 
 
+class TestProxyDiagnosticFile:
+    def test_appends_concurrent_events_without_terminal_output(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / "proxy.log"
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(path))
+        gateway_proxy.log_proxy_diagnostic("request_start", request_id="first")
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(
+                pool.map(
+                    lambda i: gateway_proxy.log_proxy_diagnostic("response_complete", request_id=i),
+                    range(20),
+                )
+            )
+
+        events = [
+            json.loads(line.removeprefix("[ucode-relay] "))
+            for line in path.read_text().splitlines()
+        ]
+        assert isinstance(events[0].pop("timestamp_ms"), int)
+        assert events[0] == {"event": "request_start", "request_id": "first"}
+        assert len(events) == 21
+        assert {event["request_id"] for event in events[1:]} == set(range(20))
+        assert capsys.readouterr().err == ""
+
+    def test_file_destination_does_not_enable_diagnostics(self, tmp_path, monkeypatch, capsys):
+        path = tmp_path / "proxy.log"
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "0")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(path))
+        gateway_proxy.log_proxy_diagnostic("request_start")
+        assert not path.exists()
+        assert capsys.readouterr().err == ""
+
+    def test_unwritable_file_preserves_response_and_stderr_evidence(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.setenv("UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE", str(tmp_path))
+        output = _Collect()
+        _relay_handler(output)._relay_response(_FakeResponse(200, {}, [b"ok"]))
+        assert output.data.endswith(b"ok")
+        stderr = capsys.readouterr().err
+        assert "Could not write proxy diagnostics file; using stderr" in stderr
+        event = json.loads(stderr.splitlines()[-1].removeprefix("[ucode-relay] "))
+        assert event["event"] == "response_complete"
+        assert event["status"] == 200
+
+
 class TestJwtExp:
     def test_extracts_exp(self):
         assert gateway_proxy._jwt_exp(_make_jwt(1234567890.0)) == 1234567890.0
@@ -417,7 +482,7 @@ class _FakeClient:
         self.sent_tokens: list[str | None] = []
         self.sent_headers: list[dict] = []
 
-    def stream(self, _method, _url, headers, content):
+    def stream(self, _method, _url, headers, content, extensions=None):
         self.sent_tokens.append(headers.get(gateway_proxy.AI_GATEWAY_TOKEN_HEADER))
         self.sent_headers.append(headers)
         return self._responses.pop(0)
@@ -487,6 +552,106 @@ class _Collect(io.RawIOBase):
 
 
 class TestRetryOn401:
+    def test_transport_failure_omits_exception_message_and_returns_502_without_retry(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        monkeypatch.delenv(gateway_proxy._DIAGNOSTICS_FILE_ENV, raising=False)
+
+        class FailingClient:
+            calls = 0
+
+            def stream(self, *args, extensions, **kwargs):
+                self.calls += 1
+                error = httpx.ReadTimeout("private-upstream-error")
+                extensions["trace"]("http11.receive_response_headers.failed", {"exception": error})
+                raise error
+
+        client = FailingClient()
+        cache = _FakeCache()
+        output = _Collect()
+        _handle_handler(client, cache, output)._handle()
+
+        logged = capsys.readouterr().err
+        events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
+        assert [event["event"] for event in events] == [
+            "request_start",
+            "upstream_request_start",
+            "upstream_transport",
+            "upstream_request_error",
+        ]
+        transport = events[2]
+        assert transport["phase"] == "http11.receive_response_headers.failed"
+        assert transport["attempt"] == 1
+        assert transport["elapsed_ms"] >= 0
+        assert len({event["request_id"] for event in events}) == 1
+        assert events[-1]["error_type"] == "ReadTimeout"
+        assert "private-upstream-error" not in logged
+        assert bytes(output.data).startswith(b"HTTP/1.0 502 ")
+        assert b"gateway proxy upstream error" in output.data
+        assert b"private-upstream-error" not in output.data
+        assert client.calls == 1
+        assert cache.refreshed == 0
+
+    def test_diagnostics_separate_token_preparation_from_upstream_attempts(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setenv(gateway_proxy._DIAGNOSTICS_ENV, "1")
+        elapsed = [0.0]
+        monkeypatch.setattr(gateway_proxy.time, "monotonic", lambda: elapsed[0])
+
+        class TimedCache(_FakeCache):
+            def token_snapshot(self):
+                elapsed[0] = 1.0
+                return super().token_snapshot()
+
+            def refresh(self, **kwargs):
+                elapsed[0] = 3.0
+                return super().refresh(**kwargs)
+
+        class TimedClient(_FakeClient):
+            def stream(self, *args, **kwargs):
+                elapsed[0] += 1.0
+                return super().stream(*args, **kwargs)
+
+        class TimedHeaders(dict):
+            def items(self):
+                elapsed[0] += 0.25
+                return super().items()
+
+        client = TimedClient([_FakeResp(401), _FakeResp(200, b"private-response")])
+        output = _Collect()
+        handler = _handle_handler(client, TimedCache(), output)
+        handler.headers = TimedHeaders(
+            {"Authorization": "Bearer private-token", "Content-Length": "15"}
+        )
+        handler.rfile = io.BytesIO(b"private-request")
+        started_ms = int(time.time() * 1000)
+        handler._handle()
+
+        logged = capsys.readouterr().err
+        events = [json.loads(line.removeprefix("[ucode-relay] ")) for line in logged.splitlines()]
+        assert [event["event"] for event in events] == [
+            "request_start",
+            "upstream_request_start",
+            "upstream_headers",
+            "upstream_request_start",
+            "upstream_headers",
+            "response_complete",
+        ]
+        assert [(event["attempt"], event["elapsed_ms"]) for event in events[1:-1]] == [
+            (1, 1250),
+            (1, 2250),
+            (2, 3250),
+            (2, 4250),
+        ]
+        assert len({event["request_id"] for event in events}) == 1
+        assert all(
+            started_ms <= event["timestamp_ms"] <= int(time.time() * 1000) for event in events
+        )
+        assert "private-" not in logged
+        assert bytes(output.data).endswith(b"private-response")
+
     @pytest.mark.parametrize("status", [401, 403])
     @pytest.mark.parametrize("same_token", [False, True])
     def test_concurrent_rejections_share_one_refresh(self, status, same_token):
@@ -669,8 +834,11 @@ class TestStartProxyPortFallback:
             occupied.close()
 
 
-def _relayed_oss_handler(client, cache, wfile, *, headers, body) -> gateway_proxy._ProxyHandler:
+def _relayed_oss_handler(
+    client, cache, wfile, *, headers, body, routes_to_subscription_relay=None
+) -> gateway_proxy._ProxyHandler:
     h = object.__new__(gateway_proxy._RelayProxyHandler)
+    h.routes_to_subscription_relay = routes_to_subscription_relay
     h.client = client
     h.cache = cache
     h.token_header = gateway_proxy.AI_GATEWAY_TOKEN_HEADER
@@ -724,6 +892,80 @@ class TestRelayedOssRouting:
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert sent["Databricks-Model-Provider-Service"] == "cat.s.relayed_mps"
+
+
+class TestRelayedModelServiceRouting:
+    def test_relay_backed_model_service_keeps_oauth_and_swap_without_mps(self):
+        # A UC model service that routes to a relayed provider: the OAuth stays in
+        # Authorization, the swap header carries the Databricks token, and the MPS header
+        # is dropped so the service's own routing chooses the destination.
+        asked: list[tuple[str, str]] = []
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=TestRelayedOssRouting._CLIENT_HEADERS,
+            body=b'{"model": "my_catalog.my_schema.claude_seat_fallback"}',
+            routes_to_subscription_relay=lambda model, token: asked.append((model, token)) or True,
+        )._handle()
+        sent = client.sent_headers[0]
+        assert asked == [("my_catalog.my_schema.claude_seat_fallback", "tok1")]
+        assert sent["Authorization"] == "Bearer anthropic-oauth"
+        assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
+        assert "Databricks-Model-Provider-Service" not in sent
+
+    @pytest.mark.parametrize("routes_to_subscription_relay", [None, lambda _m, _t: False])
+    def test_model_service_not_backed_by_a_relay_routes_to_gateway_auth(
+        self, routes_to_subscription_relay
+    ):
+        # The gateway rejects a relayed request to a non-relayed MPS, so a service backed by an
+        # api-key MPS (or one whose lookup failed) takes the gateway-auth path.
+        client = _FakeClient([_FakeResp(200, b"ok")])
+        _relayed_oss_handler(
+            client,
+            _FakeCache(),
+            _Collect(),
+            headers=TestRelayedOssRouting._CLIENT_HEADERS,
+            body=b'{"model": "my_catalog.my_schema.api_key_claude"}',
+            routes_to_subscription_relay=routes_to_subscription_relay,
+        )._handle()
+        sent = client.sent_headers[0]
+        assert sent["Authorization"] == "Bearer tok1"
+        assert gateway_proxy.AI_GATEWAY_TOKEN_HEADER not in sent
+        assert "Databricks-Model-Provider-Service" not in sent
+
+    def test_hosted_and_bare_models_skip_the_relay_lookup(self):
+        def no_lookup(_model, _token):
+            pytest.fail("only UC model services are looked up")
+
+        for model in (b"system.ai.claude-opus-4-8", b"claude-sonnet-4-5"):
+            client = _FakeClient([_FakeResp(200, b"ok")])
+            _relayed_oss_handler(
+                client,
+                _FakeCache(),
+                _Collect(),
+                headers=TestRelayedOssRouting._CLIENT_HEADERS,
+                body=b'{"model": "' + model + b'"}',
+                routes_to_subscription_relay=no_lookup,
+            )._handle()
+
+
+class TestClaudeRelayProxyWiring:
+    def test_relay_lookup_reaches_the_handler(self, monkeypatch):
+        cache = Mock(token="tok1")
+        cache.token_snapshot.return_value = ("tok1", 1)
+        monkeypatch.setattr(gateway_proxy, "TokenCache", lambda *_a, **_k: cache)
+
+        def lookup(_model, _token):
+            return True
+
+        server, _cache, upstream = gateway_proxy.start_relay_proxy(
+            "https://w", lambda _f: "t", 0, routes_to_subscription_relay=lookup
+        )
+        server.server_close()
+        upstream.close()
+        assert server.RequestHandlerClass.routes_to_subscription_relay is lookup
 
 
 class TestCodexRelayProxy:
