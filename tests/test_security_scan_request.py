@@ -3,6 +3,7 @@
 import json
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,15 @@ BASE = "b" * 40
 RUN_ID = 123
 
 
-def _resolve(tmp_path, monkeypatch, change=None, notification=None, run_error=None):
+def _resolve(
+    tmp_path,
+    monkeypatch,
+    change=None,
+    notification=None,
+    run_error=None,
+    pending_titles=(),
+    retry_change=None,
+):
     request = {
         "id": RUN_ID,
         "event": "pull_request",
@@ -48,12 +57,22 @@ def _resolve(tmp_path, monkeypatch, change=None, notification=None, run_error=No
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("REPO", "databricks/unity-gateway")
 
+    titles = iter(pending_titles)
+    sleeps = []
+    run_lookups = 0
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
     def fetch(args, timeout):
+        nonlocal run_lookups
         assert timeout == 30
         if args == ["gh", "api", f"repos/databricks/unity-gateway/actions/runs/{RUN_ID}"]:
             if run_error:
                 raise run_error
-            return json.dumps(request).encode()
+            run_lookups += 1
+            response = dict(request, display_title=next(titles, request["display_title"]))
+            if retry_change and run_lookups > 1:
+                response.update(retry_change)
+            return json.dumps(response).encode()
         assert args == ["gh", "api", "repos/databricks/unity-gateway/pulls/7"]
         return json.dumps(pr).encode()
 
@@ -62,6 +81,7 @@ def _resolve(tmp_path, monkeypatch, change=None, notification=None, run_error=No
     script = textwrap.dedent(resolve.split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
     exec(compile(script, "security-scan.yml", "exec"), {})
+    assert sleeps == [5] * len(pending_titles)
     return json.loads(output.read_text().removeprefix("metadata="))
 
 
@@ -89,6 +109,54 @@ def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch, notific
         "head_repo": "external/fork",
         "labels": ["reviewed"],
     }
+
+
+@pytest.mark.parametrize("pending_titles", [("PR title",), ("", "PR title"), ("PR title",) * 6])
+def test_trusted_scan_waits_for_evaluated_run_title(tmp_path, monkeypatch, pending_titles):
+    metadata = _resolve(tmp_path, monkeypatch, pending_titles=pending_titles)
+    assert metadata["head_sha"] == HEAD
+    assert metadata["author_association"] == "NONE"
+
+
+def test_trusted_scan_title_retry_is_bounded(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit, match="display_title"):
+        _resolve(tmp_path, monkeypatch, pending_titles=("PR title",) * 7)
+    assert capsys.readouterr().out.count("retrying in 5 seconds") == 6
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ("pr", ("head", "sha"), "c" * 40),
+        ("pr", ("head", "repo", "id"), 99),
+        ("pr", ("head", "ref"), "another-branch"),
+        ("request", ("event",), "push"),
+        ("request", ("path",), ".github/workflows/other.yml"),
+        ("request", ("id",), RUN_ID + 1),
+    ],
+)
+def test_trusted_scan_title_retry_preserves_identity_checks(tmp_path, monkeypatch, change):
+    with pytest.raises(SystemExit):
+        _resolve(tmp_path, monkeypatch, change=change, pending_titles=("PR title",))
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "retry_change",
+    [
+        {"id": RUN_ID + 1},
+        {"event": "push"},
+        {"path": ".github/workflows/other.yml"},
+        {"head_sha": "c" * 40},
+        {"head_repository": {"id": 99}},
+        {"head_branch": "another-branch"},
+    ],
+)
+def test_trusted_scan_revalidates_response_after_title_retry(tmp_path, monkeypatch, retry_change):
+    with pytest.raises(SystemExit):
+        _resolve(tmp_path, monkeypatch, pending_titles=("PR title",), retry_change=retry_change)
+    assert not (tmp_path / "output").exists()
 
 
 @pytest.mark.parametrize("run_id", [None, 0, -1, "123", True])
