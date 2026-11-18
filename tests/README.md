@@ -3,8 +3,9 @@
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
 Checks resolve external and pay-per-token destinations using selected credentials;
-preserve service request IDs; inherit native GPT metadata or known-model fallback capabilities;
-and warn on unreadable, incomplete, or incompatible destinations. Error and budget fallbacks
+preserve service request IDs; inherit native metadata or known-model fallback capabilities;
+intersect mixed-model capabilities; reject incompatible reasoning/input combinations;
+and warn on unreadable or incomplete destinations. Error and budget fallbacks
 participate in compatibility checks; idle/deleted destinations do not. Workspace-selector headers
 are covered in `test_workspace_selection.py`. Provisioned endpoint identities remain unresolved.
 Recovery checks cover failed metadata authentication, the shared lookup-time budget, and
@@ -16,6 +17,10 @@ generated native metadata with a `medium` default; `ug codex exec` completed a s
 and returned its hidden value without an effort override. Only the admin CodingAgentConfig
 input used the existing fixture hook; destination lookup and inference were live.
 A forwarding recorder confirmed the full service ID, `medium` effort, and HTTP 200 responses.
+The same arclet also validated two 50/50 pay-per-token destinations (GPT-6 Luna and GPT-6.1 Sol):
+the shared catalog passed native validation and completed the hidden-file task with `medium`
+on the wire. The mixed primary/error/budget-fallback regression failed against the previous
+implementation (`none` instead of shared `high`).
 
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and

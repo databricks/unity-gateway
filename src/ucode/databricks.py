@@ -3336,14 +3336,14 @@ def model_service_backing_model(service: dict) -> str | None:
 def model_service_primary_providers(service: dict) -> list[str]:
     """The Model Provider Services behind ``service``'s live primary destinations."""
     providers: list[str] = []
-    for destination in _model_service_primary_destinations(service) or []:
+    for destination in _model_service_primary_destinations(service, strict=False) or []:
         provider = (destination.get("external_model_config") or {}).get("model_provider_service")
         if isinstance(provider, str) and provider:
             providers.append(provider.removeprefix("model-provider-services/"))
     return providers
 
 
-def _model_service_primary_destinations(service: dict) -> list[dict] | None:
+def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
     config = service.get("config")
     routing = config.get("routing") if isinstance(config, dict) else None
     if not isinstance(routing, dict):
@@ -3354,14 +3354,18 @@ def _model_service_primary_destinations(service: dict) -> list[dict] | None:
     destinations = []
     for destination in primary:
         if not isinstance(destination, dict):
-            return None
+            if strict:
+                return None
+            continue
         if destination.get("is_deleted"):
             continue
         traffic = destination.get("traffic_percentage")
         if traffic is None:
             traffic = 100 if len(primary) == 1 else 0
         if not isinstance(traffic, (int, float)):
-            return None
+            if strict:
+                return None
+            continue
         if traffic > 0:
             destinations.append(destination)
     return destinations

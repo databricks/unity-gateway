@@ -150,7 +150,9 @@ def test_legacy_gpt_alias_uses_native_metadata(bundled):
 
 def test_custom_services_use_destination_metadata_and_keep_request_identity(bundled):
     names = ["mlops_ont.models.codegen-gpt-6-luna", "main.team.opaque", "main.team.gpt-4o"]
-    targets = dict(zip(names, ["gpt-6-astra", "system.ai.kimi-k3", "gpt-6.1-sol"], strict=True))
+    targets = dict(
+        zip(names, [["gpt-6-astra"], ["system.ai.kimi-k3"], ["gpt-6.1-sol"]], strict=True)
+    )
     original = copy.deepcopy(bundled)
 
     models = catalog.build_codex_catalog(bundled, names, model_ids=targets)["models"]
@@ -173,7 +175,7 @@ def test_custom_services_use_destination_metadata_and_keep_request_identity(bund
 @pytest.mark.parametrize("target", ["gpt-4o", "unknown-deployment"])
 def test_destination_identity_overrides_misleading_gpt_service_name(bundled, target):
     name = "main.team.gpt-6-astra"
-    model = catalog.build_codex_catalog(bundled, [name], model_ids={name: target})["models"][0]
+    model = catalog.build_codex_catalog(bundled, [name], model_ids={name: [target]})["models"][0]
 
     assert model["slug"] == name
     assert model["default_reasoning_level"] == "none"
@@ -183,7 +185,7 @@ def test_destination_identity_overrides_misleading_gpt_service_name(bundled, tar
 @pytest.mark.parametrize("target", ["system.ai.databricks-gpt-6-astra", "databricks-gpt-6-astra"])
 def test_destination_model_resource_uses_native_metadata(bundled, target):
     name = "main.team.opaque"
-    models = catalog.build_codex_catalog(bundled, [name], model_ids={name: target})["models"]
+    models = catalog.build_codex_catalog(bundled, [name], model_ids={name: [target]})["models"]
 
     assert [model["slug"] for model in models] == [name]
     assert models[0]["base_instructions"] == bundled[2]["base_instructions"]
@@ -226,6 +228,137 @@ def test_multiple_destinations_with_same_model_use_native_metadata(monkeypatch, 
 
     assert result["models"][0]["slug"] == "main.team.opaque"
     assert result["models"][0]["base_instructions"] == bundled[2]["base_instructions"]
+
+
+def test_mixed_destinations_use_only_shared_capabilities(bundled):
+    first = {
+        **bundled[1],
+        "default_reasoning_level": "high",
+        "supported_reasoning_levels": catalog._reasoning_levels(["low", "medium", "high", "max"]),
+        "context_window": 64000,
+        "max_context_window": 128000,
+        "effective_context_window_percent": 80,
+        "additional_speed_tiers": ["fast"],
+        "experimental_supported_tools": ["clock", "other"],
+        "supports_search_tool": True,
+        "support_verbosity": True,
+        "node_repl_disabled": True,
+        "use_responses_lite": True,
+        "service_tiers": [{"id": "priority"}],
+    }
+    second = {
+        **bundled[2],
+        "default_reasoning_level": "medium",
+        "supported_reasoning_levels": catalog._reasoning_levels(["medium", "high", "xhigh"]),
+        "context_window": 96000,
+        "max_context_window": 192000,
+        "effective_context_window_percent": 75,
+        "input_modalities": ["text"],
+        "additional_speed_tiers": ["fast", "other"],
+        "experimental_supported_tools": ["clock"],
+        "use_responses_lite": True,
+        "service_tiers": [{"id": "priority"}, {"id": "other"}],
+    }
+    baseline = {**bundled[0], "default_service_tier": "priority", "node_repl_disabled": False}
+    native = [baseline, first, second]
+    original = copy.deepcopy(native)
+    name = "main.team.opaque"
+
+    result = catalog.build_codex_catalog(
+        native,
+        [name],
+        model_ids={name: [first["slug"], second["slug"]]},
+    )["models"]
+
+    assert [model["slug"] for model in result] == [name]
+    model = result[0]
+    assert model["default_reasoning_level"] == "medium"
+    assert [level["effort"] for level in model["supported_reasoning_levels"]] == ["medium", "high"]
+    assert model["input_modalities"] == ["text"]
+    assert (model["context_window"], model["max_context_window"]) == (64000, 128000)
+    assert model["effective_context_window_percent"] == 75
+    assert model["additional_speed_tiers"] == ["fast"]
+    assert model["experimental_supported_tools"] == ["clock"]
+    assert model["service_tiers"] == [{"id": "priority"}]
+    assert model["use_responses_lite"] is True
+    assert model["supports_search_tool"] is False
+    assert model["support_verbosity"] is False
+    assert model["default_verbosity"] is None
+    assert model["default_service_tier"] is None
+    assert model["node_repl_disabled"] is True
+    assert model["tool_mode"] is None
+    assert model["multi_agent_version"] is None
+    assert model["base_instructions"] == baseline["base_instructions"]
+    assert native == original
+
+
+@pytest.mark.parametrize(
+    "targets,expected_default,expected_efforts",
+    [
+        (["gpt-6-astra", "gpt-5.6-sol"], "high", ["high"]),
+        (["gpt-99", "gpt-98"], "medium", ["low", "medium", "high"]),
+        (["gpt-99", "system.ai.kimi-k3"], "low", ["low", "high"]),
+    ],
+)
+def test_mixed_reasoning_uses_shared_native_or_fallback_levels(
+    bundled, targets, expected_default, expected_efforts
+):
+    name = "main.team.opaque"
+    model = catalog.build_codex_catalog(bundled, [name], model_ids={name: targets})["models"][0]
+
+    assert model["default_reasoning_level"] == expected_default
+    assert [level["effort"] for level in model["supported_reasoning_levels"]] == expected_efforts
+
+
+def test_mixed_destinations_without_shared_effort_fail_actionably(bundled):
+    with pytest.raises(RuntimeError, match="no reasoning effort supported by every destination"):
+        catalog.build_codex_catalog(
+            bundled, ["main.team.opaque"], model_ids={"main.team.opaque": ["gpt-6-astra", "gpt-4o"]}
+        )
+
+
+def test_mixed_destinations_without_shared_input_fail_actionably(bundled):
+    bundled[1]["input_modalities"] = ["text"]
+    bundled[2]["input_modalities"] = ["image"]
+    with pytest.raises(RuntimeError, match="no input modality supported by every destination"):
+        catalog.build_codex_catalog(
+            bundled,
+            ["main.team.opaque"],
+            model_ids={"main.team.opaque": ["gpt-5.6-sol", "gpt-6-astra"]},
+        )
+
+
+def test_mixed_primary_and_fallback_models_are_resolved(monkeypatch, bundled):
+    def destination(model):
+        return {"external_model_config": {"target": {"model": model}}}
+
+    service = {
+        "config": {
+            "routing": {
+                "destinations": [destination("gpt-6-astra")],
+                "fallback": {"destinations": [destination("gpt-5.6-sol")]},
+                "budget_fallbacks": [{"destination": destination("gpt-99")}],
+            }
+        }
+    }
+    monkeypatch.setattr(catalog, "get_model_service", lambda *a, **kw: (service, None))
+    monkeypatch.setattr(
+        catalog,
+        "_run_catalog_command",
+        lambda *a: subprocess.CompletedProcess([], 0, json.dumps({"models": bundled})),
+    )
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex",
+        ["main.team.opaque"],
+        workspace="https://selected",
+        get_token=lambda: "token",
+    )
+
+    model = result["models"][0]
+    assert model["slug"] == "main.team.opaque"
+    assert [level["effort"] for level in model["supported_reasoning_levels"]] == ["high"]
+    assert model["default_reasoning_level"] == "high"
 
 
 def test_prepare_catalog_resolves_custom_destinations_with_selected_credentials(
@@ -282,27 +415,8 @@ def test_prepare_catalog_resolves_custom_destinations_with_selected_credentials(
     [
         (None, "HTTP 403"),
         ({"config": {}}, None),
-        (
-            {
-                "config": {
-                    "routing": {
-                        "destinations": [
-                            {
-                                "traffic_percentage": 50,
-                                "external_model_config": {"target": {"model": "gpt-6-astra"}},
-                            },
-                            {
-                                "traffic_percentage": 50,
-                                "external_model_config": {"target": {"model": "gpt-4o"}},
-                            },
-                        ]
-                    }
-                }
-            },
-            None,
-        ),
     ],
-    ids=["unreadable", "unresolved", "different-models"],
+    ids=["unreadable", "unresolved"],
 )
 def test_unresolved_destinations_warn_without_guessing_metadata(
     monkeypatch, bundled, service, reason
@@ -326,7 +440,7 @@ def test_unresolved_destinations_warn_without_guessing_metadata(
     assert result["models"][0]["default_reasoning_level"] == "none"
     assert len(warnings) == 1
     assert "Could not resolve Codex metadata" in warnings[0]
-    assert (reason or "single backing model") in warnings[0]
+    assert (reason or "backing model identities") in warnings[0]
 
 
 def test_native_models_do_not_require_destination_lookup(monkeypatch, bundled):

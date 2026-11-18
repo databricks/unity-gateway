@@ -26,6 +26,7 @@ _TIMEOUT_SECONDS = 30
 _SERVICE_LOOKUP_SECONDS = 5
 _GPT_FALLBACK_EFFORTS = ("low", "medium", "high")
 _PRE_REASONING_GPT_PREFIXES = ("gpt-3", "gpt-4")
+_DEFAULT_CONTEXT_WINDOW = 32768
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -40,8 +41,8 @@ _HOSTED_CAPABILITIES = {
 }
 _HOSTED_DEFAULTS = {
     "input_modalities": ["text"],
-    "context_window": 32768,
-    "max_context_window": 32768,
+    "context_window": _DEFAULT_CONTEXT_WINDOW,
+    "max_context_window": _DEFAULT_CONTEXT_WINDOW,
     "default_reasoning_level": "none",
     "supported_reasoning_levels": [{"effort": "none", "description": "Default model behavior"}],
     "default_reasoning_summary": "none",
@@ -79,12 +80,116 @@ def _reasoning_levels(efforts) -> list[dict]:
     ]
 
 
+def _fallback_metadata(
+    name: str, model_id: str, bundled_models: list[dict], warn: Callable[[str], None] | None
+) -> dict:
+    key = _model_key(model_id)
+    missing_gpt = key.startswith("gpt-")
+    if missing_gpt and warn is not None:
+        warn(
+            f"Codex is missing metadata for managed GPT model '{name}', so UG is "
+            "falling back to default metadata. Try updating Codex with `ug codex update`."
+        )
+    baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
+    if baseline is None:
+        raise RuntimeError(
+            f"Codex has no ordinary-tool bundled model to base '{name}' on. Upgrade or reinstall Codex."
+        )
+    model = copy.deepcopy(baseline)
+    model.update(copy.deepcopy(_HOSTED_DEFAULTS))
+    # Pre-GPT-5 models reject reasoning efforts, so they keep the none-only default.
+    if missing_gpt and not key.startswith(_PRE_REASONING_GPT_PREFIXES):
+        model.update(
+            default_reasoning_level="medium",
+            supported_reasoning_levels=_reasoning_levels(_GPT_FALLBACK_EFFORTS),
+        )
+    capabilities = _HOSTED_CAPABILITIES.get(key)
+    if capabilities:
+        modalities, efforts = capabilities
+        model.update(
+            input_modalities=list(modalities),
+            context_window=1048576,
+            max_context_window=1048576,
+            default_reasoning_level=efforts[-1],
+            supported_reasoning_levels=_reasoning_levels(efforts),
+        )
+    model["description"] = f"{name} served on the Databricks Unity Gateway."
+    model["display_name"] = model_picker_label(name)
+    return model
+
+
+def _shared_metadata(name: str, model: dict, destinations: list[dict]) -> dict:
+    """Use ordinary tools and capabilities supported by every destination."""
+    efforts = [
+        level["effort"]
+        for level in destinations[0]["supported_reasoning_levels"]
+        if all(
+            any(other["effort"] == level["effort"] for other in item["supported_reasoning_levels"])
+            for item in destinations[1:]
+        )
+    ]
+    if not efforts:
+        raise RuntimeError(
+            f"Model service '{name}' has no reasoning effort supported by every destination. "
+            "Use separate model services for incompatible models."
+        )
+    defaults = {item.get("default_reasoning_level") for item in destinations}
+    default = next(iter(defaults)) if len(defaults) == 1 else None
+    if default not in efforts:
+        default = "medium" if "medium" in efforts else efforts[0]
+    model["supported_reasoning_levels"] = _reasoning_levels(efforts)
+    model["default_reasoning_level"] = default
+    for field in (
+        "input_modalities",
+        "additional_speed_tiers",
+        "service_tiers",
+        "experimental_supported_tools",
+    ):
+        model[field] = [
+            value
+            for value in destinations[0].get(field, [])
+            if all(value in item.get(field, []) for item in destinations[1:])
+        ]
+    if not model["input_modalities"]:
+        raise RuntimeError(
+            f"Model service '{name}' has no input modality supported by every destination. "
+            "Use separate model services for incompatible models."
+        )
+    for field in ("context_window", "max_context_window"):
+        model[field] = min(
+            item.get(field) or item.get("context_window") or _DEFAULT_CONTEXT_WINDOW
+            for item in destinations
+        )
+    model["effective_context_window_percent"] = min(
+        item.get("effective_context_window_percent") or 95 for item in destinations
+    )
+    for field in (
+        "supports_image_detail_original",
+        "supports_search_tool",
+        "supports_experimental_context",
+        "support_verbosity",
+        "use_responses_lite",
+        "supports_reasoning_effort_updates",
+    ):
+        if field in model:
+            model[field] = all(item.get(field, False) for item in destinations)
+    if "image" not in model["input_modalities"]:
+        model["supports_image_detail_original"] = False
+    for field in ("node_repl_disabled", "node_repl_auto_review_required"):
+        if field in model:
+            model[field] = any(item.get(field, False) for item in destinations)
+    model["default_verbosity"] = "medium" if model["support_verbosity"] else None
+    if "default_service_tier" in model:
+        model["default_service_tier"] = None
+    return model
+
+
 def build_codex_catalog(
     bundled_models: list[dict],
     names: list[str],
     *,
     warn: Callable[[str], None] | None = None,
-    model_ids: dict[str, str] | None = None,
+    model_ids: dict[str, list[str]] | None = None,
 ) -> dict:
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
@@ -97,46 +202,24 @@ def build_codex_catalog(
     by_key = {_model_key(slug): model for slug, model in by_slug.items()}
     models = []
     for name in dict.fromkeys(names):
-        model_id = (model_ids or {}).get(name, name)
-        native = by_slug.get(model_id) or by_key.get(_model_key(model_id))
-        if native is not None:
-            model = copy.deepcopy(native)
-        else:
-            key = _model_key(model_id)
-            missing_gpt = key.startswith("gpt-")
-            # Pre-GPT-5 models reject reasoning efforts, so they keep the none-only default.
-            missing_reasoning_gpt = missing_gpt and not key.startswith(_PRE_REASONING_GPT_PREFIXES)
-            if missing_gpt and warn is not None:
-                warn(
-                    f"Codex is missing metadata for managed GPT model '{name}', so UG is "
-                    "falling back to default metadata. Try updating Codex with "
-                    "`ug codex update`."
-                )
-            baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
-            if baseline is None:
-                raise RuntimeError(
-                    f"Codex has no ordinary-tool bundled model to base '{name}' on. "
-                    "Upgrade or reinstall Codex."
-                )
-            model = copy.deepcopy(baseline)
-            model.update(copy.deepcopy(_HOSTED_DEFAULTS))
-            if missing_reasoning_gpt:
-                model.update(
-                    default_reasoning_level="medium",
-                    supported_reasoning_levels=_reasoning_levels(_GPT_FALLBACK_EFFORTS),
-                )
-            capabilities = _HOSTED_CAPABILITIES.get(_model_key(model_id))
-            if capabilities:
-                modalities, efforts = capabilities
-                model.update(
-                    input_modalities=list(modalities),
-                    context_window=1048576,
-                    max_context_window=1048576,
-                    default_reasoning_level=efforts[-1],
-                    supported_reasoning_levels=_reasoning_levels(efforts),
-                )
-            model["description"] = f"{name} served on the Databricks Unity Gateway."
-            model["display_name"] = model_picker_label(name)
+        targets = list(
+            {
+                _model_key(target): target for target in ((model_ids or {}).get(name) or [name])
+            }.values()
+        )
+        destinations = []
+        for model_id in targets:
+            native = by_slug.get(model_id) or by_key.get(_model_key(model_id))
+            destinations.append(
+                copy.deepcopy(native)
+                if native is not None
+                else _fallback_metadata(name, model_id, bundled_models, warn)
+            )
+        model = destinations[0]
+        if len(destinations) > 1:
+            model = _shared_metadata(
+                name, _fallback_metadata(name, name, bundled_models, None), destinations
+            )
         model.update(
             slug=name,
             visibility=ModelVisibility.LIST,
@@ -207,7 +290,7 @@ def _model_service_model_ids(
     names: list[str],
     workspace: str | None,
     get_token: Callable[[], str] | None,
-) -> dict[str, str]:
+) -> dict[str, list[str]]:
     services = list(dict.fromkeys(custom_model_services(names)))
     if not services or not workspace or get_token is None:
         return {}
@@ -229,10 +312,10 @@ def _model_service_model_ids(
             else (None, "metadata lookup time budget exhausted")
         )
         targets = model_service_destination_models(service) if service is not None else None
-        if targets and len({_model_key(target) for target in targets}) == 1:
-            model_ids[name] = targets[0]
+        if targets:
+            model_ids[name] = targets
         else:
-            detail = reason or "destinations do not identify a single backing model"
+            detail = reason or "destinations do not expose backing model identities"
             print_warning(
                 f"Could not resolve Codex metadata for model service '{name}': {detail}. "
                 "Using generic compatibility metadata; check the service's routing configuration."
