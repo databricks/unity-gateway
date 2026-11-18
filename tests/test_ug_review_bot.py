@@ -404,7 +404,10 @@ def test_gateway_response_without_a_content_list_is_a_handled_failure(monkeypatc
 
 def test_workflow_posts_recommendation_and_syncs_ready_to_approve_label():
     workflow = WORKFLOW_PATH.read_text()
-    assert "run: python3 .ug-review-trusted/.github/scripts/ug-review/recommendation.py" in workflow
+    copy = 'cp .github/scripts/ug-review/recommendation.py "$RUNNER_TEMP/ug-recommendation.py"'
+    run = 'run: python3 "$RUNNER_TEMP/ug-recommendation.py"'
+    # The review action's checkout deletes .ug-review-trusted, so copy before it runs.
+    assert workflow.index(copy) < workflow.index("alibaba/open-code-review@") < workflow.index(run)
     publish = workflow.split("      - name: Publish the review recommendation\n", 1)[1].split(
         "\n      - name:", 1
     )[0]
