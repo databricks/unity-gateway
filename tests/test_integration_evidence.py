@@ -1243,3 +1243,27 @@ def test_claude_follow_up_spawned_nothing_rejects_new_children_or_spawns(after):
     before = {_PARENT: [_spawn("a")], **_child("one")}
     with pytest.raises(AssertionError):
         claude.assert_follow_up_spawned_nothing(before, after)
+
+
+@pytest.mark.parametrize("action", ["on", "off"])
+def test_native_smart_router_evidence_requires_correlated_completed_result(action):
+    item = {
+        "type": "DynamicToolCall",
+        "tool": "ug_smart_router",
+        "arguments": {"action": action},
+        "status": "completed",
+        "success": True,
+        "content_items": [
+            {"type": "inputText", "text": json.dumps({"message": "Smart Router is " + action})}
+        ],
+    }
+    records = [{"type": "event_msg", "payload": {"type": "item_completed", "item": item}}]
+    assert codex.completed_smart_router_results(records, action) == [
+        {"message": "Smart Router is " + action}
+    ]
+    assert codex.completed_smart_router_results(records, "cancel") == []
+    item["success"] = False
+    with pytest.raises(AssertionError):
+        codex.completed_smart_router_results(records, action)
+    item["tool"] = "unrelated"
+    assert codex.completed_smart_router_results(records, action) == []

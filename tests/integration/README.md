@@ -498,15 +498,22 @@ The Claude mod entry point has separate native component checks in
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's inline off-feedback orchestration has component coverage in
-`../test_smart_router_feedback.py`: Omni and direct collection, original-task identity,
-16-character validation, exact text, pre-toggle capture, post-toggle background upload,
-no-op toggles, failures, and delivery status. Isaac subprocesses are controlled in those
-checks. Live Codex validation must also exercise the installed skill in ordinary chat:
-request off, provide short input, cancel, then verify routing stayed on without upload.
-An authorized submission should retain the original task and pre-toggle routing state,
-return a feedback ID, and keep routing off if upload delivery fails. Launching inside
-Omnigent must not bypass collection. Live feedback uploads are separate from the existing
-gateway toggle journeys.
+`../test_smart_router_feedback.py` and `../test_codex_metadata.py`: session-bound native
+tool registration/dispatch, Omni and direct collection, original-task identity,
+16-character validation, exact text, capture before disabling, background upload after,
+cancellation, same-report retry, failures, delivery notices, and forwarding during capture.
+Isaac subprocesses and transport are controlled in these component checks.
+The live Codex skill-toggle and metadata journeys now require completed native
+`ug_smart_router` results correlated to each action, actual controls, and completed
+root answers. They fail on a shell approval dialog; Claude's native journey is unchanged.
+Live feedback validation must request off in ordinary chat, enter a short reason,
+then cancel and verify routing stays on without upload. An authorized submission must
+retain the original task and pre-toggle routing state, return a feedback ID, and keep
+routing off if delivery fails. Check that background notices render after the turn and
+that notices follow the model's final reply and no shell approval appears. Omnigent must not bypass collection. Backend feedback
+uploads remain separate from gateway toggle journeys. New threads get the native tool;
+resuming an old thread without it requires an updated launch/new thread rather than a
+shell fallback. Protocol support alone does not establish live resume coverage.
 
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does

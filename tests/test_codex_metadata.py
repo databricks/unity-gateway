@@ -452,3 +452,139 @@ def test_child_navigation_does_not_change_child_attribution(tmp_path):
         }
     )
     assert metadata.children == {"child"}
+
+
+async def register_native_router(upstream, tui):
+    thread_id = "1cbd36a0-177f-4df1-a5c2-5495a86a04a7"
+    tui.incoming.put_nowait({"id": "native-start", "method": "thread/start", "params": {}})
+    request = await asyncio.wait_for(upstream.outgoing.get(), 2)
+    assert request["params"]["dynamicTools"][0]["name"] == "ug_smart_router"
+    reply = {"id": "native-start", "result": {"thread": {"id": thread_id}}}
+    upstream.incoming.put_nowait(reply)
+    assert await asyncio.wait_for(tui.outgoing.get(), 2) == reply
+    return thread_id
+
+
+def native_tool_request(thread_id, action="off"):
+    return {
+        "id": "native-call",
+        "method": "item/tool/call",
+        "params": {
+            "threadId": thread_id,
+            "turnId": "turn",
+            "callId": "call",
+            "tool": "ug_smart_router",
+            "arguments": {"action": action},
+        },
+    }
+
+
+def test_native_tool_is_serviced_by_host_and_other_requests_forward(
+    running_interposer, monkeypatch
+):
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            thread_id = await register_native_router(upstream, tui)
+            request = native_tool_request(thread_id)
+            upstream.incoming.put_nowait(request)
+            response = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert response["id"] == request["id"]
+            assert response["result"]["success"] is True
+            assert "Smart Router is off" in response["result"]["contentItems"][0]["text"]
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            foreign = native_tool_request(thread_id)
+            foreign["params"]["tool"] = "another_tool"
+            upstream.incoming.put_nowait(foreign)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == foreign
+            assert request not in tui.messages
+            assert not task.done()
+
+    asyncio.run(run())
+
+
+def test_native_tool_capture_does_not_block_interrupts_or_other_frames(
+    running_interposer, monkeypatch
+):
+    started, release = threading.Event(), threading.Event()
+
+    def execute(self, params):
+        started.set()
+        if not release.wait(5):
+            raise RuntimeError("test did not release capture")
+        return {"message": "capture finished"}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            try:
+                assert await asyncio.to_thread(started.wait, 2)
+                interrupt = {
+                    "id": "interrupt",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": thread_id, "turnId": "turn"},
+                }
+                tui.incoming.put_nowait(interrupt)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == interrupt
+                notice = {"method": "turn/completed", "params": {"threadId": thread_id}}
+                upstream.incoming.put_nowait(notice)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == notice
+            finally:
+                release.set()
+            reply = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert reply["result"]["success"] is True
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "delivery,error", [("submitted", False), ("unconfirmed", False), ("unconfirmed", True)]
+)
+def test_native_delivery_notice_after_turn_without_model_or_shell(
+    running_interposer, monkeypatch, delivery, error
+):
+    monkeypatch.setattr(
+        codex_interposer.CodexSmartRouter,
+        "execute",
+        lambda *_: {"delivery": "pending", "feedback_id": "report"},
+    )
+    checked = threading.Event()
+
+    def status(_self, _report_id):
+        checked.set()
+        if error:
+            raise OSError("status unavailable")
+        return {"delivery": delivery, "message": "Feedback " + delivery}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "delivery", status)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["result"]["success"]
+            assert await asyncio.to_thread(checked.wait, 3)
+            await asyncio.sleep(0.05)
+            assert tui.outgoing.empty(), "delivery must wait for the model's final reply"
+            completed = {
+                "method": "turn/completed",
+                "params": {"threadId": thread_id, "turn": {"id": "turn", "status": "completed"}},
+            }
+            upstream.incoming.put_nowait(completed)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            started = await asyncio.wait_for(tui.outgoing.get(), 3)
+            ended = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert started["method"] == "item/started"
+            assert ended["method"] == "item/completed"
+            assert isinstance(started["params"]["startedAtMs"], int)
+            assert ended["params"]["completedAtMs"] >= started["params"]["startedAtMs"]
+            assert ended["params"]["item"] == started["params"]["item"]
+            text = ended["params"]["item"]["text"]
+            assert ("could not be confirmed" if error else delivery) in text
+            assert upstream.outgoing.empty(), "notices must not start a new model turn"
+
+    asyncio.run(run())

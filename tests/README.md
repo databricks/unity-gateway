@@ -1175,25 +1175,29 @@ Codex version tests cover one longer probe after an inconclusive cached result. 
 versions can pass that probe; old, unparseable, or repeatedly timed-out versions still fail
 the smart-routing gate. Plain launches retain their existing version rules.
 
-`test_smart_router.py` executes the installed skill's shell commands with another `ug`
-first in PATH and a launching interpreter path containing spaces. Both agents' toggles
-must update the session controls through the launching installation. Launch tests check
-that Claude settings and Codex's shell policy carry the interpreter and session marker.
-These are component checks; they do not establish native skill permission matching or
-PowerShell execution.
-A denied control-file read or write fails both toggle commands with native-approval
-guidance and leaves the saved controls byte-for-byte unchanged. Write coverage includes
-raw temporary-file errors and wrapped mkdir/replace errors, read-only filesystems,
-and full-disk failures, which report their cause without permission guidance.
-With Isaac's feedback rule on, an off without a 16-character reason exits 2 and keeps the
-controls. Claude's CLI retains its `ISAAC_LAUNCH_MODE=omni` exemption for the native
-form's already-collected feedback (`test_smart_router.py`). Codex requires feedback
-in every launch mode. `test_smart_router_feedback.py` controls the Isaac subprocess
-boundary to check task anchoring before the reason, exact text, local evidence capture
-before disabling, background delivery after disabling, unchanged-state no-ops, disabled
-feedback, failed preparation/capture/toggles, Isaac permission-approval guidance,
-upload-start failure, and read-only status.
-Those component checks do not establish live upload delivery or chat behavior.
+`test_smart_router.py` executes Claude's installed skill commands with another `ug`
+first in PATH and a launching interpreter path containing spaces. Codex's skill uses
+`ug_smart_router`, a session-bound native tool serviced by the UG app-server interposer.
+It never requests shell approval or falls back to a shell toggle. Launcher lifecycle
+checks isolate the developer machine's optional managed catalog. Existing CLI commands
+remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
+With Isaac's feedback rule on, an off without a 16-character reason keeps routing on.
+Claude's CLI retains its `ISAAC_LAUNCH_MODE=omni` exemption for native-form feedback.
+Codex requires feedback in every launch mode.
+`test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
+session binding, preserved user tools, rejection of child/foreign sessions and invalid
+arguments, original-task anchoring, exact reason text, capture before disabling,
+background upload afterward, cancellation, no-ops, failures, read-only delivery status,
+and retry of the same saved report. Status needs no Isaac executable.
+`test_codex_metadata.py` checks native request/response transport, unrelated-tool
+forwarding, responsive interrupts during capture, and completion/failure notices
+after the originating turn ends, without another model turn.
+`test_integration_evidence.py` validates native completed-tool
+receipts instead of treating shell output as Codex toggle evidence. These component
+checks do not establish live backend delivery or terminal rendering of notices.
+New threads receive the native tool at startup. Older resumed threads that never had
+it must report that an updated launch/new thread is needed; the skill must not silently
+restart the conversation or fall back to a shell command.
 `mod_tests/register.test.ts` checks that the mod skips the form there
 only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
 form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,

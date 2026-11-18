@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.smart_routing import feedback, session_env, v2
+from ucode.smart_routing.codex_feedback import TOOL_NAME, TOOL_SPEC, CodexSmartRouter
 
 runner = CliRunner()
 SESSION_ID = "1cbd36a0-177f-4df1-a5c2-5495a86a04a7"
@@ -61,7 +62,7 @@ def inline_feedback(tmp_path, monkeypatch):
 
     def upload(args, **kwargs):
         assert json.loads(controls.read_text()) == dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
-        return Mock()
+        return Mock(poll=Mock(return_value=None))
 
     run = Mock(side_effect=isaac)
     popen = Mock(side_effect=upload)
@@ -202,7 +203,7 @@ def test_failed_capture_keeps_routing_on(inline_feedback):
 @pytest.mark.parametrize(
     "error", ["permission denied", "read-only file system", "Access is denied"]
 )
-def test_isaac_permission_failure_requests_native_approval(inline_feedback, stage, error):
+def test_isaac_permission_failure_keeps_routing_on(inline_feedback, stage, error):
     controls, run, popen, _ = inline_feedback
     if stage == "capture":
         assert off().exit_code == 2
@@ -213,7 +214,7 @@ def test_isaac_permission_failure_requests_native_approval(inline_feedback, stag
     assert result.exit_code == 1
     text = " ".join(result.output.split())
     assert "Permission denied accessing Isaac feedback" in text
-    assert "Request native command approval" in text
+    assert "Check that Isaac can access" in text
     assert json.loads(controls.read_text()) == {}
     popen.assert_not_called()
 
@@ -294,3 +295,271 @@ def test_malformed_delivery_status_reports_error(inline_feedback, tmp_path):
 
     assert result.exit_code == 1
     assert "delivery status is unavailable" in result.output
+
+
+@pytest.fixture
+def native_router(inline_feedback):
+    controls, *_ = inline_feedback
+    router = CodexSmartRouter(controls)
+    request = {"id": "start", "method": "thread/start", "params": {}}
+    router.before_tui(request)
+    assert request["params"]["dynamicTools"][0]["name"] == TOOL_NAME
+    router.observe({"id": "start", "result": {"thread": {"id": SESSION_ID}}})
+    return router
+
+
+def native_call(router, action, **kwargs):
+    return router.execute({"threadId": SESSION_ID, "arguments": {"action": action, **kwargs}})
+
+
+def test_native_host_captures_then_disables_without_a_shell(native_router, inline_feedback):
+    controls, run, popen, calls = inline_feedback
+    prompt = native_call(native_router, "off")
+    assert prompt["needs_reason"]
+    assert "session details will be sent" in prompt["message"]
+    assert native_call(native_router, "off")["needs_reason"]
+    assert native_call(native_router, "off", reason="slow")["needs_reason"]
+    assert run.call_count == 1
+
+    result = native_call(native_router, "off", reason=REASON)
+
+    assert not session_env.session_routing_enabled(controls)
+    assert "Smart Router is off" in result["message"]
+    assert result["delivery"] == "pending"
+    assert calls[1][1]["input"] == REASON
+    assert calls[1][1]["env"]["CODEX_THREAD_ID"] == SESSION_ID
+    assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
+    assert all(args[0] == "/installed isaac" for args, _ in calls)
+    assert popen.call_args.kwargs["env"]["CODEX_THREAD_ID"] == SESSION_ID
+    assert "already off" in native_call(native_router, "off")["message"]
+    assert run.call_count == 2
+    popen.assert_called_once()
+
+
+def test_native_cancel_clears_pending_without_upload(native_router, inline_feedback):
+    controls, run, popen, _ = inline_feedback
+    assert native_call(native_router, "off")["needs_reason"]
+    assert "remains on" in native_call(native_router, "cancel")["message"]
+    assert SESSION_ID not in native_router.pending_threads
+    with pytest.raises(ValueError, match="anchor the preceding task"):
+        native_call(native_router, "off", reason=REASON)
+    assert json.loads(controls.read_text()) == {}
+    assert run.call_count == 1
+    popen.assert_not_called()
+
+
+def test_native_disabled_feedback_and_on_do_not_call_isaac(inline_feedback, monkeypatch):
+    controls, run, popen, _ = inline_feedback
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+    router = CodexSmartRouter(controls)
+    router.root_threads.add(SESSION_ID)
+
+    assert "is off" in native_call(router, "off")["message"]
+    assert "is on" in native_call(router, "on")["message"]
+    assert json.loads(controls.read_text()) == {}
+    run.assert_not_called()
+    popen.assert_not_called()
+
+
+@pytest.mark.parametrize("thread_id", [str(uuid4()), None, {}])
+def test_native_rejects_unbound_sessions(native_router, inline_feedback, thread_id):
+    controls, run, popen, _ = inline_feedback
+    with pytest.raises(ValueError, match="only to this session's root"):
+        native_router.execute({"threadId": thread_id, "arguments": {"action": "off"}})
+    assert json.loads(controls.read_text()) == {}
+    run.assert_not_called()
+    popen.assert_not_called()
+
+
+def test_native_capture_failure_keeps_on(native_router, inline_feedback):
+    controls, run, popen, _ = inline_feedback
+    native_call(native_router, "off")
+    run.side_effect = lambda *a, **k: subprocess.CompletedProcess([], 1, "", "capture failed")
+    with pytest.raises(RuntimeError, match="still on"):
+        native_call(native_router, "off", reason=REASON)
+    assert json.loads(controls.read_text()) == {}
+    popen.assert_not_called()
+
+
+def test_native_upload_start_failure_keeps_off(native_router, inline_feedback):
+    controls, _, popen, _ = inline_feedback
+    native_call(native_router, "off")
+    popen.side_effect = OSError("cannot start")
+
+    result = native_call(native_router, "off", reason=REASON)
+
+    assert not session_env.session_routing_enabled(controls)
+    assert result["delivery"] == "unconfirmed"
+    assert "retry this saved report" in result["message"]
+
+
+def test_native_retry_reuses_same_report_without_capture(native_router, inline_feedback):
+    _, run, popen, _ = inline_feedback
+    native_call(native_router, "off")
+    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
+    native_call(native_router, "status", feedback_id=report_id)
+    assert popen.call_count == 1
+
+    native_call(native_router, "retry", feedback_id=report_id)
+
+    assert run.call_count == 2
+    assert popen.call_count == 2
+    assert popen.call_args.args[0] == ["/installed isaac", "feedback", "--retry", report_id]
+
+
+def test_native_retry_rejects_report_from_another_session(native_router, inline_feedback, tmp_path):
+    _, run, popen, _ = inline_feedback
+    native_call(native_router, "off")
+    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
+    receipt_path = tmp_path / ".isaac/feedback" / report_id / "receipt.json"
+    receipt = json.loads(receipt_path.read_text())
+    receipt["target"]["session_id"] = str(uuid4())
+    receipt_path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="does not belong"):
+        native_call(native_router, "retry", feedback_id=report_id)
+    assert run.call_count == 2
+    popen.assert_called_once()
+
+
+@pytest.mark.parametrize("method", ["thread/start", "thread/resume"])
+def test_native_binds_only_correlated_root_responses(inline_feedback, method):
+    controls, *_ = inline_feedback
+    router = CodexSmartRouter(controls)
+    existing = {"name": "user_tool", "description": "preserve"}
+    request = {"id": 42, "method": method, "params": {"dynamicTools": [existing]}}
+    router.before_tui(request)
+    if method == "thread/start":
+        assert request["params"]["dynamicTools"] == [existing, TOOL_SPEC]
+    else:
+        assert request["params"]["dynamicTools"] == [existing]
+    router.observe({"id": 41, "result": {"thread": {"id": SESSION_ID}}})
+    assert not router.root_threads
+    router.observe({"id": 42, "result": {"thread": {"id": SESSION_ID}}})
+    assert router.root_threads == {SESSION_ID}
+    assert not router.thread_requests
+
+
+@pytest.mark.parametrize(
+    "thread",
+    [
+        {"id": SESSION_ID, "parentThreadId": "parent"},
+        {"id": SESSION_ID, "source": {"subAgent": {}}},
+        {"id": "invalid"},
+    ],
+)
+def test_native_does_not_bind_child_or_malformed_thread(inline_feedback, thread):
+    controls, *_ = inline_feedback
+    router = CodexSmartRouter(controls)
+    router.before_tui({"id": 1, "method": "thread/resume", "params": {}})
+    router.observe({"id": 1, "result": {"thread": thread}})
+    assert not router.root_threads
+
+
+@pytest.mark.parametrize("tools", ["invalid", [{"name": TOOL_NAME}]])
+def test_native_preserves_conflicting_user_tools(inline_feedback, tools):
+    controls, *_ = inline_feedback
+    router = CodexSmartRouter(controls)
+    request = {"id": 1, "method": "thread/start", "params": {"dynamicTools": tools}}
+    router.before_tui(request)
+    assert request["params"]["dynamicTools"] == tools
+    assert not router.thread_requests
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"action": "off", "command": "arbitrary"},
+        {"action": "off", "session_id": SESSION_ID},
+        {"action": "off", "reason": []},
+        {"action": "retry", "feedback_id": "../../report"},
+        {"action": "status", "reason": REASON},
+    ],
+)
+def test_native_invalid_calls_return_errors_without_mutation(
+    native_router, inline_feedback, arguments
+):
+    import asyncio
+
+    controls, run, popen, _ = inline_feedback
+    response = asyncio.run(native_router.call({"threadId": SESSION_ID, "arguments": arguments}))
+    assert response["success"] is False
+    assert json.loads(controls.read_text()) == {}
+    run.assert_not_called()
+    popen.assert_not_called()
+
+
+def test_native_status_needs_no_isaac_and_malformed_receipt_returns_error(
+    native_router, inline_feedback, tmp_path, monkeypatch
+):
+    import asyncio
+
+    native_call(native_router, "off")
+    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
+    monkeypatch.setattr(feedback.shutil, "which", lambda _: None)
+    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "pending"
+    receipt_path = tmp_path / ".isaac/feedback" / report_id / "receipt.json"
+    receipt_path.write_text("[]")
+    response = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "arguments": {"action": "retry", "feedback_id": report_id}}
+        )
+    )
+    assert response["success"] is False
+    assert "invalid" in response["contentItems"][0]["text"]
+
+
+def test_codex_skill_requires_native_host_tool():
+    text = (Path(__file__).parents[1] / "skills/smart-router/SKILL.md").read_text()
+    assert "ug_smart_router" in text
+    assert "do not fall back to Bash" in text
+    assert "-m ucode.cli codex" not in text
+    assert "sandbox_permissions" not in text
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_native_finished_uploader_without_confirmation_reports_failure(
+    native_router, inline_feedback, exit_code
+):
+    native_call(native_router, "off")
+    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
+    native_router.uploads[report_id].poll.return_value = exit_code
+    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "unconfirmed"
+
+
+def test_native_retry_ignores_stale_error_while_uploader_runs(
+    native_router, inline_feedback, tmp_path
+):
+    native_call(native_router, "off")
+    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
+    state = tmp_path / ".isaac/feedback" / report_id / "submission.json"
+    state.write_text(json.dumps({"last_error": "old failure"}))
+    result = native_call(native_router, "retry", feedback_id=report_id)
+    assert result["delivery"] == "pending"
+    assert "keep working" in result["message"]
+    state.write_text(json.dumps({"evidence_status": "queued_for_verification"}))
+    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "pending"
+    native_router.uploads[report_id].poll.return_value = 0
+    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "submitted"
+
+
+def test_native_controls_write_failure_never_requests_shell_approval(
+    native_router, inline_feedback, monkeypatch
+):
+    import asyncio
+
+    controls, _, popen, _ = inline_feedback
+    native_call(native_router, "off")
+    monkeypatch.setattr(
+        session_env, "atomic_write_json", Mock(side_effect=PermissionError("denied"))
+    )
+    response = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "arguments": {"action": "off", "reason": REASON}}
+        )
+    )
+    assert response["success"] is False
+    text = response["contentItems"][0]["text"]
+    assert "launcher can access" in text
+    assert "approval" not in text
+    assert json.loads(controls.read_text()) == {}
+    popen.assert_not_called()

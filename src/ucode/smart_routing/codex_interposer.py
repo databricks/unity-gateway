@@ -14,6 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
+from ucode.smart_routing.codex_feedback import CodexSmartRouter
 from ucode.smart_routing.codex_metadata import RoutingMetadata
 
 SETTINGS_UPDATED = "thread/settings/updated"
@@ -247,6 +248,10 @@ async def _handle_tui(
         controller = (
             RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
+        smart_router = CodexSmartRouter(session_controls) if session_controls is not None else None
+        tool_tasks: set[asyncio.Task] = set()
+        monitored_reports: set[str] = set()
+        tool_turns: dict[tuple[str, str], asyncio.Event] = {}
         queued_frames: asyncio.Queue = asyncio.Queue()
 
         def parse(frame) -> dict | None:
@@ -281,6 +286,8 @@ async def _handle_tui(
                 if isinstance(frame, str):
                     message = parse(frame)
                     if controller is not None and message is not None:
+                        assert smart_router is not None
+                        smart_router.before_tui(message)
                         message = await controller.before_tui(message)
                         frame = json.dumps(message)
                     result = await asyncio.to_thread(sess.on_tui_frame, frame)
@@ -310,12 +317,102 @@ async def _handle_tui(
                 else:
                     await upstream.send(frame)
 
+        async def run_router_tool(message: dict):
+            assert smart_router is not None
+            response = await smart_router.call(message["params"])
+            await upstream.send(json.dumps({"id": message["id"], "result": response}))
+            if not response["success"]:
+                return
+            result = json.loads(response["contentItems"][0]["text"])
+            if result.get("delivery") != "pending" or message["params"].get("arguments", {}).get(
+                "action"
+            ) not in ("off", "retry"):
+                return
+            report_id = result["feedback_id"]
+            if report_id in monitored_reports:
+                return
+            monitored_reports.add(report_id)
+            try:
+                await monitor_delivery(message, report_id)
+            finally:
+                monitored_reports.discard(report_id)
+
+        async def monitor_delivery(message: dict, report_id: str):
+            assert smart_router is not None
+            for _ in range(120):
+                await asyncio.sleep(1)
+                try:
+                    status = await asyncio.to_thread(smart_router.delivery, report_id)
+                except (OSError, ValueError):
+                    status = {
+                        "delivery": "unconfirmed",
+                        "message": f"Feedback delivery could not be confirmed. Feedback ID: {report_id}. Ask Smart Router to check or retry this saved report.",
+                    }
+                if status["delivery"] == "pending":
+                    continue
+                await delivery_notice(message, status["message"])
+                return
+            await delivery_notice(
+                message,
+                f"Feedback delivery is still unconfirmed. Feedback ID: {report_id}. Ask Smart Router to check or retry this saved report.",
+            )
+
+        async def delivery_notice(message: dict, text: str):
+            key = (message["params"]["threadId"], message["params"]["turnId"])
+            try:
+                await asyncio.wait_for(tool_turns[key].wait(), timeout=120)
+            except TimeoutError:
+                log("[FEEDBACK] Delivery notice deferred; originating turn is still active")
+                return
+            item = {
+                "type": "agentMessage",
+                "id": f"ug-feedback-{uuid.uuid4().hex}",
+                "text": text,
+                "phase": None,
+                "memoryCitation": None,
+            }
+            for method in (ITEM_STARTED, ITEM_COMPLETED):
+                timestamp_key = "startedAtMs" if method == ITEM_STARTED else "completedAtMs"
+                await tui.send(
+                    json.dumps(
+                        {
+                            "method": method,
+                            "params": {
+                                "item": item,
+                                "threadId": message["params"]["threadId"],
+                                "turnId": message["params"]["turnId"],
+                                timestamp_key: int(time.time() * 1000),
+                            },
+                        }
+                    )
+                )
+
+        def tool_done(task: asyncio.Task):
+            tool_tasks.discard(task)
+            if not task.cancelled() and (exc := task.exception()) is not None:
+                log(f"[ERR] Smart Router tool: {type(exc).__name__}")
+
         async def app_to_tui():
             async for frame in upstream:
                 message = parse(frame)
+                if smart_router is not None and message is not None:
+                    smart_router.observe(message)
+                    if smart_router.handles(message):
+                        key = (message["params"]["threadId"], message["params"]["turnId"])
+                        tool_turns.setdefault(key, asyncio.Event())
+                        task = asyncio.create_task(run_router_tool(message))
+                        tool_tasks.add(task)
+                        task.add_done_callback(tool_done)
+                        continue
                 if controller is not None and message is not None:
                     controller.observe(message)
                 await tui.send(frame)
+                if message is not None and message.get("method") == "turn/completed":
+                    params = message.get("params", {})
+                    turn = params.get("turn", {})
+                    key = (params.get("threadId"), turn.get("id"))
+                    if key in tool_turns:
+                        tool_turns[key].set()
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))
@@ -330,6 +427,9 @@ async def _handle_tui(
             for task in done:
                 task.result()
         finally:
+            for task in tool_tasks:
+                task.cancel()
+            await asyncio.gather(*tool_tasks, return_exceptions=True)
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
