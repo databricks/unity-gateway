@@ -2,7 +2,8 @@
 
 When `ug configure --global` runs on a workspace that publishes an agent configuration, it
 rebuilds each supported agent's machine-wide files from that configuration. This page calls that a
-managed run. It explains why the design looks the way it does. For the facts, see
+managed run. It explains why the design looks the way it does. To deploy it, see
+[Deploy published agent settings to managed devices](admin-managed-settings.md). For the facts, see
 [Admin-managed agent settings reference](admin-managed-settings-reference.md).
 
 ## A published agent configuration makes a run managed
@@ -13,10 +14,11 @@ workspace: when it publishes an agent configuration, that configuration describe
 machine-wide files completely, so `--global` builds them from it. Without one, there is nothing to
 build from, and `--global` merges its settings into the existing files the way it always has.
 
-## One root run writes every machine-wide file
+## One privileged run writes every machine-wide file
 
-These files are owned by root. If every launch through `ug` could update them, each update would cost
-a developer a `sudo` prompt, and two tools that both wrote the file would undo each other's changes.
+These files are owned by root on macOS and Linux, or protected by administrator permissions on
+Windows. If every launch through `ug` could update them, each update would cost a developer an
+elevation prompt, and two tools that both wrote the file would undo each other's changes.
 So the managed run is the only writer. After it runs once, it leaves a marker file, and no other `ug` run
 on that machine writes the files. Developers never see a password prompt, and the files change only
 on IT's schedule.
@@ -41,9 +43,10 @@ Databricks CLI profile, PAT, or OAuth client. The sign-in helper is `ug auth-tok
 It runs as whichever developer starts the agent, and it reads that developer's saved choices.
 
 Models follow the same rule. An explicit `models.model_services` list is the same for everyone, so
-the managed run writes it. A Unity Catalog location or a model provider service has to be resolved with
-the developer's own access, so `ug claude` and `ug codex` resolve it at launch. A bare `claude` or
-`codex` reads only the machine files, so it misses those models, tracing, and smart routing.
+the managed run writes it where the agent has a machine-wide model layer. A Unity Catalog location
+or a model provider service has to be resolved with the developer's own access, so `ug claude` and
+`ug codex` resolve it at launch. A bare agent reads only the machine files. It misses models that
+need per-user discovery, tracing, and smart routing.
 
 ## Unity Gateway reserves keys by exception
 
@@ -60,11 +63,11 @@ Claude Code's managed file. An admin can change a default. A developer can't.
 
 ## An agent can need more than one file
 
-Each agent's ownership table has one section per machine-wide file. Codex is the current case with
-two. It has one place to enforce settings, `requirements.toml`, and it accepts a fixed set of keys.
-Ordinary `config.toml` keys go in `/etc/codex/config.toml`, the lowest config layer, where
-developers can override them. The two files use some of the same keys with different meanings: in
-`config.toml`, `mcp_servers` defines servers, and in `requirements.toml` it is an allowlist. So the
+Each agent's ownership table has one section per machine-wide file. On macOS and Linux, Codex has
+one place to enforce settings, `requirements.toml`, and one for defaults, `/etc/codex/config.toml`.
+The defaults are the lowest config layer, so developers can override them. The two files use some
+of the same keys with different meanings. In `config.toml`, `mcp_servers` defines servers; in
+`requirements.toml`, it is an allowlist. So the
 agent configuration has two Codex fields.
 
 Unity Gateway locks the gateway provider in `requirements.toml`. A locked provider entry replaces
@@ -75,14 +78,17 @@ variables that the provider names in `env_http_headers`. The lock first appears 
 the settings that `ug codex` passes per launch. So the run writes it only for a static model list:
 there it names the model catalog `/etc/codex/ug-model-catalog.json`, the one setting that must
 outrank the developer's, because `requirements.toml` can't name a catalog. `ug codex` passes the
-same list per launch, so the catalog changes nothing for it.
+same list per launch, so the catalog changes nothing for it. Windows has no machine-wide Codex
+defaults or catalog layer. The managed run writes only `requirements.toml` there; `ug codex`
+supplies the static model list at launch.
 
 ## Unpublishing leaves the files in place
 
 When the workspace stops publishing the agent configuration that a machine used, the managed run exits 5 and
 changes nothing. An empty answer from the server, or coding agent configs being switched off, then
 can't silently remove the gateway, sign-in, and policy from every machine at once. Removing the
-settings takes a deliberate `ug revert` as root.
+settings takes a deliberate `ug revert` as root on macOS or Linux, or as an administrator on
+Windows.
 
 Removing one agent from `enabled_agents` is different, because the published configuration still
 says what it wants. The next run deletes that agent's files.

@@ -1,5 +1,9 @@
 # OS-Managed Agent Settings
 
+This is an earlier design document. For devices using a published agent configuration, follow
+[Deploy published agent settings to managed devices](admin-managed-settings.md) and use the
+[admin-managed agent settings reference](admin-managed-settings-reference.md) for current behavior.
+
 ## Summary
 
 Claude Code and Codex give OS-managed settings higher precedence than user settings. Previously,

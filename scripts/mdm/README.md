@@ -20,7 +20,10 @@ When the workspace publishes an agent configuration, the script's `ug configure 
 managed run: it rebuilds each supported agent's machine-wide files from the configuration,
 including the admin's native settings. Developers then launch their agents through `ug` with no
 extra variable. See
-[Admin-managed agent settings reference](../../docs/admin-managed-settings-reference.md).
+[Deploy published agent settings to managed devices](../../docs/admin-managed-settings.md)
+for the rollout and preview steps, and the
+[admin-managed agent settings reference](../../docs/admin-managed-settings-reference.md) for
+platform paths and ownership rules.
 
 The script authenticates `ug configure` with a short-lived token for a service principal whose
 client id and secret come in as policy parameters; neither the credentials nor the token are

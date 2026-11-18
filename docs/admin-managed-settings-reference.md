@@ -1,30 +1,27 @@
 # Admin-managed agent settings reference
 
 A managed run is `ug configure --global` on a workspace that publishes an agent configuration. It
-rebuilds each supported agent's machine-wide files from that configuration. It runs as root on Linux and macOS, or as administrator on Windows, often
-from an MDM policy, a provisioning script, or a fleet tool. This page lists the files, fields, exit codes, report outcomes,
-and keys that Unity Gateway owns. For why it works this way, see
+rebuilds each supported agent's machine-wide files from that configuration. It runs as root on
+macOS or Linux, or as an administrator on Windows. This page lists the files, fields, exit codes,
+report outcomes, and keys that Unity Gateway owns. To apply the configuration, see
+[Deploy published agent settings to managed devices](admin-managed-settings.md). For the design, see
 [About admin-managed agent settings](admin-managed-settings-explained.md).
 
 The supported agents are Claude Code and Codex.
 
 ## Files
 
-| Agent | File | Developers can override |
-| --- | --- | --- |
-| Claude Code | `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS, `/etc/claude-code/managed-settings.json` on Linux | No |
-| Codex | `/etc/codex/requirements.toml` | No |
-| Codex | `/etc/codex/config.toml` | Yes |
-| Codex | `/etc/codex/ug-model-catalog.json` and `/etc/codex/managed_config.toml`, only for a static model list | No |
-| Unity Gateway | `/etc/unitygateway/managed-settings.json`: the saved agent configuration | — |
-| Unity Gateway | `/etc/unitygateway/agents-state.json`: the marker file | — |
+| Agent and file | macOS | Linux | Windows | Developers can override |
+| --- | --- | --- | --- | --- |
+| Claude Code managed settings | `/Library/Application Support/ClaudeCode/managed-settings.json` | `/etc/claude-code/managed-settings.json` | `C:\Program Files\ClaudeCode\managed-settings.json` | No |
+| Codex requirements | `/etc/codex/requirements.toml` | `/etc/codex/requirements.toml` | `C:\ProgramData\OpenAI\Codex\requirements.toml` | No |
+| Codex defaults | `/etc/codex/config.toml` | `/etc/codex/config.toml` | None | Yes |
+| Codex static model catalog | `/etc/codex/ug-model-catalog.json` and `/etc/codex/managed_config.toml` | Same as macOS | None | No |
+| Unity Gateway saved configuration | `/etc/unitygateway/managed-settings.json` | Same as macOS | `C:\ProgramData\UnityGateway\managed-settings.json` | No |
+| Unity Gateway marker | `/etc/unitygateway/agents-state.json` | Same as macOS | `C:\ProgramData\UnityGateway\agents-state.json` | No |
 
-On Windows, Claude Code uses `C:\Program Files\ClaudeCode\managed-settings.json`.
-Codex uses `C:\ProgramData\OpenAI\Codex\requirements.toml`. Unity Gateway saves the
-configuration and marker under `C:\ProgramData\UnityGateway`. The Windows known folders
-supply these roots, including installations on another drive. Configure requires an elevated
-terminal or a provisioning process running as SYSTEM. An elevated `ug revert` removes the files;
-an ordinary developer revert leaves them.
+Windows uses its known Program Files and ProgramData folders, including when they are on another
+drive. An elevated `ug revert` removes the files; an ordinary developer's revert leaves them.
 
 Codex on Windows has no machine-wide `config.toml` or `managed_config.toml` layer.
 A published `codex.config` with effective values, or `default_models.default_model`, exits 2
@@ -38,8 +35,8 @@ The run builds each agent file from these layers. A later layer replaces an earl
 | --- | --- |
 | `managed-settings.json` | Unity Gateway defaults, `agent_native_settings` and `claude_code.managed_settings`, feature settings, gateway settings |
 | `requirements.toml` | `codex.requirements`, the gateway provider |
-| `config.toml` | `codex.config`, `model` from `default_models.default_model` |
-| `managed_config.toml` | Only `model_catalog_json`, naming `ug-model-catalog.json` |
+| `config.toml` (macOS and Linux) | `codex.config`, `model` from `default_models.default_model` |
+| `managed_config.toml` (macOS and Linux) | Only `model_catalog_json`, naming `ug-model-catalog.json` |
 
 While the marker file exists, no other `ug` run writes these files, and other runs read the saved
 agent configuration instead of fetching it.
@@ -48,8 +45,8 @@ agent configuration instead of fetching it.
 
 | Field | Claude Code | Codex |
 | --- | --- | --- |
-| `default_models` | Each family pin becomes `env.ANTHROPIC_DEFAULT_<FAMILY>_MODEL` | `default_model` becomes `model` in `config.toml` |
-| `models.sources`, `models.model_services` | Becomes `availableModels`, `enforceAvailableModels`, and `modelPicker`. A family with no pin gets the newest model of that family in the list | Becomes `ug-model-catalog.json`, which `managed_config.toml` names, so every user and a bare `codex` get only these models |
+| `default_models` | Each family pin becomes `env.ANTHROPIC_DEFAULT_<FAMILY>_MODEL` | On macOS and Linux, `default_model` becomes `model` in `config.toml`. Windows rejects this value in a managed run |
+| `models.sources`, `models.model_services` | Becomes `availableModels`, `enforceAvailableModels`, and `modelPicker`. A family with no pin gets the newest model of that family in the list | On macOS and Linux, becomes `ug-model-catalog.json`, named by `managed_config.toml`, for every user and bare `codex`. On Windows, the list applies through `ug codex` only |
 | `models.unity_catalog_location` | Adds the `Databricks-Model-Service-Parent-Schema` header. Models are resolved per developer by `ug claude` | Resolved per developer by `ug codex` |
 | `models.model_provider_service` | Adds the `Databricks-Model-Provider-Service` header. Family pins become `env.ANTHROPIC_DEFAULT_<FAMILY>_MODEL` | Resolved per developer by `ug codex` |
 | `http_headers` | Added to `env.ANTHROPIC_CUSTOM_HEADERS` | Added to the provider's `http_headers` |
@@ -63,12 +60,12 @@ agent configuration instead of fetching it.
 | --- | --- | --- | --- |
 | `agent_native_settings` | Claude Code | `managed-settings.json` | No |
 | `agent_native_config.claude_code.managed_settings` | Claude Code | `managed-settings.json` | No |
-| `agent_native_config.codex.config` | Codex | `/etc/codex/config.toml` | Yes |
-| `agent_native_config.codex.requirements` | Codex | `/etc/codex/requirements.toml` | No |
+| `agent_native_config.codex.config` | Codex | `/etc/codex/config.toml` on macOS and Linux; unsupported on Windows | Yes |
+| `agent_native_config.codex.requirements` | Codex | `requirements.toml` in the platform path above | No |
 
 Each agent's `config` takes one `agent_native_config` object, which sets one variant named for
 the agent, such as `claude_code` or `codex`. This page shortens the paths, for example to
-`codex.requirements`. For example:
+`codex.requirements`. This Codex entry works on macOS and Linux; omit `config` on Windows:
 
 ```json
 {
@@ -79,6 +76,19 @@ the agent, such as `claude_code` or `codex`. This page shortens the paths, for e
         "requirements": {"allowed_sandbox_modes": ["read-only", "workspace-write"]},
         "config": {"approval_policy": "on-request"}
       }
+    }
+  }
+}
+```
+
+This Claude Code entry overrides a Unity Gateway default in its managed file:
+
+```json
+{
+  "agent": "CODING_AGENT_CLAUDE_CODE",
+  "config": {
+    "agent_native_settings": {
+      "env": {"ENABLE_PROMPT_CACHING_1H": "0"}
     }
   }
 }
@@ -103,24 +113,25 @@ ug configure --global --workspace https://<workspace> [--agents claude,codex] [-
 | --- | --- |
 | `--workspace` | The workspace. `UG_WORKSPACE`, `--profile`, or the marker file can supply it instead |
 | `--agents` | The agents to rebuild. The default is every supported agent. Other agents are skipped. When the workspace differs from the last run's, every supported agent is rebuilt |
-| `--dry-run` | Lists each file the run would create, replace, or remove, prints the new contents and the report, and writes nothing |
-| `--from-file` | With `--dry-run`, reads a draft agent configuration in the format that `ug export` writes |
+| `--dry-run` | Lists each file the run would create, replace, remove, or leave unchanged; prints new contents and the report; writes nothing |
+| `--from-file` | Requires `--global --dry-run --workspace`; reads one draft configuration object in the format that `ug export` writes |
 
 These options exit 2 in a managed run: `--use-pat`,
 `--client-id`, `--mcp`, `--provider`, `--model-location`, `--enable-databricks-ai-tools`, and
 `--enable-server-side-web-search`.
 
 On a machine without the marker file, `--global` merges its settings into the existing
-machine-wide files when the workspace publishes no agent configuration.
+machine-wide files when the workspace publishes no agent configuration. Before the first managed
+run, a failed read of the configuration warns and also falls back to that merge.
 
 ## Exit codes
 
 | Exit | Meaning | Files |
 | --- | --- | --- |
-| 0 | Written, already current, or removed | Updated |
+| 0 | Written, already current, or removed | Created, replaced, removed, or unchanged |
 | 2 | Usage or setup error, such as a `ug` installation that other users can't run, or a model provider service that relays a subscription | Unchanged |
-| 3 | Not root, `sudo -n` fails, and no terminal can approve a sudo prompt | Unchanged |
-| 4 | The agent configuration, or its MCP servers couldn't be read. Before the first managed run, a failed read of the configuration warns and merges instead | Unchanged |
+| 3 | No root or approved `sudo` on macOS or Linux, or no administrator elevation on Windows | Unchanged |
+| 4 | After a managed run, the agent configuration couldn't be read; or its MCP servers couldn't be resolved | Unchanged |
 | 5 | No agent configuration is published, or coding agent configs are off, on a machine with the marker file | Unchanged |
 | 6 | A write failed, or another process changed a file during the write | Each file is replaced atomically. After a failed write, the run restores every file it changed. A file that another process changed is left as that process wrote it |
 
@@ -143,7 +154,7 @@ machine-wide files when the workspace publishes no agent configuration.
 | `ug status` | Shows `Machine-wide settings: From the published agent configuration` |
 | `ug --header` or `UG_HEADERS` | Not sent. The launch warns, because a managed run doesn't support per-launch headers. Add them to the agent configuration's `http_headers` instead |
 | `ug revert` | Reverts the developer's own settings and leaves the machine-wide files |
-| `ug revert` as root | Deletes the machine-wide files, the saved agent configuration, and the marker file. It then removes what an earlier `ug configure --global` without a published agent configuration left, such as the header mod |
+| `ug revert` as root or elevated administrator | Deletes the machine-wide files, the saved agent configuration, and the marker file. It then removes what an earlier `ug configure --global` without a published agent configuration left, such as the header mod |
 | `claude` or `codex` | Uses the gateway, the sign-in, and the native fields, after one `ug claude` or `ug codex` run. Discovered models, tracing, and smart routing need `ug` |
 
 Codex reads its files when it starts. Claude Code rereads `managed-settings.json` during a session,
