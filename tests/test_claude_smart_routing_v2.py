@@ -1115,7 +1115,7 @@ class TestSubagentRouting:
         monkeypatch.setattr(
             v2,
             "_request_claude_routing_decision",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 routing.RoutingDecision(model=gateway_model),
                 None,
             ),
@@ -1207,7 +1207,7 @@ class TestSubagentRouting:
         monkeypatch.setattr(
             v2,
             "_request_claude_routing_decision",
-            lambda *_args: (
+            lambda *_args, **_kwargs: (
                 routing.RoutingDecision(model=selected_model),
                 None,
             ),
