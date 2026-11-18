@@ -415,3 +415,18 @@ def test_terminal_escapes_never_reach_the_output(log_dir):
             len(line) == 77 for line in output.splitlines() if line.startswith(("┌", "│", "└"))
         )
     assert "task…" in "\n".join(lines_of(detail("abcd1234").output))
+
+
+def test_oversized_number_and_escaped_id_do_not_break_the_table(log_dir):
+    log_dir.mkdir()
+    records = [
+        valid_record("aaaa0001"),
+        valid_record("aaaa0002", at=10**400),
+        valid_record("\x1b[31mevil-id"),
+    ]
+    (log_dir / "codex-c1.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
+    result = table()
+    assert result.exit_code == 0
+    lines = lines_of(result.output)
+    assert lines[0] == "2 routed subagents this session (showing last 2)"
+    assert "\x1b" not in result.output

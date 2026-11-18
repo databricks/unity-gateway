@@ -190,7 +190,7 @@ def _clean(text: str) -> str:
 
 
 def _short_id(decision_id: object) -> str:
-    return decision_id[:ID_PREFIX_CHARS] if isinstance(decision_id, str) else "?"
+    return _clean(decision_id[:ID_PREFIX_CHARS]) if isinstance(decision_id, str) else "?"
 
 
 def _truncate(text: str, width: int) -> str:
@@ -206,7 +206,12 @@ def _short_model(model: object) -> str:
 
 
 def _is_number(value: object) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, int | float) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # an integer too large for a float
+        return False
 
 
 def _is_listed(record: dict[str, Any]) -> bool:
