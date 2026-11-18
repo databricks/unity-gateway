@@ -70,7 +70,8 @@ jobs:
           {
             echo "background<<$delimiter"
             cat AGENTS.md .github/ug-review-instructions.md
-            printf '\n%s\n' \
+            printf '\n'
+            printf '%s\n' \
               'Apply the shared rubric across the affected user journey, including existing' \
               'configuration, alternate write paths, and backend dependencies. Inspect related' \
               'code before reporting a file-local concern. Missing live evidence is unverified,' \
