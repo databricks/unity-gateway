@@ -3,6 +3,7 @@
 import json
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,20 @@ import pytest
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/security-scan.yml"
 HEAD = "a" * 40
 BASE = "b" * 40
+RUN_ID = 123
 
 
-def _resolve(tmp_path, monkeypatch, change=None):
+def _resolve(
+    tmp_path,
+    monkeypatch,
+    change=None,
+    notification=None,
+    run_error=None,
+    pending_titles=(),
+    retry_change=None,
+):
     request = {
+        "id": RUN_ID,
         "event": "pull_request",
         "path": ".github/workflows/ci.yml",
         "display_title": "CI #7",
@@ -22,6 +33,8 @@ def _resolve(tmp_path, monkeypatch, change=None):
         "head_branch": "topic",
         "author_association": "OWNER",  # This untrusted hint must never set policy.
     }
+    if notification is None:
+        notification = dict(request)
     pr = {
         "number": 7,
         "state": "open",
@@ -38,15 +51,29 @@ def _resolve(tmp_path, monkeypatch, change=None):
             target = target[key]
         target[path[-1]] = value
     event = tmp_path / "event.json"
-    event.write_text(json.dumps({"workflow_run": request}))
+    event.write_text(json.dumps({"workflow_run": notification}))
     output = tmp_path / "output"
     monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
     monkeypatch.setenv("GITHUB_OUTPUT", str(output))
     monkeypatch.setenv("REPO", "databricks/unity-gateway")
 
+    titles = iter(pending_titles)
+    sleeps = []
+    run_lookups = 0
+    monkeypatch.setattr(time, "sleep", sleeps.append)
+
     def fetch(args, timeout):
-        assert args == ["gh", "api", "repos/databricks/unity-gateway/pulls/7"]
+        nonlocal run_lookups
         assert timeout == 30
+        if args == ["gh", "api", f"repos/databricks/unity-gateway/actions/runs/{RUN_ID}"]:
+            if run_error:
+                raise run_error
+            run_lookups += 1
+            response = dict(request, display_title=next(titles, request["display_title"]))
+            if retry_change and run_lookups > 1:
+                response.update(retry_change)
+            return json.dumps(response).encode()
+        assert args == ["gh", "api", "repos/databricks/unity-gateway/pulls/7"]
         return json.dumps(pr).encode()
 
     monkeypatch.setattr(subprocess, "check_output", fetch)
@@ -54,11 +81,25 @@ def _resolve(tmp_path, monkeypatch, change=None):
     script = textwrap.dedent(resolve.split("        run: |\n", 1)[1])
     script = script.removeprefix("python3 - <<'PY'\n").removesuffix("PY\n")
     exec(compile(script, "security-scan.yml", "exec"), {})
+    assert sleeps == [5] * len(pending_titles)
     return json.loads(output.read_text().removeprefix("metadata="))
 
 
-def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
-    metadata = _resolve(tmp_path, monkeypatch)
+@pytest.mark.parametrize(
+    "notification",
+    [
+        None,
+        {"id": RUN_ID, "event": "pull_request"},
+        {
+            "id": RUN_ID,
+            "event": "pull_request",
+            "path": ".github/workflows/ci.yml",
+            "display_title": "Require a trusted main Security Scan before PR tests and /integration-test",
+        },
+    ],
+)
+def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch, notification):
+    metadata = _resolve(tmp_path, monkeypatch, notification=notification)
     assert metadata == {
         "head_sha": HEAD,
         "base_sha": BASE,
@@ -70,9 +111,74 @@ def test_trusted_scan_resolves_policy_from_github(tmp_path, monkeypatch):
     }
 
 
+@pytest.mark.parametrize("pending_titles", [("PR title",), ("", "PR title"), ("PR title",) * 6])
+def test_trusted_scan_waits_for_evaluated_run_title(tmp_path, monkeypatch, pending_titles):
+    metadata = _resolve(tmp_path, monkeypatch, pending_titles=pending_titles)
+    assert metadata["head_sha"] == HEAD
+    assert metadata["author_association"] == "NONE"
+
+
+def test_trusted_scan_title_retry_is_bounded(tmp_path, monkeypatch, capsys):
+    with pytest.raises(SystemExit, match="display_title"):
+        _resolve(tmp_path, monkeypatch, pending_titles=("PR title",) * 7)
+    assert capsys.readouterr().out.count("retrying in 5 seconds") == 6
+    assert not (tmp_path / "output").exists()
+
+
 @pytest.mark.parametrize(
     "change",
     [
+        ("pr", ("head", "sha"), "c" * 40),
+        ("pr", ("head", "repo", "id"), 99),
+        ("pr", ("head", "ref"), "another-branch"),
+        ("request", ("event",), "push"),
+        ("request", ("path",), ".github/workflows/other.yml"),
+        ("request", ("id",), RUN_ID + 1),
+    ],
+)
+def test_trusted_scan_title_retry_preserves_identity_checks(tmp_path, monkeypatch, change):
+    with pytest.raises(SystemExit):
+        _resolve(tmp_path, monkeypatch, change=change, pending_titles=("PR title",))
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "retry_change",
+    [
+        {"id": RUN_ID + 1},
+        {"event": "push"},
+        {"path": ".github/workflows/other.yml"},
+        {"head_sha": "c" * 40},
+        {"head_repository": {"id": 99}},
+        {"head_branch": "another-branch"},
+    ],
+)
+def test_trusted_scan_revalidates_response_after_title_retry(tmp_path, monkeypatch, retry_change):
+    with pytest.raises(SystemExit):
+        _resolve(tmp_path, monkeypatch, pending_titles=("PR title",), retry_change=retry_change)
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize("run_id", [None, 0, -1, "123", True])
+def test_trusted_scan_rejects_invalid_event_run_id(tmp_path, monkeypatch, run_id):
+    with pytest.raises(SystemExit, match="run ID"):
+        _resolve(tmp_path, monkeypatch, notification={"id": run_id})
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "error", [subprocess.CalledProcessError(1, "gh"), subprocess.TimeoutExpired("gh", 30)]
+)
+def test_trusted_scan_run_lookup_fails_closed(tmp_path, monkeypatch, error):
+    with pytest.raises(type(error)):
+        _resolve(tmp_path, monkeypatch, run_error=error)
+    assert not (tmp_path / "output").exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        ("request", ("id",), RUN_ID + 1),
         ("request", ("event",), "push"),
         ("request", ("path",), ".github/workflows/other.yml"),
         ("request", ("display_title",), "Unrecognized request"),
@@ -92,6 +198,9 @@ def test_trusted_scan_rejects_mismatched_request(tmp_path, monkeypatch, change):
     with pytest.raises(SystemExit) as result:
         _resolve(tmp_path, monkeypatch, change)
     assert result.value.code != 0
+    if change[0] == "request":
+        field = "run ID" if change[1] == ("id",) else change[1][0]
+        assert field in str(result.value)
     assert not (tmp_path / "output").exists()
 
 
@@ -104,6 +213,7 @@ def test_scan_orchestration_and_policy_use_the_default_branch():
     assert "workflows: [CI]" in trigger
     assert "uses:" not in resolve and "git " not in resolve
     assert "pull-requests: read" in resolve
+    assert "actions: read" in resolve
     assert "runs-on: ubuntu-latest" in scan and "needs: resolve" in scan
     assert "POLICY_SHA: ${{ github.workflow_sha }}" in scan
     assert 'git fetch -q --depth=1 origin "$POLICY_SHA"' in scan

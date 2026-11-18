@@ -236,12 +236,20 @@ def build_claude(
         ug_values[claude_agent.CLAUDE_ALLOWED_MCP_SERVERS_KEY] = [
             {"serverName": name} for name in sorted(names)
         ]
-    return ownership.compose(
+    composed = ownership.compose(
         ownership.load_table("claude").section("managed_settings"),
         native=native,
         ug_values=ug_values,
         features=agent_features(manifest, "claude"),
     )
+    if not claude_agent.auto_configuration_enabled():
+        from ucode.agents.claude_auto import remove_auto_configuration
+
+        try:
+            composed.doc = remove_auto_configuration(composed.doc)
+        except ValueError as exc:
+            raise ManagedRunError(EXIT_USAGE, f"Cannot remove Claude Auto settings: {exc}") from exc
+    return composed
 
 
 def _codex_identity(entry: dict) -> dict:

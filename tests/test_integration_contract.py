@@ -146,9 +146,27 @@ def test_codex_desktop_macos_ci_is_blocking_and_installs_a_pinned_app():
     assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
     assert "codex-app-prod/ChatGPT-darwin-arm64-${CHATGPT_APP_VERSION}.zip" in job
     assert "shasum -a 256 -c" in job
-    assert "--macos-desktop" in job
+    assert "--desktop-app" in job
     assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
         "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
+    }
+
+
+def test_codex_desktop_windows_ci_is_blocking_and_installs_a_pinned_app():
+    jobs = _integration_jobs()
+    job = jobs["codex-desktop-windows"]
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-desktop-windows" in {name.strip() for name in needs.group(1).split(",")}
+    assert "runs-on: windows-latest" in job
+    assert "continue-on-error:" not in job
+    assert re.search(r"(?m)^      CHATGPT_APP_VERSION: \d+\.\d+\.\d+\.\d+$", job)
+    assert re.search(r"(?m)^      CHATGPT_APP_SHA256: [0-9a-f]{64}$", job)
+    assert "codex-app-prod/releases/$env:CHATGPT_APP_VERSION/ChatGPT-x64.msix" in job
+    assert "-ne $env:CHATGPT_APP_SHA256" in job
+    assert "--desktop-app" in job
+    assert _collect_integration_cases(_ci_marker_expression(job, "codex")) == {
+        "test_ug_codex_desktop_windows.py::test_ug_codex_desktop_windows_completes_a_gateway_turn"
     }
 
 
@@ -167,7 +185,7 @@ def test_latest_harness_runs_the_newest_signed_chatgpt_app():
     assert "spctl --assess --type execute /Applications/ChatGPT.app" in workflow
     assert re.search(r"(?m)^          OPENAI_TEAM_ID: [A-Z0-9]{10}$", workflow)
     assert '"TeamIdentifier=$OPENAI_TEAM_ID"' in workflow
-    assert "${{ matrix.suite == 'desktop' && '--macos-desktop' || '' }}" in workflow
+    assert "${{ matrix.suite == 'desktop' && '--desktop-app' || '' }}" in workflow
     assert _collect_integration_cases(entry.group(2)) == {
         "test_ug_codex_desktop_macos.py::test_ug_codex_desktop_macos_completes_a_gateway_turn"
     }
@@ -263,6 +281,12 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
             )
         assert "- agent: codex\n            smart_routing: true" in jobs["managed"]
         full |= routing
+        relay = _collect_integration_cases(_ci_marker_expression(jobs["codex-relay"], agent))
+        assert relay == {
+            "test_ug_codex_relayed.py::test_ug_codex_relayed_completes_inference_through_the_relay"
+        }
+        assert not (smoke | full) & relay
+        full |= relay
     # Full skips smoke cases only because smoke runs them on the same OS matrix.
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["smoke"]
     assert "os: [ubuntu-22.04, windows-latest]" in jobs["full"]
@@ -275,6 +299,22 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
         assert not selected & staging
         selected |= staging
     assert selected == _collect_integration_cases(f"live and {agent} and not soft_fail")
+
+
+def test_codex_relay_ci_uses_allowlisted_runner_and_blocks_gate():
+    jobs = _integration_jobs()
+    relay = jobs["codex-relay"]
+    assert "group: databricks-protected-runner-group" in relay
+    assert "labels: linux-ubuntu-latest" in relay
+    assert "CODEX_ACCESS_TOKEN: ${{ secrets.CODEX_OAUTH_TOKEN }}" in relay
+    assert "CODEX_ACCESS_TOKEN" not in jobs["full"]
+    assert "PACKAGE_INDEX: https://pypi-proxy.cloud.databricks.com/simple" in relay
+    assert "NPM_REGISTRY: https://npm-proxy.cloud.databricks.com" in relay
+    assert "steps: *live-steps" in relay
+    assert "continue-on-error:" not in relay
+    needs = re.search(r"(?m)^    needs: \[([^\]]+)\]$", jobs["cujs"])
+    assert needs is not None
+    assert "codex-relay" in {name.strip() for name in needs.group(1).split(",")}
 
 
 def test_anthropic_mps_ci_uses_staging_service_principal_and_preserves_coverage(monkeypatch):
@@ -419,6 +459,7 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert 'pytest --confcutdir=tests/e2e_cuj "tests/e2e_cuj/${{ matrix.test }}"' in job
     assert 'UV_HTTP_TIMEOUT: "120"' in job and 'UV_HTTP_RETRIES: "6"' in job
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
+    assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
         "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
         "inputs.codex_version || '0.156.0' }}"
@@ -594,6 +635,7 @@ FORK_GUARD = (
 # Fork PRs get no secrets or OIDC token, so jobs that need either must skip them.
 SKIPPED_ON_FORK_PRS = {
     "anthropic-mps",
+    "codex-relay",
     "cowork-inference-windows",
     "cowork-inference-macos",
     "workspace",
@@ -604,9 +646,11 @@ SKIPPED_ON_FORK_PRS = {
     "opencode",
     "copilot",
     "antigravity",
+    "vscode",
     "managed",
     "managed-opencode",
     "codex-desktop-macos",
+    "codex-desktop-windows",
     "dedicated-cuj-plan",
     "dedicated-cuj",
     "cujs",
@@ -841,9 +885,11 @@ def test_windows_integration_ci_uses_shared_claude_version():
         "workspace",
         "smoke",
         "full",
+        "codex-relay",
         "antigravity",
         "managed",
         "codex-desktop-macos",
+        "codex-desktop-windows",
         "dedicated-cuj-plan",
         "dedicated-cuj",
     ],
@@ -865,9 +911,11 @@ def test_integration_ci_gate_requires_every_job(failed_job, job_result):
             "workspace",
             "smoke",
             "full",
+            "codex-relay",
             "antigravity",
             "managed",
             "codex-desktop-macos",
+            "codex-desktop-windows",
             "dedicated-cuj-plan",
             "dedicated-cuj",
         )
@@ -940,7 +988,11 @@ def test_live_integration_cases_belong_to_exactly_one_ci_agent():
                 marks = module_marks | _markers(node.decorator_list)
                 if marks & {"live", "managed_fixture", "workspace_switch"}:
                     assert (
-                        len(marks & {"claude", "codex", "opencode", "copilot", "antigravity"}) == 1
+                        len(
+                            marks
+                            & {"claude", "codex", "opencode", "copilot", "antigravity", "vscode"}
+                        )
+                        == 1
                     ), node.name
 
 
@@ -1119,6 +1171,28 @@ def test_cowork_ci_covers_each_claude_model_source(job_name):
     ]
 
 
+@pytest.mark.parametrize("job_name", ["cowork-inference-windows", "cowork-inference-macos"])
+def test_cowork_ci_runs_mcp_web_search_after_inference(job_name):
+    job = _integration_jobs()[job_name]
+    step = job.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.cowork-inference.outcome == 'success' }}\n" in step
+    )
+    # `ug mcp add` and the connector proxy authenticate against the e2e workspace.
+    assert "UCODE_TEST_WORKSPACE: ${{ secrets.UCODE_TEST_WORKSPACE }}" in step
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in step
+    assert ("-Capability mcp" in step) or ("--capability mcp" in step)
+    # The PAT minted for Desktop's connectors is revoked even when the job fails.
+    revoke = job.split("      - name: Revoke the Desktop PAT\n", 1)[1].split("      - name: ", 1)[0]
+    assert "        if: always()\n" in revoke
+    assert "desktop-pat.py revoke" in revoke
+    assert "DATABRICKS_BEARER: ${{ secrets.DATABRICKS_BEARER }}" in revoke
+    # configure selects the MCP service for Desktop's connectors.
+    assert "      UG_COWORK_MCP: true\n" in job
+
+
 def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     jobs = _integration_jobs()
     job = jobs["anthropic-mps"]
@@ -1142,6 +1216,29 @@ def test_staging_anthropic_mps_lane_runs_cowork_only_on_windows_claude():
     assert len(gates) == desktop.count("      - name: ") + 1
     assert "DATABRICKS_BEARER_COMMAND=" in desktop
     assert "name: cowork-inference-anthropic\n" in desktop
+    # The staging lane runs the same MCP web search; its PAT is minted with the bearer command.
+    assert "      UG_COWORK_MCP: true\n" in job
+    mcp = desktop.split("      - name: Assert Cowork MCP web search\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ !cancelled() && steps.desktop-inference.outcome == 'success' }}\n" in mcp
+    )
+    assert "-Capability mcp" in mcp
+    revoke = desktop.split("      - name: Revoke the Desktop PAT\n", 1)[1].split(
+        "      - name: ", 1
+    )[0]
+    assert (
+        "        if: ${{ always() && steps.desktop-dependencies.outcome == 'success' }}\n" in revoke
+    )
+    assert "desktop-pat.py revoke" in revoke
+    assert "${{ runner.temp }}/cowork-inference/mcp/\n" in desktop
+    opted_in = [name for name, body in jobs.items() if "\n      UG_COWORK_MCP:" in body]
+    assert sorted(opted_in) == [
+        "anthropic-mps",
+        "cowork-inference-macos",
+        "cowork-inference-windows",
+    ]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="required-e2e runs on Linux")
@@ -1173,3 +1270,42 @@ def test_required_e2e_enforces_integration_result(event, integration_result, pas
         check=False,
     )
     assert (result.returncode == 0) is passes, result.stderr
+
+
+def test_vscode_lane_pins_vscode_and_copilot_and_is_non_blocking():
+    workflow = WORKFLOW.read_text()
+    jobs = _integration_jobs()
+    job = jobs["vscode"]
+    assert "  VSCODE_VERSION: ${{ inputs.vscode_version || '1.144.0' }}" in workflow
+    assert (
+        'vscode) args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION") ;;'
+        in workflow
+    )
+    assert "runs-on: ${{ matrix.os }}" in job
+    assert "os: [ubuntu-22.04, windows-latest]" in job
+    assert "continue-on-error: true" in job
+    assert "AGENT: vscode" in job
+    assert "TEST_MARKER: live and vscode" in job
+    assert (
+        "      - name: Install a virtual display for VS Code\n"
+        "        if: ${{ env.AGENT == 'vscode' && runner.os == 'Linux' }}\n"
+        "        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb"
+    ) in workflow
+    gate_needs = re.search(r"(?m)^    needs: \[(.*)\]$", jobs["cujs"]).group(1)
+    assert "vscode" not in [need.strip() for need in gate_needs.split(",")]
+
+
+def test_latest_harness_drives_the_newest_vscode_and_copilot():
+    workflow = _workflow("harness-latest.yml")
+    resolver, harness = workflow.split("\n  harness-latest:\n", 1)
+    assert "npm view @github/copilot@latest version" in resolver
+    assert "https://update.code.visualstudio.com/api/update/linux-x64/stable/latest" in resolver
+    for output in ("copilot", "vscode", "vscode_sha256"):
+        assert f"needs.resolve-versions.outputs.{output}" in harness
+    assert "- suite: vscode\n            runner: ubuntu-22.04\n" in harness
+    assert "marker: harness_latest and vscode" in harness
+    assert (
+        'args=(--copilot-version "$COPILOT_VERSION" --vscode-version "$VSCODE_VERSION"\n'
+        '              --vscode-sha256 "$VSCODE_SHA256")'
+    ) in harness
+    assert "if: ${{ matrix.suite == 'vscode' }}" in harness

@@ -16,7 +16,7 @@ from tests.integration.utils.evidence import (
 from tests.integration.utils.mcp import open_claude_mcp_inventory, open_codex_mcp_inventory
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX
+from .helpers.constants import CLAUDE, CODEX, COPILOT
 from .helpers.evidence import completed_turn, message_text
 from .helpers.mcp import registered_name
 from .helpers.poll import poll
@@ -206,7 +206,9 @@ def _fixture_server_rows(output):
 
 def _expected_fixture_server_rows():
     return {
-        service: [f"{registered_name(service)} {service} (managed) {CLAUDE}, {CODEX} connected"]
+        service: [
+            f"{registered_name(service)} {service} (managed) {CLAUDE}, {COPILOT}, {CODEX} connected"
+        ]
         for service in SERVICES
     }
 
@@ -243,22 +245,15 @@ class TestMcpRegistration(BaseCujTest):
     WORKSPACE_URL = "https://dbc-bbdd5508-648e.cloud.databricks.com"
 
     def test_mcp_list_reports_managed_fixture_servers(self, cuj):
-        """Scenario: configure both agents and inspect unscoped `ug mcp list` output.
+        """Scenario: configure the workspace's three managed agents and inspect unscoped
+        `ug mcp list` output.
 
-        Expected: both managed fixture rows list Claude/Codex and aggregate `connected` status;
+        Expected: both managed fixture rows list Claude, Copilot and Codex and aggregate
+        `connected` status;
         no `ug_e2e.other_tools` server appears. Codex connectivity is verified by its TUI journey.
         """
         session, workspace, _recorder = cuj
-        session.configure(
-            [
-                "configure",
-                "--agents",
-                f"{CLAUDE},{CODEX}",
-                "--workspace",
-                workspace.url,
-                "--skip-upgrade",
-            ]
-        )
+        session.configure(["configure", "--workspace", workspace.url, "--skip-upgrade"])
         output = _poll_mcp_list(session)
         assert _fixture_server_rows(output) == _expected_fixture_server_rows(), output
         assert "ug_e2e.other_tools" not in output, output
