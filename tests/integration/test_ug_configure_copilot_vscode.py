@@ -258,10 +258,10 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
     reopens VS Code on the same profile.
 
     Expected: the first turn completes as in the switch CUJ. After the reconfigure, the extension
-    lists only the service's models; in the reopened window, searching the model picker finds no
-    workspace Claude model, and picking the service's model completes a turn whose requests reach
-    the OpenAI Responses route with the provider service header, for the service's model, with a
-    non-empty HTTP 200. Not covered: what the chat shows for a model that went away, which the
+    lists only the service's models. In the reopened window, picking the service's model completes a
+    turn whose requests reach the OpenAI Responses route with the provider service header, for the
+    service's model, with a non-empty HTTP 200; then searching the model picker finds no workspace
+    Claude model. Not covered: what the chat shows for a model that went away, which the
     developer has to replace by picking a new one.
     """
     session = live_session
@@ -285,7 +285,6 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
         ids = {entry["id"] for entry in config["models"]}
         assert codex_provider_model in ids and CLAUDE_TEST_MODEL not in ids, ids
         with VSCode(session, "reopened") as vscode:
-            vscode.assert_not_in_picker(old_label)
             vscode.pick_model(model_label(config, codex_provider_model))
             task = FileTask(session)
             checkpoint = recorder.checkpoint()
@@ -300,3 +299,5 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
                 PROVIDER_GPT_ROUTE,
                 {PROVIDER_HEADER: codex_provider},
             )
+            # After a completed turn the picker has loaded the service's models.
+            vscode.assert_not_in_picker(old_label)

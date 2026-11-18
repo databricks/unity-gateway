@@ -204,7 +204,11 @@ class VSCode:
             return None
 
     def screen(self) -> dict:
-        return self.page.evaluate(_SCREEN)
+        screen = self.page.evaluate(_SCREEN)
+        # The toast hides itself after some seconds, so remember it from any read.
+        if screen["byokToast"]:
+            self.copilot_chat_ready = True
+        return screen
 
     def shot(self, name: str) -> None:
         self.shots += 1
@@ -265,6 +269,8 @@ class VSCode:
         added; reaching the model list fails."""
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
+        # Each action extends the step, up to a cap for a screen that never settles.
+        cap = time.monotonic() + 3 * STEP_TIMEOUT_S
         deadline = time.monotonic() + STEP_TIMEOUT_S
         last, acted = None, 0.0
         while time.monotonic() < deadline:
@@ -299,6 +305,7 @@ class VSCode:
                 time.sleep(POLL_S)
                 continue
             last, acted = state, time.monotonic()
+            deadline = min(acted + STEP_TIMEOUT_S, cap)
             if state == "picker: no match":
                 continue
             try:
@@ -374,7 +381,6 @@ class VSCode:
             STEP_TIMEOUT_S,
             "Copilot Chat to start on the Databricks models",
         )
-        self.copilot_chat_ready = True
         self.shot("copilot-chat-ready")
 
     def assert_not_in_picker(self, label: str) -> None:
@@ -382,6 +388,8 @@ class VSCode:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
         page = self.page
+        # Each action extends the step, up to a cap for a screen that never settles.
+        cap = time.monotonic() + 3 * STEP_TIMEOUT_S
         deadline = time.monotonic() + STEP_TIMEOUT_S
         last, acted = None, 0.0
         while time.monotonic() < deadline:
@@ -399,6 +407,7 @@ class VSCode:
                 time.sleep(POLL_S)
                 continue
             last, acted = state, time.monotonic()
+            deadline = min(acted + STEP_TIMEOUT_S, cap)
             try:
                 if state == "picker: searching":
                     self._act(f"model picker: type {label}", lambda: page.keyboard.type(label))
@@ -470,7 +479,7 @@ class VSCode:
 
         Any tool confirmation or dialog fails the turn."""
         deadline = time.monotonic() + TURN_TIMEOUT_S
-        idle = 0
+        idle_since = None
         while time.monotonic() < deadline:
             screen = self.screen()
             if screen["dialog"] is not None:
@@ -482,12 +491,12 @@ class VSCode:
             response = screen["response"]
             if screen["responses"] > before and response and not response["busy"]:
                 # Busy drops only when the whole turn, every tool round included, is over.
-                idle += 1
-                if idle >= 3:
+                idle_since = idle_since or time.monotonic()
+                if time.monotonic() - idle_since >= SETTLE_S:
                     self.shot("answer")
                     return response["text"]
             else:
-                idle = 0
+                idle_since = None
             time.sleep(POLL_S)
         raise AssertionError(f"Timed out waiting for the chat turn; last screen {self.screen()}")
 

@@ -773,8 +773,8 @@ request named the service, not which backend served it. The managed journey inje
 `copilot_vscode_defaults` (`managed_fixture`) and requires the chat to start on its GPT default
 without the model list being opened, with its admin header on every request. The reconfigure
 journey completes a Claude turn, quits VS Code from the keyboard, reconfigures to the OpenAI MPS,
-reopens the same profile, requires the picker's search to find no workspace Claude model, and
-completes a turn on the service's model with its header. Configure points ug at a
+reopens the same profile, completes a turn on the service's model with its header, and then
+requires the picker's search to find no workspace Claude model. Configure points ug at a
 recording forwarder, so each turn's requests must reach the expected route
 (`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/mlflow/v1/responses`) for the picked model, with
 ug's User-Agent naming the Copilot Chat version bundled in that VS Code, and get a non-empty HTTP
