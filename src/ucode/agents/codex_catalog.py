@@ -87,7 +87,7 @@ def _fallback_metadata(
     missing_gpt = key.startswith("gpt-")
     if missing_gpt and warn is not None:
         warn(
-            f"Codex is missing metadata for managed GPT model '{name}', so UG is "
+            f"Codex is missing metadata for managed GPT model '{model_id}', so UG is "
             "falling back to default metadata. Try updating Codex with `ug codex update`."
         )
     baseline = next((m for m in bundled_models if m.get("tool_mode") is None), None)
@@ -178,7 +178,7 @@ def _shared_metadata(name: str, model: dict, destinations: list[dict]) -> dict:
     for field in ("node_repl_disabled", "node_repl_auto_review_required"):
         if field in model:
             model[field] = any(item.get(field, False) for item in destinations)
-    model["default_verbosity"] = "medium" if model["support_verbosity"] else None
+    model["default_verbosity"] = "medium" if model.get("support_verbosity") else None
     if "default_service_tier" in model:
         model["default_service_tier"] = None
     return model
@@ -194,8 +194,8 @@ def build_codex_catalog(
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
     Preserve all native metadata (including unknown future fields), except picker
-    slug/visibility/order. Services without native metadata get a picker label from their
-    unqualified model name, or the full id when labels collide. Only requested slugs are visible.
+    slug/visibility/order and custom-service labels. Custom services and models without native
+    metadata use their unqualified name, or the full id when labels collide. Only requested slugs are visible.
     Hidden aliases for selected GPTs support the smart router's native-ID translation.
     """
     by_slug = {model["slug"]: model for model in bundled_models}
@@ -220,6 +220,8 @@ def build_codex_catalog(
             model = _shared_metadata(
                 name, _fallback_metadata(name, name, bundled_models, None), destinations
             )
+        if name in (model_ids or {}):
+            model["display_name"] = model_picker_label(name)
         model.update(
             slug=name,
             visibility=ModelVisibility.LIST,

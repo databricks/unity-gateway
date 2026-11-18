@@ -149,9 +149,18 @@ def test_legacy_gpt_alias_uses_native_metadata(bundled):
 
 
 def test_custom_services_use_destination_metadata_and_keep_request_identity(bundled):
-    names = ["mlops_ont.models.codegen-gpt-6-luna", "main.team.opaque", "main.team.gpt-4o"]
+    names = [
+        "mlops_ont.models.codegen-gpt-6-luna",
+        "main.team.opaque",
+        "main.team.gpt-4o",
+        "main.team.another",
+    ]
     targets = dict(
-        zip(names, [["gpt-6-astra"], ["system.ai.kimi-k3"], ["gpt-6.1-sol"]], strict=True)
+        zip(
+            names,
+            [["gpt-6-astra"], ["system.ai.kimi-k3"], ["gpt-6.1-sol"], ["gpt-6-astra"]],
+            strict=True,
+        )
     )
     original = copy.deepcopy(bundled)
 
@@ -159,11 +168,13 @@ def test_custom_services_use_destination_metadata_and_keep_request_identity(bund
 
     assert [model["slug"] for model in models] == names
     for key, value in bundled[2].items():
-        if key not in {"slug", "priority", "visibility", "supported_in_api"}:
+        if key not in {"slug", "display_name", "priority", "visibility", "supported_in_api"}:
             assert models[0][key] == value
     assert models[1]["default_reasoning_level"] == "max"
     assert models[1]["input_modalities"] == ["text", "image"]
     assert models[2]["default_reasoning_level"] == "medium"
+    assert models[3]["display_name"] == "Another"
+    assert models[0]["display_name"] != models[3]["display_name"]
     assert [level["effort"] for level in models[2]["supported_reasoning_levels"]] == [
         "low",
         "medium",
