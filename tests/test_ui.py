@@ -317,13 +317,6 @@ class TestNormalizeWorkspaceUrl:
 class TestScrollHint:
     """A long picker list scrolls, but questionary doesn't say so — the pickers add the hint."""
 
-    def test_optional_escape_cancels_selection(self):
-        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-            pipe.send_text("\x1b")
-            assert (
-                prompt_for_selection("Model", [("sonnet", "Sonnet")], escape_to_cancel=True) is None
-            )
-
     def _opts(self, n):
         return [(f"m{i}", f"m{i}") for i in range(n)]
 

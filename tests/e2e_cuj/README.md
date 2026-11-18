@@ -115,7 +115,7 @@ model succeeds at `/ai-gateway/codex/v1/responses`, but Copilot's configured
 
 Use a clean disposable POSIX runner and the normal CUJ service-principal
 variables. Install the checkout's `ug`, Databricks CLI `1.17.0`, Claude Code
-`2.1.290`, Codex `0.156.0`, and Copilot CLI `1.0.91` on PATH. CI installs the
+`2.1.326`, Codex `0.156.0`, and Copilot CLI `1.0.91` on PATH. CI installs the
 pinned Copilot CLI only for this automatically discovered shard.
 
 ```bash

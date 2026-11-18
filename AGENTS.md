@@ -153,16 +153,6 @@ may delegate the session-control write to UG's CLI, which validates and replaces
 atomically; the mod itself still writes no file.
 
 Claude Auto is enabled only by the `subagent_auto_v0_claude_only` config version.
-The minimum Claude version is 2.1.236. On macOS/Linux before 2.1.290, the
-`claude_legacy_auto.py` terminal adapter opens a UG chooser and uses command
-hooks for subagent routing. It resolves Auto aliases to real models with native
-`/model`, preserves native validation/cache warnings, and saves preferences only
-after a confirmed selection. Its launch-only SessionStart/UserPromptSubmit/Stop
-hooks track the native transcript and whether a turn is running. It restores the
-user's prior model setting after an internal switch, resolving an Auto alias to
-its real target. Native picker checkmarks follow the real model; this path has no
-native mod status band. Windows Auto and required Isaac feedback need 2.1.290+.
-The native-mod behavior below applies to 2.1.290+.
 `ENABLE_SMART_ROUTER_AUTO_MODE` is an internal derived flag: that version sets it to
 `"1"` for Claude, and other versions set it to `"0"`. Setting the flag directly,
 managed smart routing alone, and an installed static Auto row cannot enable Auto.

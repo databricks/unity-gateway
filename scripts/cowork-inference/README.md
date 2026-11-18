@@ -126,7 +126,7 @@ provenance comes from Microsoft's winget-pkgs catalog:
 Direct official Anthropic installer/runtime downloads were approved for these
 disposable CI tests.
 
-Python dependencies come from PyPI and Claude Code CLI 2.1.290 from public npm,
+Python dependencies come from PyPI and Claude Code CLI 2.1.326 from public npm,
 matching the existing GitHub-hosted Windows CLI integration tests. These public
 package sources are approved for this CI job. Python 3.12 is selected explicitly;
 Claude Code's native binary selection requires its npm postinstall script.

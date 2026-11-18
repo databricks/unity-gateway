@@ -163,8 +163,8 @@ CLAUDE_CONFIG_LOCK_TIMEOUT_SECONDS = 5
 CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
-MINIMUM_CLAUDE_VERSION = (2, 1, 236)
-MINIMUM_CLAUDE_VERSION_TEXT = "2.1.236"
+MINIMUM_CLAUDE_VERSION = (2, 1, 326)
+MINIMUM_CLAUDE_VERSION_TEXT = "2.1.326"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
 
 SPEC: ToolSpec = {
@@ -196,12 +196,6 @@ def minimum_version_error() -> str | None:
         f"ug requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
         f"Your current version is Claude Code {version}."
     )
-
-
-def supports_hook_modules(binary: str = "claude") -> bool:
-    """Unknown builds keep the native path, as they did before version detection."""
-    parsed = _parse_version(agent_version(binary))
-    return parsed is None or parsed >= (2, 1, 290)
 
 
 def _resolve_web_search_model(state: dict) -> str | None:

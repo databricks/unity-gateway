@@ -1,12 +1,7 @@
 # Integration tests
 
-Claude 2.1.236's UG terminal Auto chooser has component coverage in
-`../test_claude_legacy_auto.py`, plus manual Linux TUI checks using the real 2.1.236
-binary and a controlled local response fixture. The manual checks cover opening
-through `/model auto` and the native Auto row, choosing a real model, Escape, and
-the outgoing request's model ID. This is not authenticated gateway inference or
-live subagent-routing coverage. Existing native-mod CI remains pinned to 2.1.290;
-it does not validate the 2.1.236 terminal path.
+Claude launches require 2.1.326 or newer. The version gate has component coverage in
+`../test_agent_claude.py::TestMinimumVersion`; it does not establish gateway inference.
 
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
@@ -484,7 +479,7 @@ patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
 The Claude mod entry point has separate native component checks in
-`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
+`../native_claude/test_mod.py`. Claude 2.1.326 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The required Isaac feedback form, evidence submission, and background delivery
@@ -1304,7 +1299,7 @@ MPS CUJs select preprovisioned services:
   profile authorized there:
 
   ```bash
-  python3.12 scripts/run_integration.py --claude-version 2.1.290 \
+  python3.12 scripts/run_integration.py --claude-version 2.1.326 \
     --workspace https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com \
     --profile YOUR_STAGING_CI_PROFILE -- -m 'anthropic_mps and claude'
   ```

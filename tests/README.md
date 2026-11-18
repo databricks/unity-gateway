@@ -1,13 +1,7 @@
 # Test suites and user journeys
 
-`test_claude_legacy_auto.py` covers the Claude 2.1.236 terminal chooser's version
-dispatch, launch hooks, model-argument precedence, saved preferences, native
-confirmation gating, cancellation, and filtering of transcript command records.
-`test_workspace_selection.py::TestHelperArgv` checks workspace selection on its
-subagent-routing helper. These are component checks; they do not establish live
-gateway routing. Manual Linux checks with the exact 2.1.236 binary and a local
-response fixture exercise the real terminal and inspect outgoing model IDs.
-Windows Auto continues to require the native mod implementation on 2.1.290+.
+`test_agent_claude.py::TestMinimumVersion` verifies the Claude 2.1.326 minimum,
+including rejection of 2.1.325. The native Auto chooser is unchanged.
 
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
@@ -261,7 +255,7 @@ unit/component checks, not live workspace or sign-in coverage; CLI wiring is sep
 
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
-`native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
+`native_claude/test_mod.py` suite. Claude 2.1.326 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
@@ -381,7 +375,7 @@ not trigger reads.
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
 making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
-not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
+not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.326) against a
 fake API with both shell variables set: the blanks make it send the `apiKeyHelper` token, or on the relayed
 path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
 skips on a machine with Claude managed settings, which would replace the fixture's.

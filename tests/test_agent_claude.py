@@ -84,40 +84,23 @@ class TestClaudeSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["2.1.236", "2.1.289", "2.1.290", "2.1.291", "3.0.0"])
+    @pytest.mark.parametrize("version", ["2.1.326", "2.1.327", "3.0.0"])
     def test_supported_version(self, monkeypatch, version):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
 
         assert claude.minimum_version_error() is None
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.235")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.325")
 
         assert claude.minimum_version_error() == (
-            "ug requires Claude Code 2.1.236 or newer. Your current version is Claude Code 2.1.235."
+            "ug requires Claude Code 2.1.326 or newer. Your current version is Claude Code 2.1.325."
         )
 
     def test_unknown_version_does_not_block(self, monkeypatch):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "unknown")
 
         assert claude.minimum_version_error() is None
-
-    @pytest.mark.parametrize(
-        "version,native",
-        [("2.1.236", False), ("2.1.289", False), ("2.1.290", True), ("unknown", True)],
-    )
-    def test_hook_module_capability(self, monkeypatch, version, native):
-        monkeypatch.setattr(claude, "agent_version", lambda _: version)
-        assert claude.supports_hook_modules() is native
-
-    def test_hook_modules_use_the_launch_binary(self, monkeypatch):
-        monkeypatch.setattr(
-            claude,
-            "agent_version",
-            lambda binary: "2.1.236" if binary == "/custom/claude" else "2.1.325",
-        )
-        assert not claude.supports_hook_modules("/custom/claude")
-        assert claude.supports_hook_modules()
 
 
 class TestRenderOverlay:

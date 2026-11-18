@@ -13,7 +13,6 @@ from decimal import ROUND_HALF_UP, Decimal
 
 import questionary
 from prompt_toolkit.formatted_text import to_formatted_text
-from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
 from prompt_toolkit.layout.containers import Window
 from prompt_toolkit.layout.dimension import Dimension
 from questionary.constants import INDICATOR_SELECTED, INDICATOR_UNSELECTED
@@ -635,11 +634,7 @@ def prompt_for_percentage(prompt: str, *, default: float | None = None) -> float
 
 
 def prompt_for_selection(
-    prompt: str,
-    options: list[tuple[str, str]],
-    *,
-    searchable: bool = False,
-    escape_to_cancel: bool = False,
+    prompt: str, options: list[tuple[str, str]], *, searchable: bool = False
 ) -> str | None:
     """Single-select arrow-key picker. `options` is [(value, label), ...].
 
@@ -672,12 +667,6 @@ def prompt_for_selection(
         use_jk_keys=not searchable,
     )
     _cap_choice_viewport(question, len(options))
-    if escape_to_cancel:
-        cancel = KeyBindings()
-        cancel.add("escape")(lambda event: event.app.exit(result=None))
-        question.application.key_bindings = merge_key_bindings(
-            [question.application.key_bindings or KeyBindings(), cancel]
-        )
     answer = question.ask()
     return answer
 

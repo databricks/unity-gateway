@@ -1,24 +1,8 @@
 # Claude mod entry point
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
-`ug-smart-router` plugin in sessions launched with smart routing on Claude Code
-2.1.290 or newer. UG's minimum Claude version is 2.1.236.
-
-Claude 2.1.236–2.1.289 uses command hooks and generated agent roles for subagent
-routing. Auto on macOS and Linux uses `claude_legacy_auto.py`, a PTY wrapper with
-a UG terminal chooser. It opens after a confirmed native Auto selection, or an
-idle `/model auto` command. The wrapper follows only new, paired native command
-records in the session transcript; assistant and subagent content cannot trigger it.
-UserPromptSubmit and Stop hooks prevent command interception during a model turn.
-The selected real model reaches Claude through its own `/model` command, including
-its validation and cache warning. UG restores the user model setting after its
-internal switch and saves an accepted preference per workspace under
-`~/.ucode/claude-auto/`. A regular native model selection turns routing off.
-The native picker checks the real model, rather than retaining the static Auto row.
-This path has no native mod status band or hint-row customization. Windows Auto
-and the required Isaac feedback form continue to require 2.1.290+.
-
-The remaining sections describe the native mod implementation.
+`ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.326 or
+newer is required.
 
 Auto requires `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only` at launch.
 The launcher derives its internal Auto flag and supplies the picker only for that version.
@@ -248,7 +232,7 @@ It also checks Agent/Task descriptions in those requests: orchestrator instructi
 active phases, native guidance otherwise, without the conflicting native advice to avoid
 spawning when unsure.
 
-The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
+The `Claude mod · 2.1.326` CI job validates the packaged module and checks event
 forwarding and launch-local options. Native request-construction checks cover description
 changes across native and CLI on/off/on toggles, a resume input containing a saved
 prompt snapshot, retained lifecycle guidance, an unchanged Agent schema, and
@@ -258,7 +242,7 @@ establish successful inference or delegation quality. To run those component che
 
 ```bash
 UCODE_TEST_CLAUDE_BINARY=/absolute/path/to/claude \
-UCODE_TEST_CLAUDE_VERSION=2.1.290 \
+UCODE_TEST_CLAUDE_VERSION=2.1.326 \
 uv run pytest tests/native_claude/test_mod.py -q
 ```
 

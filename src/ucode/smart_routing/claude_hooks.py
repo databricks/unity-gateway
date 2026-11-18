@@ -20,18 +20,9 @@ FIRST_PROMPT_HOOK_MARKER = f"{ROUTING_HOOK_COMMAND_MARKER} {ROUTE_FIRST_PROMPT_E
 FIRST_PROMPT_SOCKET_ENV = "UCODE_CLAUDE_V2_SOCKET"
 
 
-def sync_smart_routing_hooks(
-    doc: dict, state: dict, *, enabled: bool, legacy: bool = False
-) -> None:
+def sync_smart_routing_hooks(doc: dict, state: dict, *, enabled: bool) -> None:
     """Synchronize ucode-managed lifecycle hooks, removing legacy routing hooks."""
     groups = _routing_hook_groups(state) if enabled else {}
-    if enabled and legacy:
-        groups["PreToolUse"] = [
-            {
-                "matcher": "Agent|Task",
-                "hooks": [_routing_command_hook(routing_hook_argv(state, "route-subagent"))],
-            }
-        ]
     hooks.sync_managed_hooks(doc, ROUTING_HOOK_COMMAND_MARKER, groups)
 
 
@@ -85,7 +76,7 @@ def routing_hook_argv(state: dict, event: str) -> list[str]:
         ROUTING_HOOK_COMMAND_MARKER,
         event,
     ]
-    if event not in {ROUTE_SUBAGENT_MOD_EVENT, "route-subagent"}:
+    if event != ROUTE_SUBAGENT_MOD_EVENT:
         return argv
     argv += ["--host", workspace, *workspace_id_args(workspace)]
     profile = state.get("profile")
