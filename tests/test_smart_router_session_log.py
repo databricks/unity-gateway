@@ -274,3 +274,7 @@ def test_routing_card_box_is_unchanged():
         "Selected Model : m",
         "Reason : why",
     )
+
+
+def test_session_logs_are_isolated_from_the_real_home(tmp_path):
+    assert session_log.LOG_DIR.is_relative_to(tmp_path)
