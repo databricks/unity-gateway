@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
+
+from websockets.exceptions import ConnectionClosed
 
 from ucode.constants import ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR, SMART_ROUTING_ENV_KEYS
 from ucode.env import env_bool
@@ -19,15 +23,22 @@ from ucode.smart_routing.session_env import (
 )
 
 TOOL_NAME = "ug_smart_router"
+PROVIDE_REASON = "Provide a reason"
+CANCEL = "Cancel"
+FEEDBACK_QUESTION_ID = "smart_router_feedback"
+FEEDBACK_DISCLOSURE = "Your reason and session details will be sent to the Isaac team."
+AskFeedback = Callable[[dict], Awaitable[list[str] | None]]
 TOOL_SPEC = {
     "type": "function",
     "name": TOOL_NAME,
     "description": (
         "Control Unity Gateway Smart Router for this root session at the user's request. "
         "Use this native tool instead of shell commands. Call off without a reason first; "
-        "if feedback is required, ask the user directly for a reason, disclose session diagnostics, and wait. "
-        "This is ordinary feedback input, not an approval request. Do not cite skills, file paths, or instructions. "
-        "Then call off with the user's exact reason (minimum 16 trimmed characters). "
+        "if feedback is required, the launcher opens a native choice menu and collects the reason. "
+        "The user can provide a reason (minimum 16 trimmed characters) or cancel. "
+        "Do not ask another question or switch to Plan mode. "
+        "If the user already provided a reason, pass their exact text. "
+        "Do not cite skills, file paths, or instructions. "
         "Never invent feedback. Cancel sends nothing and keeps routing on. "
         "Status checks delivery; retry resends the saved report without recapturing."
     ),
@@ -45,12 +56,127 @@ TOOL_SPEC = {
 }
 
 
+class CodexFeedbackInput:
+    def __init__(self, send: Callable[[str], Awaitable[None]]):
+        self.send = send
+        self.pending: dict[str, tuple[str, str, asyncio.Future]] = {}
+        self.canceled_turns: set[tuple[str, str]] = set()
+
+    def consume(self, message: dict) -> bool:
+        request_id = message.get("id")
+        if (
+            message.get("method") is not None
+            or not isinstance(request_id, str)
+            or not request_id.startswith("ug-feedback-input-")
+        ):
+            return False
+        pending = self.pending.get(request_id)
+        if pending is not None and not pending[2].done():
+            pending[2].set_result(message)
+        return True
+
+    def cancel(self, thread_id: str, turn_id: str | None = None) -> None:
+        if turn_id is not None:
+            self.canceled_turns.add((thread_id, turn_id))
+        for thread, turn, future in self.pending.values():
+            if thread == thread_id and (turn_id is None or turn == turn_id) and not future.done():
+                self.canceled_turns.add((thread, turn))
+                future.set_result(None)
+
+    async def ask(self, thread_id: str, turn_id: str, question: dict) -> list[str] | None:
+        if (thread_id, turn_id) in self.canceled_turns:
+            return None
+        request_id = f"ug-feedback-input-{uuid4().hex}"
+        future = asyncio.get_running_loop().create_future()
+        self.pending[request_id] = (thread_id, turn_id, future)
+        try:
+            await self.send(
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "method": "item/tool/requestUserInput",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": turn_id,
+                            "itemId": request_id,
+                            "isBlocking": True,
+                            "autoResolutionMs": None,
+                            "questions": [question],
+                        },
+                    }
+                )
+            )
+            reply = await future
+            if reply is None or (thread_id, turn_id) in self.canceled_turns:
+                return None
+            result = reply.get("result")
+            if not isinstance(result, dict) or not isinstance(result.get("answers"), dict):
+                raise ValueError("Could not open the feedback prompt. Smart Router is still on.")
+            answer = result["answers"].get(FEEDBACK_QUESTION_ID, {})
+            values = answer.get("answers") if isinstance(answer, dict) else None
+            if values is None:
+                return None
+            if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+                raise ValueError("Invalid feedback response. Smart Router is still on.")
+            return values
+        finally:
+            self.pending.pop(request_id, None)
+            with contextlib.suppress(OSError, ConnectionClosed):
+                await self.send(
+                    json.dumps(
+                        {
+                            "method": "serverRequest/resolved",
+                            "params": {"threadId": thread_id, "requestId": request_id},
+                        }
+                    )
+                )
+
+
+async def collect_feedback(ask: AskFeedback) -> str | None:
+    question = {
+        "id": FEEDBACK_QUESTION_ID,
+        "header": "Smart Router",
+        "question": f"Why are you turning Smart Router off? {FEEDBACK_DISCLOSURE}",
+        "isOther": False,
+        "isSecret": False,
+        "options": [
+            {"label": PROVIDE_REASON, "description": "Type your reason (at least 16 characters)."},
+            {"label": CANCEL, "description": "Keep Smart Router on and send nothing."},
+        ],
+    }
+    answer = await ask(question)
+    if not answer or answer[0] == CANCEL:
+        return None
+    if answer[0] != PROVIDE_REASON:
+        raise ValueError("Invalid feedback selection. Smart Router is still on.")
+    notes = answer[1:]
+    while True:
+        if notes:
+            if len(notes) != 1 or not notes[0].startswith("user_note: "):
+                raise ValueError("Invalid feedback reason. Smart Router is still on.")
+            reason = notes[0].removeprefix("user_note: ")
+            if len(reason.strip()) >= 16:
+                return reason
+        question = {
+            "id": FEEDBACK_QUESTION_ID,
+            "header": "Your reason",
+            "question": f"Please share at least 16 characters. {FEEDBACK_DISCLOSURE} Press Esc to cancel and keep routing on.",
+            "isOther": False,
+            "isSecret": False,
+            "options": None,
+        }
+        notes = await ask(question)
+        if not notes:
+            return None
+
+
 class CodexSmartRouter:
     def __init__(self, controls: Path):
         self.controls = controls
         self.environment = {**os.environ, SESSION_ENV_VAR: str(controls)}
         self.feedback_required = env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
         self.pending_threads: set[str] = set()
+        self.collecting_threads: set[str] = set()
         self.root_threads: set[str] = set()
         self.thread_requests: set[str | int] = set()
         self.uploads: dict[str, feedback.FeedbackUpload] = {}
@@ -105,19 +231,57 @@ class CodexSmartRouter:
             and params.get("namespace") in (None, "")
         )
 
-    async def call(self, params: dict) -> dict:
-        async with self.lock:
-            try:
+    async def call(self, params: dict, ask: AskFeedback | None = None) -> dict:
+        try:
+            async with self.lock:
+                arguments = params.get("arguments", {})
+                thread_id = params.get("threadId")
+                if (
+                    isinstance(thread_id, str)
+                    and thread_id in self.collecting_threads
+                    and isinstance(arguments, dict)
+                    and arguments.get("action") == "off"
+                ):
+                    raise ValueError("A Smart Router feedback prompt is already open.")
+                supplied_reason = arguments.get("reason") if isinstance(arguments, dict) else None
+                if (
+                    self.feedback_required
+                    and isinstance(params.get("threadId"), str)
+                    and isinstance(arguments, dict)
+                    and arguments.get("action") == "off"
+                    and isinstance(supplied_reason, str)
+                    and params.get("threadId") not in self.pending_threads
+                ):
+                    await asyncio.to_thread(
+                        self.execute, {**params, "arguments": {**arguments, "reason": None}}
+                    )
                 result = await asyncio.to_thread(self.execute, params)
-                return {
-                    "contentItems": [{"type": "inputText", "text": json.dumps(result)}],
-                    "success": True,
-                }
-            except (OSError, RuntimeError, ValueError) as exc:
-                return {
-                    "contentItems": [{"type": "inputText", "text": str(exc)}],
-                    "success": False,
-                }
+            if result.get("needs_reason") and ask is not None:
+                thread_id = params["threadId"]
+                self.collecting_threads.add(thread_id)
+                try:
+                    reason = await collect_feedback(ask)
+                except BaseException:
+                    self.pending_threads.discard(thread_id)
+                    raise
+                finally:
+                    self.collecting_threads.discard(thread_id)
+                arguments = (
+                    {"action": "cancel"} if reason is None else {"action": "off", "reason": reason}
+                )
+                async with self.lock:
+                    result = await asyncio.to_thread(
+                        self.execute, {**params, "arguments": arguments}
+                    )
+            return {
+                "contentItems": [{"type": "inputText", "text": json.dumps(result)}],
+                "success": True,
+            }
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "contentItems": [{"type": "inputText", "text": str(exc)}],
+                "success": False,
+            }
 
     def saved_report(self, report_id: str, thread_id: str) -> tuple[str, Path]:
         report_id = str(UUID(report_id))

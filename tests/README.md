@@ -1188,13 +1188,18 @@ Codex requires feedback in every launch mode.
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
 arguments, original-task anchoring, exact reason text, capture before disabling,
 background upload afterward, cancellation, no-ops, failures, read-only delivery status,
-and retry of the same saved report. Status needs no Isaac executable.
+and retry of the same saved report. The native selector offers Provide a reason or
+Cancel, accepts reason notes or opens text entry, repeats short-reason validation,
+preserves preprovided text, and clears pending collection on interruption or error.
+Status needs no Isaac executable.
 `test_codex_metadata.py` checks native request/response transport, unrelated-tool
-forwarding, responsive interrupts during capture, and completion/failure notices
+forwarding, locally consumed feedback replies (including stale replies), native
+prompt cancellation on interrupt, completed turn, or disconnect, responsive
+interrupts during capture, and completion/failure notices
 after the originating turn ends, without another model turn.
 `test_integration_evidence.py` validates native completed-tool
 receipts instead of treating shell output as Codex toggle evidence. These component
-checks do not establish live backend delivery or terminal rendering of notices.
+checks do not establish live backend delivery or terminal rendering of prompts/notices.
 New threads receive the native tool at startup. Older resumed threads that never had
 it must report that an updated launch/new thread is needed; the skill must not silently
 restart the conversation or fall back to a shell command.

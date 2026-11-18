@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.8.1"
+  version: "1.9.0"
 ---
 
 # Smart Router
@@ -51,19 +51,14 @@ to restart through an updated Unity Gateway with smart routing enabled.
 If the command reports that Smart Router is already on or already off, return that
 result and stop. Do not retry, restart a turn, or request feedback for unchanged settings.
 
-If the off result requires feedback, routing is still on. Ask why the user is
-turning Smart Router off and explain that their reason and session details will
-be sent to the Isaac team. In Codex, ask directly in ordinary chat and wait for the
-user's reply; do not depend on a custom pane or a Plan-mode-only question tool.
-For example: "Why are you turning Smart Router off? Please share at least 16
-characters. Your reason and session details will be sent to the Isaac team.
-You can cancel to keep routing on."
-Require at least 16 characters after trimming surrounding whitespace; ask again
-if the reason is shorter. Never invent or pad their reason. Reuse a reason the
-user already supplied for this toggle instead of asking twice.
-If they cancel, use `{"action":"cancel"}` in Codex and stop without disabling routing.
-In Codex, once they provide a valid reason, call `ug_smart_router` with `action="off"` and
-`reason` equal to their exact text. The launcher anchors the preceding task,
+In Codex, the off call opens a native selection prompt when feedback is required:
+"Provide a reason" opens text entry, and "Cancel" keeps routing on and sends nothing.
+The launcher collects at least 16 characters, discloses that the reason and session
+details go to the Isaac team, and handles cancellation. Wait for the tool result;
+do not ask a duplicate chat question, call a separate question tool, or switch to
+Plan mode. If the user already supplied a reason for this toggle, pass their exact
+text in the off call instead of asking twice. Never invent or pad their reason.
+The launcher anchors the preceding task,
 saves evidence before disabling, and sends through Isaac in the background.
 Reason submission needs no additional shell approval. Do not submit the same
 report through `/isaac-feedback` or another command.
@@ -73,7 +68,13 @@ reports completion. If the user asks to check or retry a saved report, use the
 same native tool with `action="status"` or `action="retry"` and its `feedback_id`.
 Keep routing off throughout delivery and retry; never claim delivery succeeded
 merely because routing is off.
-In Claude's skill fallback, repeat off with `--smart-router-feedback '<reason>'`
+In Claude's skill fallback, if the off result requires feedback, routing is still
+on. Ask why the user is turning Smart Router off and explain that their reason and
+session details will be sent to the Isaac team. Require at least 16 characters
+after trimming surrounding whitespace; ask again if shorter. Never invent or pad
+their reason. Reuse a reason already supplied for this toggle. If they cancel,
+stop without disabling routing or submitting feedback.
+Repeat off with `--smart-router-feedback '<reason>'`
 appended, quoting the exact text as one shell argument, then submit it through
 `/isaac-feedback --category smart-routing <reason>` as before. Report a submission
 failure without re-enabling routing. This requirement applies when Isaac sets

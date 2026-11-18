@@ -588,3 +588,87 @@ def test_native_delivery_notice_after_turn_without_model_or_shell(
             assert upstream.outgoing.empty(), "notices must not start a new model turn"
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("ending", ["cancel", "interrupt", "completed", "disconnect", "error"])
+def test_native_selector_replies_stay_local_and_cancel_cleanly(
+    running_interposer, monkeypatch, ending
+):
+    calls = []
+
+    def execute(self, params):
+        calls.append(params["arguments"])
+        return (
+            {"needs_reason": True}
+            if params["arguments"]["action"] == "off"
+            else {"message": "Canceled"}
+        )
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            prompt = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert prompt["method"] == "item/tool/requestUserInput"
+            assert prompt["params"]["threadId"] == thread_id
+            assert prompt["params"]["turnId"] == "turn"
+            question = prompt["params"]["questions"][0]
+            assert [option["label"] for option in question["options"]] == [
+                "Provide a reason",
+                "Cancel",
+            ]
+            approval = {"id": "unrelated-approval", "result": {"decision": "accept"}}
+            tui.incoming.put_nowait(approval)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == approval
+            if ending == "disconnect":
+                tui.incoming.put_nowait(None)
+                await asyncio.wait_for(task, 2)
+                assert calls == [{"action": "off"}]
+                assert upstream.outgoing.empty()
+                return
+            if ending == "interrupt":
+                message = {
+                    "id": "escape",
+                    "method": "turn/interrupt",
+                    "params": {"threadId": thread_id, "turnId": "turn"},
+                }
+                tui.incoming.put_nowait(message)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == message
+            elif ending == "completed":
+                message = {
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+                }
+                upstream.incoming.put_nowait(message)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == message
+            else:
+                result = {"answers": {question["id"]: {"answers": ["Cancel"]}}}
+                reply = (
+                    {"id": prompt["id"], "result": result}
+                    if ending == "cancel"
+                    else {"id": prompt["id"], "error": {"code": -32601, "message": "unsupported"}}
+                )
+                tui.incoming.put_nowait(reply)
+            resolved = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert resolved == {
+                "method": "serverRequest/resolved",
+                "params": {"threadId": thread_id, "requestId": prompt["id"]},
+            }
+            reply = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert reply["id"] == "native-call"
+            assert reply["result"]["success"] == (ending != "error")
+            assert calls == (
+                [{"action": "off"}]
+                if ending == "error"
+                else [{"action": "off"}, {"action": "cancel"}]
+            )
+            assert json.loads(controls.read_text()) == {}
+            tui.incoming.put_nowait({"id": prompt["id"], "result": {"answers": {}}})
+            sentinel = {"id": "after-stale", "method": "ping"}
+            tui.incoming.put_nowait(sentinel)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == sentinel
+            assert upstream.outgoing.empty()
+
+    asyncio.run(run())

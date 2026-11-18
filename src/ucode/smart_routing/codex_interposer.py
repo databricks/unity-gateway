@@ -14,7 +14,7 @@ from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
 
 from ucode.smart_routing import codex_routing, routing
-from ucode.smart_routing.codex_feedback import CodexSmartRouter
+from ucode.smart_routing.codex_feedback import CodexFeedbackInput, CodexSmartRouter
 from ucode.smart_routing.codex_metadata import RoutingMetadata
 
 SETTINGS_UPDATED = "thread/settings/updated"
@@ -249,6 +249,7 @@ async def _handle_tui(
             RoutingMetadata(session_controls, log) if session_controls is not None else None
         )
         smart_router = CodexSmartRouter(session_controls) if session_controls is not None else None
+        feedback_input = CodexFeedbackInput(tui.send)
         tool_tasks: set[asyncio.Task] = set()
         monitored_reports: set[str] = set()
         tool_turns: dict[tuple[str, str], asyncio.Event] = {}
@@ -267,6 +268,11 @@ async def _handle_tui(
             assert controller is not None
             async for frame in tui:
                 message = parse(frame)
+                if message is not None and feedback_input.consume(message):
+                    continue
+                if message is not None and message.get("method") == "turn/interrupt":
+                    params = message.get("params", {})
+                    feedback_input.cancel(params.get("threadId"), params.get("turnId"))
                 if message is not None and message.get("method") in (None, "turn/interrupt"):
                     await upstream.send(frame)
                 else:
@@ -319,7 +325,12 @@ async def _handle_tui(
 
         async def run_router_tool(message: dict):
             assert smart_router is not None
-            response = await smart_router.call(message["params"])
+            params = message["params"]
+
+            async def ask(question: dict):
+                return await feedback_input.ask(params["threadId"], params["turnId"], question)
+
+            response = await smart_router.call(params, ask)
             await upstream.send(json.dumps({"id": message["id"], "result": response}))
             if not response["success"]:
                 return
@@ -412,6 +423,7 @@ async def _handle_tui(
                     turn = params.get("turn", {})
                     key = (params.get("threadId"), turn.get("id"))
                     if key in tool_turns:
+                        feedback_input.cancel(*key)
                         tool_turns[key].set()
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):

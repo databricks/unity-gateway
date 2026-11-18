@@ -563,3 +563,165 @@ def test_native_controls_write_failure_never_requests_shell_approval(
     assert "approval" not in text
     assert json.loads(controls.read_text()) == {}
     popen.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "answers,reason",
+    [
+        ([["Provide a reason", "user_note: " + REASON]], REASON),
+        ([["Provide a reason"], ["user_note: slow"], ["user_note: " + REASON]], REASON),
+        ([["Cancel", "user_note: " + REASON]], None),
+        ([None], None),
+        ([["Provide a reason"], []], None),
+    ],
+)
+@pytest.mark.parametrize("preprovided_reason", [None, "slow"])
+def test_native_selector_collects_within_toggle_call(
+    native_router, inline_feedback, answers, reason, preprovided_reason
+):
+    import asyncio
+
+    controls, run, popen, calls = inline_feedback
+    questions = []
+    replies = iter(answers)
+
+    async def ask(question):
+        assert session_env.session_routing_enabled(controls)
+        assert run.call_count == 1, "Only the original task is prepared before reason acceptance"
+        questions.append(question)
+        return next(replies)
+
+    response = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "arguments": {"action": "off", "reason": preprovided_reason}},
+            ask,
+        )
+    )
+    assert response["success"], response
+    assert [option["label"] for option in questions[0]["options"]] == ["Provide a reason", "Cancel"]
+    assert questions[0]["isOther"] is False
+    assert all("Isaac team" in question["question"] for question in questions)
+    assert all(question["options"] is None for question in questions[1:])
+    assert session_env.session_routing_enabled(controls) == (reason is None)
+    assert not native_router.pending_threads
+    if reason is None:
+        assert run.call_count == 1
+        popen.assert_not_called()
+    else:
+        assert run.call_count == 2
+        assert calls[1][1]["input"] == reason
+        assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
+        popen.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        ["unknown"],
+        ["Provide a reason", "invented text"],
+        ["Provide a reason", "user_note: first", "user_note: second"],
+    ],
+)
+def test_native_invalid_selector_response_never_submits(native_router, inline_feedback, answer):
+    import asyncio
+
+    controls, run, popen, _ = inline_feedback
+
+    async def ask(_):
+        return answer
+
+    response = asyncio.run(
+        native_router.call({"threadId": SESSION_ID, "arguments": {"action": "off"}}, ask)
+    )
+    assert not response["success"]
+    assert session_env.session_routing_enabled(controls)
+    assert not native_router.pending_threads
+    popen.assert_not_called()
+    assert run.call_count == 1
+
+
+@pytest.mark.parametrize("thread_id", [SESSION_ID, {}, None])
+def test_native_preprovided_reason_skips_menu_and_preserves_text(
+    native_router, inline_feedback, thread_id
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    controls, run, popen, calls = inline_feedback
+    ask = AsyncMock()
+    response = asyncio.run(
+        native_router.call(
+            {"threadId": thread_id, "arguments": {"action": "off", "reason": REASON}}, ask
+        )
+    )
+    ask.assert_not_called()
+    assert response["success"] == (thread_id == SESSION_ID)
+    if response["success"]:
+        assert calls[1][1]["input"] == REASON
+        assert not session_env.session_routing_enabled(controls)
+        popen.assert_called_once()
+    else:
+        run.assert_not_called()
+        popen.assert_not_called()
+        assert session_env.session_routing_enabled(controls)
+
+
+def test_native_canceled_collection_clears_pending_and_never_submits(
+    native_router, inline_feedback
+):
+    import asyncio
+
+    controls, run, popen, _ = inline_feedback
+
+    async def run_test():
+        opened = asyncio.Event()
+
+        async def ask(_):
+            opened.set()
+            await asyncio.Future()
+
+        task = asyncio.create_task(
+            native_router.call({"threadId": SESSION_ID, "arguments": {"action": "off"}}, ask)
+        )
+        await asyncio.wait_for(opened.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_test())
+    assert not native_router.pending_threads
+    assert not native_router.collecting_threads
+    assert session_env.session_routing_enabled(controls)
+    assert run.call_count == 1
+    popen.assert_not_called()
+
+
+def test_native_duplicate_off_cannot_bypass_open_selector(native_router, inline_feedback):
+    import asyncio
+
+    controls, run, popen, _ = inline_feedback
+
+    async def run_test():
+        opened = asyncio.Event()
+        answer = asyncio.get_running_loop().create_future()
+
+        async def ask(_):
+            opened.set()
+            return await answer
+
+        task = asyncio.create_task(
+            native_router.call({"threadId": SESSION_ID, "arguments": {"action": "off"}}, ask)
+        )
+        await asyncio.wait_for(opened.wait(), 2)
+        duplicate = await native_router.call(
+            {"threadId": SESSION_ID, "arguments": {"action": "off", "reason": REASON}}, ask
+        )
+        assert not duplicate["success"]
+        assert "already open" in duplicate["contentItems"][0]["text"]
+        answer.set_result(["Cancel"])
+        assert (await asyncio.wait_for(task, 2))["success"]
+
+    asyncio.run(run_test())
+    assert session_env.session_routing_enabled(controls)
+    assert run.call_count == 1
+    popen.assert_not_called()
