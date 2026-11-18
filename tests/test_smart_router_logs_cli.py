@@ -174,7 +174,9 @@ def test_table_shows_header_and_row_with_stripped_model_prefix(log_dir):
     assert result.exit_code == 0
     lines = result.output.splitlines()
     assert lines[0] == "1 routed subagents this session (showing last 1)"
+    assert lines[1] == ""
     assert lines[2].split() == ["ID", "WHEN", "TASK", "MODEL", "ROUTING"]
+    assert lines[-2] == ""
     assert lines[3].split(maxsplit=3)[1:3] == ["just", "now"]
     assert "inspect parser" in lines[3]
     assert "gpt-5-6-sol" in lines[3]
@@ -249,12 +251,23 @@ def test_detail_renders_all_fields_and_marks_selected(log_dir):
     result = detail(record["decision_id"])
     assert result.exit_code == 0
     lines = result.output.splitlines()
-    assert lines[0] == "Prompt preview: inspect parser"
-    assert "Agent type: explorer" in lines
-    assert "Selected: gpt-5-6-sol" in lines
-    assert "Routing time: 1.2s" in lines
-    assert max(len(line) for line in lines) <= 90
-    assert lines[-2:] == ["● gpt-5-6-sol", "○ gpt-5-6-luna"]
+    assert lines[0] == f"Routing decision {record['decision_id'][:8]} · just now"
+    assert lines[1] == ""
+    assert lines[2] == "Prompt preview:  inspect parser"
+    assert lines[3] == "Agent type:      explorer"
+    assert lines[4] == "Selected:        gpt-5-6-sol"
+    assert lines[5] == "Routing time:    1.2s"
+    assert lines[6].startswith("Rationale:       Needs depth. Needs depth.")
+    assert all(line.startswith(" " * 17) for line in lines[7:9])
+    assert max(len(line) for line in lines) <= 76
+    assert lines[-6:] == [
+        "",
+        "Candidates",
+        "  ● gpt-5-6-sol  (selected)",
+        "  ○ gpt-5-6-luna",
+        "",
+        "Back to the list: $smart-router logs",
+    ]
 
 
 def test_detail_handles_missing_rationale_candidates_and_route_agent(log_dir):
@@ -272,11 +285,12 @@ def test_detail_handles_missing_rationale_candidates_and_route_agent(log_dir):
     }
     (log_dir / "codex-c1.jsonl").write_text(json.dumps(record) + "\n")
     output = detail("abcd1234").output
-    assert "(prompt not recorded)" in output
+    assert "Prompt preview:  (prompt not recorded)" in output
     assert "Agent type" not in output
-    assert "Routing time: 0.1s" in output
-    assert "No rationale returned." in output
-    assert output.endswith("Candidates:\n")
+    assert "Routing time:    0.1s" in output
+    assert "Rationale:       No rationale returned." in output
+    assert "Candidates" not in output
+    assert output.endswith("\n\nBack to the list: $smart-router logs\n")
 
 
 def valid_record(decision_id, **overrides):
@@ -365,7 +379,7 @@ def test_detail_shows_placeholder_for_non_string_or_missing_preview(log_dir):
     (log_dir / "codex-c1.jsonl").write_text(
         json.dumps(valid_record("abcd1234", prompt={"preview": None})) + "\n"
     )
-    assert detail("abcd1234").output.startswith("Prompt preview: (prompt not recorded)\n")
+    assert "\nPrompt preview:  (prompt not recorded)\n" in detail("abcd1234").output
 
 
 def test_terminal_escapes_never_reach_the_output(log_dir):

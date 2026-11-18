@@ -17,7 +17,9 @@ Keep its path quoted and do not substitute `ug` or `python` from PATH.
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing` for `off`.
 - In Codex only, for `logs`, run exactly
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table`
-  and reply with its stdout verbatim in a fenced code block. Do not reformat,
+  and reply with ONLY a fenced code block (```text) containing its stdout exactly,
+  with no text before or after it. Without the fence, Codex reflows the text, loses
+  the alignment, and prepends a bullet to the first line. Do not reformat,
   summarize, or drop rows, because Codex collapses long command output.
   If `CODEX_SESSION_ID` is unset, ask the user to restart through an updated
   Unity Gateway with smart routing enabled. Claude Code handles `/smart-router logs`
@@ -26,7 +28,8 @@ Keep its path quoted and do not substitute `ug` or `python` from PATH.
   characters (`0-9a-f`) and nothing else; otherwise ask for an ID from the table
   and run nothing. Then run exactly
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision <ID>`
-  and reply with its stdout verbatim in a fenced code block, like the overview.
+  and reply with ONLY a fenced code block (```text) containing its stdout exactly,
+  with no text before or after it, like the overview.
 
 In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
 `"$UCODE_SMART_ROUTER_PYTHON"` and `"$env:CODEX_SESSION_ID"` in place of

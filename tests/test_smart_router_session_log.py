@@ -206,3 +206,36 @@ def test_render_table_formats_age_and_collapses_whitespace():
 def test_render_table_with_no_listable_records_is_empty_message():
     text = session_log.render_table([{"v": 1, "type": "decision"}])
     assert text == "No routed subagents recorded this session yet."
+
+
+def test_render_detail_exact_layout_with_hanging_indent():
+    record = {
+        "decision_id": "e789d49a" + "0" * 24,
+        "at": 1000.0,
+        "prompt": {"preview": "Investigate the service named ai-gateway. " * 3},
+        "original": {"subagent_type": None},
+        "selected_model": "system.ai.databricks-gpt-5-6-terra",
+        "routing_ms": 4040,
+        "rationale": "This task involves several related components. " * 2,
+        "candidates": [
+            {"model": "system.ai.gpt-6-astra"},
+            {"model": "system.ai.databricks-gpt-5-6-terra"},
+        ],
+    }
+    assert session_log.render_detail(record, now=1120.0).splitlines() == [
+        "Routing decision e789d49a · 2m ago",
+        "",
+        "Prompt preview:  Investigate the service named ai-gateway. Investigate the",
+        "                 service named ai-gateway. Investigate the service named",
+        "                 ai-gateway.",
+        "Selected:        gpt-5-6-terra",
+        "Routing time:    4.0s",
+        "Rationale:       This task involves several related components. This task",
+        "                 involves several related components.",
+        "",
+        "Candidates",
+        "  ○ gpt-6-astra",
+        "  ● gpt-5-6-terra  (selected)",
+        "",
+        "Back to the list: $smart-router logs",
+    ]

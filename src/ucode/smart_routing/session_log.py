@@ -29,7 +29,8 @@ ID_PREFIX_CHARS = 8
 MAX_EPOCH_SECONDS = 8.64e12  # largest time a JavaScript Date accepts
 PROMPT_PLACEHOLDER = "(prompt not recorded)"
 MIN_ID_PREFIX_CHARS = 4
-DETAIL_WRAP_WIDTH = 80
+DETAIL_WIDTH = 76
+DETAIL_LABEL_WIDTH = 17
 MODEL_PREFIXES = ("system.ai.", "databricks-")
 
 
@@ -301,10 +302,21 @@ def _is_detail_record(record: dict[str, Any]) -> bool:
     )
 
 
-def render_detail(record: dict[str, Any]) -> str:
+def _labeled(label: str, value: str) -> list[str]:
+    return textwrap.wrap(
+        value,
+        width=DETAIL_WIDTH,
+        initial_indent=label.ljust(DETAIL_LABEL_WIDTH),
+        subsequent_indent=" " * DETAIL_LABEL_WIDTH,
+        break_on_hyphens=False,
+    )
+
+
+def render_detail(record: dict[str, Any], *, now: float | None = None) -> str:
     """Render one decision like the Claude logs detail view."""
     if not _is_detail_record(record):
         raise ValueError("Could not load this routing decision.")
+    now = time.time() if now is None else now
     prompt = record.get("prompt") or {}
     original = record.get("original") or {}
     preview = prompt.get("preview")
@@ -314,18 +326,27 @@ def render_detail(record: dict[str, Any]) -> str:
     selected = record["selected_model"]
     rationale = (record["rationale"] or "").strip() or "No rationale returned."
     lines = [
-        f"Prompt preview: {_clean(preview) if isinstance(preview, str) else PROMPT_PLACEHOLDER}"
+        f"Routing decision {_short_id(record.get('decision_id'))} · {_age(record.get('at'), now)}",
+        "",
+        *_labeled(
+            "Prompt preview:",
+            _clean(preview) if isinstance(preview, str) else PROMPT_PLACEHOLDER,
+        ),
     ]
     if isinstance(subagent, str):
-        lines.append(f"Agent type: {_clean(subagent)}")
-    lines.append(f"Selected: {_short_model(selected)}")
-    lines.append(f"Routing time: {record['routing_ms'] / 1000:.1f}s")
-    lines.append("Rationale:")
-    lines.extend(textwrap.wrap(_clean(rationale), DETAIL_WRAP_WIDTH))
-    lines.append("Candidates:")
-    for candidate in record["candidates"]:
-        marker = "●" if candidate["model"] == selected else "○"
-        lines.append(f"{marker} {_short_model(candidate['model'])}")
+        lines += _labeled("Agent type:", _clean(subagent))
+    lines += _labeled("Selected:", _short_model(selected))
+    lines += _labeled("Routing time:", f"{record['routing_ms'] / 1000:.1f}s")
+    lines += _labeled("Rationale:", _clean(rationale))
+    if record["candidates"]:
+        lines += ["", "Candidates"]
+        for candidate in record["candidates"]:
+            is_selected = candidate["model"] == selected
+            suffix = "  (selected)" if is_selected else ""
+            lines.append(
+                f"  {'●' if is_selected else '○'} {_short_model(candidate['model'])}{suffix}"
+            )
+    lines += ["", "Back to the list: $smart-router logs"]
     return "\n".join(lines)
 
 
