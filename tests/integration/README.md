@@ -1,11 +1,5 @@
 # Integration tests
 
-Comment-triggered `/integration-test` runs require authorization and a successful shared
-Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
-that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner
-selection and failure-reporting component tests are documented in the [main test guide](../README.md).
-They do not exercise live GitHub comment delivery or credentialed integration runs.
-
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
@@ -16,8 +10,12 @@ The macOS Jamf npm-provisioning path has component coverage in
 run, npm agent installation and standard-user launch remain manual validation steps; these
 component checks are not integration coverage.
 
-`../test_security_scan.py` covers scanner policy and parsing with inert fixtures. Bash
-cases target the Linux scanner and do not run on Windows; Python parser checks run on both.
+`../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
+fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
+checks run on both platforms. These are not live GitHub or credentialed integration checks.
+
+The trusted scan producer's component coverage and staged enforcement are documented in
+the [main test guide](../README.md). This prerequisite does not change integration authorization.
 `../test_security_scan_request.py` checks CI metadata refresh when the requested event carries
 the PR title, lookup failures, and preserved PR identity checks with controlled API responses,
 not live webhook delivery.
