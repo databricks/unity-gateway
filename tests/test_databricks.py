@@ -1853,8 +1853,10 @@ class TestServiceUsableForTool:
     }
 
     @pytest.mark.parametrize("tool", ["copilot", "vscode"])
-    def test_github_copilot_relay_is_for_copilot_and_vscode(self, tool):
-        assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
+    def test_github_copilot_relay_is_refused_for_now(self, tool):
+        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
+        assert reason is not None
+        assert "can't route GitHub Copilot through yet" in reason
 
     @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
     def test_other_agents_refuse_a_github_copilot_relay(self, tool):
@@ -1868,12 +1870,18 @@ class TestServiceUsableForTool:
         assert reason is not None
         assert "doesn't relay a subscription" in reason
 
-    def test_github_copilot_relay_needs_targets_or_allow_all(self):
-        service = {**self._COPILOT_RELAY, "targets": []}
-        assert not db_mod.service_usable_for_tool("copilot", service)
-        assert db_mod.service_usable_for_tool("copilot", {**service, "allow_all_targets": True})
+    def test_provider_flag_explains_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setattr(
+            db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
+        )
 
-    def test_choices_label_a_github_copilot_relay(self, monkeypatch):
+        service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
+
+        assert service is None
+        assert error is not None
+        assert "relays a GitHub Copilot subscription" in error
+
+    def test_picker_leaves_out_a_github_copilot_relay(self, monkeypatch):
         api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
         monkeypatch.setattr(
             db_mod,
@@ -1881,15 +1889,8 @@ class TestServiceUsableForTool:
             lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
         )
 
-        choices, reason = db_mod.tool_provider_service_choices("copilot", WS, "tok")
-
-        assert reason is None
-        assert choices == [
-            ("main.s.anthropic", "main.s.anthropic"),
-            ("main.s.copilot-seats", "main.s.copilot-seats (GitHub Copilot subscription)"),
-        ]
         assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
-            ["main.s.anthropic", "main.s.copilot-seats"],
+            ["main.s.anthropic"],
             None,
         )
 

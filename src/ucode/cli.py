@@ -103,6 +103,7 @@ from ucode.databricks import (
     is_model_provider_feature_unavailable,
     list_anthropic_model_catalog,
     list_profile_entries,
+    list_tool_provider_services,
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
@@ -111,7 +112,6 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
-    tool_provider_service_choices,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -1327,7 +1327,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     # silently dropping back to Databricks.
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
-        choices, reason = tool_provider_service_choices(tool, state["workspace"], token)
+        names, reason = list_tool_provider_services(tool, state["workspace"], token)
     offers_location = tool in MODEL_LOCATION_TOOLS
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
@@ -1336,15 +1336,15 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
             print_warning(f"Could not list model provider services: {reason}")
             if not offers_location:
                 print_note("Falling back to Databricks models.")
-        choices = []
-    elif not choices and not offers_location:
+        names = []
+    elif not names and not offers_location:
         # Feature is on but no service matches this tool's provider type.
         print_note(f"Using Databricks models for {display}.")
-    if not choices and not offers_location:
+    if not names and not offers_location:
         return _use_databricks()
 
     options = [("databricks", "Databricks Hosted")]
-    if choices:
+    if names:
         options.append(("mps", "External Models"))
     if offers_location:
         options.append(("location", "Custom Model Location"))
@@ -1362,7 +1362,9 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
         print_success(f"{display} will discover models in {location}")
         return state
 
-    selected = prompt_for_selection("Select a model provider service:", choices)
+    selected = prompt_for_selection(
+        "Select a model provider service:", [(name, name) for name in names]
+    )
     if selected is None:
         raise KeyboardInterrupt
     state = set_model_location(state, tool, None)
