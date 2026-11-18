@@ -105,8 +105,15 @@ def remove(*, keep_service: bool) -> str:
     if recorded:
         if keep_service:
             port = login_service.recorded_port("port")
-            if port and (workspace := login_service.recorded_workspace()[0]):
-                login_service.install(workspace, port, login_service.recorded_port("relay-port"))
+            host, workspace_id = login_service.recorded_workspace()
+            if port and host:
+                # Keep the service exactly as recorded, not on the current workspace selection.
+                login_service.install(
+                    host,
+                    port,
+                    login_service.recorded_port("relay-port"),
+                    pin=["--workspace-id", workspace_id] if workspace_id else [],
+                )
         else:
             login_service.remove()
         if result == "not set up":
