@@ -112,7 +112,11 @@ def _run_calculation(
 ):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
-    tui.submit(task.prompt)
+    prompt = task.prompt
+    if agent == "claude":
+        # Native forks inherit their model and deliberately bypass Smart Router.
+        prompt += ' Use the Agent tool with subagent_type "general-purpose"; do not fork or resume.'
+    tui.submit(prompt)
 
     if routed:
         tui.wait_for(

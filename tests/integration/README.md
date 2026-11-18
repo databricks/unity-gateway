@@ -11,6 +11,12 @@ after reconfigure removes UG's ordinary discovery picker. Ordinary launches, oth
 an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
 The live journey retains saved-model restart, successful inference, and no-router assertions.
 
+Comment-triggered `/integration-test` runs require authorization and a successful shared
+Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
+that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner
+selection and failure-reporting component tests are documented in the [main test guide](../README.md).
+They do not exercise live GitHub comment delivery or credentialed integration runs.
+
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
@@ -21,12 +27,8 @@ The macOS Jamf npm-provisioning path has component coverage in
 run, npm agent installation and standard-user launch remain manual validation steps; these
 component checks are not integration coverage.
 
-`../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
-fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
-checks run on both platforms. These are not live GitHub or credentialed integration checks.
-
-The trusted scan producer's component coverage and staged enforcement are documented in
-the [main test guide](../README.md). This prerequisite does not change integration authorization.
+`../test_security_scan.py` covers scanner policy and parsing with inert fixtures. Bash
+cases target the Linux scanner and do not run on Windows; Python parser checks run on both.
 `../test_security_scan_request.py` checks CI metadata refresh when the requested event carries
 the PR title, lookup failures, and preserved PR identity checks with controlled API responses,
 not live webhook delivery.
@@ -68,8 +70,11 @@ ingestion. Silent controls-read failure, bounded retry, later-turn recovery, and
 evidence-parser boundaries have separate
 [component coverage](../README.md); live journeys do not induce file-access failures.
 
-Subagent calculation journeys use short native task names. Offline evidence checks
-still reject mistyped markers and wrong results in either the parent or child answer.
+Subagent calculation journeys use short native task names. Claude calculations request
+fresh `general-purpose` agents because native forks inherit their model and bypass routing.
+The existing UI, live routing decision, selected model, and parent/child answer assertions
+still require real routed work. Offline evidence checks
+reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
 
 File-read tasks use six-character hidden values. Offline Copilot evidence checks
@@ -352,8 +357,12 @@ Accessibility clicks and real keystrokes, and requires the exact answer on scree
 app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. It then clicks an
 absent label in the same app and requires a nonzero helper exit with the native four-column
 accessibility tree captured before the fatal error in command evidence.
-`scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
-macOS desktop CI job does, so a local run never drives a developer's installed app.
+`test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
+Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
+a screenshot of the app window as evidence. It also requires the app's model picker to list only
+the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+`scripts/run_integration.py` ignores both modules unless `--desktop-app` is passed, which only the
+desktop CI jobs do, so a local run never drives a developer's installed app.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -1092,6 +1101,7 @@ test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credent
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_codex_desktop_macos.py          # ChatGPT desktop app on macOS: GUI prompt, exact answer, model, completed turn
+test_ug_codex_desktop_windows.py        # the same journey on Windows through UI Automation
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
@@ -1591,6 +1601,13 @@ Accessibility to the runner's shell, so no permission prompt is needed. It uploa
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journey against the newest appcast build, so it shows
 when a bump is due.
+The required **Codex desktop inference · Windows** job installs the ChatGPT MSIX that OpenAI keeps
+at `codex-app-prod/releases/<version>/ChatGPT-x64.msix`, pinned by version and SHA256 in
+`integration.yml`, and runs the `windows_desktop` marker against the managed e2e workspace. It
+uploads `integration-codex-desktop-windows` evidence. To update the app, take `packageVersion`
+from `https://persistent.oaistatic.com/codex-app-prod/windows-release.json` and the MSIX's SHA256.
+OpenAI has re-uploaded some builds a few days after release, so pin one whose `Last-Modified`
+matches its `x-ms-creation-time`.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. The dedicated direct-Anthropic lanes
