@@ -138,12 +138,13 @@ def _logs(session) -> list[Path]:
 def requested_urls(session) -> list[str]:
     """Every model request URL, plus native diagnostics for retries and final errors."""
     paths = _logs(session)
+    recent = set(sorted(paths, key=lambda path: path.stat().st_mtime_ns)[-_MAX_LOG_FILES:])
     urls = []
     logs = []
-    for index, path in enumerate(paths):
+    for path in paths:
         text = path.read_text(errors="replace")
         urls.extend(match.group(1) for match in _REQUEST.finditer(text))
-        if index >= len(paths) - _MAX_LOG_FILES:
+        if path in recent:
             # Redact before truncating so a token crossing the tail boundary cannot leak.
             text = session.redact(text)
             logs.append(
