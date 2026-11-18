@@ -221,13 +221,12 @@ jobs:
           python - <<'PY'
           import os
           from pathlib import Path
-          from scripts.run_integration import redact_secrets
+          from scripts.run_integration import redact_junit_report
 
-          report = Path("e2e-results.xml")
-          if report.exists():
-              secrets = (os.environ.get("DATABRICKS_BEARER", ""), os.environ.get("UCODE_TEST_WORKSPACE", ""))
-              redacted = redact_secrets(report.read_text(encoding="utf-8"), secrets).replace("<redacted>", "&lt;redacted&gt;")
-              Path("e2e-results-redacted.xml").write_text(redacted, encoding="utf-8")
+          redact_junit_report(
+              Path("e2e-results.xml"), Path("e2e-results-redacted.xml"),
+              (os.environ.get("DATABRICKS_BEARER", ""), os.environ.get("UCODE_TEST_WORKSPACE", "")),
+          )
           PY
       - name: Upload e2e test results
         if: ${{ always() }}

@@ -1,28 +1,28 @@
-import os
 import subprocess
-import sys
-import textwrap
 import xml.etree.ElementTree as ET
-from pathlib import Path
 
 import pytest
 
+from scripts.run_integration import redact_junit_report
 from tests import test_e2e as e2e
 from ucode.agents import opencode
 
 
-@pytest.mark.parametrize("times_out", [True, False])
+@pytest.mark.parametrize("outcome", ["timeout", "nonzero", "logs_only"])
 def test_opencode_failure_preserves_recent_logs_without_token(
-    monkeypatch, tmp_path, capsys, times_out
+    monkeypatch, tmp_path, capsys, outcome
 ):
     token = "private-workspace-token"
-    output = "startup-only-marker" + "x" * 12000 + token + " service=llm status=waiting"
+    workspace = "https://workspace.example"
+    output = "startup-only-marker" + "x" * 12000 + token + workspace + " service=llm status=waiting"
 
     def run_agent(cmd, *, env, timeout):
         assert cmd[-3:] == ["--print-logs", "--log-level", "INFO"]
         assert timeout == 180
-        if times_out:
+        if outcome == "timeout":
             raise subprocess.TimeoutExpired(cmd, timeout, output.encode(), output.encode())
+        if outcome == "logs_only":
+            return subprocess.CompletedProcess(cmd, 0, "", output)
         return subprocess.CompletedProcess(cmd, 1, output, output)
 
     # Configuration and process execution are boundaries; exercise the real failure reporting.
@@ -36,7 +36,7 @@ def test_opencode_failure_preserves_recent_logs_without_token(
             tmp_path,
             monkeypatch,
             {},
-            "https://workspace.example",
+            workspace,
             token,
         )
 
@@ -44,37 +44,35 @@ def test_opencode_failure_preserves_recent_logs_without_token(
     assert "service=llm status=waiting" in reported
     assert "<redacted>" in reported
     assert token not in reported
+    assert workspace not in reported
     assert "startup-only-marker" not in reported
-    assert ("TIMEOUT after" if times_out else "rc=1") in reported
+    assert {"timeout": "TIMEOUT after", "nonzero": "rc=1", "logs_only": "rc=0"}[outcome] in reported
 
 
 def test_e2e_artifact_redaction_preserves_xml(tmp_path):
-    root = Path(__file__).resolve().parents[1]
-    workflow = (root / ".github/workflows/ci.yml").read_text()
-    block = workflow.split("      - name: Redact e2e test results\n", 1)[1].split(
-        "      - name: Upload e2e test results\n", 1
-    )[0]
-    script = textwrap.dedent(
-        block.split("          python - <<'PY'\n", 1)[1].rsplit("          PY\n", 1)[0]
-    )
-    (tmp_path / "e2e-results.xml").write_text(
-        '<testsuite name="workspace-sentinel"><failure>bearer-sentinel</failure></testsuite>'
-    )
-    subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=tmp_path,
-        env={
-            **os.environ,
-            "PYTHONPATH": str(root),
-            "DATABRICKS_BEARER": "bearer-sentinel",
-            "UCODE_TEST_WORKSPACE": "workspace-sentinel",
-        },
-        check=True,
-        timeout=30,
-    )
-    report = tmp_path / "e2e-results-redacted.xml"
-    assert "sentinel" not in report.read_text()
-    suite = ET.parse(report).getroot()
+    source, destination = tmp_path / "raw.xml", tmp_path / "redacted.xml"
+    workspace, bearer = 'https://workspace.example/?w=1&x="private"', "bearer-sentinel"
+    suite = ET.Element("testsuite", name=workspace, tests="1")
+    failure = ET.SubElement(suite, "failure")
+    failure.text = bearer
+    failure.tail = bearer
+    ET.ElementTree(suite).write(source, encoding="utf-8")
+
+    redact_junit_report(source, destination, (bearer, workspace))
+
+    report = destination.read_text()
+    assert "sentinel" not in report
+    assert "workspace.example" not in report
+    suite = ET.parse(destination).getroot()
     assert suite.attrib["name"] == "<redacted>"
+    assert suite.attrib["tests"] == "1"
     assert suite.findtext("failure") == "<redacted>"
-    assert "path: e2e-results-redacted.xml" in workflow
+    assert suite[0].tail == "<redacted>"
+
+
+def test_e2e_artifact_is_absent_when_pytest_produced_no_report(tmp_path):
+    destination = tmp_path / "redacted.xml"
+
+    redact_junit_report(tmp_path / "missing.xml", destination, ("bearer",))
+
+    assert not destination.exists()

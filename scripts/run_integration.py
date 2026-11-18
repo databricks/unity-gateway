@@ -107,6 +107,19 @@ def redact_secrets(value: str, secrets: Iterable[str]) -> str:
     return value
 
 
+def redact_junit_report(source: Path, destination: Path, secrets: Iterable[str]) -> None:
+    if not source.exists():
+        return
+    secrets = tuple(secrets)
+    report = ET.parse(source)
+    for element in report.iter():
+        element.text = redact_secrets(element.text or "", secrets)
+        element.tail = redact_secrets(element.tail or "", secrets)
+        for key, value in element.attrib.items():
+            element.set(key, redact_secrets(value, secrets))
+    report.write(destination, encoding="utf-8", xml_declaration=True)
+
+
 def managed_policy_paths(
     agents: Iterable[str],
     environment: Mapping[str, str] | None = None,

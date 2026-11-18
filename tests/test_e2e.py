@@ -805,8 +805,12 @@ class TestOpencodeLaunch:
             result = _run_agent(cmd, env=opencode.build_runtime_env(e2e_token), timeout=180)
         except subprocess.TimeoutExpired as exc:
             elapsed = time.monotonic() - t0
-            partial_stdout = redact_secrets(_timeout_output(exc.stdout), (e2e_token,))[-12000:]
-            partial_stderr = redact_secrets(_timeout_output(exc.stderr), (e2e_token,))[-12000:]
+            partial_stdout = redact_secrets(
+                _timeout_output(exc.stdout), (e2e_token, e2e_workspace)
+            )[-12000:]
+            partial_stderr = redact_secrets(
+                _timeout_output(exc.stderr), (e2e_token, e2e_workspace)
+            )[-12000:]
             print(
                 f"[opencode-per-model] {provider}/{model} TIMEOUT after {elapsed:.1f}s\n"
                 f"  partial stdout tail: {partial_stdout!r}\n"
@@ -819,12 +823,12 @@ class TestOpencodeLaunch:
                 f"TIMEOUT after {elapsed:.1f}s stderr tail={partial_stderr!r}"
             )
         elapsed = time.monotonic() - t0
-        combined = (result.stdout + result.stderr).strip()
-        status = "OK" if result.returncode == 0 and combined else f"FAIL rc={result.returncode}"
+        response = result.stdout.strip()
+        status = "OK" if result.returncode == 0 and response else f"FAIL rc={result.returncode}"
         print(f"[opencode-per-model] {provider}/{model} {status} ({elapsed:.1f}s)", flush=True)
-        if result.returncode != 0 or not combined:
-            stdout_tail = redact_secrets(result.stdout, (e2e_token,))[-12000:]
-            stderr_tail = redact_secrets(result.stderr, (e2e_token,))[-12000:]
+        if result.returncode != 0 or not response:
+            stdout_tail = redact_secrets(result.stdout, (e2e_token, e2e_workspace))[-12000:]
+            stderr_tail = redact_secrets(result.stderr, (e2e_token, e2e_workspace))[-12000:]
             pytest.fail(
                 f"OpenCode launch failure: provider={provider} model={model} "
                 f"rc={result.returncode} elapsed={elapsed:.1f}s "
