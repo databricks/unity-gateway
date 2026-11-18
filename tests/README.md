@@ -314,6 +314,14 @@ These checks do not establish live reliability; SQL execution is no longer
 covered by the Antigravity MCP case. Headless journeys save model request URLs even when
 the command fails or times out.
 
+`test_opencode_family.py` covers the code OpenCode and Kilo share in `agents/opencode_family.py`.
+Kilo's rendered auth plugin must equal OpenCode's V1 plugin for the same state, and OpenCode's V2
+plugin must share the V1 prelude. The plugin must list the same provider ids as `PROVIDER_KEYS`,
+and Kilo must write the V1 plugin whatever Kilo version is installed. The token command in the
+plugin must carry the host, the profile, `--use-pat` and `--force-refresh`. These are component checks.
+Version, path and token lookups are patched on the wrapper modules, so they do not establish live
+OpenCode or Kilo behavior.
+
 `ug configure --global` (machine-wide settings only) is covered by unit/component checks:
 `TestConfigureScopeFlags` in `test_cli.py` (the flag lasts one run, per-user-only agents are
 skipped as a no-op, `--mcp`/AI Tools/`UG_SKIP_OS_SETTINGS` are rejected, the picker offers only
