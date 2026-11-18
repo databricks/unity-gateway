@@ -1,6 +1,7 @@
 # Integration tests
 
-Claude launches require 2.1.326 or newer. The version gate has component coverage in
+The exact `subagent_auto_v0_claude_only` configuration requires Claude 2.1.326 or newer.
+Other configurations keep the 2.1.290 minimum. Component coverage lives in
 `../test_agent_claude.py::TestMinimumVersion`; it does not establish gateway inference.
 
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the

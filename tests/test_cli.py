@@ -1486,7 +1486,7 @@ class TestSubcommandRouting:
         )
         monkeypatch.setattr(claude, "_resolve_web_search_model", lambda state: None)
         monkeypatch.setattr(claude, "save_state", lambda state: None)
-        monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.326")
+        monkeypatch.setattr(claude, "agent_version", lambda binary: "2.1.290")
         with _launch_policy_patches(None) as calls:
             calls["configure"].side_effect = agents.configure_tool
             ordinary = runner.invoke(app, ["claude"])

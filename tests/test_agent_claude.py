@@ -19,7 +19,7 @@ from ucode import databricks as db_mod
 from ucode import gateway_proxy, managed_files
 from ucode.agents import LaunchOptions, claude
 from ucode.databricks import RelayLookup
-from ucode.smart_routing import claude_routing, v2
+from ucode.smart_routing import claude_routing, config, v2
 from ucode.state import (
     CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
     MANAGED_OVERLAY_KEY,
@@ -84,20 +84,68 @@ class TestClaudeSpec:
 
 
 class TestMinimumVersion:
-    @pytest.mark.parametrize("version", ["2.1.326", "2.1.327", "3.0.0"])
+    @pytest.fixture(autouse=True)
+    def _clear_selector(self, monkeypatch):
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
+
+    @pytest.mark.parametrize("version", ["2.1.290", "2.1.325", "2.1.326", "3.0.0"])
     def test_supported_version(self, monkeypatch, version):
         monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
 
         assert claude.minimum_version_error() is None
 
     def test_older_version_requires_update(self, monkeypatch):
-        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.325")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.289")
 
         assert claude.minimum_version_error() == (
-            "ug requires Claude Code 2.1.326 or newer. Your current version is Claude Code 2.1.325."
+            "ug requires Claude Code 2.1.290 or newer. Your current version is Claude Code 2.1.289."
         )
 
-    def test_unknown_version_does_not_block(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "selector", ["", "unknown", config.SUBAGENT_ONLY_V0, config.SUBAGENT_ORCH_V0_CLAUDE_ONLY]
+    )
+    def test_other_selectors_keep_baseline_minimum(self, monkeypatch, selector):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.325")
+
+        assert claude.minimum_version_error() is None
+
+    def test_internal_auto_flag_keeps_baseline_minimum(self, monkeypatch):
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.325")
+
+        assert claude.minimum_version_error() is None
+
+    @pytest.mark.parametrize("version", ["2.1.326", "2.1.327", "3.0.0"])
+    def test_auto_supported_version(self, monkeypatch, version):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: version)
+
+        assert claude.minimum_version_error() is None
+
+    def test_auto_requires_newer_version_after_selector_consumed(self, monkeypatch):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", config.SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+        monkeypatch.setattr(claude, "agent_version", lambda _binary: "2.1.325")
+        expected = (
+            "ug requires Claude Code 2.1.326 or newer for "
+            "SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only. "
+            "Your current version is Claude Code 2.1.325."
+        )
+        assert claude.minimum_version_error() == expected
+        with config.version_scope():
+            previous = config.apply_config(agent="claude")
+            try:
+                assert "SMART_ROUTER_CONFIG_VERSION" not in os.environ
+                assert claude.minimum_version_error() == expected
+            finally:
+                v2.restore_smart_routing_env(previous)
+        monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION")
+
+        assert claude.minimum_version_error() is None
+
+    @pytest.mark.parametrize("selector", ["", config.SUBAGENT_AUTO_V0_CLAUDE_ONLY])
+    def test_unknown_version_does_not_block(self, monkeypatch, selector):
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", selector)
         monkeypatch.setattr(claude, "agent_version", lambda _binary: "unknown")
 
         assert claude.minimum_version_error() is None

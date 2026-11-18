@@ -575,7 +575,9 @@ scope. An installed row does not activate the Auto mod by itself.
 `--disable-smart-routing`, an explicit `--model`, a budget recommendation and resume
 retain their precedence. Other versions keep their existing Smart Router controls.
 
-Claude Code **2.1.326 or newer** is required. The native `/model` picker includes **Auto**:
+Auto requires Claude Code **2.1.326 or newer** when
+`SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only` is selected. Other configurations
+retain the Claude Code 2.1.290 minimum. The native `/model` picker includes **Auto**:
 “Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
 enables UG's existing subagent router and opens a compact main-model modal above the prompt.
 `/model auto` selects Auto and opens the same modal without a model request. The current model

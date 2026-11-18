@@ -1,7 +1,8 @@
 # Test suites and user journeys
 
-`test_agent_claude.py::TestMinimumVersion` verifies the Claude 2.1.326 minimum,
-including rejection of 2.1.325. The native Auto chooser is unchanged.
+`test_agent_claude.py::TestMinimumVersion` verifies the 2.1.326 minimum for the exact
+Auto configuration, including its consumed launch selector, while other configurations
+keep the 2.1.290 minimum.
 
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and

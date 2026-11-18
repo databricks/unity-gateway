@@ -1,8 +1,8 @@
 # Claude mod entry point
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
-`ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.326 or
-newer is required.
+`ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
+newer is required. The `subagent_auto_v0_claude_only` configuration requires 2.1.326 or newer.
 
 Auto requires `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only` at launch.
 The launcher derives its internal Auto flag and supplies the picker only for that version.
