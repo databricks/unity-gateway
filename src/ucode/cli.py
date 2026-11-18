@@ -103,7 +103,6 @@ from ucode.databricks import (
     is_model_provider_feature_unavailable,
     list_anthropic_model_catalog,
     list_profile_entries,
-    list_tool_provider_services,
     map_claude_family_models,
     normalize_workspace_url,
     probe_unity_gateway_capabilities,
@@ -112,6 +111,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    tool_provider_service_choices,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -1327,7 +1327,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
     # silently dropping back to Databricks.
     token = get_databricks_token(state["workspace"], state.get("profile"))
     with spinner("Checking for model provider services..."):
-        names, reason = list_tool_provider_services(tool, state["workspace"], token)
+        choices, reason = tool_provider_service_choices(tool, state["workspace"], token)
     offers_location = tool in MODEL_LOCATION_TOOLS
     if reason is not None:
         # Most workspaces don't have the feature enabled — that's the common case,
@@ -1336,15 +1336,15 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
             print_warning(f"Could not list model provider services: {reason}")
             if not offers_location:
                 print_note("Falling back to Databricks models.")
-        names = []
-    elif not names and not offers_location:
+        choices = []
+    elif not choices and not offers_location:
         # Feature is on but no service matches this tool's provider type.
         print_note(f"Using Databricks models for {display}.")
-    if not names and not offers_location:
+    if not choices and not offers_location:
         return _use_databricks()
 
     options = [("databricks", "Databricks Hosted")]
-    if names:
+    if choices:
         options.append(("mps", "External Models"))
     if offers_location:
         options.append(("location", "Custom Model Location"))
@@ -1362,9 +1362,7 @@ def _maybe_select_provider_service(tool: str, state: dict) -> dict:
         print_success(f"{display} will discover models in {location}")
         return state
 
-    selected = prompt_for_selection(
-        "Select a model provider service:", [(name, name) for name in names]
-    )
+    selected = prompt_for_selection("Select a model provider service:", choices)
     if selected is None:
         raise KeyboardInterrupt
     state = set_model_location(state, tool, None)
@@ -3042,6 +3040,36 @@ def mcp_proxy_cmd(
     from ucode.mcp_proxy_runtime import run_proxy
 
     run_proxy(url, host, profile, use_pat, workspace_id)
+
+
+@app.command(
+    "copilot-seat-runtime",
+    hidden=True,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def copilot_seat_runtime_cmd(
+    ctx: typer.Context,
+    runtime: Annotated[str, typer.Option("--runtime", help="VS Code's bundled Copilot runtime.")],
+    provider: Annotated[
+        str, typer.Option("--provider", help="The GitHub Copilot seat relay service.")
+    ],
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+) -> None:
+    """Run VS Code's Copilot runtime with its Copilot API calls through the seat relay."""
+    import sys
+    from contextlib import redirect_stdout
+
+    # The runtime talks to VS Code over this process's stdio.
+    with redirect_stdout(sys.stderr):
+        state = load_state()
+        workspace = state.get("workspace")
+        if not workspace:
+            print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
+            raise typer.Exit(1)
+        if workspace_id:
+            pin(workspace, workspace_id)
+        returncode = copilot_agent.run_seat_runtime(state, provider, runtime, list(ctx.args))
+    raise typer.Exit(returncode)
 
 
 @app.command("cowork-hook", hidden=True)

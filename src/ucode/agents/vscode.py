@@ -37,15 +37,16 @@ from ucode.agents.copilot import (
     provider_service_catalog,
     resolve_copilot_model,
     unservable_static_models,
+    uses_seat_relay,
 )
 from ucode.constants import LOOPBACK_HOST
 from ucode.custom_oauth import CustomOAuthConfig, build_custom_auth_shell_command
-from ucode.databricks import build_auth_shell_command
+from ucode.databricks import build_auth_shell_command, ug_binary
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.system_cross_os import windows_program_files_dir
 from ucode.ui import console, print_heading, print_kv, print_note, print_warning
-from ucode.workspace import workspace_headers
+from ucode.workspace import workspace_headers, workspace_id_args
 
 EXTENSION_DIR = Path(__file__).resolve().parent.parent / "vscode" / "extension"
 EXTENSION_ID = "databricks.unity-gateway"
@@ -265,6 +266,21 @@ _OTEL_SETTINGS = {
     "chat.agentHost.otel": {"enabled": True, "exporterType": "otlp-http"},
 }
 DEFAULT_MODEL_SETTING = "chat.defaultModel"
+# The setting the extension points at its wrapper of VS Code's Copilot runtime, and the name the
+# wrapper file starts with; see vscode-extension/src/seatRelay.ts.
+RUNTIME_PATH_SETTING = "chat.agentHost.copilot.runtimePath"
+RUNTIME_WRAPPER_NAME = "ug-copilot-runtime"
+
+
+def seat_relay_command(state: dict, provider: str) -> list[str]:
+    """The ug command the extension's wrapper runs in place of VS Code's Copilot runtime."""
+    return [
+        ug_binary(),
+        "copilot-seat-runtime",
+        "--provider",
+        provider,
+        *workspace_id_args(state["workspace"]),
+    ]
 
 
 def written_settings(config: dict) -> list[dict[str, object]]:
@@ -310,7 +326,7 @@ def remove_written_settings(user: Path, config: dict) -> None:
     """Remove from each settings.json under ``user`` the values the extension wrote from
     ``config`` that the developer hasn't changed since."""
     groups = written_settings(config)
-    if not groups:
+    if not groups and not config.get("seatRelay"):
         return
     for path in [user / "settings.json", *sorted(user.glob("profiles/*/settings.json"))]:
         try:
@@ -334,6 +350,10 @@ def remove_written_settings(user: Path, config: dict) -> None:
             for key, value in group.items()
             if key in settings and settings[key] == value
         ]
+        runtime = settings.get(RUNTIME_PATH_SETTING)
+        # The wrapper's folder depends on the VS Code install, so match it by name.
+        if isinstance(runtime, str) and Path(runtime).name.startswith(RUNTIME_WRAPPER_NAME):
+            stale.append(RUNTIME_PATH_SETTING)
         if not stale:
             continue
         for key in stale:
@@ -355,7 +375,7 @@ def auth_command(state: dict) -> str:
     )
 
 
-def next_steps() -> list[str]:
+def next_steps(*, seat_relay: bool = False) -> list[str]:
     """What to do in VS Code once the extension is installed, for this OS."""
     restart = (
         # Closing every window leaves VS Code running on macOS.
@@ -367,7 +387,9 @@ def next_steps() -> list[str]:
         # A running VS Code keeps the extension build it loaded, even in a new window, and
         # configure reinstalls every time.
         f"1. {restart}",
-        "2. Open Chat, click the model picker, and choose a Databricks model.",
+        "2. Open Chat, sign in to GitHub Copilot, and choose a model."
+        if seat_relay
+        else "2. Open Chat, click the model picker, and choose a Databricks model.",
     ]
 
 
@@ -385,8 +407,10 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
             "rerun `ug configure --agents copilot`."
         )
         return False
+    seat_relay = bool(provider) and uses_seat_relay(state, cast(str, provider), tool="vscode")
     try:
-        catalog = _catalog(state, provider, location)
+        # A seat relay serves Copilot's own models, so the extension lists none of Databricks'.
+        catalog = [] if seat_relay else _catalog(state, provider, location)
     except RuntimeError as exc:
         # Keep what an earlier configure installed: a failed listing shouldn't wipe a working setup.
         print_warning(f"{exc} VS Code was left unchanged.")
@@ -399,6 +423,8 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     }
     if provider:
         config["provider"] = provider
+    if seat_relay:
+        config["seatRelay"] = {"command": seat_relay_command(state, cast(str, provider))}
     # The extension makes it VS Code's default for new chats, unless the developer set their own.
     if default_model := managed_default_model(state, catalog):
         config["defaultModel"] = default_model
@@ -410,16 +436,23 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
     if state.get("copilot_otel_tracing"):
         config["otel"] = otel_receiver(state)
     source = f" from {provider or location}" if provider or location else ""
+    detail = (
+        f"routing Copilot through {provider}"
+        if seat_relay
+        else f"with {len(models)} models{source}"
+    )
     try:
-        print_kv(
-            "VS Code extension",
-            f"{install_extension(code, config)} with {len(models)} models{source}",
-        )
+        print_kv("VS Code extension", f"{install_extension(code, config)} {detail}")
     except RuntimeError as exc:
         print_warning(f"{exc} Rerun `ug configure --agents copilot` to try again.")
         return False
+    if seat_relay and current_os() is OS.WINDOWS:
+        print_warning(
+            "VS Code on Windows can't route GitHub Copilot through the seat relay yet, so its "
+            "Copilot calls go straight to GitHub. Use `ug copilot` there instead."
+        )
     print_heading("Next, in VS Code:")
-    for line in next_steps():
+    for line in next_steps(seat_relay=seat_relay):
         console.print(f"  {line}", highlight=False)
     return True
 

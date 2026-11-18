@@ -1858,6 +1858,29 @@ class TestServiceUsableForTool:
         assert reason is not None
         assert "can't route GitHub Copilot through yet" in reason
 
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_for_copilot_and_vscode_once_opted_in(self, tool, monkeypatch):
+        monkeypatch.setenv(db_mod.COPILOT_SEAT_RELAY_ENV, "1")
+        assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
+        assert not db_mod.service_usable_for_tool("claude", self._COPILOT_RELAY)
+
+    def test_choices_label_a_github_copilot_relay(self, monkeypatch):
+        monkeypatch.setenv(db_mod.COPILOT_SEAT_RELAY_ENV, "1")
+        api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
+        monkeypatch.setattr(
+            db_mod,
+            "list_model_provider_services",
+            lambda *a, **k: ([api_key, self._COPILOT_RELAY], None),
+        )
+
+        choices, reason = db_mod.tool_provider_service_choices("copilot", WS, "tok")
+
+        assert reason is None
+        assert choices == [
+            ("main.s.anthropic", "main.s.anthropic"),
+            ("main.s.copilot-seats", "main.s.copilot-seats (GitHub Copilot subscription)"),
+        ]
+
     @pytest.mark.parametrize("tool", ["claude", "codex", "gemini"])
     def test_other_agents_refuse_a_github_copilot_relay(self, tool):
         reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")

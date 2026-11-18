@@ -34,6 +34,8 @@ import json
 import os
 import re
 import secrets
+import signal
+import sys
 import threading
 import time
 from collections import Counter
@@ -79,6 +81,7 @@ from ucode.databricks import (
     build_copilot_base_url,
     build_tool_base_url,
     get_model_service,
+    is_copilot_seat_relay,
     list_anthropic_model_catalog,
     list_provider_service_models,
     model_service_backing_model,
@@ -1312,9 +1315,154 @@ def _session_catalog(
     return catalog
 
 
+# A seat-relayed session is signed in to GitHub, so none of the offline BYOK setup applies.
+_SEAT_RELAY_DROPPED_ENV = frozenset(
+    {"COPILOT_OFFLINE", "COPILOT_API_URL", "GITHUB_MCP_URL_OVERRIDE", "COPILOT_MODEL"}
+)
+
+
+def seat_relay_env(api_url: str, *, mcp_host: str | None) -> dict[str, str]:
+    """Copilot's environment for a session on a GitHub Copilot seat relay: signed in to GitHub,
+    with every Copilot API call sent to the relay at ``api_url``, and GitHub MCP sent straight to
+    ``mcp_host`` (the caller's Copilot API host) when it's known."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("COPILOT_PROVIDER") and key not in _SEAT_RELAY_DROPPED_ENV
+    }
+    env["COPILOT_API_URL"] = api_url
+    # Copilot opens /responses as a WebSocket first, which the relay refuses; only `true` (not
+    # `1`) turns that off.
+    env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] = "true"
+    if mcp_host:
+        env["GITHUB_MCP_URL_OVERRIDE"] = f"https://{mcp_host}/mcp/readonly"
+    return env
+
+
+def start_seat_relay(
+    state: dict, provider_service: str, *, headers: dict[str, str], sign_in_hint: str
+) -> tuple[Any, Any, Any, str]:
+    """Start the seat relay for one session; returns ``(server, cache, client, api_url)``."""
+    from ucode import copilot_relay
+
+    secret = secrets.token_urlsafe(32)
+    server, cache, client = copilot_relay.start_copilot_relay_proxy(
+        state["workspace"],
+        _token_provider(state),
+        session_secret=secret,
+        provider_service=provider_service,
+        sign_in_hint=sign_in_hint,
+        added_headers=headers,
+        on_refresh_failure=_log_proxy_failure,
+    )
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, cache, client, f"http://{LOOPBACK_HOST}:{server.server_address[1]}/{secret}"
+
+
+def _stop_seat_relay(server: Any, cache: Any, client: Any) -> None:
+    cache.stop()
+    server.shutdown()
+    server.server_close()
+    client.close()
+
+
+def _copilot_settings_path() -> Path:
+    copilot_home = os.environ.get("COPILOT_HOME")
+    return (Path(copilot_home) if copilot_home else COPILOT_CONFIG_DIR) / "settings.json"
+
+
+def copilot_url_setting() -> str | None:
+    """The ``copilotUrl`` in Copilot's user settings, which an interactive session may use
+    instead of ``COPILOT_API_URL``."""
+    try:
+        settings = json.loads(_copilot_settings_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = settings.get("copilotUrl") if isinstance(settings, dict) else None
+    return value if isinstance(value, str) and value else None
+
+
+def uses_seat_relay(state: dict, provider_service: str, *, tool: str = "copilot") -> bool:
+    """True when ``provider_service`` relays each developer's own GitHub Copilot seat."""
+    workspace = state["workspace"]
+    service, _error = resolve_provider_service(
+        tool, provider_service, workspace, launch_token(state, workspace)
+    )
+    return service is not None and is_copilot_seat_relay(service)
+
+
+def _launch_seat_relay(state: dict, tool_args: list[str], provider_service: str) -> None:
+    """Run Copilot signed in to GitHub, with its Copilot API calls through the seat relay."""
+    scrub_stored_credentials()
+    try:
+        migrate_legacy_mcp_config()
+    except RuntimeError as exc:
+        print_warning(f"ug's MCP servers aren't available in this session: {exc}")
+    if url := copilot_url_setting():
+        print_warning(
+            f"Copilot's `copilotUrl` setting ({url}) in {_copilot_settings_path()} may send its "
+            f"calls past Unity Gateway, around {provider_service}. Remove it to use the relay."
+        )
+    from ucode import copilot_relay
+
+    workspace = state["workspace"]
+    tool_args, session_id = session_args(tool_args)
+    server, cache, client, api_url = start_seat_relay(
+        state,
+        provider_service,
+        headers=with_session_id(proxy_headers(state), session_id),
+        sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
+    )
+    try:
+        env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
+        metrics.agent_handoff()
+        proc = subprocess_cross_os.popen([SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env)
+        returncode = _wait_for_exit(proc)
+    finally:
+        _stop_seat_relay(server, cache, client)
+    raise SystemExit(returncode)
+
+
+def run_seat_runtime(
+    state: dict, provider_service: str, runtime: str, runtime_args: list[str]
+) -> int:
+    """Run VS Code's bundled Copilot runtime with its Copilot API calls through the seat relay.
+
+    VS Code starts this in place of the runtime and talks to it over stdio, so nothing may be
+    written to stdout."""
+    from ucode import copilot_relay
+
+    headers = {
+        name: value
+        for name, value in proxy_headers(state).items()
+        # The runtime names VS Code in its own User-Agent.
+        if name.casefold() != "user-agent"
+    }
+    server, cache, client, api_url = start_seat_relay(
+        state,
+        provider_service,
+        headers=headers,
+        sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
+    )
+    try:
+        env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
+        proc = subprocess_cross_os.popen([runtime, *runtime_args], env=env)
+        if hasattr(signal, "SIGTERM"):
+            # VS Code stops the runtime by terminating this process, which must stop it too.
+            signal.signal(signal.SIGTERM, lambda *_args: proc.terminate())
+        return _wait_for_exit(proc)
+    except OSError as exc:
+        sys.stderr.write(f"[ucode] Couldn't start the Copilot runtime {runtime}: {exc}\n")
+        return 1
+    finally:
+        _stop_seat_relay(server, cache, client)
+
+
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
     model_location = state.pop(LAUNCH_MODEL_LOCATION_KEY, None)
+    if provider_service and uses_seat_relay(state, provider_service):
+        _launch_seat_relay(state, tool_args, provider_service)
     catalog = _session_catalog(state, tool_args, provider_service, model_location)
     # Resolve before the proxy starts so a bad model fails without starting Copilot.
     tool_args, selected = rewrite_model_args(tool_args, catalog)
