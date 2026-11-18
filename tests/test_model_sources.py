@@ -19,10 +19,16 @@ class TestProviderWildcardCatalogSelection:
             ("microsoft_foundry", "claude", [], ["claude-a", "claude-b", "claude-c"]),
             # Codex expands from the Codex catalog even on an Anthropic-API provider type.
             ("amazon_bedrock", "codex", [{"slug": "gpt-a"}], ["gpt-a"]),
-            # Other tools fall back to provider-based selection: Anthropic-API provider
-            # types use the Anthropic catalog, everything else the Codex catalog.
-            ("anthropic", "copilot", [], ["claude-a", "claude-b", "claude-c"]),
-            ("microsoft_foundry", "copilot", [{"slug": "gpt-a"}], ["gpt-a"]),
+            # Copilot speaks both APIs: Anthropic-API provider types use the Anthropic catalog,
+            # other types both catalogs, so Foundry's Claude models are not lost.
+            ("anthropic", "copilot", [{"slug": "gpt-a"}], ["claude-a", "claude-b", "claude-c"]),
+            ("microsoft_foundry", "copilot", [], ["claude-a", "claude-b", "claude-c"]),
+            (
+                "microsoft_foundry",
+                "copilot",
+                [{"slug": "gpt-a"}],
+                ["gpt-a", "claude-a", "claude-b", "claude-c"],
+            ),
         ],
     )
     def test_provider_wildcard_uses_tool_catalog(
