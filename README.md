@@ -22,6 +22,10 @@ ug --version
 ug --help
 ```
 
+Behind a TLS-inspection proxy, add `--system-certs` (`--native-tls` on older uv) so uv trusts the
+operating system's certificates; see
+[TLS certificates behind an inspection proxy](#tls-certificates-behind-an-inspection-proxy).
+
 `--version` reports installed package metadata without loading the CLI. Use
 `ug --help` (or `ucode --help`) to verify that the CLI's startup imports work;
 version output alone is not an installation health check. Help does not validate
@@ -277,27 +281,37 @@ Relayed launches are unaffected.
 
 ### TLS certificates behind an inspection proxy
 
-`ug`'s own HTTPS requests verify servers against Python's certificate chain by default. Behind an
-enterprise TLS-inspection proxy that chain usually lacks the proxy's root certificate, so `ug` fails
-with `CERTIFICATE_VERIFY_FAILED` while curl and your browser work. Switch `ug` to the operating
-system's trust store (Keychain on macOS, the certificate store on Windows, the system CA bundle on
-Linux), where that root is installed:
+`ug`'s own HTTPS requests verify servers against the operating system's trust store (Keychain on
+macOS, the certificate store on Windows, the system CA bundle on Linux). That is where an
+enterprise TLS-inspection proxy's root certificate is installed, so `ug` trusts what curl and your
+browser trust. To use Python's own certificate chain instead:
 
 ```bash
-ug configure --tls-trust-store os   # saved as tls_trust_store in ~/.ucode/state.json
-UG_TLS_TRUST_STORE=os ug claude     # one command; overrides the saved choice
+ug configure --tls-trust-store python   # saved as tls_trust_store in ~/.ucode/state.json
+UG_TLS_TRUST_STORE=python ug claude     # one command; overrides the saved choice
 ```
 
 | Value | Certificates trusted |
 |-------|----------------------|
-| `python` (default) | Python's own chain: the CA bundle its OpenSSL reads, plus `SSL_CERT_FILE` / `SSL_CERT_DIR` |
-| `os` | The operating system's trust store |
+| `os` (default) | The operating system's trust store |
+| `python` | Python's own chain. `SSL_CERT_FILE` / `SSL_CERT_DIR` add a CA bundle for most requests; the Databricks SDK and metrics upload use `requests`, which reads `REQUESTS_CA_BUNDLE` instead, so set both |
 
 `UG_TLS_TRUST_STORE` wins over the saved `tls_trust_store`, which wins over the default; an unknown
-value warns and is ignored. `--tls-trust-store python` switches back, and `ug revert` clears the
-saved choice. The setting covers every request `ug` and its helpers (`ug mcp-proxy`, tracing, usage
-reporting) make. Agents and the Databricks CLI are separate programs with their own trust settings,
-for example `NODE_EXTRA_CA_CERTS` for Claude Code.
+value warns and is ignored. `--tls-trust-store os` switches back, and `ug revert` clears the saved
+choice. The setting covers every request `ug` and its helpers (`ug mcp-proxy`, tracing, usage
+reporting) make. A certificate verification error names the trust store in use and how to
+change it. On macOS and Windows the OS store also applies the platform's own TLS rules, so it can
+refuse a certificate that Python's chain accepts (macOS, for example, requires a server
+certificate to list the server-authentication usage); `python` is the way out.
+
+With `os` in effect, `ug upgrade` also has uv read the OS trust store (`UV_SYSTEM_CERTS=1`, and
+`UV_NATIVE_TLS=1` for older uv). The first install runs before `ug` exists, so behind an inspection
+proxy pass it yourself: `uv tool install --system-certs git+https://github.com/databricks/unity-gateway`
+(`--native-tls` on older uv).
+
+Agents and the Databricks CLI are separate programs with their own trust settings. An agent built
+on Node.js that uses Node's bundled roots reads the OS store with `NODE_USE_SYSTEM_CA=1`, or one
+extra bundle with `NODE_EXTRA_CA_CERTS`.
 
 ### Extra headers for one session
 

@@ -25,7 +25,7 @@ from typer.testing import CliRunner
 import ucode.cli as cli_mod
 import ucode.databricks as db_mod
 import ucode.managed_files as managed_files
-from ucode import agents
+from ucode import agents, tls
 from ucode.agents import copilot as copilot_agent
 from ucode.cli import app
 from ucode.databricks import GatewayProbe
@@ -350,6 +350,13 @@ class TestProjectScripts:
 
 
 class TestUpgrade:
+    # What `tls.uv_environment()` hands uv; its contents are covered in test_tls.py.
+    _UV_ENV = {"UV_SYSTEM_CERTS": "1"}
+
+    @pytest.fixture(autouse=True)
+    def _uv_environment(self, monkeypatch):
+        monkeypatch.setattr(tls, "uv_environment", lambda: self._UV_ENV)
+
     @staticmethod
     def _ok() -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess([], 0, stdout="", stderr="")
@@ -374,6 +381,7 @@ class TestUpgrade:
         assert run.call_args_list == [
             call(
                 ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+                env=self._UV_ENV,
                 check=False,
                 capture_output=True,
                 text=True,
@@ -410,12 +418,13 @@ class TestUpgrade:
         assert run.call_args_list == [
             call(
                 ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+                env=self._UV_ENV,
                 check=False,
                 capture_output=True,
                 text=True,
             ),
             call(["uv", "tool", "uninstall", "ucode"], check=True),
-            call(["uv", "tool", "install", "--force", git_url], check=True),
+            call(["uv", "tool", "install", "--force", git_url], env=self._UV_ENV, check=True),
             call(
                 ["/tools/ug", "--help"],
                 check=False,
@@ -448,6 +457,7 @@ class TestUpgrade:
                 "--reinstall",
                 self._requirement("unity-gateway"),
             ],
+            env=self._UV_ENV,
             check=False,
             capture_output=True,
             text=True,
@@ -467,6 +477,7 @@ class TestUpgrade:
         assert result.exit_code == 1
         run.assert_called_once_with(
             ["uv", "tool", "install", "--reinstall", self._requirement("ucode")],
+            env=self._UV_ENV,
             check=False,
             capture_output=True,
             text=True,

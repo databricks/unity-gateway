@@ -5367,10 +5367,10 @@ def configure(
         str | None,
         typer.Option(
             "--tls-trust-store",
-            help="Certificates ug's own HTTPS requests trust: 'python' (Python's certificate "
-            "chain, the default) or 'os' (the operating system's trust store, for networks "
-            "behind a TLS-inspection proxy). Saved for later `ug` commands; UG_TLS_TRUST_STORE "
-            "overrides it. Omit to keep the saved choice.",
+            help="Certificates ug's own HTTPS requests trust: 'os' (the operating system's "
+            "trust store, the default, which includes a TLS-inspection proxy's root) or "
+            "'python' (Python's certificate chain). Saved for later `ug` commands; "
+            "UG_TLS_TRUST_STORE overrides it. Omit to keep the saved choice.",
         ),
     ] = None,
     provider: Annotated[
@@ -6134,6 +6134,7 @@ def upgrade_cmd() -> None:
     try:
         result = subprocess_cross_os.run(
             ["uv", "tool", "install", "--reinstall", upgrade_requirement],
+            env=tls.uv_environment(),
             check=False,
             capture_output=True,
             text=True,
@@ -6150,6 +6151,7 @@ def upgrade_cmd() -> None:
                 legacy_removed = True
                 subprocess_cross_os.run(
                     ["uv", "tool", "install", "--force", git_url],
+                    env=tls.uv_environment(),
                     check=True,
                 )
                 migrated = True

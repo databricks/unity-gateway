@@ -1,19 +1,21 @@
 """Which certificate authorities ``ug``'s own HTTPS requests trust.
 
-``python`` (the default) keeps Python's own certificate chain: the CA bundle the interpreter's
-OpenSSL was built to read, plus ``SSL_CERT_FILE`` / ``SSL_CERT_DIR``. ``os`` verifies against the
-operating system's trust store instead (Keychain on macOS, the certificate store on Windows, the
-system CA bundle on Linux), which is where an enterprise TLS-inspection proxy's root certificate
-is installed. curl and browsers read that store already; Python does not on every platform, so
-behind such a proxy ``ug`` fails with ``CERTIFICATE_VERIFY_FAILED`` while curl succeeds.
+``os`` (the default) verifies against the operating system's trust store (Keychain on macOS, the
+certificate store on Windows, the system CA bundle on Linux), which is where an enterprise
+TLS-inspection proxy's root certificate is installed and what curl, browsers, and ``ug mcp-proxy``
+(through httpx2) already read. ``python`` keeps Python's own certificate chain instead: the CA
+bundle the interpreter's OpenSSL reads plus ``SSL_CERT_FILE`` / ``SSL_CERT_DIR`` for urllib and
+httpx, and certifi or ``REQUESTS_CA_BUNDLE`` for ``requests`` (the Databricks SDK, the metrics
+exporter). Behind an inspection proxy that chain lacks the proxy's root, so requests fail with
+``CERTIFICATE_VERIFY_FAILED`` while curl succeeds.
 
 The choice comes from ``UG_TLS_TRUST_STORE``, then ``tls_trust_store`` in ``~/.ucode/state.json``
 (saved by ``ug configure --tls-trust-store``), then the default. It is applied once per process,
 before any request, and covers every client in it (urllib, httpx, requests, the Databricks SDK).
 Agents and the Databricks CLI are separate programs with their own trust settings.
 
-Kept free of heavy imports: every ``ug`` process, including the ``--version``-adjacent startup
-path and the detached helpers, runs :func:`apply`.
+Kept free of heavy imports: every ``ug`` process, including the detached helpers, runs
+:func:`apply` at startup.
 """
 
 from __future__ import annotations
@@ -28,7 +30,7 @@ TRUST_STORE_STATE_KEY = "tls_trust_store"
 TRUST_STORE_PYTHON = "python"
 TRUST_STORE_OS = "os"
 TRUST_STORES = (TRUST_STORE_PYTHON, TRUST_STORE_OS)
-DEFAULT_TRUST_STORE = TRUST_STORE_PYTHON
+DEFAULT_TRUST_STORE = TRUST_STORE_OS
 
 _STATE_PATH = Path.home() / ".ucode" / "state.json"
 _applied: str | None = None
@@ -112,6 +114,49 @@ def apply(trust_store: str | None = None) -> str:
         truststore.extract_from_ssl()
     _applied = wanted
     return wanted
+
+
+def effective_trust_store() -> str:
+    """The trust store this process verifies against (resolved now if :func:`apply` hasn't run)."""
+    return _applied if _applied is not None else resolve_trust_store()
+
+
+def is_certificate_failure(error: object) -> bool:
+    """Whether ``error`` (an exception, or a URLError's ``reason``) is a failed verification."""
+    import ssl
+
+    return isinstance(error, ssl.SSLCertVerificationError) or "CERTIFICATE_VERIFY_FAILED" in str(
+        error
+    )
+
+
+def certificate_failure_hint() -> str:
+    """What to do about a ``CERTIFICATE_VERIFY_FAILED``, for the trust store in effect."""
+    bundle = "point SSL_CERT_FILE and REQUESTS_CA_BUNDLE at a CA bundle that includes it"
+    if effective_trust_store() == TRUST_STORE_OS:
+        return (
+            "ug verifies against the operating system's trust store. Behind a TLS-inspection "
+            "proxy, add the proxy's root certificate to that store, or set "
+            f"{TRUST_STORE_ENV_VAR}={TRUST_STORE_PYTHON} and {bundle}."
+        )
+    return (
+        "ug is verifying against Python's certificate chain. Behind a TLS-inspection proxy, "
+        f"set {TRUST_STORE_ENV_VAR}={TRUST_STORE_OS} (or run `ug configure --tls-trust-store "
+        f"{TRUST_STORE_OS}`) to use the operating system's trust store, or {bundle}."
+    )
+
+
+def uv_environment(environment: dict[str, str] | None = None) -> dict[str, str]:
+    """``environment`` (default: this process's) for a ``uv`` child that installs packages.
+
+    With the OS trust store in effect, uv reads it too, so ``ug upgrade`` works behind the same
+    inspection proxy. ``UV_SYSTEM_CERTS`` is the current switch and ``UV_NATIVE_TLS`` the one
+    older uv releases read; a value the user already set is kept."""
+    env = dict(os.environ if environment is None else environment)
+    if effective_trust_store() == TRUST_STORE_OS:
+        env.setdefault("UV_SYSTEM_CERTS", "1")
+        env.setdefault("UV_NATIVE_TLS", "1")
+    return env
 
 
 def save_trust_store(trust_store: str) -> None:

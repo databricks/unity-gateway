@@ -33,7 +33,7 @@ from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
 
-from ucode import metrics
+from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
@@ -297,6 +297,19 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
+def _network_error_reason(error: object) -> str:
+    """``network error: ...``, with what to do when it is a failed certificate verification."""
+    if not tls.is_certificate_failure(error):
+        return f"network error: {error}"
+    # The OS store's verifier raises with a bare message, which prints as a tuple.
+    args = getattr(error, "args", ())
+    detail = str(args[0] if len(args) == 1 else error).rstrip(".")
+    return (
+        f"network error: certificate verification failed: {detail}. "
+        f"{tls.certificate_failure_hint()}"
+    )
+
+
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -422,7 +435,7 @@ def _http_get_bytes(
             retry_after = exc.headers.get("Retry-After") if exc.headers is not None else None
         except urllib_error.URLError as exc:
             _debug(f"GET {url}", f"URLError: {exc.reason}")
-            reason = f"network error: {exc.reason}"
+            reason = _network_error_reason(exc.reason)
             if attempt == max_retries:
                 return None, reason
             retry_after = None
@@ -554,7 +567,7 @@ def _http_send_json(
         return None, reason
     except urllib_error.URLError as exc:
         _debug(f"{method} {url}", f"URLError: {exc.reason}")
-        return None, f"network error: {exc.reason}"
+        return None, _network_error_reason(exc.reason)
     except OSError as exc:
         # See `_http_get_json`: a bare socket timeout is an OSError, not a
         # URLError, and would otherwise escape the caller's error handling.

@@ -41,14 +41,15 @@ def _write_state(**extra) -> None:
 
 
 class TestResolveTrustStore:
-    def test_defaults_to_python(self):
-        assert tls.DEFAULT_TRUST_STORE == "python"
-        assert tls.resolve_trust_store() == "python"
-
-    def test_saved_choice_is_used(self):
-        _write_state(tls_trust_store="os")
+    def test_defaults_to_os(self):
+        assert tls.DEFAULT_TRUST_STORE == "os"
         assert tls.resolve_trust_store() == "os"
-        assert tls.saved_trust_store() == "os"
+
+    @pytest.mark.parametrize("saved", ["os", "python"])
+    def test_saved_choice_is_used(self, saved):
+        _write_state(tls_trust_store=saved)
+        assert tls.resolve_trust_store() == saved
+        assert tls.saved_trust_store() == saved
 
     @pytest.mark.parametrize(("env", "saved"), [("os", "python"), ("python", "os")])
     def test_env_var_overrides_saved_choice(self, monkeypatch, env, saved):
@@ -61,37 +62,37 @@ class TestResolveTrustStore:
         assert tls.resolve_trust_store() == "os"
 
     def test_empty_env_var_falls_through_silently(self, monkeypatch, capsys):
-        _write_state(tls_trust_store="os")
+        _write_state(tls_trust_store="python")
         monkeypatch.setenv(tls.TRUST_STORE_ENV_VAR, " ")
-        assert tls.resolve_trust_store() == "os"
+        assert tls.resolve_trust_store() == "python"
         assert capsys.readouterr().err == ""
 
     def test_unknown_env_var_warns_and_falls_through(self, monkeypatch, capsys):
-        _write_state(tls_trust_store="os")
+        _write_state(tls_trust_store="python")
         monkeypatch.setenv(tls.TRUST_STORE_ENV_VAR, "system")
-        assert tls.resolve_trust_store() == "os"
+        assert tls.resolve_trust_store() == "python"
         err = capsys.readouterr().err
         assert "UG_TLS_TRUST_STORE='system'" in err
         assert "python, os" in err
 
     def test_unknown_saved_choice_warns_and_uses_default(self, capsys):
         _write_state(tls_trust_store="keychain")
-        assert tls.resolve_trust_store() == "python"
+        assert tls.resolve_trust_store() == "os"
         assert tls.saved_trust_store() is None
         assert "tls_trust_store='keychain'" in capsys.readouterr().err
 
     def test_unreadable_state_uses_default(self):
         state_mod.STATE_PATH.write_text("{not json", encoding="utf-8")
-        assert tls.resolve_trust_store() == "python"
+        assert tls.resolve_trust_store() == "os"
 
 
 class TestApply:
-    def test_python_leaves_ssl_alone(self, fake_truststore):
+    def test_python_leaves_ssl_alone(self, monkeypatch, fake_truststore):
+        monkeypatch.setenv(tls.TRUST_STORE_ENV_VAR, "python")
         assert tls.apply() == "python"
         assert fake_truststore == []
 
-    def test_os_injects_once(self, monkeypatch, fake_truststore):
-        monkeypatch.setenv(tls.TRUST_STORE_ENV_VAR, "os")
+    def test_os_injects_once(self, fake_truststore):
         assert tls.apply() == "os"
         assert tls.apply() == "os"
         assert fake_truststore == ["inject"]
@@ -148,9 +149,11 @@ class TestSavedTrustStore:
 
 class TestConfigureFlag:
     def test_saves_and_applies_before_any_request(self, fake_truststore):
-        cli_mod._configure_tls_trust_store(" OS ")
-        assert tls.saved_trust_store() == "os"
-        assert fake_truststore == ["inject"]
+        tls.apply()
+        cli_mod._configure_tls_trust_store(" Python ")
+        assert tls.saved_trust_store() == "python"
+        assert fake_truststore == ["inject", "extract"]
+        assert tls.effective_trust_store() == "python"
 
     def test_unknown_value_exits_without_saving(self, fake_truststore, capsys):
         with pytest.raises(typer.Exit) as exc:
@@ -169,6 +172,54 @@ class TestConfigureFlag:
         assert "UG_TLS_TRUST_STORE=python overrides" in warnings[0]
 
 
+class TestCertificateFailureHint:
+    def test_os_store_hint_names_the_store_and_the_escape_hatch(self, fake_truststore):
+        tls.apply("os")
+        hint = tls.certificate_failure_hint()
+        assert "operating system's trust store" in hint
+        assert "UG_TLS_TRUST_STORE=python" in hint
+        assert "SSL_CERT_FILE and REQUESTS_CA_BUNDLE" in hint
+
+    def test_python_chain_hint_points_at_the_os_store(self, fake_truststore):
+        tls.apply("python")
+        hint = tls.certificate_failure_hint()
+        assert "UG_TLS_TRUST_STORE=os" in hint
+        assert "SSL_CERT_FILE and REQUESTS_CA_BUNDLE" in hint
+
+    def test_only_verification_failures_get_the_hint(self):
+        import ssl
+
+        from ucode.databricks import _network_error_reason
+
+        failed = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] self-signed")
+        assert tls.is_certificate_failure(failed)
+        assert _network_error_reason(failed).startswith(
+            "network error: certificate verification failed: [SSL: CERTIFICATE_VERIFY_FAILED]"
+        )
+        bare = ssl.SSLCertVerificationError("certificate is not trusted")
+        assert _network_error_reason(bare).startswith(
+            "network error: certificate verification failed: certificate is not trusted. ug "
+        )
+        assert "UG_TLS_TRUST_STORE" in _network_error_reason(failed)
+        assert _network_error_reason("Connection refused") == "network error: Connection refused"
+
+
+class TestUvEnvironment:
+    def test_os_store_makes_uv_read_system_certificates(self, fake_truststore):
+        tls.apply("os")
+        env = tls.uv_environment({"PATH": "/bin"})
+        assert env == {"PATH": "/bin", "UV_SYSTEM_CERTS": "1", "UV_NATIVE_TLS": "1"}
+
+    def test_user_values_are_kept(self, fake_truststore):
+        tls.apply("os")
+        env = tls.uv_environment({"UV_SYSTEM_CERTS": "0"})
+        assert env["UV_SYSTEM_CERTS"] == "0"
+
+    def test_python_chain_leaves_uv_alone(self, fake_truststore):
+        tls.apply("python")
+        assert tls.uv_environment({"PATH": "/bin"}) == {"PATH": "/bin"}
+
+
 class TestProcessEntryPoints:
     """Every process that makes requests applies the trust store before its work."""
 
@@ -177,7 +228,7 @@ class TestProcessEntryPoints:
 
         order: list[str] = []
         monkeypatch.setattr(sys, "argv", ["ug", "status"])
-        monkeypatch.setattr(tls, "apply", lambda: order.append("tls") or "python")
+        monkeypatch.setattr(tls, "apply", lambda *_: order.append("tls") or "python")
         monkeypatch.setattr(cli_mod, "app", lambda: order.append("command"))
         entrypoint_mod.main()
         assert order[0] == "tls"

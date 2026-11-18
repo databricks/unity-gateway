@@ -1780,7 +1780,15 @@ fail closed; retry after the reported quota reset. A static scan does not replac
 authorization for credentialed integration.
 
 TLS trust-store component coverage in `test_tls.py` checks precedence (`UG_TLS_TRUST_STORE`,
-saved `tls_trust_store`, default `python`), warnings for unknown values, `truststore` injection
-and removal, the `ug configure --tls-trust-store` save, `ug revert` cleanup, and that each process
-entry point applies the choice. These are component checks; no test verifies a live connection
-through a TLS-inspection proxy.
+saved `tls_trust_store`, default `os`), warnings for unknown values, `truststore` injection
+and removal, the `ug configure --tls-trust-store` save, `ug revert` cleanup, the certificate
+failure hint, the uv environment `ug upgrade` uses, and that each process entry point applies the
+choice. `test_tls_https.py` makes real requests from a fresh interpreter to a local HTTPS server
+signed by a disposable CA (`tls_ca.py`), with urllib, httpx, `requests`, the Databricks SDK, and
+ug's own client: an untrusted CA fails all five with an actionable reason in both modes;
+`python` with `SSL_CERT_FILE` alone leaves `requests` and the SDK failing; adding
+`REQUESTS_CA_BUNDLE` fixes them; and `os` verifies all five with the root only in the OS store.
+That last case runs on Linux (the store is a CA bundle file) and on the Windows CI runner, which
+adds the CA to the certificate store and sets `UG_TEST_OS_TRUSTED_CA_DIR`; it is skipped on macOS
+and on a Windows machine without that variable. No test goes through a real TLS-inspection proxy,
+and `ug upgrade` is not run against one.

@@ -31,8 +31,17 @@ def _reset_selected_workspace(monkeypatch):
     monkeypatch.setattr(workspace_mod, "_host_types", {})
 
 
+def _extract_truststore() -> None:
+    import ssl
+
+    if ssl.SSLContext.__module__.startswith("truststore"):
+        import truststore
+
+        truststore.extract_from_ssl()
+
+
 @pytest.fixture(autouse=True)
-def _isolate_ucode_state(tmp_path, monkeypatch):
+def _isolate_ucode_state(tmp_path, monkeypatch, request):
     """Redirect ucode's state file and APP_DIR to a per-test tmp dir.
 
     Defense in depth: even if an individual test forgets to patch save_state,
@@ -64,6 +73,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(tls_mod, "_STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(tls_mod, "_applied", None)
     monkeypatch.delenv(tls_mod.TRUST_STORE_ENV_VAR, raising=False)
+    # Entry points default to the OS trust store; keep that out of the tests that follow.
+    request.addfinalizer(_extract_truststore)
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(config_io_mod, "_dry_run", False)
     monkeypatch.setattr(claude_mod, "_explicit_configure", False)
