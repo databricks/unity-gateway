@@ -88,6 +88,70 @@ def test_m2m_token_redacts_before_truncating_error_body(monkeypatch):
     assert detail == "x" * 1990 + "<redacted>"
 
 
+def test_m2m_token_recovers_from_temporary_unavailability(monkeypatch, capsys):
+    responses = [
+        urllib.error.HTTPError("https://workspace.example", 503, "Unavailable", {}, io.BytesIO()),
+        urllib.error.HTTPError("https://workspace.example", 503, "Unavailable", {}, io.BytesIO()),
+        io.BytesIO(b'{"access_token":"workspace-token"}'),
+    ]
+    attempts = []
+    delays = []
+
+    def token_response(request, timeout):
+        response = responses[len(attempts)]
+        attempts.append(request)
+        if isinstance(response, urllib.error.HTTPError):
+            raise response
+        return response
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+    monkeypatch.setattr(runner.time, "sleep", delays.append)
+
+    assert (
+        runner.mint_m2m_token("https://workspace.example", "client", "secret") == "workspace-token"
+    )
+    assert len(attempts) == 3
+    assert delays == [1, 2]
+    assert all(response.closed for response in responses)
+    assert capsys.readouterr().err == (
+        "Service-principal OAuth token request failed (HTTP 503), attempt 1/3; retrying in 1s.\n"
+        "Service-principal OAuth token request failed (HTTP 503), attempt 2/3; retrying in 2s.\n"
+    )
+
+
+@pytest.mark.parametrize("status, expected_attempts", [(503, 3), (401, 1), (403, 1)])
+def test_m2m_token_retry_exhaustion_and_permanent_errors(
+    monkeypatch, capsys, status, expected_attempts
+):
+    attempts = []
+    delays = []
+
+    def unavailable(request, timeout):
+        response = urllib.error.HTTPError(
+            request.full_url,
+            status,
+            "Unavailable",
+            {},
+            io.BytesIO(b'{"message":"secret Y2xpZW50OnNlY3JldA== TraceId: ci-trace"}'),
+        )
+        attempts.append(response)
+        raise response
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", unavailable)
+    monkeypatch.setattr(runner.time, "sleep", delays.append)
+
+    with pytest.raises(RuntimeError, match=f"HTTP {status}") as error:
+        runner.mint_m2m_token("https://workspace.example", "client", "secret")
+
+    assert len(attempts) == expected_attempts
+    assert delays == list(range(1, expected_attempts))
+    assert all(response.closed for response in attempts)
+    assert "TraceId: ci-trace" in str(error.value)
+    diagnostics = str(error.value) + capsys.readouterr().err
+    assert "secret" not in diagnostics
+    assert "Y2xpZW50OnNlY3JldA==" not in diagnostics
+
+
 def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):
     assert runner.integration_test_targets(
         tmp_path,

@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -237,20 +238,33 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
             "Content-Type": "application/x-www-form-urlencoded",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
-            token = json.load(response).get("access_token", "")
-    except urllib.error.HTTPError as exc:
-        detail = redact_secrets(
-            exc.read().decode("utf-8", errors="replace"), (client_secret, basic)
-        )[:2000]
-        raise RuntimeError(
-            f"Service-principal OAuth token request to {request.full_url} failed "
-            f"(HTTP {exc.code}): {detail}"
-        ) from None
-    if not token:
-        raise RuntimeError("Service-principal client credentials returned no access token.")
-    return token
+    attempt = 1
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
+                token = json.load(response).get("access_token", "")
+        except urllib.error.HTTPError as exc:
+            with exc:
+                if exc.code == 503 and attempt < 3:
+                    print(
+                        f"Service-principal OAuth token request failed (HTTP 503), "
+                        f"attempt {attempt}/3; retrying in {attempt}s.",
+                        file=sys.stderr,
+                    )
+                else:
+                    detail = redact_secrets(
+                        exc.read().decode("utf-8", errors="replace"), (client_secret, basic)
+                    )[:2000]
+                    raise RuntimeError(
+                        f"Service-principal OAuth token request to {request.full_url} failed "
+                        f"(HTTP {exc.code}): {detail}"
+                    ) from None
+            time.sleep(attempt)
+            attempt += 1
+            continue
+        if not token:
+            raise RuntimeError("Service-principal client credentials returned no access token.")
+        return token
 
 
 @contextlib.contextmanager
