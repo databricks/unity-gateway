@@ -1,5 +1,13 @@
 # Integration tests
 
+Claude 2.1.236's UG terminal Auto chooser has component coverage in
+`../test_claude_legacy_auto.py`, plus manual Linux TUI checks using the real 2.1.236
+binary and a controlled local response fixture. The manual checks cover opening
+through `/model auto` and the native Auto row, choosing a real model, Escape, and
+the outgoing request's model ID. This is not authenticated gateway inference or
+live subagent-routing coverage. Existing native-mod CI remains pinned to 2.1.290;
+it does not validate the 2.1.236 terminal path.
+
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in

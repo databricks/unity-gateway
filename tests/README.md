@@ -1,5 +1,14 @@
 # Test suites and user journeys
 
+`test_claude_legacy_auto.py` covers the Claude 2.1.236 terminal chooser's version
+dispatch, launch hooks, model-argument precedence, saved preferences, native
+confirmation gating, cancellation, and filtering of transcript command records.
+`test_workspace_selection.py::TestHelperArgv` checks workspace selection on its
+subagent-routing helper. These are component checks; they do not establish live
+gateway routing. Manual Linux checks with the exact 2.1.236 binary and a local
+response fixture exercise the real terminal and inspect outgoing model IDs.
+Windows Auto continues to require the native mod implementation on 2.1.290+.
+
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,

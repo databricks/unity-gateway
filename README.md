@@ -575,7 +575,16 @@ scope. An installed row does not activate the Auto mod by itself.
 `--disable-smart-routing`, an explicit `--model`, a budget recommendation and resume
 retain their precedence. Other versions keep their existing Smart Router controls.
 
-The native `/model` picker includes **Auto**:
+Claude Code **2.1.236 or newer** is required. On macOS and Linux, releases before
+2.1.290 use a UG terminal chooser after selecting Auto in `/model`, or typing
+`/model auto`. Escape cancels the chooser. Claude validates the chosen real model
+and keeps its native cache warning; UG saves the preference only after the switch
+succeeds. The native picker checks the real main model, and UG reports routing
+status in a terminal notice. Preferences for this path live under
+`~/.ucode/claude-auto/`, separately from the newer native mod's preferences.
+Windows Auto and Isaac's required feedback form still need 2.1.290+.
+
+On Claude 2.1.290+, the native `/model` picker includes **Auto**:
 “Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
 enables UG's existing subagent router and opens a compact main-model modal above the prompt.
 `/model auto` selects Auto and opens the same modal without a model request. The current model
@@ -597,8 +606,7 @@ own selected profile, even when another session saves a different preference.
 Model-switch echoes and confirmations use Auto. Native `/status` and the header for non-Claude models still show the internal
 alias because Claude 2.1.290 does not expose a model-name display hook.
 
-This uses native Claude mods, not a Claude fork, prompt-based skill, or terminal
-wrapper. Configure writes these fixed aliases only for UG-owned model
+The 2.1.290+ implementation uses native Claude mods. Configure writes these fixed aliases only for UG-owned model
 pickers, preserving foreign administrator pickers and custom model options. In the
 default Auto mode it enables
 Claude's native custom-model row (`replaceBuiltInOptions: false`); under managed

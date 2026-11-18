@@ -1,8 +1,24 @@
 # Claude mod entry point
 
 UG's Claude launcher loads `hooks/register.ts` through the existing launch-scoped
-`ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
-newer is required.
+`ug-smart-router` plugin in sessions launched with smart routing on Claude Code
+2.1.290 or newer. UG's minimum Claude version is 2.1.236.
+
+Claude 2.1.236–2.1.289 uses command hooks and generated agent roles for subagent
+routing. Auto on macOS and Linux uses `claude_legacy_auto.py`, a PTY wrapper with
+a UG terminal chooser. It opens after a confirmed native Auto selection, or an
+idle `/model auto` command. The wrapper follows only new, paired native command
+records in the session transcript; assistant and subagent content cannot trigger it.
+UserPromptSubmit and Stop hooks prevent command interception during a model turn.
+The selected real model reaches Claude through its own `/model` command, including
+its validation and cache warning. UG restores the user model setting after its
+internal switch and saves an accepted preference per workspace under
+`~/.ucode/claude-auto/`. A regular native model selection turns routing off.
+The native picker checks the real model, rather than retaining the static Auto row.
+This path has no native mod status band or hint-row customization. Windows Auto
+and the required Isaac feedback form continue to require 2.1.290+.
+
+The remaining sections describe the native mod implementation.
 
 Auto requires `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only` at launch.
 The launcher derives its internal Auto flag and supplies the picker only for that version.

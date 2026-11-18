@@ -222,6 +222,13 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    def test_claude_terminal_router_hook_preserves_selection(self, selected):
+        from ucode.smart_routing.claude_hooks import routing_hook_argv
+
+        argv = routing_hook_argv({"workspace": SHARED}, "route-subagent")
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+        assert argv[argv.index("--host") + 1] == SHARED
+
     def test_mcp_proxy(self, selected):
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID

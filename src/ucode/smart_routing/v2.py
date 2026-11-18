@@ -48,6 +48,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -413,7 +414,9 @@ def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = None) -> None:
+def _write_routed_claude_plugin(
+    plugin_dir: Path, model_ids: list[str] | None = None, *, native_modules: bool = True
+) -> None:
     """Write the native routing mod and roles; model IDs support legacy hook agents."""
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
@@ -499,6 +502,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
             ),
         )
     orchestrator.add_claude_agents(plugin_dir)
+    if not native_modules:
+        return
     mods = Path(__file__).parents[1] / "agents" / "claude_mods"
     # These are imported by the entry point, so they ship beside it rather than as modules.
     for name in (
@@ -713,8 +718,9 @@ def _claude_print_prompt(tool_args: list[str]) -> tuple[str | None, bytes | None
 
 
 class _ClaudeModelSettingGuard:
-    def __init__(self, settings_path: Path) -> None:
+    def __init__(self, settings_path: Path, *, alias_targets: dict[str, str] | None = None) -> None:
         self.settings_path = settings_path
+        self.alias_targets = alias_targets or {}
         self._before: dict | None = None
         self._routed_model: str | None = None
         self._lock: TextIO | None = None
@@ -724,6 +730,9 @@ class _ClaudeModelSettingGuard:
         self._lock = open(APP_DIR / "claude-v2-model.lock", "a+", encoding="utf-8")
         acquire_exclusive_file_lock(self._lock)
         self._before = read_json_safe(self.settings_path)
+        previous_model = self._before.get("model")
+        if isinstance(previous_model, str) and previous_model in self.alias_targets:
+            self._before["model"] = self.alias_targets[previous_model]
         self._routed_model = routed_model
 
     def is_routed(self) -> bool:
@@ -763,7 +772,7 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, supports_hook_modules
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
 
     if os.name != "nt":
@@ -797,6 +806,14 @@ def launch_claude(
     auto_picker = (
         auto_mode_enabled() and not route_first_prompt and not claude_print_mode(remaining)
     )
+    native_modules = supports_hook_modules(binary)
+    legacy_auto = not native_modules and auto_picker
+    if legacy_auto and os.name == "nt":
+        raise RuntimeError(
+            "The UG terminal Auto chooser requires macOS or Linux; Windows needs Claude 2.1.290+."
+        )
+    if not native_modules and env_bool("ISAAC_SMART_ROUTER_FEEDBACK"):
+        raise RuntimeError("Isaac's required feedback form needs Claude 2.1.290 or newer.")
     from ucode.agents.claude import _managed_settings_path
     from ucode.agents.claude_auto import (
         add_picker_entry,
@@ -894,6 +911,8 @@ def launch_claude(
                 auto_config["model"] = static_model
                 auto_config["staticModel"] = static_model
                 auto_config["preferSaved"] = not (launch_model or default_model)
+    if legacy_auto and not auto_picker:
+        raise RuntimeError("Claude 2.1.236 Auto needs an available UG Auto model catalog.")
     routed_model: str | None = None
     stdin_prompt: bytes | None = None
     if route_first_prompt and claude_print_mode(remaining):
@@ -938,11 +957,16 @@ def launch_claude(
         **state,
         "claude_models": {str(index): model for index, model in enumerate(model_ids)},
     }
-    sync_smart_routing_hooks(settings, routing_state, enabled=True)
+    sync_smart_routing_hooks(settings, routing_state, enabled=True, legacy=not native_modules)
     if route_first_prompt:
         sync_first_prompt_hook(settings, hook_executable)
     orchestrator.sync_hooks(settings, agent="claude")
-    model_setting = _ClaudeModelSettingGuard(user_settings_path)
+    model_setting = _ClaudeModelSettingGuard(
+        user_settings_path,
+        alias_targets={row["autoModel"]: row["model"] for row in auto_config["models"]}
+        if legacy_auto
+        else None,
+    )
 
     def route_prompt(prompt: str) -> claude_pty.FirstPromptRoute:
         decision = _route_claude_prompt(state, token, prompt, model_ids)
@@ -989,8 +1013,17 @@ def launch_claude(
                 "options"
             ] = mod_options
             try:
+                if legacy_auto:
+                    from ucode.smart_routing import claude_legacy_auto
+
+                    claude_legacy_auto.add_session_hook(
+                        settings, launch_dir / "native-session.json"
+                    )
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir)
+                if not native_modules:
+                    _write_routed_claude_plugin(plugin_dir, model_ids, native_modules=False)
+                else:
+                    _write_routed_claude_plugin(plugin_dir)
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             start_model = routed_model or launch_model
@@ -1008,18 +1041,42 @@ def launch_claude(
                 start_model = auto_config["model"]
             if auto_picker and start_model == AUTO_MODEL:
                 start_model = auto_config["model"]
+            if legacy_auto:
+                # Claude owns the actual main model; the parent holds Auto's routing state.
+                # Explicit native arguments still outrank the generated startup argument.
+                from ucode.agents.args import explicit_model_arg_value
+
+                explicit_model = explicit_model_arg_value(remaining) or launch_model
+                start_model, legacy_enabled = claude_legacy_auto.initial_model(
+                    auto_config, explicit_model, resume=resuming
+                )
+                remaining = claude_legacy_auto.resolve_model_args(remaining, auto_config)
             model_args = launch_model_args(remaining, start_model)
             argv = [
                 binary,
                 "--settings",
                 str(settings_path),
-                *_claude_mod_launch_args(mod_options),
+                *(_claude_mod_launch_args(mod_options) if native_modules else []),
                 *model_args,
                 "--plugin-dir",
                 str(plugin_dir),
                 *remaining,
             ]
-            if claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
+            if legacy_auto:
+                returncode = claude_legacy_auto.run(
+                    argv,
+                    auto=auto_config,
+                    start_model=start_model,
+                    enabled=legacy_enabled,
+                    controls=session_path,
+                    baseline=mod_options,
+                    session_path=launch_dir / "native-session.json",
+                    prepare_switch=model_setting.begin,
+                    switch_accepted=model_setting.is_routed,
+                    restore_selection=model_setting.restore,
+                    saved_model=lambda: read_json_safe(user_settings_path).get("model"),
+                )
+            elif claude_print_mode(remaining) and orchestrator.enabled(agent=AGENT_CLAUDE):
                 returncode = claude_answer_delivery.run(
                     argv, session_path=session_path, stdin_prompt=stdin_prompt
                 )
