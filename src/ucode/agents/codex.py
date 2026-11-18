@@ -101,7 +101,7 @@ from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ug_headers import published_agent_config_headers_warning, ug_headers
 from ucode.ui import print_note, print_success, print_warning_err
-from ucode.workspace import workspace_headers
+from ucode.workspace import workspace_headers, workspace_id_args
 
 from .args import LaunchOptions
 from .codex_catalog import prepare_codex_catalog, validate_codex_catalog
@@ -799,8 +799,10 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
 
 
 def _service_on(workspace: str) -> bool:
-    """Whether ug's login service unit serves ``workspace``."""
-    return workspace in login_service.read_unit(login_service.service_path())
+    """Whether ug's login service unit serves ``workspace``, with the same pinned workspace id on
+    a host that serves several."""
+    pinned = workspace_id_args(workspace)
+    return login_service.recorded_workspace() == (workspace, pinned[1] if pinned else None)
 
 
 _explicit_configure = False
@@ -843,14 +845,11 @@ def _sync_desktop_relay(
                     del doc["model_provider"]
                 write_toml_file(_legacy_config_path(), doc)
             keep_service = tracing or copilot_app
-            if (
-                keep_service
-                and workspace
-                and relay_port
-                and (not copilot_app or _service_on(workspace))
-            ):
+            # A revert has no workspace; the Copilot app keeps the service on its recorded one.
+            target = workspace or (login_service.recorded_workspace()[0] if copilot_app else None)
+            if keep_service and target and relay_port and (not copilot_app or _service_on(target)):
                 login_service.install(
-                    workspace,
+                    target,
                     login_service.recorded_port("port") or login_service.allocate_port(),
                     copilot_app=copilot_app,
                 )

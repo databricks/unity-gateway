@@ -285,6 +285,19 @@ def copilot_app_recorded() -> bool:
     return _owned(unit) and COPILOT_APP_NOTE in read_unit(unit)
 
 
+def recorded_workspace() -> tuple[str | None, str | None]:
+    """The workspace URL and pinned workspace id ug's own login service unit serves."""
+    unit = service_path()
+    text = read_unit(unit) if _owned(unit) else ""
+
+    def value(flag: str) -> str | None:
+        # systemd quotes and escapes each argument; a plist puts it in its own <string>.
+        match = re.search(rf'"?--{flag}"?(?:\s+"?|</string>\s*<string>)([^"\s<]+)', text)
+        return match[1].replace("$$", "$").replace("%%", "%") if match else None
+
+    return value("host"), value("workspace-id")
+
+
 def recorded_port(flag: str) -> int | None:
     """The ``--{flag}`` port recorded in ug's own login service unit, if there is one."""
     unit = service_path()

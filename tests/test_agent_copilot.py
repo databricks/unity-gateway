@@ -2157,3 +2157,18 @@ class TestAppServiceRoutes:
         assert traces.upstream == "/ai-gateway/otel/v1/traces"
         assert copilot.MODEL_PROVIDER_SERVICE_HEADER not in traces.headers
         assert routes[("POST", "/copilot/otel/v1/metrics")].upstream is None
+
+    def test_managed_headers_and_tracing_come_from_the_saved_managed_config(self, monkeypatch):
+        from ucode import managed_config
+
+        managed = {
+            "enabled_agents": {
+                "copilot": {"http_headers": {"X-Admin": "a"}, "otel_tracing_enabled": True}
+            }
+        }
+        monkeypatch.setattr(managed_config, "load_managed_state", lambda key: managed)
+
+        routes = copilot.app_service_routes({"workspace": self.WS})
+
+        assert routes[("POST", "/copilot/anthropic/v1/messages")].headers["X-Admin"] == "a"
+        assert ("POST", "/copilot/otel/v1/traces") in routes

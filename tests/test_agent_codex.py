@@ -3069,7 +3069,7 @@ class TestCodexManagedConfig:
     def test_desktop_codex_never_drops_or_moves_the_copilot_app_service(
         self, tmp_path, monkeypatch, capsys
     ):
-        self._sudo_counting_env(tmp_path, monkeypatch)
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
         codex._legacy_config_path().parent.mkdir(parents=True, exist_ok=True)
         unit_path = login_service.service_path()
         ports = iter(range(43198, 43298))
@@ -3093,6 +3093,7 @@ class TestCodexManagedConfig:
 
         # Adding and dropping the Codex relay keeps the app's note.
         monkeypatch.setattr(codex, "_explicit_configure", True)
+        managed_path.unlink(missing_ok=True)  # a non-relayed run owns it; relay refuses that file
         codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
         assert "--relay-port" in unit_path.read_text()
         assert login_service.copilot_app_recorded()
@@ -3100,12 +3101,42 @@ class TestCodexManagedConfig:
         assert "--relay-port" not in unit_path.read_text()
         assert login_service.copilot_app_recorded()
 
+        # A revert keeps the app's service on its workspace, without the relay.
+        managed_path.unlink(missing_ok=True)
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert codex._sync_desktop_relay({}, None, None) is True
+        assert "--relay-port" not in unit_path.read_text()
+        assert f'--host "{WS}"' in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+
         # A relay for another workspace would move the app's traffic, so it is skipped.
+        managed_path.unlink(missing_ok=True)
         codex.write_tool_config(
             {"workspace": "https://other.example"}, provider="cat.s.mps", relayed=True
         )
         assert "GitHub Copilot app on another workspace" in capsys.readouterr().err
         assert f'--host "{WS}"' in unit_path.read_text()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_codex_keeps_the_app_on_its_workspace_id_on_a_shared_host(
+        self, tmp_path, monkeypatch
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        codex._legacy_config_path().parent.mkdir(parents=True, exist_ok=True)
+        unit_path = login_service.service_path()
+        monkeypatch.setattr(login_service, "allocate_port", lambda: 43199)
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
+        pinned = ["--workspace-id", "111"]
+        for module in (codex, login_service):
+            monkeypatch.setattr(module, "workspace_id_args", lambda host: list(pinned))
+        login_service.install(WS, 43199, copilot_app=True)
+        assert login_service.recorded_workspace() == (WS, "111")
+
+        # Another workspace on the same host must not take over the app's traffic.
+        pinned[1] = "222"
+        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
+        assert '"--workspace-id" "111"' in unit_path.read_text()
 
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
