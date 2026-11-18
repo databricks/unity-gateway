@@ -50,34 +50,39 @@ jobs:
           import re
           import subprocess
           import sys
-          import time
+          import urllib.parse
 
           event = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
           run_id = event["workflow_run"].get("id")
           if type(run_id) is not int or run_id <= 0:
               sys.exit("::error::Security Scan requires a valid triggering CI run ID.")
           repo = os.environ["REPO"]
-          # The requested event can arrive before the Actions API has evaluated run-name.
-          for attempt in range(7):
-              request = json.loads(subprocess.check_output(
-                  ["gh", "api", f"repos/{repo}/actions/runs/{run_id}"], timeout=30
+          request = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{repo}/actions/runs/{run_id}"], timeout=30
+          ))
+          if request["id"] != run_id:
+              sys.exit("::error::GitHub returned a different CI run ID.")
+          if request["event"] != "pull_request":
+              sys.exit(f"::error::CI run {run_id} event must be pull_request.")
+          if request["path"] != ".github/workflows/ci.yml":
+              sys.exit(f"::error::CI run {run_id} path must be .github/workflows/ci.yml.")
+          # The run name is the PR title while a fork's CI awaits approval, so find the PR by head.
+          head = f"{request['head_repository']['owner']['login']}:{request['head_branch']}"
+          query = urllib.parse.urlencode({"head": head, "state": "open", "per_page": 100})
+          candidates = [
+              c for c in json.loads(subprocess.check_output(
+                  ["gh", "api", f"repos/{repo}/pulls?{query}"], timeout=30
               ))
-              if request["id"] != run_id:
-                  sys.exit("::error::GitHub returned a different CI run ID.")
-              if request["event"] != "pull_request":
-                  sys.exit(f"::error::CI run {run_id} event must be pull_request.")
-              if request["path"] != ".github/workflows/ci.yml":
-                  sys.exit(f"::error::CI run {run_id} path must be .github/workflows/ci.yml.")
-              match = re.fullmatch(r"CI #([1-9][0-9]*)", request["display_title"])
-              if match:
-                  break
-              if attempt < 6:
-                  print(f"CI run {run_id} display_title is not ready; retrying in 5 seconds.", flush=True)
-                  time.sleep(5)
-          else:
-              sys.exit(f"::error::CI run {run_id} display_title must be CI #<PR> after 7 lookups. "
-                       "Re-run the Security Scan if this CI request has the expected run name.")
-          number = int(match[1])
+              if c["head"]["sha"] == request["head_sha"] and c["head"]["repo"] and
+              c["head"]["repo"]["id"] == request["head_repository"]["id"]
+          ]
+          if len(candidates) != 1:
+              sys.exit(f"::error::CI run {run_id} must match exactly one open PR head, "
+                       f"found {len(candidates)}.")
+          number = candidates[0]["number"]
+          title = re.fullmatch(r"CI #([1-9][0-9]*)", request["display_title"])
+          if title and int(title[1]) != number:
+              sys.exit(f"::error::CI run {run_id} name does not match PR {number}.")
           pr = json.loads(subprocess.check_output(
               ["gh", "api", f"repos/{repo}/pulls/{number}"], timeout=30
           ))

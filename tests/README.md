@@ -9,10 +9,11 @@ It does not install real packages, contact Databricks, or establish a macOS/Jamf
 `test_security_scan_request.py` verifies the default-branch Security Scan's request
 validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
 The resolver uses the event's run ID to fetch current CI metadata through the authenticated
-Actions API. Cases cover incomplete event metadata and the observed PR title in the
-requested event instead of the evaluated CI run name, invalid/mismatched run IDs,
-API errors/timeouts, and field-specific diagnostics; lookup failure never falls back to
-the event snapshot. These fixtures do not establish GitHub's metadata availability timing.
+Actions API, then finds the PR by the run's head owner and branch rather than its run
+name, which stays the PR title while a fork's CI awaits approval. Cases cover incomplete
+event metadata, PR-title run names, zero/multiple/stale head matches, invalid/mismatched
+run IDs, API errors/timeouts, and field-specific diagnostics; lookup failure never falls
+back to the event snapshot. These fixtures do not establish live GitHub behavior.
 This prerequisite installs the producer and reusable consumer without making existing CI
 wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
 secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
