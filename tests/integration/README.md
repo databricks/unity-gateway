@@ -167,7 +167,9 @@ The native component suite also covers child-ID-to-animal-name rendering without
 spawn inputs. `../test_claude_mod.py` checks that generated plugins omit the deprecated
 `subagentStatusLine` command. Native `AgentRow` component tests preserve model, usage and
 task metadata while changing only routed child labels. These are not live interactive
-bottom-panel checks.
+bottom-panel checks. Both 2.1.290 and 2.1.326 run the common mod suite; only
+2.1.326 and newer run `AgentRow` rendering tests. The minimum version and integration pin
+remain 2.1.290.
 
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,
@@ -478,7 +480,7 @@ patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
 The Claude mod entry point has separate native component checks in
-`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
+`../native_claude/test_mod.py`. Claude 2.1.290 and 2.1.326 validate the module and run its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The required Isaac feedback form, evidence submission, and background delivery

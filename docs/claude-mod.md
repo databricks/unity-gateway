@@ -229,8 +229,10 @@ It also checks Agent/Task descriptions in those requests: orchestrator instructi
 active phases, native guidance otherwise, without the conflicting native advice to avoid
 spawning when unsure.
 
-The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
-forwarding and launch-local options. Native request-construction checks cover description
+The Claude mod CI jobs use 2.1.290 and 2.1.326 to validate the packaged module and check event
+forwarding and launch-local options. The `AgentRow` rendering test runs on 2.1.326 and newer;
+older engines run the common routing suite and keep native bottom-panel labels. The minimum
+Claude version and integration-test pin remain 2.1.290. Native request-construction checks cover description
 changes across native and CLI on/off/on toggles, a resume input containing a saved
 prompt snapshot, retained lifecycle guidance, an unchanged Agent schema, and
 ineligible launches. They inspect

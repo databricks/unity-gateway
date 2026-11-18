@@ -87,10 +87,8 @@ test('animal names stay distinct and stable without changing routed calls or row
   expect(names[100]).toMatch(/ 2$/);
 });
 
-test('routing changes only the matching spawn model and joins its display name to the child ID', async ($, on) => {
+test('routing changes only the matching spawn model and preserves native spawn results', async ($, on) => {
   const forwarded: any[] = [];
-  const shown = new Map<string, string>();
-  const agentRows = new Map<string, unknown>();
   const routedModel = 'system.ai.gpt-5-6-sol[1m]';
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', () => {
@@ -105,9 +103,7 @@ test('routing changes only the matching spawn model and joins its display name t
       : { model: 'claude-sonnet-5', agentId: `child-${e.tool_use_id}` };
   });
   on('ui.render', ($, e) => {
-    if (e.component === 'ToolUse') shown.set(e.requestId, e.props.tool);
-    if (e.component === 'AgentRow') agentRows.set(e.props.id, e.props);
-    return { type: 'Text', props: {}, children: [e.props.tool ?? e.props.label] };
+    return { type: 'Text', props: {}, children: [e.props.tool] };
   });
   for (const id of ['call-a', 'call-b', 'denied']) {
     await $.tool.call({ tool: 'Agent', tool_use_id: id, ...originalInput });
@@ -135,18 +131,6 @@ test('routing changes only the matching spawn model and joins its display name t
   const denied = await $.ui.mount(row('denied'));
   expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
   await denied.unmount();
-  for (const id of ['call-b', 'call-a', 'denied', 'unrouted']) {
-    const props = {
-      id: `child-${id}`, type: 'local_agent', status: 'running', label: 'Reading files',
-      description: originalInput.description, tokenCount: 1234, startTime: 123,
-      model: 'claude-sonnet-5', columns: 100, rowIds: [], hasRow: true, body: 'Native task body', isHidden: false,
-    };
-    const mounted = await $.ui.mount({ ...panel, component: 'AgentRow', props });
-    const name = id === 'denied' || id === 'unrouted' ? props.label : shown.get(id);
-    expect(agentRows.get(props.id)).toEqual({ ...props, label: name });
-    expect(await mounted.find({ type: 'Text', text: name })).toBeDefined();
-    await mounted.unmount();
-  }
   const resumed = { ...forwarded[0], model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
   await $.agent.spawn(resumed);
   expect(forwarded[forwarded.length - 1]).toEqual(resumed);
