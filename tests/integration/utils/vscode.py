@@ -25,6 +25,10 @@ POLL_S = 0.25
 # How long a screen gets to react to an action before the same screen is read as new.
 SETTLE_S = 3
 
+# ug's extension asks for this on a profile where Copilot Chat never finished its setup. The toast
+# stays up after Copilot Chat is turned on another way, over the chat's model picker.
+COPILOT_CHAT_OFF_NOTICE = "Databricks models need Copilot Chat, which is turned off."
+
 # Read in one round trip, so one poll classifies one consistent screen.
 _SCREEN = """() => {
   const visible = e => !!e && e.getClientRects().length > 0
@@ -46,6 +50,9 @@ _SCREEN = """() => {
   const modelsEditor = [...document.querySelectorAll('.monaco-modal-editor-block')].find(
     e => visible(e) && e.querySelector('.models-widget')
   );
+  const notice = [...document.querySelectorAll('.notifications-toasts .notification-list-item')].find(
+    e => visible(e) && text(e).includes(NOTICE)
+  );
   return {
     workbench: !!document.querySelector('.monaco-workbench'),
     onboarding: onboarding ? text(onboarding) : null,
@@ -65,8 +72,11 @@ _SCREEN = """() => {
       XPathResult.FIRST_ORDERED_NODE_TYPE, null
     ).singleNodeValue),
     modelsEditor: !!modelsEditor,
+    copilotChatOffNotice: !!notice,
+    // An open dropdown blocks clicks everywhere else until it closes.
+    dropdown: [...document.querySelectorAll('.context-view-block')].some(visible),
   };
-}"""
+}""".replace("NOTICE", json.dumps(COPILOT_CHAT_OFF_NOTICE))
 
 
 class UnknownScreen(AssertionError):
@@ -91,6 +101,8 @@ class VSCode:
         self.user_dir = vscode_user_dir(session)
         self.shots = 0
         self.actions: list[str] = []
+        self.states: list[str] = []
+        self.started = time.monotonic()
         self.copilot_chat_ready = False
 
     def __enter__(self):
@@ -163,6 +175,7 @@ class VSCode:
                 self.session.record(f"{self.name}-failure-screen.json", self._screen_or_none())
         finally:
             self.session.record(f"{self.name}-actions.json", self.actions)
+            self.session.record(f"{self.name}-states.json", self.states)
             self._stop()
 
     def _stop(self):
@@ -222,8 +235,19 @@ class VSCode:
         self.actions.append(description)
         action()
 
+    def _seen(self, state: str, screen: dict) -> None:
+        """Record each change of the recognized screen, for diagnosing a failed or slow step."""
+        line = f"{time.monotonic() - self.started:7.2f}s {state} | {screen['modelButton']}"
+        if not self.states or self.states[-1].split(" ", 1)[1] != line.split(" ", 1)[1]:
+            self.states.append(line)
+
     def _click(self, description: str, locator) -> None:
-        self._act(description, lambda: locator.click(timeout=CLICK_TIMEOUT_MS))
+        def click():
+            # A tooltip left by the pointer's last position can cover the next target.
+            self.page.mouse.move(0, 0)
+            locator.click(timeout=CLICK_TIMEOUT_MS)
+
+        self._act(description, click)
 
     def finish_first_launch(self) -> None:
         """Answer the first-launch onboarding modal and close the Welcome editor.
@@ -272,18 +296,28 @@ class VSCode:
         # Each action extends the step, up to a cap for a screen that never settles.
         cap = time.monotonic() + 3 * STEP_TIMEOUT_S
         deadline = time.monotonic() + STEP_TIMEOUT_S
-        last, acted = None, 0.0
+        last, acted, picked_since = None, 0.0, None
         while time.monotonic() < deadline:
             screen = self.screen()
             if (
                 screen["modelButton"] == f"Models, {label}"
                 and screen["picker"] is None
                 and not screen["modelsEditor"]
+                and not screen["copilotChatOffNotice"]
             ):
-                self._wait_for_copilot_chat()
-                self.shot("model-picked")
-                return
+                # ug's extension can switch the model and a second Language Models editor can open
+                # just after the providers are added, so the picked screen has to hold.
+                self._seen("picked", screen)
+                last, picked_since = "picked", picked_since or time.monotonic()
+                if time.monotonic() - picked_since >= SETTLE_S:
+                    self._wait_for_copilot_chat()
+                    self.shot("model-picked")
+                    return
+                time.sleep(POLL_S)
+                continue
+            picked_since = None
             state = self._picker_state(screen, label)
+            self._seen(state, screen)
             if (
                 not select
                 and state.startswith("picker: ")
@@ -327,6 +361,19 @@ class VSCode:
                 page.locator(".monaco-dialog-box:visible").get_by_role(
                     "button", name="Trust Folder & Continue"
                 ),
+            )
+        elif state == "notice: Copilot Chat off":
+            self.shot("copilot-chat-off-notice")
+            self._click(
+                "ug notice: Turn On Copilot Chat",
+                page.locator(".notifications-toasts .notification-list-item:visible")
+                .filter(has_text=COPILOT_CHAT_OFF_NOTICE)
+                .get_by_role("button", name="Turn On Copilot Chat"),
+            )
+            self._wait(
+                lambda: not self.screen()["copilotChatOffNotice"],
+                STEP_TIMEOUT_S,
+                "the Copilot Chat notice to close",
             )
         elif state == "language models editor":
             # Its own close button: Escape only closes it while it has focus.
@@ -395,6 +442,7 @@ class VSCode:
         while time.monotonic() < deadline:
             screen = self.screen()
             state = self._picker_state(screen, label)
+            self._seen(state, screen)
             if state == "picker: no match" and time.monotonic() - acted >= SETTLE_S:
                 self.shot(f"picker-without-{label}")
                 self._act("model picker: Escape", lambda: page.keyboard.press("Escape"))
@@ -417,6 +465,7 @@ class VSCode:
                     "picker: restricted",
                     "picker: signed out",
                     "dialog: trust folder",
+                    "notice: Copilot Chat off",
                     "language models editor",
                 ):
                     # Reopening a profile can show the signed-out picker until Copilot Chat starts.
@@ -446,6 +495,8 @@ class VSCode:
             if "Do you trust the authors" in screen["dialog"]:
                 return "dialog: trust folder"
             return f"dialog: {screen['dialog'][:200]}"
+        if screen["copilotChatOffNotice"] and not screen["dropdown"]:
+            return "notice: Copilot Chat off"
         if screen["modelsEditor"]:
             return "language models editor"
         text = screen["picker"]

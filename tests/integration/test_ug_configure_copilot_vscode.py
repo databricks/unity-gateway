@@ -116,9 +116,9 @@ def test_ug_configure_copilot_vscode_installs_and_reverts_the_extension(live_ses
 @pytest.mark.harness_latest
 def test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window(live_session, workspace):
     """Scenario: after `ug configure --agents copilot`, a developer opens VS Code for the first time,
-    continues without signing in to GitHub, trusts the folder, adds the model providers from Copilot
-    Chat's model picker, picks the Databricks Claude test model and asks Agent mode to read a local
-    file. In the same window they pick the GPT test model and ask it to read another file.
+    continues without signing in to GitHub, trusts the folder, turns on Copilot Chat (from its model
+    picker or ug's notice), picks the Databricks Claude test model and asks Agent mode to read a
+    local file. In the same window they pick the GPT test model and ask it to read another file.
 
     Expected: everything happens through visible clicks and keys on a fresh profile; no settings or
     VS Code state is seeded. Each answer contains its own file's value, which is never in a prompt.

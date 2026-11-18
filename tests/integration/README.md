@@ -761,8 +761,12 @@ bearer is on disk, then requires `ug revert` to remove the extension and leave t
 byte-identical. The chat journeys launch the pinned VS Code on a private Xvfb display with
 its DevTools port open, and Playwright reads and clicks the real window (`utils/vscode.py`).
 Nothing is seeded: each journey answers the first-launch onboarding with "Continue without Signing
-In", closes the Welcome editor, trusts the folder from the model picker, enables the bundled
-Copilot Chat with the picker's "Add Models...", and picks a model by its label in the picker.
+In", closes the Welcome editor, trusts the folder from the model picker, turns on the bundled
+Copilot Chat with the picker's "Add Models..." or ug's "Turn On Copilot Chat" notice, whichever
+is on screen first (both open the Language Models editor, which it closes), and picks a model by
+its label in the picker. The picked model has to hold for a few seconds, since ug's extension
+switches the chat to its default model once Copilot Chat is on. Each window records its actions
+and every change of the recognized screen (`<name>-states.json`).
 Every step acts on one recognized screen; an unknown screen, an unexpected dialog, or a tool
 confirmation fails. The switch journey asks Agent mode to read a `FileTask` file on Claude, then
 picks the GPT test model and reads a second file, and checks no bearer is on disk after the window
