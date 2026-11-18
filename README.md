@@ -205,7 +205,7 @@ passwordless sudo), since a write that can't be authorized fails the command.
 `~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
 servers, skills, Databricks AI Tools, and Desktop/Cowork user settings. Claude Code and Codex
 (0.134.0 or newer) have machine-wide CLI settings; macOS also supports Desktop MDM provisioning.
-Other CLI agents are skipped with a note, so a run that names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
+Other CLI agents are skipped with a note, so a run that names only them does nothing. When the workspace's agent configuration also enables GitHub Copilot, the run installs the Copilot CLI where every user can run it, but writes none of its settings: each user's first `ug copilot` sets it up. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
 relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
 (checked through symlinks), since every user's agents run them: install ug in a shared location
 first, as `scripts/mdm/macos-provision.sh` does with `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR`, and

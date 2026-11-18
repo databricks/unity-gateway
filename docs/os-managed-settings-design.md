@@ -36,7 +36,9 @@ An explicit `ug configure --global` writes only the OS-managed files: the Claude
 config files, user MCP registrations, skills, Databricks AI Tools, Claude Desktop, Cowork, and the
 Codex app settings are left unchanged. The run backs up a pre-existing per-user file under
 `~/.ucode` as usual, so `ug revert` restores it rather than deleting it. Agents without OS-managed
-files are skipped, so a run naming only them is a no-op. A subscription relay, Codex older than
+files are skipped, so a run naming only them is a no-op. When the workspace's agent configuration
+also enables GitHub Copilot, the run installs the Copilot CLI for every user, without its settings.
+A subscription relay, Codex older than
 0.134.0, `UG_SKIP_OS_SETTINGS`, and platforms without managed files fail. So does an installation
 whose `ug` or Python, as given or with symlinks resolved, is in the current user's home folder or the
 folder holding every user's home (`/home`, `/Users`, `%SystemDrive%\Users`): the managed settings run

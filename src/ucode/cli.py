@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import Future
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
@@ -1510,6 +1510,7 @@ def _configure_workspace_command(
     if managed is not None and managed_tools:
         _reject_managed_model_source(managed, model_location=model_location, provider=provider)
         refuse_user_scope_over_managed_files(managed_tools)
+        _install_shared_binaries(managed_tools)
         managed_tools = _machine_wide_tools(managed_tools)
         if not managed_tools:
             # The workspace enables only agents with per-user settings: nothing to write.
@@ -5870,6 +5871,7 @@ def _configure_global_from_agent_config(
                         install_tool_binary(tool_name, strict=False)
                     except RuntimeError as exc:
                         print_warning(str(exc))
+            _install_shared_binaries(enabled)
         published_agent_config.run(
             key=key,
             raw=raw,
@@ -5903,6 +5905,24 @@ def _configure_global_from_agent_config(
 
 # Only these agents have machine-wide settings; every other agent is configured per user.
 MACHINE_WIDE_TOOLS = ("claude", "codex")
+# Per-user agents whose binary `ug configure --global` still installs for every user, so a standard
+# user's first launch doesn't need to install it (npm's shared prefix is root-owned).
+SHARED_BINARY_TOOLS = ("copilot",)
+
+
+def _install_shared_binaries(enabled_tools: Iterable[str]) -> None:
+    """Install the binaries of the ``SHARED_BINARY_TOOLS`` the agent configuration enables.
+
+    Only during ``ug configure --global``. It writes none of their settings: each user's first
+    launch sets the agent up for that user."""
+    if not machine_wide_only() or is_dry_run():
+        return
+    for tool in SHARED_BINARY_TOOLS:
+        if tool in enabled_tools:
+            try:
+                install_tool_binary(tool, strict=False)
+            except RuntimeError as exc:
+                print_warning(str(exc))
 
 
 def _check_machine_wide_only_request(
