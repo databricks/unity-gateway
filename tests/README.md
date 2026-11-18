@@ -11,8 +11,9 @@ validation, GitHub-sourced policy metadata, main policy checkout and isolated ho
 The resolver uses the event's run ID to fetch current CI metadata through the authenticated
 Actions API, then finds the PR by the run's head owner and branch rather than its run
 name, which stays the PR title while a fork's CI awaits approval. Cases cover incomplete
-event metadata, PR-title run names, zero/multiple/stale head matches, invalid/mismatched
-run IDs, API errors/timeouts, and field-specific diagnostics; lookup failure never falls
+event metadata, PR-title run names, runs without a resolvable head, zero/multiple/stale
+head matches, invalid/mismatched run IDs, revalidation of the fetched PR detail,
+API errors/timeouts, and field-specific diagnostics; lookup failure never falls
 back to the event snapshot. These fixtures do not establish live GitHub behavior.
 This prerequisite installs the producer and reusable consumer without making existing CI
 wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
