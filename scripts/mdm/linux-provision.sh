@@ -14,6 +14,9 @@
 #   $5  Service principal OAuth client id
 #   $6  Service principal OAuth client secret
 #
+# Set UG_INSTALL_SPEC to a uv tool spec to install ug from somewhere other
+# than the repository's main branch, e.g. a local checkout.
+#
 # The token is used for this run only; developers sign in with their own
 # OAuth. Needs access to PyPI, GitHub, astral.sh, nodejs.org and npmjs.org.
 
@@ -35,6 +38,7 @@ NODE_VERSION=22.23.5
 NODE_SHA256_X64=c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1
 NODE_SHA256_ARM64=8bd3dc69eee8f3f226315a80d7d1d4faccf217a4c8fae500168ac2e38f3bdba3
 UG_REPO=https://github.com/databricks/unity-gateway
+UG_INSTALL_SPEC="${UG_INSTALL_SPEC:-git+$UG_REPO}"
 UV_URL=https://astral.sh/uv/install.sh
 CLI_URL=https://raw.githubusercontent.com
 CLI_URL="$CLI_URL/databricks/setup-cli/main/install.sh"
@@ -70,7 +74,7 @@ if ! command -v uv >/dev/null; then
   curl -LsSf "$UV_URL" \
     | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 fi
-uv tool install --force "git+$UG_REPO"
+uv tool install --force "$UG_INSTALL_SPEC"
 
 if [ ! -x /usr/local/bin/databricks ]; then
   curl -fsSL "$CLI_URL" | sh

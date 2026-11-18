@@ -50,3 +50,6 @@ sudo bash linux-provision.sh _ _ _ https://myws.cloud.databricks.com "$CLIENT_ID
 The client secret is visible to other local users in the process list while the script runs, as
 with any tool that passes it as an argument. The service principal setup in
 [macos-setup.md](macos-setup.md) applies unchanged.
+
+`tests/e2e_mdm` runs both scripts in CI. It sets `UG_INSTALL_SPEC` to install a checkout instead of
+the repository's main branch.
