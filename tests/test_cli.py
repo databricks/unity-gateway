@@ -4684,7 +4684,10 @@ class TestOtelProxyCommand:
             patch("ucode.gateway_proxy.start_otel_proxy", return_value=otel),
             patch("ucode.gateway_proxy.start_relay_proxy", return_value=relay) as start_relay,
             # Run the relay thread's target inline so its serve_forever call is deterministic.
-            patch("ucode.cli.threading.Thread", lambda target, daemon: MagicMock(start=target)),
+            patch(
+                "ucode.login_service.threading.Thread",
+                lambda target, daemon: MagicMock(start=target),
+            ),
         ):
             result = runner.invoke(
                 app,
