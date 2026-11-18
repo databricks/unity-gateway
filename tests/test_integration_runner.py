@@ -1,5 +1,6 @@
 import base64
 import io
+import runpy
 import urllib.error
 from pathlib import Path
 
@@ -150,6 +151,46 @@ def test_m2m_token_retry_exhaustion_and_permanent_errors(
     diagnostics = str(error.value) + capsys.readouterr().err
     assert "secret" not in diagnostics
     assert "Y2xpZW50OnNlY3JldA==" not in diagnostics
+
+
+def test_desktop_credential_helper_uses_shared_oauth_recovery(monkeypatch, capsys, tmp_path):
+    responses = [
+        urllib.error.HTTPError("https://workspace.example", 503, "Unavailable", {}, io.BytesIO()),
+        io.BytesIO(b'{"access_token":"workspace-token"}'),
+    ]
+    attempts = []
+    delays = []
+
+    def token_response(request, timeout):
+        assert timeout == 10
+        assert request.full_url == "https://workspace.example/oidc/v1/token"
+        response = responses[len(attempts)]
+        attempts.append(request)
+        if isinstance(response, urllib.error.HTTPError):
+            raise response
+        return response
+
+    monkeypatch.setenv("UCODE_TEST_WORKSPACE", "https://workspace.example/")
+    monkeypatch.setenv("DATABRICKS_CLIENT_ID", "client")
+    monkeypatch.setenv("DATABRICKS_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(runner.urllib.request, "urlopen", token_response)
+    monkeypatch.setattr(runner.time, "sleep", delays.append)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit) as exit_status:
+        runpy.run_path(
+            str(runner.ROOT / "scripts/cowork-inference/bearer-token.py"), run_name="__main__"
+        )
+
+    assert exit_status.value.code is None
+    assert len(attempts) == 2
+    assert delays == [1]
+    assert all(response.closed for response in responses)
+    output = capsys.readouterr()
+    assert output.out == "workspace-token\n"
+    assert "HTTP 503" in output.err
+    assert "secret" not in output.err
 
 
 def test_headless_only_selects_exact_nodes_for_requested_agents(tmp_path):

@@ -233,7 +233,9 @@ def npm_executable(bin_dir: Path, name: str) -> Path:
     return bin_dir / (f"{name}.cmd" if os.name == "nt" else name)
 
 
-def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
+def mint_m2m_token(
+    workspace: str, client_id: str, client_secret: str, *, timeout: float = 30
+) -> str:
     """Mint a short-lived workspace token for a service principal via OAuth client credentials.
 
     Managed-workspace M2M tokens expire hourly, so the runner mints them from client credentials
@@ -254,7 +256,7 @@ def mint_m2m_token(workspace: str, client_id: str, client_secret: str) -> str:
     attempt = 1
     while True:
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310 (https workspace URL)
+            with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 (https workspace URL)
                 token = json.load(response).get("access_token", "")
         except urllib.error.HTTPError as exc:
             with exc:
