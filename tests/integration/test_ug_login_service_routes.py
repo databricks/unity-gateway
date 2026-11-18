@@ -37,7 +37,7 @@ def _post(url: str, body: dict, headers: dict[str, str] | None = None) -> tuple[
 def _wait_for_port(proc: subprocess.Popen, port: int) -> None:
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
-        assert proc.poll() is None, proc.communicate(timeout=5)
+        assert proc.poll() is None, "ug otel-proxy exited; see login-service.log"
         with socket.socket() as sock:
             if sock.connect_ex(("127.0.0.1", port)) == 0:
                 return
@@ -64,14 +64,16 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
         "--disable-databricks-ai-tools",
     )
     port = _free_port()
+    # A file, not a pipe: nothing reads the service's log until it stops, and a full pipe
+    # (4 KB on Windows) would block it mid-request.
+    log_path = session.artifacts / "login-service.log"
+    log = log_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         [str(session.binary), "otel-proxy", "--host", workspace, "--port", str(port)],
         cwd=session.cwd,
         env=session.env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        encoding="utf-8",
-        errors="replace",
+        stdout=log,
+        stderr=subprocess.STDOUT,
         **process_group_options(),
     )
     base = f"http://127.0.0.1:{port}"
@@ -100,8 +102,11 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
         )
     finally:
         stop_process(proc)
-        _, stderr = proc.communicate(timeout=10)
-        session.record("login-service.json", {"stderr": stderr})
+        proc.wait(timeout=10)
+        log.close()
+        session.record(
+            "login-service.json", {"output": log_path.read_text(encoding="utf-8", errors="replace")}
+        )
     session.record(
         "turns.json",
         {
