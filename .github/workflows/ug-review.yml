@@ -67,6 +67,8 @@ jobs:
         id: policy
         working-directory: .ug-review-trusted
         run: |
+          # The review action's checkout deletes this directory; keep the later step's script.
+          cp .github/scripts/ug-review/recommendation.py "$RUNNER_TEMP/ug-recommendation.py"
           delimiter="ug-review-policy-$(openssl rand -hex 16)"
           {
             echo "background<<$delimiter"
@@ -224,7 +226,7 @@ jobs:
         env:
           GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}
           RECOMMENDATION_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
-        run: python3 .ug-review-trusted/.github/scripts/ug-review/recommendation.py
+        run: python3 "$RUNNER_TEMP/ug-recommendation.py"
 
       - name: Publish the review recommendation
         if: ${{ steps.pr.outputs.head != '' && steps.ocr.outcome == 'success' }}
