@@ -10,6 +10,11 @@ routing attribution. Existing children and an ongoing main turn keep their origi
 attribution after a toggle. A failed controls read shows `UNKNOWN` without stopping
 Codex's polling, so the next successful read can recover.
 
+The state badge matches Claude's Smart Router banner: bold black `ON` on green,
+or bold black `OFF` on gray. Claude keeps an ON/OFF hint below the prompt after its
+temporary banner disappears; disabling routing does not hide that hint. Codex keeps
+the badge in its persistent footer, since this API only controls the footer.
+
 ## Validation
 
 Install the checkout in an isolated Python environment and use Codex
@@ -28,11 +33,11 @@ just lint
 For a configured test workspace and an explicitly selected profile:
 
 1. Launch `SMART_ROUTER_CONFIG_VERSION=subagent_only_v0 ug codex`. Check the
-   native footer shows `smart router ON` alongside model and project directory.
+   native footer shows `smart router` with a green `ON` badge alongside model and project directory.
 2. Ask Codex to read a file containing an unpredictable value. Require the correct
    value in its completed answer, rather than accepting a startup banner as inference.
-3. Submit `$smart-router off`. After the command succeeds, require `smart router OFF`
-   in the footer without restarting the conversation.
+3. Submit `$smart-router off`. After the command succeeds, require a gray `OFF`
+   badge in the footer without restarting the conversation. The indicator stays visible.
 4. Submit `$smart-router on` and require `smart router ON` again. Complete another
    file task in the same conversation.
 5. Open a second session. Toggle one and check the other session's footer is unchanged.

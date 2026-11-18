@@ -2,7 +2,9 @@
 
 The experimental Codex footer has offline protocol, process-isolation, and launcher
 coverage in `../test_codex_statusline.py` and `../test_codex_smart_routing_v2.py`.
-Those component checks also cover nullable snapshots and terminal config isolation.
+Those component checks also cover Claude-style green ON/gray OFF badges, nullable
+snapshots, and terminal config isolation. Native UI checks must verify badge colors
+as well as the ON/OFF text; OFF remains visible, matching Claude's persistent hint.
 The stable CI baseline does not exercise this new renderer. Test it with pinned
 Codex `0.171.0-alpha.12` using the
 [footer validation steps](../../docs/codex-smart-router-statusline.md). A native

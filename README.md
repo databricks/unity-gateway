@@ -614,7 +614,9 @@ per-turn metadata; a static Codex `responses_api_metadata` entry with that name
 would override dynamic values.
 
 Routed Codex terminal sessions on **0.171.0-alpha.12 or newer** show
-`smart router ON/OFF` beside the current model, directory, and remaining context.
+`smart router` with a green `ON` or gray `OFF` badge beside the current model,
+directory, and remaining context, matching Claude's badge colors. The indicator
+stays visible when routing is off, as Claude's prompt hint does.
 This uses Codex's experimental MCP status-line provider API. Earlier versions,
 including stable 0.169.0, keep their existing footer. UG does not install an alpha
 or raise its minimum Codex version for this feature.

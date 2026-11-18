@@ -18,7 +18,7 @@ from ucode.smart_routing.session_env import SESSION_ENV_VAR, set_session_environ
 def _labels(tree):
     if isinstance(tree, str):
         return tree
-    return " ".join(_labels(child) for child in tree.get("children", []))
+    return " ".join(" ".join(_labels(child) for child in tree.get("children", [])).split())
 
 
 def _read_lines(stream, replies):
@@ -138,6 +138,29 @@ def test_footer_handles_missing_snapshot_and_windows_paths(tmp_path, monkeypatch
     assert "my-app" in _labels(
         statusline.render({"thread": {"workspace": {"cwd": r"C:\projects\my-app"}}})
     )
+
+
+@pytest.mark.parametrize(
+    ("enabled", "label", "background"), [(True, "ON", "green"), (False, "OFF", "#808080")]
+)
+def test_footer_matches_claude_badges(tmp_path, monkeypatch, enabled, label, background):
+    controls = tmp_path / "controls.json"
+    controls.write_text(
+        json.dumps(
+            {
+                ENABLE_SMART_ROUTING_ENV_VAR: "0",
+                ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1" if enabled else "0",
+            }
+        )
+    )
+    monkeypatch.setenv(SESSION_ENV_VAR, str(controls))
+    indicator = statusline.render({})["children"][0]
+    assert _labels(indicator) == f"smart router {label}"
+    badge = indicator["children"][1]
+    assert badge["props"] == {"gap": 0, "background": background}
+    assert badge["children"] == [
+        {"type": "text", "props": {"color": "black", "weight": "bold"}, "children": [f" {label} "]}
+    ]
 
 
 @pytest.mark.parametrize("contents", [None, "not-json", "[]", '{"unrecognized": "1"}'])

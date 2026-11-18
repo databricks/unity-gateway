@@ -71,22 +71,43 @@ def _text(value: str, color: str) -> dict:
     return {"type": "text", "props": {"color": color}, "children": [value]}
 
 
+def _router_indicator(label: str) -> dict:
+    if label == "UNKNOWN":
+        return _text("smart router UNKNOWN", "yellow")
+    badge = {
+        "type": "row",
+        "props": {"gap": 0, "background": "green" if label == "ON" else "#808080"},
+        "children": [
+            {
+                "type": "text",
+                "props": {"color": "black", "weight": "bold"},
+                "children": [f" {label} "],
+            }
+        ],
+    }
+    return {
+        "type": "row",
+        "props": {"gap": 1},
+        "children": [_text("smart router", "primary"), badge],
+    }
+
+
 def render(state: dict[str, Any]) -> dict:
     controls = os.environ.get(SESSION_ENV_VAR)
     try:
         if not controls:
             raise ValueError("No session controls")
         enabled = session_routing_enabled(Path(controls), retry=False)
-        label, color = ("ON", "green") if enabled else ("OFF", "yellow")
+        label = "ON" if enabled else "OFF"
     except (OSError, UnicodeError, ValueError):
-        label, color = "UNKNOWN", "yellow"
+        label = "UNKNOWN"
 
     thread = _object(_object(state).get("thread"))
     model = _object(thread.get("model"))
     model_name = model.get("display_name") or model.get("id") or "Codex"
     if model.get("reasoning_level"):
         model_name += " " + model["reasoning_level"]
-    children = [_text(f"smart router {label}", color), _text(model_name, "status-model")]
+    children = [_router_indicator(label), _text(model_name, "status-model")]
     cwd = _object(thread.get("workspace")).get("cwd")
     if cwd:
         path = PureWindowsPath(cwd) if "\\" in cwd else PurePosixPath(cwd)
