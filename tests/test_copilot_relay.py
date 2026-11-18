@@ -322,12 +322,17 @@ class TestGatewayDenials:
     @pytest.mark.parametrize(
         "body",
         [
-            b"<html>denied</html>",
-            b"",
-            b'{"message": "no error code"}',
-            b'{"error_code": 7, "message": "bad code"}',
-            b'{"error_code": "PERMISSION_DENIED", "message": ""}',
-            json.dumps({"error_code": "PERMISSION_DENIED", "message": "x" * (64 * 1024)}).encode(),
+            pytest.param(b"<html>denied</html>", id="html"),
+            pytest.param(b"", id="empty"),
+            pytest.param(b'{"message": "no error code"}', id="no-error-code"),
+            pytest.param(b'{"error_code": 7, "message": "bad code"}', id="code-not-a-string"),
+            pytest.param(b'{"error_code": "PERMISSION_DENIED", "message": ""}', id="empty-message"),
+            pytest.param(
+                json.dumps(
+                    {"error_code": "PERMISSION_DENIED", "message": "x" * (64 * 1024)}
+                ).encode(),
+                id="oversized",
+            ),
         ],
     )
     def test_other_403_bodies_get_the_generic_message(self, gateway, github, body):
