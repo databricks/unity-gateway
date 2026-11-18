@@ -53,7 +53,7 @@ def test_launch_config_pins_session_without_credentials(tmp_path):
     config = statusline.launch_config("0.171.0-alpha.12", controls)
     server = config["mcp_servers"][statusline.SERVER_NAME]
     assert server["command"] == sys.executable
-    assert server["args"] == ["-X", "utf8", "-m", "ucode.smart_routing.codex_statusline"]
+    assert server["args"] == ["-P", "-X", "utf8", "-m", "ucode.smart_routing.codex_statusline"]
     assert server["env"] == {SESSION_ENV_VAR: str(controls)}
     assert config["features.tui_extensions_statusline"] is True
     assert config["tui.status_line_provider"] == {

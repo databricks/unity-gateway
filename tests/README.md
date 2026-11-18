@@ -4,8 +4,8 @@
 live control-file reads, Claude-style green ON/gray OFF badges, ON/OFF/UNKNOWN recovery,
 nullable per-thread display inputs, MCP
 advertisement and protocol errors, and isolation between two real stdio provider
-processes. `test_codex_smart_routing_v2.py` checks that both POSIX and Windows
-launches wire the provider into the app-server and its selection into the terminal,
+processes using Python's `-P` launch flag. `test_codex_smart_routing_v2.py` checks
+that both POSIX and Windows launches wire the provider into the app-server and its selection into the terminal,
 with first-prompt routing on or off. Stable 0.169.0 and alpha.11 receive no new
 fields. These are offline component checks; native alpha UI and credentialed
 gateway validation are separate, as described in the

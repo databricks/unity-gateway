@@ -413,7 +413,7 @@ class TestLaunchCodex:
             )
             assert json.dumps(sys.executable) in server_config
             assert (
-                'args = ["-X", "utf8", "-m", "ucode.smart_routing.codex_statusline"]'
+                'args = ["-P", "-X", "utf8", "-m", "ucode.smart_routing.codex_statusline"]'
                 in server_config
             )
             assert json.dumps(os.environ["UCODE_SESSION_ENV_FILE"]) in server_config

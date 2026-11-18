@@ -47,7 +47,7 @@ def launch_config(version: str, controls: Path) -> dict:
         "mcp_servers": {
             SERVER_NAME: {
                 "command": sys.executable,
-                "args": ["-X", "utf8", "-m", __name__],
+                "args": ["-P", "-X", "utf8", "-m", __name__],
                 "env": {SESSION_ENV_VAR: str(controls)},
                 "enabled": True,
             }
