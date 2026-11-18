@@ -5,8 +5,9 @@ MDM deployment runs `ug configure` as root on each machine.
 | Platform | Script | Setup guide |
 | --- | --- | --- |
 | macOS | `macos-provision.sh` | [macos-setup.md](macos-setup.md) |
+| Linux | `linux-provision.sh` | [Linux](#linux) below |
 
-Linux and Windows scripts will follow.
+A Windows script will follow.
 
 On macOS, `macos-provision.sh` is an MDM policy script (written for JAMF), run as root on each
 machine. It installs `ug` (with its own Python), the Databricks CLI and Node.js/npm under
@@ -27,3 +28,25 @@ extra variable. See
 The script authenticates `ug configure` with a short-lived token for a service principal whose
 client id and secret come in as policy parameters; neither the credentials nor the token are
 written to disk. See [macos-setup.md](macos-setup.md) for the full setup.
+
+## Linux
+
+`linux-provision.sh` does the same as the macOS script for an MDM or configuration management tool
+that runs it as root. It takes the same arguments (`$4` workspace URL, `$5` client id, `$6` client
+secret; `$1`-`$3` are ignored), installs `ug` and the Databricks CLI under `/usr/local`, and
+installs Node.js 22 (checksum-pinned, under `/usr/local/unity-gateway/node`) if `node` or `npm` is
+missing. `ug configure --global --mdm` then installs any missing Claude Code or Codex with
+`npm install -g` into `/usr/local`, and writes the machine-wide files under `/etc/unitygateway/`,
+`/etc/claude-code/` and `/etc/codex/`. Agents already on the `PATH` are reused, not migrated to
+npm; remove an earlier native install before rerunning if npm should own it. It adds the same
+`claude` and `codex` aliases to whichever of `/etc/bash.bashrc`, `/etc/bashrc`, `/etc/zsh/zshrc`
+and `/etc/zshrc` exist. It installs any missing `curl`, `git`,
+`python3`, `tar` or `unzip` with `apt-get` or `dnf`. For example:
+
+```bash
+sudo bash linux-provision.sh _ _ _ https://myws.cloud.databricks.com "$CLIENT_ID" "$CLIENT_SECRET"
+```
+
+The client secret is visible to other local users in the process list while the script runs, as
+with any tool that passes it as an argument. The service principal setup in
+[macos-setup.md](macos-setup.md) applies unchanged.
