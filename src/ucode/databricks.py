@@ -15,7 +15,6 @@ import random
 import re
 import shlex
 import shutil
-import ssl
 import subprocess
 import sys
 import tempfile
@@ -298,29 +297,6 @@ def _log_auth_diagnostics() -> None:
         _debug(f"databrickscfg ({cfg_path})", f"read error: {exc}")
 
 
-@functools.cache
-def _make_ssl_context() -> ssl.SSLContext:
-    """Return an SSL context that trusts the system CA bundle plus any custom CA
-    pointed to by REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, or SSL_CERT_FILE.
-
-    Enterprise environments often inject a self-signed certificate via an SSL
-    inspection proxy. curl picks it up from the system store automatically;
-    Python's default ssl context doesn't on all platforms. Honoring the same
-    env vars that curl and the `requests` library use lets customers point ucode
-    at their enterprise CA bundle without patching the system Python install."""
-    ctx = ssl.create_default_context()
-    for env_var in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE"):
-        ca_bundle = os.environ.get(env_var, "").strip()
-        if ca_bundle and Path(ca_bundle).is_file():
-            try:
-                ctx.load_verify_locations(cafile=ca_bundle)
-            except OSError:
-                continue
-            else:
-                break
-    return ctx
-
-
 def _http_get_retry_delay(retry_after: str | None, retry_index: int) -> float:
     if retry_after is not None:
         try:
@@ -413,9 +389,7 @@ def _http_get_bytes(
         if attempt:
             metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
-            with urllib_request.urlopen(
-                request, timeout=timeout, context=_make_ssl_context()
-            ) as response:
+            with urllib_request.urlopen(request, timeout=timeout) as response:
                 status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
@@ -546,9 +520,7 @@ def _http_send_json(
     request_started = time.perf_counter()
     status = None
     try:
-        with urllib_request.urlopen(
-            request, timeout=timeout, context=_make_ssl_context()
-        ) as response:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
             status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)

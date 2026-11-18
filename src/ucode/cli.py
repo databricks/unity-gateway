@@ -27,7 +27,7 @@ from rich.text import Text
 from typer import _click
 from typer.core import HAS_RICH, TyperCommand, TyperGroup, TyperOption
 
-from ucode import custom_oauth, managed_files, metrics
+from ucode import custom_oauth, managed_files, metrics, tls
 from ucode.agents import (
     GEMINI_API_TOOLS,
     MODEL_LOCATION_TOOLS,
@@ -5363,6 +5363,16 @@ def configure(
             "choice (off by default).",
         ),
     ] = None,
+    tls_trust_store: Annotated[
+        str | None,
+        typer.Option(
+            "--tls-trust-store",
+            help="Certificates ug's own HTTPS requests trust: 'python' (Python's certificate "
+            "chain, the default) or 'os' (the operating system's trust store, for networks "
+            "behind a TLS-inspection proxy). Saved for later `ug` commands; UG_TLS_TRUST_STORE "
+            "overrides it. Omit to keep the saved choice.",
+        ),
+    ] = None,
     provider: Annotated[
         str | None,
         typer.Option(
@@ -5463,6 +5473,8 @@ def configure(
         raise typer.Exit(2)
     set_dry_run(dry_run)
     set_verbosity(verbose)
+    if tls_trust_store is not None:
+        _configure_tls_trust_store(tls_trust_store)
     if from_file is not None and not (global_scope and dry_run):
         print_err("--from-file previews a draft, so it requires --global --dry-run.")
         raise typer.Exit(2)
@@ -6236,7 +6248,26 @@ def _verify_upgraded_commands() -> None:
             )
 
 
+def _configure_tls_trust_store(requested: str) -> None:
+    """Save ``--tls-trust-store`` and switch this run to it before its first request."""
+    trust_store = requested.strip().lower()
+    if trust_store not in tls.TRUST_STORES:
+        print_err(f"--tls-trust-store must be one of: {', '.join(tls.TRUST_STORES)}.")
+        raise typer.Exit(2)
+    tls.save_trust_store(trust_store)
+    override = os.environ.get(tls.TRUST_STORE_ENV_VAR, "").strip().lower()
+    if override in tls.TRUST_STORES and override != trust_store:
+        print_warning(
+            f"{tls.TRUST_STORE_ENV_VAR}={override} overrides the saved TLS trust store "
+            f"'{trust_store}' while it is set."
+        )
+        return
+    tls.apply(trust_store)
+
+
 def main() -> None:
+    # `python -m ucode.cli` wrappers (Desktop MDM, the smart-router skill) skip the entry point.
+    tls.apply()
     app()
 
 

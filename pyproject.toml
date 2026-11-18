@@ -27,6 +27,7 @@ dependencies = [
   "opentelemetry-sdk>=1.44.0,<2",
   "questionary>=2.0.0",
   "tomlkit>=0.13.0",
+  "truststore>=0.10.0",
   "typer>=0.26.0",
   # enable changing codex model after first prompt
   "websockets>=13",

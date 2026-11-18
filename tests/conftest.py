@@ -47,6 +47,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    import ucode.tls as tls_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
@@ -60,6 +61,9 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(tls_mod, "_STATE_PATH", state_dir / "state.json")
+    monkeypatch.setattr(tls_mod, "_applied", None)
+    monkeypatch.delenv(tls_mod.TRUST_STORE_ENV_VAR, raising=False)
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(config_io_mod, "_dry_run", False)
     monkeypatch.setattr(claude_mod, "_explicit_configure", False)

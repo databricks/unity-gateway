@@ -275,6 +275,30 @@ omitting the flag keeps the saved choice). An explicit `ug configure` then also 
 restores it only if that deny list wasn't edited since. ug never writes the deny to the managed file.
 Relayed launches are unaffected.
 
+### TLS certificates behind an inspection proxy
+
+`ug`'s own HTTPS requests verify servers against Python's certificate chain by default. Behind an
+enterprise TLS-inspection proxy that chain usually lacks the proxy's root certificate, so `ug` fails
+with `CERTIFICATE_VERIFY_FAILED` while curl and your browser work. Switch `ug` to the operating
+system's trust store (Keychain on macOS, the certificate store on Windows, the system CA bundle on
+Linux), where that root is installed:
+
+```bash
+ug configure --tls-trust-store os   # saved as tls_trust_store in ~/.ucode/state.json
+UG_TLS_TRUST_STORE=os ug claude     # one command; overrides the saved choice
+```
+
+| Value | Certificates trusted |
+|-------|----------------------|
+| `python` (default) | Python's own chain: the CA bundle its OpenSSL reads, plus `SSL_CERT_FILE` / `SSL_CERT_DIR` |
+| `os` | The operating system's trust store |
+
+`UG_TLS_TRUST_STORE` wins over the saved `tls_trust_store`, which wins over the default; an unknown
+value warns and is ignored. `--tls-trust-store python` switches back, and `ug revert` clears the
+saved choice. The setting covers every request `ug` and its helpers (`ug mcp-proxy`, tracing, usage
+reporting) make. Agents and the Databricks CLI are separate programs with their own trust settings,
+for example `NODE_EXTRA_CA_CERTS` for Claude Code.
+
 ### Extra headers for one session
 
 ```bash

@@ -1778,3 +1778,9 @@ to refresh labels and the failed CI jobs. Later pushes need a new waiver; the ol
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
+
+TLS trust-store component coverage in `test_tls.py` checks precedence (`UG_TLS_TRUST_STORE`,
+saved `tls_trust_store`, default `python`), warnings for unknown values, `truststore` injection
+and removal, the `ug configure --tls-trust-store` save, `ug revert` cleanup, and that each process
+entry point applies the choice. These are component checks; no test verifies a live connection
+through a TLS-inspection proxy.

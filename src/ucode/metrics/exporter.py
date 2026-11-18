@@ -12,6 +12,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any, BinaryIO
 from urllib.parse import urlsplit, urlunsplit
 
+from ucode import tls
 from ucode.metrics import EXPORT_INTERVAL_SECONDS, MAX_HANDOFF_BYTES, MAX_OBSERVATIONS
 
 if TYPE_CHECKING:
@@ -262,6 +263,7 @@ def export_batch(batch: dict) -> None:
 
 def main() -> None:
     with suppress(Exception):
+        tls.apply()
         ExportBuffer().run(sys.stdin.buffer)
 
 
