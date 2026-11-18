@@ -462,6 +462,27 @@ async def register_native_router(upstream, tui):
     reply = {"id": "native-start", "result": {"thread": {"id": thread_id}}}
     upstream.incoming.put_nowait(reply)
     assert await asyncio.wait_for(tui.outgoing.get(), 2) == reply
+    tui.incoming.put_nowait(
+        {
+            "id": "off-command",
+            "method": "turn/start",
+            "params": {
+                "threadId": thread_id,
+                "input": [
+                    {"type": "text", "text": "$smart-router off"},
+                    {
+                        "type": "skill",
+                        "name": "smart-router",
+                        "path": "/skills/smart-router/SKILL.md",
+                    },
+                ],
+            },
+        }
+    )
+    assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["method"] == "turn/start"
+    started = {"id": "off-command", "result": {"turn": {"id": "turn"}}}
+    upstream.incoming.put_nowait(started)
+    assert await asyncio.wait_for(tui.outgoing.get(), 2) == started
     return thread_id
 
 

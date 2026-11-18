@@ -1191,7 +1191,11 @@ background upload afterward, cancellation, no-ops, failures, read-only delivery 
 and retry of the same saved report. The native selector offers Provide a reason or
 Cancel, accepts reason notes or opens text entry, ends short-reason attempts with
 an explicit validation error and character count instead of reopening the prompt,
-preserves preprovided text, and clears pending collection on interruption or error.
+and clears pending collection on interruption or error. Only an exact off command
+with native skill-selection metadata authorizes the matching turn's off call, once.
+Plain prompts, quoted commands, appended reasons, foreign/finished turns, and
+model-provided reasons cannot start feedback or disable routing. Correlated
+turn-start replies bind authorization even when the tool request arrives first.
 Status needs no Isaac executable.
 `test_codex_metadata.py` checks native request/response transport, unrelated-tool
 forwarding, locally consumed feedback replies (including stale replies), native

@@ -15,6 +15,7 @@ from ucode.smart_routing.codex_feedback import TOOL_NAME, TOOL_SPEC, CodexSmartR
 
 runner = CliRunner()
 SESSION_ID = "1cbd36a0-177f-4df1-a5c2-5495a86a04a7"
+OFF_TURN_ID = "off-command-turn"
 TASK_ID = "44160a3a-e643-4259-bc9d-3a40b1803704"
 REASON = "  The routed model didn't finish my task.\nPlease check its tool use.  "
 
@@ -305,11 +306,35 @@ def native_router(inline_feedback):
     router.before_tui(request)
     assert request["params"]["dynamicTools"][0]["name"] == TOOL_NAME
     router.observe({"id": "start", "result": {"thread": {"id": SESSION_ID}}})
+    register_off_command(router)
     return router
 
 
+def register_off_command(router, turn_id=OFF_TURN_ID):
+    router.before_tui(
+        {
+            "id": "off-command",
+            "method": "turn/start",
+            "params": {
+                "threadId": SESSION_ID,
+                "input": [
+                    {"type": "text", "text": "$smart-router off"},
+                    {
+                        "type": "skill",
+                        "name": "smart-router",
+                        "path": "/skills/smart-router/SKILL.md",
+                    },
+                ],
+            },
+        }
+    )
+    router.observe({"id": "off-command", "result": {"turn": {"id": turn_id}}})
+
+
 def native_call(router, action, **kwargs):
-    return router.execute({"threadId": SESSION_ID, "arguments": {"action": action, **kwargs}})
+    return router.execute(
+        {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": action, **kwargs}}
+    )
 
 
 def test_native_host_captures_then_disables_without_a_shell(native_router, inline_feedback):
@@ -367,7 +392,9 @@ def test_native_disabled_feedback_and_on_do_not_call_isaac(inline_feedback, monk
 def test_native_rejects_unbound_sessions(native_router, inline_feedback, thread_id):
     controls, run, popen, _ = inline_feedback
     with pytest.raises(ValueError, match="only to this session's root"):
-        native_router.execute({"threadId": thread_id, "arguments": {"action": "off"}})
+        native_router.execute(
+            {"threadId": thread_id, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}
+        )
     assert json.loads(controls.read_text()) == {}
     run.assert_not_called()
     popen.assert_not_called()
@@ -483,7 +510,9 @@ def test_native_invalid_calls_return_errors_without_mutation(
     import asyncio
 
     controls, run, popen, _ = inline_feedback
-    response = asyncio.run(native_router.call({"threadId": SESSION_ID, "arguments": arguments}))
+    response = asyncio.run(
+        native_router.call({"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": arguments})
+    )
     assert response["success"] is False
     assert json.loads(controls.read_text()) == {}
     run.assert_not_called()
@@ -503,7 +532,11 @@ def test_native_status_needs_no_isaac_and_malformed_receipt_returns_error(
     receipt_path.write_text("[]")
     response = asyncio.run(
         native_router.call(
-            {"threadId": SESSION_ID, "arguments": {"action": "retry", "feedback_id": report_id}}
+            {
+                "threadId": SESSION_ID,
+                "turnId": OFF_TURN_ID,
+                "arguments": {"action": "retry", "feedback_id": report_id},
+            }
         )
     )
     assert response["success"] is False
@@ -554,9 +587,13 @@ def test_native_controls_write_failure_never_requests_shell_approval(
     monkeypatch.setattr(
         session_env, "atomic_write_json", Mock(side_effect=PermissionError("denied"))
     )
+
+    async def ask(_):
+        return ["Provide a reason", "user_note: " + REASON]
+
     response = asyncio.run(
         native_router.call(
-            {"threadId": SESSION_ID, "arguments": {"action": "off", "reason": REASON}}
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}, ask
         )
     )
     assert response["success"] is False
@@ -595,7 +632,7 @@ def test_native_selector_collects_within_toggle_call(
 
     response = asyncio.run(
         native_router.call(
-            {"threadId": SESSION_ID, "arguments": {"action": "off"}},
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}},
             ask,
         )
     )
@@ -633,7 +670,9 @@ def test_native_invalid_selector_response_never_submits(native_router, inline_fe
         return answer
 
     response = asyncio.run(
-        native_router.call({"threadId": SESSION_ID, "arguments": {"action": "off"}}, ask)
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}, ask
+        )
     )
     assert not response["success"]
     assert session_env.session_routing_enabled(controls)
@@ -642,30 +681,29 @@ def test_native_invalid_selector_response_never_submits(native_router, inline_fe
     assert run.call_count == 1
 
 
-@pytest.mark.parametrize("thread_id", [SESSION_ID, {}, None])
-def test_native_preprovided_reason_skips_menu_and_preserves_text(
-    native_router, inline_feedback, thread_id
-):
+@pytest.mark.parametrize("reason", [REASON, "slow"])
+def test_native_model_supplied_reason_cannot_bypass_prompt(native_router, inline_feedback, reason):
     import asyncio
     from unittest.mock import AsyncMock
 
-    controls, run, popen, calls = inline_feedback
+    controls, run, popen, _ = inline_feedback
     ask = AsyncMock()
     response = asyncio.run(
         native_router.call(
-            {"threadId": thread_id, "arguments": {"action": "off", "reason": REASON}}, ask
+            {
+                "threadId": SESSION_ID,
+                "turnId": OFF_TURN_ID,
+                "arguments": {"action": "off", "reason": reason},
+            },
+            ask,
         )
     )
+    assert not response["success"]
+    assert "feedback prompt" in response["contentItems"][0]["text"]
     ask.assert_not_called()
-    assert response["success"] == (thread_id == SESSION_ID)
-    if response["success"]:
-        assert calls[1][1]["input"] == REASON
-        assert not session_env.session_routing_enabled(controls)
-        popen.assert_called_once()
-    else:
-        run.assert_not_called()
-        popen.assert_not_called()
-        assert session_env.session_routing_enabled(controls)
+    run.assert_not_called()
+    popen.assert_not_called()
+    assert session_env.session_routing_enabled(controls)
 
 
 def test_native_canceled_collection_clears_pending_and_never_submits(
@@ -683,7 +721,9 @@ def test_native_canceled_collection_clears_pending_and_never_submits(
             await asyncio.Future()
 
         task = asyncio.create_task(
-            native_router.call({"threadId": SESSION_ID, "arguments": {"action": "off"}}, ask)
+            native_router.call(
+                {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}, ask
+            )
         )
         await asyncio.wait_for(opened.wait(), 2)
         task.cancel()
@@ -712,14 +752,21 @@ def test_native_duplicate_off_cannot_bypass_open_selector(native_router, inline_
             return await answer
 
         task = asyncio.create_task(
-            native_router.call({"threadId": SESSION_ID, "arguments": {"action": "off"}}, ask)
+            native_router.call(
+                {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}, ask
+            )
         )
         await asyncio.wait_for(opened.wait(), 2)
         duplicate = await native_router.call(
-            {"threadId": SESSION_ID, "arguments": {"action": "off", "reason": REASON}}, ask
+            {
+                "threadId": SESSION_ID,
+                "turnId": OFF_TURN_ID,
+                "arguments": {"action": "off", "reason": REASON},
+            },
+            ask,
         )
         assert not duplicate["success"]
-        assert "already open" in duplicate["contentItems"][0]["text"]
+        assert "Use $smart-router off" in duplicate["contentItems"][0]["text"]
         answer.set_result(["Cancel"])
         assert (await asyncio.wait_for(task, 2))["success"]
 
@@ -730,7 +777,7 @@ def test_native_duplicate_off_cannot_bypass_open_selector(native_router, inline_
 
 
 @pytest.mark.parametrize("reason", ["", "slow", "   slow   ", "界" * 15])
-@pytest.mark.parametrize("entry", ["text", "option_note", "preprovided"])
+@pytest.mark.parametrize("entry", ["text", "option_note"])
 def test_native_short_reason_ends_attempt_without_reopening(
     native_router, inline_feedback, reason, entry
 ):
@@ -749,10 +796,10 @@ def test_native_short_reason_ends_attempt_without_reopening(
         return (["Provide a reason"] if entry == "option_note" else []) + ["user_note: " + reason]
 
     arguments = {"action": "off"}
-    if entry == "preprovided":
-        arguments["reason"] = reason
     response = asyncio.run(
-        native_router.call({"threadId": SESSION_ID, "arguments": arguments}, ask)
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": arguments}, ask
+        )
     )
     assert response["success"], response
     result = json.loads(response["contentItems"][0]["text"])
@@ -760,7 +807,7 @@ def test_native_short_reason_ends_attempt_without_reopening(
     assert f"{len(reason.strip())}/16 characters" in result["message"]
     assert "Smart Router is still on; nothing was sent" in result["message"]
     assert "needs_reason" not in result
-    assert len(questions) == {"text": 2, "option_note": 1, "preprovided": 0}[entry]
+    assert len(questions) == {"text": 2, "option_note": 1}[entry]
     assert not native_router.collecting_threads
     assert session_env.session_routing_enabled(controls)
     assert run.call_count == 1
@@ -772,3 +819,136 @@ def test_native_short_reason_ends_attempt_without_reopening(
     assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
     assert calls[1][1]["input"] == REASON
     popen.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "text,selected_skill,allowed",
+    [
+        ("$smart-router off", True, True),
+        (" /smart-router off\n", True, True),
+        ("$smart-router off", False, False),
+        ("Turn off Smart Router.", False, False),
+        ("Turn off Smart Router. My reason: delegation is slow and models are worse.", True, False),
+        ("$smart-router off because delegation is slow", True, False),
+        ("`$smart-router off`", True, False),
+        ("Explain $smart-router off", True, False),
+        ("$smart-router on", True, False),
+    ],
+)
+def test_native_off_requires_explicit_skill_command_in_current_turn(
+    native_router, inline_feedback, text, selected_skill, allowed
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    controls, run, upload, _ = inline_feedback
+    native_router.off_turns.clear()
+    inputs = [{"type": "text", "text": text}]
+    if selected_skill:
+        inputs.append(
+            {"type": "skill", "name": "smart-router", "path": "/skills/smart-router/SKILL.md"}
+        )
+    native_router.before_tui(
+        {
+            "id": "command-check",
+            "method": "turn/start",
+            "params": {"threadId": SESSION_ID, "input": inputs},
+        }
+    )
+    native_router.observe({"id": "command-check", "result": {"turn": {"id": "current-turn"}}})
+    ask = AsyncMock(return_value=["Cancel"])
+    response = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": "current-turn", "arguments": {"action": "off"}}, ask
+        )
+    )
+    assert response["success"] == allowed
+    assert ask.call_count == int(allowed)
+    assert run.call_count == int(allowed)
+    assert session_env.session_routing_enabled(controls)
+    upload.assert_not_called()
+    if not allowed:
+        assert "Use $smart-router off" in response["contentItems"][0]["text"]
+
+
+@pytest.mark.parametrize("ending", ["used", "completed", "foreign_turn", "foreign_thread"])
+def test_native_off_command_authorization_cannot_be_reused(native_router, inline_feedback, ending):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    controls, run, upload, _ = inline_feedback
+    params = {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}
+    ask = AsyncMock(return_value=["Cancel"])
+    if ending == "completed":
+        native_router.observe(
+            {
+                "method": "turn/completed",
+                "params": {"threadId": SESSION_ID, "turn": {"id": OFF_TURN_ID}},
+            }
+        )
+    elif ending == "foreign_turn":
+        params["turnId"] = "ordinary-chat-turn"
+    elif ending == "foreign_thread":
+        params["threadId"] = str(uuid4())
+    else:
+        assert asyncio.run(native_router.call(params, ask))["success"]
+    before = run.call_count
+    response = asyncio.run(native_router.call(params, ask))
+    assert not response["success"]
+    assert run.call_count == before
+    assert session_env.session_routing_enabled(controls)
+    upload.assert_not_called()
+
+
+@pytest.mark.parametrize("reply_error", [False, True])
+def test_native_off_waits_for_correlated_turn_start_reply(
+    native_router, inline_feedback, reply_error
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    controls, run, upload, _ = inline_feedback
+
+    async def scenario():
+        native_router.before_tui(
+            {
+                "id": "delayed-command",
+                "method": "turn/start",
+                "params": {
+                    "threadId": SESSION_ID,
+                    "input": [
+                        {"type": "text", "text": "$smart-router off"},
+                        {
+                            "type": "skill",
+                            "name": "smart-router",
+                            "path": "/skills/smart-router/SKILL.md",
+                        },
+                    ],
+                },
+            }
+        )
+        ask = AsyncMock(return_value=["Cancel"])
+        task = asyncio.create_task(
+            native_router.call(
+                {"threadId": SESSION_ID, "turnId": "delayed-turn", "arguments": {"action": "off"}},
+                ask,
+            )
+        )
+        await asyncio.sleep(0)
+        native_router.observe({"id": "unrelated", "result": {"turn": {"id": "delayed-turn"}}})
+        await asyncio.sleep(0)
+        assert not task.done()
+        reply = (
+            {"error": {"message": "turn did not start"}}
+            if reply_error
+            else {"result": {"turn": {"id": "delayed-turn"}}}
+        )
+        native_router.observe({"id": "delayed-command", **reply})
+        response = await asyncio.wait_for(task, 2)
+        assert response["success"] == (not reply_error)
+        assert ask.call_count == int(not reply_error)
+
+    asyncio.run(scenario())
+    assert run.call_count == int(not reply_error)
+    assert session_env.session_routing_enabled(controls)
+    upload.assert_not_called()

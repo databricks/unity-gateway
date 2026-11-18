@@ -505,13 +505,15 @@ cancellation, same-report retry, failures, delivery notices, and forwarding duri
 The two-choice menu opens free-text entry, accepts notes on the selected reason option,
 ends short-reason attempts with a validation error and character count instead of
 reopening the prompt, and handles Escape/turn completion/disconnect without
-uploading. Its replies stay local; unrelated replies continue upstream. Preprovided
-reasons bypass the menu without changing the text.
+uploading. Its replies stay local; unrelated replies continue upstream. Off requires
+an explicit skill command in the matching native turn. Plain chat and model-provided
+reasons cannot bypass the disclosed native feedback flow; CLI compatibility is unchanged.
 Isaac subprocesses and transport are controlled in these component checks.
 The live Codex skill-toggle and metadata journeys now require completed native
 `ug_smart_router` results correlated to each action, actual controls, and completed
 root answers. They fail on a shell approval dialog; Claude's native journey is unchanged.
-Live feedback validation must request off in ordinary chat, select Provide a reason,
+Live feedback validation must first verify a natural-language off request leaves
+routing unchanged and starts no feedback, then invoke `$smart-router off`, select Provide a reason,
 enter a short reason, verify the turn ends with a clear error and no reopened prompt,
 then cancel and verify routing stays on without upload. An authorized submission must
 retain the original task and pre-toggle routing state, return a feedback ID, and keep

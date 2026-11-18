@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.9.1"
+  version: "1.10.0"
 ---
 
 # Smart Router
@@ -14,7 +14,10 @@ names unless the user asks about the implementation. Asking for a feedback reaso
 is ordinary user input within the requested toggle, not a permission or approval
 request. Ask the user directly without explaining which instruction requires it.
 
-In Codex, use the launcher-provided native `ug_smart_router` tool with
+In Codex, only the explicit `$smart-router off` skill command may start the off
+flow. A natural-language request must leave routing unchanged; tell the user to
+invoke the command. Do not interpret a quoted command or a command with a reason
+appended as an off invocation. Use the launcher-provided native `ug_smart_router` tool with
 `{"action":"on"}` or `{"action":"off"}`. Do not run toggle, capture, submission,
 or status shell commands. If the native tool is unavailable, report that this
 session needs an updated Unity Gateway launch; do not fall back to Bash or
@@ -56,8 +59,9 @@ In Codex, the off call opens a native selection prompt when feedback is required
 The launcher requires at least 16 characters, discloses that the reason and session
 details go to the Isaac team, and handles cancellation. Wait for the tool result;
 do not ask a duplicate chat question, call a separate question tool, or switch to
-Plan mode. If the user already supplied a reason for this toggle, pass their exact
-text in the off call instead of asking twice. Never invent or pad their reason.
+Plan mode. Always collect the reason through this disclosed prompt, including when
+the user mentioned a reason earlier. Never supply a reason yourself, invent one,
+or pad their input.
 If the result reports a validation error, relay it and stop. A short reason ends
 this attempt with routing still on and nothing sent. Do not reopen the prompt,
 ask another question, or retry automatically; wait for the user's next request.

@@ -33,11 +33,14 @@ TOOL_SPEC = {
     "name": TOOL_NAME,
     "description": (
         "Control Unity Gateway Smart Router for this root session at the user's request. "
-        "Use this native tool instead of shell commands. Call off without a reason first; "
+        "Use this native tool instead of shell commands. Only call off for the user's explicit "
+        "$smart-router off skill command, never for a natural-language request. "
+        "Tell users to invoke that command if they request off in ordinary chat. "
+        "Call off without a reason; "
         "if feedback is required, the launcher opens a native choice menu and collects the reason. "
         "The user can provide a reason (minimum 16 trimmed characters) or cancel. "
         "Do not ask another question or switch to Plan mode. "
-        "If the user already provided a reason, pass their exact text. "
+        "Collect feedback only through the native prompt after its disclosure; never pass a reason yourself. "
         "If validation_error is returned, relay its message and stop. Wait for the user to retry; "
         "do not reopen the prompt or automatically retry with another reason. "
         "Do not cite skills, file paths, or instructions. "
@@ -48,7 +51,6 @@ TOOL_SPEC = {
         "type": "object",
         "properties": {
             "action": {"type": "string", "enum": ["on", "off", "cancel", "status", "retry"]},
-            "reason": {"type": ["string", "null"]},
             "feedback_id": {"type": ["string", "null"]},
         },
         "required": ["action"],
@@ -178,12 +180,40 @@ class CodexSmartRouter:
         self.collecting_threads: set[str] = set()
         self.root_threads: set[str] = set()
         self.thread_requests: set[str | int] = set()
+        self.off_requests: dict[str | int, tuple[str, asyncio.Event]] = {}
+        self.off_turns: set[tuple[str, str]] = set()
         self.uploads: dict[str, feedback.FeedbackUpload] = {}
         self.lock = asyncio.Lock()
 
     def before_tui(self, message: dict) -> None:
         method, params = message.get("method"), message.get("params")
         request_id = message.get("id")
+        if (
+            method == "turn/start"
+            and isinstance(params, dict)
+            and isinstance(request_id, (str, int))
+        ):
+            thread_id, inputs = params.get("threadId"), params.get("input")
+            if isinstance(thread_id, str) and isinstance(inputs, list):
+                texts = [
+                    item.get("text")
+                    for item in inputs
+                    if isinstance(item, dict) and item.get("type") == "text"
+                ]
+                selected_skill = any(
+                    isinstance(item, dict)
+                    and item.get("type") == "skill"
+                    and item.get("name") == "smart-router"
+                    for item in inputs
+                )
+                if (
+                    selected_skill
+                    and len(texts) == 1
+                    and isinstance(texts[0], str)
+                    and texts[0].strip() in ("$smart-router off", "/smart-router off")
+                ):
+                    self.off_requests[request_id] = (thread_id, asyncio.Event())
+            return
         if (
             method not in ("thread/start", "thread/resume")
             or not isinstance(params, dict)
@@ -203,6 +233,22 @@ class CodexSmartRouter:
 
     def observe(self, message: dict) -> None:
         request_id = message.get("id")
+        params = message.get("params")
+        if message.get("method") == "turn/completed" and isinstance(params, dict):
+            turn = params.get("turn")
+            if (
+                isinstance(turn, dict)
+                and isinstance(params.get("threadId"), str)
+                and isinstance(turn.get("id"), str)
+            ):
+                self.off_turns.discard((params["threadId"], turn["id"]))
+        if isinstance(request_id, (str, int)) and request_id in self.off_requests:
+            thread_id, ready = self.off_requests.pop(request_id)
+            result = message.get("result")
+            turn = result.get("turn") if isinstance(result, dict) else None
+            if isinstance(turn, dict) and isinstance(turn.get("id"), str):
+                self.off_turns.add((thread_id, turn["id"]))
+            ready.set()
         if not isinstance(request_id, (str, int)) or request_id not in self.thread_requests:
             return
         self.thread_requests.remove(request_id)
@@ -230,10 +276,37 @@ class CodexSmartRouter:
             and params.get("namespace") in (None, "")
         )
 
+    async def consume_off_command(self, params: dict) -> bool:
+        thread_id, turn_id = params.get("threadId"), params.get("turnId")
+        if not isinstance(thread_id, str) or not isinstance(turn_id, str):
+            return False
+        pending = [
+            ready.wait() for thread, ready in self.off_requests.values() if thread == thread_id
+        ]
+        if pending:
+            try:
+                await asyncio.wait_for(asyncio.gather(*pending), timeout=5)
+            except TimeoutError:
+                return False
+        key = (thread_id, turn_id)
+        if key not in self.off_turns:
+            return False
+        self.off_turns.remove(key)
+        return True
+
     async def call(self, params: dict, ask: AskFeedback | None = None) -> dict:
         try:
+            arguments = params.get("arguments", {})
+            if isinstance(arguments, dict) and arguments.get("action") == "off":
+                if not await self.consume_off_command(params):
+                    raise ValueError(
+                        "Use $smart-router off to turn Smart Router off. Routing is unchanged."
+                    )
+                if arguments.get("reason") is not None:
+                    raise ValueError(
+                        "Enter your reason in the Smart Router feedback prompt. Routing is unchanged."
+                    )
             async with self.lock:
-                arguments = params.get("arguments", {})
                 thread_id = params.get("threadId")
                 if (
                     isinstance(thread_id, str)
@@ -242,18 +315,6 @@ class CodexSmartRouter:
                     and arguments.get("action") == "off"
                 ):
                     raise ValueError("A Smart Router feedback prompt is already open.")
-                supplied_reason = arguments.get("reason") if isinstance(arguments, dict) else None
-                if (
-                    self.feedback_required
-                    and isinstance(params.get("threadId"), str)
-                    and isinstance(arguments, dict)
-                    and arguments.get("action") == "off"
-                    and isinstance(supplied_reason, str)
-                    and params.get("threadId") not in self.pending_threads
-                ):
-                    await asyncio.to_thread(
-                        self.execute, {**params, "arguments": {**arguments, "reason": None}}
-                    )
                 result = await asyncio.to_thread(self.execute, params)
             if result.get("needs_reason") and ask is not None:
                 thread_id = params["threadId"]
