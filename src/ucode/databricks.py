@@ -3128,6 +3128,7 @@ _TOOL_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
         "openai",
         "azure_openai",
         "microsoft_foundry",
+        "github_copilot",
     ),
 }
 # Copilot Chat in VS Code can use the same provider types as Copilot CLI.
@@ -3141,6 +3142,15 @@ BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
 # Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
+GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
+
+# Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
+# agent named in the refusal. The fallback for an unknown relayed type keeps the Claude entry.
+_SUBSCRIPTION_RELAYS: dict[str, tuple[tuple[str, ...], str, str]] = {
+    "anthropic": (("claude",), "Claude", "Claude Code"),
+    "openai": (("codex",), "ChatGPT", "Codex"),
+    GITHUB_COPILOT_PROVIDER_TYPE: (("copilot", "vscode"), "GitHub Copilot", "GitHub Copilot"),
+}
 
 
 def tool_supports_provider_type(tool: str, provider_type: str) -> bool:
@@ -3174,8 +3184,9 @@ def list_model_provider_services(
     "allow_all_targets": bool, "relayed": bool}``.
     ``targets`` is the provider-side model ids the service exposes (used to pin
     Bedrock model names); ``target_api_types`` holds the APIs each target declares
-    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less Anthropic
-    service (Claude Max/Team/Enterprise subscription relay). A non-None
+    (``native_api_types``, e.g. ``openai/v1/embeddings``). ``relayed`` is True for a credential-less
+    Anthropic, OpenAI or GitHub Copilot service (a Claude, ChatGPT or GitHub Copilot subscription
+    relay). A non-None
     ``reason`` means the listing call itself failed.
 
     Pages through the endpoint: a metastore with more services than fit on one page used to have the
@@ -3266,12 +3277,12 @@ def _provider_service_entry(raw_service: object) -> dict | None:
             api_types = entry.get("native_api_types")
             if isinstance(api_types, list):
                 target_api_types[model_id] = tuple(t for t in api_types if isinstance(t, str))
-    # Relayed = credential-less Anthropic or OpenAI (subscription relay). Only whether
-    # it's relayed matters here; the tier (Max vs Team/Enterprise) is governed
-    # server-side, so both launch identically.
+    # Relayed = credential-less Anthropic, OpenAI or GitHub Copilot (subscription relay). Only
+    # whether it's relayed matters here; the tier (Max vs Team/Enterprise, or the Copilot plan) is
+    # governed server-side, so they launch identically.
     relayed = any(
         isinstance(cfg, dict) and "relayed" in cfg
-        for cfg in (config.get("anthropic"), config.get("openai"))
+        for cfg in (config.get("anthropic"), config.get("openai"), config.get("github_copilot"))
     )
     raw_type = config.get("provider_type")
     return {
@@ -3492,11 +3503,30 @@ def list_tool_provider_services(
 
     Returns ``(names, reason)``; ``reason`` is non-None when the listing failed.
     """
+    choices, reason = tool_provider_service_choices(tool, workspace, token)
+    return [name for name, _label in choices], reason
+
+
+def tool_provider_service_choices(
+    tool: str, workspace: str, token: str
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Like :func:`list_tool_provider_services`, as ``(name, picker label)`` pairs."""
     services, reason = list_model_provider_services(workspace, token)
     if reason is not None:
         return [], reason
-    names = [s["name"] for s in services if service_usable_for_tool(tool, s)]
-    return names, None
+    choices = [
+        (s["name"], provider_service_label(s)) for s in services if service_usable_for_tool(tool, s)
+    ]
+    return choices, None
+
+
+def provider_service_label(service: dict) -> str:
+    """A service's name, marked when it relays a GitHub Copilot subscription: Copilot lists those
+    beside API-key services, and each developer signs in to them with their own seat."""
+    name = service.get("name", "")
+    if service.get("relayed") and service.get("provider_type") == GITHUB_COPILOT_PROVIDER_TYPE:
+        return f"{name} (GitHub Copilot subscription)"
+    return name
 
 
 def _provider_service_unusable_reason(tool: str, service: dict, service_name: str) -> str | None:
@@ -3509,17 +3539,20 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
             f"which {tool} can't route to (supported: {supported})."
         )
     if service.get("relayed"):
-        relay_tool, subscription, display = (
-            ("codex", "ChatGPT", "Codex")
-            if provider_type == "openai"
-            else ("claude", "Claude", "Claude Code")
+        relay_tools, subscription, display = _SUBSCRIPTION_RELAYS.get(
+            provider_type, _SUBSCRIPTION_RELAYS["anthropic"]
         )
-        if tool != relay_tool:
+        if tool not in relay_tools:
             return (
                 f"Model provider service '{service_name}' relays a {subscription} subscription, "
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
             )
+    elif provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
+        return (
+            f"Model provider service '{service_name}' is a GitHub Copilot provider that doesn't "
+            "relay a subscription, which ug can't route to."
+        )
     if not service.get("allow_all_targets") and not provider_targets_for_tool(tool, service):
         return (
             f"Model provider service '{service_name}' exposes no compatible models for {tool} — "

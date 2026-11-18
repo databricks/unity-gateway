@@ -676,6 +676,16 @@ class TestProviderCatalog:
         assert seen["listing"] == (MPS, "amazon_bedrock")
 
     @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_refuses_a_github_copilot_relay_for_now(self, monkeypatch, tool):
+        _stub_provider_service(
+            monkeypatch,
+            {"provider_type": "github_copilot", "targets": ["claude-sonnet-5.5"], "relayed": True},
+        )
+
+        with pytest.raises(RuntimeError, match="relays a GitHub Copilot subscription"):
+            copilot.provider_service_catalog({"workspace": WS}, MPS, None, tool=tool)
+
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
     def test_allow_all_adds_the_managed_default_for_the_cli_and_vscode(self, monkeypatch, tool):
         _stub_provider_service(
             monkeypatch,

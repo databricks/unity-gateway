@@ -485,6 +485,20 @@ class TestResolveProviderModels:
         assert models is None
         assert relayed is True
 
+    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
+    def test_github_copilot_relay_is_not_supported_yet(self, monkeypatch, tool):
+        self._patch(
+            monkeypatch,
+            {"provider_type": "github_copilot", "targets": ["gpt-5.5"], "relayed": True},
+            None,
+        )
+        models, error, relayed = agents_mod.resolve_provider_models(
+            tool, self._STATE, "main.a.copilot-seats"
+        )
+        assert (models, relayed) == (None, False)
+        assert error is not None
+        assert "relays a GitHub Copilot subscription" in error
+
     def test_relayed_anthropic_with_targets_pins_family(self, monkeypatch):
         # A curated relay maps its declared targets by family so --model can resolve against them.
         self._patch(
