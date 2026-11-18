@@ -784,7 +784,8 @@ recording forwarder, so each turn's requests must reach the expected route
 ug's User-Agent naming the Copilot Chat version bundled in that VS Code, and get a non-empty HTTP
 200. The answer must contain the file's value, and VS Code's saved chat
 (`utils/agents/vscode.py`; VS Code saves it about a minute after launch) must record the
-Databricks model, a tool call, the value and no error (the switch journey). Not
+Databricks model, a tool call, the value in the assistant's own text and no error, matched to each
+turn by its prompt (every chat journey). Not
 covered: GitHub sign-in or a Copilot seat, Copilot Chat's other agent harnesses, what the chat
 shows for a model that went away after a reconfigure, MCP, skills, OTel, and macOS.
 

@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from utils.agents.vscode import chat_requests
+from utils.agents.vscode import chat_turns
 from utils.constants import CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL
 from utils.evidence import FileTask, assert_no_bearer_on_disk
 from utils.managed import use_managed_config_fixture
@@ -51,6 +51,31 @@ def _user_settings(session):
     return path
 
 
+def _config_evidence(config):
+    # The extension's config can carry managed header values and the trace receiver's secret.
+    return {
+        "workspace": config.get("workspace"),
+        "provider": config.get("provider"),
+        "defaultModel": config.get("defaultModel"),
+        "models": [
+            {key: entry.get(key) for key in ("id", "name", "api")} for entry in config["models"]
+        ],
+        "headerNames": sorted(config.get("headers") or {}),
+        "otel": "otel" in config,
+    }
+
+
+def _assert_saved_turns(session, turns):
+    """VS Code's saved chat has each ``(task, model)`` turn as a completed request on the Databricks
+    model, with a tool call, no error, and the value in the assistant's own text."""
+    saved = chat_turns(session, [task.prompt for task, _ in turns])
+    for turn, (task, model) in zip(saved, turns, strict=True):
+        assert turn["model"] == f"databricks-unity-gateway/{model}", turn
+        assert turn["tools"], turn
+        assert turn["error"] is None, turn
+        assert task.value in turn["text"], turn
+
+
 def _assert_turn(session, recorder, checkpoint, task, answer, model, route, headers=None):
     """The chat answer carries the file's value, and every request of the turn asked the gateway
     for ``model`` on ``route`` with ``headers``, from the bundled Copilot Chat, and got a non-empty
@@ -96,7 +121,7 @@ def test_ug_configure_copilot_vscode_installs_and_reverts_the_extension(live_ses
     _configure(session, workspace)
     assert EXTENSION_ID in installed_extensions(session)
     config = ug_extension_config(session)
-    session.record("ug-config.json", config)
+    session.record("ug-config.json", _config_evidence(config))
     assert config["workspace"] == workspace
     assert config["authCommand"]
     wires = {entry["id"]: entry["api"] for entry in config["models"]}
@@ -151,15 +176,9 @@ def test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window(live_sess
             _assert_turn(
                 session, recorder, checkpoint, gpt_task, answer, COPILOT_GPT_TEST_MODEL, GPT_ROUTE
             )
-            turns = chat_requests(session, 2)
-    for turn, model, task in (
-        (turns[0], CLAUDE_TEST_MODEL, claude_task),
-        (turns[1], COPILOT_GPT_TEST_MODEL, gpt_task),
-    ):
-        assert turn["model"] == f"databricks-unity-gateway/{model}", turn
-        assert turn["tools"], turn
-        assert turn["error"] is None, turn
-        assert task.value in turn["text"], turn
+            _assert_saved_turns(
+                session, [(claude_task, CLAUDE_TEST_MODEL), (gpt_task, COPILOT_GPT_TEST_MODEL)]
+            )
     assert_no_bearer_on_disk(session)
 
 
@@ -173,14 +192,15 @@ def test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model(
     Expected: the extension lists the service's own model id. The answer contains the file's value,
     which is never in the prompt. Every request of the turn reaches the gateway's OpenAI Responses
     route with the provider service header, for the service's model, with ug's User-Agent, and gets
-    a non-empty HTTP 200. This shows the request named the service; which backend served it is the
-    gateway's side and is not asserted here.
+    a non-empty HTTP 200. VS Code's saved chat records the turn on the service's model with a tool
+    call, the value in the assistant's text, and no error. This shows the request named the service;
+    which backend served it is the gateway's side and is not asserted here.
     """
     session = live_session
     with TuiRequestRecorder(workspace) as recorder:
         _configure(session, recorder.url, "--provider", codex_provider)
         config = ug_extension_config(session)
-        session.record("ug-config.json", config)
+        session.record("ug-config.json", _config_evidence(config))
         assert config["provider"] == codex_provider
         label = model_label(config, codex_provider_model)
         with VSCode(session, "provider") as vscode:
@@ -199,6 +219,7 @@ def test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model(
                 PROVIDER_GPT_ROUTE,
                 {PROVIDER_HEADER: codex_provider},
             )
+            _assert_saved_turns(session, [(task, codex_provider_model)])
 
 
 @pytest.mark.managed_fixture
@@ -211,7 +232,8 @@ def test_vscode_copilot_chat_starts_on_the_managed_default_model(live_session, w
     Expected: once the model providers are added, the chat's model is the managed default, not
     the first model VS Code would pick by itself. The answer contains the file's value. Every
     request of the turn asks for the default model on the Responses route, carries the admin's
-    header and ug's User-Agent, and gets a non-empty HTTP 200.
+    header and ug's User-Agent, and gets a non-empty HTTP 200; the saved chat records the turn as
+    in the switch CUJ.
     """
     session = live_session
     use_managed_config_fixture(session, "copilot_vscode_defaults")
@@ -226,7 +248,7 @@ def test_vscode_copilot_chat_starts_on_the_managed_default_model(live_session, w
             timeout=300,
         )
         config = ug_extension_config(session)
-        session.record("ug-config.json", config)
+        session.record("ug-config.json", _config_evidence(config))
         assert config["defaultModel"] == COPILOT_GPT_TEST_MODEL
         assert {entry["id"] for entry in config["models"]} == {
             CLAUDE_TEST_MODEL,
@@ -248,6 +270,7 @@ def test_vscode_copilot_chat_starts_on_the_managed_default_model(live_session, w
                 GPT_ROUTE,
                 dict([MANAGED_HEADER]),
             )
+            _assert_saved_turns(session, [(task, COPILOT_GPT_TEST_MODEL)])
 
 
 def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
@@ -261,7 +284,7 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
     lists only the service's models. In the reopened window, picking the service's model completes a
     turn whose requests reach the OpenAI Responses route with the provider service header, for the
     service's model, with a non-empty HTTP 200; then searching the model picker finds no workspace
-    Claude model. Not covered: what the chat shows for a model that went away, which the
+    Claude model. The saved chat records both turns as in the switch CUJ. Not covered: what the chat shows for a model that went away, which the
     developer has to replace by picking a new one.
     """
     session = live_session
@@ -277,11 +300,12 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
             _assert_turn(
                 session, recorder, checkpoint, task, answer, CLAUDE_TEST_MODEL, CLAUDE_ROUTE
             )
+            _assert_saved_turns(session, [(task, CLAUDE_TEST_MODEL)])
             vscode.quit()
 
         _configure(session, recorder.url, "--provider", codex_provider)
         config = ug_extension_config(session)
-        session.record("ug-config.json", config)
+        session.record("ug-config.json", _config_evidence(config))
         ids = {entry["id"] for entry in config["models"]}
         assert codex_provider_model in ids and CLAUDE_TEST_MODEL not in ids, ids
         with VSCode(session, "reopened") as vscode:
@@ -299,5 +323,6 @@ def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
                 PROVIDER_GPT_ROUTE,
                 {PROVIDER_HEADER: codex_provider},
             )
+            _assert_saved_turns(session, [(task, codex_provider_model)])
             # After a completed turn the picker has loaded the service's models.
             vscode.assert_not_in_picker(old_label)

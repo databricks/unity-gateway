@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..vscode import vscode_user_dir
 
-__all__ = ["chat_requests"]
+__all__ = ["chat_turns"]
 
 # VS Code saves chat sessions on a storage timer of about a minute, not when a turn ends.
 SAVE_TIMEOUT_S = 120
@@ -78,19 +78,27 @@ def _summary(request: dict) -> dict:
     }
 
 
-def chat_requests(session, count: int) -> list[dict]:
-    """Wait until VS Code has saved a chat with ``count`` completed requests; return them in order."""
+def chat_turns(session, prompts: list[str]) -> list[dict]:
+    """Wait until VS Code has saved a completed request for each prompt; return them in order.
+
+    Requests are matched by prompt, not by session file: a reopened window starts a new chat in the
+    same workspace storage."""
     root = vscode_user_dir(session) / "User/workspaceStorage"
     deadline = time.monotonic() + SAVE_TIMEOUT_S
     while time.monotonic() < deadline:
+        wanted = [prompt.strip() for prompt in prompts]
+        found = {}
         for path in root.glob("*/chatSessions/*.jsonl"):
-            state = _replay(path)
-            requests = (state or {}).get("requests") or []
-            if len(requests) >= count and all(request.get("result") for request in requests):
-                summaries = [_summary(request) for request in requests]
-                session.record("vscode-chat-session.json", summaries)
-                return summaries
+            for request in (_replay(path) or {}).get("requests") or []:
+                summary = _summary(request)
+                prompt = (summary["prompt"] or "").strip()
+                if request.get("result") and prompt in wanted:
+                    found[prompt] = summary
+        if len(found) == len(prompts):
+            turns = [found[prompt] for prompt in wanted]
+            session.record("vscode-chat-session.json", turns)
+            return turns
         time.sleep(1)
     raise AssertionError(
-        f"VS Code saved no chat with {count} completed requests in {SAVE_TIMEOUT_S}s"
+        f"VS Code saved no completed request for some prompts in {SAVE_TIMEOUT_S}s"
     )
