@@ -173,6 +173,8 @@ from the service's routing configuration and uses their native Codex metadata. T
 service name remains the request model. This covers external and pay-per-token
 destinations. UG warns and keeps generic defaults if destinations are unreadable,
 do not expose a model ID (including provisioned endpoints), or route to different models.
+Lookups share a five-second budget. Offline `--from-file` previews keep generic metadata
+without signing in; authentication failures also warn and retain generic metadata.
 
 Codex loads the catalog at app-server startup. When ug reports a catalog change,
 finish active tasks, restart the app server on the **connected host**, then reconnect.

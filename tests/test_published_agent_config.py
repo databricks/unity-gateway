@@ -1080,6 +1080,36 @@ class TestGlobalCli:
         assert "apiKeyHelper" in result.output
         assert written == {} and global_cli == []
 
+    def test_preview_custom_codex_service_needs_no_credentials(
+        self, monkeypatch, writes, global_cli, tmp_path
+    ):
+        draft = tmp_path / "codex.json"
+        raw = _raw_config(
+            codex_config={
+                "models": {"model_services": ["main.team.opaque"]},
+                "default_models": {"default_model": "main.team.opaque"},
+            }
+        )
+        raw["default_agent"] = "CODING_AGENT_CODEX"
+        draft.write_text(json.dumps(raw))
+        monkeypatch.setattr(
+            machine, "get_databricks_token", lambda *a, **kw: pytest.fail("draft requested login")
+        )
+        catalogs = []
+
+        def prepare(binary, names, *, workspace, get_token):
+            assert get_token is None
+            catalogs.append(names)
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+
+        result = _configure("--dry-run", "--agents", "codex", "--from-file", str(draft))
+
+        assert result.exit_code == 0, result.output
+        assert catalogs == [["main.team.opaque"]]
+        assert writes[0] == {} and global_cli == []
+
     def test_from_file_requires_global_dry_run(self, tmp_path):
         result = CliRunner().invoke(
             cli_mod.app, ["configure", "--from-file", str(tmp_path / "x.json")]

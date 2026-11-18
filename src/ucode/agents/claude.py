@@ -60,11 +60,11 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
+    custom_model_services,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
     model_service_relay_lookup,
     model_services_need_subscription_relay,
-    relay_candidate_model_services,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -1695,7 +1695,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
     models = state.get("claude_static_models")
-    candidates = relay_candidate_model_services(models if isinstance(models, list) else [])
+    candidates = custom_model_services(models if isinstance(models, list) else [])
     if not candidates:
         state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
         return False

@@ -9,17 +9,23 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from pathlib import Path
+from time import monotonic
 
 from ucode.codex_config import ModelVisibility
-from ucode.databricks import get_model_service, model_service_destination_models
+from ucode.databricks import (
+    custom_model_services,
+    get_model_service,
+    model_service_destination_models,
+)
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.string_utils import model_picker_label
 from ucode.ui import print_warning
 
 _TIMEOUT_SECONDS = 30
+_SERVICE_LOOKUP_SECONDS = 5
 _GPT_FALLBACK_EFFORTS = ("low", "medium", "high")
-_PRE_REASONING_GPT_PREFIXES = ("gpt-3", "gpt-4", "databricks-gpt-3", "databricks-gpt-4")
+_PRE_REASONING_GPT_PREFIXES = ("gpt-3", "gpt-4")
 
 # Known hosted-model capabilities, following universe#2591694. These are not
 # universal non-GPT defaults: an arbitrary UC service need not support images,
@@ -97,7 +103,7 @@ def build_codex_catalog(
             model = copy.deepcopy(native)
         else:
             key = _model_key(model_id)
-            missing_gpt = key.startswith(("gpt-", "databricks-gpt-"))
+            missing_gpt = key.startswith("gpt-")
             # Pre-GPT-5 models reject reasoning efforts, so they keep the none-only default.
             missing_reasoning_gpt = missing_gpt and not key.startswith(_PRE_REASONING_GPT_PREFIXES)
             if missing_gpt and warn is not None:
@@ -197,6 +203,43 @@ def validate_codex_catalog(binary: str, catalog: dict) -> None:
         ) from None
 
 
+def _model_service_model_ids(
+    names: list[str],
+    workspace: str | None,
+    get_token: Callable[[], str] | None,
+) -> dict[str, str]:
+    services = list(dict.fromkeys(custom_model_services(names)))
+    if not services or not workspace or get_token is None:
+        return {}
+    try:
+        token = get_token()
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        print_warning(
+            "Could not authenticate to resolve Codex model-service metadata. "
+            "Using generic compatibility metadata; check your workspace login."
+        )
+        return {}
+    model_ids = {}
+    deadline = monotonic() + _SERVICE_LOOKUP_SECONDS
+    for name in services:
+        remaining = deadline - monotonic()
+        service, reason = (
+            get_model_service(name.removesuffix("[1m]"), workspace, token, timeout=remaining)
+            if remaining > 0
+            else (None, "metadata lookup time budget exhausted")
+        )
+        targets = model_service_destination_models(service) if service is not None else None
+        if targets and len({_model_key(target) for target in targets}) == 1:
+            model_ids[name] = targets[0]
+        else:
+            detail = reason or "destinations do not identify a single backing model"
+            print_warning(
+                f"Could not resolve Codex metadata for model service '{name}': {detail}. "
+                "Using generic compatibility metadata; check the service's routing configuration."
+            )
+    return model_ids
+
+
 def prepare_codex_catalog(
     binary: str,
     names: list[str],
@@ -210,25 +253,7 @@ def prepare_codex_catalog(
     Both commands run outside user/project config in a disposable CODEX_HOME.
     Failure blocks configuration rather than falling back to remote Codex discovery.
     """
-    model_ids = {}
-    services = [
-        name
-        for name in dict.fromkeys(names)
-        if len(name.split(".")) == 3 and not name.startswith("system.")
-    ]
-    if services and workspace and get_token is not None:
-        token = get_token()
-        for name in services:
-            service, reason = get_model_service(name, workspace, token, timeout=5)
-            targets = model_service_destination_models(service) if service is not None else None
-            if targets and len({_model_key(target) for target in targets}) == 1:
-                model_ids[name] = targets[0]
-            else:
-                detail = reason or "destinations do not identify a single backing model"
-                print_warning(
-                    f"Could not resolve Codex metadata for model service '{name}': {detail}. "
-                    "Using generic compatibility metadata; check the service's routing configuration."
-                )
+    model_ids = _model_service_model_ids(names, workspace, get_token)
     try:
         with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
             result = _run_catalog_command(binary, ["debug", "models", "--bundled"], home)

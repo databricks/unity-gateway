@@ -7,6 +7,9 @@ preserve service request IDs; inherit native GPT metadata or known-model fallbac
 and warn on unreadable, incomplete, or incompatible destinations. Error and budget fallbacks
 participate in compatibility checks; idle/deleted destinations do not. Workspace-selector headers
 are covered in `test_workspace_selection.py`. Provisioned endpoint identities remain unresolved.
+Recovery checks cover failed metadata authentication, the shared lookup-time budget, and
+credential-free custom-service draft previews. Relay and metadata parsing share the single-primary
+traffic default.
 Manual live validation on 2026-11-18 used a separate arclet, the `eng-ml-inference` profile,
 Codex 0.169.0, and an opaque pay-per-token service targeting GPT-6 Luna. Public `ug configure`
 generated native metadata with a `medium` default; `ug codex exec` completed a shell file read

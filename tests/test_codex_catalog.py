@@ -191,6 +191,43 @@ def test_destination_model_resource_uses_native_metadata(bundled, target):
     assert models[0]["context_window"] == bundled[2]["context_window"]
 
 
+def test_multiple_destinations_with_same_model_use_native_metadata(monkeypatch, bundled):
+    service = {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {
+                        "traffic_percentage": 50,
+                        "external_model_config": {"target": {"model": "gpt-6-astra"}},
+                    },
+                    {
+                        "traffic_percentage": 50,
+                        "pay_per_token_config": {
+                            "model": "models/system.ai.databricks-gpt-6-astra"
+                        },
+                    },
+                ]
+            }
+        }
+    }
+    monkeypatch.setattr(catalog, "get_model_service", lambda *a, **kw: (service, None))
+    monkeypatch.setattr(
+        catalog,
+        "_run_catalog_command",
+        lambda *a: subprocess.CompletedProcess([], 0, json.dumps({"models": bundled})),
+    )
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex",
+        ["main.team.opaque"],
+        workspace="https://selected",
+        get_token=lambda: "token",
+    )
+
+    assert result["models"][0]["slug"] == "main.team.opaque"
+    assert result["models"][0]["base_instructions"] == bundled[2]["base_instructions"]
+
+
 def test_prepare_catalog_resolves_custom_destinations_with_selected_credentials(
     monkeypatch, bundled
 ):
@@ -226,10 +263,11 @@ def test_prepare_catalog_resolves_custom_destinations_with_selected_credentials(
         "/selected/codex", names + names[:1], workspace="https://selected", get_token=get_token
     )
 
-    assert requests == [
-        (f"https://selected/api/2.1/unity-catalog/model-services/{name}", "selected-token", 5)
+    assert [(url, token) for url, token, _timeout in requests] == [
+        (f"https://selected/api/2.1/unity-catalog/model-services/{name}", "selected-token")
         for name in names
     ]
+    assert all(0 < timeout <= 5 for _url, _token, timeout in requests)
     assert auth_calls == [True]
     assert validated == [result]
     assert [model["slug"] for model in result["models"]] == names
@@ -306,6 +344,60 @@ def test_native_models_do_not_require_destination_lookup(monkeypatch, bundled):
     )
 
     assert result["models"][0]["base_instructions"] == bundled[2]["base_instructions"]
+
+
+@pytest.mark.parametrize("error", [RuntimeError("expired"), OSError("unavailable")])
+def test_service_metadata_auth_failure_warns_and_keeps_catalog(monkeypatch, bundled, error):
+    def token():
+        raise error
+
+    warnings = []
+    monkeypatch.setattr(catalog, "print_warning", warnings.append)
+    monkeypatch.setattr(
+        catalog, "get_model_service", lambda *a, **kw: pytest.fail("lookup without credentials")
+    )
+    monkeypatch.setattr(
+        catalog,
+        "_run_catalog_command",
+        lambda *a: subprocess.CompletedProcess([], 0, json.dumps({"models": bundled})),
+    )
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex", ["main.team.opaque"], workspace="https://selected", get_token=token
+    )
+
+    assert result["models"][0]["slug"] == "main.team.opaque"
+    assert "check your workspace login" in warnings[0]
+
+
+def test_service_metadata_lookups_share_time_budget(monkeypatch, bundled):
+    clock = iter([100, 102, 106])
+    monkeypatch.setattr(catalog, "monotonic", lambda: next(clock))
+    calls = []
+
+    def service(name, workspace, token, *, timeout):
+        calls.append((name, timeout))
+        return None, "network timeout"
+
+    warnings = []
+    monkeypatch.setattr(catalog, "get_model_service", service)
+    monkeypatch.setattr(catalog, "print_warning", warnings.append)
+    monkeypatch.setattr(
+        catalog,
+        "_run_catalog_command",
+        lambda *a: subprocess.CompletedProcess([], 0, json.dumps({"models": bundled})),
+    )
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex",
+        ["main.team.first", "main.team.second"],
+        workspace="https://selected",
+        get_token=lambda: "token",
+    )
+
+    assert calls == [("main.team.first", 3)]
+    assert len(result["models"]) == 2
+    assert "time budget exhausted" in warnings[1]
 
 
 def test_generic_non_gpt_uses_conservative_ordinary_tool_defaults(bundled):

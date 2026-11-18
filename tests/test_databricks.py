@@ -6945,6 +6945,25 @@ class TestSharedHostProfiles:
 
 
 class TestModelServiceDestinationModels:
+    def test_single_primary_without_traffic_is_live_for_both_consumers(self):
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        {
+                            "external_model_config": {
+                                "model_provider_service": "model-provider-services/main.team.provider",
+                                "target": {"model": "gpt-6-luna"},
+                            }
+                        }
+                    ]
+                }
+            }
+        }
+
+        assert db_mod.model_service_primary_providers(service) == ["main.team.provider"]
+        assert db_mod.model_service_destination_models(service) == ["gpt-6-luna"]
+
     @pytest.mark.parametrize(
         "destination,expected",
         [
@@ -7186,7 +7205,7 @@ class TestModelServicesNeedSubscriptionRelay:
             "claude-sonnet-5-5",
             "main.default.oss",
         ]
-        assert db_mod.relay_candidate_model_services(models) == [
+        assert db_mod.custom_model_services(models) == [
             "main.default.sonnet[1m]",
             "main.default.oss",
         ]

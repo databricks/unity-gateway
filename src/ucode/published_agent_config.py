@@ -812,7 +812,7 @@ def run(
             mcp_entries,
             previous,
             claude_mcp_names=claude_mcp_names,
-            get_token=lambda: token if token is not None else get_databricks_token(host, profile),
+            get_token=(lambda: token) if token is not None else None,
         )
     except ValueError as exc:
         raise ManagedRunError(EXIT_USAGE, str(exc)) from exc
