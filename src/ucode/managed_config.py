@@ -811,8 +811,13 @@ def request_mdm_os(enabled: bool | None) -> None:
 
 
 def saved_mdm_os() -> str | None:
-    """The ``mdm_os`` saved by ``ug configure --mdm`` in machine-wide managed settings, or None."""
-    if not _machine_policy_installable():
+    """The ``mdm_os`` saved by ``ug configure --mdm`` in machine-wide managed settings, or None.
+
+    Read even when machine-wide settings are skipped (``UG_SKIP_OS_SETTINGS``, ``--user``, or a
+    managed run's marker): MDM machines launch through aliases that set ``UG_SKIP_OS_SETTINGS``,
+    and the mark describes the machine, not the run.
+    """
+    if not _machine_policy_supported():
         return None
     value = config_io.read_json_safe(MANAGED_CONFIG_PATH).get("mdm_os")
     return value if isinstance(value, str) and value else None

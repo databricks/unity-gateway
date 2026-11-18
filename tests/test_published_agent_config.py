@@ -921,6 +921,32 @@ class TestGlobalCli:
         assert result.exit_code == 0, result.output
         assert seen == [("ADMIN", "token")]
 
+    @pytest.mark.parametrize(
+        ("args", "expected"),
+        [(["--mdm"], "Linux"), ([], None), (["--mdm", "--dry-run"], "Mac")],
+        ids=["mdm", "without_mdm_clears", "dry_run_keeps"],
+    )
+    def test_the_managed_run_saves_the_mdm_mark(
+        self, monkeypatch, writes, global_cli, args, expected
+    ):
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
+        policy = managed_config_mod.MANAGED_CONFIG_PATH
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(json.dumps({"workspace": WS, "mdm_os": "Mac"}))
+        result = _configure("--agents", "claude", *args)
+        assert result.exit_code == 0, result.output
+        assert json.loads(policy.read_text()).get("mdm_os") == expected
+
+    def test_launches_read_the_mdm_mark_after_a_managed_run(self, monkeypatch):
+        monkeypatch.setattr(managed_files_mod, "published_agent_config_used", lambda: True)
+        monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        policy = managed_config_mod.MANAGED_CONFIG_PATH
+        policy.parent.mkdir(parents=True, exist_ok=True)
+        policy.write_text(json.dumps({"workspace": WS, "mdm_os": "Linux"}))
+        assert managed_config_mod.saved_mdm_os() == "Linux"
+
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_dropping_claude_removes_desktop_mdm(self, monkeypatch, writes, global_cli, dry_run):
         raw = _raw_config(codex_config={})

@@ -2219,7 +2219,9 @@ class TestMdmOs:
 
     @pytest.mark.parametrize("mode", ["user_scope", "skip_os_settings"])
     @pytest.mark.parametrize("enabled", [True, False])
-    def test_without_machine_settings_mdm_is_a_no_op(self, monkeypatch, mode, enabled):
+    def test_without_machine_settings_mdm_is_saved_nowhere_but_still_read(
+        self, monkeypatch, mode, enabled
+    ):
         import ucode.managed_files as mf_mod
 
         save_managed_state(WORKSPACE, RAW_MANIFEST)
@@ -2235,10 +2237,11 @@ class TestMdmOs:
 
         assert mc_mod.MANAGED_CONFIG_PATH.read_bytes() == before
         assert not mc_mod.USER_MANAGED_CONFIG_PATH.exists()
-        assert os.environ["MDM_OS"] == "None"
+        # The machine's saved mark still reaches the run, as MDM aliases set UG_SKIP_OS_SETTINGS.
+        assert os.environ["MDM_OS"] == "Linux"
         assert len(warnings) == (1 if enabled else 0)
 
-    def test_scope_change_reads_the_selected_scope(self, monkeypatch):
+    def test_user_scope_still_reads_the_machine_mark(self, monkeypatch):
         import ucode.managed_files as mf_mod
 
         self._save(True)
@@ -2247,7 +2250,7 @@ class TestMdmOs:
         assert os.environ["MDM_OS"] == "Linux"
         monkeypatch.setattr(mf_mod, "_config_scope", "user")
         mc_mod.request_mdm_os(None)
-        assert os.environ["MDM_OS"] == "None"
+        assert os.environ["MDM_OS"] == "Linux"
 
     def test_windows_saves_machine_wide(self, monkeypatch):
         """An elevated MDM run (e.g. as SYSTEM) saves beside the ProgramData policy every user reads."""
