@@ -11,7 +11,6 @@ validation, GitHub-sourced policy metadata, main policy checkout and isolated ho
 The resolver uses the event's run ID to fetch current CI metadata through the authenticated
 Actions API. Cases cover incomplete event metadata and the observed PR title in the
 requested event instead of the evaluated CI run name, invalid/mismatched run IDs,
-delayed API titles, bounded title retry exhaustion, identity rejection after a retry,
 API errors/timeouts, and field-specific diagnostics; lookup failure never falls back to
 the event snapshot. These fixtures do not establish GitHub's metadata availability timing.
 This prerequisite installs the producer and reusable consumer without making existing CI

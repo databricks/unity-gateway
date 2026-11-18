@@ -19,8 +19,7 @@ component checks are not integration coverage.
 `../test_security_scan.py` covers scanner policy and parsing with inert fixtures. Bash
 cases target the Linux scanner and do not run on Windows; Python parser checks run on both.
 `../test_security_scan_request.py` checks CI metadata refresh when the requested event carries
-the PR title, delayed API titles, bounded retry exhaustion, lookup failures, and preserved
-PR identity checks after retries with controlled API responses,
+the PR title, lookup failures, and preserved PR identity checks with controlled API responses,
 not live webhook delivery.
 
 `../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
