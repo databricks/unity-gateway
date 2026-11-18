@@ -1186,8 +1186,15 @@ guidance and leaves the saved controls byte-for-byte unchanged. Write coverage i
 raw temporary-file errors and wrapped mkdir/replace errors, read-only filesystems,
 and full-disk failures, which report their cause without permission guidance.
 With Isaac's feedback rule on, an off without a 16-character reason exits 2 and keeps the
-controls, except in an `ISAAC_LAUNCH_MODE=omni` session, where it turns routing off
-(`test_smart_router.py`). `mod_tests/register.test.ts` checks that the mod skips the form there
+controls. Claude's CLI retains its `ISAAC_LAUNCH_MODE=omni` exemption for the native
+form's already-collected feedback (`test_smart_router.py`). Codex requires feedback
+in every launch mode. `test_smart_router_feedback.py` controls the Isaac subprocess
+boundary to check task anchoring before the reason, exact text, local evidence capture
+before disabling, background delivery after disabling, unchanged-state no-ops, disabled
+feedback, failed preparation/capture/toggles, Isaac permission-approval guidance,
+upload-start failure, and read-only status.
+Those component checks do not establish live upload delivery or chat behavior.
+`mod_tests/register.test.ts` checks that the mod skips the form there
 only for `off --feedback-collected` and runs the plain CLI off, that a plain off still opens the
 form, whose Submit logs `Smart Router is off` and whose Cancel keeps routing on with no reply,
 and that the flag after `on` or with other text gets the usage reply. `native_claude/test_mod.py`
