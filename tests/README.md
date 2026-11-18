@@ -1,7 +1,18 @@
 # Test suites and user journeys
 
+`test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
+It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
+npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,
+and idempotent aliases.
+It does not install real packages, contact Databricks, or establish a macOS/Jamf integration pass.
+
 `test_security_scan_request.py` verifies the default-branch Security Scan's request
 validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
+The resolver uses the event's run ID to fetch current CI metadata through the authenticated
+Actions API. Cases cover incomplete event metadata and the observed PR title in the
+requested event instead of the evaluated CI run name, invalid/mismatched run IDs,
+API errors/timeouts, and field-specific diagnostics; lookup failure never falls back to
+the event snapshot. These fixtures do not establish GitHub's metadata availability timing.
 This prerequisite installs the producer and reusable consumer without making existing CI
 wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
 secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
@@ -16,6 +27,12 @@ require local metadata listing without validating unrelated workspaces, preserve
 filtering (including implicit PATs without DEFAULT inheritance), tolerate unreadable
 local classification hints, and verify that the selected workspace still gets an
 authentication check. They do not establish live login or end-to-end startup latency.
+
+The Codex ChatGPT relay check in `integration/test_ug_codex_relayed.py` logs in with an
+access token and requests a short `gpt-6-luna` reply, asserting the completed answer and
+HTTP 200 through the relay. Its dedicated protected Linux CI job maps `CODEX_OAUTH_TOKEN`
+to `CODEX_ACCESS_TOKEN`; `test_cuj_session.py` covers credential redaction from evidence.
+File tools, desktop configure/revert, desktop inference, and browser sign-in are not covered.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
@@ -115,8 +132,9 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 installed UG through its CLI, and asserts a completed exact-answer task through macOS
 Accessibility for each model source: Databricks Hosted, the Anthropic MPS, and the
 Anthropic relay MPS (see `scripts/cowork-inference/README.md`). Both jobs block the
-integration gate. The macOS job also runs the file and skill tasks described below.
-Apple Silicon, Code-tab, MCP, and file writes remain uncovered.
+integration gate. The macOS job also runs the file, skill, and MCP web search tasks described
+below. Apple Silicon, Code-tab, MCP services other than `system.ai.web_search`, and file writes
+remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
 provider-service and relay-helper profile checks, model-picker switching from Desktop's
@@ -138,6 +156,11 @@ staging `anthropic-mps` lane's Windows Claude row runs the same Desktop steps fo
 non-relay Anthropic MPS. Each lane
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
+Both Windows lanes also run a `system.ai.web_search` connector search through UG's MCP proxy,
+requiring an official Databricks URL shared by the tool result and the answer. Those jobs use a
+minted, revoked PAT profile with `--use-pat`, since Desktop does not pass the job's bearer to
+connectors. `test_desktop_setup.py` and `test_desktop_auth_cli.py` cover the PAT helper arguments
+and reading a PAT profile's token.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
 mismatched or malformed result IDs, malformed tool inputs and file paths, missing skill calls,
 incomplete answers, and case-mismatched macOS paths. It tolerates unrelated
@@ -1242,6 +1265,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 
 | Test | User action | Expected evidence |
 | --- | --- | --- |
+| `test_sources_{claude,codex}_discovers_mixed_models_and_uses_custom_default` in CUJ9 | Configure mixed model sources, inspect native discovery, and complete a TUI task on the custom default | Exact Claude/Codex picker inventories, Codex model/list, native completed answers and paired exact-model HTTP 200 responses |
+| `test_sources_copilot_discovers_mixed_models_and_uses_service_default` in CUJ9 | Configure mixed model sources, inspect the live registry, and complete a TUI task on the hosted GPT default | Exact active registry IDs and wire providers, a native completed answer, paired exact-model HTTP 200 inference, and registry removal on exit |
+| `test_sources_{claude,codex,copilot}_inference_on_each_source_model` in CUJ9 | Run an explicit headless file task on every expanded source model | Each provider deep link, custom service, schema wildcard and provider wildcard contribution serves a hidden-value task; Codex and Copilot never route |
+| `test_sources_claude_routing_response_selects_an_expanded_source` in CUJ9 | Delegate a real TUI task with Claude-only managed smart routing | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference`, `test_cuj_claude_mps_smart_routing_header` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, Claude TUI, and Claude smart-routing cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; inference cases record the MPS target header, model, paired HTTP 200, and completed greeting. The smart-routing case checks the managed MPS header on first-prompt and delegated-task router requests, their HTTP 200 responses, and completed native turns. Request IDs correlate greeting traffic. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
@@ -1424,8 +1451,8 @@ It installs the shared CI Claude version and uploads independent evidence. Codex
 journey is deferred while its npm proxy access is blocked. Native TUI
 and managed-settings coverage remain deferred; a green installation check alone
 does not establish a successful live task.
-A required macOS job opens the pinned ChatGPT desktop app after managed `ug configure`, sends a
-prompt through the GUI, and asserts the exact answer, model, and completed turn from the app's rollout.
+Required macOS and Windows jobs open the pinned ChatGPT desktop app after managed `ug configure`, send a
+prompt through the GUI, and assert the exact answer, model, and completed turn from the app's rollout.
 The `All integration tests` check requires every selected integration job to pass, including
 both managed-config lanes for full/live runs; full coverage does not depend on a label or
 a manual request.
@@ -1568,7 +1595,7 @@ verify that neither a sudo capability probe nor a prompting worker is started.
 | Follow-up turns and conversation resume | Not covered; reopen proves startup, not conversation resume |
 | Claude/Codex interactive smart routing | First-prompt routing through `first_prompt_and_subagent_no_orch_v0` is covered by the `managed_fixture` banner journeys and CUJ4's preset journeys. CUJ4's managed journeys verify that `smart_routing.enabled` alone leaves Claude's first prompt unrouted and turns on Smart Router Orchestrator for Claude, and that Codex's managed default stays unrouted and unorchestrated; the Claude managed-default skill-toggle cases and a Codex launch-only opt-out case cover those paths; `--enable-smart-routing` has component coverage only. The live subagent-only journeys spawn native children and invoke the installed Smart Router skill to verify routing at launch, off, and off -> on in separate Claude/Codex sessions. The scheduled harness-latest workflow repeats CUJ4, routing hooks, skill toggles, and banners with both latest agents. Plugin-refresh survival and native daemon/background dispatch remain deferred. |
 | Full allow/deny tool-permission matrix | Not covered; onboarding/trust uses actual TUI choices |
-| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; GUI inference on macOS by `integration/test_ug_codex_desktop_macos.py`; desktop tracing and Windows/Linux GUI are not |
+| Desktop Codex app, Isaac itself, auto-upgrades | Not covered by command forwarding or pinned-version tests. Codex desktop's shared-config catalog pointer (repeat configure and a user-owned pointer) is covered by `integration/test_ug_configure_codex_desktop.py`; GUI inference on macOS and Windows by `integration/test_ug_codex_desktop_macos.py` and `integration/test_ug_codex_desktop_windows.py`; desktop tracing and Linux GUI are not |
 | Native macOS/Windows live TUI, managed settings, resize/signals | Windows fresh-install, CLI, local helpers, and the Claude headless gateway journey are advisory; Codex Windows CI is blocked on npm proxy access. Live PTY/TUI, managed settings, and signal behavior still need separate platform implementation and coverage |
 | Other agents | Live scope is Claude Code and Codex, plus a non-blocking OpenCode headless case |
 | OpenCode `--model` / `-m` | Unit/component tests cover raw CLI forwarding, configured model selection, launch arguments, rejection of unknown models before starting the native process, and the existing failure when no default model is available; no dedicated live integration journey |
@@ -1696,8 +1723,15 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+component coverage. CUJ9 collects 14 installed-agent cases for mixed sources and qualified MPS
+inference, with smart routing only for Claude Code. The workspace directly publishes
+its configuration as of 2026-11-16; tests validate it without a local configuration
+artifact. Claude and Codex use custom defaults, while Copilot uses hosted
+`system.ai.gpt-6-luna`. 11 of the 14 cases are active; the three
+`test_sources_copilot_inference_on_each_source_model` cases are skipped (gap) pending
+investigation (AIGTWY-5588) of a gateway 400 on `mlflow/v1/responses` for the
+provider-service GPT luna model. These are implemented assertions, not a live pass. See the
+[CUJ9 prerequisites and run command](e2e_cuj/README.md#model-sources-in-cuj9).
 
 Copilot CLI registry label checks cover human-readable labels for qualified catalog models,
 duplicate-label fallback to exact IDs, and unchanged wire identity. Direct-provider target names

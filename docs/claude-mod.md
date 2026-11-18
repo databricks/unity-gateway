@@ -4,12 +4,23 @@ UG's Claude launcher loads `hooks/register.ts` through the existing launch-scope
 `ug-smart-router` plugin in sessions launched with smart routing. Claude Code 2.1.290 or
 newer is required.
 
+Auto requires `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only` at launch.
+The launcher derives its internal Auto flag and supplies the picker only for that version.
+An inherited Auto flag, managed routing, or a saved Auto row cannot enable the feature.
+
 The existing `_write_routed_claude_plugin()` copies the packaged TypeScript entry point
 from `src/ucode/agents/claude_mods/` and writes `hooks/hooks.json` into that plugin.
 Every routed launch includes the status band above the prompt. It shows at launch and after
 each `/smart-router on|off`, and hides once the next prompt's turn completes. The prompt hint row (the line under the
 input with the permission mode) carries `smart router ON` or `smart router OFF`, followed by
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
+Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
+model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
+prompt hint for the main model. Native's initial `/model` confirmation reads
+`Auto on: subagents smart-routed`; saving a main model prints a notice naming the saved model.
+The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
+picker closes, or on `/model auto`. It uses the compact native question modal, with no
+effort controls. Native `/effort` remains unchanged.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

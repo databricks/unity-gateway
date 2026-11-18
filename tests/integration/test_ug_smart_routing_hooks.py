@@ -112,7 +112,11 @@ def _run_calculation(
 ):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
-    tui.submit(task.prompt)
+    prompt = task.prompt
+    if agent == "claude":
+        # Native forks inherit their model and deliberately bypass Smart Router.
+        prompt += ' Use the Agent tool with subagent_type "general-purpose"; do not fork or resume.'
+    tui.submit(prompt)
 
     if routed:
         tui.wait_for(
@@ -236,6 +240,7 @@ def _toggle_with_skill(
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         }
     )
     assert json.loads(controls[0].read_text()) != expected

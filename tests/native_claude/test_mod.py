@@ -76,8 +76,8 @@ def test_native_options_are_launch_local(native_binary, tmp_path):
         Session(native_binary, tmp_path / "a", env) as a,
         Session(native_binary, tmp_path / "b", {}) as b,
     ):
-        assert a.observe()["options"] == _claude_mod_launch_options(env)
-        assert b.observe()["options"] == _claude_mod_launch_options({})
+        assert a.observe()["options"] == {**_claude_mod_launch_options(env), "autoPicker": ""}
+        assert b.observe()["options"] == {**_claude_mod_launch_options({}), "autoPicker": ""}
         assert not (a.plugin / "hooks/launch.json").exists()
 
 
@@ -210,6 +210,47 @@ def test_marked_omni_off_turns_routing_off_without_the_feedback_form(native_bina
             result = session.send("/smart-router off --feedback-collected")["result"]
             assert "Smart Router is off" in result
             assert json.loads(controls.read_text())["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+    finally:
+        shutil.rmtree(controls.parent)
+
+
+def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary, tmp_path):
+    """Initialize a regular model with feedback required, then submit a main turn.
+
+    Routing stays off without a feedback-gated disable. Inference deliberately fails
+    without credentials; this checks native startup/next-turn state, not a live answer.
+    """
+    from ucode.constants import SMART_ROUTING_ENV_KEYS
+
+    env = {
+        "ENABLE_SMART_ROUTING_V2": "0",
+        "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "1",
+        "SMART_ROUTER_CONFIG_VERSION": config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+        "ISAAC_SMART_ROUTER_FEEDBACK": "1",
+        "ISAAC_LAUNCH_MODE": "cli",
+        "PYTHONPATH": str(Path(__file__).parents[2] / "src"),
+    }
+    controls = session_env.start_session(env)
+    # Fresh Auto launches initialize OFF until the native selected model is known.
+    controls.write_text(json.dumps(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")))
+    auto = {
+        "model": "ug-auto-sonnet",
+        "mainModel": "claude-sonnet-4-6",
+        "description": "Auto",
+        "storeKey": "test-main",
+        "models": [
+            {"model": "claude-sonnet-4-6", "label": "Sonnet", "autoModel": "ug-auto-sonnet"}
+        ],
+    }
+    try:
+        with Session(native_binary, tmp_path / "manual-auto", env, auto_picker=auto) as session:
+            for after_turn in (False, True):
+                if after_turn:
+                    session.send("Reply OK without tools.", expect_error=True)
+                observed = session.observe()
+                assert observed["environment"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "0"
+                assert observed["body"]["smart_router_recipe_name"] == "DISABLED"
+                assert not session_env.session_routing_enabled(controls)
     finally:
         shutil.rmtree(controls.parent)
 

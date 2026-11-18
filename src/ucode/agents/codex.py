@@ -24,6 +24,7 @@ from tomlkit.exceptions import ParseError
 
 from ucode import metrics
 from ucode.codex_config import (
+    CODEX_MODEL_PROVIDER_NAME,
     catalog_slugs,
     codex_config_args,
     codex_config_precedence_paths,
@@ -87,6 +88,7 @@ from ucode.managed_files import (
     managed_settings_skipped,
     managed_writes_allowed,
     mark_managed_file_verified,
+    published_agent_config_used,
     read_managed_file,
     reconcile_managed_file,
     reconcile_privileged_files,
@@ -104,7 +106,7 @@ from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
-from ucode.ug_headers import ug_headers
+from ucode.ug_headers import published_agent_config_headers_warning, ug_headers
 from ucode.ui import print_note, print_success, print_warning_err
 from ucode.workspace import workspace_headers, workspace_id_args
 
@@ -121,7 +123,6 @@ CODEX_MODEL_CATALOG_PATH = APP_DIR / "codex-model-catalog.json"
 MANAGED_MODEL_CATALOG_NAME = "ug-model-catalog.json"
 LEGACY_CODEX_CONFIG_PATH = CODEX_CONFIG_DIR / "config.toml"
 LEGACY_CODEX_BACKUP_PATH = APP_DIR / "codex-config.backup.toml"
-CODEX_MODEL_PROVIDER_NAME = "Databricks"
 LEGACY_CODEX_MODEL_PROVIDER_NAME = "ucode-databricks"
 # The Codex app relay's own provider in ~/.codex/config.toml, apart from the managed `Databricks`.
 CODEX_APP_RELAY_PROVIDER_NAME = "DatabricksRelay"
@@ -140,6 +141,8 @@ _LAUNCH_ROUTING_HEADER_ENV_VARS = {
     SMART_ROUTER_RECIPE_HEADER: "UG_CODEX_SMART_ROUTER_RECIPE",
     AI_GATEWAY_REQUEST_TAGS_HEADER: "UG_CODEX_REQUEST_TAGS",
 }
+# Codex 0.156.0 first enforces requirements.toml's provider lock, which a managed run writes;
+# older releases ignore it and would leave developers free to bypass the gateway.
 MINIMUM_CODEX_VERSION = (0, 156, 0)
 MINIMUM_CODEX_VERSION_TEXT = "0.156.0"
 MINIMUM_SMART_ROUTING_CODEX_VERSION = (0, 164, 0)
@@ -1639,13 +1642,24 @@ def _render_launch_overlay(*args, **kwargs) -> dict:
     return overlay
 
 
+_warned_published_agent_config_headers = False
+
+
 def _add_launch_headers(config: dict) -> None:
     """Add this launch's ``ug --header`` / ``UG_HEADERS`` to the provider's ``-c`` headers.
 
     A header ug or the admin already sends keeps its value. The headers reach only this launch's
-    ``-c`` flags, never a config file."""
+    ``-c`` flags, never a config file. On a machine with a managed run, ``requirements.toml`` locks
+    the provider, so Codex ignores them; the launch says so instead."""
+    global _warned_published_agent_config_headers
+    headers = ug_headers()
+    if headers and published_agent_config_used():
+        if not _warned_published_agent_config_headers:
+            _warned_published_agent_config_headers = True
+            print_warning_err(published_agent_config_headers_warning("Codex"))
+        return
     present = {name.casefold() for name in _managed_provider_headers(config) or {}}
-    for name, value in ug_headers().items():
+    for name, value in headers.items():
         if name.casefold() not in present:
             _set_routing_header(config, name, value)
 

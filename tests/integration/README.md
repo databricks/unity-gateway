@@ -1,9 +1,31 @@
 # Integration tests
 
+Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
+[coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
+The configure-time managed-routing and exact Auto-version matrix has component coverage in
+`../test_agent_claude.py`; live configure-to-launch validation remains a gap.
+
+CUJ7 reconfigures with the Auto version before its personal Auto launch. Component tests
+in `../test_cli.py` verify that this launch does not reinstall a shared replacement picker
+after reconfigure removes UG's ordinary discovery picker. Ordinary launches, other versions,
+an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
+The live journey retains saved-model restart, successful inference, and no-router assertions.
+
+Comment-triggered `/integration-test` runs require authorization and a successful shared
+Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
+that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner
+selection and failure-reporting component tests are documented in the [main test guide](../README.md).
+They do not exercise live GitHub comment delivery or credentialed integration runs.
+
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
 exercise live sudo or Codex startup.
+
+The macOS Jamf npm-provisioning path has component coverage in
+`../test_macos_provision.py`, using redirected paths and stubbed installers. A real Jamf policy
+run, npm agent installation and standard-user launch remain manual validation steps; these
+component checks are not integration coverage.
 
 `../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
 fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
@@ -11,6 +33,9 @@ checks run on both platforms. These are not live GitHub or credentialed integrat
 
 The trusted scan producer's component coverage and staged enforcement are documented in
 the [main test guide](../README.md). This prerequisite does not change integration authorization.
+`../test_security_scan_request.py` checks CI metadata refresh when the requested event carries
+the PR title, lookup failures, and preserved PR identity checks with controlled API responses,
+not live webhook delivery.
 
 `../test_databricks.py::TestGetDatabricksProfiles` covers metadata-only profile
 discovery, implicit PAT classification, and the separate selected-workspace authentication check at controlled
@@ -32,7 +57,8 @@ Toggle approvals accept only the requested command or its exact environment-vari
 on POSIX and PowerShell (early exit or else branch); extra commands and non-local execution
 remain rejected.
 PowerShell guard matching recognizes the fixed `-not` and `IsNullOrWhiteSpace` checks
-of both session variables, including ConPTY's replacement selection marker. Component
+of both session variables, a literal missing-variable message with or without `Write-Output`,
+and ConPTY's replacement selection marker. Component
 tests reject extra commands, substitutions, other variables, and different conditions.
 The busy child's full assignment is an ordinary input file so the parent only passes
 its absolute path. Gate and value paths are absolute too, preserving access if a child
@@ -48,8 +74,11 @@ ingestion. Silent controls-read failure, bounded retry, later-turn recovery, and
 evidence-parser boundaries have separate
 [component coverage](../README.md); live journeys do not induce file-access failures.
 
-Subagent calculation journeys use short native task names. Offline evidence checks
-still reject mistyped markers and wrong results in either the parent or child answer.
+Subagent calculation journeys use short native task names. Claude calculations request
+fresh `general-purpose` agents because native forks inherit their model and bypass routing.
+The existing UI, live routing decision, selected model, and parent/child answer assertions
+still require real routed work. Offline evidence checks
+reject mistyped markers and wrong results in either the parent or child answer.
 These checks do not establish the live model's copying-error rate.
 
 File-read tasks use six-character hidden values. Offline Copilot evidence checks
@@ -332,8 +361,12 @@ Accessibility clicks and real keystrokes, and requires the exact answer on scree
 app's rollout, with `system.ai.gpt-5-6-sol` as the completed turn's model. It then clicks an
 absent label in the same app and requires a nonzero helper exit with the native four-column
 accessibility tree captured before the fatal error in command evidence.
-`scripts/run_integration.py` ignores the module unless `--macos-desktop` is passed, which only the
-macOS desktop CI job does, so a local run never drives a developer's installed app.
+`test_ug_codex_desktop_windows.py` is the same journey on Windows, driven through Windows UI
+Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
+a screenshot of the app window as evidence. It also requires the app's model picker to list only
+the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+`scripts/run_integration.py` ignores both modules unless `--desktop-app` is passed, which only the
+desktop CI jobs do, so a local run never drives a developer's installed app.
 
 The separate [dedicated-workspace CUJ](../e2e_cuj/AGENTS.md) lives in `tests/e2e_cuj/`
 and runs directly with pytest. It does not use this suite's runner or config fixtures.
@@ -1060,6 +1093,7 @@ test_ug_claude_headless.py              # script prompts, models, caller setting
 test_ug_claude_relayed.py               # relayed session: subscription + Databricks-hosted models
 test_ug_claude_tracing.py               # Claude OTLP export reaches the configured trace table
 test_ug_codex_headless.py               # script prompts and model arguments
+test_ug_codex_relayed.py                # access-token login and simple ChatGPT-relay inference
 test_ug_copilot_headless.py             # Copilot via the session proxy: Claude + GPT tasks, no token on disk
 test_ug_copilot_lifecycle.py            # Copilot refresh after revocation, sign-in expired, configure/revert, upgrade
 test_ug_copilot_models.py               # Copilot model registry: Claude then GPT, GLM/Kimi/DeepSeek, unknown model, TUI /model switch
@@ -1079,6 +1113,7 @@ test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credent
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
 test_ug_codex_desktop_macos.py          # ChatGPT desktop app on macOS: GUI prompt, exact answer, model, completed turn
+test_ug_codex_desktop_windows.py        # the same journey on Windows through UI Automation
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
@@ -1223,6 +1258,18 @@ re-routes to gateway auth (`route=databricks`) — one relayed session reaching 
 It needs a subscription OAuth token (see below). Interactive model-picker selection
 remains uncovered.
 
+The Codex relay check (`test_ug_codex_relayed.py`) uses a fresh home to run
+`codex login --with-access-token`, passing the credential on stdin. It then launches
+`ug codex --provider <relayed OpenAI MPS>` with the same access token and asks `gpt-6-luna`
+for a short random reply without tools. It requires a completed turn with exactly that answer
+and a forwarded `/v1/responses` request that completes with HTTP 200.
+
+This deliberately covers only token login and relay inference. File-tool execution, desktop
+configure/revert, desktop inference, managed-file conflict refusal, and browser sign-in are
+outside this check. CI runs it in the `codex-relay` job on protected Linux with allowlisted
+egress, separately from the full Linux/Windows journeys. Select it locally with
+`--codex-version 0.156.0 -- -m 'live and codex and codex_relay'`.
+
 MPS CUJs select preprovisioned services:
 
 - Claude (direct API key): `main.ucode.dont_delete_ci_company_anthropic_mps` in
@@ -1296,13 +1343,20 @@ MPS CUJs select preprovisioned services:
 - Claude (relayed hybrid): `main.ucode.ci_e2e_anthropic_relay_mps`, which also
   requires `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) so the relayed
   launch runs headless instead of opening a browser login.
+- Codex (relayed ChatGPT subscription): `main.ucode.ci_e2e_openai_relay_mps` (a relayed
+  `{"openai":{"relayed":{}}}` MPS that must exist on the e2e workspace), which also requires
+  `CODEX_ACCESS_TOKEN`: a Codex access token (ChatGPT Business/Enterprise admin console) that the
+  test passes to native login on stdin and sets in the relay launch environment.
+  CI supplies this environment variable from the repository secret `CODEX_OAUTH_TOKEN`.
+  Renew the secret before it expires. The ChatGPT workspace IP allowlist must cover both the
+  runner's login egress and the gateway's inference egress.
 - Codex and Copilot (OpenAI): `main.ucode.ci_openai_mps`, using its allowed `gpt-6-luna` model.
 - Antigravity CLI (Gemini Enterprise): `main.ucode.ci-gemini-mps`, using its `gemini-3.8-flash`
   target (`--antigravity-provider`, `--antigravity-provider-models`).
 - Codex and Copilot (Azure OpenAI): `main.ucode.ci_azure_openai_mps`, using its `gpt-6-luna` model.
 - Codex and Copilot (Microsoft Foundry): `main.ucode.ci_foundry_mps`, using its `gpt-6-luna` model.
 
-Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` to
+Use `--claude-provider` / `--claude-relayed-provider` / `--codex-provider` / `--codex-relayed-provider` to
 reproduce another existing service. Use `--claude-provider-model` /
 `--codex-provider-model` when it allows a different model. Those choices are recorded in `versions.json`.
 No service is created or modified. A missing service, permission, or OAuth token
@@ -1380,7 +1434,7 @@ cases instead complete real file tasks through `--workspace` and `--model-locati
 `ug_e2e.models.claude_haiku` and `ug_e2e.models.gpt_luna`. The two fresh `--provider`
 journeys check setup and launch with existing services, without inference.
 
-There are **88 live cases** (including 12 marked TUI journeys) and **8 installation
+There are **89 live cases** (including 12 marked TUI journeys) and **8 installation
 checks** with Claude and Codex; selecting OpenCode adds one live headless case and two `managed_fixture` cases; selecting Copilot adds eighteen live cases; selecting Antigravity adds eight live cases (one TUI). One
 **`workspace_switch` case** uses two real workspaces and checks skills MCP cleanup and a completed
 Claude task. A further **44 `managed_fixture` cases** (twelve of them also `live`) run on the
@@ -1559,14 +1613,23 @@ Accessibility to the runner's shell, so no permission prompt is needed. It uploa
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
 harness-latest workflow runs the same journey against the newest appcast build, so it shows
 when a bump is due.
+The required **Codex desktop inference · Windows** job installs the ChatGPT MSIX that OpenAI keeps
+at `codex-app-prod/releases/<version>/ChatGPT-x64.msix`, pinned by version and SHA256 in
+`integration.yml`, and runs the `windows_desktop` marker against the managed e2e workspace. It
+uploads `integration-codex-desktop-windows` evidence. To update the app, take `packageVersion`
+from `https://persistent.oaistatic.com/codex-app-prod/windows-release.json` and the MSIX's SHA256.
+OpenAI has re-uploaded some builds a few days after release, so pin one whose `Last-Modified`
+matches its `x-ms-creation-time`.
 Local native runs use the same runner; Colima/Docker provides a separate Linux
 container option. Matching dependency versions does not make those OS environments identical.
 Installation jobs need no workspace credentials. The dedicated direct-Anthropic lanes
 use the staging SP described above. Other live jobs for same-repository PRs
 reuse the existing `UCODE_TEST_WORKSPACE` and `DATABRICKS_BEARER` secrets; the full
 Claude lane also passes `CLAUDE_CODE_OAUTH_TOKEN` (the same secret the e2e workflow
-uses) for the relayed hybrid CUJ. Fork PRs run installation checks only because they
-cannot receive those secrets.
+uses) for the relayed hybrid CUJ. The dedicated `codex-relay` job maps `CODEX_OAUTH_TOKEN`
+to `CODEX_ACCESS_TOKEN` and uses `databricks-protected-runner-group` / `linux-ubuntu-latest`
+with the internal package proxies. It is required by the integration gate. Fork PRs run
+installation checks only because they cannot receive those secrets.
 
 CUJ7's five journeys collect eight cases in `tests/e2e_cuj/test_cuj7_model_discovery.py`: configured
 Claude picker and Codex app-server discovery, fresh Claude/Codex model-location file
@@ -2074,6 +2137,33 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
+Auto main-model confirmation component tests (`../native_claude/mod_tests/auto-static.test.ts`)
+check the saved-model transcript notice, repeated picks through `/model auto`,
+and cancellation without a save notice. Manual native TUI
+verification on Claude 2.1.290 and 2.1.325 covered normal-mode selection and the saved-model
+notice. This is not an authenticated
+gateway inference check or an automated integration journey.
+
+Auto cleanup component tests cover the copy-on-write transformation, configure/revert
+ordering, restored private and managed backups, saved native model resolution, restrictive
+allowlists, command scopes, symlink preflight, retry after a failed native write even when
+restore has removed the source mapping (with and without workspace state), and the
+exact-version plus effective-routing provisioning gate. These cases exercise temporary
+settings through the real Python lifecycle; they do not establish live gateway coverage.
+
+The Auto chooser's native component tests cover compact modal selection, cancellation,
+pagination, invalid typed answers with a visible retry message, and stale answers after
+a model command or session end. Claude 2.1.290's plugin test runner lacks a
+`session.append` implementation, so these component tests do not cover picker-confirmation
+ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
+preservation, or prompt interruption. The chooser has no
+effort controls or internal effort commands.
+
+The same component suite covers static Auto cache warnings at the final main-model choice,
+including unchanged models, fresh sessions, inactive preference edits, cancellation, stale
+answers, and preserved hook decisions. Native TUI checks use a controlled local response
+fixture to populate token accounting; they do not establish gateway cache hits or cost.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
@@ -2081,6 +2171,8 @@ unknown selectors, and absent versus empty flags. These checks do not establish 
 CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
+Its Auto selector journey also covers a non-replacing managed picker without managed
+aliases or an allowlist, completed inference, and unchanged machine-wide settings.
 
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journeys rather than `claude plugin test`; native
@@ -2193,8 +2285,20 @@ eight-digit hashes, clean fallback descriptions, preserved explicit descriptions
 context hints. Shared unwrapping checks leave malformed aliases unchanged. Native TUI rendering
 is not covered by these component checks.
 Launch fallback, workspace-cache isolation, and wildcard configure failures lack dedicated
-component coverage. No installed-agent journey currently covers mixed wildcard sources or
-proves inference with qualified MPS models.
+component coverage. Dedicated CUJ9 adds 14 installed-agent cases for mixed sources and
+qualified MPS inference on its separate workspace. Smart routing is enabled only for
+Claude Code. The workspace directly publishes its configuration as of 2026-11-16;
+tests validate it without a local configuration artifact. Claude and Codex use custom
+defaults, while Copilot uses hosted `system.ai.gpt-6-luna`. 11 of the 14 cases are active;
+the three Copilot per-source inference cases are skipped (gap) pending AIGTWY-5588.
+These are implemented assertions, not a live pass. See the
+[CUJ9 published configuration and run command](../e2e_cuj/README.md#model-sources-in-cuj9).
+
+| CUJ9 journey | Observable evidence |
+| --- | --- |
+| Claude, Codex, and Copilot discovery and defaults | Exact native Claude/Codex picker inventories, Codex model/list, active Copilot registry IDs and wire providers, followed by completed native TUI tasks on custom Claude/Codex or hosted Copilot defaults and exact-model HTTP 200 inference |
+| Explicit inference on every source model | Hidden-value tasks on MPS deep links, custom model services, schema wildcards and a provider wildcard; Codex and Copilot send no routing request |
+| Claude-only delegated task | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
 
 Antigravity MCP web-search evidence compares homepage slash variants and ignores
 `utm_source` attribution while retaining the completed-call and official-URL checks.

@@ -16,10 +16,20 @@ from tests.integration.utils.evidence import (
     tool_outputs,
 )
 from tests.integration.utils.terminal import (
+    claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+@pytest.mark.parametrize("wrap", ["", "\n "])
+def test_claude_workspace_trust_requires_full_project_path(wrap):
+    cwd = PureWindowsPath(r"D:\a\_temp\ug-integration-project-8725e2e1b7c0\project with spaces")
+    screen = f"Accessing workspace:\n{str(cwd).replace('with spaces', 'with' + wrap + ' spaces')}\n❯ No, exit\n  Yes, I trust this folder"
+    assert claude_workspace_trust_dialog_shown(screen, cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("8725e2e1b7c0", "other"), cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("Accessing workspace:", ""), cwd)
 
 
 @pytest.mark.parametrize(
@@ -152,6 +162,7 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 )
 @pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
+@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
 @pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
 @pytest.mark.parametrize(
     "condition",
@@ -163,12 +174,12 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
     ids=["unset", "whitespace"],
 )
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
-    extra_command, missing_message, guard_style, selected, condition
+    extra_command, missing_message, guard_style, write_output, selected, condition
 ):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
     branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
     suffix = "" if guard_style == "exit" else " }"
-    guard = f"if ({condition}) {{ Write-Output {missing_message}{branch}"
+    guard = f"if ({condition}) {{ {write_output}{missing_message}{branch}"
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
         f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
