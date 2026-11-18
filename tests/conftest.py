@@ -56,6 +56,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     from ucode.agents.desktop import claude as desktop_mod
     from ucode.agents.desktop import cowork as cowork_mod
     from ucode.agents.desktop import mdm as mdm_mod
+    from ucode.smart_routing import session_log as session_log_mod
 
     state_dir = tmp_path / ".ucode"
     state_dir.mkdir()
@@ -65,6 +66,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(claude_mod, "_explicit_configure", False)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
+    # Bound from APP_DIR at import; creating a log also prunes old ones in that directory.
+    monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
     # No test may run the developer's `code` or look at their installed VS Code extensions.
