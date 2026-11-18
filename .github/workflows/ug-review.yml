@@ -45,6 +45,7 @@ jobs:
     timeout-minutes: 30
     env:
       DATABRICKS_HOST: https://ai-oss-ecosystem-integration-testing.cloud.databricks.com
+      GATEWAY_MODEL: system.ai.claude-opus-5-5
       NPM_CONFIG_REGISTRY: https://databricks.jfrog.io/artifactory/api/npm/db-npm/
       OCR_NO_UPDATE: "1"
     steps:
@@ -136,7 +137,7 @@ jobs:
           llm_extra_headers: x-databricks-use-coding-agent-mode=true
           # The gateway model requires adaptive thinking; the action defaults to disabled.
           llm_extra_body: '{"thinking":{"type":"adaptive"},"output_config":{"effort":"medium"}}'
-          llm_model: system.ai.claude-opus-5-5
+          llm_model: ${{ env.GATEWAY_MODEL }}
           ocr_version: "1.12.0"
           rule: .github/open-code-review/rules.json
           background: ${{ steps.policy.outputs.background }}
@@ -222,7 +223,6 @@ jobs:
         id: recommendation
         env:
           GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}
-          GATEWAY_MODEL: system.ai.claude-opus-5-5
           RECOMMENDATION_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
         run: python3 .ug-review-trusted/.github/scripts/ug-review/recommendation.py
 
@@ -239,19 +239,26 @@ jobs:
             const fs = require('fs');
             const body = fs.readFileSync(process.env.RECOMMENDATION_BODY, 'utf8');
             const args = { ...context.repo, issue_number: Number(process.env.PR_NUMBER) };
-            await github.rest.issues.createComment({ ...args, body });
+            // Replace the previous recommendation comment so older verdicts do
+            // not pile up next to the current one.
+            const marker = '<!-- ug-review-recommendation-run:';
+            const { data: comments } = await github.rest.issues.listComments(
+              { ...args, per_page: 100 });
+            const previous = comments.find((comment) =>
+              comment.user?.type === 'Bot' && (comment.body || '').includes(marker));
+            if (previous) {
+              await github.rest.issues.updateComment(
+                { ...context.repo, comment_id: previous.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...args, body });
+            }
             const label = process.env.RECOMMENDATION_LABEL;
             if (process.env.RECOMMENDATION === 'approve') {
-              try {
-                await github.rest.issues.addLabels({ ...args, labels: [label] });
-              } catch (error) {
-                if (error.status !== 404) throw error;
-                await github.rest.issues.createLabel({ ...context.repo, name: label, color: '0e8a16' });
-                await github.rest.issues.addLabels({ ...args, labels: [label] });
-              }
-            } else if (process.env.RECOMMENDATION === 'reject') {
-              // Remove a stale label from an earlier review so it cannot linger
-              // after a re-review rejects the PR.
+              // addLabels creates a missing repository label.
+              await github.rest.issues.addLabels({ ...args, labels: [label] });
+            } else {
+              // A reject, or a run without a recommendation, must not leave a
+              // stale `ready-to-approve` on a head nobody judged.
               const { data: labels } = await github.rest.issues.listLabelsOnIssue(
                 { ...args, per_page: 100 });
               if (labels.some((item) => item.name === label)) {

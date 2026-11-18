@@ -235,7 +235,7 @@ def test_workflow_routes_review_through_gateway_with_service_principal_token():
     assert "llm_auth_token: ${{ steps.gateway-auth.outputs.token }}" in workflow
     assert "llm_auth_header: Authorization" in workflow
     assert 'llm_use_anthropic: "true"' in workflow
-    assert "llm_model: system.ai.claude-opus-5-5" in workflow
+    assert "llm_model: ${{ env.GATEWAY_MODEL }}" in workflow
     assert '"thinking":{"type":"adaptive"}' in workflow
     assert "llm_extra_headers: x-databricks-use-coding-agent-mode=true" in workflow
     assert "UG_CI_REVIEW_MODEL" not in workflow
@@ -361,7 +361,45 @@ def test_unparseable_or_failed_model_output_gives_no_recommendation(
     assert "recommendation=none\n" in output_path.read_text()
     body = body_path.read_text()
     assert "**No recommendation**" in body
-    assert "No label was changed." in body
+    assert "ready-to-approve` label is removed" in body
+
+
+def test_findings_with_warnings_do_not_recommend(monkeypatch, tmp_path):
+    finding = {"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}
+    output_path, _, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        {"status": "complete", "comments": [finding], "warnings": [{"Type": "review_limit"}]},
+        AssertionError("A warned review must not reach the model."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    assert calls == []
+
+
+def test_truncation_keeps_the_most_severe_findings():
+    comments = [
+        {"path": f"f{i}.py", "start_line": 1, "end_line": 1, "severity": "low"}
+        for i in range(recommendation.MAX_PROMPT_FINDINGS)
+    ]
+    comments.append({"path": "late.py", "start_line": 1, "end_line": 1, "severity": "critical"})
+
+    briefs = recommendation.finding_briefs(comments)
+
+    assert len(briefs) == recommendation.MAX_PROMPT_FINDINGS
+    assert briefs[0]["path"] == "late.py"
+
+
+def test_gateway_response_without_a_content_list_is_a_handled_failure(monkeypatch):
+    monkeypatch.setattr(
+        recommendation.urllib.request,
+        "urlopen",
+        lambda request, timeout: BytesIO(b'{"error": {"message": "denied"}}'),
+    )
+
+    with pytest.raises(recommendation.RecommendationError, match="no content list"):
+        recommendation.request_recommendation("https://example.databricks.com", "t", "m", [])
 
 
 def test_workflow_posts_recommendation_and_syncs_ready_to_approve_label():
@@ -371,6 +409,7 @@ def test_workflow_posts_recommendation_and_syncs_ready_to_approve_label():
         "\n      - name:", 1
     )[0]
     assert "RECOMMENDATION_LABEL: ready-to-approve" in publish
+    assert "updateComment" in publish
     assert "createComment" in publish
     assert "addLabels({ ...args, labels: [label] })" in publish
     assert "removeLabel({ ...args, name: label })" in publish
