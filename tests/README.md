@@ -1510,7 +1510,12 @@ comment when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered 
 Label removal and ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers
 gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
-not live inference or GitHub posting. The old custom
+not live inference or GitHub posting. It also covers the advisory recommendation
+derived after a complete review: the `RECOMMENDATION: APPROVE|REJECT` marker parse,
+the zero-finding approve without a model call, a parsed reject from model findings,
+unparseable or failed model output degrading to "no recommendation" with no label
+change, and the workflow's `ready-to-approve` add-and-remove contract. Live
+recommendation inference and label posting remain unverified. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
 is removed. `test_polly_review.py` covers the Polly review workflow contract and its
 summary helper. `/user-journey-check` runs the user-journey gate,
