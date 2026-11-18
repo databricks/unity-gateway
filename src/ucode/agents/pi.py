@@ -163,6 +163,18 @@ def _claude_thinking_level_map(model_id: str) -> ThinkingLevelMap | None:
     return None
 
 
+def _claude_binds_thinking_to_prefix(model_id: str) -> bool:
+    """Whether the model rejects a replayed thinking block once the request prefix changes.
+
+    Fable 5.2 signs each thinking block against the system prompt, tools and messages before it.
+    After Pi compacts a session (or the prompt or tool list changes) the gateway answers every
+    request with HTTP 400 "Invalid `signature` in `thinking` block" unless the request asks for
+    mismatched blocks to be dropped. Earlier models accept the replayed block.
+    """
+    parsed = claude_version(model_id)
+    return parsed is not None and parsed[0] == "fable" and parsed[1] >= (5, 2)
+
+
 def _claude_model_entry(model_id: str) -> dict:
     # Name-based Claude limits (shared with Copilot): their windows match what the gateway's
     # Anthropic listing reports, and they cost no request at launch.
@@ -178,6 +190,11 @@ def _claude_model_entry(model_id: str) -> dict:
     level_map = _claude_thinking_level_map(model_id)
     if level_map is not None:
         entry["compat"] = {"forceAdaptiveThinking": True}
+        if _claude_binds_thinking_to_prefix(model_id):
+            # Pi sends `thinking.block_binding: drop_block` only with this flag, which also moves
+            # the thinking level into per-message effort. Models that don't need it stay off:
+            # Opus/Sonnet 4.x and 5 and Fable 5 reject those messages with HTTP 400.
+            entry["compat"]["supportsMidConvoEffort"] = True
         entry["thinkingLevelMap"] = level_map
     return entry
 

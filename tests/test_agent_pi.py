@@ -695,6 +695,25 @@ class TestModelEntries:
         assert _entry("system.ai.claude-haiku-5-5")["compat"] == {"forceAdaptiveThinking": True}
         assert "compat" not in _entry("system.ai.claude-sonnet-4-5")
 
+    def test_prefix_bound_claude_models_ask_pi_to_drop_mismatched_thinking(self):
+        assert _entry("system.ai.claude-fable-5-2")["compat"] == {
+            "forceAdaptiveThinking": True,
+            "supportsMidConvoEffort": True,
+        }
+
+    @pytest.mark.parametrize(
+        "model_id",
+        [
+            "system.ai.claude-fable-5",
+            "system.ai.claude-fable-5-1",
+            "system.ai.claude-opus-5",
+            "system.ai.claude-opus-5-5",
+            "system.ai.claude-sonnet-4-6",
+        ],
+    )
+    def test_other_claude_models_keep_request_level_effort(self, model_id):
+        assert "supportsMidConvoEffort" not in _entry(model_id).get("compat", {})
+
     @pytest.mark.parametrize(
         "model_id",
         [
