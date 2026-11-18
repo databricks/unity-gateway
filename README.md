@@ -2,7 +2,7 @@
 
 [Watch or download the MP4](./codex-smart-router-feedback.mp4).
 
-43-second replay of actual Codex 0.167.2 sessions on Arclet for
+47-second replay of actual Codex 0.167.2 sessions on Arclet for
 [#1751](https://github.com/databricks/unity-gateway/pull/1751).
 
 Shows inline feedback disclosure, short-reason validation, cancellation with routing
