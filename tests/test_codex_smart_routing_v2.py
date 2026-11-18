@@ -1030,7 +1030,9 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     captured = {}
     logged = []
 
-    def select_route(workspace, token, task, route_options, *, router_name, timeout):
+    def select_route(
+        workspace, token, task, route_options, *, router_name, timeout, attribution_headers
+    ):
         captured.update(
             workspace=workspace,
             token=token,
@@ -1096,7 +1098,9 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
 def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
     captured = {}
 
-    def select_route(workspace, token, task, route_options, *, router_name, timeout):
+    def select_route(
+        workspace, token, task, route_options, *, router_name, timeout, attribution_headers
+    ):
         captured["route_options"] = list(route_options)
         return None, "not selected"
 

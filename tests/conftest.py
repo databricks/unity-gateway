@@ -40,6 +40,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     privileged writer for an OS-managed agent config.
     """
     import ucode.agents as agents_mod
+    import ucode.codex_config as codex_config_mod
     import ucode.config_io as config_io_mod
     import ucode.databricks as databricks_mod
     import ucode.managed_config as managed_config_mod
@@ -60,6 +61,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     state_dir.mkdir()
     monkeypatch.setattr(state_mod, "STATE_PATH", state_dir / "state.json")
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
+    monkeypatch.setattr(config_io_mod, "_dry_run", False)
+    monkeypatch.setattr(claude_mod, "_explicit_configure", False)
     monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
@@ -142,8 +145,15 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
         tmp_path / "etc" / "agents-state.json",
     )
     monkeypatch.setattr(codex_mod, "codex_managed_config_path", lambda: None)
+    monkeypatch.setattr(claude_mod, "_managed_settings_path", lambda: None)
     # Launch seeds Claude's feature cache in `.claude.json`; never touch the developer's copy.
     monkeypatch.setattr(claude_mod, "CLAUDE_CODE_CONFIG_PATH", tmp_path / ".claude.json")
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_SETTINGS_PATH", tmp_path / ".claude" / "ucode-settings.json"
+    )
+    monkeypatch.setattr(
+        claude_mod, "CLAUDE_USER_SETTINGS_PATH", tmp_path / ".claude" / "settings.json"
+    )
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     # The header mod installs beside the real managed file; tests opt in with a tmp root.
     monkeypatch.setattr(claude_mod, "claude_header_mod_root", lambda: None)
@@ -185,6 +195,12 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.delenv("UCODE_SMART_ROUTER_PYTHON", raising=False)
     # `ug --header` exports this to the agent, so an outer session's value would leak into launches.
     monkeypatch.delenv("UG_HEADERS", raising=False)
+    # The routing hooks copy harness headers from these, so the developer's own values would leak.
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.setattr(
+        codex_config_mod, "DEFAULT_CODEX_CONFIG_PATH", tmp_path / ".codex" / "ucode.config.toml"
+    )
     # When the suite runs inside a ug smart-routing session, these ambient env vars
     # make smart_routing_enabled()/configured_router_name() read the host's live
     # routing state, leaking a Databricks-Smart-Router-Recipe header into

@@ -152,6 +152,90 @@ launch settings. Keep the TypeScript static; toggles must not write configuratio
 may delegate the session-control write to UG's CLI, which validates and replaces that file
 atomically; the mod itself still writes no file.
 
+Claude Auto is enabled only by the `subagent_auto_v0_claude_only` config version.
+`ENABLE_SMART_ROUTER_AUTO_MODE` is an internal derived flag: that version sets it to
+`"1"` for Claude, and other versions set it to `"0"`. Setting the flag directly,
+managed smart routing alone, and an installed static Auto row cannot enable Auto.
+Capture the selected version in a scoped Python context before materializing its
+flags and consuming the environment selector. Restore that context on every exit;
+do not leave the selector in child environments, where it could reapply a preset
+over a session's routing overrides. Only an eligible exact-version launch supplies
+`autoPicker` to the native mod. Routing off, first-prompt routing and print mode
+never enter Auto.
+Fresh Auto launches use the managed default model, or the first available model;
+explicit model arguments and native resume retain precedence over startup Auto.
+Fresh Auto session controls start OFF; native startup initializes the selected state
+without treating a manual-model launch as a feedback-gated user disable. Ordinary
+launches preserve installed Auto picker metadata without enabling the feature.
+Explicit configure removes UG Auto aliases and picker metadata unless the exact Auto
+version is selected and routing remains enabled. Revert removes them after restoring
+backups, including aliases that a restored backup reintroduces. Cleanup respects user,
+global, skip-OS and published-managed scopes, leaves foreign settings untouched, and
+resolves a native saved Auto model to its allowed real target before removing its mapping.
+An alias-only allowlist remains restrictive; unresolved targets fail before cleanup writes.
+Revert retains captured alias targets in the existing UG state until cleanup succeeds, so
+a failed native write can retry after source mappings were restored away. Live mappings
+override retained targets; the final restored policy still determines allowed targets.
+Ordinary launches and session toggles do not perform this cleanup.
+Configure provisions Auto aliases only with the exact Auto version and effective routing
+enabled. For a UG-owned picker
+without managed smart routing, it sets `modelPicker.replaceBuiltInOptions=false`.
+When managed Claude `smart_routing_enabled` is true AND the configure-time selector
+is `SMART_ROUTER_CONFIG_VERSION=subagent_auto_v0_claude_only`,
+configure keeps `replaceBuiltInOptions=true` on the UG-owned static catalog and serves
+Auto from one row inside it, first among UG's rows (below Claude's native Default row): the default variant's alias with label `Auto`, its
+`modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
+is written at configure only — launches preserve whichever installed mode the file
+carries, and a launch's own version selection never installs or converts the catalog.
+In that mode native always stays on the static row's alias (the launch passes it as
+`staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
+holds the chosen main model in memory and its `$.store` preference and resolves the
+real target from it. Main-model switches never run native `/model`.
+Entering static Auto compares the held main model with the current model for cache warnings,
+not the static alias's default target. Keeping the same main model skips the native warning.
+Saving a different main model while Auto is active asks for confirmation before changing
+the saved preference when the session has context. Cancellation keeps the current
+main model and reopens the chooser. This check includes cold contexts and does not claim
+that a warm cache exists. Other hooks' blocks and explicit confirmation requests still apply.
+The main-model chooser opens only after the person confirms the Auto row in `/model` and
+the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
+on Esc. The chooser uses a compact native modal above the prompt, including in narrow
+terminals. The current model appears first; larger catalogs use a More models choice
+to cycle through pages. It has no effort controls and runs no `/effort` commands.
+Native confirms the row as its picker closes, before the chooser opens, so that confirmation
+reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
+a visible `$.ui.log` notice after saving the chosen model, such as
+`Auto mode: main model claude-opus-5-5, subagents smart routed.` Native prefixes this notice
+with the plugin name. `$.session.append` system and user-meta rows are hidden in normal mode.
+The prompt hint row's `Auto (<main model>)` also names the main model. Native `/effort`
+continues to work independently. A fresh launch
+without a launch-only model starts on the stored main model; a per-model alias selected
+natively (an earlier version's saved selection) still counts as Auto with that model.
+Native context window and effort follow the static row (the default variant) for every
+main model; the mod's prompt hint row names the held main model, not the row's alias.
+The config version controls Auto activation; installed picker metadata does not. Configure
+preserves foreign admin
+picker/custom option settings. Claude owns model-specific effort capabilities and defaults.
+Claude Auto configures immutable per-main-model aliases in `modelOverrides` and
+permits only aliases whose real targets are allowed. Configure removes stale UG
+aliases and sets `modelPicker.replaceBuiltInOptions` false only for UG-owned
+pickers so the native custom option is visible. Preserve admin custom model options
+and replacement pickers; skip Auto when they occupy or hide its native custom slot.
+Personal configure does not discover or persist a picker for Auto; unrestricted
+personal launches and foreign non-replacing pickers build Auto aliases in launch-only
+settings when managed settings define neither `modelOverrides` nor `availableModels`.
+Managed denials still filter aliases and their real targets. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+its display companions in the process environment: putting these in settings env
+would reset the pointer whenever native `/model` saves a selection. Keep one Auto
+row; aliases must not be separate modelPicker rows. Preserve other overrides and
+regular picker rows. `/model auto` selects Auto and opens its main-model selector.
+Keep `/auto` hidden as an internal selector command. Native context,
+effort, inference target and indicator derive from the selected alias, never another
+session's saved preference. The mod stores the per-workspace preference with native
+`$.store` and never writes configuration files. An ordinary `/model` selection
+disables session routing. Managed configuration changes require explicit configure;
+a launch never installs or rewrites machine-wide configuration.
+
 ### Adding a parameter
 
 1. Define its environment-variable constant in `src/ucode/constants.py` and add it to
@@ -227,12 +311,14 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list. A static list naming a model service whose primary destination is a subscription-relay MPS makes Claude Code CLI launch relayed for a user already signed in to a Claude subscription (credential swap, no `apiKeyHelper`; others keep gateway auth with a sign-in note) with the list still owning the picker; Claude Desktop keeps gateway auth for it (CLI-only for now) |
+| UG Auto metadata and saved selection | Merge | Merge | Explicit configure outside eligible Auto and revert remove UG-reserved aliases from `modelOverrides`, `availableModels`, and picker rows, plus an Auto custom-model environment triplet. Saved Auto `model` and Anthropic model environment values resolve to permitted real targets or are removed. Cleanup also covers native `settings.json` within the command's scope; unrelated models, aliases and policy remain unchanged. Launches and toggles do not clean these fields |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone. `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1` makes one launch strip the bare rule and hide `web_search` in its inline `--settings`; a managed, drop-in or user `WebSearch` deny makes it keep ug's MCP. The managed file never gets the deny; `ug configure --enable-server-side-web-search` (saved as `claude_server_side_web_search`) makes an explicit configure remove an existing bare one unless the admin's settings request it |
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |
 | `managedMcpServers` | Ignore | Merge | Add/update the config's MCP server entries; other entries left alone |
 | Smart-routing hooks | Merge | Merge | `PreToolUse`, `SessionStart`, `SubagentStart`; only `ug`'s own marked handlers, other hooks left alone |
 | Admin `agent_native_settings` | Ignore | Create/replace | Managed file only; copied as-is. Keys `ug` owns are skipped, `permissions.deny` and hooks are merged, and `ug`'s MCP servers are added to an admin `allowedMcpServers`. Removed when the admin drops them, unless edited by hand |
 | Smart Router Orchestrator hooks | Merge | Merge | Launch-only `UserPromptSubmit` and compact `SessionStart` handlers for smart-routed sessions with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`; read the same session controls as routing |
+| `parentSettingsBehavior` | Create/replace | Create/replace | Managed file only: `"merge"`, so Claude Desktop layers its own policy for Cowork and Chat under this file instead of dropping it (and stops warning about it). Like the header mod, only `ug configure` adds it and a plain launch never does; an administrator's own value is kept. Revert removes it |
 | Header mod | Merge | Merge | Managed file only, Linux, macOS, and Windows: `extraKnownMarketplaces.ucode-managed`, `enabledPlugins["ug-headers@ucode-managed"]`, and `ug-headers@ucode-managed` first in `prependPlugins` (an unset list becomes the mod plus `sec-default@builtin`). The mod's files live in an administrator-only `ucode-plugins` folder beside the managed file and add `UG_HEADERS` to each request. Installed, upgraded, and enabled only by `ug configure` (a terminal, or in place over an existing managed file through `sudo -n`; on Windows, elevated), never by a launch (even with `UG_HEADERS`, which instead warns when no header mod is enabled: neither ug's, current, nor another tool's enabled `ug-headers@` plugin such as Isaac's), so a launch writes no machine-wide files and another writer of the file that drops them isn't fought on every launch. The entries are written only once the files are in place; revert removes both, keeping `sec-default@builtin` when an admin has extended the list |
 
 </details>
@@ -374,6 +460,10 @@ Fields live in `~/.codex/ucode.config.toml` and `/etc/codex/managed_config.toml`
 | Smart Router native metadata | Launch-only (-c), never written | Launch-only (-c), never written | `responses_api_metadata.smart_router_recipe_name` records the configured recipe. The app-server interposer updates `smart_router_state` per main turn; spawn hooks stamp child task names. Reserve the state key for the interposer; a static config value would override turn updates |
 
 </details>
+
+The ChatGPT desktop app (Codex desktop) reads these files too. The required **Codex desktop
+inference** integration jobs on macOS and Windows open a pinned build after managed `ug configure`
+and require a completed system.ai turn; see `tests/integration/README.md` to bump a pin.
 
 <details>
 <summary>GitHub Copilot in VS Code</summary>

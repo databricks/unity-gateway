@@ -25,6 +25,7 @@ _REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 _REAL_WINDOWS_REPLACE = managed_files._windows_replace
 _REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
 _REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
+_REAL_CLAUDE_MANAGED_SETTINGS_PATH = claude_agent._managed_settings_path
 
 
 @pytest.fixture(autouse=True)
@@ -591,7 +592,7 @@ class TestSudoReplace:
         monkeypatch.setattr(claude_agent, "current_os", lambda: os_enum)
         monkeypatch.setattr(codex_config, "current_os", lambda: os_enum)
         allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
-        assert claude_agent._managed_settings_path() in allowed
+        assert _REAL_CLAUDE_MANAGED_SETTINGS_PATH() in allowed
         assert codex_config.codex_managed_config_path() in allowed
 
 
@@ -1347,7 +1348,7 @@ class TestWindowsManagedWrites:
         monkeypatch.setattr(claude_agent, "current_os", lambda: managed_files.OS.WINDOWS)
         monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
 
-        assert claude_agent._managed_settings_path() == windows
+        assert _REAL_CLAUDE_MANAGED_SETTINGS_PATH() == windows
         assert codex_config.codex_managed_config_path() == (
             managed_files.windows_codex_managed_settings_path()
         )
