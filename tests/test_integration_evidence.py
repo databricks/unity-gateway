@@ -2,7 +2,8 @@
 
 import json
 import re
-from pathlib import PurePosixPath, PureWindowsPath
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -15,12 +16,72 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.harness import UserSession
 from tests.integration.utils.terminal import (
     claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+def test_antigravity_native_log_evidence_is_bounded_and_redacted(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(7):
+        text = f"Making Gateway streaming request to: http://127.0.0.1/models/model-{index}\n"
+        text += "x" * 70_000 + "secret-session-bearer\nrequest timed out; retrying\n"
+        (directory / f"cli-{index}.log").write_text(text)
+
+    assert antigravity.requested_urls(session) == [
+        f"http://127.0.0.1/models/model-{index}" for index in range(7)
+    ]
+    artifact = (session.artifacts / "antigravity-logs.json").read_text()
+    assert "secret-session-bearer" not in artifact
+    value = json.loads(artifact)
+    assert value["files_omitted"] == 2
+    assert [log["name"] for log in value["logs"]] == [f"cli-{index}.log" for index in range(2, 7)]
+    for log in value["logs"]:
+        assert log["truncated"]
+        assert len(log["tail"]) == 64_000
+        assert log["tail"].endswith("<redacted>\nrequest timed out; retrying\n")
+
+
+def test_antigravity_native_log_evidence_without_logs(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    assert antigravity.requested_urls(session) == []
+    assert json.loads((session.artifacts / "antigravity-logs.json").read_text()) == {
+        "files_omitted": 0,
+        "logs": [],
+    }
+
+
+def test_antigravity_native_log_redacts_token_crossing_tail_boundary(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    (directory / "cli-1.log").write_text("prefixsecret-session-bearer" + "x" * 63_990)
+
+    antigravity.requested_urls(session)
+
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["logs"][0]["tail"] == "<redacted>" + "x" * 63_990
 
 
 @pytest.mark.parametrize("wrap", ["", "\n "])
