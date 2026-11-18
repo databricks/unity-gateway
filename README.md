@@ -2,14 +2,19 @@
 
 [Watch or download the MP4](./codex-smart-router-feedback.mp4).
 
-34-second replay of the native Codex 0.169.0 session verified on Arclet for
+43-second replay of actual Codex 0.167.2 sessions on Arclet for
 [#1751](https://github.com/databricks/unity-gateway/pull/1751).
 
-Shows the off skill, native permission approval, inline feedback disclosure,
-16-character validation, and cancellation while routing stays on.
+Shows inline feedback disclosure, short-reason validation, cancellation with routing
+still on, a valid reason followed by routing off, same-report native retry, backend
+confirmation after the model's final reply, and continued work. No shell approval.
 
-The replay uses saved native terminal screens. Earlier onboarding is cropped,
-blank gaps are collapsed, and pauses are shortened. No product output is recreated.
-No feedback is uploaded in this recording.
+Separate cancel, submit, and resumed retry sessions are joined and labeled. The
+isolated test home initially lacked dbcert credentials; credentials were restored
+before retrying the same saved report. One clearly labeled test report reached
+Isaac's backend. No additional report was captured during retries.
+
+Saved native terminal screens are replayed with onboarding cropped, blank gaps
+collapsed, and pauses shortened. No product output is recreated.
 
 This media-only branch keeps the video out of the feature PR's code diff.
