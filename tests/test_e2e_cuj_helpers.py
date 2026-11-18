@@ -420,7 +420,12 @@ def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     healthy = "\n".join(
         rows[0] for rows in mcp_registration._expected_fixture_server_rows().values()
     )
-    failed = healthy.replace(f"{CLAUDE}, {CODEX} connected", f"{CLAUDE}:failed {CODEX}:enabled", 1)
+    failed = healthy.replace(
+        f"{CLAUDE}, {COPILOT}, {CODEX} connected",
+        f"{CLAUDE}:failed {COPILOT}:enabled {CODEX}:enabled",
+        1,
+    )
+    assert failed != healthy
     outputs = [failed, failed, healthy, "unused"]
     session = SimpleNamespace(
         run=lambda *args, timeout: SimpleNamespace(stdout=outputs.pop(0), stderr="")
