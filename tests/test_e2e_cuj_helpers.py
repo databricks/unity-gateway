@@ -360,6 +360,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "empty",
         "completed",
         "completed_empty_history",
+        "nonempty_history",
         "detail",
         "routed_detail",
         "resumed",

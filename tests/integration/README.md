@@ -1,5 +1,16 @@
 # Integration tests
 
+Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
+[coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
+The configure-time managed-routing and exact Auto-version matrix has component coverage in
+`../test_agent_claude.py`; live configure-to-launch validation remains a gap.
+
+CUJ7 reconfigures with the Auto version before its personal Auto launch. Component tests
+in `../test_cli.py` verify that this launch does not reinstall a shared replacement picker
+after reconfigure removes UG's ordinary discovery picker. Ordinary launches, other versions,
+an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
+The live journey retains saved-model restart, successful inference, and no-router assertions.
+
 Comment-triggered `/integration-test` runs require authorization and a successful shared
 Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
 that the scan came from main's `workflow_run` producer for the matching CI request. The gate, runner
@@ -2114,6 +2125,33 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
+Auto main-model confirmation component tests (`../native_claude/mod_tests/auto-static.test.ts`)
+check the saved-model transcript notice, repeated picks through `/model auto`,
+and cancellation without a save notice. Manual native TUI
+verification on Claude 2.1.290 and 2.1.325 covered normal-mode selection and the saved-model
+notice. This is not an authenticated
+gateway inference check or an automated integration journey.
+
+Auto cleanup component tests cover the copy-on-write transformation, configure/revert
+ordering, restored private and managed backups, saved native model resolution, restrictive
+allowlists, command scopes, symlink preflight, retry after a failed native write even when
+restore has removed the source mapping (with and without workspace state), and the
+exact-version plus effective-routing provisioning gate. These cases exercise temporary
+settings through the real Python lifecycle; they do not establish live gateway coverage.
+
+The Auto chooser's native component tests cover compact modal selection, cancellation,
+pagination, invalid typed answers with a visible retry message, and stale answers after
+a model command or session end. Claude 2.1.290's plugin test runner lacks a
+`session.append` implementation, so these component tests do not cover picker-confirmation
+ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
+preservation, or prompt interruption. The chooser has no
+effort controls or internal effort commands.
+
+The same component suite covers static Auto cache warnings at the final main-model choice,
+including unchanged models, fresh sessions, inactive preference edits, cancellation, stale
+answers, and preserved hook decisions. Native TUI checks use a controlled local response
+fixture to populate token accounting; they do not establish gateway cache hits or cost.
+
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,
 unknown selectors, and absent versus empty flags. These checks do not establish gateway/TUI coverage.
@@ -2121,6 +2159,8 @@ unknown selectors, and absent versus empty flags. These checks do not establish 
 CUJ 4's preset journeys check Claude's visible ON/OFF status band and routing scope
 before work and after off/on toggles. Checks ignore terminal styling and trailing
 UI controls; offline cases reject stale states, wrong scope, and command confirmations.
+Its Auto selector journey also covers a non-replacing managed picker without managed
+aliases or an allowlist, completed inference, and unchanged machine-wide settings.
 
 The plugin test host runs without a process capability, so the mod's session-control call
 is covered by the live skill-toggle journeys rather than `claude plugin test`; native
