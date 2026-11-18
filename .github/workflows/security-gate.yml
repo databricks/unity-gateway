@@ -3,6 +3,8 @@ name: Security Gate
 # Adapted from omnigent-ai/omnigent (Apache-2.0). Each caller waits for the
 # independent security-scan.yml run; this workflow never checks out PR code.
 # Missing results, API errors and timeouts block CI, just like scan findings.
+# An organization ruleset must require this workflow from protected main;
+# requiring only its check name does not protect the gate from PR edits.
 on:
   workflow_call:
     inputs:
@@ -14,6 +16,8 @@ on:
         description: Commit selected by the caller's authorization job.
         type: string
         required: false
+  pull_request:
+  merge_group:
 
 permissions:
   actions: read
