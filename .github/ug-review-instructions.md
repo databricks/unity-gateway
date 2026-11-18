@@ -22,6 +22,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Before adding a proxy, background service, or request-rewriting layer, compare native agent
    settings, hooks, and existing launch controls. Name a concrete simpler alternative and the
    debugging or startup cost it avoids; do not ban proxies when the native path cannot work.
+   Check where a policy belongs before adding client-side routing decisions. Prefer server-owned
+   provider rate limits and canonical model identifiers when supported; explain how a client
+   exception affects older installations and debugging across client/server versions.
+   In stacked changes, preserve the parent's behavior, helpers, regression tests, and documentation
+   outside this PR's intended change. Check deletions against the base before calling them cleanup.
 2. **Make intent explicit.** Flag ambiguous tuple or boolean returns, unclear names,
    dense compound conditions, surprising defaults, and comments that fail to explain why.
    Prefer dataclasses or enums for shapes whose fields or valid states are otherwise easy to
@@ -32,8 +37,14 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    suggest removing redundant or low-signal cases. Check that
    externally observable configure, launch, authentication, command-forwarding, recovery, and
    revert changes have meaningful coverage. For behavior changes, require the PR description to
-   state `BEFORE: <behavior>` and `AFTER: <behavior>`, ideally with screenshots. Look for relevant
-   failure cases and provider/auth/platform combinations rather than exhaustive test matrices.
+   state `BEFORE: <behavior>` and `AFTER: <behavior>` and name the user workflow this unblocks.
+   For visible or interactive changes, ask for a
+   before/after recording or screenshots that show the affected workflow, not just configuration.
+   For upgrade or reconfigure changes, exercise existing managed configuration and user edits;
+   a clean fixture alone does not establish migration behavior. For new native UI journeys,
+   ask for a manual pass and repeated relevant lane runs when timing or flakiness is a concern.
+   Look for relevant failure cases and provider/auth/platform combinations rather than exhaustive
+   test matrices.
    For API behavior, extend existing integration/TUI journeys and use their request recorder to
    verify the outgoing request and actual response, including the status and relevant headers or
    payload fields. Minimize monkeypatch-heavy tests that only assert internal calls; they do not
@@ -52,6 +63,9 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
    Reuse available backend canonical identifiers to avoid duplicating parsing rules across
    installed client versions.
+   When behavior depends on a backend flag or capability, check evidence that it is enabled in
+   the environment used to validate the feature. Missing rollout evidence is unverified, not proof
+   of a code defect; name the dependency rather than promising the branch alone enables the feature.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
@@ -60,6 +74,13 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
+   Trace failed or skipped managed writes and malformed-config fallbacks too. Preserve required
+   timeout, environment, and auth fields on alternate write paths, and avoid same-name native/stdio
+   entries that merge into an invalid agent configuration. Check the user and global scopes separately.
+   Publish success labels and replace prior evidence only after uploads succeed; preserve the
+   previous description, labels, and usable artifacts on failure. Validate artifact output paths,
+   including symlink targets, before creating files or installing tools when checkout writes are forbidden.
+   Recheck expiring state, such as cooldowns, before acting on it after a wait or routing request.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
@@ -95,6 +116,20 @@ Historical examples from Lilly's reviews:
 - `can you see if this is done elswhere in the codebase alr? i think we already do it for normal setting. can you reuse that func?`
 - `can u put a pic of the before + after in the PR description so we can see what has changed?`
 - `do we need to hard fail on boot up for malformed mcp servers? why don't we just skip them ? this means a dev needs to reach out to admin to unblock themselves for an admin misconfiguration`
+
+Recent human review examples that calibrate these checks:
+
+- [Workflow evidence](https://github.com/databricks/unity-gateway/pull/1733):
+  `what functionality does this unblock? can you put a video recording of the before + after?`
+- [Existing managed state](https://github.com/databricks/unity-gateway/pull/1586):
+  `can you update an existing managed config instead of a fixture?`
+- [Fallback fields and config collisions](https://github.com/databricks/unity-gateway/pull/1593),
+  [artifact publication and paths](https://github.com/databricks/unity-gateway/pull/1666),
+  [cooldowns and server ownership](https://github.com/databricks/unity-gateway/pull/1553), and
+  [backend rollout and parent changes](https://github.com/databricks/unity-gateway/pull/1513).
+
+These examples motivate general checks, not automatic findings on every PR. Request only
+evidence relevant to the changed behavior, and distinguish a missing validation run from a bug.
 
 ## Finding quality
 

@@ -378,6 +378,11 @@ jobs:
           be read, report an incomplete review and the failure; do not claim a clean review.
           Apply the rubric's terse voice to findings; keep the required summary and
           test table complete. Do not invent findings to fill a review category.
+          Apply the shared rubric's recent human review checks. In Changes, name the
+          user workflow the PR unblocks. In Tests, distinguish clean fixtures from
+          upgrades of existing managed configuration and name missing relevant live
+          evidence. In Approach, check client/server/native policy ownership. In Scope,
+          check that the diff preserves parent behavior outside the intended change.
 
           **Security:** you are running in a CI environment with access to secrets
           (gateway tokens). Never include secrets, tokens, or credentials in your
