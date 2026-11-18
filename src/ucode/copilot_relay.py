@@ -64,6 +64,16 @@ _OTEL_TRACES_CALL = ("POST", f"{OTEL_PATH}/v1/traces")
 _OTEL_METRICS_CALL = ("POST", f"{OTEL_PATH}/v1/metrics")
 # A session credential the exporter may send, which must not reach the gateway.
 _OTEL_SESSION_CREDENTIAL_HEADER = "x-api-key"
+# Headers the relay sets itself, which a launch's added headers can't replace.
+_RESERVED_ADDED_HEADERS = frozenset(
+    name.lower()
+    for name in (
+        AI_GATEWAY_TOKEN_HEADER,
+        AUTHORIZATION_HEADER,
+        MODEL_PROVIDER_SERVICE_HEADER,
+        GITHUB_COPILOT_API_HOST_HEADER,
+    )
+)
 # Copilot joins GitHub MCP to the bare host and port, dropping the session secret.
 _SECRETLESS_DIRECT_CALLS = frozenset({("POST", "/mcp/readonly")})
 
@@ -118,6 +128,30 @@ def _retrieved_at(entry: Mapping[str, object]) -> float:
     return float("-inf")
 
 
+def cached_copilot_api_host(cache_file: Path | None = None) -> str | None:
+    """The Copilot API host of the newest entry in Copilot's local user cache, or None."""
+    path = cache_file or _copilot_user_cache_file()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    # The file is JSONC: whole-line `//` comments around a JSON object.
+    lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
+    try:
+        payload = json.loads("\n".join(lines))
+    except ValueError:
+        return None
+    best: tuple[float, str] | None = None
+    for entry in payload.values() if isinstance(payload, dict) else ():
+        if not isinstance(entry, dict):
+            continue
+        endpoints = entry.get("endpoints")
+        host = copilot_api_host(endpoints.get("api")) if isinstance(endpoints, dict) else None
+        if host and (best is None or _retrieved_at(entry) > best[0]):
+            best = (_retrieved_at(entry), host)
+    return best[1] if best else None
+
+
 class CopilotHostResolver:
     """Finds the caller's Copilot API host, once per GitHub credential.
 
@@ -168,26 +202,7 @@ class CopilotHostResolver:
         return copilot_api_host(endpoints.get("api")) if isinstance(endpoints, dict) else None
 
     def _from_cache_file(self) -> str | None:
-        path = self._cache_file or _copilot_user_cache_file()
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None
-        # The file is JSONC: whole-line `//` comments around a JSON object.
-        lines = [line for line in text.splitlines() if not line.lstrip().startswith("//")]
-        try:
-            payload = json.loads("\n".join(lines))
-        except ValueError:
-            return None
-        best: tuple[float, str] | None = None
-        for entry in payload.values() if isinstance(payload, dict) else ():
-            if not isinstance(entry, dict):
-                continue
-            endpoints = entry.get("endpoints")
-            host = copilot_api_host(endpoints.get("api")) if isinstance(endpoints, dict) else None
-            if host and (best is None or _retrieved_at(entry) > best[0]):
-                best = (_retrieved_at(entry), host)
-        return best[1] if best else None
+        return cached_copilot_api_host(self._cache_file)
 
 
 def _is_normalized(path: str) -> bool:
@@ -206,6 +221,7 @@ class _CopilotRelayHandler(_ProxyHandler):
     # Set by the server factory.
     session_secret: str
     provider_service: str
+    added_headers: Mapping[str, str]
     sign_in_hint: str
     copilot_host: Callable[[str], str | None]
     direct_base_url: Callable[[str], str]
@@ -309,9 +325,15 @@ class _CopilotRelayHandler(_ProxyHandler):
         return AI_GATEWAY_TOKEN_HEADER, self._databricks_headers(), "copilot-gateway"
 
     def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        extra = {
+            name: value
+            for name, value in self.added_headers.items()
+            if name.lower() not in _RESERVED_ADDED_HEADERS
+        }
         if self._is_otel_export():
-            return {}
+            return extra
         return {
+            **extra,
             MODEL_PROVIDER_SERVICE_HEADER: self.provider_service,
             GITHUB_COPILOT_API_HOST_HEADER: self._api_host,
         }
@@ -389,6 +411,7 @@ def start_copilot_relay_proxy(
     session_secret: str,
     provider_service: str,
     sign_in_hint: str,
+    added_headers: Mapping[str, str] | None = None,
     copilot_host: Callable[[str], str | None] | None = None,
     direct_base_url: Callable[[str], str] = _https_base_url,
     on_direct_request: Callable[[str, str], None] = _log_direct_request,
@@ -398,10 +421,13 @@ def start_copilot_relay_proxy(
     ``http://127.0.0.1:<server.server_address[1]>/<session_secret>``, and its OTLP endpoint is that
     URL followed by :data:`OTEL_PATH`.
 
+    ``added_headers`` go on every gateway call and OTel trace export, never on a direct one; they
+    can't replace the credential, Model Provider Service or Copilot API host headers.
     :data:`GATEWAY_ROUTES` are the calls AI Gateway serves; every other call goes direct to the
     Copilot API host that ``copilot_host(authorization)`` finds for the caller (a
-    :class:`CopilotHostResolver` by default), at ``direct_base_url(host)``. ``on_direct_request(method, path)`` sees each direct
-    call's method and path, never its headers or body."""
+    :class:`CopilotHostResolver` by default), at ``direct_base_url(host)``.
+    ``on_direct_request(method, path)`` sees each direct call's method and path, never its headers
+    or body."""
     return _start_proxy(
         workspace,
         token_provider,
@@ -414,6 +440,7 @@ def start_copilot_relay_proxy(
         handler_attrs={
             "session_secret": session_secret,
             "provider_service": provider_service,
+            "added_headers": dict(added_headers or {}),
             "sign_in_hint": sign_in_hint,
             # staticmethod: a plain function on the handler class would bind as a method.
             "copilot_host": staticmethod(copilot_host or CopilotHostResolver()),

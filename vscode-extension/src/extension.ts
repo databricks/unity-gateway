@@ -16,6 +16,7 @@ import {
 } from "./formats";
 import { streamEvents } from "./gateway";
 import { listen, type OtelSetting, otelEndpoint, otelSettings, startReceiver } from "./otel";
+import { RUNTIME_PATH_SETTING, type SeatRelaySetting, seatRelaySetting, writeWrapper } from "./seatRelay";
 import { DEFAULT_MODEL_SETTING, syncSettings } from "./settings";
 
 // ug writes the wire name of the model it configured (WIRE_* in src/ucode/agents/copilot.py).
@@ -42,6 +43,8 @@ export interface Settings {
   readonly otel?: OtelSetting;
   /** The workspace's default model, one of `models`, for new chat conversations. */
   readonly defaultModel?: string;
+  /** Routes GitHub Copilot's own calls through a Model Provider Service that relays the developer's Copilot seat. */
+  readonly seatRelay?: SeatRelaySetting;
 }
 
 /** Routes a request to a Model Provider Service; its models aren't served without it. */
@@ -89,6 +92,7 @@ export const readConfig = (text: string | undefined): Settings => {
   const headers = managedHeaders(get("headers"));
   const otel = otelSetting(get("otel"));
   const defaultModel = get("defaultModel");
+  const seatRelay = seatRelaySetting(get("seatRelay"));
   const kept: ModelSetting[] = (Array.isArray(models) ? models : [])
     .filter(
       (model): model is ModelSetting =>
@@ -109,6 +113,7 @@ export const readConfig = (text: string | undefined): Settings => {
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
     ...(otel ? { otel } : {}),
     ...(typeof defaultModel === "string" && kept.some((model) => model.id === defaultModel) ? { defaultModel } : {}),
+    ...(seatRelay ? { seatRelay } : {}),
   };
 };
 
@@ -332,15 +337,23 @@ export function activate(context: vscode.ExtensionContext): void {
     listen(receiver, settings.otel.port, warn);
     context.subscriptions.push({ dispose: () => receiver.close() });
   }
+  // Rewritten on every start, so it follows the VS Code install it runs in.
+  const wrapper = settings.seatRelay
+    ? writeWrapper(context.globalStorageUri.fsPath, settings.seatRelay, vscode.env.appRoot, warn).catch((error: unknown) => {
+        warn(`Couldn't set up GitHub Copilot's runtime for Unity Gateway: ${String(error)}`);
+        return undefined;
+      })
+    : Promise.resolve(undefined);
   // This also removes what an earlier configure had the extension write and this one doesn't.
-  const wanted = {
+  const wanted = async () => ({
     ...(settings.otel ? otelSettings(otelEndpoint(settings.otel)) : {}),
     ...(settings.defaultModel ? { [DEFAULT_MODEL_SETTING]: settings.defaultModel } : {}),
-  };
+    ...((path) => (path ? { [RUNTIME_PATH_SETTING]: path } : {}))(await wrapper),
+  });
   const sync = () =>
-    syncSettings(vscode.workspace.getConfiguration(), context.globalState, wanted, warn, new Set([DEFAULT_MODEL_SETTING])).catch(
-      (error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`),
-    );
+    wanted()
+      .then((values) => syncSettings(vscode.workspace.getConfiguration(), context.globalState, values, warn, new Set([DEFAULT_MODEL_SETTING])))
+      .catch((error: unknown) => warn(`Could not update VS Code's settings: ${String(error)}`));
   const synced = sync();
   // VS Code lists a provider's models only when a chat view asks or the provider reports a change, so a window that
   // was open when ug installed the extension never lists them otherwise.

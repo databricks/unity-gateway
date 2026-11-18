@@ -156,6 +156,14 @@ describe("requestHeaders", () => {
 });
 
 describe("readConfig", () => {
+  it("keeps a seat relay's command", () => {
+    const command = ["/bin/ug", "copilot-seat-runtime", "--provider", "main.ai.seats"];
+    const config = { workspace: "https://ws", models: [], provider: "main.ai.seats", seatRelay: { command } };
+
+    assert.deepEqual(readConfig(JSON.stringify(config)).seatRelay, { command });
+    assert.equal(readConfig(JSON.stringify({ ...config, seatRelay: { command: "ug" } })).seatRelay, undefined);
+  });
+
   it("keeps well-formed models, names, families and token limits, the provider, and trims the workspace URL", () => {
     const config = {
       workspace: "https://ws/",

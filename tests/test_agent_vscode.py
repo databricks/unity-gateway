@@ -352,6 +352,47 @@ class TestConfigure:
         assert "--install-extension` failed: boom" in _printed(capsys)
 
 
+class TestSeatRelay:
+    SEATS = "main.ai.copilot_seats"
+
+    @pytest.fixture
+    def seats(self, monkeypatch):
+        monkeypatch.setattr(vscode, "uses_seat_relay", lambda state, provider, tool: True)
+        monkeypatch.setattr(vscode, "ug_binary", lambda: "/bin/ug")
+
+    def test_routes_copilot_through_the_seat_relay_with_no_databricks_models(
+        self, code, seats, capsys
+    ):
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config == {
+            "workspace": WS,
+            "authCommand": vscode.build_auth_shell_command(WS, "dev"),
+            "models": [],
+            "provider": self.SEATS,
+            "seatRelay": {"command": ["/bin/ug", "copilot-seat-runtime", "--provider", self.SEATS]},
+        }
+        assert f"routing Copilot through {self.SEATS}" in _printed(capsys)
+
+    def test_revert_removes_the_runtime_wrapper_setting_only(self, code, seats):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        user = vscode.user_dir(insiders=False)
+        ours = user / "settings.json"
+        ours.parent.mkdir(parents=True, exist_ok=True)
+        wrapper = str(user / "globalStorage" / vscode.EXTENSION_ID / vscode.RUNTIME_WRAPPER_NAME)
+        ours.write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: wrapper, "editor.tabSize": 2}))
+        theirs = user / "profiles" / "p1" / "settings.json"
+        theirs.parent.mkdir(parents=True)
+        theirs.write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: "/opt/my/copilot-runtime"}))
+
+        assert vscode.revert() == "removed"
+
+        assert json.loads(ours.read_text()) == {"editor.tabSize": 2}
+        assert json.loads(theirs.read_text()) == {
+            vscode.RUNTIME_PATH_SETTING: "/opt/my/copilot-runtime"
+        }
+
+
 class TestCopilotModels:
     """With the Copilot CLI's catalog in state, VS Code gets the same models and the managed setup."""
 
