@@ -11,7 +11,8 @@ fields, and exit codes, see the [admin-managed settings reference](admin-managed
 
 ## Prepare the workspace and devices
 
-1. Publish a coding-agent configuration in the workspace with Claude Code, Codex, or both enabled.
+1. [Publish a coding-agent configuration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-configure-govern)
+   in the workspace with Claude Code, Codex, or both enabled.
    Set gateway fields such as `models`, `default_models`, `http_headers`, `tracing`, and `mcp_servers`
    there. Use `agent_native_settings` or `agent_native_config.claude_code.managed_settings` for
    Claude Code keys. Use `agent_native_config.codex.requirements` for enforced Codex rules and
@@ -19,8 +20,9 @@ fields, and exit codes, see the [admin-managed settings reference](admin-managed
    examples](admin-managed-settings-reference.md#native-fields) for the JSON shape.
 2. Install `ug`, its Python runtime, and the agents in locations that every device user can run.
    Keep the shared installation outside a user's home directory. Codex 0.156.0 or newer is needed
-   for the gateway provider lock. The [macOS Jamf guide](../scripts/mdm/macos-setup.md) includes a
-   provisioning script and service-principal setup.
+   for the gateway provider lock. The [MDM script index](../scripts/mdm/README.md) lists macOS and
+   Windows scripts. The [macOS Jamf guide](../scripts/mdm/macos-setup.md) covers service-principal
+   setup.
 3. Give the provisioning identity read access to the published configuration and any MCP servers
    it names. Use an unattended credential source for a fleet job. The provisioning credential
    reads the policy; it does not become a developer's sign-in.
@@ -58,7 +60,8 @@ contents of files it would create or replace, and a per-agent report. Review `[s
 warnings: a skipped native key either belongs to Unity Gateway or conflicts with a feature. The
 [key classes and ownership tables](admin-managed-settings-reference.md#key-classes) give the
 reason for each key. A preview writes no machine-wide files. When resolving
-workspace MCP servers, the run still needs access to those servers.
+workspace MCP servers, the run still needs access to those servers. The preview composes the files;
+the test device launch confirms that the installed agent accepts the native values.
 
 ## Apply the configuration
 
