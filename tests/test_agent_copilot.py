@@ -2110,3 +2110,129 @@ class TestWithSessionId:
             "User-Agent": "u",
         }
         assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}
+
+
+SEAT_MPS = "main.ai.copilot_seats"
+SEAT_SERVICE = {"provider_type": "github_copilot", "targets": ["gpt-5.5"], "relayed": True}
+
+
+def _stub_seat_launch(monkeypatch, *, returncode=0, host="api.business.githubcopilot.com"):
+    from ucode import copilot_relay
+
+    seen: dict = {}
+    monkeypatch.setattr(copilot_relay, "cached_copilot_api_host", lambda *_a: host)
+
+    def popen(argv, *, env):
+        seen["argv"] = argv
+        seen["env"] = env
+        # The relay is live while Copilot runs, and refuses a call without a GitHub token.
+        seen["unsigned_status"] = httpx.get(f"{env['COPILOT_API_URL']}/meta", timeout=5).status_code
+        return _ExitedProcess(returncode)
+
+    monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+    return seen
+
+
+class TestSeatRelay:
+    def test_env_signs_copilot_in_and_sends_its_calls_to_the_relay(self, monkeypatch):
+        for key in ("COPILOT_OFFLINE", "COPILOT_MODEL", "COPILOT_PROVIDERS_CONFIG"):
+            monkeypatch.setenv(key, "x")
+        monkeypatch.setenv("COPILOT_PROVIDER_API_KEY", "byok")
+        monkeypatch.setenv("GITHUB_MCP_URL_OVERRIDE", "https://elsewhere/mcp")
+
+        env = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host="api.githubcopilot.com")
+
+        assert env["COPILOT_API_URL"] == "http://127.0.0.1:9/s"
+        assert env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] == "true"
+        assert env["GITHUB_MCP_URL_OVERRIDE"] == "https://api.githubcopilot.com/mcp/readonly"
+        for key in ("COPILOT_OFFLINE", "COPILOT_MODEL", "COPILOT_PROVIDERS_CONFIG"):
+            assert key not in env
+        assert "COPILOT_PROVIDER_API_KEY" not in env
+        assert "GITHUB_MCP_URL_OVERRIDE" not in copilot.seat_relay_env("u", mcp_host=None)
+
+    def test_launch_runs_copilot_signed_in_through_the_relay(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        seen = _stub_seat_launch(monkeypatch, returncode=3)
+        state = dict(STATE)
+        state[copilot.LAUNCH_PROVIDER_SERVICE_KEY] = SEAT_MPS
+
+        with pytest.raises(SystemExit) as exit_info:
+            copilot.launch(state, ["--model", "gpt-5.5"], options=copilot.LaunchOptions())
+
+        assert exit_info.value.code == 3
+        env = seen["env"]
+        assert env["COPILOT_API_URL"].startswith("http://127.0.0.1:")
+        assert "COPILOT_OFFLINE" not in env and "COPILOT_PROVIDERS_CONFIG" not in env
+        assert (
+            env["GITHUB_MCP_URL_OVERRIDE"] == "https://api.business.githubcopilot.com/mcp/readonly"
+        )
+        assert "dbx-token" not in env.values()
+        assert seen["argv"][:2] == [copilot.SPEC["binary"], *copilot.MCP_LAUNCH_ARGS]
+        assert seen["argv"][2] == "--session-id"
+        assert seen["argv"][4:] == ["--model", "gpt-5.5"]
+        assert seen["unsigned_status"] == 401
+        assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
+
+    def test_launch_warns_about_copilots_own_api_url_setting(self, tmp_path, monkeypatch, capsys):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        home = tmp_path / "copilot-home"
+        home.mkdir()
+        (home / "settings.json").write_text(json.dumps({"copilotUrl": "https://example.test"}))
+        monkeypatch.setenv("COPILOT_HOME", str(home))
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        _stub_seat_launch(monkeypatch)
+        state = {**STATE, copilot.LAUNCH_PROVIDER_SERVICE_KEY: SEAT_MPS}
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        printed = " ".join(capsys.readouterr().out.split())
+        assert "`copilotUrl` setting (https://example.test)" in printed
+
+    def test_a_service_that_doesnt_relay_a_seat_launches_offline(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        seen = _stub_launch(monkeypatch)
+        _stub_provider_service(
+            monkeypatch, {"provider_type": "anthropic", "targets": ["claude-sonnet-5"]}
+        )
+        state = {**STATE, copilot.LAUNCH_PROVIDER_SERVICE_KEY: MPS}
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        assert seen["env"]["COPILOT_OFFLINE"] == "true"
+
+    def test_vscode_runtime_runs_through_the_relay_and_keeps_stdout_clear(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+        seen = _stub_seat_launch(monkeypatch, returncode=5)
+
+        returncode = copilot.run_seat_runtime(
+            dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", ["--stdio", "--headless"]
+        )
+
+        assert returncode == 5
+        assert seen["argv"] == ["/vscode/copilot-runtime", "--stdio", "--headless"]
+        assert seen["env"]["COPILOT_API_URL"].startswith("http://127.0.0.1:")
+        assert seen["unsigned_status"] == 401
+        assert capsys.readouterr().out == ""
+
+    def test_vscode_runtime_that_cant_start_reports_it_on_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
+
+        def popen(argv, *, env):
+            raise FileNotFoundError(argv[0])
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+
+        assert copilot.run_seat_runtime(dict(STATE), SEAT_MPS, "/missing", []) == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert "Couldn't start the Copilot runtime /missing" in captured.err

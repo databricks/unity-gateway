@@ -111,6 +111,7 @@ _AGENT_SESSION_COMMANDS = frozenset(
         "claude-router-hook",
         "codex-router-hook",
         "cowork-hook",
+        "copilot-seat-runtime",
         "claude-desktop-auth",
         "smart-router-describe",
         "smart-router-logs",

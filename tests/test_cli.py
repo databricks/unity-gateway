@@ -5750,7 +5750,12 @@ class TestConfigureAgentsSelection:
     def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
         state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
-        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        names, reason = services
+        monkeypatch.setattr(
+            cli_mod,
+            "tool_provider_service_choices",
+            lambda *a: ([(name, name) for name in names], reason),
+        )
         saved: list[dict] = []
         monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
         asked: list[list[str]] = []
@@ -5842,6 +5847,27 @@ class TestConfigureAgentsSelection:
         result = cli_mod._maybe_select_provider_service("claude", state)
         assert cli_mod.get_model_location(result, "claude") is None
         assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_shows_service_labels(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "copilot", services=([], None), answers=[]
+        )
+        label = "a.b.seats (GitHub Copilot subscription)"
+        monkeypatch.setattr(
+            cli_mod, "tool_provider_service_choices", lambda *a: ([("a.b.seats", label)], None)
+        )
+        shown: list[list[tuple[str, str]]] = []
+        replies = iter(["mps", "a.b.seats"])
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_selection",
+            lambda prompt, options: shown.append(list(options)) or next(replies),
+        )
+
+        result = cli_mod._maybe_select_provider_service("copilot", state)
+
+        assert shown[1] == [("a.b.seats", label)]
+        assert cli_mod.get_provider_service(result, "copilot") == "a.b.seats"
 
     def test_picker_gemini_has_no_custom_location(self, monkeypatch):
         state, _saved, asked = self._picker(
@@ -10281,3 +10307,61 @@ class TestAutoCleanupLifecycle:
         assert json.loads(native.read_text()) == expected
         assert not state_mod.load_state()
         assert state_mod.CLAUDE_AUTO_REVERT_TARGETS_KEY not in state_mod.load_full_state()
+
+
+class TestCopilotSeatRuntime:
+    def _run(self, monkeypatch, state, args):
+        seen: dict = {}
+        pinned: list = []
+        monkeypatch.setattr(cli_mod, "load_state", lambda: state)
+        monkeypatch.setattr(
+            cli_mod, "pin", lambda host, workspace_id: pinned.append((host, workspace_id))
+        )
+
+        def run(state_arg, provider, runtime, runtime_args):
+            print("not for VS Code")
+            seen.update(provider=provider, runtime=runtime, args=runtime_args)
+            return 7
+
+        monkeypatch.setattr(cli_mod.copilot_agent, "run_seat_runtime", run)
+        result = CliRunner().invoke(cli_mod.app, args)
+        return result, seen, pinned
+
+    def test_runs_the_runtime_with_vscodes_arguments(self, monkeypatch):
+        result, seen, pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://ws.example"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "main.ai.seats",
+                "--workspace-id",
+                "42",
+                "--runtime",
+                "/vscode/copilot-runtime",
+                "--",
+                "--stdio",
+                "--log-level",
+                "info",
+            ],
+        )
+
+        assert result.exit_code == 7
+        assert seen == {
+            "provider": "main.ai.seats",
+            "runtime": "/vscode/copilot-runtime",
+            "args": ["--stdio", "--log-level", "info"],
+        }
+        assert pinned == [("https://ws.example", "42")]
+        # The runtime owns stdout.
+        assert "not for VS Code" not in result.stdout
+
+    def test_needs_a_configured_workspace(self, monkeypatch):
+        result, seen, _pinned = self._run(
+            monkeypatch,
+            {},
+            ["copilot-seat-runtime", "--provider", "p", "--runtime", "/r", "--", "--stdio"],
+        )
+
+        assert result.exit_code == 1
+        assert seen == {}

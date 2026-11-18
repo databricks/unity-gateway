@@ -170,6 +170,22 @@ class TestGatewayRoutes:
         assert "x-databricks-org-id" not in sent["headers"]
         assert sent["names"].count("x-databricks-ai-gateway-token") == 1
 
+    def test_adds_the_launch_headers_without_replacing_its_own(self, gateway, github):
+        added = {
+            "User-Agent": "ucode/1 copilot/2",
+            "Databricks-Model-Provider-Service": "other.mps",
+            "X-Databricks-AI-Gateway-Token": "Bearer spoofed",
+        }
+        with _relay(gateway, github, added_headers=added) as (http, _port, _direct):
+            http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+            http.get(f"/{SECRET}/agents/swe/custom-agents/o/r", headers=_auth())
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["user-agent"] == "ucode/1 copilot/2"
+        assert sent["headers"]["databricks-model-provider-service"] == MPS
+        assert sent["headers"]["x-databricks-ai-gateway-token"] == f"Bearer {DATABRICKS_TOKEN}"
+        assert github.requests[0]["headers"].get("user-agent") != "ucode/1 copilot/2"
+
     def test_a_dead_databricks_login_answers_with_the_sign_in_hint(self, gateway, github):
         gateway._status = 401
 
