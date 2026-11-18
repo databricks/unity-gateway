@@ -17,6 +17,7 @@ from tests.e2e_cuj.helpers.constants import (
     CLAUDE,
     CLAUDE_HAIKU_MODEL,
     CODEX,
+    COPILOT,
     INFERENCE_PATHS,
     CodingAgent,
 )
@@ -998,12 +999,14 @@ def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
     suffix = ".EXE" if sys.platform == "win32" else ""
-    for agent in (CLAUDE, CODEX):
+    for agent in (CLAUDE, CODEX, COPILOT):
         (tmp_path / f"{agent}{suffix}").write_text("#!/bin/sh\n")
         (tmp_path / f"{agent}{suffix}").chmod(0o755)
     banner = "Checking MCP server health…\n\n\n"
-    rows = f"{cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)}: ug mcp-proxy - ✓ Connected\n"
-    outputs = {CLAUDE: [banner, rows], CODEX: [rows]}
+    name = cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)
+    rows = f"{name}: ug mcp-proxy - ✓ Connected\n"
+    copilot_rows = f"User servers:\n  {name} (http)\n"
+    outputs = {CLAUDE: [banner, rows], CODEX: [rows], COPILOT: [copilot_rows]}
     calls = []
 
     def run(*args, binary, timeout):
@@ -1014,7 +1017,7 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
-    assert calls == [CLAUDE, CLAUDE, CODEX]
+    assert calls == [CLAUDE, CLAUDE, CODEX, COPILOT]
 
 
 def _codex_events(*events):
