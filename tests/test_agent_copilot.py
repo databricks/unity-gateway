@@ -2110,3 +2110,50 @@ class TestWithSessionId:
             "User-Agent": "u",
         }
         assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}
+
+
+class TestAppServiceRoutes:
+    WS = "https://example.cloud.databricks.com"
+
+    @pytest.fixture(autouse=True)
+    def _version(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.91")
+
+    def test_turns_go_to_the_gateway_with_ug_copilot_headers(self):
+        routes = copilot.app_service_routes(
+            {"workspace": self.WS, "copilot_http_headers": {"X-Team": "ml"}}
+        )
+        claude = routes[("POST", "/copilot/anthropic/v1/messages")]
+        gpt = routes[("POST", "/copilot/responses/v1/responses")]
+        assert (claude.upstream, gpt.upstream) == (
+            "/ai-gateway/anthropic/v1/messages",
+            "/ai-gateway/mlflow/v1/responses",
+        )
+        assert claude.headers["X-Team"] == "ml"
+        assert claude.headers["x-databricks-use-coding-agent-mode"] == "true"
+        assert "copilot/1.0.91" in claude.headers["User-Agent"]
+        assert claude.sign_in_error and claude.bad_request_rewriter is not None
+        # Without workspace tracing the app's OTLP export has nowhere to go.
+        assert not any(path.startswith("/copilot/otel/") for _, path in routes)
+
+    def test_a_provider_service_routes_only_the_turns(self):
+        routes = copilot.app_service_routes(
+            {
+                "workspace": self.WS,
+                "provider_services": {"copilot": "cat.s.mps"},
+                "copilot_otel_tracing": True,
+            }
+        )
+        gpt = routes[("POST", "/copilot/responses/v1/responses")]
+        traces = routes[("POST", "/copilot/otel/v1/traces")]
+        assert gpt.upstream == "/ai-gateway/openai/v1/responses"
+        assert gpt.headers[copilot.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+        assert (
+            routes[("POST", "/copilot/anthropic/v1/messages")].headers[
+                copilot.MODEL_PROVIDER_SERVICE_HEADER
+            ]
+            == "cat.s.mps"
+        )
+        assert traces.upstream == "/ai-gateway/otel/v1/traces"
+        assert copilot.MODEL_PROVIDER_SERVICE_HEADER not in traces.headers
+        assert routes[("POST", "/copilot/otel/v1/metrics")].upstream is None

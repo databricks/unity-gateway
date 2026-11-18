@@ -763,8 +763,9 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         port = login_service.recorded_port("port")
         ours = port is not None and otel.get("trace_exporter") == _desktop_trace_exporter(port)
         relay_port = login_service.recorded_port("relay-port")
+        copilot_app = login_service.copilot_app_recorded()
         if workspace is None:
-            if not relay_port:  # the Codex app's relay still needs the service
+            if not relay_port and not copilot_app:  # the Codex relay or Copilot app needs it
                 login_service.remove()
             if ours:
                 del otel["trace_exporter"]
@@ -772,9 +773,9 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
                     del doc["otel"]
                 write_toml_file(_legacy_config_path(), doc)
             return ours
-        # The app's relay stays on the workspace `ug configure` set it up for; a launch elsewhere
-        # must not move the service (and the app's MPS headers) to another workspace.
-        if relay_port and workspace not in login_service.read_unit(login_service.service_path()):
+        # The Codex app's relay and the Copilot app stay on the workspace `ug configure` set them
+        # up for; a launch elsewhere must not move the service (and their traffic) to another one.
+        if (relay_port or copilot_app) and not _service_on(workspace):
             return False
         # shortcut: a managed-file exporter still outranks this one, check it if admins set one.
         if "trace_exporter" in otel and not ours:
@@ -785,7 +786,7 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
             return False
         port = port or login_service.allocate_port()
         # Before the exporter, so a missing systemd user manager leaves Codex settings untouched.
-        login_service.install(workspace, port, relay_port)
+        login_service.install(workspace, port, relay_port, copilot_app=copilot_app)
         if ours:
             return False
         otel["trace_exporter"] = _desktop_trace_exporter(port)
@@ -795,6 +796,11 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning_err(f"Could not update Codex desktop tracing: {exc}")
         return False
+
+
+def _service_on(workspace: str) -> bool:
+    """Whether ug's login service unit serves ``workspace``."""
+    return workspace in login_service.read_unit(login_service.service_path())
 
 
 _explicit_configure = False
@@ -826,6 +832,7 @@ def _sync_desktop_relay(
             providers.get(CODEX_APP_RELAY_PROVIDER_NAME) if isinstance(providers, dict) else None
         )
         relay_port = login_service.recorded_port("relay-port")
+        copilot_app = login_service.copilot_app_recorded()
         if provider is None or workspace is None:
             # Config first, so a failed write leaves the app's relay still served.
             if isinstance(current, dict) and isinstance(providers, dict):
@@ -835,11 +842,19 @@ def _sync_desktop_relay(
                 if doc.get("model_provider") == CODEX_APP_RELAY_PROVIDER_NAME:
                     del doc["model_provider"]
                 write_toml_file(_legacy_config_path(), doc)
-            if tracing and workspace and relay_port:
+            keep_service = tracing or copilot_app
+            if (
+                keep_service
+                and workspace
+                and relay_port
+                and (not copilot_app or _service_on(workspace))
+            ):
                 login_service.install(
-                    workspace, login_service.recorded_port("port") or login_service.allocate_port()
+                    workspace,
+                    login_service.recorded_port("port") or login_service.allocate_port(),
+                    copilot_app=copilot_app,
                 )
-            elif not tracing:
+            elif not keep_service:
                 login_service.remove()
             return isinstance(current, dict)
         if (
@@ -851,13 +866,19 @@ def _sync_desktop_relay(
                 "ChatGPT relay."
             )
             return False
+        if copilot_app and not _service_on(workspace):
+            print_warning_err(
+                "ug's login service serves the GitHub Copilot app on another workspace; skipped "
+                "the Codex app ChatGPT relay."
+            )
+            return False
         relay_port = relay_port or login_service.allocate_port()
         port = login_service.recorded_port("port")
         # Each allocation releases its port, so a second one can repeat the first; retry it.
         while not port or port == relay_port:
             port = login_service.allocate_port()
         # Before the config, so a missing systemd user manager leaves Codex settings untouched.
-        login_service.install(workspace, port, relay_port)
+        login_service.install(workspace, port, relay_port, copilot_app=copilot_app)
         block = _provider_block(
             workspace,
             state.get("profile"),

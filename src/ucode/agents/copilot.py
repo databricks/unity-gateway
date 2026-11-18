@@ -91,7 +91,13 @@ from ucode.os_compatibility.file_lock_cross_os import (
     release_file_lock,
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
-from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
+from ucode.state import (
+    get_provider_service,
+    is_tool_managed,
+    load_state,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
@@ -1274,6 +1280,51 @@ def _log_proxy_failure(exc: BaseException) -> None:
             log.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')} token refresh failed: {exc}\n")
     except OSError:
         pass
+
+
+# Where the GitHub Copilot app's model providers and OTLP exporter post on ug's login service.
+APP_ANTHROPIC_PATH = "/copilot/anthropic/v1/messages"
+APP_RESPONSES_PATH = "/copilot/responses/v1/responses"
+APP_OTEL_PATH = "/copilot/otel"
+
+
+def app_service_routes(state: dict) -> dict:
+    """The GitHub Copilot app's routes on the login service's shared port, for ``state``'s
+    workspace: Claude and GPT turns with the headers ``ug copilot`` sends, and the app's own
+    OTLP export. A Model Provider Service gets its routing header and the gateway's native OpenAI
+    route, as in ``render_providers_config``."""
+    from ucode.gateway_proxy import ServiceRoute
+    from ucode.managed_config import load_managed_state
+    from ucode.managed_resolve import resolve_state
+    from ucode.workspace import state_workspace_key
+
+    # Admin headers, the provider service and tracing are managed values that state.json omits.
+    if managed := load_managed_state(state_workspace_key(state)):
+        state = resolve_state(managed, state, "copilot")
+    provider_service = get_provider_service(state, "copilot")
+    headers = proxy_headers(state)
+    routing = {MODEL_PROVIDER_SERVICE_HEADER: provider_service} if provider_service else {}
+    responses = "/ai-gateway/openai/v1" if provider_service else "/ai-gateway/mlflow/v1"
+
+    def turn(upstream: str) -> ServiceRoute:
+        return ServiceRoute(
+            upstream,
+            {**headers, **routing},
+            sign_in_error=True,
+            bad_request_rewriter=recognizable_context_overflow,
+        )
+
+    routes = {
+        ("POST", APP_ANTHROPIC_PATH): turn("/ai-gateway/anthropic/v1/messages"),
+        ("POST", APP_RESPONSES_PATH): turn(f"{responses}/responses"),
+    }
+    if state.get("copilot_otel_tracing"):
+        routes[("POST", f"{APP_OTEL_PATH}/v1/traces")] = ServiceRoute(
+            OTEL_TRACES_PATH, headers, sign_in_error=True
+        )
+        # The gateway takes no metrics, which the runtime always exports.
+        routes[("POST", f"{APP_OTEL_PATH}/v1/metrics")] = ServiceRoute(None)
+    return routes
 
 
 class _ChildProcess(Protocol):

@@ -29,6 +29,8 @@ from ucode.workspace_key import workspace_key
 
 SERVICE_NAME = "ug-codex-otel.service"
 UNIT_MARKER = "# Managed by unity-gateway; do not edit."
+# Added to the marker while the GitHub Copilot app needs the service, so Codex keeps it.
+COPILOT_APP_NOTE = "Used by the GitHub Copilot app."
 # The macOS LaunchAgent label and the Windows scheduled task name.
 SERVICE_LABEL = "com.databricks.ug-codex-otel"
 
@@ -83,7 +85,7 @@ def _service_env() -> dict[str, str]:
     return env
 
 
-def _ensure_launch_agent(path: Path, argv: list[str]) -> None:
+def _ensure_launch_agent(path: Path, argv: list[str], marker: str) -> None:
     plist = plistlib.dumps(
         {
             "Label": SERVICE_LABEL,
@@ -94,7 +96,7 @@ def _ensure_launch_agent(path: Path, argv: list[str]) -> None:
             "KeepAlive": {"SuccessfulExit": False},
         }
     ).decode("utf-8")
-    text = plist.replace("<plist", f"<!-- {UNIT_MARKER} -->\n<plist", 1)
+    text = plist.replace("<plist", f"<!-- {marker} -->\n<plist", 1)
     changed = not path.is_file() or path.read_text(encoding="utf-8") != text
     if changed:
         write_text_file(path, text)
@@ -109,12 +111,12 @@ def _ensure_launch_agent(path: Path, argv: list[str]) -> None:
     _run_service_command(["launchctl", "bootstrap", domain, str(path)])
 
 
-def _ensure_scheduled_task(path: Path, argv: list[str]) -> None:
+def _ensure_scheduled_task(path: Path, argv: list[str], marker: str) -> None:
     # A non-admin may only register a logon trigger for their own account.
     user = "\\".join(filter(None, (os.environ.get("USERDOMAIN"), os.environ.get("USERNAME"))))
     text = f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Description>{UNIT_MARKER}</Description></RegistrationInfo>
+  <RegistrationInfo><Description>{marker}</Description></RegistrationInfo>
   <Triggers><LogonTrigger><UserId>{escape(user)}</UserId></LogonTrigger></Triggers>
   <Principals>
     <Principal id="Author">
@@ -175,12 +177,15 @@ def _owned(path: Path) -> bool:
     return path.is_file() and UNIT_MARKER in read_unit(path)
 
 
-def install(workspace: str, port: int, relay_port: int | None = None) -> None:
+def install(
+    workspace: str, port: int, relay_port: int | None = None, *, copilot_app: bool = False
+) -> None:
     path = service_path()
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace a symlinked service file: {path}")
     if path.exists() and not _owned(path):
         raise RuntimeError(f"Refusing to replace an unmanaged service file: {path}")
+    marker = f"{UNIT_MARKER} {COPILOT_APP_NOTE}" if copilot_app else UNIT_MARKER
     # Also serve the ChatGPT relay for the Codex app; before --port so its anchor still matches.
     relay = ["--relay-port", str(relay_port)] if relay_port else []
     if current_os() == OS.WINDOWS:
@@ -201,7 +206,7 @@ def install(workspace: str, port: int, relay_port: int | None = None) -> None:
             str(port),
             *workspace_id_args(workspace),
         ]
-        _ensure_scheduled_task(path, argv)
+        _ensure_scheduled_task(path, argv, marker)
         return
     ug_path = ug_binary()
     if not os.path.isabs(ug_path):
@@ -221,10 +226,11 @@ def install(workspace: str, port: int, relay_port: int | None = None) -> None:
                 str(port),
                 *workspace_id_args(workspace),
             ],
+            marker,
         )
         return
     lines = [
-        UNIT_MARKER,
+        marker,
         "[Service]",
         # systemd expands `$` in ExecStart arguments but never in the executable path.
         f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
@@ -273,6 +279,12 @@ def remove() -> None:
     _run_systemctl(["daemon-reload"])
 
 
+def copilot_app_recorded() -> bool:
+    """Whether ug's own login service unit records that the GitHub Copilot app needs it."""
+    unit = service_path()
+    return _owned(unit) and COPILOT_APP_NOTE in read_unit(unit)
+
+
 def recorded_port(flag: str) -> int | None:
     """The ``--{flag}`` port recorded in ug's own login service unit, if there is one."""
     unit = service_path()
@@ -298,7 +310,18 @@ def serve(host: str, workspace_id: str | None, port: int, relay_port: int | None
         def token_provider(force: bool) -> str:
             return launch_token(state, host, force_refresh=force)
 
-        server, _cache, _client = gateway_proxy.start_otel_proxy(host, token_provider, port=port)
+        from ucode.agents import copilot
+
+        # One port for every desktop agent: Codex's trace exporter keeps its /v1/ URL, and the
+        # GitHub Copilot app's routes are always served.
+        server, _cache, _client = gateway_proxy.start_service_listener(
+            host,
+            token_provider,
+            port=port,
+            exact_routes=copilot.app_service_routes(state),
+            prefix_routes={"/v1/": gateway_proxy.ServiceRoute("/ai-gateway/otel/v1/")},
+            sign_in_hint=f"Run `databricks auth login --host {host}`, then retry.",
+        )
         if relay_port:
             # The Codex app is pinned to this port, so fail (and restart) rather than move.
             relay, _cache, _client = gateway_proxy.start_relay_proxy(

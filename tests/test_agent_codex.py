@@ -3065,6 +3065,48 @@ class TestCodexManagedConfig:
         assert codex._sync_desktop_relay({}, WS, "cat.s.mps") is False
         assert app_path.read_text() == ""
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_codex_never_drops_or_moves_the_copilot_app_service(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        codex._legacy_config_path().parent.mkdir(parents=True, exist_ok=True)
+        unit_path = login_service.service_path()
+        ports = iter(range(43198, 43298))
+        monkeypatch.setattr(login_service, "allocate_port", lambda: next(ports))
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
+        login_service.install(WS, 43199, copilot_app=True)
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        assert login_service.copilot_app_recorded()
+        assert f'--host "{WS}" --port 43199' in unit_path.read_text()
+
+        # A traced launch elsewhere leaves the app's service on its workspace.
+        codex.write_tool_config({"workspace": "https://other.example", "codex_otel_tracing": True})
+        assert f'--host "{WS}"' in unit_path.read_text()
+
+        # Turning Codex tracing off keeps the service the app needs.
+        codex.write_tool_config({"workspace": WS})
+        assert login_service.copilot_app_recorded()
+
+        # Adding and dropping the Codex relay keeps the app's note.
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert "--relay-port" in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+        codex.write_tool_config({"workspace": WS})
+        assert "--relay-port" not in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+
+        # A relay for another workspace would move the app's traffic, so it is skipped.
+        codex.write_tool_config(
+            {"workspace": "https://other.example"}, provider="cat.s.mps", relayed=True
+        )
+        assert "GitHub Copilot app on another workspace" in capsys.readouterr().err
+        assert f'--host "{WS}"' in unit_path.read_text()
+
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         ensure = Mock()
