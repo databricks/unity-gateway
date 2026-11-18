@@ -167,9 +167,11 @@ its Agent row, parallel calls as cards above the parent's next reply in call ord
 still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
-The native component suite also covers child-ID-to-animal-name recording without changing
-spawn inputs. `../test_claude_mod.py` checks the generated bottom-bar command and its
-fallback to native rows. Neither is a live interactive bottom-bar check.
+The native component suite also covers child-ID-to-animal-name rendering without changing
+spawn inputs. `../test_claude_mod.py` checks that generated plugins omit the deprecated
+`subagentStatusLine` command. Native `AgentRow` component tests preserve model, usage and
+task metadata while changing only routed child labels. These are not live interactive
+bottom-panel checks.
 
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,

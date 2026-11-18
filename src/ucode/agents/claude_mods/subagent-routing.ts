@@ -238,23 +238,19 @@ export const registerSubagentRouting = (
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const name = route?.name
     const result = await next(route ? { ...e, model: route.model } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
-    if (name && result.agentId) {
-      try {
-        // The native bottom bar is outside ui.render; join its task ID to this call.
-        await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(result.agentId)}.json`,
-          JSON.stringify({ session_id: await $.session.id(), name }))
-      } catch {
-        $.ui.log('Could not save the subagent display name; its bottom bar will use the native label.')
-      }
-    }
     return result
+  })
+
+  on('ui.render', async ($, e, next) => {
+    if (e.component !== 'AgentRow') return next(e)
+    const name = children.get(e.props.id)?.name
+    return next(name ? { ...e, props: { ...e.props, label: name } } : e)
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
