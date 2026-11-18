@@ -212,6 +212,53 @@ jobs:
                   raise SystemExit('::error::OCR result does not match the requested commit.')
           PY
 
+      # Advisory recommendation over the completed review. A missing or
+      # unparseable `RECOMMENDATION: APPROVE|REJECT` marker becomes
+      # `recommendation=none`: the note comment is posted and labels are left
+      # alone. The job only reaches this step after the completeness check
+      # passed, so an incomplete review never produces a verdict.
+      - name: Derive the review recommendation
+        if: ${{ steps.pr.outputs.head != '' && steps.ocr.outcome == 'success' }}
+        id: recommendation
+        env:
+          GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}
+          GATEWAY_MODEL: system.ai.claude-opus-5-5
+          RECOMMENDATION_RUN: ${{ github.run_id }}-${{ github.run_attempt }}
+        run: python3 .ug-review-trusted/.github/scripts/ug-review/recommendation.py
+
+      - name: Publish the review recommendation
+        if: ${{ steps.pr.outputs.head != '' && steps.ocr.outcome == 'success' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          RECOMMENDATION: ${{ steps.recommendation.outputs.recommendation }}
+          RECOMMENDATION_BODY: /tmp/ug-recommendation-body.md
+          RECOMMENDATION_LABEL: ready-to-approve
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.RECOMMENDATION_BODY, 'utf8');
+            const args = { ...context.repo, issue_number: Number(process.env.PR_NUMBER) };
+            await github.rest.issues.createComment({ ...args, body });
+            const label = process.env.RECOMMENDATION_LABEL;
+            if (process.env.RECOMMENDATION === 'approve') {
+              try {
+                await github.rest.issues.addLabels({ ...args, labels: [label] });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({ ...context.repo, name: label, color: '0e8a16' });
+                await github.rest.issues.addLabels({ ...args, labels: [label] });
+              }
+            } else if (process.env.RECOMMENDATION === 'reject') {
+              // Remove a stale label from an earlier review so it cannot linger
+              // after a re-review rejects the PR.
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue(
+                { ...args, per_page: 100 });
+              if (labels.some((item) => item.name === label)) {
+                await github.rest.issues.removeLabel({ ...args, name: label });
+              }
+            }
+
       - name: Remove temporary package credentials
         if: always()
         run: rm -f "$RUNNER_TEMP/ug-review-package-config/.npmrc"

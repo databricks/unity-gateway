@@ -19,6 +19,13 @@ SPEC = importlib.util.spec_from_file_location("ug_review_auth", AUTH_PATH)
 assert SPEC is not None and SPEC.loader is not None
 gateway_auth = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gateway_auth)
+RECOMMENDATION_PATH = ROOT / ".github" / "scripts" / "ug-review" / "recommendation.py"
+RECOMMENDATION_SPEC = importlib.util.spec_from_file_location(
+    "ug_review_recommendation", RECOMMENDATION_PATH
+)
+assert RECOMMENDATION_SPEC is not None and RECOMMENDATION_SPEC.loader is not None
+recommendation = importlib.util.module_from_spec(RECOMMENDATION_SPEC)
+RECOMMENDATION_SPEC.loader.exec_module(recommendation)
 WORKFLOW_PATH = ROOT / ".github" / "workflows" / "ug-review.yml"
 
 
@@ -268,3 +275,205 @@ def test_workflow_passes_trusted_rubric_as_background_and_checks_completeness():
     assert "OCR review is incomplete" in workflow
     assert "OCR result does not match the requested commit." in workflow
     assert not (AUTH_PATH.parent / "review.py").exists()
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("RECOMMENDATION: APPROVE", "approve"),
+        ("RECOMMENDATION: REJECT", "reject"),
+        ("  recommendation: reject  ", "reject"),
+        ("Some preamble.\nRECOMMENDATION: APPROVE\nREASONS:\n- ok", "approve"),
+        ("the verdict is RECOMMENDATION: APPROVE on this line", None),
+        ("RECOMMENDATION: MAYBE", None),
+        ("RECOMMENDATION:APPROVE", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_recommendation_marker_parses_only_on_its_own_line(text, expected):
+    assert recommendation.parse_recommendation(text) == expected
+
+
+def test_extract_reasons_reads_bullets_after_the_reasons_header():
+    text = "RECOMMENDATION: REJECT\nREASONS:\n- leaks credentials\n- 2. breaks revert\n"
+    assert recommendation.extract_reasons(text, "reject") == [
+        "leaks credentials",
+        "breaks revert",
+    ]
+
+
+def test_extract_reasons_falls_back_to_plain_lines_without_a_reasons_header():
+    text = "RECOMMENDATION: APPROVE\nThe remaining findings are minor.\n"
+    assert recommendation.extract_reasons(text, "approve") == ["The remaining findings are minor."]
+
+
+def test_extract_reasons_keeps_a_fallback_when_the_marker_has_no_reasons():
+    text = "RECOMMENDATION: REJECT\n"
+    reasons = recommendation.extract_reasons(text, "reject")
+    assert reasons == ["The reviewer returned the marker without reasons; see the inline findings."]
+
+
+def _recommendation_environment(monkeypatch, tmp_path, result, model_text=None, model_error=None):
+    result_path = tmp_path / "ocr-result.json"
+    result_path.write_text(json.dumps(result))
+    output_path = tmp_path / "github-output"
+    output_path.write_text("")
+    body_path = tmp_path / "recommendation-body.md"
+    monkeypatch.setenv("OCR_RESULT_PATH", str(result_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
+    monkeypatch.setenv("BODY_PATH", str(body_path))
+    monkeypatch.setenv("RECOMMENDATION_RUN", "run-1")
+    monkeypatch.setenv("DATABRICKS_HOST", "https://example.databricks.com")
+    monkeypatch.setenv("GATEWAY_TOKEN", "access-token")
+
+    calls = []
+
+    def request(host, token, model, briefs):
+        calls.append((host, token, model, briefs))
+        if model_error is not None:
+            raise model_error
+        return model_text
+
+    monkeypatch.setattr(recommendation, "request_recommendation", request)
+    return output_path, body_path, calls
+
+
+def test_zero_finding_complete_review_approves_without_a_model_call(monkeypatch, tmp_path, capsys):
+    result = {"status": "complete", "summary": {"files_reviewed": 4}, "comments": []}
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        result,
+        model_error=AssertionError("A clean review must not request a recommendation."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=approve\n" in output_path.read_text()
+    body = body_path.read_text()
+    assert "**RECOMMENDATION: APPROVE**" in body
+    assert "no findings on the changed lines" in body
+    assert "<!-- ug-review-recommendation-run:run-1 -->" in body
+    assert calls == []
+
+
+def test_findings_reach_the_model_and_a_reject_marker_removes_the_label(monkeypatch, tmp_path):
+    result = {
+        "status": "complete",
+        "summary": {"files_reviewed": 2},
+        "comments": [
+            {
+                "path": "a.py",
+                "start_line": 1,
+                "end_line": 2,
+                "severity": "high",
+                "category": "bug",
+                "content": "drops user state",
+            },
+        ],
+    }
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        result,
+        model_text="RECOMMENDATION: REJECT\nREASONS:\n- drops user state\n",
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=reject\n" in output_path.read_text()
+    host, token, model, briefs = calls[0]
+    assert (host, token) == ("https://example.databricks.com", "access-token")
+    assert model
+    assert briefs[0]["path"] == "a.py" and briefs[0]["severity"] == "high"
+    body = body_path.read_text()
+    assert "**RECOMMENDATION: REJECT**" in body
+    assert "- drops user state" in body
+    assert "ready-to-approve" in body
+
+
+def test_unparseable_model_output_yields_no_recommendation_and_no_label_change(
+    monkeypatch, tmp_path, capsys
+):
+    result = {
+        "status": "complete",
+        "comments": [{"path": "a.py", "start_line": 1, "end_line": 1, "content": "nit"}],
+    }
+    output_path, body_path, _ = _recommendation_environment(
+        monkeypatch, tmp_path, result, model_text="Looks fine to me overall."
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    body = body_path.read_text()
+    assert "**No recommendation**" in body
+    assert "parseable `RECOMMENDATION: APPROVE|REJECT`" in body
+    assert "No label was changed." in body
+    assert "::warning::" in capsys.readouterr().out
+
+
+def test_failed_recommendation_request_still_posts_the_note_without_failing(
+    monkeypatch, tmp_path, capsys
+):
+    result = {
+        "status": "complete",
+        "comments": [{"path": "a.py", "start_line": 1, "end_line": 1, "content": "bug"}],
+    }
+    output_path, body_path, _ = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        result,
+        model_error=recommendation.RecommendationError("gateway down"),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    assert "gateway down" in body_path.read_text()
+    assert "::warning::" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"status": "skipped", "comments": []},
+        {
+            "status": "complete",
+            "comments": [],
+            "warnings": [{"Type": "review_limit", "Message": "x"}],
+        },
+    ],
+)
+def test_incomplete_or_warned_reviews_do_not_recommend(monkeypatch, tmp_path, result):
+    output_path, body_path, calls = _recommendation_environment(
+        monkeypatch,
+        tmp_path,
+        result,
+        model_error=AssertionError("An unsafe verdict must not reach the model."),
+    )
+
+    assert recommendation.main() == 0
+    assert "recommendation=none\n" in output_path.read_text()
+    assert "No recommendation" in body_path.read_text()
+    assert calls == []
+
+
+def test_workflow_posts_recommendation_and_keeps_the_ready_to_approve_label_current():
+    workflow = WORKFLOW_PATH.read_text()
+    derive_index = workflow.index("- name: Derive the review recommendation")
+    publish_index = workflow.index("- name: Publish the review recommendation")
+    completeness_index = workflow.index("- name: Report review completeness")
+    assert completeness_index < derive_index < publish_index
+    assert "run: python3 .ug-review-trusted/.github/scripts/ug-review/recommendation.py" in workflow
+    assert "GATEWAY_TOKEN: ${{ steps.gateway-auth.outputs.token }}" in workflow
+    assert "GATEWAY_MODEL: system.ai.claude-opus-5-5" in workflow
+    assert "steps.ocr.outcome == 'success'" in workflow
+
+    publish = workflow[publish_index:].split("\n      - name:", 1)[0]
+    assert "RECOMMENDATION_LABEL: ready-to-approve" in publish
+    assert "createComment" in publish
+    assert "addLabels({ ...args, labels: [label] })" in publish
+    assert "listLabelsOnIssue" in publish
+    assert "removeLabel({ ...args, name: label })" in publish
+    # The job already holds the narrow write scopes the label sync needs.
+    assert "issues: write" in workflow
+    assert "pull-requests: write" in workflow
+    assert "contents: write" not in workflow
