@@ -17,6 +17,7 @@ from tests.e2e_cuj.helpers.constants import (
     CLAUDE,
     CLAUDE_HAIKU_MODEL,
     CODEX,
+    COPILOT,
     INFERENCE_PATHS,
     CodingAgent,
 )
@@ -360,6 +361,7 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
         "empty",
         "completed",
         "completed_empty_history",
+        "nonempty_history",
         "detail",
         "routed_detail",
         "resumed",
@@ -418,7 +420,12 @@ def test_mcp_list_poll_retries_a_failed_probe_until_rows_match(monkeypatch):
     healthy = "\n".join(
         rows[0] for rows in mcp_registration._expected_fixture_server_rows().values()
     )
-    failed = healthy.replace(f"{CLAUDE}, {CODEX} connected", f"{CLAUDE}:failed {CODEX}:enabled", 1)
+    failed = healthy.replace(
+        f"{CLAUDE}, {COPILOT}, {CODEX} connected",
+        f"{CLAUDE}:failed {COPILOT}:enabled {CODEX}:enabled",
+        1,
+    )
+    assert failed != healthy
     outputs = [failed, failed, healthy, "unused"]
     session = SimpleNamespace(
         run=lambda *args, timeout: SimpleNamespace(stdout=outputs.pop(0), stderr="")
@@ -997,12 +1004,14 @@ def test_cuj2_mps_catalog_requires_fixture_apis(native_apis, accepted):
 
 def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeypatch):
     suffix = ".EXE" if sys.platform == "win32" else ""
-    for agent in (CLAUDE, CODEX):
+    for agent in (CLAUDE, CODEX, COPILOT):
         (tmp_path / f"{agent}{suffix}").write_text("#!/bin/sh\n")
         (tmp_path / f"{agent}{suffix}").chmod(0o755)
     banner = "Checking MCP server health…\n\n\n"
-    rows = f"{cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)}: ug mcp-proxy - ✓ Connected\n"
-    outputs = {CLAUDE: [banner, rows], CODEX: [rows]}
+    name = cuj2.registered_name(cuj2.SANDBOX_MCP_SERVICE_NAME)
+    rows = f"{name}: ug mcp-proxy - ✓ Connected\n"
+    copilot_rows = f"User servers:\n  {name} (http)\n"
+    outputs = {CLAUDE: [banner, rows], CODEX: [rows], COPILOT: [copilot_rows]}
     calls = []
 
     def run(*args, binary, timeout):
@@ -1013,7 +1022,7 @@ def test_cuj2_mcp_listing_retries_a_banner_only_claude_listing(tmp_path, monkeyp
     monkeypatch.setattr(poll_module.time, "sleep", lambda seconds: None)
     cuj2._assert_generated_mcp_listings(SimpleNamespace(env={"PATH": str(tmp_path)}, run=run))
 
-    assert calls == [CLAUDE, CLAUDE, CODEX]
+    assert calls == [CLAUDE, CLAUDE, CODEX, COPILOT]
 
 
 def _codex_events(*events):

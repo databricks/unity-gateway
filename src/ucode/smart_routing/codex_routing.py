@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 # Re-exported so tests can patch the shared ``urlopen`` seam via
 # ``codex_routing.urllib.request`` — the actual call lives in ``routing``, but
@@ -21,7 +22,7 @@ from typing import Any
 from ucode.codex_config import provider_http_headers
 from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_CODEX
-from ucode.smart_routing import orchestrator, routing
+from ucode.smart_routing import orchestrator, routing, session_log
 from ucode.smart_routing.routing import RoutingDecision
 
 ROUTER_NAME = routing.ROUTER_NAME
@@ -100,8 +101,10 @@ def route_pre_tool_use(
         harness_headers=provider_http_headers(),
     )
     if audit_decision:
+        started = time.monotonic()
 
         def record(payload, task, decision, requested):
+            routing_ms = round((time.monotonic() - started) * 1000)
             # Bound diagnostic text without changing the router input or native hook output.
             audit = replace(
                 decision,
@@ -112,6 +115,9 @@ def route_pre_tool_use(
             )
             routing.write_decision_record(
                 DECISIONS_PATH, payload, task, audit, requested, include_task_text=False
+            )
+            session_log.append_decision(
+                AGENT_CODEX, payload, task, decision, requested, routing_ms=routing_ms
             )
 
     name_suffix = " [orchestrator on]" if orchestrator.enabled(agent=AGENT_CODEX) else ""

@@ -16,6 +16,8 @@ AGENT_RESPONSE_STEP = 15
 DONE_STATUS = 3
 # Antigravity logs every model request's URL; in gateway mode it names the gateway it was given.
 _REQUEST = re.compile(r"Making Gateway streaming request to: (\S+)")
+_MAX_LOG_FILES = 5
+_MAX_LOG_CHARACTERS = 64_000
 RESOURCE_EXHAUSTED_MAX_ATTEMPTS = 3
 _RESOURCE_EXHAUSTED_BACKOFF_BASE_SECONDS = 5.0
 _RESOURCE_EXHAUSTED_BACKOFF_MAX_SECONDS = 20.0
@@ -134,13 +136,29 @@ def _logs(session) -> list[Path]:
 
 
 def requested_urls(session) -> list[str]:
-    """Every model request URL Antigravity logged in this session home."""
-    urls = [
-        match.group(1)
-        for path in _logs(session)
-        for match in _REQUEST.finditer(path.read_text(errors="replace"))
-    ]
+    """Every model request URL, plus native diagnostics for retries and final errors."""
+    paths = _logs(session)
+    recent = set(sorted(paths, key=lambda path: path.stat().st_mtime_ns)[-_MAX_LOG_FILES:])
+    urls = []
+    logs = []
+    for path in paths:
+        text = path.read_text(errors="replace")
+        urls.extend(match.group(1) for match in _REQUEST.finditer(text))
+        if path in recent:
+            # Redact before truncating so a token crossing the tail boundary cannot leak.
+            text = session.redact(text)
+            logs.append(
+                {
+                    "name": path.name,
+                    "truncated": len(text) > _MAX_LOG_CHARACTERS,
+                    "tail": text[-_MAX_LOG_CHARACTERS:],
+                }
+            )
     session.record("antigravity-requests.json", {"urls": urls})
+    session.record(
+        "antigravity-logs.json",
+        {"files_omitted": max(0, len(paths) - _MAX_LOG_FILES), "logs": logs},
+    )
     return urls
 
 

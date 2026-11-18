@@ -1263,7 +1263,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_sources_{claude,codex}_discovers_mixed_models_and_uses_custom_default` in CUJ9 | Configure mixed model sources, inspect native discovery, and complete a TUI task on the custom default | Exact Claude/Codex picker inventories, Codex model/list, native completed answers and paired exact-model HTTP 200 responses |
 | `test_sources_copilot_discovers_mixed_models_and_uses_service_default` in CUJ9 | Configure mixed model sources, inspect the live registry, and complete a TUI task on the hosted GPT default | Exact active registry IDs and wire providers, a native completed answer, paired exact-model HTTP 200 inference, and registry removal on exit |
 | `test_sources_{claude,codex,copilot}_inference_on_each_source_model` in CUJ9 | Run an explicit headless file task on every expanded source model | Each provider deep link, custom service, schema wildcard and provider wildcard contribution serves a hidden-value task; Codex and Copilot never route |
-| `test_sources_claude_routing_response_selects_an_expanded_source` in CUJ9 | Delegate a real TUI task with Claude-only managed smart routing | The TUI request recorder pairs `routes:select` with an HTTP 200 response selecting an offered source model; the child and parent complete their answers |
+| `test_sources_claude_routing_response_selects_an_expanded_source` in CUJ9 | Delegate a real TUI task with Claude-only managed smart routing | At least one routing request; every `routes:select` request names the task, offers Claude models from the expanded catalog, and has its own HTTP 200 response selecting one offered model. Native recovery may issue additional requests; the child and parent must complete their answers |
 | `test_cuj_configuration`, `test_cuj_codex_inference`, `test_cuj_claude_inference`, `test_cuj_claude_mps_smart_routing_header` in `test_cuj2_mps_mcp.py` | Read the permanently preconfigured two-agent MPS/MCP config; run separate configure, Codex TUI, Claude TUI, and Claude smart-routing cases | Configuration verifies both native MPS APIs, generated settings, and sandbox inclusion with web_search excluded; inference cases record the MPS target header, model, paired HTTP 200, and completed greeting. The smart-routing case checks the managed MPS header on first-prompt and delegated-task router requests, their HTTP 200 responses, and completed native turns. Request IDs correlate greeting traffic. Live sandbox execution is deferred because MAS cannot downscope the CI service principal. No workspace config CRUD is performed |
 | `test_ug_configure_claude_databricks` | Configure Databricks Hosted; execute the generated auth helper; launch plain `ug claude`, read a file, and open `/model` | Generated helper invokes `ug` with clean token stdout; assistant returns an unpredictable file value; native discovery caches `system.ai` models and the picker shows a discovered model without an opt-in flag; normal exit; reopen with working keyboard input |
 | `test_ug_configure_claude_anthropic_mps` | Select Anthropic MPS in the real configure picker; launch Claude | Saved provider in status; completed TUI file task on the pinned Haiku model; out-of-allowlist model rejected; normal exit |
@@ -1297,6 +1297,10 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_mcp_add_copilot_registers_server_in_copilot_config` | Over a developer-owned, disabled server in `~/.copilot/mcp-config.json`, configure Copilot, `ug mcp add --agents copilot --names system.ai.web_search`, run a headless task that calls the tool, then revert | `copilot mcp list --json` lists ug's server from the user config, enabled, next to the developer's still-disabled one; `ug mcp list --agents copilot` reports it enabled; Copilot's session events record a successful call loaded from the user config; revert leaves only the developer's server and no legacy `ucode-mcp-config.json` (non-blocking CI lane) |
 | `test_ug_copilot_upgrade_scrubs_token_saved_by_older_ug` | Configure Copilot with ug v0.2.0 (pinned commit; saves the bearer in `~/.copilot/ucode.env`), then configure with this ug, run a GPT task, revert | v0.2.0 left the bearer; after this ug's configure no file holds it; task completes; revert leaves no token and no `ucode.env` (non-blocking CI lane) |
 | `test_ug_configure_honors_managed_copilot_vscode_off` | Under the injected `copilot_vscode_off` managed config (Copilot entry with `vscode_integration.enabled: false`), `ug configure`, then `ug status` | Configure succeeds and says the workspace turns off GitHub Copilot in VS Code instead of looking for `code`; status shows `VS Code: off (workspace-managed)` |
+| `test_ug_configure_copilot_vscode_installs_and_reverts_the_extension` | Beside a developer's own VS Code `settings.json`, `ug configure --agents copilot` twice, then `ug revert` | `code --list-extensions` lists ug's extension after each configure, one copy installed; its `ug-config.json` names the workspace, a sign-in command, and the Claude and GPT test models on the Anthropic Messages and Responses wires; no file holds the bearer; after revert VS Code no longer lists it and the settings file is byte-identical. Configuration only (non-blocking CI lane) |
+| `test_vscode_copilot_chat_switches_from_claude_to_gpt_in_one_window` | Configure, then in the real VS Code window on a fresh profile: continue without signing in, close Welcome, trust the folder, turn on Copilot Chat ("Add Models..." in the model picker or ug's "Turn On Copilot Chat" notice), pick the Claude test model, ask Agent mode to read a file; then pick the GPT test model and read a second file | Visible clicks and keys only, nothing seeded; each answer contains its own file value; the Claude turn's requests hit `/ai-gateway/anthropic/v1/messages` and the GPT turn's `/ai-gateway/mlflow/v1/responses`, each for its picked model with ug's User-Agent naming the bundled Copilot Chat and a non-empty 200; the saved chat records both turns on their Databricks models with a tool call, the value, no error; no file holds the bearer after the window closes (non-blocking CI lane, Linux and Windows) |
+| `test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model` | `ug configure --agents copilot --provider` with the OpenAI MPS, then in the real window: first launch as above, pick the service's GPT model, read a file | The extension lists the service's model id; the answer contains the file value; every request hits `/ai-gateway/openai/v1/responses` with the provider service header, for that model, with a non-empty 200; the gateway's backend is not asserted (non-blocking CI lane, Linux and Windows) |
+| `test_vscode_copilot_chat_lists_the_new_models_after_reconfigure` | Claude turn, quit VS Code from the keyboard, `ug configure --agents copilot --provider` with the OpenAI MPS, reopen the same profile | After reconfigure the extension lists only the service's models; a turn on the service's model hits `/ai-gateway/openai/v1/responses` with the provider header and a non-empty 200; then the picker's search finds no workspace Claude model (non-blocking CI lane, Linux and Windows) |
 | `test_ug_opencode_headless_prompt_argument` | Run OpenCode from a script (`run --format json --auto`) with an argument prompt | Completed Read tool call; final text answer contains the file value; exit zero (non-blocking CI lane) |
 | `test_ug_agents_self_managed_opencode_journey` | Under the injected `managed_workspace_default` config (enables Claude/Codex, not OpenCode): bare configure, `ug agents list`, refused OpenCode launch, `ug agents add opencode`, real headless task, `ug agents remove opencode` (marker `managed_fixture and opencode`, non-blocking CI lane) | OpenCode absent from the list and launch fails with "doesn't enable OpenCode" / `ug agents add opencode`; after add it is listed self-managed and the headless Read task returns the fixture value; after remove it is hidden and refused again |
 | `test_ug_agents_admin_managed_guardrails` | `ug agents add` / `remove` on an agent the admin config enables | Add is a no-op noting the admin manages it; remove is rejected with nonzero exit |
@@ -1497,57 +1501,10 @@ or skipped dependency fails the gate, and a running integration suite keeps it
 pending. The advisory Windows installation and headless lanes are not part of `All integration
 tests` yet. The descriptive jobs provide the actual coverage and diagnostics.
 
-One shared `Security Scan` runs from the default branch on `workflow_run: requested` for
-PR CI. Its protected resolver validates the PR, source repository, branch and commit against
-GitHub; its separate hosted job statically scans the PR using policy from the workflow's main
-commit. `tests/test_security_scan_request.py` covers request validation and that policy wiring.
-There is no bootstrap pass when the trusted workflow is missing.
-
-CI and publisher tests wait through `Security Gate`. The gate finds the PR's CI request and
-requires a successful `workflow_run` scan for that run ID. A same-named PR-authored scan cannot
-satisfy it. All ordinary PR gates use hosted runners and the public API. Authorized comment
-runs use main's gate on the allowlisted pool. Queries are scoped to the selected CI request,
-with two-minute polling for up to 20 minutes and explicit retry messages for API errors.
-The job budget is 25 minutes to allow for request latency.
-`test_security_gate_waits_for_the_current_scan` covers failure/timeout, pagination and scan
-provenance; separate cases cover authentication and mismatched request/comment identities.
-`test_security_gate_explains_rate_limits` checks 403/429 retry messages; the API-error cases
-cover access errors, server failures and network timeouts.
-The workflow-expression tests verify runner/token selection. These component tests do not
-establish live event delivery, organization runner restrictions or ruleset enforcement.
-
-Organization rules must require `security-gate.yml` from protected main and restrict runner
-access; PR workflow definitions alone cannot enforce those controls.
-`test_security_gate_supports_required_workflow_events` checks its direct PR/merge-queue
-triggers alongside workflow reuse. Push, schedule and dispatch skip the gate. Merge queues
-rely on native PR enforcement; live verification remains a
-[rollout blocker](#security-scan-rollout).
-
-`test_security_scan_runs_before_every_job_that_runs_pr_code` checks every CI/publisher job
-has a dependency path through the gate and checks the diff flags that keep a PR's
-`.gitattributes` from hiding changes. The shared scanner test
-`test_exfil_scan_recognizes_every_ci_secret` requires every secret-backed workflow variable to be
-a name the exfil scan watches. `test_security_scan_parsers_survive_diff_and_path_tricks` checks
-that added lines posing as diff headers and quoted or non-ASCII file names still reach the exfil,
-secret and sensitive-path checks. These shared scanner tests live in `test_security_scan.py`,
-alongside coverage for commit-scoped waivers, trusted-author exemptions, decoder detection,
-justfile warnings, symlink handling and multi-batch Semgrep report parsing. They use inert
-fixtures and never execute contributed code. Semgrep rules, `nosem` behavior and live
-advisory-service responses have no automated coverage. Bash cases run only on non-Windows
-hosts, matching the Linux scanner; Python parser checks also run on Windows. Sensitive-path
-rejection checks the annotation as well as the exit status.
-
 Fork PRs get no secrets, so their `pull_request` run skips every credentialed integration
 job. Only org members can comment `/integration-test`, on any PR: integration runs the PR's
 code with CI secrets, so a member reviews the changes first and other contributors ask one.
 `/integration-test <sha>` additionally requires the current head to match that commit.
-After authorization, the shared gate must find a successful
-scan for that exact commit before integration receives CI secrets. A comment reuses the latest
-scan for the authorized SHA; its later timestamp does not invalidate the earlier scan.
-Missing or invalid PR/SHA inputs fail instead of skipping the gate. Scan failures, missing scans
-and API errors skip integration and post a failed `Fork integration` status on the authorized SHA.
-`test_security_gate_comment_requires_existing_scan_of_authorized_commit` covers reuse and SHA
-mismatches; `test_fork_integration_reports_scan_failure_on_authorized_commit` exercises the report.
 It posts a `Fork integration` status, and works on in-repo PRs too as an on-demand rerun.
 Each new push needs a new command.
 It runs main's workflow definitions and never caches fork builds. `/ug-review` requests
@@ -1559,7 +1516,12 @@ comment when GitHub classifies them as a `CONTRIBUTOR`; the fork's PR-triggered 
 Label removal and ordinary pushes do not rerun reviews. `test_ug_review_bot.py` covers
 gateway authentication,
 OIDC-authenticated npm-proxy configuration and credential cleanup, and the workflow contract,
-not live inference or GitHub posting. The old custom
+not live inference or GitHub posting. It also covers the advisory recommendation
+derived after a complete review: the `RECOMMENDATION: APPROVE|REJECT` marker parse,
+the zero-finding approve without a model call, a parsed reject from model findings,
+unparseable or failed model output degrading to "no recommendation" with no label
+change, and the workflow's `ready-to-approve` add-and-remove contract. Live
+recommendation inference and label posting remain unverified. The old custom
 Responses/diff/parser/summary-rendering tests are obsolete because that implementation
 is removed. `test_polly_review.py` covers the Polly review workflow contract and its
 summary helper. `/user-journey-check` runs the user-journey gate,

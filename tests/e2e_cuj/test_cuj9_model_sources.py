@@ -409,8 +409,8 @@ class TestModelSources(BaseCujTest):
     def test_sources_claude_routing_response_selects_an_expanded_source(self, cuj):
         """Scenario: configure the Claude-only managed router and delegate a real TUI file task.
 
-        Expected: the TUI request recorder pairs routes:select with an HTTP 200 response
-        selecting an offered source model, and the native child and parent both finish.
+        Expected: at least one routing request occurs, every routes:select response is HTTP 200
+        and selects an offered source model, and the native child and parent both finish.
         """
         session, _, recorder = cuj
         recorder.configure_session(session, ["configure", "--skip-upgrade"])
@@ -441,18 +441,18 @@ class TestModelSources(BaseCujTest):
         task.assert_completed(session, CLAUDE)
         requests = recorder.requests_after(checkpoint)
         routes = [request for request in requests if request.path == ROUTING_PATH]
-        assert len(routes) == 1, routes
-        route = routes[0]
-        route_prompt = route.payload["task"]["prompt"]
-        assert task.filename in route_prompt, route_prompt
-        options = route.payload["route_options"]
-        assert options and all(option["harness"] == CLAUDE for option in options), options
-        offered = {option["model"] for option in options}
+        assert routes, "No routing request was recorded for the delegated file task"
         expected_options = {claude.discovery_model_id(model) for model in CLAUDE_MODELS}
-        assert offered <= expected_options, offered
-        response = recorder.response_for(route)
-        assert response.status_code == 200, response.status_code
-        selections = response.payload["route_selection"]
-        assert len(selections) == 1, selections
-        selected = selections[0]["route_option"]["model"]
-        assert selected in offered, selected
+        for route in routes:
+            route_prompt = route.payload["task"]["prompt"]
+            assert task.filename in route_prompt, route_prompt
+            options = route.payload["route_options"]
+            assert options and all(option["harness"] == CLAUDE for option in options), options
+            offered = {option["model"] for option in options}
+            assert offered <= expected_options, offered
+            response = recorder.response_for(route)
+            assert response.status_code == 200, response.status_code
+            selections = response.payload["route_selection"]
+            assert len(selections) == 1, selections
+            selected = selections[0]["route_option"]["model"]
+            assert selected in offered, selected

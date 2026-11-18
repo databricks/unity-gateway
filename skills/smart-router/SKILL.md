@@ -1,9 +1,9 @@
 ---
 name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
-allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *)
+allowed-tools: Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.6.0"
+  version: "1.8.0"
 ---
 
 # Smart Router
@@ -15,9 +15,25 @@ Keep its path quoted and do not substitute `ug` or `python` from PATH.
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing` for `off`.
 - In Codex, run exactly `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --enable-smart-routing` for `on` or
   `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing` for `off`.
+- In Codex only, for `logs`, run exactly
+  `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table`
+  and reply with ONLY a fenced code block (```text) containing its stdout exactly,
+  with no text before or after it. Without the fence, Codex reflows the text, loses
+  the alignment, and prepends a bullet to the first line. Do not reformat,
+  summarize, or drop rows, because Codex collapses long command output.
+  If `CODEX_SESSION_ID` is unset, ask the user to restart through an updated
+  Unity Gateway with smart routing enabled. Claude Code handles `/smart-router logs`
+  natively; do not run this command there.
+- In Codex only, for `logs --id <ID>`, first check that `<ID>` is 4 to 32 hex
+  characters (`0-9a-f`) and nothing else; otherwise ask for an ID from the table
+  and run nothing. Then run exactly
+  `"$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision <ID>`
+  and reply with ONLY a fenced code block (```text) containing its stdout exactly,
+  with no text before or after it, like the overview.
 
 In PowerShell, use `& "$env:UCODE_SMART_ROUTER_PYTHON"` in place of
-`"$UCODE_SMART_ROUTER_PYTHON"`; keep the remaining arguments the same.
+`"$UCODE_SMART_ROUTER_PYTHON"` and `"$env:CODEX_SESSION_ID"` in place of
+`"$CODEX_SESSION_ID"`; keep the remaining arguments the same.
 If `UCODE_SMART_ROUTER_PYTHON` or `UCODE_SESSION_ENV_FILE` is unset, ask the user
 to restart through an updated Unity Gateway with smart routing enabled.
 
@@ -40,7 +56,7 @@ failure without re-enabling routing. This requirement applies when Isaac sets
 `ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on` (case-insensitive);
 do not change that flag to bypass it.
 
-With no argument, explain that only `on` and `off` are accepted. Do not edit the state file.
+With no argument, explain that only `on`, `off`, and (in Codex) `logs` and `logs --id <ID>` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model
 or first prompt. In sessions launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`, it also controls Smart Router
 Orchestrator. When turned off, earlier Smart Router Orchestrator instructions

@@ -1,8 +1,9 @@
 # Catalog discovery CUJ
 
-The dedicated workspace must already publish a CodingAgentConfig enabling both agents
-with `ug_e2e.models` as their model source. Claude is the default agent; its default and
-Sonnet-family model are `claude_sonnet`, and Codex defaults to `gpt_luna`. Smart routing
+The dedicated workspace must already publish a CodingAgentConfig enabling Claude Code, Codex and
+Copilot CLI with `ug_e2e.models` as their model source. Claude is the default agent; its default
+and Sonnet-family model are `claude_sonnet`, Codex defaults to `gpt_luna`, and Copilot defaults to
+`claude_sonnet`. Smart routing
 and tracing are disabled. Tests neither provision nor validate fixture definitions.
 
 | Service under `ug_e2e.models` | Claude Code | Codex |
@@ -151,6 +152,15 @@ native parent turn matching that prompt, a nonempty answer, the expected provide
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
 
+CUJ2's Copilot CLI entry uses the Anthropic MPS, `ug_e2e.providers.anthropic`, with VS Code
+integration on. Its headless file task, with no `--model`, must start on `claude-haiku-5-5`,
+send the provider header on every Messages request that carries the task, and get a non-empty
+HTTP 200 for each.
+
+CUJ3's Copilot case reads Copilot's live registry: exactly the four Claude-visible scoped services,
+under their full names on the Anthropic route (Copilot picks wires by model name, and these names
+fall back to it), with no Gemini and no decoys. Its TUI task completes on `claude_sonnet`.
+
 A separate CUJ2 Claude TUI case checks default Model Provider Service support with the
 first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
 both route-selection requests, plus completed parent and child turns.
@@ -164,16 +174,36 @@ these cases. Tests only validate the published fixtures; they never update them.
 ## Smart-routing CUJ
 
 `test_cuj4_smart_routing.py` uses its own read-only workspace with managed smart routing enabled.
-It runs the managed-default and explicit-model journeys and six
+Its Auto toggle journey returns from a manual model through `/model auto`.
+The full-screen alias assertion is temporarily commented out with a TODO: Claude
+2.1.290 exposes internal Auto aliases in some headers and in `/status`. Model-selection
+and routing-indicator assertions remain enabled.
+It runs the managed-default and explicit-model journeys and seven
 `SMART_ROUTER_CONFIG_VERSION` presets using the shared version constants. With no selector,
 managed smart routing leaves the first prompt unrouted: the admin's default model completes the
 file task, no `routes:select` request is sent, and the Smart Router Orchestrator context reaches
 that inference request. Each preset runs as independent tests so a slow live subagent call
 cannot fail unrelated assertions: one first-prompt-then-explicit-subagent journey per agent
-(12 cases, with Claude ending in the native background-task wait) and one Claude-only status
+(14 cases, including the Auto preset, with Claude ending in the native background-task wait) and one Claude-only status
 band/hint row/toggle journey per preset (6 cases, which needs no delegation or background-task
 wait).
 The CUJ derives routing and orchestration assertions from each agent's resolved preset flags.
+An additional Claude-only selector journey overrides the version with
+`subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
+selects a regular model and verifies the band and footer show OFF, then returns
+to Auto and verifies both show ON. It observes the chosen main-model row before
+pressing Enter to save in the compact numbered chooser, with the current model first,
+and checks that the save notice names the selected model. The managed replacement
+picker contains one Auto row; only regular model rows supply alternate inference targets.
+The journey completes a real main-model file task with paired gateway request/response
+evidence, saves the unchanged main model without a cache warning after that task, and
+requires byte-identical managed settings across model selections. Launch may retarget only
+the gateway URL and auth helper host to the recording proxy; all other configured settings
+must remain identical. The existing main/subagent journey also includes Auto
+and verifies its correlated routing decision, real model IDs, and completed answers.
+The selector journey has its own class-scoped user session so its saved main-model
+preference cannot change later preset journeys. Its native evidence baseline is captured
+before Claude starts, including sessions whose transcript begins with model commands.
 Component tests independently verify the preset values. The resulting expectations are:
 
 | Selector | First prompt routed | Orchestrator context | Child on first prompt | Explicitly requested child |
@@ -184,6 +214,7 @@ Component tests independently verify the preset values. The resulting expectatio
 | `subagent_orch_v0` | No | Yes | No | Yes, routed |
 | `subagent_orch_v1` | No | Yes | No | Yes, routed |
 | `subagent_orch_v0_claude_only` | No | Claude only | No | Yes for both; only Claude routed |
+| `subagent_auto_v0_claude_only` | No | No | No | Yes for both; only Claude routed |
 
 First prompts explicitly forbid delegation to isolate first-prompt routing. Assertions require
 the expected presence/absence of a prompt-correlated router request, successful inference on
@@ -241,3 +272,10 @@ uv run --with pexpect==4.9.0 --with pyte==0.8.2 pytest \
   --confcutdir=tests/e2e_cuj tests/e2e_cuj/test_cuj4_smart_routing.py \
   -k test_smart_router_preset -v
 ```
+
+CUJ 7's existing Claude discovery case reconfigures with the Auto version after its
+ordinary discovery launch, removing UG's earlier replacement picker. The Auto launch
+keeps its aliases in launch settings. It saves an Auto selection on the unmanaged
+workspace, completes a main-model file task, then restarts with routing disabled.
+The restart must complete another task on the same real model with paired successful
+HTTP evidence and no router request. It never seeds Auto aliases in shared settings.
