@@ -845,12 +845,26 @@ def _sync_desktop_relay(
                     del doc["model_provider"]
                 write_toml_file(_legacy_config_path(), doc)
             keep_service = tracing or copilot_app
-            # A revert has no workspace; the Copilot app keeps the service on its recorded one.
-            target = workspace or (login_service.recorded_workspace()[0] if copilot_app else None)
-            if keep_service and target and relay_port and (not copilot_app or _service_on(target)):
+            recorded_port = login_service.recorded_port("port")
+            if workspace is None and copilot_app and relay_port and recorded_port:
+                # A revert has no workspace: keep the Copilot app's service as recorded.
+                host, workspace_id = login_service.recorded_workspace()
+                if host:
+                    login_service.install(
+                        host,
+                        recorded_port,
+                        copilot_app=True,
+                        pin=["--workspace-id", workspace_id] if workspace_id else [],
+                    )
+            elif (
+                keep_service
+                and workspace
+                and relay_port
+                and (not copilot_app or _service_on(workspace))
+            ):
                 login_service.install(
-                    target,
-                    login_service.recorded_port("port") or login_service.allocate_port(),
+                    workspace,
+                    recorded_port or login_service.allocate_port(),
                     copilot_app=copilot_app,
                 )
             elif not keep_service:

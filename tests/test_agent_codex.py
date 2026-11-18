@@ -3138,6 +3138,15 @@ class TestCodexManagedConfig:
         codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
         assert '"--workspace-id" "111"' in unit_path.read_text()
 
+        # A revert drops the Codex relay but keeps the app's service exactly as recorded.
+        pinned[1] = "111"
+        login_service.install(WS, 43199, 43198, copilot_app=True)
+        pinned[1] = "222"
+        codex._sync_desktop_relay({}, None, None)
+        assert "--relay-port" not in unit_path.read_text()
+        assert '"--workspace-id" "111"' in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         ensure = Mock()

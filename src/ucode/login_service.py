@@ -178,8 +178,15 @@ def _owned(path: Path) -> bool:
 
 
 def install(
-    workspace: str, port: int, relay_port: int | None = None, *, copilot_app: bool = False
+    workspace: str,
+    port: int,
+    relay_port: int | None = None,
+    *,
+    copilot_app: bool = False,
+    pin: list[str] | None = None,
 ) -> None:
+    """Write and start the unit; ``pin`` replaces the workspace selection's ``--workspace-id``."""
+    pin = workspace_id_args(workspace) if pin is None else pin
     path = service_path()
     if path.is_symlink():
         raise RuntimeError(f"Refusing to replace a symlinked service file: {path}")
@@ -204,7 +211,7 @@ def install(
             *relay,
             "--port",
             str(port),
-            *workspace_id_args(workspace),
+            *pin,
         ]
         _ensure_scheduled_task(path, argv, marker)
         return
@@ -224,7 +231,7 @@ def install(
                 *relay,
                 "--port",
                 str(port),
-                *workspace_id_args(workspace),
+                *pin,
             ],
             marker,
         )
@@ -235,7 +242,7 @@ def install(
         # systemd expands `$` in ExecStart arguments but never in the executable path.
         f"ExecStart={_systemd_quote(ug_path)} otel-proxy --host "
         f"{_systemd_quote(workspace, exec_start=True)} {' '.join([*relay, '--port', str(port)])}"
-        + "".join(f" {_systemd_quote(arg)}" for arg in workspace_id_args(workspace)),
+        + "".join(f" {_systemd_quote(arg)}" for arg in pin),
         "Restart=on-failure",
         "RestartSec=1s",
     ]
