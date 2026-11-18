@@ -769,9 +769,30 @@ class TestProviderCatalog:
             copilot.provider_service_catalog({"workspace": WS}, MPS, None)
 
 
-def _stub_location(monkeypatch, model_ids, error=None):
+def _model_service(*models):
+    """A UC model service whose routing has one live pay-per-token destination per model."""
+    return {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {"traffic_percentage": 100, "pay_per_token_config": {"model": f"models/{m}"}}
+                    for m in models
+                ]
+            }
+        }
+    }
+
+
+def _stub_location(monkeypatch, model_ids, error=None, services=None):
     monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
-    seen = {}
+    seen = {"looked_up": []}
+
+    def model_service(name, workspace, token, *, timeout):
+        seen["looked_up"].append(name)
+        service = (services or {}).get(name)
+        return (service, None) if service else (None, "not found")
+
+    monkeypatch.setattr(copilot, "get_model_service", model_service)
 
     def anthropic_catalog(workspace, token, *, parent_schema):
         seen["parent_schema"] = parent_schema
@@ -803,6 +824,46 @@ class TestLocationCatalog:
             ("main.ucode.gpt-5-6-luna", "responses"),
         ]
         assert seen["parent_schema"] == "main.ucode"
+
+    def test_a_service_named_like_no_model_takes_its_claude_settings_from_the_model_behind_it(
+        self, monkeypatch
+    ):
+        seen = _stub_location(
+            monkeypatch,
+            [
+                "anthropic-aigw-1a2b3c4d-main.ucode.claude_sonnet",
+                "main.ucode.gpt_luna",
+                "main.ucode.claude-haiku-4-5",
+            ],
+            services={
+                "main.ucode.claude_sonnet": _model_service(
+                    "system.ai.databricks-claude-sonnet-4-6"
+                ),
+                "main.ucode.gpt_luna": _model_service("system.ai.databricks-gpt-6-luna"),
+            },
+        )
+
+        models = copilot.location_catalog({"workspace": WS}, "main.ucode")
+        entries = {
+            entry["wireModel"]: entry
+            for entry in copilot.render_providers_config(models, PROXY, "secret")["models"]
+        }
+
+        # Copilot sends `temperature` to a model it can't place, which newer Claude models reject.
+        assert entries["main.ucode.claude_sonnet"]["modelId"] == "claude-sonnet-4.6"
+        assert entries["main.ucode.claude_sonnet"]["maxPromptTokens"] == 872_000
+        assert "modelId" not in entries["main.ucode.gpt_luna"]
+        assert entries["main.ucode.claude-haiku-4-5"]["modelId"] == "claude-haiku-4.5"
+        assert sorted(seen["looked_up"]) == ["main.ucode.claude_sonnet", "main.ucode.gpt_luna"]
+
+    def test_a_service_lookup_that_fails_keeps_the_service_as_listed(self, monkeypatch):
+        _stub_location(monkeypatch, ["main.ucode.claude_sonnet"])
+
+        [model] = copilot.location_catalog({"workspace": WS}, "main.ucode")
+
+        assert model.served_model is None
+        [entry] = copilot.render_providers_config([model], PROXY, "secret")["models"]
+        assert "modelId" not in entry
 
     def test_an_empty_schema_says_so(self, monkeypatch):
         _stub_location(monkeypatch, [], error="Unity Gateway returned no Anthropic model ids")

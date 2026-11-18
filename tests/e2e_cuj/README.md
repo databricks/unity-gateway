@@ -1,8 +1,9 @@
 # Catalog discovery CUJ
 
-The dedicated workspace must already publish a CodingAgentConfig enabling both agents
-with `ug_e2e.models` as their model source. Claude is the default agent; its default and
-Sonnet-family model are `claude_sonnet`, and Codex defaults to `gpt_luna`. Smart routing
+The dedicated workspace must already publish a CodingAgentConfig enabling Claude Code, Codex and
+Copilot CLI with `ug_e2e.models` as their model source. Claude is the default agent; its default
+and Sonnet-family model are `claude_sonnet`, Codex defaults to `gpt_luna`, and Copilot defaults to
+`claude_sonnet`. Smart routing
 and tracing are disabled. Tests neither provision nor validate fixture definitions.
 
 | Service under `ug_e2e.models` | Claude Code | Codex |
@@ -150,6 +151,15 @@ CUJ2's Claude and Codex MPS inference cases ask for a short greeting. Each requi
 native parent turn matching that prompt, a nonempty answer, the expected provider/model and
 its paired HTTP 200 response. Random request IDs correlate traffic without requiring models
 to repeat them. File, skill, MCP and subagent tasks keep their expected-value assertions.
+
+CUJ2's Copilot CLI entry uses the Anthropic MPS, `ug_e2e.providers.anthropic`, with VS Code
+integration on. Its headless file task, with no `--model`, must start on `claude-haiku-5-5`,
+send the provider header on every Messages request that carries the task, and get a non-empty
+HTTP 200 for each.
+
+CUJ3's Copilot case reads Copilot's live registry: exactly the four Claude-visible scoped services,
+under their full names on the Anthropic route (Copilot picks wires by model name, and these names
+fall back to it), with no Gemini and no decoys. Its TUI task completes on `claude_sonnet`.
 
 A separate CUJ2 Claude TUI case checks default Model Provider Service support with the
 first-prompt/subagent routing preset. It checks the managed MPS header and paired HTTP 200 on
