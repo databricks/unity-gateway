@@ -3083,6 +3083,9 @@ def claude_desktop_auth_cmd(
     claude_binary: Annotated[
         str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
     ] = None,
+    use_pat: Annotated[
+        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
+    ] = False,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
@@ -3094,6 +3097,11 @@ def claude_desktop_auth_cmd(
 
     try:
         with redirect_stdout(sys.stderr):
+            if use_pat and not ensure_pat_bearer(profile):
+                raise RuntimeError(
+                    f"Databricks profile `{profile}` has no personal access token. "
+                    "Add one, then start a new Cowork task."
+                )
             if relay:
                 if not claude_binary or not os.path.isabs(claude_binary):
                     raise RuntimeError("An absolute Claude Code executable path is required.")
@@ -5853,6 +5861,15 @@ def _configure_global_from_agent_config(
                 raise published_agent_config.ManagedRunError(
                     published_agent_config.EXIT_WRITE, str(exc)
                 ) from exc
+        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
+        if not dry_run and from_file is None:
+            # Install missing enabled agents as the merge does, before the build checks versions.
+            for tool_name in selected:
+                if tool_name in enabled:
+                    try:
+                        install_tool_binary(tool_name, strict=False)
+                    except RuntimeError as exc:
+                        print_warning(str(exc))
         published_agent_config.run(
             key=key,
             raw=raw,
@@ -5862,7 +5879,6 @@ def _configure_global_from_agent_config(
             profile=profile,
             token=token,
         )
-        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
         if from_file is None and "claude" in selected:
             if "claude" in enabled:
                 # Best effort, as before: a Desktop failure warns without failing the run. A dry

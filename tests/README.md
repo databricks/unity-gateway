@@ -1,7 +1,18 @@
 # Test suites and user journeys
 
+`test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
+It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
+npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,
+and idempotent aliases.
+It does not install real packages, contact Databricks, or establish a macOS/Jamf integration pass.
+
 `test_security_scan_request.py` verifies the default-branch Security Scan's request
 validation, GitHub-sourced policy metadata, main policy checkout and isolated hosted scan.
+The resolver uses the event's run ID to fetch current CI metadata through the authenticated
+Actions API. Cases cover incomplete event metadata and the observed PR title in the
+requested event instead of the evaluated CI run name, invalid/mismatched run IDs,
+API errors/timeouts, and field-specific diagnostics; lookup failure never falls back to
+the event snapshot. These fixtures do not establish GitHub's metadata availability timing.
 This prerequisite installs the producer and reusable consumer without making existing CI
 wait. `test_security_scan.py` covers commit-scoped waivers, trusted-author exemptions,
 secret-name coverage, quoted diff paths and line numbers, decoder detection, build-hook
@@ -16,6 +27,12 @@ require local metadata listing without validating unrelated workspaces, preserve
 filtering (including implicit PATs without DEFAULT inheritance), tolerate unreadable
 local classification hints, and verify that the selected workspace still gets an
 authentication check. They do not establish live login or end-to-end startup latency.
+
+The Codex ChatGPT relay check in `integration/test_ug_codex_relayed.py` logs in with an
+access token and requests a short `gpt-6-luna` reply, asserting the completed answer and
+HTTP 200 through the relay. Its dedicated protected Linux CI job maps `CODEX_OAUTH_TOKEN`
+to `CODEX_ACCESS_TOKEN`; `test_cuj_session.py` covers credential redaction from evidence.
+File tools, desktop configure/revert, desktop inference, and browser sign-in are not covered.
 
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
@@ -115,8 +132,9 @@ Native macOS Cowork inference is covered by `cowork-inference-macos` in
 installed UG through its CLI, and asserts a completed exact-answer task through macOS
 Accessibility for each model source: Databricks Hosted, the Anthropic MPS, and the
 Anthropic relay MPS (see `scripts/cowork-inference/README.md`). Both jobs block the
-integration gate. The macOS job also runs the file and skill tasks described below.
-Apple Silicon, Code-tab, MCP, and file writes remain uncovered.
+integration gate. The macOS job also runs the file, skill, and MCP web search tasks described
+below. Apple Silicon, Code-tab, MCP services other than `system.ai.web_search`, and file writes
+remain uncovered.
 `test_macos_cowork_harness.py` checks sanitized evidence, private raw logs, multiline prompt
 fields, exact enabled controls, bounded Accessibility retries, unambiguous model labels,
 provider-service and relay-helper profile checks, model-picker switching from Desktop's
@@ -138,6 +156,11 @@ staging `anthropic-mps` lane's Windows Claude row runs the same Desktop steps fo
 non-relay Anthropic MPS. Each lane
 then checks a selected local file and a user-authored native plugin skill, requiring
 successful tool results and completed answers with random values absent from the prompts.
+Both Windows lanes also run a `system.ai.web_search` connector search through UG's MCP proxy,
+requiring an official Databricks URL shared by the tool result and the answer. Those jobs use a
+minted, revoked PAT profile with `--use-pat`, since Desktop does not pass the job's bearer to
+connectors. `test_desktop_setup.py` and `test_desktop_auth_cli.py` cover the PAT helper arguments
+and reading a PAT profile's token.
 `test_cowork_session_evidence.py` rejects wrong-session/file/value evidence, tool errors,
 mismatched or malformed result IDs, malformed tool inputs and file paths, missing skill calls,
 incomplete answers, and case-mismatched macOS paths. It tolerates unrelated

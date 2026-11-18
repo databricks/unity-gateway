@@ -54,7 +54,7 @@ _JS_FILE = re.compile(r"\.(js|mjs|cjs|jsx|ts|tsx)$")
 # or a test's `_SESSION_SECRET` doesn't count.
 _SECRET = re.compile(
     r"\b(?:CLAUDE_CODE_OAUTH_TOKEN|DATABRICKS_(?:SECOND_)?BEARER|DATABRICKS_TOKEN"
-    r"|[A-Z][A-Z0-9_]*_CLIENT_SECRET|SLACK_WEBHOOK|GITHUB_TOKEN|GH_TOKEN"
+    r"|CODEX_ACCESS_TOKEN|[A-Z][A-Z0-9_]*_CLIENT_SECRET|SLACK_WEBHOOK|GITHUB_TOKEN|GH_TOKEN"
     r"|ACTIONS_RUNTIME_TOKEN|ACTIONS_ID_TOKEN_REQUEST_TOKEN|PRIVATE_KEY)\b"
     r"|\.databrickscfg|/proc/self/environ"
 )

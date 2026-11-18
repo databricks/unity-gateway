@@ -711,8 +711,18 @@ class TestRun:
 
 
 @pytest.fixture
-def global_cli(monkeypatch, writes):
-    """`ug configure --global` on Linux with the Desktop step recorded instead of run."""
+def installed(monkeypatch):
+    """Agent installs `ug configure --global` asks for, recorded instead of run."""
+    calls: list = []
+    monkeypatch.setattr(
+        cli_mod, "install_tool_binary", lambda tool, **kwargs: calls.append((tool, kwargs)) or True
+    )
+    return calls
+
+
+@pytest.fixture
+def global_cli(monkeypatch, writes, installed):
+    """`ug configure --global` on Linux with the Desktop step and agent installs recorded."""
     from ucode.agents.desktop import setup as desktop_setup
 
     desktop: list[dict] = []
@@ -774,6 +784,51 @@ class TestGlobalCli:
         assert claude.managed_settings_path() in written
         assert global_cli == [{"workspace": WS, "profile": None}]
         assert not managed_files_mod.machine_wide_only()
+
+    def test_installs_enabled_agents_before_building_their_files(
+        self, monkeypatch, writes, global_cli, installed
+    ):
+        raw = _raw_config(claude_config={}, codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        real_run = machine.run
+        monkeypatch.setattr(
+            machine, "run", lambda **kwargs: installed.append("run") or real_run(**kwargs)
+        )
+        result = _configure("--agents", "claude,codex,gemini")
+        assert result.exit_code == 0, result.output
+        assert installed == [("claude", {"strict": False}), ("codex", {"strict": False}), "run"]
+
+    def test_installs_only_the_agents_the_configuration_enables(
+        self, monkeypatch, writes, global_cli, installed
+    ):
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--agents", "claude,codex")
+        assert result.exit_code == 0, result.output
+        assert installed == [("claude", {"strict": False})]
+
+    def test_dry_run_installs_nothing(self, monkeypatch, writes, global_cli, installed):
+        raw = _raw_config(claude_config={}, codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--dry-run", "--agents", "claude,codex")
+        assert result.exit_code == 0, result.output
+        assert installed == []
+
+    def test_a_failed_install_warns_and_still_writes_the_files(
+        self, monkeypatch, writes, global_cli
+    ):
+        written, _ = writes
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+
+        def too_old(tool, **kwargs):
+            raise RuntimeError("Claude Code 1.0.0 is too old.")
+
+        monkeypatch.setattr(cli_mod, "install_tool_binary", too_old)
+        result = _configure("--agents", "claude")
+        assert result.exit_code == 0, result.output
+        assert "Claude Code 1.0.0 is too old." in result.output
+        assert claude.managed_settings_path() in written
 
     def test_no_cached_sign_in_signs_in_before_deciding(self, monkeypatch, writes, global_cli):
         written, _ = writes
