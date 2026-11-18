@@ -5743,7 +5743,12 @@ class TestConfigureAgentsSelection:
     def _picker(self, monkeypatch, tool, *, services, answers, text=("main.models",)):
         state = {**MINIMAL_STATE, "provider_services": {tool: "old.mps.name"}}
         monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *a: "token")
-        monkeypatch.setattr(cli_mod, "list_tool_provider_services", lambda *a: services)
+        names, reason = services
+        monkeypatch.setattr(
+            cli_mod,
+            "tool_provider_service_choices",
+            lambda *a: ([(name, name) for name in names], reason),
+        )
         saved: list[dict] = []
         monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(dict(s)))
         asked: list[list[str]] = []
@@ -5835,6 +5840,27 @@ class TestConfigureAgentsSelection:
         result = cli_mod._maybe_select_provider_service("claude", state)
         assert cli_mod.get_model_location(result, "claude") is None
         assert cli_mod.get_provider_service(result, "claude") == "a.b.mps"
+
+    def test_picker_shows_service_labels(self, monkeypatch):
+        state, _saved, _asked = self._picker(
+            monkeypatch, "copilot", services=([], None), answers=[]
+        )
+        label = "a.b.seats (GitHub Copilot subscription)"
+        monkeypatch.setattr(
+            cli_mod, "tool_provider_service_choices", lambda *a: ([("a.b.seats", label)], None)
+        )
+        shown: list[list[tuple[str, str]]] = []
+        replies = iter(["mps", "a.b.seats"])
+        monkeypatch.setattr(
+            cli_mod,
+            "prompt_for_selection",
+            lambda prompt, options: shown.append(list(options)) or next(replies),
+        )
+
+        result = cli_mod._maybe_select_provider_service("copilot", state)
+
+        assert shown[1] == [("a.b.seats", label)]
+        assert cli_mod.get_provider_service(result, "copilot") == "a.b.seats"
 
     def test_picker_gemini_has_no_custom_location(self, monkeypatch):
         state, _saved, asked = self._picker(
