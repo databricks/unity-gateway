@@ -1,235 +1,295 @@
-# Set up Unity Gateway on Windows with Intune
+# Deploy Unity Gateway to a Windows device with Intune
 
-Deploy [windows-provision.ps1](windows-provision.ps1) as an Intune **Windows app (Win32)**,
-running as SYSTEM in 64-bit Windows PowerShell. The installer provides shared tools, exchanges
-service-principal credentials for a short-lived token, and runs `ug configure --global --mdm`.
-Developers sign in with their own Databricks accounts when they launch an agent.
+Follow these steps to install Unity Gateway, Claude Code and Codex on **one enrolled Windows test
+device**. Intune runs the installer as SYSTEM; the developer then signs in with their own
+Databricks account. Do not run the provisioning script manually before this test.
 
-This is a draft deployment procedure. The revised script has helper tests, but its full install,
-uninstall, and SYSTEM-to-standard-user flow still need to be tested on Windows and through Intune.
+This walkthrough is awaiting an actual Intune pilot. If a step fails, stop at that step and collect
+the error before assigning the app to more devices.
 
 ## Before you start
 
-- Windows 11 x64 or ARM64, enrolled in Intune with the Intune Management Extension installed.
-- A workspace with Claude Code and Codex enabled in the Unity Gateway coding-agent configuration,
-  and models available for both agents.
-- A dedicated provisioning service principal with **Workspace access** and access to the models,
-  MCP servers and skills in that configuration. Generate an OAuth secret with the shortest lifetime
-  that covers your rollout. Use the `ai-gateway` and `unity-catalog` **Read** scopes
-  (`ai-gateway:read unity-catalog:read`). Create the service principal and OAuth secret in the
-  workspace under **Settings > Identity and access > Service principals**.
-- Network access to the workspace, GitHub (`github.com`, `raw.githubusercontent.com` and release
-  asset download hosts), PyPI (`pypi.org`, `files.pythonhosted.org`), `nodejs.org`, and the npm
-  registry (`registry.npmjs.org`). If required, configure your approved PyPI/npm proxies in a
-  deployment wrapper using `UV_DEFAULT_INDEX` and `npm_config_registry`.
-- Review your execution-policy requirements. The script changes an unset or `Restricted`
-  LocalMachine policy to `RemoteSigned` so the PowerShell aliases load. It keeps `AllSigned` and
-  does not override Group Policy. Under a policy requiring signatures, your organization must sign
-  the resulting profiles or use `ug claude` / `ug codex` directly.
+Have these ready:
 
-## 1. Supply deployment inputs
+- A Windows 11 Pro, Enterprise or Education x64/ARM64 test device enrolled in Intune, and
+  permission to create Win32 apps and device groups in the Intune admin center. Take a VM snapshot
+  if using a VM.
+- Your Databricks workspace URL, provisioning service principal client id and client secret.
+  The service principal needs workspace access and access to the models, MCP servers and skills
+  in the workspace's published coding-agent configuration. Enable both Claude Code and Codex with
+  usable models for this walkthrough. Provisioning requests `ai-gateway:read unity-catalog:read`.
+- Network access from the Windows device to your workspace, GitHub and its release-download
+  hosts, PyPI, `nodejs.org` and `registry.npmjs.org`.
 
-The script accepts these named PowerShell parameters. It does not prompt, so missing credentials
-fail the deployment rather than hanging an unattended install.
+**Credential warning:** this pilot passes the client secret through Intune's install command.
+That can expose it to Intune administrators and endpoint process/management logs. Use a dedicated,
+short-lived provisioning secret only if your organization permits this handling. Do not put the
+secret in the `.ps1` file or `.intunewin` package, paste it into this repository, or include it in
+screenshots/logs you share. If your organization prohibits secret arguments, use its approved
+runtime credential-delivery mechanism before proceeding; Intune has no secure secret-argument
+field.
 
-| Parameter | Environment fallback | Purpose |
-| --- | --- | --- |
-| `-Workspace` | `DATABRICKS_HOST` | Workspace origin, starting with `https://` |
-| `-ClientId` | `DATABRICKS_CLIENT_ID` | Provisioning service principal client id |
-| `-ClientSecret` | `DATABRICKS_CLIENT_SECRET` | Provisioning service principal secret |
-| `-UgRef` | None | Release tag or commit; defaults to the commit pinned in the script |
-| `-Uninstall` | None | Revert and remove this deployment; no credentials required |
+The current script also sets an unset or `Restricted` LocalMachine execution policy to
+`RemoteSigned` and installs all-users PowerShell functions. It does not override Group Policy.
+Confirm these changes are permitted on your test device.
 
-### Credential handling
+## 1. Prepare the package on Windows
 
-Intune's Win32 **Install command** supports named arguments for deployment settings. It does not
-provide a secure secret parameter: a secret supplied in the command can be visible to Intune
-administrators and through endpoint process auditing or management logs. Microsoft
-[advises against putting sensitive information in deployed scripts](https://learn.microsoft.com/en-us/intune/device-management/tools/run-powershell-scripts-windows#before-you-begin).
+On the Windows device you will use to build the package, open Start, search for **Windows
+PowerShell**, and choose **Run as administrator** so you can create the folders below. These
+packaging commands do not install Unity Gateway; Intune will do that later.
 
-Use your organization's approved credential-delivery mechanism, if available. A wrapper can obtain
-the secret at runtime, set `DATABRICKS_CLIENT_SECRET` **for that process only**, and call the script.
-Intune does not populate this variable for you; the wrapper must authenticate to the credential
-source. Do not store the secret in machine environment variables or a packaged config file.
-
-The install-command example below shows the script's `-ClientSecret` input. Use that form only if
-your organization's credential-handling policy permits the command-line exposure. Restrict access
-to the Intune app configuration and rotate or revoke the secret after the deployment window.
-If the exposure is not acceptable and you do not have an approved runtime credential source,
-resolve credential delivery before deploying; moving the secret into an environment variable is
-not a complete solution.
-
-Keep secrets out of the script and the `.intunewin` package. The script does not write its
-credentials into the installed copy, marker, or generated profiles, but this does not erase
-Intune's records or endpoint logs.
-
-## 2. Test the script manually
-
-Start with a clean VM snapshot. In **64-bit Windows PowerShell as administrator**, from the folder
-containing the script, prompt for the credential so it is not saved in the file or a literal
-command-line argument:
+Create three folders:
 
 ```powershell
-$env:DATABRICKS_HOST = 'https://<workspace>.cloud.databricks.com'
-$credential = Get-Credential -UserName '<client-id>' -Message 'Provisioning service principal'
-$env:DATABRICKS_CLIENT_ID = $credential.UserName
-$env:DATABRICKS_CLIENT_SECRET = $credential.GetNetworkCredential().Password
-try {
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\windows-provision.ps1
-  if ($LASTEXITCODE -ne 0) { throw "Provisioning failed: $LASTEXITCODE" }
-} finally {
-  Remove-Item Env:DATABRICKS_CLIENT_SECRET -ErrorAction SilentlyContinue
-  Remove-Item Env:DATABRICKS_CLIENT_ID -ErrorAction SilentlyContinue
-  Remove-Item Env:DATABRICKS_HOST -ErrorAction SilentlyContinue
-  $credential = $null
-}
+New-Item -ItemType Directory -Force -Path C:\UGPackage, C:\UGTools, C:\UGOutput | Out-Null
 ```
 
-This administrator test is not an Intune/SYSTEM test. Do the pilot in step 5 before expanding the
-assignment. Rerun the script to check repeatability, then restart Windows and verify the aliases.
+Download the merged provisioning script and Microsoft's Win32 Content Prep Tool:
 
-## 3. Package the script
+```powershell
+Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/databricks/unity-gateway/fc1ec310baf083e311a9cf084b8ea25046a4bb02/scripts/mdm/windows-provision.ps1' -OutFile C:\UGPackage\windows-provision.ps1
+Invoke-WebRequest -UseBasicParsing -Uri 'https://raw.githubusercontent.com/microsoft/Microsoft-Win32-Content-Prep-Tool/master/IntuneWinAppUtil.exe' -OutFile C:\UGTools\IntuneWinAppUtil.exe
+```
 
-1. Create a source folder containing only `windows-provision.ps1` (and your approved wrapper, if
-   using one). Do not include credentials, test output or local configuration.
-2. Select the `ug` revision you have validated. The default is pinned in the script; pass a release
-   tag or full commit with `-UgRef` to use another one. Do not use a moving branch for a production
-   rollout.
-3. Use the [Microsoft Win32 Content Prep Tool](https://learn.microsoft.com/en-us/intune/app-management/deployment/create-win32-package):
+If you already have that version of `windows-provision.ps1`, copying it into `C:\UGPackage` is
+also sufficient. Use the provisioning script, not an earlier `windows-native-test.ps1` or
+`windows-npm-test.ps1` copy. Leave its credential inputs unchanged.
 
-   ```powershell
-   IntuneWinAppUtil.exe -c C:\UGPackage -s windows-provision.ps1 -o C:\UGOutput
-   Get-FileHash C:\UGPackage\windows-provision.ps1 -Algorithm SHA256
-   ```
+Check the source folder:
 
-   Keep the output folder outside the source folder. Record the script hash for the detection rule.
+```powershell
+Get-ChildItem C:\UGPackage
+```
 
-Git and uv download versions/hashes are pinned in the script. A first install selects the current
-Node.js LTS and the Databricks CLI version from `setup-cli`, and `ug` selects the npm agent packages.
-The deployment is not fully reproducible unless your organization also pins or mirrors those
-inputs. Review the downloaded tools against your software policy before rollout.
+**Expected:** only `windows-provision.ps1`. Remove unrelated files from this package source folder;
+the packaging tool includes its contents. Keep `UGTools` and `UGOutput` outside it.
 
-## 4. Create the Win32 app
+## 2. Create the .intunewin package
 
-In the Intune admin center, select **Apps > All apps > Create > Windows app (Win32)** and upload the
-`.intunewin` package. See Microsoft's [Win32 app instructions](https://learn.microsoft.com/en-us/intune/app-management/deployment/add-win32).
+In the same PowerShell window:
 
-On **Program**, use **Command line** as the installer type:
+```powershell
+& C:\UGTools\IntuneWinAppUtil.exe -c C:\UGPackage -s windows-provision.ps1 -o C:\UGOutput -q
+if ($LASTEXITCODE -ne 0) { throw "Packaging failed: $LASTEXITCODE" }
+Get-ChildItem C:\UGOutput
+```
 
-| Setting | Value |
-| --- | --- |
-| Install behavior | **System** |
-| Device restart behavior | **No specific action** |
-| Allow available uninstall | **No** during the pilot |
+**Expected:** `C:\UGOutput\windows-provision.intunewin`.
 
-**Install command** (replace placeholders; apply the credential warning in step 1):
+See Microsoft's [Content Prep Tool instructions](https://learn.microsoft.com/en-us/intune/app-management/deployment/create-win32-package)
+for packaging requirements.
+
+## 3. Create a group containing only the test device
+
+In the [Intune admin center](https://intune.microsoft.com):
+
+1. Open **Devices > All devices**. Find the enrolled Windows device and note its device name.
+2. Open **Groups > All groups > New group**.
+3. Set **Group type** to **Security** and **Group name** to `Unity Gateway Windows pilot`.
+4. Set **Membership type** to **Assigned**.
+5. Under **Members**, select the Windows **device** you noted, not your user account.
+6. Create the group. Do not add other devices yet.
+
+## 4. Upload a Windows app (Win32)
+
+1. Open **Apps > All apps > Create**.
+2. Select **Windows app (Win32)** and click **Select**.
+3. Click **Select app package file**, choose
+   `C:\UGOutput\windows-provision.intunewin`, and click **OK**.
+4. On **App information**, enter:
+
+   | Field | Value |
+   | --- | --- |
+   | Name | `Unity Gateway Windows pilot` |
+   | Description | `Unity Gateway, Claude Code and Codex for the Windows pilot` |
+   | Publisher | `Databricks` |
+
+5. Click **Next** to open **Program**.
+
+## 5. Enter the install and uninstall commands
+
+On **Program**, choose **Command line** if an installer-type selector is shown.
+
+Paste this as the **Install command**, replacing only `WORKSPACE`, `CLIENT_ID` and `CLIENT_SECRET`.
+Keep the double quotes and the supplied `-UgRef` value:
 
 ```text
-%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\windows-provision.ps1" -Workspace "https://<workspace>.cloud.databricks.com" -ClientId "<client-id>" -ClientSecret "<client-secret>" -UgRef "<approved-tag-or-full-commit>"
+C:\Windows\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\windows-provision.ps1" -Workspace "https://WORKSPACE.cloud.databricks.com" -ClientId "CLIENT_ID" -ClientSecret "CLIENT_SECRET" -UgRef "fc1ec310baf083e311a9cf084b8ea25046a4bb02"
 ```
 
-Do not paste a real secret into a terminal to test this command. Use the prompted test above.
-Verify quoting for your actual credential; do not print the populated command to diagnose it.
-An approved wrapper can instead provide the credential through the environment fallback.
+Replace the entire workspace origin with your actual URL if it uses a different domain. Enter the
+credential only in Intune; do not run the populated command in a terminal or share a screenshot of
+it. The supplied revision includes the merged managed-agent installation support. Do not omit
+`-UgRef`: the script's older default does not include that fix.
 
-**Uninstall command**:
+Paste this as the **Uninstall command**:
 
 ```text
 C:\Windows\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\UnityGateway\windows-provision.ps1" -Uninstall
 ```
 
-The script keeps an uncredentialed copy at that path after a successful install. The uninstall
-command uses literal paths because Intune does not expand environment variables in that field;
-adjust both paths for a custom Windows installation drive. `Sysnative` selects the 64-bit host
-when launched by the 32-bit Intune management process; running plain `powershell.exe` there can
-select 32-bit PowerShell, which the script refuses.
+These paths assume Windows is installed on `C:\`. Adjust both commands if your device uses a
+different drive. The uninstall field does not expand environment variables. `Sysnative` selects
+64-bit PowerShell when the 32-bit Intune management process launches it.
 
-On **Requirements**, target Windows 11 and the architectures you tested (x64 and/or ARM64).
-Use separate pilot assignments if the architecture-specific dependencies differ.
+Set the remaining fields:
 
-On **Detection rules**, choose **Use a custom detection script**, with
-**Run script as 32-bit process on 64-bit clients: No**. Use the script below, replacing all three
-expected values with the exact script hash, workspace and `UgRef` used in the install command:
+| Field | Value |
+| --- | --- |
+| Install behavior | **System** |
+| Installation time required | **60 minutes** |
+| Device restart behavior | **No specific action** |
+| Allow available uninstall | **No**, if shown |
+| Return codes | Leave the defaults |
+
+Click **Next**.
+
+## 6. Set requirements
+
+On **Requirements**:
+
+1. Select the 64-bit operating-system architecture for your test device. If ARM64 is listed
+   separately, select it for a Windows ARM64 device.
+2. Set **Minimum operating system** to a Windows 11 version your test device meets.
+3. Leave the optional CPU, memory and disk requirement rules unset for this pilot.
+4. Click **Next**.
+
+## 7. Add a detection rule
+
+On **Detection rules**:
+
+1. Set **Rules format** to **Manually configure detection rules**.
+2. Click **Add**, select **File**, and enter:
+
+   | Field | Value |
+   | --- | --- |
+   | Path | `C:\Program Files\UnityGateway` |
+   | File or folder | `provisioned.json` |
+   | Detection method | **File or folder exists** |
+   | Associated with a 32-bit app on 64-bit clients | **No** |
+
+3. Click **OK**, then **Next**.
+
+The script writes this marker only after configure and profile setup finish. This is an
+**initial-install pilot** rule, not a software-version or policy-refresh rule. A device that already
+has this file will be considered installed without running the app. Use a clean enrolled device
+for the delivery test; do not delete the entire shared installation just to force detection.
+
+On **Dependencies** and **Supersedence**, add nothing and click **Next**. The script installs its
+own dependencies for this pilot.
+
+## 8. Assign and create the app
+
+On **Assignments**:
+
+1. Under **Required**, click **Add group**.
+2. Select **Unity Gateway Windows pilot**, the group containing only your test device.
+3. Do not assign to **All users** or **All devices**. Leave **Available** and **Uninstall** empty.
+4. Click **Next**, review the summary, and click **Create**.
+
+**Expected:** the app exists and has a Required assignment to the pilot group.
+
+## 9. Sync the device and watch installation
+
+1. In Intune, open **Devices > All devices > your Windows device > Sync** and confirm.
+2. Keep the device powered on and connected. A sync requests check-in; it does not guarantee
+   immediate Win32 installation. Do not run the script yourself while waiting.
+3. Open **Apps > All apps > Unity Gateway Windows pilot > Device install status**.
+4. Wait for your device to show **Installed**. The status page can lag the device's actual work.
+
+On the Windows device, check whether the completion marker exists:
 
 ```powershell
-$ErrorActionPreference = 'Stop'
-$expectedHash = '<script-sha256-from-step-3>'
-$expectedWorkspace = 'https://<workspace>.cloud.databricks.com'
-$expectedUgRef = '<approved-tag-or-full-commit>'
-$root = Join-Path $env:ProgramW6432 'UnityGateway'
-$marker = Join-Path $root 'provisioned.json'
-if (-not (Test-Path -LiteralPath $marker)) { exit 1 }
-try { $record = Get-Content -Raw -LiteralPath $marker | ConvertFrom-Json }
-catch { exit 1 }
-if ($record.scriptSha256 -ne $expectedHash -or
-    $record.workspace -ne $expectedWorkspace -or $record.ugRef -ne $expectedUgRef) { exit 1 }
-foreach ($relative in 'bin\ug.exe', 'bin\databricks.exe', 'node\node.exe',
-                      'npm\claude.cmd', 'npm\codex.cmd', 'windows-provision.ps1') {
-  if (-not (Test-Path -LiteralPath (Join-Path $root $relative))) { exit 1 }
-}
-Write-Output 'Unity Gateway provisioned'
-exit 0
+Test-Path 'C:\Program Files\UnityGateway\provisioned.json'
 ```
 
-The marker is written only after configure and profile installation finish. Intune detection needs
-both exit code 0 and output on stdout; a missing marker or binary returns 1. File existence alone
-does not establish that an agent can authenticate: verify that separately in the pilot.
+**Expected:** `True` after a successful installation. You can also read this non-secret marker:
 
-## 5. Pilot as SYSTEM, then verify as a user
+```powershell
+Get-Content 'C:\Program Files\UnityGateway\provisioned.json'
+```
 
-Assign the app as **Required** to a small test-device group. Check installation status in Intune
-and the device's logs under `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs`:
-`IntuneManagementExtension.log`, `AppWorkload.log`, and `AgentExecutor.log` where applicable.
-Treat collected logs as sensitive. Do not enable PowerShell tracing or dump environments containing
-credentials.
+It should name your workspace and the `fc1ec310baf083e311a9cf084b8ea25046a4bb02` revision.
 
-After installation, sign out and back in (or restart Windows) so new terminals inherit the updated
-machine PATH. As a **standard user**, open Windows PowerShell and run:
+If Intune reports **Failed**, stop and use the troubleshooting section below. Do not rotate the
+provisioning secret until the intended installation attempts have completed or been cancelled.
+
+## 10. Verify as the developer
+
+After installation, restart Windows or sign out and back in to pick up the machine PATH. Open a
+normal **Windows PowerShell** window, not an administrator window and not one started with
+`-NoProfile`.
 
 ```powershell
 Get-Command ug, claude, codex | Select-Object Name, Source, CommandType
-$before = $env:UG_SKIP_OS_SETTINGS
-claude
-$env:UG_SKIP_OS_SETTINGS -eq $before
-codex
-$env:UG_SKIP_OS_SETTINGS -eq $before
 ```
 
-`claude` and `codex` should be functions. Launch each separately, sign in to Databricks as the
-developer when prompted, and complete a prompt before exiting. The environment comparisons should
-print `True`. Repeat after a Windows restart. Confirm the agent installations are under
-`C:\Program Files\UnityGateway\npm`, not SYSTEM's profile.
+**Expected:** `ug` resolves under `C:\Program Files\UnityGateway\bin`, while `claude` and `codex`
+are **Function** commands.
 
-If the profile is blocked, check `Get-ExecutionPolicy -List` against your organization's policy.
-In a shell that doesn't load the profile, launch directly:
+Run:
+
+```powershell
+claude
+```
+
+Sign in to Databricks as the developer if prompted, send a prompt, and verify a response. Exit the
+agent, then run:
+
+```powershell
+codex
+```
+
+Complete a prompt there too. These developer sessions use the developer's identity, not the
+provisioning service principal.
+
+## If a step fails
+
+Send the step number, the exact error text, and the app's **Device install status** error code.
+Redact credentials and tokens before sharing anything. Do not send the populated install command.
+
+On the device, Intune logs are under:
+
+```text
+C:\ProgramData\Microsoft\IntuneManagementExtension\Logs
+```
+
+Start with `AppWorkload.log` and `IntuneManagementExtension.log`; `AgentExecutor.log` may also
+contain script-execution details. Search for the app name, the app id from Intune, or
+`windows-provision.ps1`. Do not upload the whole log folder without checking it for secrets.
+
+| Symptom | Check |
+| --- | --- |
+| Intune says Installed immediately, but nothing ran | Check whether `provisioned.json` already existed before assignment. |
+| No attempt appears on the device | Confirm device-group membership, Required assignment and requirement applicability. An MDM sync is not proof the app ran. |
+| Download or npm/PyPI connection errors | Check network/proxy rules in SYSTEM context. If proxies must be added to the script, edit the source and repackage before retrying. |
+| `claude` or `codex` was not installed | Check configure's output, both enabled agents/model access, and that the install command includes the supplied `-UgRef`. |
+| PowerShell profile cannot load | Check `Get-ExecutionPolicy -List`. Group Policy may block unsigned profiles; do not override organization policy. |
+| `ug` is not recognized | Restart/sign out, then check `C:\Program Files\UnityGateway\bin\ug.exe`. |
+
+If profiles are blocked, the direct launch command is:
 
 ```powershell
 $env:UG_SKIP_OS_SETTINGS = '1'; ug claude
-# Or ug codex
+# Or: ug codex
 ```
 
-Aliases apply to Windows PowerShell and an existing PowerShell 7 installation, not cmd.exe or Git
-Bash. If PowerShell 7 is installed later, rerun provisioning to install its profile block.
+## After the pilot
 
-## Updates, secret rotation and removal
+- **Credentials:** revoke/rotate the dedicated provisioning secret after the deployment window.
+  Existing users sign in with their own OAuth. Keep access to Intune app settings restricted.
+- **Wider rollout:** only expand the Required group after successful Intune delivery and both
+  standard-user launches. Repeat on each architecture you intend to deploy.
+- **Updates:** prepare and pilot a new deployment revision, version-aware detection and
+  supersedence. The marker-existence rule above will not refresh a working installation merely
+  because the workspace policy changed. Reruns reinstall the selected `ug` revision but reuse
+  existing dependencies; this script is not a fleet updater. Node.js, the CLI and npm agents are
+  selected at first installation rather than fully pinned by this package.
+- **Removal:** remove the Required assignment before assigning Uninstall to the test group. Close
+  running agents. Uninstall runs `ug revert`, removes this deployment's PowerShell blocks and PATH
+  entries, and deletes `C:\Program Files\UnityGateway`. It leaves shared Git, execution policy
+  and developers' Databricks credentials alone. Do not delete the runtime before reverting its
+  managed settings, which can reference its absolute path.
 
-- **Policy refresh:** Win32 detection prevents another install while the expected deployment is
-  present. Plan a new deployment revision or a separate,
-  explicitly scheduled management action when the workspace policy needs to be refreshed.
-- **Software updates:** reruns reinstall the requested `ug` revision. They reuse existing Git,
-  uv, Node.js and Databricks CLI installations. Agent version handling remains `ug`'s existing
-  behavior; this is not a general fleet updater. Test updates in a pilot and distribute a revised
-  package/detection rule through Intune supersedence.
-- **Secret rotation:** rotate or revoke the provisioning secret after the rollout window. Before
-  a later rollout, replace it in your approved credential source or Intune install command. Existing
-  devices use each developer's OAuth and do not need the provisioning secret to launch agents.
-- **Removal:** remove the Required assignment before assigning Uninstall. Close running agents.
-  Uninstall runs `ug revert` as SYSTEM, removes the managed alias blocks and this deployment's
-  PATH entries, and deletes `C:\Program Files\UnityGateway` (including its npm agents and marker).
-  It leaves Git for Windows, execution policy, and individual users' Databricks credentials alone.
-  Review any pre-existing managed settings that `ug revert` restores from backups. If users also
-  ran per-user configuration, have them run `ug revert` in their own session where needed.
-
-Do not delete the shared `ug` runtime before reverting managed settings: those settings can reference
-its absolute path for authentication. Do not delete all of `C:\ProgramData\UnityGateway`; it is a
-separate machine-policy location managed by `ug`, not the install directory.
+Reference: [Microsoft's Win32 app deployment settings](https://learn.microsoft.com/en-us/intune/app-management/deployment/add-win32).
