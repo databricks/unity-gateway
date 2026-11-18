@@ -281,7 +281,12 @@ export function register(on: On, options: PluginOptions): void {
   const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   const routingSync: RoutingSyncState = {};
   let pendingChooser: object | undefined;
-  let reopenChooser: (() => void) | undefined;
+  let modelList: {
+    labels: string[];
+    offset: number;
+    resolve: (answer: string | undefined) => void;
+  } | undefined;
+  let reopenChooser: (() => Promise<void>) | undefined;
   let awaitingModelChoice = false;
   let switchingAuto = false;
   const internalModels: string[] = [];
@@ -316,7 +321,7 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
-  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, ($, e, next) => {
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     sessionActive = false;
     pendingChooser = undefined;
     awaitingModelChoice = false;
@@ -324,6 +329,7 @@ export function register(on: On, options: PluginOptions): void {
     clearAutoSave();
     internalModels.length = 0;
     pendingSelection?.cancel();
+    if (modelList) await $.ui.close({id:'auto-main'});
     return next(e);
   });
 
@@ -345,18 +351,47 @@ export function register(on: On, options: PluginOptions): void {
 
   if (auto) {
     on('ui.close', {id:'auto-main'}, ($, e, next) => {
+      modelList?.resolve(undefined);
+      modelList = undefined;
       if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
       if (e.origin.kind === 'person') clearAutoSave();
       return next(e);
     });
-    on('session.append', {door:'prompt'}, ($, e, next) => {
+    on('session.append', {door:'prompt'}, async ($, e, next) => {
       if (!e.agentId && !e.message.isMeta) {
         pendingChooser = undefined;
         awaitingModelChoice = false;
         manualOffRequest = undefined;
         clearAutoSave();
+        if (modelList) await $.ui.close({id:'auto-main'});
       }
       return next(e);
+    });
+    on('ui.render', {component:'Pane'}, ($, e, next) => {
+      if (e.requestId !== 'auto-main' || !modelList) return next(e);
+      const list = modelList;
+      const {offset, labels} = list;
+      const {Box, Text, Button} = $.ui.resolve(e);
+      const end = Math.min(offset + 10, labels.length);
+      const move = (to: number) => {
+        if (modelList !== list) return;
+        list.offset = to;
+        $.ui.invalidate('ui.render');
+      };
+      return Box({flexDirection:'column', children:[
+        Text({bold:true, wrap:'truncate', children:[AUTO_MAIN_TITLE]}),
+        ...labels.slice(offset, end).map((label, index) => Button({
+          key:`model-${offset + index}`, label:`${offset + index + 1}. ${label}`, plain:true,
+          ...(index === 0 ? {autoFocus:true as const} : {}),
+          onPress:() => { if (modelList === list && list.offset === offset) list.resolve(label); },
+        })),
+        Box({flexDirection:'row', columnGap:1, children:[
+          ...(offset ? [Button({key:`previous-${offset}`, label:'Previous', hotkey:'p', plain:true, onPress:() => move(Math.max(0, offset - 10))})] : []),
+          ...(labels.length > 10 ? [Button({key:`more-${offset}`, label:end < labels.length ? 'More models' : 'First models', hotkey:'n', plain:true, onPress:() => move(end < labels.length ? end : 0)})] : []),
+          Button({key:`cancel-${offset}`, label:'Cancel', hotkey:'c', plain:true, onPress:() => list.resolve(undefined)}),
+        ]}),
+        Text({dimColor:true, wrap:'truncate', children:[`${offset + 1}–${end} of ${labels.length} · ↑↓ choose · Enter select · Esc cancel`]}),
+      ]});
     });
     on('classic.PreModelSwitch', async ($, e, next) => {
       const result = await next(e);
@@ -390,7 +425,7 @@ export function register(on: On, options: PluginOptions): void {
               await customAutoRow($, auto, await entryMainModel($, auto));
               if (autoSave === request) {
                 clearAutoSave();
-                scheduleChooser();
+                await scheduleChooser();
               }
               return;
             }
@@ -419,7 +454,7 @@ export function register(on: On, options: PluginOptions): void {
               if (auto.staticModel) auto.variant = previousMain;
               if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
               if (autoSave !== request) return;
-              scheduleChooser();
+              await scheduleChooser();
               $.ui.toast(`Could not save Auto: ${String(error)}. Check /model, then retry.`);
               $.ui.invalidate('ui.render');
             } finally {
@@ -471,7 +506,7 @@ export function register(on: On, options: PluginOptions): void {
             if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
             if (autoSave !== request) return;
             clearAutoSave();
-            scheduleChooser();
+            await scheduleChooser();
             $.ui.toast(`Could not save Auto: ${String(error)}. Check /model, then retry.`);
             $.ui.invalidate('ui.render');
           }
@@ -479,52 +514,75 @@ export function register(on: On, options: PluginOptions): void {
         await run();
       };
 
-      function scheduleChooser(): void {
+      async function scheduleChooser(): Promise<void> {
         if (pendingChooser || !sessionActive) return;
         const request = {};
         pendingChooser = request;
         pendingSelection?.cancel();
-        pendingSelection = $.clock.after(0, async () => {
+        let markOpened: () => void;
+        const opened = new Promise<void>(resolve => { markOpened = resolve; });
+        const show = async () => {
           const baseline = await selectedModel($, auto);
           const current = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
+          if (pendingChooser !== request || !sessionActive) return;
           const rows = [...auto.models.filter(row => row.model === current), ...auto.models.filter(row => row.model !== current)];
           const labels = rows.map(row => rows.filter(other => other.label === row.label).length > 1 || ['More models', 'Cancel'].includes(row.label)
             ? `${row.label} (${row.model})` : row.label);
-          const pageSize = rows.length > 4 ? 3 : 4;
-          let offset = 0;
           let question = AUTO_MAIN_TITLE;
           try {
             while (pendingChooser === request && sessionActive) {
-              const choices = labels.slice(offset, offset + pageSize);
-              if (rows.length > 4) choices.push('More models');
-              if (choices.length === 1) choices.push('Cancel');
-              const answer = await $.ui.ask(question, {header:'Main model', options:choices}).catch(() => undefined);
+              let answer: string | undefined;
+              if (labels.length <= 4) {
+                // Native questions allow at most four options.
+                answer = await $.ui.ask(question, {header:'Main model', options:labels.length === 1 ? [...labels, 'Cancel'] : labels}).catch(() => undefined);
+              } else {
+                let resolve: (answer: string | undefined) => void;
+                const selection = new Promise<string | undefined>(done => { resolve = done; });
+                const list = {labels, offset:0, resolve:resolve!};
+                modelList = list;
+                try {
+                  const opened = await $.ui.open({id:'auto-main', title:AUTO_MAIN_TITLE, focus:true, closeOnEscape:true, rows:14, columns:60});
+                  markOpened!();
+                  if (!opened.isPlaced) {
+                    $.ui.toast('Could not open the model list. Try /model auto again.');
+                    return;
+                  }
+                  answer = await selection;
+                } finally {
+                  if (modelList === list) {
+                    modelList = undefined;
+                    await $.ui.close({id:'auto-main'});
+                  }
+                }
+              }
               if (pendingChooser !== request || !sessionActive || await selectedModel($, auto) !== baseline) return;
               if (answer === undefined || answer === 'Cancel') return;
-              if (answer === 'More models' && rows.length > 4) {
-                offset = offset + pageSize >= rows.length ? 0 : offset + pageSize;
-                question = AUTO_MAIN_TITLE;
-                continue;
-              }
-              const index = choices.indexOf(answer);
+              const index = labels.indexOf(answer);
               if (index < 0) {
                 question = `${AUTO_MAIN_TITLE}\n\nInvalid model. Choose a model from the list.`;
                 continue;
               }
-              const selected = rows[offset + index];
+              const selected = rows[index];
               await save(selected, request);
               return;
             }
           } finally {
             if (pendingChooser === request) pendingChooser = undefined;
           }
-        });
+        };
+        // Keep the user's command context for native pane placement at narrow
+        // widths. A clock callback is classified as an unasked sidebar.
+        if (auto.models.length > 4) {
+          void show().catch(error => $.ui.toast(`Could not open the model list: ${String(error)}`)).finally(() => markOpened!());
+          await opened;
+        }
+        else pendingSelection = $.clock.after(0, show);
       }
       reopenChooser = scheduleChooser;
       if (e.command === 'auto') {
         if (pendingChooser) return {};
         clearAutoSave();
-        scheduleChooser();
+        await scheduleChooser();
         return {};
       }
       const internalCommand = internalModels.includes(e.args)
@@ -560,7 +618,7 @@ export function register(on: On, options: PluginOptions): void {
       }
       if (e.args.trim().toLowerCase() === 'auto' && awaitingModelChoice && await autoSelected($, auto)) {
         awaitingModelChoice = false;
-        scheduleChooser();
+        await scheduleChooser();
       }
       return result;
     });
@@ -736,7 +794,7 @@ export function register(on: On, options: PluginOptions): void {
         awaitingModelChoice = false;
         await syncAutoRouting($, options, auto, routingSync);
         $.ui.invalidate('ui.render');
-        if (await autoSelected($, auto)) reopenChooser?.();
+        if (await autoSelected($, auto)) await reopenChooser?.();
       }
       return result;
     });

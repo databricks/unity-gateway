@@ -54,6 +54,8 @@ function staticCatalogSession(on: On, initial: string, saved?: string, contextTo
   const choices: {question:string; options:{label:string}[]}[] = [];
   const answers: (string | undefined)[] = [];
   const chooser: {answer?: () => Promise<string>} = {};
+  let openedList: () => void;
+  const listOpened = new Promise<void>(resolve => { openedList = resolve; });
   on('tool.call', {tool:'AskUserQuestion'}, async ($, e, next) => {
     const question = e.questions[0];
     if (question.header !== 'Main model') return next(e);
@@ -91,6 +93,7 @@ function staticCatalogSession(on: On, initial: string, saved?: string, contextTo
   });
   on('ui.open', ($, e) => {
     opened.push(e.id);
+    if (e.id === 'auto-main') openedList();
     return { value: { isPlaced: true } };
   });
   on('ui.close', ($, e) => {
@@ -102,7 +105,7 @@ function staticCatalogSession(on: On, initial: string, saved?: string, contextTo
   on('session.start', () => ({ cwd: '/work' }));
   on('session.end', () => ({sessionId:'session'}));
   return {
-    env, writes, runs, opened, store, commands, clock, choices, answers, chooser,
+    env, writes, runs, opened, store, commands, clock, choices, answers, chooser, listOpened,
     selected: () => selected,
   };
 }
@@ -477,36 +480,98 @@ const LARGE_AUTO = {
   }),
 };
 
-test('the compact chooser pages through every model with at most four options', {
+const MODEL_LIST = {
+  plugin:'ug-smart-router', component:'Pane', requestId:'auto-main', surface:'terminal',
+  props:{title:'Auto: choose your main model', isFocused:true, bodyColumns:60,
+    placement:'inline', scroll:{offset:0, bodyRows:14}, view:{}},
+} as const;
+
+function modelLabels(tree: any): string[] {
+  return [
+    ...(tree?.type === 'Button' && tree.props?.key?.startsWith('model-') ? [tree.props.label] : []),
+    ...(tree?.children ?? []).flatMap(modelLabels),
+  ];
+}
+
+for (const count of [5, 10, 12, 23]) {
+  test(`the model list shows ten rows per page with continuous numbers: ${count} models`, {
+    options:{...OPTIONS, autoPicker:JSON.stringify({...LARGE_AUTO, models:Array.from({length:count}, (_, index) =>
+      LARGE_AUTO.models[index] ?? {model:`system.ai.model-${index}`, label:`Model ${index}`, autoModel:`ug-auto-model-${index}`})})},
+  }, async ($, on) => {
+    const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
+    const notices = captureNotices(on);
+    await $.session.start(START);
+    await $.command.run({command:'auto', args:''});
+    const choosing = session.clock.advance(0);
+    await session.listOpened;
+    const ui = await $.ui.mount(MODEL_LIST);
+    const seen: string[] = [];
+    for (let offset = 0; offset < count; offset += 10) {
+      if (offset) { await ui.press({key:`more-${offset - 10}`}); await ui.redraw(); }
+      const labels = modelLabels(await ui.drawn());
+      expect(labels).toHaveLength(Math.min(10, count - offset));
+      expect(labels.map(label => Number(label.split('.')[0])))
+        .toEqual(Array.from({length:Math.min(10, count - offset)}, (_, index) => offset + index + 1));
+      seen.push(...labels);
+    }
+    expect(seen).toEqual(['1. Haiku 4.5', '2. Sonnet 5', ...Array.from({length:count - 2}, (_, index) => `${index + 3}. Model ${index + 2}`)]);
+    await ui.press({key:`model-${count - 1}`});
+    await choosing;
+    expect(session.store[AUTO.storeKey]).toBe(`system.ai.model-${count - 1}`);
+    expect(notices).toEqual([savedConfirmation(`system.ai.model-${count - 1}`)]);
+    await ui.unmount();
+  });
+}
+
+test('More models, Previous and First models retain numbering and the current model first', {
   options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
 }, async ($, on) => {
   const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
-  const rows = captureNotices(on);
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
-  session.answers.push('More models', 'More models', 'More models', 'Model 11');
-  await session.clock.advance(0);
-  expect(session.choices).toHaveLength(4);
-  expect(session.choices.map(question => question.options.length)).toEqual([4, 4, 4, 4]);
-  expect(session.choices[0].options[0].label).toBe('Haiku 4.5');
-  expect(session.choices.flatMap(question => question.options.map(option => option.label).filter(label => label !== 'More models')))
-    .toEqual(['Haiku 4.5', 'Sonnet 5', ...Array.from({length:10}, (_, index) => `Model ${index + 2}`)]);
-  expect(session.store[AUTO.storeKey]).toBe('system.ai.model-11');
-  expect(rows).toEqual([savedConfirmation('system.ai.model-11')]);
+  const choosing = session.clock.advance(0);
+  await session.listOpened;
+  const ui = await $.ui.mount(MODEL_LIST);
+  const first = modelLabels(await ui.drawn());
+  await ui.press({key:'more-0'});
+  await ui.redraw();
+  expect(modelLabels(await ui.drawn())).toEqual(['11. Model 10', '12. Model 11']);
+  await ui.press({key:'previous-10'});
+  await ui.redraw();
+  expect(modelLabels(await ui.drawn())).toEqual(first);
+  await ui.press({key:'more-0'});
+  await ui.redraw();
+  await ui.press({key:'more-10'});
+  await ui.redraw();
+  expect(modelLabels(await ui.drawn())).toEqual(first);
+  await ui.press({key:'model-0'});
+  await choosing;
+  expect(session.store[AUTO.storeKey]).toBe(OTHER);
+  await ui.unmount();
 });
 
-test('More models cycles back to the current model on the first page', {
-  options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
-}, async ($, on) => {
-  const session = staticCatalogSession(on, DEFAULT_ALIAS, OTHER);
-  await $.session.start(START);
-  await $.command.run({command:'auto', args:''});
-  session.answers.push('More models', 'More models', 'More models', 'More models', 'Haiku 4.5');
-  await session.clock.advance(0);
-  expect(session.choices).toHaveLength(5);
-  expect(session.choices[4].options).toEqual(session.choices[0].options);
-  expect(session.store[AUTO.storeKey]).toBe(OTHER);
-});
+for (const cancel of ['button', 'model', 'end']) {
+  test(`cancelling the model list on its second page keeps the preference: ${cancel}`, {
+    options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
+  }, async ($, on) => {
+    const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
+    const notices = captureNotices(on);
+    await $.session.start(START);
+    await $.command.run({command:'auto', args:''});
+    const choosing = session.clock.advance(0);
+    await session.listOpened;
+    const ui = await $.ui.mount(MODEL_LIST);
+    await ui.press({key:'more-0'});
+    await ui.redraw();
+    if (cancel === 'button') await ui.press({key:'cancel-10'});
+    if (cancel === 'model') await $.command.run({command:'model', args:MAIN});
+    if (cancel === 'end') await $.session.end({reason:'prompt_input_exit'});
+    await choosing;
+    expect(session.store[AUTO.storeKey]).toBe(MAIN);
+    expect(notices).toEqual([]);
+    await ui.unmount();
+  });
+}
 
 for (const answer of ['Sonnet 5', 'Cancel']) {
   test(`a single main model has a valid compact question: ${answer}`, {
@@ -572,25 +637,6 @@ test('a valid choice after an invalid typed model saves once', {options:OPTIONS}
   expect(session.choices[1].question).toContain('Invalid model. Choose a model from the list.');
   expect(session.store[AUTO.storeKey]).toBe(OTHER);
   expect(rows).toEqual([savedConfirmation(OTHER)]);
-});
-
-test('repeated invalid typed models preserve the current page until cancellation', {
-  options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
-}, async ($, on) => {
-  const session = staticCatalogSession(on, DEFAULT_ALIAS, MAIN);
-  const rows = captureNotices(on);
-  await $.session.start(START);
-  await $.command.run({command:'auto', args:''});
-  session.answers.push('More models', 'unavailable model', 'another unavailable model', undefined);
-  await session.clock.advance(0);
-  expect(session.choices).toHaveLength(4);
-  expect(session.choices[1].options.map(option => option.label)).toEqual(['Model 3', 'Model 4', 'Model 5', 'More models']);
-  for (const question of session.choices.slice(2)) {
-    expect(question.question).toContain('Invalid model. Choose a model from the list.');
-    expect(question.options).toEqual(session.choices[1].options);
-  }
-  expect(session.store[AUTO.storeKey]).toBe(MAIN);
-  expect(rows).toEqual([]);
 });
 
 test('dismissing the chooser does not show an invalid-model error', {options:OPTIONS}, async ($, on) => {

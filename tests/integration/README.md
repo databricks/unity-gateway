@@ -2191,9 +2191,17 @@ restore has removed the source mapping (with and without workspace state), and t
 exact-version plus effective-routing provisioning gate. These cases exercise temporary
 settings through the real Python lifecycle; they do not establish live gateway coverage.
 
-The Auto chooser's native component tests cover compact modal selection, cancellation,
-pagination, invalid typed answers with a visible retry message, and stale answers after
-a model command or session end. Claude 2.1.290's plugin test runner lacks a
+The Auto chooser's native component tests cover compact modal selection for small
+catalogs and the draft ten-model pane for larger catalogs: continuous numbering,
+forward/backward/wrap navigation, selection and cancellation. Invalid typed answers
+remain covered for small catalogs; the larger button list has no text input.
+Pane placement is mocked and the component tests redraw explicitly. Manual Linux
+checks found automatic opening after the stock picker refused below 144 columns
+on Claude 2.1.290/2.1.322, and a 36-row terminal clipped the direct command's list.
+A 160-column, 60-row terminal displayed two full pages and selected model 12,
+but reopening lost keyboard focus to the prompt. These remain draft blockers;
+no successful complete automatic terminal journey is claimed.
+Claude 2.1.290's plugin test runner lacks a
 `session.append` implementation, so these component tests do not cover picker-confirmation
 ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
 preservation, or prompt interruption. The chooser has no

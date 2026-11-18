@@ -19,8 +19,18 @@ model the mod holds, not the row's default-variant alias, and updates on each sw
 prompt hint for the main model. Native's initial `/model` confirmation reads
 `Auto on: subagents smart-routed`; saving a main model prints a notice naming the saved model.
 The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
-picker closes, or on `/model auto`. It uses the compact native question modal, with no
-effort controls. Native `/effort` remains unchanged.
+picker closes, or on `/model auto`. This draft keeps the compact native question for
+catalogs of four models or fewer. Larger catalogs use a native pane with ten models
+per page, continuous numbering, and Previous/More models navigation. Native `/effort`
+remains unchanged.
+
+The larger chooser is experimental and not ready to merge. On Claude 2.1.290 and
+2.1.322, opening it after selecting Auto in the stock picker is classified as an
+unasked pane and can be refused below 144 terminal columns. Typing `/model auto`
+directly preserves the command context, but a short terminal can still clip rows
+and navigation. A 160-column, 60-row terminal displayed both full pages and selected
+a model, but reopening the list left keyboard input in the main prompt. Placement,
+clipping, and focus remain unresolved.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

@@ -267,6 +267,18 @@ These deliberately unauthenticated requests do not establish
 successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).
 
+The draft Auto list's component tests in `native_claude/mod_tests/auto-static.test.ts`
+cover 5/10/12/23-model catalogs, ten rows per page with continuous numbering,
+forward/backward/wrap navigation, selection, and cancellation without changing the
+saved preference. Small catalogs retain native-question validation. The old invalid
+typed-answer pagination case is obsolete for the button list, which has no text input.
+Component tests mock pane placement and redraw explicitly; they do not establish
+terminal focus or visibility. Manual Linux checks found the automatic stock-picker
+path refused below 144 columns on Claude 2.1.290/2.1.322, and a 36-row terminal clipped
+the direct command's list. A 160-column, 60-row terminal displayed two full pages
+and selected model 12, but reopening lost keyboard focus to the prompt. These are
+unresolved draft blockers, not passing end-to-end UI coverage.
+
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
 name stability. They cover a lone call's decision under its Agent row and parallel calls

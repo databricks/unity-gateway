@@ -204,9 +204,12 @@ main model and reopens the chooser. This check includes cold contexts and does n
 that a warm cache exists. Other hooks' blocks and explicit confirmation requests still apply.
 The main-model chooser opens only after the person confirms the Auto row in `/model` and
 the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
-on Esc. The chooser uses a compact native modal above the prompt, including in narrow
-terminals. The current model appears first; larger catalogs use a More models choice
-to cycle through pages. It has no effort controls and runs no `/effort` commands.
+on Esc. Catalogs of four models or fewer use a compact native question. This draft
+uses a native pane for larger catalogs, with ten models per page, continuous numbering,
+and Previous/More models navigation. The current model appears first. Native pane
+placement after the stock picker closes and clipping in short terminals remain unresolved;
+do not treat the component tests as evidence of a working automatic terminal flow.
+It has no effort controls and runs no `/effort` commands.
 Native confirms the row as its picker closes, before the chooser opens, so that confirmation
 reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
 a visible `$.ui.log` notice after saving the chosen model, such as
