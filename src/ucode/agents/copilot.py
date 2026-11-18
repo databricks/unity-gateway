@@ -420,14 +420,6 @@ def model_labels(
     return {model: model.id if counts[label] > 1 else label for model, label in labels.items()}
 
 
-def seat_relay_unsupported(service_name: str) -> str:
-    return (
-        f"Model provider service '{service_name}' relays a GitHub Copilot subscription, which this "
-        "version of ug can't route GitHub Copilot through yet. Pick a Model Provider Service with "
-        "an API key, or use Databricks models."
-    )
-
-
 def provider_service_catalog(
     state: dict, service_name: str, requested: str | None, *, tool: str = "copilot"
 ) -> list[CopilotModel]:
@@ -441,8 +433,6 @@ def provider_service_catalog(
     service, error = resolve_provider_service(tool, service_name, workspace, token)
     if error or service is None:
         raise RuntimeError(error or f"Model provider service '{service_name}' was not found.")
-    if service.get("relayed"):
-        raise RuntimeError(seat_relay_unsupported(service_name))
     agent = "Copilot" if tool == "copilot" else "VS Code"
     provider_type = service["provider_type"]
     named = list(service.get("targets") or [])

@@ -476,8 +476,6 @@ def resolve_provider_models(
     if error or service is None:
         return None, error, False
     relayed = bool(service.get("relayed"))
-    if relayed and tool in (AGENT_COPILOT, "vscode"):
-        return None, copilot.seat_relay_unsupported(provider), False
     # Relayed services enforce their declared targets too, so map them like any Anthropic service
     # (allow_all declares none). relayed gates auth, not model reconciliation.
     # Only Claude pins per-family model ids. Codex ignores this map, and gemini resolves
