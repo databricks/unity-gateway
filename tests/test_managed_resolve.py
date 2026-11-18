@@ -703,6 +703,11 @@ class TestManagedUnservableModels:
             self._managed("pi", ["system.ai.kimi-k2-7-code"]), "pi"
         ) == ["system.ai.kimi-k2-7-code"]
 
+    def test_pi_old_claude_only_is_unservable(self):
+        # Pi leaves out Claude older than 4.5, legacy-named ids included.
+        models = ["system.ai.claude-opus-4-1", "databricks-claude-3-7-sonnet"]
+        assert managed_unservable_models(self._managed("pi", models), "pi") == models
+
     def test_opencode_gpt_only_is_unservable(self):
         # OpenCode has no OpenAI provider block.
         managed = self._managed("opencode", ["system.ai.gpt-5"])

@@ -125,8 +125,8 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
 
     Only non-empty when *every* named model is unservable, which is when the translation yields
     nothing and the developer's own models stand — so the caller can say why the admin's list had no
-    effect. opencode has no OpenAI provider and pi has no OSS provider, so each can be handed a
-    valid model FQN it cannot route, and copilot serves only Claude and GPT.
+    effect. opencode has no OpenAI provider, so it can be handed a valid model FQN it cannot route;
+    pi serves Claude 4.5 or newer, GPT and Gemini, and copilot serves only Claude and GPT.
     """
     if tool == "copilot":
         from ucode.agents.copilot import classify_copilot_model
@@ -138,15 +138,12 @@ def managed_unservable_models(managed: dict, tool: str) -> list[str]:
     models = _manifest_models(managed, tool)
     if not isinstance(models, list):
         return []
-    servable = (
-        _bucket_by_provider(models)
-        if tool == "opencode"
-        else [
-            m
-            for m in models
-            if classify_model_family(m) in (*ANTHROPIC_FAMILIES, "codex", "gemini")
-        ]
-    )
+    if tool == "opencode":
+        servable = _bucket_by_provider(models)
+    else:
+        from ucode.agents.pi import serves_pi_model
+
+        servable = [m for m in models if serves_pi_model(m)]
     return [] if servable else models
 
 
