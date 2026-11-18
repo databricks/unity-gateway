@@ -503,7 +503,8 @@ tool registration/dispatch, Omni and direct collection, original-task identity,
 16-character validation, exact text, capture before disabling, background upload after,
 cancellation, same-report retry, failures, delivery notices, and forwarding during capture.
 The two-choice menu opens free-text entry, accepts notes on the selected reason option,
-repeats short-reason validation, and handles Escape/turn completion/disconnect without
+ends short-reason attempts with a validation error and character count instead of
+reopening the prompt, and handles Escape/turn completion/disconnect without
 uploading. Its replies stay local; unrelated replies continue upstream. Preprovided
 reasons bypass the menu without changing the text.
 Isaac subprocesses and transport are controlled in these component checks.
@@ -511,7 +512,7 @@ The live Codex skill-toggle and metadata journeys now require completed native
 `ug_smart_router` results correlated to each action, actual controls, and completed
 root answers. They fail on a shell approval dialog; Claude's native journey is unchanged.
 Live feedback validation must request off in ordinary chat, select Provide a reason,
-enter a short reason, verify native text entry repeats,
+enter a short reason, verify the turn ends with a clear error and no reopened prompt,
 then cancel and verify routing stays on without upload. An authorized submission must
 retain the original task and pre-toggle routing state, return a feedback ID, and keep
 routing off if delivery fails. Check that background notices render after the turn and

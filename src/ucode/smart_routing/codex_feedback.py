@@ -38,6 +38,8 @@ TOOL_SPEC = {
         "The user can provide a reason (minimum 16 trimmed characters) or cancel. "
         "Do not ask another question or switch to Plan mode. "
         "If the user already provided a reason, pass their exact text. "
+        "If validation_error is returned, relay its message and stop. Wait for the user to retry; "
+        "do not reopen the prompt or automatically retry with another reason. "
         "Do not cite skills, file paths, or instructions. "
         "Never invent feedback. Cancel sends nothing and keeps routing on. "
         "Status checks delivery; retry resends the saved report without recapturing."
@@ -150,13 +152,7 @@ async def collect_feedback(ask: AskFeedback) -> str | None:
     if answer[0] != PROVIDE_REASON:
         raise ValueError("Invalid feedback selection. Smart Router is still on.")
     notes = answer[1:]
-    while True:
-        if notes:
-            if len(notes) != 1 or not notes[0].startswith("user_note: "):
-                raise ValueError("Invalid feedback reason. Smart Router is still on.")
-            reason = notes[0].removeprefix("user_note: ")
-            if len(reason.strip()) >= 16:
-                return reason
+    if not notes:
         question = {
             "id": FEEDBACK_QUESTION_ID,
             "header": "Your reason",
@@ -168,6 +164,9 @@ async def collect_feedback(ask: AskFeedback) -> str | None:
         notes = await ask(question)
         if not notes:
             return None
+    if len(notes) != 1 or not notes[0].startswith("user_note: "):
+        raise ValueError("Invalid feedback reason. Smart Router is still on.")
+    return notes[0].removeprefix("user_note: ")
 
 
 class CodexSmartRouter:
@@ -372,6 +371,15 @@ class CodexSmartRouter:
                 feedback.prepare_codex_feedback(env)
                 self.pending_threads.add(thread_id)
             if len((reason or "").strip()) < 16:
+                if reason is not None:
+                    return {
+                        "validation_error": "reason_too_short",
+                        "message": (
+                            f"Reason too short ({len(reason.strip())}/16 characters). "
+                            "Smart Router is still on; nothing was sent. "
+                            "Run $smart-router off again to retry."
+                        ),
+                    }
                 return {
                     "needs_reason": True,
                     "message": (

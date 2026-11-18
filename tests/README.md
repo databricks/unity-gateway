@@ -1189,7 +1189,8 @@ session binding, preserved user tools, rejection of child/foreign sessions and i
 arguments, original-task anchoring, exact reason text, capture before disabling,
 background upload afterward, cancellation, no-ops, failures, read-only delivery status,
 and retry of the same saved report. The native selector offers Provide a reason or
-Cancel, accepts reason notes or opens text entry, repeats short-reason validation,
+Cancel, accepts reason notes or opens text entry, ends short-reason attempts with
+an explicit validation error and character count instead of reopening the prompt,
 preserves preprovided text, and clears pending collection on interruption or error.
 Status needs no Isaac executable.
 `test_codex_metadata.py` checks native request/response transport, unrelated-tool

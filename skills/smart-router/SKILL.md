@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.9.0"
+  version: "1.9.1"
 ---
 
 # Smart Router
@@ -53,11 +53,14 @@ result and stop. Do not retry, restart a turn, or request feedback for unchanged
 
 In Codex, the off call opens a native selection prompt when feedback is required:
 "Provide a reason" opens text entry, and "Cancel" keeps routing on and sends nothing.
-The launcher collects at least 16 characters, discloses that the reason and session
+The launcher requires at least 16 characters, discloses that the reason and session
 details go to the Isaac team, and handles cancellation. Wait for the tool result;
 do not ask a duplicate chat question, call a separate question tool, or switch to
 Plan mode. If the user already supplied a reason for this toggle, pass their exact
 text in the off call instead of asking twice. Never invent or pad their reason.
+If the result reports a validation error, relay it and stop. A short reason ends
+this attempt with routing still on and nothing sent. Do not reopen the prompt,
+ask another question, or retry automatically; wait for the user's next request.
 The launcher anchors the preceding task,
 saves evidence before disabling, and sends through Isaac in the background.
 Reason submission needs no additional shell approval. Do not submit the same

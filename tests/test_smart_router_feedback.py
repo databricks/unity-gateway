@@ -318,7 +318,9 @@ def test_native_host_captures_then_disables_without_a_shell(native_router, inlin
     assert prompt["needs_reason"]
     assert "session details will be sent" in prompt["message"]
     assert native_call(native_router, "off")["needs_reason"]
-    assert native_call(native_router, "off", reason="slow")["needs_reason"]
+    rejected = native_call(native_router, "off", reason="slow")
+    assert rejected["validation_error"] == "reason_too_short"
+    assert "4/16 characters" in rejected["message"]
     assert run.call_count == 1
 
     result = native_call(native_router, "off", reason=REASON)
@@ -569,15 +571,15 @@ def test_native_controls_write_failure_never_requests_shell_approval(
     "answers,reason",
     [
         ([["Provide a reason", "user_note: " + REASON]], REASON),
-        ([["Provide a reason"], ["user_note: slow"], ["user_note: " + REASON]], REASON),
+        ([["Provide a reason"], ["user_note: " + REASON]], REASON),
+        ([["Provide a reason"], ["user_note: " + "界" * 16]], "界" * 16),
         ([["Cancel", "user_note: " + REASON]], None),
         ([None], None),
         ([["Provide a reason"], []], None),
     ],
 )
-@pytest.mark.parametrize("preprovided_reason", [None, "slow"])
 def test_native_selector_collects_within_toggle_call(
-    native_router, inline_feedback, answers, reason, preprovided_reason
+    native_router, inline_feedback, answers, reason
 ):
     import asyncio
 
@@ -593,7 +595,7 @@ def test_native_selector_collects_within_toggle_call(
 
     response = asyncio.run(
         native_router.call(
-            {"threadId": SESSION_ID, "arguments": {"action": "off", "reason": preprovided_reason}},
+            {"threadId": SESSION_ID, "arguments": {"action": "off"}},
             ask,
         )
     )
@@ -725,3 +727,48 @@ def test_native_duplicate_off_cannot_bypass_open_selector(native_router, inline_
     assert session_env.session_routing_enabled(controls)
     assert run.call_count == 1
     popen.assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["", "slow", "   slow   ", "界" * 15])
+@pytest.mark.parametrize("entry", ["text", "option_note", "preprovided"])
+def test_native_short_reason_ends_attempt_without_reopening(
+    native_router, inline_feedback, reason, entry
+):
+    import asyncio
+
+    controls, run, popen, calls = inline_feedback
+    questions = []
+
+    async def ask(question):
+        questions.append(question)
+        assert len(questions) <= (2 if entry == "text" else 1), (
+            "Short answer must not reopen the prompt"
+        )
+        if entry == "text" and len(questions) == 1:
+            return ["Provide a reason"]
+        return (["Provide a reason"] if entry == "option_note" else []) + ["user_note: " + reason]
+
+    arguments = {"action": "off"}
+    if entry == "preprovided":
+        arguments["reason"] = reason
+    response = asyncio.run(
+        native_router.call({"threadId": SESSION_ID, "arguments": arguments}, ask)
+    )
+    assert response["success"], response
+    result = json.loads(response["contentItems"][0]["text"])
+    assert result["validation_error"] == "reason_too_short"
+    assert f"{len(reason.strip())}/16 characters" in result["message"]
+    assert "Smart Router is still on; nothing was sent" in result["message"]
+    assert "needs_reason" not in result
+    assert len(questions) == {"text": 2, "option_note": 1, "preprovided": 0}[entry]
+    assert not native_router.collecting_threads
+    assert session_env.session_routing_enabled(controls)
+    assert run.call_count == 1
+    popen.assert_not_called()
+
+    assert native_call(native_router, "off")["needs_reason"]
+    assert run.call_count == 1, "Retry must preserve original task anchor"
+    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
+    assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
+    assert calls[1][1]["input"] == REASON
+    popen.assert_called_once()
