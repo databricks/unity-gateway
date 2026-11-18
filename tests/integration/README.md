@@ -1,9 +1,5 @@
 # Integration tests
 
-The exact `subagent_auto_v0_claude_only` configuration requires Claude 2.1.326 or newer.
-Other configurations keep the 2.1.290 minimum. Component coverage lives in
-`../test_agent_claude.py::TestMinimumVersion`; it does not establish gateway inference.
-
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
@@ -167,11 +163,9 @@ its Agent row, parallel calls as cards above the parent's next reply in call ord
 still routing waiting for a later reply, distinct
 IDs for identical tasks, pending row and turn-spinner routing timers, and disabled/failed routing. These are not live
 parallel-agent TUI or gateway checks.
-The native component suite also covers child-ID-to-animal-name rendering without changing
-spawn inputs. `../test_claude_mod.py` checks that generated plugins omit the deprecated
-`subagentStatusLine` command. Native `AgentRow` component tests preserve model, usage and
-task metadata while changing only routed child labels. These are not live interactive
-bottom-panel checks.
+The native component suite also covers child-ID-to-animal-name recording without changing
+spawn inputs. `../test_claude_mod.py` checks the generated bottom-bar command and its
+fallback to native rows. Neither is a live interactive bottom-bar check.
 
 Native hint-row component tests also cover ` · N subagents running` from Claude's agent
 list, excluding inactive statuses, singular wording, preservation of other hint text,
@@ -482,7 +476,7 @@ patch application functions, substitute agent executables, run a fake gateway,
 or construct ug state files. The normal test suite checks these boundaries.
 
 The Claude mod entry point has separate native component checks in
-`../native_claude/test_mod.py`. Claude 2.1.326 validates the module and runs its
+`../native_claude/test_mod.py`. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 The required Isaac feedback form, evidence submission, and background delivery
@@ -1302,7 +1296,7 @@ MPS CUJs select preprovisioned services:
   profile authorized there:
 
   ```bash
-  python3.12 scripts/run_integration.py --claude-version 2.1.326 \
+  python3.12 scripts/run_integration.py --claude-version 2.1.290 \
     --workspace https://dbc-1bb9e8f5-bf3a.staging.cloud.databricks.com \
     --profile YOUR_STAGING_CI_PROFILE -- -m 'anthropic_mps and claude'
   ```

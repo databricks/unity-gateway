@@ -47,7 +47,6 @@ def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
         assert result.returncode == 0, result.stdout + result.stderr
         if command == "validate":
             assert "./register.ts hooks: session.start" in result.stdout
-            assert "subagentStatusLine is deprecated" not in result.stdout + result.stderr
 
 
 def test_header_mod_validation_and_merge(native_binary, tmp_path):

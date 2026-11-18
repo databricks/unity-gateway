@@ -127,7 +127,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.config import SUBAGENT_AUTO_V0_CLAUDE_ONLY, auto_mode_enabled
+from ucode.smart_routing.config import auto_mode_enabled
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import (
     CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
@@ -164,7 +164,7 @@ CLAUDE_USER_SETTINGS_PATH = CLAUDE_CONFIG_DIR / "settings.json"
 CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
-MINIMUM_CLAUDE_AUTO_VERSION = (2, 1, 326)
+MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"
 MANAGED_MCP_SETTINGS_KEY = "managedMcpServers"
 
 SPEC: ToolSpec = {
@@ -190,14 +190,10 @@ def _parse_version(value: str) -> tuple[int, int, int] | None:
 def minimum_version_error() -> str | None:
     version = agent_version(SPEC["binary"])
     parsed = _parse_version(version)
-    auto = auto_mode_enabled()
-    minimum = MINIMUM_CLAUDE_AUTO_VERSION if auto else MINIMUM_CLAUDE_VERSION
-    if parsed is None or parsed >= minimum:
+    if parsed is None or parsed >= MINIMUM_CLAUDE_VERSION:
         return None
-    minimum_text = ".".join(map(str, minimum))
-    requirement = f" for SMART_ROUTER_CONFIG_VERSION={SUBAGENT_AUTO_V0_CLAUDE_ONLY}" if auto else ""
     return (
-        f"ug requires Claude Code {minimum_text} or newer{requirement}. "
+        f"ug requires Claude Code {MINIMUM_CLAUDE_VERSION_TEXT} or newer. "
         f"Your current version is Claude Code {version}."
     )
 
