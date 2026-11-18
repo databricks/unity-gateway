@@ -2,11 +2,12 @@
 
 [Watch the native selection flow](./codex-smart-router-feedback-menu.mp4).
 
-30-second replay of actual Codex 0.167.2 terminal screens from one Arclet session for
+28-second replay of actual Codex 0.167.2 terminal screens from one Arclet session for
 [#1751](https://github.com/databricks/unity-gateway/pull/1751).
 
-Shows the native Provide a reason / Cancel menu, free-text entry, short-reason
-validation, a valid unsubmitted draft, Escape, and cancellation with routing still on.
+Shows the native Provide a reason / Cancel menu, free-text entry, a short-reason
+error that ends the attempt without reopening the prompt, an explicit user retry,
+and cancellation with routing still on.
 No feedback report was captured or uploaded in this session. No shell approval.
 
 [Earlier delivery verification](./codex-smart-router-feedback.mp4) preserves the
