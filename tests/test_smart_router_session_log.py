@@ -278,3 +278,39 @@ def test_routing_card_box_is_unchanged():
 
 def test_session_logs_are_isolated_from_the_real_home(tmp_path):
     assert session_log.LOG_DIR.is_relative_to(tmp_path)
+
+
+def _detail_record(**overrides):
+    record = {
+        "decision_id": "abcdef0123456789",
+        "at": 1_000.0,
+        "prompt": {"preview": "first line"},
+        "original": None,
+        "selected_model": "system.ai.gpt-5-6-luna",
+        "routing_ms": 1200,
+        "rationale": "short reason",
+        "candidates": [{"model": "system.ai.gpt-5-6-luna"}],
+    }
+    return {**record, **overrides}
+
+
+@pytest.mark.parametrize("at", [10**400, float("inf"), float("nan")])
+def test_render_detail_shows_unknown_age_for_out_of_range_timestamps(at):
+    assert "Routing decision abcdef01 · ?" in session_log.render_detail(
+        _detail_record(at=at), now=2_000.0
+    )
+
+
+def test_render_detail_collapses_whitespace_in_preview_and_rationale():
+    out = session_log.render_detail(
+        _detail_record(prompt={"preview": "line one\n\tline two"}, rationale="because\nreasons"),
+        now=2_000.0,
+    )
+    assert "�" not in out
+    assert "line one line two" in out
+    assert "because reasons" in out
+
+
+def test_render_detail_keeps_the_label_for_an_empty_value():
+    out = session_log.render_detail(_detail_record(prompt={"preview": "   "}), now=2_000.0)
+    assert "Prompt preview:" in out

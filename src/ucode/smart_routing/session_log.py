@@ -169,7 +169,7 @@ def overview(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _age(at: object, now: float) -> str:
-    if not isinstance(at, int | float):
+    if not isinstance(at, int | float) or not _is_number(at) or abs(at) > MAX_EPOCH_SECONDS:
         return "?"
     seconds = max(0, int(now - at))
     if seconds < 60:
@@ -256,7 +256,7 @@ def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> 
                 _age(summary["at"], now),
                 _clean(" ".join((summary["preview"] or PROMPT_PLACEHOLDER).split())),
                 _short_model(summary["selected_model"]),
-                f"{summary['routing_ms']} ms",
+                f"{round(summary['routing_ms'])} ms",
             )
         )
     headers = ("ID", "WHEN", "TASK", "MODEL", "ROUTING")
@@ -329,7 +329,7 @@ def _labeled(label: str, value: str) -> list[str]:
         initial_indent=label.ljust(DETAIL_LABEL_WIDTH),
         subsequent_indent=" " * DETAIL_LABEL_WIDTH,
         break_on_hyphens=False,
-    )
+    ) or [label]
 
 
 def render_detail(record: dict[str, Any], *, now: float | None = None) -> str:
@@ -350,14 +350,14 @@ def render_detail(record: dict[str, Any], *, now: float | None = None) -> str:
         "",
         *_labeled(
             "Prompt preview:",
-            _clean(preview) if isinstance(preview, str) else PROMPT_PLACEHOLDER,
+            _clean(" ".join(preview.split())) if isinstance(preview, str) else PROMPT_PLACEHOLDER,
         ),
     ]
     if isinstance(subagent, str):
         lines += _labeled("Agent type:", _clean(subagent))
     lines += _labeled("Selected:", _short_model(selected))
     lines += _labeled("Routing time:", f"{record['routing_ms'] / 1000:.1f}s")
-    lines += _labeled("Rationale:", _clean(rationale))
+    lines += _labeled("Rationale:", _clean(" ".join(rationale.split())))
     if record["candidates"]:
         lines += ["", "Candidates"]
         for candidate in record["candidates"]:
