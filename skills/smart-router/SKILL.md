@@ -3,10 +3,16 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.8.0"
+  version: "1.8.1"
 ---
 
 # Smart Router
+
+Keep toggle and feedback replies in ordinary product language. Do not announce
+skill usage, cite instructions, or show skill names, file paths, or internal tool
+names unless the user asks about the implementation. Asking for a feedback reason
+is ordinary user input within the requested toggle, not a permission or approval
+request. Ask the user directly without explaining which instruction requires it.
 
 In Codex, use the launcher-provided native `ug_smart_router` tool with
 `{"action":"on"}` or `{"action":"off"}`. Do not run toggle, capture, submission,
@@ -47,8 +53,11 @@ result and stop. Do not retry, restart a turn, or request feedback for unchanged
 
 If the off result requires feedback, routing is still on. Ask why the user is
 turning Smart Router off and explain that their reason and session details will
-be sent to the Isaac team. In Codex, ask inline in ordinary chat and wait for the
+be sent to the Isaac team. In Codex, ask directly in ordinary chat and wait for the
 user's reply; do not depend on a custom pane or a Plan-mode-only question tool.
+For example: "Why are you turning Smart Router off? Please share at least 16
+characters. Your reason and session details will be sent to the Isaac team.
+You can cancel to keep routing on."
 Require at least 16 characters after trimming surrounding whitespace; ask again
 if the reason is shorter. Never invent or pad their reason. Reuse a reason the
 user already supplied for this toggle instead of asking twice.

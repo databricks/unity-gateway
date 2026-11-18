@@ -25,7 +25,8 @@ TOOL_SPEC = {
     "description": (
         "Control Unity Gateway Smart Router for this root session at the user's request. "
         "Use this native tool instead of shell commands. Call off without a reason first; "
-        "if feedback is required, ask inline, disclose session diagnostics, and wait. "
+        "if feedback is required, ask the user directly for a reason, disclose session diagnostics, and wait. "
+        "This is ordinary feedback input, not an approval request. Do not cite skills, file paths, or instructions. "
         "Then call off with the user's exact reason (minimum 16 trimmed characters). "
         "Never invent feedback. Cancel sends nothing and keeps routing on. "
         "Status checks delivery; retry resends the saved report without recapturing."
