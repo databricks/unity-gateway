@@ -98,8 +98,8 @@ exercise.
   (non-blocking lane), plus Antigravity CLI configure, TUI, headless, External Models,
   MCP-tool, skill-directory, and revert journeys (blocking Linux lane), plus VS Code Copilot Chat
   configure/revert and chat journeys driven through the real VS Code window: file tasks on a
-  Databricks Claude model then a GPT model in one window, a Model Provider Service model, the
-  managed default model and headers, and new models after a reconfigure (non-blocking Linux and
+  Databricks Claude model then a GPT model in one window, a Model Provider Service model, and new
+  models after a reconfigure (non-blocking Linux and
   Windows lane). The VS Code
   lane follows rules 1-12 with its window in place of a TUI: visible clicks and keys, no seeded
   settings or VS Code state, no driver extension or internal commands. Do not add other

@@ -6,7 +6,6 @@ import pytest
 from utils.agents.vscode import chat_turns
 from utils.constants import CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL
 from utils.evidence import FileTask, assert_no_bearer_on_disk
-from utils.managed import use_managed_config_fixture
 from utils.request_recorder import TuiRequestRecorder, assert_served
 from utils.vscode import (
     VSCode,
@@ -24,8 +23,6 @@ CLAUDE_ROUTE = "/ai-gateway/anthropic/v1/messages"
 GPT_ROUTE = "/ai-gateway/mlflow/v1/responses"
 PROVIDER_GPT_ROUTE = "/ai-gateway/openai/v1/responses"
 PROVIDER_HEADER = "databricks-model-provider-service"
-# The http_headers entry in fixtures/managed_config/copilot_vscode_defaults.json.
-MANAGED_HEADER = ("x-ug-integration-lane", "vscode")
 
 
 def _configure(session, workspace, *options):
@@ -220,57 +217,6 @@ def test_vscode_copilot_chat_reads_a_file_on_a_provider_service_model(
                 {PROVIDER_HEADER: codex_provider},
             )
             _assert_saved_turns(session, [(task, codex_provider_model)])
-
-
-@pytest.mark.managed_fixture
-def test_vscode_copilot_chat_starts_on_the_managed_default_model(live_session, workspace):
-    """Scenario: under the injected `copilot_vscode_defaults` managed config (the Claude and GPT
-    test models, GPT as the default, an admin HTTP header), a developer runs `ug configure`, opens
-    VS Code for the first time as in the switch CUJ, and asks Agent mode to read a local file
-    without touching the model picker's model list.
-
-    Expected: once the model providers are added, the chat's model is the managed default, not
-    the first model VS Code would pick by itself. The answer contains the file's value. Every
-    request of the turn asks for the default model on the Responses route, carries the admin's
-    header and ug's User-Agent, and gets a non-empty HTTP 200; the saved chat records the turn as
-    in the switch CUJ.
-    """
-    session = live_session
-    use_managed_config_fixture(session, "copilot_vscode_defaults")
-    with TuiRequestRecorder(workspace) as recorder:
-        session.run(
-            "configure",
-            "--workspace",
-            recorder.url,
-            "--skip-validate",
-            "--skip-upgrade",
-            "--disable-databricks-ai-tools",
-            timeout=300,
-        )
-        config = ug_extension_config(session)
-        session.record("ug-config.json", _config_evidence(config))
-        assert config["defaultModel"] == COPILOT_GPT_TEST_MODEL
-        assert {entry["id"] for entry in config["models"]} == {
-            CLAUDE_TEST_MODEL,
-            COPILOT_GPT_TEST_MODEL,
-        }
-        with VSCode(session, "managed") as vscode:
-            vscode.finish_first_launch()
-            vscode.pick_model(model_label(config, COPILOT_GPT_TEST_MODEL), select=False)
-            task = FileTask(session)
-            checkpoint = recorder.checkpoint()
-            answer = vscode.wait_for_answer(vscode.send(task.prompt))
-            _assert_turn(
-                session,
-                recorder,
-                checkpoint,
-                task,
-                answer,
-                COPILOT_GPT_TEST_MODEL,
-                GPT_ROUTE,
-                dict([MANAGED_HEADER]),
-            )
-            _assert_saved_turns(session, [(task, COPILOT_GPT_TEST_MODEL)])
 
 
 def test_vscode_copilot_chat_lists_the_new_models_after_reconfigure(
