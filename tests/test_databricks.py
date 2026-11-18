@@ -7118,3 +7118,38 @@ class TestModelServicesNeedSubscriptionRelay:
             "main.default.sonnet[1m]",
             "main.default.oss",
         ]
+
+
+def test_model_service_backing_model_reads_the_first_live_foundation_model():
+    from ucode.databricks import model_service_backing_model
+
+    service = {
+        "config": {
+            "routing": {
+                "destinations": [
+                    {
+                        "is_deleted": True,
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {"model": "models/system.ai.old"},
+                    },
+                    {
+                        "traffic_percentage": 0,
+                        "pay_per_token_config": {"model": "models/system.ai.idle"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "external_model_config": {"model_provider_service": "main.x.mps"},
+                    },
+                    {
+                        "traffic_percentage": 100,
+                        "pay_per_token_config": {
+                            "model": "models/system.ai.databricks-claude-sonnet-4-6"
+                        },
+                    },
+                ]
+            }
+        }
+    }
+
+    assert model_service_backing_model(service) == "system.ai.databricks-claude-sonnet-4-6"
+    assert model_service_backing_model({"config": {}}) is None

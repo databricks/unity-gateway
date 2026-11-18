@@ -16,7 +16,8 @@ the Anthropic endpoint, its other chat models on the gateway's native OpenAI rou
 registry provider sending the service's routing header. `ug copilot --model-location` registers
 the model services of one Unity Catalog schema: those named like Claude, GPT, GLM, Kimi or
 DeepSeek models on their usual wire, the rest on the Anthropic endpoint like Claude Code, which the gateway
-translates.
+translates. A service on the Anthropic endpoint that routes to a Claude model gets that model's catalog id, so
+Copilot sends it Claude's request settings.
 
 Copilot holds its provider credential for the whole session, so every provider points at a
 per-session loopback proxy (`gateway_proxy.start_gateway_auth_proxy`): Copilot authenticates to
@@ -37,6 +38,7 @@ import threading
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -76,8 +78,10 @@ from ucode.databricks import (
     bare_model_name,
     build_copilot_base_url,
     build_tool_base_url,
+    get_model_service,
     list_anthropic_model_catalog,
     list_provider_service_models,
+    model_service_backing_model,
     model_version_sort_key,
     resolve_provider_service,
 )
@@ -315,7 +319,7 @@ def catalog_model_limits(model: CopilotModel) -> tuple[int, int] | None:
     The limits are the ones the gateway listed for the model, else Claude's or an open model's by
     name; the prompt leaves room for the output."""
     open_limits = _OPEN_MODEL_TOKENS if is_open_model(model.id) else None
-    limits = model.listed_limits or claude_token_limits(model.id) or open_limits
+    limits = model.listed_limits or claude_token_limits(model.catalog_name) or open_limits
     if limits is None or limits[0] <= limits[1]:
         return None
     return limits[0] - limits[1], limits[1]
@@ -331,6 +335,13 @@ class CopilotModel:
     listed_limits: tuple[int, int] | None = field(default=None, compare=False)
     # Set when dropping `system.ai.` would collide with another model in the same catalog.
     full_registry_id: bool = field(default=False, compare=False)
+    # The foundation model behind a service whose own name doesn't say which model it is.
+    served_model: str | None = field(default=None, compare=False)
+
+    @property
+    def catalog_name(self) -> str:
+        """The name Copilot's request settings and token limits follow."""
+        return self.served_model or self.id
 
     @property
     def provider(self) -> str:
@@ -508,7 +519,39 @@ def location_catalog(state: dict, schema: str) -> list[CopilotModel]:
     if not catalog:
         reason = f": {listing.error_msg}" if listing.error_msg else ""
         raise RuntimeError(f"Found no model services to use in {schema}{reason}.")
-    return catalog
+    return with_served_models(catalog, workspace, launch_token(state, workspace))
+
+
+def with_served_models(
+    catalog: list[CopilotModel], workspace: str, token: str
+) -> list[CopilotModel]:
+    """``catalog`` with the foundation model behind each Anthropic-route service whose name isn't
+    a Claude model's.
+
+    Copilot applies Claude request settings only to an id it recognizes as Claude, and sends
+    `temperature` to any other model, which newer Claude models reject."""
+    unnamed = [
+        model
+        for model in catalog
+        if model.wire == WIRE_ANTHROPIC and copilot_catalog_model_id(model.id) is None
+    ]
+    if not unnamed:
+        return catalog
+
+    def served(model: CopilotModel) -> str | None:
+        service, _ = get_model_service(model.id, workspace, token, timeout=10)
+        return model_service_backing_model(service) if service else None
+
+    with ThreadPoolExecutor(max_workers=min(8, len(unnamed))) as pool:
+        claude = {
+            model: served_model
+            for model, served_model in zip(unnamed, pool.map(served, unnamed), strict=True)
+            if served_model and copilot_catalog_model_id(served_model)
+        }
+    return [
+        replace(model, served_model=claude[model]) if model in claude else model
+        for model in catalog
+    ]
 
 
 def catalog_from_listings(
@@ -776,7 +819,9 @@ def render_providers_config(
             "wireModel": model.id,
             "name": labels[model],
         }
-        catalog_id = copilot_catalog_model_id(model.id) if model.wire == WIRE_ANTHROPIC else None
+        catalog_id = (
+            copilot_catalog_model_id(model.catalog_name) if model.wire == WIRE_ANTHROPIC else None
+        )
         if catalog_id is not None:
             entry["modelId"] = catalog_id
         if limits := catalog_model_limits(model):
