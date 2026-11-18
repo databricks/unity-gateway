@@ -11,25 +11,27 @@ import shutil
 import textwrap
 import time
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from ucode.config_io import APP_DIR
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock, release_file_lock
-from ucode.smart_routing.routing import RoutingDecision
+from ucode.smart_routing.routing import ROUTING_BOX_WIDTH, RoutingDecision, draw_box
 
 SCHEMA_VERSION = 1
 LOG_DIR = APP_DIR / "smart-router" / "sessions"
 RETENTION_SECONDS = 30 * 24 * 3600
 PREVIEW_CHARS = 160
 TABLE_MAX_ROWS = 20
-TABLE_TASK_WIDTH = 48
-TABLE_MODEL_WIDTH = 28
+TABLE_TASK_COLUMN = 2
+TABLE_MODEL_COLUMN = 3
+TABLE_COLUMN_GAP = 2
+TABLE_MIN_TASK_WIDTH = 12
 ID_PREFIX_CHARS = 8
 MAX_EPOCH_SECONDS = 8.64e12  # largest time a JavaScript Date accepts
 PROMPT_PLACEHOLDER = "(prompt not recorded)"
 MIN_ID_PREFIX_CHARS = 4
-DETAIL_WIDTH = 76
 DETAIL_LABEL_WIDTH = 17
 MODEL_PREFIXES = ("system.ai.", "databricks-")
 
@@ -223,38 +225,51 @@ def _is_listed(record: dict[str, Any]) -> bool:
     )
 
 
+def _fit_columns(rows: Sequence[tuple[str, ...]], headers: tuple[str, ...]) -> list[int]:
+    """Column widths that fit the box: the task column shrinks first, then the model."""
+    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows, strict=True)]
+    task, model = TABLE_TASK_COLUMN, TABLE_MODEL_COLUMN
+    overflow = sum(widths) + TABLE_COLUMN_GAP * (len(widths) - 1) - ROUTING_BOX_WIDTH
+    widths[task] = max(TABLE_MIN_TASK_WIDTH, widths[task] - max(overflow, 0))
+    overflow = sum(widths) + TABLE_COLUMN_GAP * (len(widths) - 1) - ROUTING_BOX_WIDTH
+    widths[model] = max(len(headers[model]), widths[model] - max(overflow, 0))
+    return widths
+
+
 def render_table(records: list[dict[str, Any]], *, now: float | None = None) -> str:
-    """Render the most recent decisions as a fixed-width table for chat."""
+    """Render the most recent decisions as a boxed table for chat."""
     records = [record for record in records if _is_listed(record)]
     if not records:
-        return "No routed subagents recorded this session yet."
+        return draw_box(["No routed subagents recorded this session yet."])
     now = time.time() if now is None else now
     shown = records[-TABLE_MAX_ROWS:]
     rows = []
     for summary in map(overview, shown):
-        task = _clean(" ".join((summary["preview"] or PROMPT_PLACEHOLDER).split()))
         rows.append(
             (
                 _short_id(summary["decision_id"]),
                 _age(summary["at"], now),
-                _truncate(task, TABLE_TASK_WIDTH),
-                _truncate(_short_model(summary["selected_model"]), TABLE_MODEL_WIDTH),
+                _clean(" ".join((summary["preview"] or PROMPT_PLACEHOLDER).split())),
+                _short_model(summary["selected_model"]),
                 f"{summary['routing_ms']} ms",
             )
         )
     headers = ("ID", "WHEN", "TASK", "MODEL", "ROUTING")
-    widths = [max(len(cell) for cell in column) for column in zip(headers, *rows, strict=True)]
-    lines = [
-        f"{len(records)} routed subagents this session (showing last {len(shown)})",
-        "",
-        *(
-            "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True)).rstrip()
-            for row in (headers, *rows)
-        ),
-        "",
-        "Show one: $smart-router logs --id <ID>",
+    widths = _fit_columns(rows, headers)
+    table = [
+        (TABLE_COLUMN_GAP * " ").join(
+            _truncate(cell, width).ljust(width) for cell, width in zip(row, widths, strict=True)
+        )
+        for row in (headers, *rows)
     ]
-    return "\n".join(lines)
+    return "\n".join(
+        [
+            f"{len(records)} routed subagents this session (showing last {len(shown)})",
+            "",
+            draw_box(table),
+            "Show one: $smart-router logs --id <ID>",
+        ]
+    )
 
 
 def find_decision(records: list[dict[str, Any]], query: str) -> dict[str, Any]:
@@ -305,7 +320,7 @@ def _is_detail_record(record: dict[str, Any]) -> bool:
 def _labeled(label: str, value: str) -> list[str]:
     return textwrap.wrap(
         value,
-        width=DETAIL_WIDTH,
+        width=ROUTING_BOX_WIDTH,
         initial_indent=label.ljust(DETAIL_LABEL_WIDTH),
         subsequent_indent=" " * DETAIL_LABEL_WIDTH,
         break_on_hyphens=False,
@@ -343,11 +358,9 @@ def render_detail(record: dict[str, Any], *, now: float | None = None) -> str:
         for candidate in record["candidates"]:
             is_selected = candidate["model"] == selected
             suffix = "  (selected)" if is_selected else ""
-            lines.append(
-                f"  {'●' if is_selected else '○'} {_short_model(candidate['model'])}{suffix}"
-            )
-    lines += ["", "Back to the list: $smart-router logs"]
-    return "\n".join(lines)
+            line = f"  {'●' if is_selected else '○'} {_short_model(candidate['model'])}{suffix}"
+            lines.append(_truncate(line, ROUTING_BOX_WIDTH))
+    return "\n".join([draw_box(lines), "Back to the list: $smart-router logs"])
 
 
 def clear_logs() -> None:

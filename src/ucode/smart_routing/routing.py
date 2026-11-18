@@ -78,16 +78,22 @@ def format_subagent_message(
 
 
 def _format_box(lines: list[str]) -> str:
-    wrapped_lines = [
-        wrapped
-        for line in lines
-        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
-    ]
+    return draw_box(
+        [
+            wrapped
+            for line in lines
+            for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+        ]
+    )
+
+
+def draw_box(fitted_lines: list[str]) -> str:
+    """Draw lines already no wider than ROUTING_BOX_WIDTH in the routing-card box."""
     border = "─" * (ROUTING_BOX_WIDTH + 2)
     return "\n".join(
         [
             f"┌{border}┐",
-            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in fitted_lines),
             f"└{border}┘",
         ]
     )

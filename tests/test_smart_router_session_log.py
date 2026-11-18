@@ -197,18 +197,43 @@ def listed(**overrides):
     }
 
 
+def box(*lines):
+    return ["┌" + "─" * 75 + "┐", *(f"│ {line:<73} │" for line in lines), "└" + "─" * 75 + "┘"]
+
+
 def test_render_table_formats_age_and_collapses_whitespace():
-    row = session_log.render_table([listed()], now=1000.0 + 7200).splitlines()[3]
-    assert row.split("  ", 1)[1].startswith("2h ago")
-    assert "line one line two" in row
+    lines = session_log.render_table([listed()], now=1000.0 + 7200).splitlines()
+    assert lines[2:-1] == box(
+        "ID        WHEN    TASK               MODEL  ROUTING",
+        "abcd1234  2h ago  line one line two  m      5 ms",
+    )
 
 
-def test_render_table_with_no_listable_records_is_empty_message():
+def test_render_table_with_no_listable_records_is_boxed_empty_message():
     text = session_log.render_table([{"v": 1, "type": "decision"}])
-    assert text == "No routed subagents recorded this session yet."
+    assert text.splitlines() == box("No routed subagents recorded this session yet.")
 
 
-def test_render_detail_exact_layout_with_hanging_indent():
+def test_render_table_shrinks_task_column_to_fit_the_box():
+    long = listed(prompt={"preview": "t" * 200}, selected_model="system.ai.gpt-5-6-sol")
+    lines = session_log.render_table([long], now=1000.0).splitlines()
+    assert lines[0] == "1 routed subagents this session (showing last 1)"
+    assert lines[1] == ""
+    assert lines[-1] == "Show one: $smart-router logs --id <ID>"
+    assert all(len(line) == 77 for line in lines[2:-1])
+    # 73 columns minus ID 8, WHEN 8, MODEL 11, ROUTING 7 and four 2-column gaps leaves 31 for TASK.
+    assert lines[4] == f"│ abcd1234  just now  {'t' * 30}…  gpt-5-6-sol  5 ms    │"
+
+
+def test_render_table_truncates_model_only_after_task_hits_its_minimum():
+    wide = listed(prompt={"preview": "t" * 200}, selected_model="m" * 80)
+    lines = session_log.render_table([wide], now=1000.0).splitlines()
+    assert all(len(line) == 77 for line in lines[2:-1])
+    assert lines[4].count("…") == 2
+    assert f"  {'t' * 11}…  " in lines[4]
+
+
+def test_render_detail_exact_boxed_layout_with_hanging_indent():
     record = {
         "decision_id": "e789d49a" + "0" * 24,
         "at": 1000.0,
@@ -223,19 +248,29 @@ def test_render_detail_exact_layout_with_hanging_indent():
         ],
     }
     assert session_log.render_detail(record, now=1120.0).splitlines() == [
-        "Routing decision e789d49a · 2m ago",
-        "",
-        "Prompt preview:  Investigate the service named ai-gateway. Investigate the",
-        "                 service named ai-gateway. Investigate the service named",
-        "                 ai-gateway.",
-        "Selected:        gpt-5-6-terra",
-        "Routing time:    4.0s",
-        "Rationale:       This task involves several related components. This task",
-        "                 involves several related components.",
-        "",
-        "Candidates",
-        "  ○ gpt-6-astra",
-        "  ● gpt-5-6-terra  (selected)",
-        "",
+        *box(
+            "Routing decision e789d49a · 2m ago",
+            "",
+            "Prompt preview:  Investigate the service named ai-gateway. Investigate",
+            "                 the service named ai-gateway. Investigate the service",
+            "                 named ai-gateway.",
+            "Selected:        gpt-5-6-terra",
+            "Routing time:    4.0s",
+            "Rationale:       This task involves several related components. This task",
+            "                 involves several related components.",
+            "",
+            "Candidates",
+            "  ○ gpt-6-astra",
+            "  ● gpt-5-6-terra  (selected)",
+        ),
         "Back to the list: $smart-router logs",
     ]
+
+
+def test_routing_card_box_is_unchanged():
+    assert routing.format_subagent_message("m", "why", subagent_name="s").splitlines() == box(
+        "Using Unity Gateway Smart Router - Subagent",
+        "Subagent : s",
+        "Selected Model : m",
+        "Reason : why",
+    )

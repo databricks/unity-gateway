@@ -143,6 +143,20 @@ def test_decision_miss_exits_1(log_dir):
     assert json.loads(result.output) == {"v": 1, "error": "decision not found"}
 
 
+def lines_of(output):
+    """Output lines with the box borders removed; every box line must be 77 characters."""
+    lines = []
+    for line in output.splitlines():
+        if line.startswith(("┌", "└")):
+            assert len(line) == 77
+            continue
+        if line.startswith("│ "):
+            assert len(line) == 77 and line.endswith(" │")
+            line = line[2:-2].rstrip()
+        lines.append(line)
+    return lines
+
+
 def write_codex(session_id="c1", task="inspect parser", model="system.ai.databricks-gpt-5-6-sol"):
     session_log.append_decision(
         "codex", payload(session_id), task, decision(model), "requested", routing_ms=1234
@@ -172,11 +186,11 @@ def test_table_shows_header_and_row_with_stripped_model_prefix(log_dir):
     write_codex()
     result = table()
     assert result.exit_code == 0
-    lines = result.output.splitlines()
+    lines = lines_of(result.output)
     assert lines[0] == "1 routed subagents this session (showing last 1)"
     assert lines[1] == ""
     assert lines[2].split() == ["ID", "WHEN", "TASK", "MODEL", "ROUTING"]
-    assert lines[-2] == ""
+    assert lines[-1] == "Show one: $smart-router logs --id <ID>"
     assert lines[3].split(maxsplit=3)[1:3] == ["just", "now"]
     assert "inspect parser" in lines[3]
     assert "gpt-5-6-sol" in lines[3]
@@ -188,19 +202,22 @@ def test_table_caps_rows_and_truncates_task(log_dir):
     for index in range(25):
         write_codex(task=f"task {index} " + "x" * 200)
     result = table()
-    lines = result.output.splitlines()
+    lines = lines_of(result.output)
     assert lines[0] == "25 routed subagents this session (showing last 20)"
-    assert len(lines) == 3 + 20 + 2
+    assert len(lines) == 3 + 20 + 1
     assert "task 5 " in lines[3]
     assert "task 4 " not in result.output
     assert all("…" in line for line in lines[3:23])
-    assert max(len(line) for line in lines[3:23]) < 130
 
 
 def test_table_empty_message(log_dir):
     result = table()
     assert result.exit_code == 0
-    assert result.output == "No routed subagents recorded this session yet.\n"
+    assert result.output.splitlines() == [
+        "┌" + "─" * 75 + "┐",
+        "│ No routed subagents recorded this session yet." + " " * 27 + " │",
+        "└" + "─" * 75 + "┘",
+    ]
 
 
 def test_table_error_is_one_plain_line(log_dir, monkeypatch):
@@ -224,7 +241,7 @@ def test_unknown_harness_rejected(log_dir):
 def test_table_has_id_column_and_hint(log_dir):
     write_codex()
     decision_id = json.loads((log_dir / "codex-c1.jsonl").read_text())["decision_id"]
-    lines = table().output.splitlines()
+    lines = lines_of(table().output)
     assert lines[3].split()[0] == decision_id[:8]
     assert lines[-1] == "Show one: $smart-router logs --id <ID>"
 
@@ -250,7 +267,7 @@ def test_detail_renders_all_fields_and_marks_selected(log_dir):
     record = json.loads((log_dir / "codex-c1.jsonl").read_text())
     result = detail(record["decision_id"])
     assert result.exit_code == 0
-    lines = result.output.splitlines()
+    lines = lines_of(result.output)
     assert lines[0] == f"Routing decision {record['decision_id'][:8]} · just now"
     assert lines[1] == ""
     assert lines[2] == "Prompt preview:  inspect parser"
@@ -259,13 +276,11 @@ def test_detail_renders_all_fields_and_marks_selected(log_dir):
     assert lines[5] == "Routing time:    1.2s"
     assert lines[6].startswith("Rationale:       Needs depth. Needs depth.")
     assert all(line.startswith(" " * 17) for line in lines[7:9])
-    assert max(len(line) for line in lines) <= 76
-    assert lines[-6:] == [
+    assert lines[-5:] == [
         "",
         "Candidates",
         "  ● gpt-5-6-sol  (selected)",
         "  ○ gpt-5-6-luna",
-        "",
         "Back to the list: $smart-router logs",
     ]
 
@@ -284,13 +299,13 @@ def test_detail_handles_missing_rationale_candidates_and_route_agent(log_dir):
         "candidates": [],
     }
     (log_dir / "codex-c1.jsonl").write_text(json.dumps(record) + "\n")
-    output = detail("abcd1234").output
+    output = "\n".join(lines_of(detail("abcd1234").output))
     assert "Prompt preview:  (prompt not recorded)" in output
     assert "Agent type" not in output
     assert "Routing time:    0.1s" in output
     assert "Rationale:       No rationale returned." in output
     assert "Candidates" not in output
-    assert output.endswith("\n\nBack to the list: $smart-router logs\n")
+    assert output.endswith("\nBack to the list: $smart-router logs")
 
 
 def valid_record(decision_id, **overrides):
@@ -367,7 +382,7 @@ def test_table_lists_the_same_rows_as_the_claude_pane(log_dir):
         valid_record("aaaa0008", prompt={"preview": "  "}),
     ]
     (log_dir / "codex-c1.jsonl").write_text("".join(json.dumps(r) + "\n" for r in records))
-    lines = table().output.splitlines()
+    lines = lines_of(table().output)
     assert lines[0] == "3 routed subagents this session (showing last 3)"
     assert [line.split()[0] for line in lines[3:6]] == ["aaaa0001", "aaaa0007", "aaaa0008"]
     assert lines[4].count("(prompt not recorded)") == 1
@@ -379,7 +394,7 @@ def test_detail_shows_placeholder_for_non_string_or_missing_preview(log_dir):
     (log_dir / "codex-c1.jsonl").write_text(
         json.dumps(valid_record("abcd1234", prompt={"preview": None})) + "\n"
     )
-    assert "\nPrompt preview:  (prompt not recorded)\n" in detail("abcd1234").output
+    assert "Prompt preview:  (prompt not recorded)" in lines_of(detail("abcd1234").output)
 
 
 def test_terminal_escapes_never_reach_the_output(log_dir):
@@ -396,4 +411,7 @@ def test_terminal_escapes_never_reach_the_output(log_dir):
     (log_dir / "codex-c1.jsonl").write_text(json.dumps(record) + "\n")
     for output in (table().output, detail("abcd1234").output):
         assert not any(ord(c) < 32 and c != "\n" or 0x7F <= ord(c) <= 0x9F for c in output)
-    assert "task…" in table().output
+        assert all(
+            len(line) == 77 for line in output.splitlines() if line.startswith(("┌", "│", "└"))
+        )
+    assert "task…" in "\n".join(lines_of(detail("abcd1234").output))
