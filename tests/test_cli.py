@@ -1478,6 +1478,7 @@ class TestSubcommandRouting:
         monkeypatch.setattr(claude, "managed_writes_allowed", lambda: True)
         monkeypatch.setattr(managed_files, "managed_writes_allowed", lambda **kw: True)
         monkeypatch.setattr(managed_files, "_sudo_replace", write_managed)
+        monkeypatch.setattr(managed_files, "_windows_replace", write_managed)
         monkeypatch.setattr(managed_files.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(claude, "CLAUDE_BACKUP_PATH", tmp_path / "claude.backup")
         monkeypatch.setattr(
