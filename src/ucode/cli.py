@@ -38,6 +38,7 @@ from ucode.agents import (
     configure_selected_tools,
     configure_single_tool,
     configure_tool,
+    default_model_for_tool,
     ensure_bootstrap_dependencies,
     ensure_provider_state,
     explicit_model_arg_value,
@@ -58,6 +59,7 @@ from ucode.agents import copilot as copilot_agent
 from ucode.agents import (
     launch as launch_agent,
 )
+from ucode.agents import pi as pi_agent
 from ucode.agents.args import has_explicit_model_arg
 from ucode.agents.codex import revert_legacy_shared_config
 from ucode.agents.model_sources import (
@@ -88,6 +90,7 @@ from ucode.databricks import (
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
+    claude_ids_from_entries,
     databricks_cli_installed,
     discover_claude_models,
     discover_codex_models,
@@ -101,6 +104,7 @@ from ucode.databricks import (
     get_databricks_token,
     install_databricks_cli,
     is_model_provider_feature_unavailable,
+    is_oss_family_model,
     list_anthropic_model_catalog,
     list_profile_entries,
     list_tool_provider_services,
@@ -112,6 +116,7 @@ from ucode.databricks import (
     resolve_provider_launch_model,
     resolve_provider_service,
     run_databricks_login,
+    runs_web_search_tool,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -282,7 +287,7 @@ _DISCOVERY_CONSUMERS: dict[str, tuple[str, ...]] = {
     "claude": ("claude", "opencode", "kilo", "copilot", "pi"),
     "codex": ("codex", "copilot", "pi"),
     "gemini": ("gemini", "opencode", "kilo", "pi", "antigravity"),
-    "oss": ("opencode", "kilo"),
+    "oss": ("opencode", "kilo", "pi"),
 }
 
 
@@ -807,8 +812,10 @@ def configure_shared_state(
         fetch_all or "codex" in tools or "claude" in tools or "copilot" in tools or "pi" in tools
     )
     # Codex smart routing can select OSS models such as GLM, so a Codex-only
-    # configure must persist that discovered family too.
-    want_oss = fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools
+    # configure must persist that discovered family too. Pi serves them on its MLflow provider.
+    want_oss = (
+        fetch_all or "opencode" in tools or "kilo" in tools or "codex" in tools or "pi" in tools
+    )
     want_copilot = fetch_all or "copilot" in tools
 
     claude_reason: str | None = None
@@ -818,6 +825,7 @@ def configure_shared_state(
     copilot_reason: str | None = None
     copilot_models: list[copilot_agent.CopilotModel] | None = None
     claude_models = {}
+    all_claude_models: list[str] = []
     gemini_models = []
     codex_models = []
     oss_models = []
@@ -831,8 +839,7 @@ def configure_shared_state(
         if want_claude:
             with spinner("Fetching available models..."):
                 ws_models, _ = discover_codex_models(workspace, token)
-            if ws_models:
-                web_search_model = ws_models[0]
+            web_search_model = next((m for m in ws_models if runs_web_search_tool(m)), None)
     else:
         # UC-first, best-effort: one UC model-services call yields all families
         # as `system.ai.<model-name>` ids, bucketed by name. If a family comes
@@ -846,6 +853,11 @@ def configure_shared_state(
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
+                # Every Claude version this run's UC listing found, for Pi's model picker. Without
+                # one, Pi lists the family models above.
+                all_claude_models = claude_ids_from_entries(
+                    cached_model_service_entries(workspace) or ()
+                )
             if want_gemini:
                 gemini_models, gemini_reason = ms_gemini, ms_reason
                 if not gemini_models:
@@ -867,8 +879,9 @@ def configure_shared_state(
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:
             opencode_models["gemini"] = gemini_models
-        if oss_models:
-            opencode_models["oss"] = oss_models
+        opencode_oss = _opencode_oss_models(oss_models)
+        if opencode_oss:
+            opencode_models["oss"] = opencode_oss
 
     if skip_model_discovery:
         # Don't clobber any previously-discovered Databricks model lists; provider
@@ -879,6 +892,10 @@ def configure_shared_state(
     else:
         if want_claude:
             state["claude_models"] = claude_models
+            if all_claude_models:
+                state["all_claude_models"] = all_claude_models
+            else:
+                state.pop("all_claude_models", None)
         if want_gemini:
             state["gemini_models"] = gemini_models
         if want_codex:
@@ -1807,11 +1824,8 @@ def _status_models(tool: str, state: dict) -> list[str]:
     elif tool == "antigravity":
         models = list(antigravity_agent.model_catalog(state).values())
     elif tool == "pi":
-        models = _model_values(state.get("pi_models")) or (
-            _model_values(state.get("claude_models"))
-            + _model_values(state.get("codex_models"))
-            + _model_values(state.get("gemini_models"))
-        )
+        # Pi skips models it can't serve, and an allowlist with none falls back to discovery.
+        models = pi_agent.status_models(state)
     else:
         models = []
     return list(dict.fromkeys(models))
@@ -1820,16 +1834,21 @@ def _status_models(tool: str, state: dict) -> list[str]:
 def _status_default_model(tool: str, state: dict, models: list[str]) -> str | None:
     if tool == "copilot":
         return copilot_agent.default_model(state)
+    if tool == "pi" and models:
+        # Pi skips a managed default or model it can't serve, so report the model it starts on.
+        return default_model_for_tool("pi", state)
     explicit = state.get(f"{tool}_default_model")
     if isinstance(explicit, str) and explicit:
         return explicit
     # Claude and Codex deliberately leave the starting model to the agent unless a managed
     # config pins one. The other clients write the first resolved model into their ug config.
-    return (
-        models[0]
-        if models and tool in ("gemini", "opencode", "kilo", "pi", "antigravity")
-        else None
-    )
+    return models[0] if models and tool in ("gemini", "opencode", "kilo", "antigravity") else None
+
+
+def _opencode_oss_models(oss_models: list[str]) -> list[str]:
+    """The discovered OSS models OpenCode and Kilo serve: only the families validated for every
+    agent, not the other MLflow chat models Pi lists."""
+    return [m for m in oss_models if is_oss_family_model(m)]
 
 
 def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
@@ -1869,13 +1888,20 @@ def _live_status_model_state(state: dict, tools: set[str]) -> tuple[dict, str]:
     live["codex_models"] = codex_models
     live["gemini_models"] = gemini_models
     live["oss_models"] = oss_models
+    # Pi lists every Claude version from this listing, as configure saves it.
+    all_claude_models = claude_ids_from_entries(cached_model_service_entries(workspace) or ())
+    if all_claude_models:
+        live["all_claude_models"] = all_claude_models
+    else:
+        live.pop("all_claude_models", None)
     opencode_models: dict[str, list[str]] = {}
     if claude_models:
         opencode_models["anthropic"] = list(claude_models.values())
     if gemini_models:
         opencode_models["gemini"] = gemini_models
-    if oss_models:
-        opencode_models["oss"] = oss_models
+    opencode_oss = _opencode_oss_models(oss_models)
+    if opencode_oss:
+        opencode_models["oss"] = opencode_oss
     live["opencode_models"] = opencode_models
     if "copilot" in tools:
         copilot_models = copilot_agent.catalog_from_listings(

@@ -194,12 +194,20 @@ class TestRenderOverlay:
         options = overlay["provider"]["databricks-oss"]["options"]
         assert options["baseURL"] == f"{WS}/ai-gateway/mlflow/v1"
 
-    def test_glm_gets_token_limits(self):
-        models = {"oss": ["system.ai.glm-5-2"]}
-        overlay, _ = opencode.render_overlay("system.ai.glm-5-2", "tok", _base_urls(), models)
-        glm = overlay["provider"]["databricks-oss"]["models"]["system.ai.glm-5-2"]
+    @pytest.mark.parametrize(
+        ("model_id", "limit"),
+        [
+            ("system.ai.glm-5-3", {"context": 1_048_576, "output": 131_072}),
+            ("system.ai.glm-5-2", {"context": 1_000_000, "output": 131_072}),
+            ("system.ai.glm-4-6", {"context": 200_000, "output": 25_000}),
+        ],
+    )
+    def test_glm_gets_token_limits(self, model_id, limit):
+        models = {"oss": [model_id]}
+        overlay, _ = opencode.render_overlay(model_id, "tok", _base_urls(), models)
+        glm = overlay["provider"]["databricks-oss"]["models"][model_id]
         # OpenCode's schema requires both context and output on `limit`.
-        assert glm["limit"] == {"context": 200000, "output": 25000}
+        assert glm["limit"] == limit
 
     def test_non_glm_oss_model_has_no_output_cap(self):
         models = {"oss": ["system.ai.kimi-k2-7-code"]}
