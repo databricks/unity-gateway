@@ -56,7 +56,7 @@ from ucode.managed_resolve import (
     managed_unity_catalog_location,
 )
 from ucode.managed_setup import claude_family_candidates, validate_manifest
-from ucode.os_compatibility import subprocess_cross_os
+from ucode.os_compatibility import subprocess_cross_os, system_cross_os
 from ucode.telemetry import agent_version, ug_version
 from ucode.ui import console, normalize_workspace_url, print_note, print_warning
 from ucode.workspace import activate, pin, resolve_workspace, split_workspace_key
@@ -351,6 +351,13 @@ def _codex_catalog_files(
 
     Removes only files ug wrote: this run's earlier managed run, or an earlier ``ug configure``.
     """
+    if managed_files.current_os() is managed_files.OS.WINDOWS:
+        if _codex_static_models(manifest):
+            warnings.append(
+                "Windows has no machine-wide model catalog config layer. "
+                "The static model list is applied by `ug codex` only."
+            )
+        return {}
     ours = str(CODEX_MANAGED_CONFIG_PATH) in previous_paths
     legacy = _legacy_codex_doc()
     owned = ours or legacy is not None
@@ -413,7 +420,10 @@ def agent_paths(agent: str) -> list[Path]:
     if agent == "claude":
         path = claude_agent.managed_settings_path()
         return [path] if path is not None else []
-    return [managed_files.CODEX_SYSTEM_REQUIREMENTS_PATH, managed_files.CODEX_SYSTEM_CONFIG_PATH]
+    paths = [managed_files.CODEX_SYSTEM_REQUIREMENTS_PATH]
+    if managed_files.current_os() is not managed_files.OS.WINDOWS:
+        paths.append(managed_files.CODEX_SYSTEM_CONFIG_PATH)
+    return paths
 
 
 def _recorded_paths(previous_state: dict | None, agent: str) -> list[Path]:
@@ -486,6 +496,18 @@ def plan_agents(
                 (requirements, managed_files.CODEX_SYSTEM_REQUIREMENTS_PATH),
                 (settings, managed_files.CODEX_SYSTEM_CONFIG_PATH),
             ):
+                if (
+                    managed_files.current_os() is managed_files.OS.WINDOWS
+                    and path == managed_files.CODEX_SYSTEM_CONFIG_PATH
+                ):
+                    if composed.doc:
+                        raise ManagedRunError(
+                            EXIT_USAGE,
+                            "Codex on Windows has no machine-wide config.toml layer. "
+                            "Remove codex.config and default_models.default_model from the "
+                            "published configuration, or provision Codex defaults per user.",
+                        )
+                    continue
                 for dotted in _strip_nulls(composed.doc):
                     composed.items.append(
                         ownership.ReportItem(ownership.SKIPPED, dotted, "TOML has no null value.")
@@ -542,6 +564,8 @@ def parse_agents(raw: str | None) -> list[str]:
 
 def has_machine_privileges() -> bool:
     """Whether this run can write root-owned files without a password prompt."""
+    if managed_files.current_os() is managed_files.OS.WINDOWS:
+        return system_cross_os.is_admin()
     if _running_as_root():
         return True
     try:
@@ -560,6 +584,11 @@ def check_privileges() -> None:
     approve a sudo prompt instead."""
     if has_machine_privileges() or _sudo_may_prompt():
         return
+    if managed_files.current_os() is managed_files.OS.WINDOWS:
+        raise ManagedRunError(
+            EXIT_PRIVILEGES,
+            "Run `ug configure --global` from a terminal opened with Run as administrator.",
+        )
     raise ManagedRunError(
         EXIT_PRIVILEGES,
         "`ug configure --global` writes machine-wide files. Run it as root, for example from "

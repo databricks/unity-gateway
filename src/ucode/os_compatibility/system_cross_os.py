@@ -53,3 +53,75 @@ def windows_program_data_dir() -> Path:
 def windows_system32_dir() -> Path:
     """The Windows system folder, for running system tools without searching ``PATH`` or the cwd."""
     return Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32"
+
+
+def windows_admin_owned_path(path: Path) -> bool:
+    """Whether only SYSTEM and Administrators can modify this Windows policy path.
+
+    Fail closed for unreadable descriptors or unfamiliar ACLs. UG creates these ACLs with
+    icacls; unlike POSIX mode bits, they remain meaningful for unelevated Windows readers.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    if sys.platform != "win32":
+        return False
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_security = advapi.GetNamedSecurityInfoW
+    get_security.argtypes = [
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    get_security.restype = wintypes.DWORD
+    convert = advapi.ConvertSecurityDescriptorToStringSecurityDescriptorW
+    convert.argtypes = [
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.LPWSTR),
+        ctypes.c_void_p,
+    ]
+    convert.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    descriptor = ctypes.c_void_p()
+    # SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION.
+    if get_security(str(path), 1, 5, None, None, None, None, ctypes.byref(descriptor)):
+        return False
+    rendered = wintypes.LPWSTR()
+    try:
+        if not convert(descriptor, 1, 5, ctypes.byref(rendered), None):
+            return False
+        return _windows_policy_sddl_is_trusted(rendered.value or "")
+    finally:
+        if rendered:
+            kernel.LocalFree(ctypes.cast(rendered, ctypes.c_void_p))
+        kernel.LocalFree(descriptor)
+
+
+def _windows_policy_sddl_is_trusted(sddl: str) -> bool:
+    """Accept the administrator-owned, read-only-for-users ACLs UG publishes."""
+    import re
+
+    if not sddl.startswith(("O:BA", "O:SY")) or "D:" not in sddl:
+        return False
+    dacl = sddl.split("D:", 1)[1]
+    entries = re.findall(r"\(([^()]*)\)", dacl)
+    if not entries or re.sub(r"\([^()]*\)", "", dacl) not in ("", "P", "AI", "PAI"):
+        return False
+    for entry in entries:
+        fields = entry.split(";")
+        if len(fields) != 6 or fields[0] != "A" or fields[3] or fields[4]:
+            return False
+        if fields[5] in ("BA", "SY"):
+            continue
+        if fields[5] != "BU" or fields[2] not in ("FR", "FRFX", "0x1200a9"):
+            return False
+    return True

@@ -205,6 +205,10 @@ passwordless sudo), since a write that can't be authorized fails the command.
 `~/.claude/ucode-settings.json`, `~/.codex/ucode.config.toml` and `~/.codex/config.toml`, user MCP
 servers, skills, Databricks AI Tools, and Desktop/Cowork user settings. Claude Code and Codex
 (0.134.0 or newer) have machine-wide CLI settings; macOS also supports Desktop MDM provisioning.
+For a workspace that publishes an agent configuration, see
+[deploy published agent settings](docs/admin-managed-settings.md) and the
+[settings reference](docs/admin-managed-settings-reference.md).
+
 Other CLI agents are skipped with a note, so a run that names only them does nothing. It fails for `--mcp`, `--enable-databricks-ai-tools`, a subscription
 relay, and `UG_SKIP_OS_SETTINGS`. It also fails when `ug` or its Python is in a user's home folder
 (checked through symlinks), since every user's agents run them: install ug in a shared location
@@ -895,6 +899,9 @@ auth helper retains its existing shared deadline.
 
 ## Documentation
 
+- [Deploy published agent settings to managed devices](docs/admin-managed-settings.md)
+- [Admin-managed agent settings reference](docs/admin-managed-settings-reference.md)
+- [About admin-managed agent settings](docs/admin-managed-settings-explained.md)
 - [Databricks Unity Gateway overview](https://docs.databricks.com/aws/en/ai-gateway/overview-beta)
 - [Databricks Unity Gateway coding agent integration](https://docs.databricks.com/aws/en/ai-gateway/coding-agent-integration-beta)
 - [Databricks CLI authentication](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)

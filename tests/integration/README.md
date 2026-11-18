@@ -2345,3 +2345,8 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+Windows published-configuration component coverage in `test_published_agent_config.py`
+checks elevated privilege selection, protected marker ACLs, Codex requirements-only output,
+rejection of unsupported machine-wide Codex defaults, and the static catalog warning.
+These controlled-platform tests do not establish a native Windows provisioning or agent pass.

@@ -1787,3 +1787,8 @@ to refresh labels and the failed CI jobs. Later pushes need a new waiver; the ol
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
+
+Windows published-configuration component coverage in `test_published_agent_config.py`
+checks elevated privilege selection, protected marker ACLs, Codex requirements-only output,
+rejection of unsupported machine-wide Codex defaults, and the static catalog warning.
+These controlled-platform tests do not establish a native Windows provisioning or agent pass.
