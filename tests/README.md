@@ -1,5 +1,19 @@
 # Test suites and user journeys
 
+Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
+`test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
+Checks resolve external and pay-per-token destinations using selected credentials;
+preserve service request IDs; inherit native GPT metadata or known-model fallback capabilities;
+and warn on unreadable, incomplete, or incompatible destinations. Error and budget fallbacks
+participate in compatibility checks; idle/deleted destinations do not. Workspace-selector headers
+are covered in `test_workspace_selection.py`. Provisioned endpoint identities remain unresolved.
+Manual live validation on 2026-11-18 used a separate arclet, the `eng-ml-inference` profile,
+Codex 0.169.0, and an opaque pay-per-token service targeting GPT-6 Luna. Public `ug configure`
+generated native metadata with a `medium` default; `ug codex exec` completed a shell file read
+and returned its hidden value without an effort override. Only the admin CodingAgentConfig
+input used the existing fixture hook; destination lookup and inference were live.
+A forwarding recorder confirmed the full service ID, `medium` effort, and HTTP 200 responses.
+
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,

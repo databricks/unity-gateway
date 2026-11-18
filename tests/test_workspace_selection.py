@@ -222,6 +222,18 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    def test_model_service_metadata_lookup(self, selected):
+        url = f"{SHARED}/api/2.1/unity-catalog/model-services/main.team.opaque"
+        with patch.object(
+            db_mod.urllib_request, "urlopen", return_value=_Response(b"{}", url, WSID)
+        ) as urlopen:
+            assert db_mod.get_model_service("main.team.opaque", SHARED, "tok") == ({}, None)
+
+        request = urlopen.call_args.args[0]
+        assert request.full_url == url
+        assert request.get_header("X-databricks-org-id") == WSID
+        assert request.get_header("X-databricks-workspace-id") == WSID
+
     def test_mcp_proxy(self, selected):
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID

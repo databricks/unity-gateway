@@ -581,7 +581,12 @@ def write_tool_config(
     # catalog enabled or partially rewrite the user's configuration.
     try:
         catalog = (
-            prepare_codex_catalog(SPEC["binary"], static_models)
+            prepare_codex_catalog(
+                SPEC["binary"],
+                static_models,
+                workspace=workspace,
+                get_token=lambda: launch_token(state, workspace),
+            )
             if static_models and not provider
             else None
         )

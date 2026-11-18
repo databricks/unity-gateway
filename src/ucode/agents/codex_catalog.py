@@ -1,4 +1,4 @@
-"""Build managed Codex catalogs offline, using the installed harness's schema and prompts."""
+"""Build managed Codex catalogs using destination identities and bundled native metadata."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from ucode.codex_config import ModelVisibility
+from ucode.databricks import get_model_service, model_service_destination_models
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.codex_routing import codex_model_id
 from ucode.string_utils import model_picker_label
@@ -58,7 +59,12 @@ _HOSTED_DEFAULTS = {
 def _model_key(slug: str) -> str:
     # Reuse Codex's known gateway/legacy GPT aliases. Arbitrary UC service
     # names do not establish which underlying model serves them.
-    return codex_model_id(slug).removeprefix("system.ai.").replace(".", "-")
+    return (
+        codex_model_id(slug)
+        .removeprefix("system.ai.")
+        .removeprefix("databricks-")
+        .replace(".", "-")
+    )
 
 
 def _reasoning_levels(efforts) -> list[dict]:
@@ -72,6 +78,7 @@ def build_codex_catalog(
     names: list[str],
     *,
     warn: Callable[[str], None] | None = None,
+    model_ids: dict[str, str] | None = None,
 ) -> dict:
     """Copy native presets or derive generic compatibility defaults, in admin order.
 
@@ -84,11 +91,12 @@ def build_codex_catalog(
     by_key = {_model_key(slug): model for slug, model in by_slug.items()}
     models = []
     for name in dict.fromkeys(names):
-        native = by_slug.get(name) or by_key.get(_model_key(name))
+        model_id = (model_ids or {}).get(name, name)
+        native = by_slug.get(model_id) or by_key.get(_model_key(model_id))
         if native is not None:
             model = copy.deepcopy(native)
         else:
-            key = _model_key(name)
+            key = _model_key(model_id)
             missing_gpt = key.startswith(("gpt-", "databricks-gpt-"))
             # Pre-GPT-5 models reject reasoning efforts, so they keep the none-only default.
             missing_reasoning_gpt = missing_gpt and not key.startswith(_PRE_REASONING_GPT_PREFIXES)
@@ -111,7 +119,7 @@ def build_codex_catalog(
                     default_reasoning_level="medium",
                     supported_reasoning_levels=_reasoning_levels(_GPT_FALLBACK_EFFORTS),
                 )
-            capabilities = _HOSTED_CAPABILITIES.get(name.removeprefix("system.ai."))
+            capabilities = _HOSTED_CAPABILITIES.get(_model_key(model_id))
             if capabilities:
                 modalities, efforts = capabilities
                 model.update(
@@ -189,13 +197,38 @@ def validate_codex_catalog(binary: str, catalog: dict) -> None:
         ) from None
 
 
-def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
-    """Extract and validate with the launch binary; never fetch or reuse stale metadata.
+def prepare_codex_catalog(
+    binary: str,
+    names: list[str],
+    *,
+    workspace: str | None = None,
+    get_token: Callable[[], str] | None = None,
+) -> dict:
+    """Resolve custom services' destinations, then extract and validate native metadata.
 
     --bundled bypasses discovery. Validation reads an explicit local catalog.
     Both commands run outside user/project config in a disposable CODEX_HOME.
-    Failure blocks configuration rather than falling back to remote discovery.
+    Failure blocks configuration rather than falling back to remote Codex discovery.
     """
+    model_ids = {}
+    services = [
+        name
+        for name in dict.fromkeys(names)
+        if len(name.split(".")) == 3 and not name.startswith("system.")
+    ]
+    if services and workspace and get_token is not None:
+        token = get_token()
+        for name in services:
+            service, reason = get_model_service(name, workspace, token, timeout=5)
+            targets = model_service_destination_models(service) if service is not None else None
+            if targets and len({_model_key(target) for target in targets}) == 1:
+                model_ids[name] = targets[0]
+            else:
+                detail = reason or "destinations do not identify a single backing model"
+                print_warning(
+                    f"Could not resolve Codex metadata for model service '{name}': {detail}. "
+                    "Using generic compatibility metadata; check the service's routing configuration."
+                )
     try:
         with tempfile.TemporaryDirectory(prefix="ug-codex-catalog-") as home:
             result = _run_catalog_command(binary, ["debug", "models", "--bundled"], home)
@@ -211,7 +244,9 @@ def prepare_codex_catalog(binary: str, names: list[str]) -> dict:
             ):
                 raise ValueError("invalid bundled model catalog")
             fallback_warnings: list[str] = []
-            catalog = build_codex_catalog(bundled, names, warn=fallback_warnings.append)
+            catalog = build_codex_catalog(
+                bundled, names, warn=fallback_warnings.append, model_ids=model_ids
+            )
             _validate_codex_catalog_in_home(binary, catalog, home)
     except (OSError, TypeError, ValueError, subprocess.SubprocessError):
         raise RuntimeError(

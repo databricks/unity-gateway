@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from ucode import databricks as db_mod
 from ucode.agents import codex_catalog as catalog
 
 
@@ -145,6 +146,166 @@ def test_legacy_gpt_alias_uses_native_metadata(bundled):
     assert models[0]["slug"] == "databricks-gpt-5-6-sol"
     assert models[1]["slug"] == "gpt-5.6-sol"
     assert models[1]["visibility"] == "hide"
+
+
+def test_custom_services_use_destination_metadata_and_keep_request_identity(bundled):
+    names = ["mlops_ont.models.codegen-gpt-6-luna", "main.team.opaque", "main.team.gpt-4o"]
+    targets = dict(zip(names, ["gpt-6-astra", "system.ai.kimi-k3", "gpt-6.1-sol"], strict=True))
+    original = copy.deepcopy(bundled)
+
+    models = catalog.build_codex_catalog(bundled, names, model_ids=targets)["models"]
+
+    assert [model["slug"] for model in models] == names
+    for key, value in bundled[2].items():
+        if key not in {"slug", "priority", "visibility", "supported_in_api"}:
+            assert models[0][key] == value
+    assert models[1]["default_reasoning_level"] == "max"
+    assert models[1]["input_modalities"] == ["text", "image"]
+    assert models[2]["default_reasoning_level"] == "medium"
+    assert [level["effort"] for level in models[2]["supported_reasoning_levels"]] == [
+        "low",
+        "medium",
+        "high",
+    ]
+    assert bundled == original
+
+
+@pytest.mark.parametrize("target", ["gpt-4o", "unknown-deployment"])
+def test_destination_identity_overrides_misleading_gpt_service_name(bundled, target):
+    name = "main.team.gpt-6-astra"
+    model = catalog.build_codex_catalog(bundled, [name], model_ids={name: target})["models"][0]
+
+    assert model["slug"] == name
+    assert model["default_reasoning_level"] == "none"
+    assert model["context_window"] == 32768
+
+
+@pytest.mark.parametrize("target", ["system.ai.databricks-gpt-6-astra", "databricks-gpt-6-astra"])
+def test_destination_model_resource_uses_native_metadata(bundled, target):
+    name = "main.team.opaque"
+    models = catalog.build_codex_catalog(bundled, [name], model_ids={name: target})["models"]
+
+    assert [model["slug"] for model in models] == [name]
+    assert models[0]["base_instructions"] == bundled[2]["base_instructions"]
+    assert models[0]["supported_reasoning_levels"] == bundled[2]["supported_reasoning_levels"]
+    assert models[0]["context_window"] == bundled[2]["context_window"]
+
+
+def test_prepare_catalog_resolves_custom_destinations_with_selected_credentials(
+    monkeypatch, bundled
+):
+    names = ["mlops_ont.models.codegen-gpt-6-luna", "main.team.opaque", "main.team.oss"]
+    native = {**bundled[2], "slug": "gpt-6-luna", "default_reasoning_level": "high"}
+    services = [
+        {"external_model_config": {"target": {"model": "gpt-6-luna"}}},
+        {"pay_per_token_config": {"model": "models/system.ai.databricks-gpt-6-1-sol"}},
+        {"pay_per_token_config": {"model": "models/system.ai.databricks-kimi-k3"}},
+    ]
+    requests = []
+    auth_calls = []
+    validated = []
+
+    def get_json(url, token, *, timeout):
+        requests.append((url, token, timeout))
+        destination = services[len(requests) - 1]
+        return {"config": {"routing": {"destinations": [destination]}}}, None
+
+    def get_token():
+        auth_calls.append(True)
+        return "selected-token"
+
+    def run(binary, args, home):
+        if args == ["debug", "models", "--bundled"]:
+            return subprocess.CompletedProcess([], 0, json.dumps({"models": [*bundled, native]}))
+        validated.append(json.loads((Path(home) / "catalog.json").read_text()))
+
+    monkeypatch.setattr(db_mod, "_http_get_json", get_json)
+    monkeypatch.setattr(catalog, "_run_catalog_command", run)
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex", names + names[:1], workspace="https://selected", get_token=get_token
+    )
+
+    assert requests == [
+        (f"https://selected/api/2.1/unity-catalog/model-services/{name}", "selected-token", 5)
+        for name in names
+    ]
+    assert auth_calls == [True]
+    assert validated == [result]
+    assert [model["slug"] for model in result["models"]] == names
+    assert result["models"][0]["default_reasoning_level"] == "high"
+    assert result["models"][0]["base_instructions"] == native["base_instructions"]
+    assert result["models"][1]["default_reasoning_level"] == "medium"
+    assert result["models"][2]["default_reasoning_level"] == "max"
+
+
+@pytest.mark.parametrize(
+    "service,reason",
+    [
+        (None, "HTTP 403"),
+        ({"config": {}}, None),
+        (
+            {
+                "config": {
+                    "routing": {
+                        "destinations": [
+                            {
+                                "traffic_percentage": 50,
+                                "external_model_config": {"target": {"model": "gpt-6-astra"}},
+                            },
+                            {
+                                "traffic_percentage": 50,
+                                "external_model_config": {"target": {"model": "gpt-4o"}},
+                            },
+                        ]
+                    }
+                }
+            },
+            None,
+        ),
+    ],
+    ids=["unreadable", "unresolved", "different-models"],
+)
+def test_unresolved_destinations_warn_without_guessing_metadata(
+    monkeypatch, bundled, service, reason
+):
+    warnings = []
+    monkeypatch.setattr(db_mod, "_http_get_json", lambda *a, **kw: (service, reason))
+    monkeypatch.setattr(catalog, "print_warning", warnings.append)
+    monkeypatch.setattr(
+        catalog,
+        "_run_catalog_command",
+        lambda *a: subprocess.CompletedProcess([], 0, json.dumps({"models": bundled})),
+    )
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex",
+        ["main.team.gpt-6-astra"],
+        workspace="https://selected",
+        get_token=lambda: "token",
+    )
+
+    assert result["models"][0]["default_reasoning_level"] == "none"
+    assert len(warnings) == 1
+    assert "Could not resolve Codex metadata" in warnings[0]
+    assert (reason or "single backing model") in warnings[0]
+
+
+def test_native_models_do_not_require_destination_lookup(monkeypatch, bundled):
+    monkeypatch.setattr(
+        catalog,
+        "_run_catalog_command",
+        lambda *a: subprocess.CompletedProcess([], 0, json.dumps({"models": bundled})),
+    )
+
+    result = catalog.prepare_codex_catalog(
+        "/selected/codex",
+        ["system.ai.gpt-6-astra", "gpt-5.2"],
+        workspace="https://selected",
+        get_token=lambda: pytest.fail("unneeded authentication"),
+    )
+
+    assert result["models"][0]["base_instructions"] == bundled[2]["base_instructions"]
 
 
 def test_generic_non_gpt_uses_conservative_ordinary_tool_defaults(bundled):

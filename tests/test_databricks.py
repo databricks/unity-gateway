@@ -6944,6 +6944,78 @@ class TestSharedHostProfiles:
         ]
 
 
+class TestModelServiceDestinationModels:
+    @pytest.mark.parametrize(
+        "destination,expected",
+        [
+            ({"external_model_config": {"target": {"model": "gpt-6-luna"}}}, "gpt-6-luna"),
+            (
+                {"pay_per_token_config": {"model": "models/system.ai.gpt-6-luna"}},
+                "system.ai.gpt-6-luna",
+            ),
+        ],
+    )
+    def test_reads_model_identity_from_each_destination_type(self, destination, expected):
+        service = {"config": {"routing": {"destinations": [destination]}}}
+        assert db_mod.model_service_destination_models(service) == [expected]
+
+    def test_includes_error_and_budget_fallbacks_but_ignores_idle_and_deleted(self):
+        def external(model, **kwargs):
+            return {"external_model_config": {"target": {"model": model}}, **kwargs}
+
+        service = {
+            "config": {
+                "routing": {
+                    "destinations": [
+                        external("gpt-6-luna", traffic_percentage=100),
+                        external("gpt-4o", traffic_percentage=0),
+                        external("gpt-4o", traffic_percentage=100, is_deleted=True),
+                    ],
+                    "fallback": {
+                        "destinations": [
+                            external("gpt-6-astra"),
+                            external("gpt-4o", is_deleted=True),
+                        ]
+                    },
+                    "budget_fallbacks": [{"destination": external("gpt-6-sol")}],
+                }
+            }
+        }
+
+        assert db_mod.model_service_destination_models(service) == [
+            "gpt-6-luna",
+            "gpt-6-astra",
+            "gpt-6-sol",
+        ]
+
+    @pytest.mark.parametrize(
+        "service",
+        [
+            {},
+            {"config": None},
+            {"config": {"routing": {"destinations": []}}},
+            {"config": {"routing": {"destinations": [{"external_model_config": {"target": {}}}]}}},
+            {"config": {"routing": {"destinations": [{"pay_per_token_config": {"model": 123}}]}}},
+            {"config": {"routing": {"destinations": [{"traffic_percentage": "100"}]}}},
+            {
+                "config": {
+                    "routing": {
+                        "destinations": [
+                            {
+                                "provisioned_throughput_config": {
+                                    "model_serving_endpoint": "serving-endpoints/custom"
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+        ],
+    )
+    def test_incomplete_identity_is_not_inferred(self, service):
+        assert db_mod.model_service_destination_models(service) is None
+
+
 class TestModelServicesNeedSubscriptionRelay:
     """A static model-service list launches relayed when a service routes to a relayed MPS."""
 

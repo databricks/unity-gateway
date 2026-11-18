@@ -3351,6 +3351,63 @@ def model_service_primary_providers(service: dict) -> list[str]:
     return providers
 
 
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
+        return None
+    primary = routing.get("destinations")
+    if not isinstance(primary, list) or not primary:
+        return None
+    destinations = []
+    for destination in primary:
+        if not isinstance(destination, dict):
+            return None
+        traffic = destination.get("traffic_percentage")
+        if traffic is None:
+            traffic = 100 if len(primary) == 1 else 0
+        if not isinstance(traffic, (int, float)):
+            return None
+        if traffic > 0:
+            destinations.append(destination)
+    fallback = routing.get("fallback") or {}
+    if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
+        return None
+    destinations.extend(fallback.get("destinations", []))
+    budget_fallbacks = routing.get("budget_fallbacks") or []
+    if not isinstance(budget_fallbacks, list):
+        return None
+    for entry in budget_fallbacks:
+        if not isinstance(entry, dict):
+            return None
+        destinations.append(entry.get("destination"))
+    models = []
+    for destination in destinations:
+        if not isinstance(destination, dict):
+            return None
+        if destination.get("is_deleted"):
+            continue
+        configs = [
+            destination[key]
+            for key in (
+                "external_model_config",
+                "pay_per_token_config",
+            )
+            if key in destination
+        ]
+        if len(configs) != 1 or not isinstance(configs[0], dict):
+            return None
+        target = configs[0]
+        if "external_model_config" in destination:
+            target = target.get("target")
+        model = target.get("model") if isinstance(target, dict) else None
+        if not isinstance(model, str) or not model:
+            return None
+        models.append(model.removeprefix("models/"))
+    return list(dict.fromkeys(models)) or None
+
+
 class RelayLookup(Enum):
     """Whether a model service routes to a Claude subscription relay."""
 

@@ -17,6 +17,17 @@ that the scan came from main's `workflow_run` producer for the matching CI reque
 selection and failure-reporting component tests are documented in the [main test guide](../README.md).
 They do not exercise live GitHub comment delivery or credentialed integration runs.
 
+Custom Codex service metadata is currently covered by the component tests listed in the
+[main test guide](../README.md): destination resolution, credential selection, unchanged request
+IDs, native reasoning metadata, and incompatible/unreadable-route warnings. Manual live validation
+on 2026-11-18 used a separate arclet, `eng-ml-inference`, Codex 0.169.0, and an opaque
+pay-per-token service targeting GPT-6 Luna. Public configure generated a `medium` default,
+then `ug codex exec` completed a shell file read and returned its hidden value without an effort
+override. Admin CodingAgentConfig input used the existing fixture hook; destination lookup and
+inference were live. This was a manual headless check, not an automated or interactive journey.
+A forwarding recorder confirmed the full service ID, `medium` effort, and HTTP 200 responses.
+External services and provisioned endpoints have no new live coverage.
+
 `../test_agent_codex.py::TestCodexManagedConfig` covers managed catalog backup and rollback with
 real backup/revert logic and temporary-file privileged writers: a second user's configure/revert,
 failed TOML updates, failed rollback/revert, and later catalog edits. These component checks do not
