@@ -30,7 +30,7 @@ client id and secret come in as policy parameters; neither the credentials nor t
 written to disk by the script. See [macos-setup.md](macos-setup.md) for the full setup.
 
 On Windows, deploy `windows-provision.ps1` as an Intune Win32 app. It installs shared tools under
-Program Files, uses `ug`'s npm agent installer, and adds PowerShell launch functions. Named inputs
-replace Jamf's positional parameters. A secret passed in the Intune install command is not secure
-secret injection and can appear in management or process logs; review the credential handling,
+Program Files, uses `ug`'s npm agent installer, and adds PowerShell launch functions. Named
+parameters supply the deployment settings. A secret passed in the Intune install command is not
+secure secret injection and can appear in management or process logs; review the credential handling,
 pilot, detection and removal steps in [windows-setup.md](windows-setup.md).

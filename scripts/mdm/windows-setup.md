@@ -1,8 +1,8 @@
 # Set up Unity Gateway on Windows with Intune
 
 Deploy [windows-provision.ps1](windows-provision.ps1) as an Intune **Windows app (Win32)**,
-running as SYSTEM in 64-bit Windows PowerShell. This follows the Jamf flow: install shared tools,
-exchange service-principal credentials for a short-lived token, and run `ug configure --global`.
+running as SYSTEM in 64-bit Windows PowerShell. The installer provides shared tools, exchanges
+service-principal credentials for a short-lived token, and runs `ug configure --global --mdm`.
 Developers sign in with their own Databricks accounts when they launch an agent.
 
 This is a draft deployment procedure. The revised script has helper tests, but its full install,
@@ -16,7 +16,8 @@ uninstall, and SYSTEM-to-standard-user flow still need to be tested on Windows a
 - A dedicated provisioning service principal with **Workspace access** and access to the models,
   MCP servers and skills in that configuration. Generate an OAuth secret with the shortest lifetime
   that covers your rollout. Use the `ai-gateway` and `unity-catalog` **Read** scopes
-  (`ai-gateway:read unity-catalog:read`). See [Create the service principal](macos-setup.md#1-create-the-service-principal).
+  (`ai-gateway:read unity-catalog:read`). Create the service principal and OAuth secret in the
+  workspace under **Settings > Identity and access > Service principals**.
 - Network access to the workspace, GitHub (`github.com`, `raw.githubusercontent.com` and release
   asset download hosts), PyPI (`pypi.org`, `files.pythonhosted.org`), `nodejs.org`, and the npm
   registry (`registry.npmjs.org`). If required, configure your approved PyPI/npm proxies in a
@@ -41,25 +42,26 @@ fail the deployment rather than hanging an unattended install.
 
 ### Credential handling
 
-Intune's Win32 **Install command** supports arguments, unlike the Platform scripts upload, which
-has no parameter field. Named arguments are the closest equivalent to Jamf policy parameters.
-They are **not a secure secret channel**: a secret supplied in the command can be visible to
-Intune administrators and through endpoint process auditing or management logs. Microsoft
+Intune's Win32 **Install command** supports named arguments for deployment settings. It does not
+provide a secure secret parameter: a secret supplied in the command can be visible to Intune
+administrators and through endpoint process auditing or management logs. Microsoft
 [advises against putting sensitive information in deployed scripts](https://learn.microsoft.com/en-us/intune/device-management/tools/run-powershell-scripts-windows#before-you-begin).
 
-The example install command below uses a `-ClientSecret` argument for Jamf-style parity. Use it
-only if your organization's credential-handling policy permits that exposure, restrict access to
-the Intune app configuration, and rotate or revoke the secret after the deployment window.
+Use your organization's approved credential-delivery mechanism, if available. A wrapper can obtain
+the secret at runtime, set `DATABRICKS_CLIENT_SECRET` **for that process only**, and call the script.
+Intune does not populate this variable for you; the wrapper must authenticate to the credential
+source. Do not store the secret in machine environment variables or a packaged config file.
+
+The install-command example below shows the script's `-ClientSecret` input. Use that form only if
+your organization's credential-handling policy permits the command-line exposure. Restrict access
+to the Intune app configuration and rotate or revoke the secret after the deployment window.
+If the exposure is not acceptable and you do not have an approved runtime credential source,
+resolve credential delivery before deploying; moving the secret into an environment variable is
+not a complete solution.
+
 Keep secrets out of the script and the `.intunewin` package. The script does not write its
 credentials into the installed copy, marker, or generated profiles, but this does not erase
 Intune's records or endpoint logs.
-
-If your organization already has an approved credential-delivery mechanism, use a wrapper that
-obtains the secret at runtime, sets `DATABRICKS_CLIENT_SECRET` **for that process only**, and calls
-the script. Omit `-ClientSecret` from the Intune command in that case. Intune does not populate this
-variable for you. Do not store the secret in machine environment variables or a packaged config
-file. This guide does not add a credential broker or assume that Windows devices can access a
-secret vault without authentication.
 
 ## 2. Test the script manually
 
@@ -133,13 +135,14 @@ An approved wrapper can instead provide the credential through the environment f
 **Uninstall command**:
 
 ```text
-%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\UnityGateway\windows-provision.ps1" -Uninstall
+C:\Windows\Sysnative\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Program Files\UnityGateway\windows-provision.ps1" -Uninstall
 ```
 
-The script keeps an uncredentialed copy at that path after a successful install. For a custom
-Windows installation drive, adjust the path. `Sysnative` selects the 64-bit host when launched by
-the 32-bit Intune management process; running plain `powershell.exe` there can select 32-bit
-PowerShell, which the script refuses.
+The script keeps an uncredentialed copy at that path after a successful install. The uninstall
+command uses literal paths because Intune does not expand environment variables in that field;
+adjust both paths for a custom Windows installation drive. `Sysnative` selects the 64-bit host
+when launched by the 32-bit Intune management process; running plain `powershell.exe` there can
+select 32-bit PowerShell, which the script refuses.
 
 On **Requirements**, target Windows 11 and the architectures you tested (x64 and/or ARM64).
 Use separate pilot assignments if the architecture-specific dependencies differ.
@@ -210,8 +213,8 @@ Bash. If PowerShell 7 is installed later, rerun provisioning to install its prof
 
 ## Updates, secret rotation and removal
 
-- **Policy refresh:** unlike a recurring Jamf policy, Win32 detection prevents another install
-  while the expected deployment is present. Plan a new deployment revision or a separate,
+- **Policy refresh:** Win32 detection prevents another install while the expected deployment is
+  present. Plan a new deployment revision or a separate,
   explicitly scheduled management action when the workspace policy needs to be refreshed.
 - **Software updates:** reruns reinstall the requested `ug` revision. They reuse existing Git,
   uv, Node.js and Databricks CLI installations. Agent version handling remains `ug`'s existing
