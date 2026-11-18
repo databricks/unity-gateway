@@ -35,6 +35,11 @@ Tests live in `tests/`.
 - Use `launcher.exec_or_spawn` when handing the terminal to an agent. Shell strings and explicit executable overrides keep their existing subprocess semantics.
 - Every child process inherits `UG_HEADERS`, including an agent started from another agent's session. The gateway records `Databricks-Custom-Coding-Agent` ahead of `User-Agent`, so the root callback drops an inherited one when it launches an agent (bare `ug` or `_AGENT_LAUNCH_COMMANDS` in `cli.py`); helper subcommands such as `mcp-proxy` keep it, since they run under the agent their parent launched. Add a new agent command outside `TOOL_ALIASES` to `_AGENT_LAUNCH_COMMANDS`, or it reports the parent's agent.
 - Add or update focused tests for behavior changes.
+- In live agent tests, assert completed outcomes and correlated request/response semantics.
+  Do not require an exact number or order of model, tool, subagent, or routing calls merely
+  because a prompt requests it. Native recovery and agent planning can produce extra calls.
+  Require relevant evidence and validate every matching call; use exact counts only when
+  cardinality is the contract being tested, such as routing disabled or one selection per response.
 - Never trigger a workflow with `pull_request_target`; `tests/test_integration_contract.py` rejects it. Use `pull_request` for checks that need no secrets. For checks that need secrets on fork PRs, use the default-branch `issue_comment` workflows. Only members/owners may request a run that executes PR code with CI secrets (as in `fork-integration.yml`), after reviewing the changes. Review commands that run no PR code (`ug-review.yml`) may also let GitHub-classified `CONTRIBUTOR`s request their own PR; first-time contributors need a member.
 - Do not modify generated or lock files unless the dependency graph intentionally changes.
 

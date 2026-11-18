@@ -45,6 +45,12 @@ tests. Keep work scoped to the behavior requested by the user.
 7. **Assert observable behavior.** Use actual files, structured final agent
    results, exit status and protocol exchanges. Process startup, banners, echoed
    input, or nonempty output alone do not establish a successful task.
+   A prompt asking for one subagent or tool call does not guarantee an exact call
+   count or order. Native recovery and agent planning can add calls. Require relevant
+   evidence, correlate every matching request with its response, and validate every
+   decision instead of selecting the first success. Use exact counts only for an
+   explicit cardinality contract, such as no routing when disabled or one selection
+   per routing response. Keep task completion and model/policy checks intact.
 8. **Isolate through processes and environments.** Fresh homes, working directories,
    package environments and explicit subprocess `env` are allowed. Do not mutate
    pytest's environment to redirect imported modules. Avoid developer config,
