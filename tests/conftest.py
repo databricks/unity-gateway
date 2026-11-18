@@ -47,6 +47,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.managed_files as managed_files_mod
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
+    from ucode import copilot_app_setup as copilot_app_setup_mod
     from ucode import desktop_auth as desktop_auth_mod
     from ucode import login_service as login_service_mod
     from ucode.agents import antigravity as antigravity_mod
@@ -68,6 +69,8 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(cowork_mod, "_code_config_root", lambda: tmp_path / ".claude")
     monkeypatch.setattr(agents_mod, "_vscode_with_copilot", True)
+    # No test may find the developer's GitHub Copilot app or change its providers.
+    monkeypatch.setattr(copilot_app_setup_mod, "installed", lambda: False)
     # No test may run the developer's `code` or look at their installed VS Code extensions.
     monkeypatch.setattr(vscode_mod, "find_code", lambda: None)
     monkeypatch.setattr(vscode_mod, "_find_command", lambda command: None)

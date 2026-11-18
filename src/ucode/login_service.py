@@ -314,6 +314,20 @@ def recorded_workspace() -> tuple[str | None, str | None]:
     return value("host"), value("workspace-id")
 
 
+def restart() -> None:
+    """Restart ug's own login service so it reads the saved settings again."""
+    if not _owned(service_path()):
+        return
+    if current_os() == OS.MACOS:
+        _run_service_command(["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{SERVICE_LABEL}"])
+    elif current_os() == OS.WINDOWS:
+        task = ["/TN", SERVICE_LABEL]
+        _run_service_command(["schtasks", "/End", *task], check=False)
+        _run_service_command(["schtasks", "/Run", *task])
+    else:
+        _run_systemctl(["restart", SERVICE_NAME])
+
+
 def recorded_port(flag: str) -> int | None:
     """The ``--{flag}`` port recorded in ug's own login service unit, if there is one."""
     unit = service_path()

@@ -798,6 +798,21 @@ def _sync_desktop_tracing(workspace: str | None) -> bool:
         return False
 
 
+def uses_login_service() -> bool:
+    """Whether Codex desktop's trace export or ChatGPT relay still goes through ug's login
+    service."""
+    if login_service.recorded_port("relay-port"):
+        return True
+    port = login_service.recorded_port("port")
+    if port is None:
+        return False
+    try:
+        otel = _read_app_config().get("otel")
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return isinstance(otel, dict) and otel.get("trace_exporter") == _desktop_trace_exporter(port)
+
+
 def _service_on(workspace: str) -> bool:
     """Whether ug's login service unit serves ``workspace``, with the same pinned workspace id on
     a host that serves several."""
