@@ -204,6 +204,7 @@ export function register(on) {
             lambda s: "Auto (Model 12)" in "\n".join(s.splitlines()[-4:]),
             "the main model in the footer",
         )
+        assert "smart router ON" not in "\n".join(tui.visible.splitlines()[-4:])
         first = observe(tui, "model-twelve")
         assert first["routing"] == "1", first
         assert first["model"] == (

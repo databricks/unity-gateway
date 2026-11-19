@@ -2184,7 +2184,8 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
 Auto main-model terminal checks (`../native_claude/test_auto_picker.py`) assert
-the selected model in the footer and absence of the redundant plugin transcript
+the selected model in the footer without a duplicate `smart router ON` suffix,
+and absence of the redundant plugin transcript
 notice, and require no skipped UG model-switch-hook notice. Separate tiered mod
 component plugins forward `PreModelSwitch` past user hooks and verify that
 allow/deny/ask results stand without skipping a UG hook. Native and managed security

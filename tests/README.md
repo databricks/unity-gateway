@@ -273,7 +273,8 @@ fixture catalog and an observer plugin, not gateway inference). With 23 models a
 60 columns, it checks scrolling past model ten without numbering resets, selection
 and native inline effort, Escape and reopening, Default, regular-model routing off,
 and inactive `/auto` preference edits. The selected main model appears in the footer
-without an extra `Auto mode: main model` transcript notice or a skipped UG
+as `Auto (<model>)` without a redundant `smart router ON` suffix.
+The flow also omits the extra `Auto mode: main model` transcript notice and skipped UG
 model-switch-hook notice. Tiered component plugins also forward `PreModelSwitch`
 past user hooks, checking allow/deny/ask results and no skipped UG hook.
 UG leaves model-switch permissions and cache-cost confirmations to Claude and
