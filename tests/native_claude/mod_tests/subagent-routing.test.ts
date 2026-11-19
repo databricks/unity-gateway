@@ -89,7 +89,7 @@ test('animal names stay distinct and stable without changing routed calls or row
   expect(names[100]).toMatch(/ 2$/);
 });
 
-test('routing changes the matching spawn model and task description while preserving its address', async ($, on) => {
+test('routing changes the matching spawn model while preserving the task and its address', async ($, on) => {
   const writes: any[] = [];
   const forwarded: any[] = [];
   const shown = new Map<string, string>();
@@ -97,6 +97,7 @@ test('routing changes the matching spawn model and task description while preser
   const logs: string[] = [];
   const routedModel = 'system.ai.gpt-5-6-sol[1m]';
   on('session.id', () => ({ value: 'session-1' }));
+  on('store.set', () => ({ value: undefined }));
   on('process.run', () => {
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: routedModel, rationale: 'Selected for the task',
@@ -136,7 +137,7 @@ test('routing changes the matching spawn model and task description while preser
     };
     const result = await $.agent.spawn(spawn);
     expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
-      : { ...spawn, model: routedModel, description: `${shown.get(id)} — gpt-5-6-sol` });
+      : { ...spawn, model: routedModel });
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
@@ -152,7 +153,7 @@ test('routing changes the matching spawn model and task description while preser
     expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
     expect(JSON.parse(writes[index].text)).toEqual({
       session_id: 'session-1', name: `${shown.get(id)} — claude-sonnet-5`,
-      description: `${shown.get(id)} — gpt-5-6-sol`,
+      description: originalInput.description,
     });
   }
   const resumed = { ...forwarded[0], description: originalInput.description,
@@ -164,7 +165,7 @@ test('routing changes the matching spawn model and task description while preser
   const result = await $.agent.spawn(forwarded[0]);
   expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
   expect(writes.length).toBe(2);
-  expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
+  expect(logs).toEqual(['Could not persist the subagent display label; native labels remain where unavailable.']);
 });
 
 test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
@@ -399,12 +400,10 @@ test('the router hears which subagent made the call, and nothing for the main lo
   });
   await $.agent.spawn(spawn('call-main', 'main'));
   await $.agent.spawn(spawn('call-nested', 'agent-parent'));
-  expect(spawns.map(({ description, ...rest }) => rest)).toEqual(
+  expect(spawns).toEqual(
     [spawn('call-main', 'main'), spawn('call-nested', 'agent-parent')]
-      .map(({ description, ...rest }) => ({ ...rest, model: 'system.ai.claude-sonnet-5' })),
+      .map(original => ({ ...original, model: 'system.ai.claude-sonnet-5' })),
   );
-  expect(spawns.every(s => s.description.endsWith(' — claude-sonnet-5'))).toBe(true);
-  expect(new Set(spawns.map(s => s.description)).size).toBe(2);
 });
 
 for (const [name, result, warningCount] of [
@@ -673,7 +672,7 @@ test('routed children leave native parent synthesis and stream errors unchanged'
     const { description, ...forwarded } = forwardedSpawns[forwardedSpawns.length - 1];
     const { description: originalDescription, ...original } = spawn;
     expect(forwarded).toEqual({ ...original, model: selected[input.tool_use_id] });
-    expect(description.endsWith(` — ${selected[input.tool_use_id]}`)).toBe(true);
+    expect(description).toBe(originalDescription);
     await $.turn.complete({
       agentId: child.agentId, turnId: 'child-turn-' + input.tool_use_id,
       answer: 'Answer from ' + input.tool_use_id, reason: 'answer',
@@ -788,12 +787,12 @@ test('routed joke titles use the selected model without rewriting reviewed argum
     await $.agent.spawn(spawn);
     const label = `${displayed.get(call.tool_use_id).tool} — routed-model`;
     expect(spawned[spawned.length - 1]).toEqual({
-      ...spawn, model: 'catalog.schema.routed-model', description: label,
+      ...spawn, model: 'catalog.schema.routed-model',
     });
     expect(await cards.find({ type: 'Text', text: label })).toBeDefined();
     await ui.unmount();
   }
-  expect(new Set(spawned.map(s => s.description)).size).toBe(3);
+  expect(spawned.map(s => s.description)).toEqual(calls.map(call => call.description));
   for (const input of [undefined, null, false, 42, 'native input', []]) {
     const event = row(calls[0].tool_use_id);
     const ui = await $.ui.mount({ ...event, props: { ...event.props, input } });
@@ -801,4 +800,85 @@ test('routed joke titles use the selected model without rewriting reviewed argum
     await ui.unmount();
   }
   await cards.unmount();
+});
+
+test('completed notification labels persist by native child ID without changing task identity', async ($, on) => {
+  const stored = new Map<string, unknown>();
+  const writes: any[] = [];
+  const renders: any[] = [];
+  const forwarded: any[] = [];
+  on('session.id', () => ({ value: 'session-1' }));
+  on('env.get', () => ({ value: undefined }));
+  on('env.set', () => ({ value: undefined }));
+  on('session.start', ($, e) => ({ cwd: e.cwd }));
+  on('store.set', ($, e) => { stored.set(e.key, e.value); return { value: undefined }; });
+  on('store.get', ($, e) => ({ value: stored.get(e.key) }));
+  on('store.keys', () => ({ value: [...stored.keys()] }));
+  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
+  on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+    model: 'catalog.schema.selected-model', rationale: 'Selected for this task.',
+  }) } }));
+  on('tool.call', () => ({ result: 'launched' }));
+  on('agent.spawn', ($, e) => {
+    forwarded.push(e);
+    return { agentId: 'child-1', model: 'catalog.schema.launched-model' };
+  });
+  on('ui.render', ($, e) => {
+    renders.push(e);
+    return { type: 'Text', props: {}, children: [e.props.text] };
+  });
+  const input = { ...originalInput, description: 'Joke from Sonnet' };
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'call-1', ...input });
+  const spawn = {
+    tool_use_id: 'call-1', prompt: input.prompt, description: input.description,
+    subagentType: input.subagent_type, parentModel: 'parent-model',
+    provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+    name: 'native-address', permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
+  };
+  await $.agent.spawn(spawn);
+  expect(forwarded).toEqual([{ ...spawn, model: 'catalog.schema.selected-model' }]);
+  const key = 'routed-agent:session-1:child-1';
+  const saved = JSON.parse(writes[0].text);
+  expect(stored.get(key)).toEqual(saved);
+  expect(saved.name.endsWith(' — launched-model')).toBe(true);
+  expect(saved.description).toBe(input.description);
+  const notice = {
+    ...panel, component: 'UserMessage' as const, requestId: 'notice-1',
+    props: { text: 'Agent "Joke from Sonnet" finished', origin: { kind: 'task-notification' as const },
+      task: { id: 'child-1', status: 'completed', toolUseId: 'call-1', durationMs: 4200 }, isExpanded: false },
+  };
+  const ui = await $.ui.mount(notice);
+  const { plugin: selector, ...expected } = notice;
+  expect(await ui.find({ type: 'Text', text: `Agent "${saved.name}" finished · Task request: ${input.description}` })).toBeDefined();
+  expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props,
+    text: `Agent "${saved.name}" finished · Task request: ${input.description}`,
+  } });
+  expect(notice.props.text).toBe('Agent "Joke from Sonnet" finished');
+  await ui.unmount();
+  const expanded = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded: true,
+    text: 'Original task summary\nFull child output stays visible.' } });
+  expect(await expanded.find({ type: 'Text', text: `Launched agent: ${saved.name}\nTask request: ${input.description}\nOriginal task summary\nFull child output stays visible.` })).toBeDefined();
+  await expanded.unmount();
+  stored.set('routed-agent:another-session:child-2', { ...saved, session_id: 'another-session' });
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
+  expect(writes.length).toBe(2);
+  expect(writes[1]).toEqual(writes[0]);
+  for (const value of [undefined, null, [], {}, { ...saved, session_id: 'another-session' },
+    { ...saved, name: 42 }, { ...saved, description: '' }]) {
+    stored.set(key, value);
+    const invalid = await $.ui.mount(notice);
+    expect(renders[renders.length - 1]).toEqual(expected);
+    await invalid.unmount();
+  }
+  stored.set(key, saved);
+  for (const props of [
+    { ...notice.props, origin: { kind: 'composer' as const }, task: undefined },
+    { ...notice.props, task: { ...notice.props.task, id: 'unrouted-child' } },
+    { ...notice.props, task: { ...notice.props.task, status: 'failed' } },
+  ]) {
+    const untouched = { ...notice, props };
+    const other = await $.ui.mount(untouched);
+    expect(renders[renders.length - 1]).toEqual({ ...expected, props });
+    await other.unmount();
+  }
 });

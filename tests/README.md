@@ -150,13 +150,16 @@ receipt-based guidance after orchestrator instructions and Usage notes, and leav
 description unchanged when routing is off.
 Native routing components check model-written joke titles against one routed selection,
 card and row model labels, retained task-request context, unchanged reviewed arguments,
-and distinct native spawn labels with preserved agent addresses and permissions. Malformed
+and preserved native task descriptions, agent addresses and permissions. Malformed
 display inputs pass through unchanged. Native
 auto-mode cases retain their approval/denial and zero fallback-classification assertions.
 The native status command checks old animal-only mappings, model labels with unchanged
 live progress and counters, and identical activity labels without duplication.
-The collapsed parallel-agent header has no mod render event in Claude Code 2.1.325 or
-2.1.328 and is not covered as a corrected surface.
+Completed-notification render tests cover child-ID joins, actual launch-model mismatches,
+unchanged task metadata, expanded output, malformed records, session isolation and persisted
+status mappings restored at session start. The collapsed parallel-agent header and native
+task-list titles have no matching mod render event in Claude Code 2.1.325 or
+2.1.328 and are not covered as corrected surfaces.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates

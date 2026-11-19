@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   MODEL_SET_PREFIX,
@@ -318,6 +318,19 @@ export function register(on: On, options: PluginOptions): void {
   }
 
   on('session.start', async ($, e, next) => {
+    try {
+      const session_id = await $.session.id();
+      const prefix = `routed-agent:${session_id}:`;
+      for (const key of await $.store.keys()) {
+        if (!key.startsWith(prefix)) continue;
+        const saved = savedRoutedDisplay(await $.store.get(key), session_id);
+        if (!saved) continue;
+        await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(key.slice(prefix.length))}.json`,
+          JSON.stringify(saved));
+      }
+    } catch {
+      $.ui.log('Could not restore subagent display labels; native labels remain where unavailable.');
+    }
     sessionActive = true;
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });

@@ -35,19 +35,19 @@ only `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
-Routing-card titles and individual tool rows identify the selected model rather than using
-a model-written title such as `Joke from Sonnet`. Cards and individual rows retain the
-original description as explicit task-request context. After launch, display labels use
-the model returned by the host. The native task registry receives the animal-and-model label
-at spawn, so same-model children have distinct completion notices. Reviewed tool inputs,
-full prompts, native agent addresses and parent prose are unchanged.
-The native status panel uses the same animal and model label, keeps live activity and
-counters, and does not repeat an identical activity label. Older animal-only mappings
-continue to render.
-Claude's collapsed parallel-agent header still renders the stored request description and
-does not expose a mod render event in Claude Code 2.1.325 or 2.1.328. Those header labels retain the
-original requested text. Rewriting the tool input or its response stream invalidates the
-server's auto-mode review and is not used to change these labels.
+Routing-card titles and individual tool rows identify the launched model, or the router
+selection before launch, rather than a model-written title such as `Joke from Sonnet`.
+Cards and lone rows retain the original description as explicit task-request context.
+Native task descriptions, reviewed inputs, full prompts, agent addresses and parent prose
+are unchanged. Completed task-notification rows use the child ID to display its launch
+identity and original task request; expanded rows retain the full original content.
+Native plugin storage preserves those display mappings across session resume, and the
+status command keeps live activity and counters without repeating the task description.
+Older animal-only mappings continue to render.
+Claude's collapsed parallel-agent header and native task-list titles still render the
+stored request description outside these display sites in Claude Code 2.1.325 and 2.1.328.
+Those surfaces require a native renderer change. Rewriting the tool input or its response
+stream invalidates the server's auto-mode review and is not used to change these labels.
 In subagent-only mode, the native tool description explains that a requested model
 outside the built-in choices does not prevent a general-purpose launch; the router
 selects an available execution model.

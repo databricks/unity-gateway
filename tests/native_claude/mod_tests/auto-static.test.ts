@@ -71,6 +71,8 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     value: { modelOverrides: { [DEFAULT_ALIAS]: MAIN, [OTHER_ALIAS]: OTHER } },
   }));
   on('store.get', ($, e) => ({ value: store[e.key] }));
+  on('session.id', () => ({ value: 'auto-static-session' }));
+  on('store.keys', () => ({ value: Object.keys(store) }));
   on('store.set', ($, e) => {
     chooser.beforeStore?.();
     store[e.key] = e.value;

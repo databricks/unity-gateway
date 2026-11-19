@@ -18,6 +18,8 @@ const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as cons
 // A pinned environment variable is the policy refusal the managed security default
 // raises; only the extra body may carry the recipe.
 function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}) {
+  on('session.id', () => ({ value: 'session-1' }));
+  on('store.keys', () => ({ value: [] }));
   // A routed launch puts its flags in the environment; session.start reads them back
   // so a reload keeps the toggle the session last applied.
   const env: Record<string, string | undefined> = {
@@ -369,7 +371,6 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     const exitCode = e.argv.includes('--disable-smart-routing') ? offExitCode : 0;
     return { value: { exitCode, stdout: e.argv.includes('--inspect-target') ? '{"message_id":"m1"}' : '', stderr: '' } };
   });
-  on('session.id', () => ({ value: 'session-1' }));
   on('fs.exists', () => ({ value: false }));
   on('ui.log', ($, e) => {
     logs.push(e.text);

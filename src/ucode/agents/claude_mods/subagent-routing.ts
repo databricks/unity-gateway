@@ -61,6 +61,14 @@ const shortModel = (model: string): string => {
 }
 const taskLabel = (record: RoutingRecord): string =>
   `${record.name} — ${shortModel(record.spawned?.model || record.model)}`
+export const savedRoutedDisplay = (value: unknown, sessionId: string) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || !('session_id' in value) || value.session_id !== sessionId
+      || !('name' in value) || !('description' in value)) return undefined
+  const name = safeText(value.name, 240)
+  const description = safeText(value.description, 1000)
+  return name && description ? { session_id: sessionId, name, description } : undefined
+}
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -244,8 +252,7 @@ export const registerSubagentRouting = (
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const description = route ? taskLabel(route) : e.description
-    const result = await next(route ? { ...e, model: route.model, description } : e)
+    const result = await next(route ? { ...e, model: route.model } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
@@ -253,14 +260,35 @@ export const registerSubagentRouting = (
     }
     if (route && result.agentId) {
       try {
+        const session_id = await $.session.id()
+        const saved = { session_id, name: taskLabel(route), description: e.description }
         // The native bottom bar is outside ui.render; join its task ID to this call.
         await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(result.agentId)}.json`,
-          JSON.stringify({ session_id: await $.session.id(), name: taskLabel(route), description }))
+          JSON.stringify(saved))
+        await $.store.set(`routed-agent:${session_id}:${result.agentId}`, saved)
       } catch {
-        $.ui.log('Could not save the subagent display name; its bottom bar will use the native label.')
+        $.ui.log('Could not persist the subagent display label; native labels remain where unavailable.')
       }
     }
     return result
+  })
+
+  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
+    const task = e.props.task
+    if (e.props.origin?.kind !== 'task-notification' || task?.status !== 'completed' || !task.id) return next(e)
+    let saved
+    try {
+      const session_id = await $.session.id()
+      saved = savedRoutedDisplay(await $.store.get(`routed-agent:${session_id}:${task.id}`), session_id)
+    } catch {
+      return next(e)
+    }
+    if (!saved) return next(e)
+    return next({ ...e, props: { ...e.props,
+      text: e.props.isExpanded
+        ? `Launched agent: ${saved.name}\nTask request: ${saved.description}\n${e.props.text}`
+        : `Agent "${saved.name}" finished · Task request: ${saved.description}`,
+    } })
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
