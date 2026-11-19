@@ -14,6 +14,7 @@ from ucode.constants import AGENT_CLAUDE
 from ucode.smart_routing.config import resolve_environment
 from ucode.smart_routing.v2 import (
     CLAUDE_ROUTING_PLUGIN_NAME,
+    _claude_host_has_view,
     _claude_mod_launch_args,
     _claude_mod_launch_options,
     _write_routed_claude_plugin,
@@ -48,7 +49,7 @@ class Session:
             shutil.copyfile(resume, target)
             resume_args = ["--resume", str(target)]
         self.plugin = root / "plugin"
-        _write_routed_claude_plugin(self.plugin, [])
+        _write_routed_claude_plugin(self.plugin, [], native_view=_claude_host_has_view(binary))
         shutil.copyfile(Path(__file__).with_name("observe.ts"), self.plugin / "hooks/observe.ts")
         (self.plugin / "hooks/hooks.json").write_text('{"modules":["./observe.ts"]}')
         skill = root / "config/skills/smart-router"

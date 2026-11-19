@@ -22,9 +22,63 @@ The Auto main-model chooser opens only after the person confirms Auto in `/model
 picker closes, or on `/model auto`. It uses the compact native question modal, with no
 effort controls. Native `/effort` remains unchanged.
 The count also includes background agents after the parent turn ends and refreshes within
-one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
-routing launches use this path, and the existing temporary-directory lifecycle
-cleans up the files when Claude exits.
+one second; unchanged counts do not trigger redraws.
+
+After the first subagent or routing attempt, one
+`View subagents` control under the hint opens an optional native pane; `/smart-router tree`
+opens the same view. A new batch of subagents also requests the pane without requesting
+keyboard focus. The host chooses placement: wide fullscreen terminals dock it; unsupported
+or narrow surfaces retain the manual entry. `/smart-router tree off` disables automatic
+opening for the session, and `/smart-router tree auto` enables it for the next batch.
+Closing a pane keeps it closed for the current batch. No inline activity block is added.
+
+The pane uses native docking on wide fullscreen terminals and native inline placement
+on narrower terminals after a manual open. The overview names the conversation and
+Smart Router (or native delegation) above the independent child cards. Parallel siblings
+share one labelled group; there is no edge between siblings. Nested children are
+indented under their recorded parent, and a child whose parent is unknown is listed under
+"NOT CONNECTED". The "results return" line is a destination label, not a completion state.
+Each child is a bordered card (active state colour, muted when finished): name,
+task, state glyph and word, elapsed time, current action and recently completed tools.
+One to three children have roomy cards with their latest complete sentence. Larger groups
+use compact tiles and a session log containing each child's latest message, wrapped in
+full. Native scrolling retains long content. Pressing a child's name (click or Enter)
+steps into that subagent's own transcript view with the host's `$.ui.view`: the host's
+main view shows the child's conversation, and the composer's next Enter is addressed to
+that child until the person returns to the main transcript (Esc, the tasks list, or the
+pane's `Back to main`). A host refusal falls back to the read-only details. The pane stays
+open across the switch and marks the child in view. The in-pane `details` control keeps
+the read-only summary: the quote, a timeline of
+what it said and which tools it used (tool names and file basenames), its final answer
+once finished, then its captured parent, launch model, routing decision and reported usage.
+Close returns to the same composer;
+Escape also closes while the pane owns keyboard focus.
+
+While the pane owns the keyboard, Tab moves a yellow selection between cards (the
+arrows scroll the pane body), Enter steps into the selected child, and digit hotkeys
+still reach the first nine tiles. The selection follows the child's identity across
+updates and reorders; turning a page selects the new page's first tile. Esc with the
+pane focused closes it while Main is in view; over a running viewed child, Esc is the
+host's interrupt for that child, so the return to Main is the pane's `Back to main`
+(or the host's own tasks list). Without the
+keyboard the pane shows the host focus chord (`ctrl+x tab`) instead of the shortcuts,
+and typing in the composer stays ordinary typing.
+
+Child text is the streamed assistant text from the native model step, passed through the
+same sanitizer as other pane text: control characters are removed, code blocks and shell
+lines are omitted, inline identifiers remain readable, paths are shortened to their basename, secrets in `key=value` and
+bearer forms are redacted, and each message is capped at 32,768 characters. Raw tool input,
+tool output and prompts are never shown or stored.
+
+Cards keep their positions while the pane is open; `Active first` reorders them and
+`Failed subagents` filters them. Reopening starts at the overview. Completed children remain
+available until the session is cleared or the plugin reloads, without new routing or
+model requests. Missing host metadata stays unknown. Native text layout wraps or truncates
+multilingual labels, and the detail view retains task text up to the capture limit.
+Waiting agents return to their current tool activity when they resume; late callbacks
+cannot replace a completed or idle status with active work. Both full and subagent-only
+routing launches use this path, and the existing launch-directory lifecycle cleans up
+the plugin files when Claude exits.
 
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in

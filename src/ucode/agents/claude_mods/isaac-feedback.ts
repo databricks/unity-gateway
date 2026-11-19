@@ -217,12 +217,7 @@ export function registerIsaacFeedback(
     if (!e.agentId && !e.message.isMeta) state.lastPromptId = e.uuid;
     return next(e);
   });
-  on('session.end', ($, e, next) => {
-    state.lastPromptId = undefined;
-    state.paneId = undefined;
-    state.openRoutingOff = undefined;
-    return next(e);
-  });
+
   on('command.run', { command: 'isaac-feedback' }, async ($, e, next) => {
     if (!envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) return next(e);
     if (state.submitted) return { text: 'Feedback is being prepared.' };

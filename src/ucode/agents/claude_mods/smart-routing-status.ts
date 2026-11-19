@@ -2,6 +2,8 @@ import type { On } from 'claude-code'
 import { autoTarget, type AutoPicker } from './auto-model.ts'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
+import { AGENT_TREE_PANE, resetAgentTreeView } from './agent-tree.ts'
+import { agentTree } from './agent-tree-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
@@ -66,7 +68,8 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
   // the band hides and flips as soon as a toggle succeeds.
   on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
     const { enabled } = await readRoutingState($)
-    running = (await $.agent.list()).filter((agent) => agent.status === 'running').length
+    const roster = await $.agent.list()
+    running = roster.filter((agent) => agent.status === 'running').length
     // Background agents can change state without changing Claude's cached hint props.
     if (!refresh) refresh = $.clock.every(1000, async () => {
       const count = (await $.agent.list()).filter((agent) => agent.status === 'running').length
@@ -81,7 +84,19 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       if (main) state = `Auto (${main.label}) · ${state}`
     }
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
-    return next({ ...e, props: { ...e.props, tail } })
+    const original = await next({ ...e, props: { ...e.props, tail } })
+    // The one addition to the conversation: an entry to the pane once a subagent or routing attempt exists.
+    if (e.surface === 'mobile' || !(roster.length || agentTree.nodes.size || agentTree.routes.size)) return original
+    const { Box, Button } = $.ui.resolve(e)
+    return Box({ flexDirection: 'column', children: [original,
+      Button({ key: 'view-subagents', label: 'View subagents', plain: true,
+        onPress: async () => {
+          resetAgentTreeView()
+          const own = (await $.ui.panes()).find(pane => pane.id === AGENT_TREE_PANE.id)
+          if (own && !own.isShown) await $.ui.close({id: AGENT_TREE_PANE.id})
+          return $.ui.open(AGENT_TREE_PANE)
+        } }),
+    ] })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {

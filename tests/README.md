@@ -440,6 +440,13 @@ under `e2e_cuj/` and `integration/`; no workflow edit is needed. Integration cas
 retain their agent and workspace markers, including `managed_fixture` when needed.
 See [the harness opt-in guide](integration/README.md#opting-into-harness-latest).
 
+Subagent pane checks (`register.test.ts`) cover turn-start auto-open once per activity
+batch, opt-out and manual reopening, semantic parent labels without invented sibling
+edges, stable overview-log ordering with chronological pinned history, and answer fallback
+after timeline eviction. They also exercise sanitized streamed previews and native stream
+result retention, monotonic terminal answers, usage, page-scoped logs, focused controls,
+finished-child collapse, and four-row 60x20 content plus end-scroll reachability.
+
 CUJ 4's Claude-only preset band journey (separate from the delegation journeys) checks Claude's ON/OFF status band, routing scope, and
 updates after off/on toggles, and that the band is hidden after the launch turn and by
 the second turn after each toggle. They also check that the prompt hint row under the

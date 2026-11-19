@@ -26,6 +26,8 @@ import {
   routingLogsPaneOpen,
 } from './routing-logs.ts';
 import { AUTO_KEPT_PREFIX, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoStatus, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { clearAgentTree, registerAgentTree, resetAutoOpenBatchIfIdle } from './agent-tree.ts';
+import { agentTree } from './agent-tree-state.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
@@ -303,6 +305,7 @@ export function register(on: On, options: PluginOptions): void {
 
   on('session.start', async ($, e, next) => {
     sessionActive = true;
+    clearAgentTree();
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });
       if (auto.staticModel) await initStaticVariant($, auto);
@@ -326,6 +329,14 @@ export function register(on: On, options: PluginOptions): void {
     pendingSelection?.cancel();
     return next(e);
   });
+  registerAgentTree(on);
+  on('session.end', ($, e, next) => {
+    feedback.lastPromptId = undefined;
+    feedback.paneId = undefined;
+    feedback.openRoutingOff = undefined;
+    clearAgentTree();
+    return next(e);
+  });
 
   on('turn.step', async function* ($, e, next) {
     if (auto && !e.agentId && !switchingAuto && !manualOffRequest) await syncAutoRouting($, options, auto, routingSync);
@@ -340,7 +351,25 @@ export function register(on: On, options: PluginOptions): void {
     const model = routedModels.model(e.agentId)
       ?? (auto && !e.agentId && await autoSelected($, auto) ? await mainModel($, auto) : undefined)
       ?? (auto ? autoTarget(auto, e.model) : undefined);
-    return yield* next(model ? {...e, model} : e);
+    const step = model ? {...e, model} : e;
+    agentTree.stepStarted(step, await $.clock.now().catch(() => 0));
+    try {
+      const stream = next(step);
+      for await (const chunk of stream) {
+        if (step.agentId && chunk.kind === 'text') {
+          agentTree.assistantTextChunk(step.agentId, step.turnId, step.index, chunk.text, await $.clock.now().catch(() => 0));
+        }
+        yield chunk;
+      }
+      const result = await stream.result;
+      agentTree.stepFinished(step, result, await $.clock.now().catch(() => 0));
+      return result;
+    } catch (error) {
+      agentTree.stepFailed(step, await $.clock.now().catch(() => 0));
+      throw error;
+    } finally {
+      $.ui.invalidate('ui.render');
+    }
   });
 
   if (auto) {
@@ -765,7 +794,7 @@ export function register(on: On, options: PluginOptions): void {
   on('command.run', {command: 'smart-router'}, async ($, e, next) => {
     const command = parseSmartRouterCommand(e.args);
     if (auto) return { text: 'Choose Auto in /model to enable Smart Routing, or choose a model to turn it off. Use /model auto to customize the main agent model.' };
-    if (!command) return {text: 'Usage: /smart-router on|off|logs'};
+    if (!command) return {text: 'Usage: /smart-router on|off|logs|tree'};
     if (!launchedEnabled) return {text: 'Smart Router was not enabled for this session.'};
     if (command.action === 'off') {
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
@@ -794,6 +823,9 @@ export function register(on: On, options: PluginOptions): void {
   registerSubagentRouting(on, options, auto?.models.map(row => row.autoModel));
   // Claude allows one unmatched turn.complete handler per plugin, so both modules share it.
   on('turn.complete', async ($, e, next) => {
+    agentTree.turnFinished(e, await $.clock.now().catch(() => 0));
+    resetAutoOpenBatchIfIdle();
+    $.ui.invalidate('ui.render');
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     const result = await next(e);

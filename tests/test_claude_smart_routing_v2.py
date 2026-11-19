@@ -1253,7 +1253,7 @@ class TestSubagentRouting:
     ):
         monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestration)
-        v2._write_routed_claude_plugin(tmp_path)
+        v2._write_routed_claude_plugin(tmp_path, native_view=False)
 
         agents = list((tmp_path / "agents").glob("*.md"))
         assert not any(agent.stem.startswith("ucode-route-") for agent in agents)
@@ -1268,7 +1268,7 @@ class TestSubagentRouting:
         plugin_dir = tmp_path / "routing-plugin"
         models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3", "system.ai.gpt-5-6-sol"]
 
-        v2._write_routed_claude_plugin(plugin_dir, models)
+        v2._write_routed_claude_plugin(plugin_dir, models, native_view=False)
 
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
         assert manifest["name"] == "ug-smart-router"
