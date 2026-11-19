@@ -1192,28 +1192,26 @@ Component cases cover both CLIs with Omni, direct, empty, and unset launch modes
 and native Codex with feedback disabled or an Omni launch.
 `test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
-arguments, original-task anchoring, exact reason text, capture before disabling,
-background upload afterward, cancellation, no-ops, failures, read-only delivery status,
-and retry of the same saved report. The native selector offers Provide a reason or
-Cancel, accepts reason notes or opens text entry, ends short-reason attempts with
-an explicit validation error and character count instead of reopening the prompt,
-and clears pending collection on interruption or error. Only an exact off command
-with native skill-selection metadata authorizes the matching turn's off call, once.
-Plain prompts, quoted commands, appended reasons, foreign/finished turns, and
-model-provided reasons cannot start feedback or disable routing. Correlated
-turn-start replies bind authorization even when the tool request arrives first.
-Native status needs no Isaac executable. The unused CLI feedback-status command and
-duplicate CLI capture/upload cases were removed. Native and adapter cases retain
-capture ordering, permission failures, cross-session targets, control-write failures,
-upload-start failures, saved delivery states, and malformed-state coverage.
-Re-enabling through either CLI or native Codex clears the saved task reference in
-shared session controls before routing changes. The next native off must prepare
-a fresh target; old evidence cannot be recaptured. Cleanup failure keeps routing off.
-Short-reason retries within the same attempt retain their original task reference.
+arguments, original-task selection, exact reason text, and pre-toggle routing context.
+Like Claude, Codex starts `isaac feedback --with-evidence` in the background before
+turning routing off, reports the command's exit result, and retries saved reports with
+`isaac feedback --retry`. Delivery or process-start failure leaves routing off;
+preparation failure before collection leaves it on. A toggle failure does not cancel
+feedback that is already sending. Worker timeout or cancellation kills and reaps the
+subprocess. These are component checks, not proof of backend delivery.
+The native selector offers Provide a reason or Cancel, accepts option notes or text
+entry, and ends a short attempt with a validation error rather than reopening it.
+Each explicit retry identifies the current task again. Cancel and interrupted collection
+send nothing. Native skill metadata authorizes only the matching off turn, once;
+plain prompts, quoted/appended commands, and model-provided reasons cannot start it.
+UG holds the selected task only in memory while the prompt is open. Target-file
+persistence/cleanup, receipt-schema validation, and custom status polling were removed
+to use Isaac's submission contract, as Claude does. Their tests were replaced by
+command/exit-result, re-enable/new-task, and native failure-boundary coverage.
 `test_codex_metadata.py` checks native request/response transport, unrelated-tool
 forwarding, locally consumed feedback replies (including stale replies), native
 prompt cancellation on interrupt, completed turn, or disconnect, responsive
-interrupts during capture, and completion/failure notices
+interrupts during preparation, and completion/failure notices
 after the originating turn ends, without another model turn.
 Malformed tool calls and completion/interrupt notifications pass through without
 being handled locally; a subsequent native toggle and messages in both directions

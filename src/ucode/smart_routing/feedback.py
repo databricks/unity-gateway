@@ -1,23 +1,23 @@
-"""Isaac evidence capture and delivery for native Codex feedback."""
+"""Isaac feedback commands used by the native Codex launcher."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Protocol
-from uuid import UUID, uuid4
+from typing import Protocol
+from uuid import UUID
 
-from ucode.config_io import atomic_write_json
 from ucode.constants import ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR
 from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.smart_routing.session_env import effective_environment, feedback_target_path
+from ucode.smart_routing.session_env import SESSION_ENV_VAR, effective_environment
 
 
 def smart_router_feedback_required() -> bool:
@@ -30,39 +30,12 @@ def smart_router_feedback_required() -> bool:
 def _isaac() -> str:
     executable = shutil.which("isaac")
     if not executable:
-        raise RuntimeError("Isaac feedback is unavailable. Smart Router is still on.")
+        raise RuntimeError("Isaac feedback is unavailable. Routing is unchanged.")
     return executable
 
 
-def _native_session_id(env: Mapping[str, str] | None = None) -> str:
-    source = os.environ if env is None else env
-    return str(UUID(source.get("CODEX_THREAD_ID") or source.get("CODEX_SESSION_ID") or ""))
-
-
-def _check_isaac_result(result: subprocess.CompletedProcess[str]) -> None:
-    if result.returncode == 0:
-        return
-    detail = f"{result.stderr or ''}\n{result.stdout or ''}".casefold()
-    if any(
-        error in detail
-        for error in (
-            "permission denied",
-            "operation not permitted",
-            "read-only file system",
-            "access is denied",
-        )
-    ):
-        raise RuntimeError(
-            "Permission denied accessing Isaac feedback. Smart Router is still on. "
-            "Check that Isaac can access this session's local feedback files."
-        )
-    raise ValueError("Isaac feedback command failed.")
-
-
-def prepare_codex_feedback(env: Mapping[str, str] | None = None) -> None:
-    """Anchor the preceding task before the user's reason becomes a new turn."""
+def prepare_codex_feedback(env: Mapping[str, str]) -> str | None:
     try:
-        session_id = _native_session_id(env)
         result = subprocess_cross_os.run(
             [
                 _isaac(),
@@ -71,155 +44,85 @@ def prepare_codex_feedback(env: Mapping[str, str] | None = None) -> None:
                 "--harness",
                 "codex",
                 "--session-id",
-                session_id,
+                env["CODEX_THREAD_ID"],
             ],
-            env=effective_environment(env, agent="codex", strict=True),
+            env=dict(env),
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=10,
         )
-        _check_isaac_result(result)
+        if result.returncode:
+            raise ValueError("Could not identify the feedback target.")
         target = json.loads(result.stdout)
-        if not isinstance(target, dict) or not isinstance(target.get("session_id"), str):
-            raise ValueError("Missing native session identity.")
-        if target["session_id"] != session_id:
-            raise ValueError("Isaac resolved a different native session.")
-        turn_id = target.get("turn_id") or target.get("message_id") or "no-prior-task"
-        if not isinstance(turn_id, str) or len(turn_id) > 128:
-            raise ValueError("Invalid native task identity.")
-        atomic_write_json(feedback_target_path(env), {"session_id": session_id, "turn_id": turn_id})
+        if not isinstance(target, dict) or target.get("session_id") != env["CODEX_THREAD_ID"]:
+            raise ValueError("Invalid native feedback session.")
+        turn_id = target.get("turn_id") or target.get("message_id")
+        if turn_id is not None and not isinstance(turn_id, str):
+            raise ValueError("Invalid native feedback task.")
+        return turn_id
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(
-            "Could not prepare Isaac feedback. Smart Router is still on; retry the off command."
-        ) from exc
-
-
-@dataclass(frozen=True)
-class CapturedFeedback:
-    executable: str
-    feedback_id: str
-    directory: Path
-    notices: tuple[str, ...] = ()
+        raise RuntimeError("Could not prepare feedback. Smart Router is still on.") from exc
 
 
 class FeedbackUpload(Protocol):
-    def poll(self) -> int | None: ...
+    def wait(self, timeout: float | None = None) -> int: ...
+    def kill(self) -> None: ...
 
 
-def capture_codex_feedback(reason: str, env: Mapping[str, str] | None = None) -> CapturedFeedback:
-    """Freeze evidence locally while routing is on; this never uploads it."""
-    executable = _isaac()
-    try:
-        target = json.loads(feedback_target_path(env).read_text(encoding="utf-8"))
-        session_id = str(UUID(target["session_id"]))
-        if session_id != _native_session_id(env):
-            raise ValueError("Feedback belongs to a different native session.")
-        turn_id = target["turn_id"]
-        if not isinstance(turn_id, str) or not turn_id or len(turn_id) > 128:
-            raise ValueError("Invalid feedback target.")
-        feedback_id = str(uuid4())
-        root = Path.home() / ".isaac" / "feedback"
-        result = subprocess_cross_os.run(
+def submit_codex_feedback(
+    feedback_id: str,
+    env: Mapping[str, str],
+    *,
+    reason: str | None = None,
+    turn_id: str | None = None,
+) -> FeedbackUpload:
+    report_id = str(UUID(feedback_id))
+    args = [_isaac(), "feedback"]
+    if reason is None:
+        args.extend(["--retry", report_id])
+    else:
+        args.extend(
             [
-                executable,
-                "feedback",
-                "--capture-local",
-                str(root),
                 "--category",
                 "smart-routing",
                 "--harness",
                 "codex",
                 "--session-id",
-                session_id,
-                "--turn-id",
-                turn_id,
+                env["CODEX_THREAD_ID"],
                 "--feedback-id",
-                feedback_id,
-                "--full-capture",
-            ],
-            input=reason,
-            env=effective_environment(env, agent="codex", strict=True),
-            capture_output=True,
-            text=True,
-            timeout=120,
+                report_id,
+                "--with-evidence",
+                "--turn-id",
+                turn_id or "no-prior-task",
+            ]
         )
-        _check_isaac_result(result)
-        directory = root / feedback_id
-        receipt = json.loads((directory / "receipt.json").read_text(encoding="utf-8"))
-        if (
-            not isinstance(receipt, dict)
-            or not isinstance(receipt.get("request"), dict)
-            or not isinstance(receipt.get("target"), dict)
-            or not isinstance(receipt.get("smart_routing", {}), dict)
-            or receipt["feedback_id"] != feedback_id
-            or receipt["request"]["message"] != reason
-            or receipt["request"]["harness"] != "codex"
-            or receipt["request"]["category"] != "smart-routing"
-            or receipt["target"]["session_id"] != session_id
-            or (
-                turn_id != "no-prior-task"
-                and turn_id
-                not in (receipt["target"].get("turn_id"), receipt["target"].get("message_id"))
-            )
-        ):
-            raise ValueError("Isaac captured a different feedback target.")
-    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-        raise RuntimeError(
-            "Could not save Isaac feedback. Smart Router is still on. "
-            "Run $smart-router off again to retry."
-        ) from exc
-    notices = tuple(
-        notice
-        for notice in (
-            receipt["target"].get("notice"),
-            receipt.get("smart_routing", {}).get("notice"),
-        )
-        if isinstance(notice, str) and notice
-    )
-    return CapturedFeedback(executable, feedback_id, directory, notices)
-
-
-def submit_codex_feedback(
-    feedback: CapturedFeedback, env: Mapping[str, str] | None = None
-) -> FeedbackUpload:
-    options: dict[str, Any] = (
+    environment = effective_environment(env, agent="codex", strict=True)
+    environment[SESSION_ENV_VAR] = ""
+    options = (
         {"creationflags": subprocess.CREATE_NO_WINDOW}
         if sys.platform == "win32"
         else {"start_new_session": True}
     )
-    with (feedback.directory / "upload.log").open("ab") as log:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdin:
+        stdin.write(reason or "")
+        stdin.seek(0)
         return subprocess_cross_os.popen(
-            [feedback.executable, "feedback", "--retry", feedback.feedback_id],
-            stdin=subprocess.DEVNULL,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            env=dict(os.environ if env is None else env),
+            args,
+            stdin=stdin,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=environment,
             **options,
         )
 
 
-def codex_feedback_delivery(feedback_id: str) -> dict[str, str]:
-    report_id = str(UUID(feedback_id))
-    directory = Path.home() / ".isaac" / "feedback" / report_id
-    if not (directory / "receipt.json").is_file():
-        raise ValueError("Feedback report is unavailable on this machine.")
-    state_path = directory / "submission.json"
-    state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
-    if not isinstance(state, dict):
-        raise ValueError("Feedback delivery status is unavailable.")
-    if state.get("evidence_status") in ("attached", "queued_for_verification"):
-        delivery = "submitted"
-        message = f"Feedback submitted; backend processing may be pending. Feedback ID: {report_id}"
-    elif state.get("last_error"):
-        delivery = "unconfirmed"
-        message = (
-            f"Feedback delivery is unconfirmed. Feedback ID: {report_id}. "
-            "Ask Smart Router to retry this saved report."
-        )
-    else:
-        delivery = "pending"
-        message = (
-            "Feedback saved; delivery is pending confirmation. You can keep working. "
-            f"Feedback ID: {report_id}. Ask Smart Router to retry this saved report if needed."
-        )
-    return {"delivery": delivery, "message": message, "feedback_id": report_id}
+async def wait_for_feedback(process: FeedbackUpload) -> bool:
+    try:
+        return await asyncio.to_thread(process.wait, timeout=120) == 0
+    except (subprocess.TimeoutExpired, asyncio.CancelledError) as exc:
+        with contextlib.suppress(OSError):
+            process.kill()
+        await asyncio.to_thread(process.wait)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        return False

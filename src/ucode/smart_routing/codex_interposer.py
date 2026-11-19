@@ -251,7 +251,6 @@ async def _handle_tui(
         smart_router = CodexSmartRouter(session_controls) if session_controls is not None else None
         feedback_input = CodexFeedbackInput(tui.send)
         tool_tasks: set[asyncio.Task] = set()
-        monitored_reports: set[str] = set()
         tool_turns: dict[tuple[str, str], asyncio.Event] = {}
         queued_frames: asyncio.Queue = asyncio.Queue()
 
@@ -345,41 +344,21 @@ async def _handle_tui(
             ) not in ("off", "retry"):
                 return
             report_id = result["feedback_id"]
-            if report_id in monitored_reports:
-                return
-            monitored_reports.add(report_id)
-            try:
-                await monitor_delivery(message, report_id)
-            finally:
-                monitored_reports.discard(report_id)
+            await monitor_delivery(message, report_id)
 
         async def monitor_delivery(message: dict, report_id: str):
             assert smart_router is not None
-            for _ in range(120):
-                await asyncio.sleep(1)
-                try:
-                    status = await asyncio.to_thread(smart_router.delivery, report_id)
-                except (OSError, ValueError):
-                    status = {
-                        "delivery": "unconfirmed",
-                        "message": f"Feedback delivery could not be confirmed. Feedback ID: {report_id}. Ask Smart Router to check or retry this saved report.",
-                    }
-                if status["delivery"] == "pending":
-                    continue
-                await delivery_notice(message, status["message"])
-                return
-            await delivery_notice(
-                message,
-                f"Feedback delivery is still unconfirmed. Feedback ID: {report_id}. Ask Smart Router to check or retry this saved report.",
-            )
+            try:
+                status = await smart_router.delivery(report_id)
+            except (OSError, ValueError):
+                status = {
+                    "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}. Ask Smart Router to retry this saved report.",
+                }
+            await delivery_notice(message, status["message"])
 
         async def delivery_notice(message: dict, text: str):
             key = (message["params"]["threadId"], message["params"]["turnId"])
-            try:
-                await asyncio.wait_for(tool_turns[key].wait(), timeout=120)
-            except TimeoutError:
-                log("[FEEDBACK] Delivery notice deferred; originating turn is still active")
-                return
+            await tool_turns[key].wait()
             item = {
                 "type": "agentMessage",
                 "id": f"ug-feedback-{uuid.uuid4().hex}",

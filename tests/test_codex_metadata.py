@@ -582,7 +582,7 @@ def test_malformed_feedback_frames_preserve_relay_and_subsequent_toggle(
     asyncio.run(run())
 
 
-def test_native_tool_capture_does_not_block_interrupts_or_other_frames(
+def test_native_tool_preparation_does_not_block_interrupts_or_other_frames(
     running_interposer, monkeypatch
 ):
     started, release = threading.Event(), threading.Event()
@@ -590,8 +590,8 @@ def test_native_tool_capture_does_not_block_interrupts_or_other_frames(
     def execute(self, params):
         started.set()
         if not release.wait(5):
-            raise RuntimeError("test did not release capture")
-        return {"message": "capture finished"}
+            raise RuntimeError("test did not release preparation")
+        return {"message": "preparation finished"}
 
     monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
 
@@ -632,7 +632,7 @@ def test_native_delivery_notice_after_turn_without_model_or_shell(
     )
     checked = threading.Event()
 
-    def status(_self, _report_id):
+    async def status(_self, _report_id):
         checked.set()
         if error:
             raise OSError("status unavailable")
@@ -662,7 +662,7 @@ def test_native_delivery_notice_after_turn_without_model_or_shell(
             assert ended["params"]["completedAtMs"] >= started["params"]["startedAtMs"]
             assert ended["params"]["item"] == started["params"]["item"]
             text = ended["params"]["item"]["text"]
-            assert ("could not be confirmed" if error else delivery) in text
+            assert ("unconfirmed" if error else delivery) in text
             assert upstream.outgoing.empty(), "notices must not start a new model turn"
 
     asyncio.run(run())

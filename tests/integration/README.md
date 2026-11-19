@@ -498,43 +498,32 @@ The Claude mod entry point has separate native component checks in
 TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's native off-feedback selector has component coverage in
-`../test_smart_router_feedback.py` and `../test_codex_metadata.py`: session-bound native
-tool registration/dispatch, direct collection and the Omni exemption, original-task identity,
-16-character validation, exact text, capture before disabling, background upload after,
-cancellation, same-report retry, failures, delivery notices, and forwarding during capture.
-The two-choice menu opens free-text entry, accepts notes on the selected reason option,
-ends short-reason attempts with a validation error and character count instead of
-reopening the prompt, and handles Escape/turn completion/disconnect without
-uploading. Its replies stay local; unrelated replies continue upstream. Off requires
-an explicit skill command in the matching native turn. Plain chat and model-provided
-reasons cannot bypass the disclosed native feedback flow. Shared CLI toggles validate
-the reason and change controls without capturing or uploading feedback, matching the
-existing Claude CLI behavior. Native Codex owns capture, upload, status, and retry;
-the unused CLI feedback-status command was removed. Its delivery-state checks and
-the former CLI capture-failure checks now exercise the adapter or native entry point.
-Isaac subprocesses and transport are controlled in these component checks.
-Component regressions also verify that malformed tool/completion/interrupt frames
-do not end the relay, and that either CLI or native Codex re-enable clears the previous
-feedback task through shared session controls before routing changes. The next native
-off requires fresh preparation and captures the new task. Cleanup failure keeps routing off, while
-short-reason retries preserve their anchor. Live journeys do not inject malformed
-protocol frames or task-reference cleanup failures.
-The live Codex skill-toggle and metadata journeys now require completed native
-`ug_smart_router` results correlated to each action, actual controls, and completed
-root answers. They fail on a shell approval dialog; Claude's native journey is unchanged.
-Live feedback validation must first verify a natural-language off request leaves
-routing unchanged and starts no feedback, then invoke `$smart-router off`, select Provide a reason,
-enter a short reason, verify the turn ends with a clear error and no reopened prompt,
-then cancel and verify routing stays on without upload. An authorized submission must
-retain the original task and pre-toggle routing state, return a feedback ID, and keep
-routing off if delivery fails. Check that background notices render after the turn and
-that notices follow the model's final reply and no shell approval appears.
-In Omnigent, verify that off skips the native prompt and sends no feedback, matching
-the shared CLI exemption. This launch-mode rule has component coverage; the updated
-Omnigent flow has not been rerun live. Backend feedback
-uploads remain separate from gateway toggle journeys. New threads get the native tool;
-resuming an old thread without it requires an updated launch/new thread rather than a
-shell fallback. Protocol support alone does not establish live resume coverage.
+`../test_smart_router_feedback.py` and `../test_codex_metadata.py`: native tool binding,
+explicit-command authorization, original-task selection, 16-character validation,
+exact reason text, pre-toggle routing context, cancellation, and the Omni exemption.
+The menu offers Provide a reason or Cancel. A short submission ends the attempt with
+an error; the user must explicitly retry. Interrupted open prompts send nothing.
+
+Submission follows Claude's existing `isaac feedback --with-evidence` command in the
+background, then routing turns off. Worker success/failure follows Isaac's exit code;
+delivery failures leave routing off. Retry uses `isaac feedback --retry` without
+recapturing. UG no longer persists target files, validates captured-receipt schemas,
+or offers its own status reader. Those tests were replaced with command/exit-result,
+worker timeout/cancellation, and re-enable/new-task checks. Isaac subprocesses and
+transport are controlled in these component tests; backend delivery remains unverified.
+Shared CLI toggles only validate reasons and change controls, as Claude's CLI does.
+Malformed protocol frames still pass through without ending the relay. Background
+completion notices wait for the originating turn to finish, without another model turn.
+
+The live skill-toggle and metadata journeys require completed native results,
+actual controls, and completed root answers; shell approval dialogs fail the journey.
+The attached TUI recording covers the menu, short input, explicit retry, and Cancel.
+It does not establish submission through the simplified background command.
+Manual validation should submit an authorized reason, verify original-task and routing
+context, confirm the delivery result, and retry the saved report after a delivery
+failure. In Omnigent, off must skip collection. Updated submission and Omnigent behavior
+have not been rerun live. Existing threads created without the native tool still need
+an updated launch/new thread, with no shell fallback or automatic conversation restart.
 
 The required Isaac feedback form, evidence submission, and background delivery
 notifications need a separate manual Isaac check. The gateway toggle journey does

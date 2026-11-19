@@ -33,40 +33,18 @@ def inline_feedback(tmp_path, monkeypatch):
     controls.parent.mkdir()
     controls.write_text("{}")
     monkeypatch.setenv(session_env.SESSION_ENV_VAR, str(controls))
-    monkeypatch.setattr(feedback.shutil, "which", lambda name: "/installed isaac")
+    monkeypatch.setattr(feedback.shutil, "which", lambda _: "/installed isaac")
     calls = []
 
     def isaac(args, **kwargs):
         calls.append((args, kwargs))
-        assert json.loads(controls.read_text()) == {}, "capture must precede the toggle"
-        if "--inspect-target" in args:
-            return subprocess.CompletedProcess(
-                args, 0, json.dumps({"session_id": SESSION_ID, "turn_id": TASK_ID}), ""
-            )
-        report_id = args[args.index("--feedback-id") + 1]
-        directory = tmp_path / ".isaac" / "feedback" / report_id
-        directory.mkdir(parents=True)
-        (directory / "receipt.json").write_text(
-            json.dumps(
-                {
-                    "feedback_id": report_id,
-                    "request": {
-                        "message": kwargs["input"],
-                        "harness": "codex",
-                        "category": "smart-routing",
-                    },
-                    "target": {
-                        "session_id": SESSION_ID,
-                        "turn_id": args[args.index("--turn-id") + 1],
-                    },
-                }
-            )
+        return subprocess.CompletedProcess(
+            args, 0, json.dumps({"session_id": SESSION_ID, "turn_id": TASK_ID}), ""
         )
-        return subprocess.CompletedProcess(args, 0, "Local feedback receipt saved", "")
 
     def upload(args, **kwargs):
-        assert json.loads(controls.read_text()) == dict.fromkeys(v2.SMART_ROUTING_ENV_KEYS, "0")
-        return Mock(poll=Mock(return_value=None))
+        calls.append((args, {**kwargs, "input": kwargs["stdin"].read()}))
+        return Mock(wait=Mock(return_value=0))
 
     run = Mock(side_effect=isaac)
     popen = Mock(side_effect=upload)
@@ -144,81 +122,29 @@ def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monk
 
 
 @pytest.mark.parametrize("reenable", ["claude", "codex", "native"])
-def test_reenabled_session_cannot_upload_previous_tasks_evidence(
+def test_native_off_after_reenable_identifies_current_task(
     native_router, inline_feedback, reenable
 ):
     controls, run, popen, calls = inline_feedback
     assert native_call(native_router, "off")["needs_reason"]
     assert native_call(native_router, "off", reason=REASON)["feedback_id"]
-    target = controls.with_name("feedback-target.json")
-    if reenable != "native":
-        result = runner.invoke(cli.app, [reenable, "--enable-smart-routing"])
-        assert result.exit_code == 0, result.output
-    else:
+    if reenable == "native":
         assert "is on" in native_call(native_router, "on")["message"]
-    assert not target.exists()
-    assert session_env.session_routing_enabled(controls)
-
-    with pytest.raises(RuntimeError, match="still on"):
-        feedback.capture_codex_feedback(REASON)
-    with pytest.raises(ValueError, match="anchor the preceding task"):
-        native_call(native_router, "off", reason=REASON)
-    assert run.call_count == 2
-    assert popen.call_count == 1
-    assert session_env.session_routing_enabled(controls)
-
-    next_task = str(uuid4())
-    isaac = run.side_effect
-
-    def current_task(args, **kwargs):
-        result = isaac(args, **kwargs)
-        if "--inspect-target" in args:
-            result.stdout = json.dumps({"session_id": SESSION_ID, "turn_id": next_task})
-        return result
-
-    run.side_effect = current_task
-    assert native_call(native_router, "off")["needs_reason"]
-    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
-    captures = [args for args, _ in calls if "--capture-local" in args]
-    assert [args[args.index("--turn-id") + 1] for args in captures] == [TASK_ID, next_task]
-    assert popen.call_count == 2
-    assert not session_env.session_routing_enabled(controls)
-
-
-@pytest.mark.parametrize("reenable", ["claude", "codex", "native"])
-def test_failed_task_reference_cleanup_keeps_routing_off(
-    native_router, inline_feedback, monkeypatch, reenable
-):
-    import asyncio
-
-    controls, run, popen, _ = inline_feedback
-    assert native_call(native_router, "off")["needs_reason"]
-    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
-    target = controls.with_name("feedback-target.json")
-    unlink = Path.unlink
-
-    def deny_target_removal(path, *args, **kwargs):
-        if path == target:
-            raise PermissionError("target is locked")
-        return unlink(path, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "unlink", deny_target_removal)
-    if reenable != "native":
-        result = runner.invoke(cli.app, [reenable, "--enable-smart-routing"])
-        assert result.exit_code == 1, result.output
-        message = " ".join(result.output.split())
     else:
-        result = asyncio.run(
-            native_router.call({"threadId": SESSION_ID, "arguments": {"action": "on"}})
-        )
-        assert not result["success"]
-        message = result["contentItems"][0]["text"]
-    assert "Could not clear the saved Smart Router feedback task" in message
-    assert "Routing is unchanged" in message
-    assert not session_env.session_routing_enabled(controls)
-    assert target.exists()
-    assert run.call_count == 2
-    assert popen.call_count == 1
+        assert runner.invoke(cli.app, [reenable, "--enable-smart-routing"]).exit_code == 0
+    assert session_env.session_routing_enabled(controls)
+    assert not native_router.pending_feedback
+    next_task = str(uuid4())
+    run.return_value = subprocess.CompletedProcess(
+        [], 0, json.dumps({"session_id": SESSION_ID, "turn_id": next_task}), ""
+    )
+    run.side_effect = None
+    assert native_call(native_router, "off")["needs_reason"]
+    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
+    submissions = [args for args, _ in calls if "--with-evidence" in args]
+    assert [args[args.index("--turn-id") + 1] for args in submissions] == [TASK_ID, next_task]
+    assert popen.call_count == 2
+    assert not controls.with_name("feedback-target.json").exists()
 
 
 @pytest.mark.parametrize("flag", ["0", "false", "off", ""])
@@ -266,91 +192,23 @@ def test_unavailable_native_collection_keeps_routing_on(
         )
     )
     assert not result["success"], result
-    assert "still on" in result["contentItems"][0]["text"]
+    assert ("unavailable" if failure == "missing_isaac" else "still on") in result["contentItems"][
+        0
+    ]["text"]
     assert json.loads(controls.read_text()) == {}
     popen.assert_not_called()
 
 
-@pytest.mark.parametrize("stage", ["prepare", "capture"])
-@pytest.mark.parametrize(
-    "error", ["permission denied", "read-only file system", "Access is denied"]
-)
-def test_native_isaac_permission_failure_keeps_routing_on(
-    native_router, inline_feedback, stage, error
-):
-    import asyncio
-    from unittest.mock import AsyncMock
-
+def test_native_rejects_inspection_of_another_session(native_router, inline_feedback):
     controls, run, popen, _ = inline_feedback
-    isaac = run.side_effect
-
-    def denied(args, **kwargs):
-        if (stage == "prepare") == ("--inspect-target" in args):
-            return subprocess.CompletedProcess(args, 1, "", error)
-        return isaac(args, **kwargs)
-
-    run.side_effect = denied
-    result = asyncio.run(
-        native_router.call(
-            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}},
-            AsyncMock(return_value=["Provide a reason", "user_note: " + REASON]),
-        )
+    run.side_effect = None
+    run.return_value = subprocess.CompletedProcess(
+        [], 0, json.dumps({"session_id": str(uuid4()), "turn_id": TASK_ID}), ""
     )
-    assert not result["success"], result
-    text = result["contentItems"][0]["text"]
-    assert "Permission denied accessing Isaac feedback" in text
-    assert "Check that Isaac can access" in text
-    assert json.loads(controls.read_text()) == {}
-    popen.assert_not_called()
-
-
-def test_feedback_target_cannot_be_reused_in_another_session(
-    native_router, inline_feedback, monkeypatch
-):
-    controls, run, popen, _ = inline_feedback
-    assert native_call(native_router, "off")["needs_reason"]
-    monkeypatch.setenv("CODEX_THREAD_ID", str(uuid4()))
-
     with pytest.raises(RuntimeError, match="still on"):
-        feedback.capture_codex_feedback(REASON)
-    assert json.loads(controls.read_text()) == {}
-    assert run.call_count == 1
+        native_call(native_router, "off")
+    assert session_env.session_routing_enabled(controls)
     popen.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "state,expected",
-    [
-        ({}, "delivery is pending confirmation"),
-        ({"evidence_status": "queued_for_verification"}, "submitted; backend processing"),
-        ({"evidence_status": "pending", "last_error": "network"}, "delivery is unconfirmed"),
-    ],
-)
-def test_saved_delivery_status_does_not_resubmit(inline_feedback, tmp_path, state, expected):
-    _, run, popen, _ = inline_feedback
-    report_id = str(uuid4())
-    directory = tmp_path / ".isaac" / "feedback" / report_id
-    directory.mkdir(parents=True)
-    (directory / "receipt.json").write_text("{}")
-    (directory / "submission.json").write_text(json.dumps(state))
-
-    result = feedback.codex_feedback_delivery(report_id)
-
-    assert result["feedback_id"] == report_id
-    assert expected in result["message"]
-    run.assert_not_called()
-    popen.assert_not_called()
-
-
-def test_malformed_delivery_status_reports_error(inline_feedback, tmp_path):
-    report_id = str(uuid4())
-    directory = tmp_path / ".isaac" / "feedback" / report_id
-    directory.mkdir(parents=True)
-    (directory / "receipt.json").write_text("{}")
-    (directory / "submission.json").write_text("[]")
-
-    with pytest.raises(ValueError, match="delivery status is unavailable"):
-        feedback.codex_feedback_delivery(report_id)
 
 
 @pytest.fixture
@@ -392,48 +250,73 @@ def native_call(router, action, **kwargs):
     )
 
 
-def test_native_host_captures_then_disables_without_a_shell(native_router, inline_feedback):
+def test_native_starts_isaac_with_evidence_and_then_disables(native_router, inline_feedback):
     controls, run, popen, calls = inline_feedback
-    prompt = native_call(native_router, "off")
-    assert prompt["needs_reason"]
-    assert "session details will be sent" in prompt["message"]
     assert native_call(native_router, "off")["needs_reason"]
-    rejected = native_call(native_router, "off", reason="slow")
-    assert rejected["validation_error"] == "reason_too_short"
-    assert "4/16 characters" in rejected["message"]
-    assert run.call_count == 1
-
-    result = native_call(native_router, "off", reason=REASON)
-
-    assert not session_env.session_routing_enabled(controls)
-    assert "Smart Router is off" in result["message"]
-    assert result["delivery"] == "pending"
-    assert calls[1][1]["input"] == REASON
-    assert calls[1][1]["env"]["CODEX_THREAD_ID"] == SESSION_ID
-    assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
-    assert calls[1][0][calls[1][0].index("--session-id") + 1] == SESSION_ID
-    assert "--full-capture" in calls[1][0]
-    assert calls[1][1]["env"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
-    assert all(args[0] == "/installed isaac" for args, _ in calls)
-    assert popen.call_args.args[0] == [
+    assert run.call_args.args[0] == [
         "/installed isaac",
         "feedback",
-        "--retry",
-        result["feedback_id"],
+        "--inspect-target",
+        "--harness",
+        "codex",
+        "--session-id",
+        SESSION_ID,
     ]
-    assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
-    assert popen.call_args.kwargs["env"]["CODEX_THREAD_ID"] == SESSION_ID
+    start = popen.side_effect
+
+    def before_disable(args, **kwargs):
+        assert session_env.session_routing_enabled(controls)
+        return start(args, **kwargs)
+
+    popen.side_effect = before_disable
+    result = native_call(native_router, "off", reason=REASON)
+    args, kwargs = calls[-1]
+    assert args == [
+        "/installed isaac",
+        "feedback",
+        "--category",
+        "smart-routing",
+        "--harness",
+        "codex",
+        "--session-id",
+        SESSION_ID,
+        "--feedback-id",
+        result["feedback_id"],
+        "--with-evidence",
+        "--turn-id",
+        TASK_ID,
+    ]
+    assert kwargs["input"] == REASON
+    assert kwargs["env"]["CODEX_THREAD_ID"] == SESSION_ID
+    assert kwargs["env"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
+    assert kwargs["env"][session_env.SESSION_ENV_VAR] == ""
+    assert "--capture-local" not in args
+    assert not session_env.session_routing_enabled(controls)
+    assert result["delivery"] == "pending"
     assert "already off" in native_call(native_router, "off")["message"]
-    assert run.call_count == 2
+    run.assert_called_once()
     popen.assert_called_once()
+    assert not controls.with_name("feedback-target.json").exists()
+
+
+def test_native_without_prior_task_uses_isaacs_empty_task_selector(native_router, inline_feedback):
+    _, run, popen, _ = inline_feedback
+    run.side_effect = None
+    run.return_value = subprocess.CompletedProcess(
+        [], 0, json.dumps({"session_id": SESSION_ID, "turn_id": None}), ""
+    )
+    assert native_call(native_router, "off")["needs_reason"]
+    result = native_call(native_router, "off", reason=REASON)
+    assert popen.call_args.args[0][-2:] == ["--turn-id", "no-prior-task"]
+    assert "No earlier task" in result["notices"][0]
 
 
 def test_native_cancel_clears_pending_without_upload(native_router, inline_feedback):
     controls, run, popen, _ = inline_feedback
     assert native_call(native_router, "off")["needs_reason"]
     assert "remains on" in native_call(native_router, "cancel")["message"]
-    assert SESSION_ID not in native_router.pending_threads
-    with pytest.raises(ValueError, match="anchor the preceding task"):
+    assert SESSION_ID not in native_router.pending_feedback
+    with pytest.raises(ValueError, match="feedback prompt first"):
         native_call(native_router, "off", reason=REASON)
     assert json.loads(controls.read_text()) == {}
     assert run.call_count == 1
@@ -481,14 +364,19 @@ def test_native_rejects_unbound_sessions(native_router, inline_feedback, thread_
     popen.assert_not_called()
 
 
-def test_native_capture_failure_keeps_on(native_router, inline_feedback):
-    controls, run, popen, _ = inline_feedback
-    native_call(native_router, "off")
-    run.side_effect = lambda *a, **k: subprocess.CompletedProcess([], 1, "", "capture failed")
-    with pytest.raises(RuntimeError, match="still on"):
-        native_call(native_router, "off", reason=REASON)
-    assert json.loads(controls.read_text()) == {}
-    popen.assert_not_called()
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_native_delivery_result_matches_isaac_exit(native_router, inline_feedback, exit_code):
+    import asyncio
+
+    controls, _, _, _ = inline_feedback
+    assert native_call(native_router, "off")["needs_reason"]
+    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
+    process = native_router.uploads[report_id]
+    process.wait.return_value = exit_code
+    result = asyncio.run(native_router.delivery(report_id))
+    assert result["delivery"] == ("submitted" if exit_code == 0 else "unconfirmed")
+    assert not session_env.session_routing_enabled(controls)
+    assert not native_router.uploads
 
 
 def test_native_upload_start_failure_keeps_off(native_router, inline_feedback):
@@ -500,35 +388,19 @@ def test_native_upload_start_failure_keeps_off(native_router, inline_feedback):
 
     assert not session_env.session_routing_enabled(controls)
     assert result["delivery"] == "unconfirmed"
-    assert "retry this saved report" in result["message"]
+    assert "delivery could not start" in result["message"]
 
 
-def test_native_retry_reuses_same_report_without_capture(native_router, inline_feedback):
-    _, run, popen, _ = inline_feedback
-    native_call(native_router, "off")
+def test_native_retry_uses_isaacs_saved_report(native_router, inline_feedback):
+    _, run, popen, calls = inline_feedback
+    assert native_call(native_router, "off")["needs_reason"]
     report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    native_call(native_router, "status", feedback_id=report_id)
-    assert popen.call_count == 1
-
-    native_call(native_router, "retry", feedback_id=report_id)
-
-    assert run.call_count == 2
-    assert popen.call_count == 2
+    result = native_call(native_router, "retry", feedback_id=report_id)
+    assert result["feedback_id"] == report_id
     assert popen.call_args.args[0] == ["/installed isaac", "feedback", "--retry", report_id]
-
-
-def test_native_retry_rejects_report_from_another_session(native_router, inline_feedback, tmp_path):
-    _, run, popen, _ = inline_feedback
-    native_call(native_router, "off")
-    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    receipt_path = tmp_path / ".isaac/feedback" / report_id / "receipt.json"
-    receipt = json.loads(receipt_path.read_text())
-    receipt["target"]["session_id"] = str(uuid4())
-    receipt_path.write_text(json.dumps(receipt))
-    with pytest.raises(ValueError, match="does not belong"):
-        native_call(native_router, "retry", feedback_id=report_id)
-    assert run.call_count == 2
-    popen.assert_called_once()
+    assert calls[-1][1]["input"] == ""
+    assert popen.call_count == 2
+    run.assert_called_once()
 
 
 @pytest.mark.parametrize("method", ["thread/start", "thread/resume"])
@@ -600,30 +472,6 @@ def test_native_invalid_calls_return_errors_without_mutation(
     popen.assert_not_called()
 
 
-def test_native_status_needs_no_isaac_and_malformed_receipt_returns_error(
-    native_router, inline_feedback, tmp_path, monkeypatch
-):
-    import asyncio
-
-    native_call(native_router, "off")
-    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    monkeypatch.setattr(feedback.shutil, "which", lambda _: None)
-    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "pending"
-    receipt_path = tmp_path / ".isaac/feedback" / report_id / "receipt.json"
-    receipt_path.write_text("[]")
-    response = asyncio.run(
-        native_router.call(
-            {
-                "threadId": SESSION_ID,
-                "turnId": OFF_TURN_ID,
-                "arguments": {"action": "retry", "feedback_id": report_id},
-            }
-        )
-    )
-    assert response["success"] is False
-    assert "invalid" in response["contentItems"][0]["text"]
-
-
 def test_codex_skill_requires_native_host_tool():
     text = (Path(__file__).parents[1] / "skills/smart-router/SKILL.md").read_text()
     assert "ug_smart_router" in text
@@ -632,57 +480,68 @@ def test_codex_skill_requires_native_host_tool():
     assert "sandbox_permissions" not in text
 
 
-@pytest.mark.parametrize("exit_code", [0, 1])
-def test_native_finished_uploader_without_confirmation_reports_failure(
-    native_router, inline_feedback, exit_code
-):
-    native_call(native_router, "off")
-    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    native_router.uploads[report_id].poll.return_value = exit_code
-    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "unconfirmed"
+def test_feedback_worker_stops_and_reaps_on_timeout():
+    import asyncio
+
+    process = Mock()
+    process.wait.side_effect = [subprocess.TimeoutExpired("isaac", 120), 1]
+    assert asyncio.run(feedback.wait_for_feedback(process)) is False
+    process.kill.assert_called_once()
+    assert process.wait.call_count == 2
 
 
-def test_native_retry_ignores_stale_error_while_uploader_runs(
-    native_router, inline_feedback, tmp_path
-):
-    native_call(native_router, "off")
-    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    state = tmp_path / ".isaac/feedback" / report_id / "submission.json"
-    state.write_text(json.dumps({"last_error": "old failure"}))
-    result = native_call(native_router, "retry", feedback_id=report_id)
-    assert result["delivery"] == "pending"
-    assert "keep working" in result["message"]
-    state.write_text(json.dumps({"evidence_status": "queued_for_verification"}))
-    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "pending"
-    native_router.uploads[report_id].poll.return_value = 0
-    assert native_call(native_router, "status", feedback_id=report_id)["delivery"] == "submitted"
+def test_canceling_feedback_worker_stops_and_reaps_waiting_process():
+    import asyncio
+    import threading
+
+    started, stopped = threading.Event(), threading.Event()
+
+    def wait(timeout=None):
+        started.set()
+        assert stopped.wait(3), "Canceled feedback worker left its process running"
+        return 1
+
+    process = Mock(wait=Mock(side_effect=wait), kill=Mock(side_effect=stopped.set))
+
+    async def run():
+        task = asyncio.create_task(feedback.wait_for_feedback(process))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 2)
+        finally:
+            stopped.set()
+
+    asyncio.run(run())
+    process.kill.assert_called_once()
+    assert process.wait.call_count == 2
 
 
-def test_native_controls_write_failure_never_requests_shell_approval(
+def test_native_toggle_failure_does_not_cancel_feedback_or_request_approval(
     native_router, inline_feedback, monkeypatch
 ):
     import asyncio
+    from unittest.mock import AsyncMock
 
     controls, _, popen, _ = inline_feedback
-    native_call(native_router, "off")
     monkeypatch.setattr(
         session_env, "atomic_write_json", Mock(side_effect=PermissionError("denied"))
     )
-
-    async def ask(_):
-        return ["Provide a reason", "user_note: " + REASON]
-
     response = asyncio.run(
         native_router.call(
-            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}, ask
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}},
+            AsyncMock(return_value=["Provide a reason", "user_note: " + REASON]),
         )
     )
-    assert response["success"] is False
-    text = response["contentItems"][0]["text"]
-    assert "launcher can access" in text
-    assert "approval" not in text
-    assert json.loads(controls.read_text()) == {}
-    popen.assert_not_called()
+    assert response["success"], response
+    result = json.loads(response["contentItems"][0]["text"])
+    assert "Could not turn Smart Router off" in result["message"]
+    assert "Routing is unchanged" in result["message"]
+    assert "approval" not in result["message"]
+    assert result["delivery"] == "pending"
+    assert session_env.session_routing_enabled(controls)
+    popen.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -723,12 +582,12 @@ def test_native_selector_collects_within_toggle_call(
     assert all("Isaac team" in question["question"] for question in questions)
     assert all(question["options"] is None for question in questions[1:])
     assert session_env.session_routing_enabled(controls) == (reason is None)
-    assert not native_router.pending_threads
+    assert not native_router.pending_feedback
     if reason is None:
         assert run.call_count == 1
         popen.assert_not_called()
     else:
-        assert run.call_count == 2
+        assert run.call_count == 1
         assert calls[1][1]["input"] == reason
         assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
         popen.assert_called_once()
@@ -757,7 +616,7 @@ def test_native_invalid_selector_response_never_submits(native_router, inline_fe
     )
     assert not response["success"]
     assert session_env.session_routing_enabled(controls)
-    assert not native_router.pending_threads
+    assert not native_router.pending_feedback
     popen.assert_not_called()
     assert run.call_count == 1
 
@@ -812,7 +671,7 @@ def test_native_canceled_collection_clears_pending_and_never_submits(
             await task
 
     asyncio.run(run_test())
-    assert not native_router.pending_threads
+    assert not native_router.pending_feedback
     assert not native_router.collecting_threads
     assert session_env.session_routing_enabled(controls)
     assert run.call_count == 1
@@ -894,11 +753,19 @@ def test_native_short_reason_ends_attempt_without_reopening(
     assert run.call_count == 1
     popen.assert_not_called()
 
-    assert native_call(native_router, "off")["needs_reason"]
-    assert run.call_count == 1, "Retry must preserve original task anchor"
-    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
-    assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
-    assert calls[1][1]["input"] == REASON
+    from unittest.mock import AsyncMock
+
+    register_off_command(native_router, turn_id="retry-turn")
+    retry = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": "retry-turn", "arguments": {"action": "off"}},
+            AsyncMock(return_value=["Provide a reason", "user_note: " + REASON]),
+        )
+    )
+    assert retry["success"], retry
+    assert run.call_count == 2
+    assert calls[-1][0][calls[-1][0].index("--turn-id") + 1] == TASK_ID
+    assert calls[-1][1]["input"] == REASON
     popen.assert_called_once()
 
 

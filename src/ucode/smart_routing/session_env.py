@@ -49,10 +49,6 @@ def session_env_path(env: Mapping[str, str] | None = None) -> Path:
     )
 
 
-def feedback_target_path(env: Mapping[str, str] | None = None) -> Path:
-    return session_env_path(env).with_name("feedback-target.json")
-
-
 def _validate(values: object) -> dict[str, str]:
     if not isinstance(values, dict) or any(
         key not in _ALLOWED_KEYS or not isinstance(value, str) for key, value in values.items()
@@ -126,13 +122,6 @@ def set_session_environment(
     requested = _validate(dict(values))
     if current == requested:
         return False
-    if not requested:
-        try:
-            feedback_target_path(env).unlink(missing_ok=True)
-        except OSError as exc:
-            raise RuntimeError(
-                "Could not clear the saved Smart Router feedback task. Routing is unchanged."
-            ) from exc
     try:
         atomic_write_json(path, requested)
     except (OSError, RuntimeError) as exc:

@@ -8,7 +8,6 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
 from uuid import UUID, uuid4
 
 from websockets.exceptions import ConnectionClosed
@@ -44,12 +43,12 @@ TOOL_SPEC = {
         "do not reopen the prompt or automatically retry with another reason. "
         "Do not cite skills, file paths, or instructions. "
         "Never invent feedback. Cancel sends nothing and keeps routing on. "
-        "Status checks delivery; retry resends the saved report without recapturing."
+        "Retry resends the saved report through Isaac without recapturing."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["on", "off", "cancel", "status", "retry"]},
+            "action": {"type": "string", "enum": ["on", "off", "cancel", "retry"]},
             "feedback_id": {"type": ["string", "null"]},
         },
         "required": ["action"],
@@ -175,7 +174,7 @@ class CodexSmartRouter:
         self.controls = controls
         self.environment = {**os.environ, SESSION_ENV_VAR: str(controls)}
         self.feedback_required = feedback.smart_router_feedback_required()
-        self.pending_threads: set[str] = set()
+        self.pending_feedback: dict[str, str | None] = {}
         self.collecting_threads: set[str] = set()
         self.root_threads: set[str] = set()
         self.thread_requests: set[str | int] = set()
@@ -323,7 +322,7 @@ class CodexSmartRouter:
                 try:
                     reason = await collect_feedback(ask)
                 except BaseException:
-                    self.pending_threads.discard(thread_id)
+                    self.pending_feedback.pop(thread_id, None)
                     raise
                 finally:
                     self.collecting_threads.discard(thread_id)
@@ -344,42 +343,16 @@ class CodexSmartRouter:
                 "success": False,
             }
 
-    def saved_report(self, report_id: str, thread_id: str) -> tuple[str, Path]:
-        report_id = str(UUID(report_id))
-        directory = Path.home() / ".isaac/feedback" / report_id
-        receipt = json.loads((directory / "receipt.json").read_text(encoding="utf-8"))
-        if not isinstance(receipt, dict):
-            raise ValueError("Feedback receipt is invalid.")
-        target = receipt.get("target")
-        request = receipt.get("request")
-        if (
-            not isinstance(target, dict)
-            or target.get("session_id") != thread_id
-            or not isinstance(request, dict)
-            or request.get("harness") != "codex"
-            or request.get("category") != "smart-routing"
-            or receipt.get("feedback_id") != report_id
-        ):
-            raise ValueError("Feedback report does not belong to this native session.")
-        return report_id, directory
-
-    def delivery(self, report_id: str) -> dict[str, str]:
-        result = feedback.codex_feedback_delivery(report_id)
-        process = self.uploads.get(report_id)
-        if process is None:
-            return result
-        if process.poll() is None:
-            return {
-                "delivery": "pending",
-                "message": f"Feedback is sending in the background. You can keep working. Feedback ID: {report_id}",
-                "feedback_id": report_id,
-            }
-        if result["delivery"] == "submitted":
-            return result
+    async def delivery(self, report_id: str) -> dict[str, str]:
+        sent = await feedback.wait_for_feedback(self.uploads.pop(report_id))
+        message = (
+            "Feedback submitted successfully."
+            if sent
+            else "Feedback delivery is unconfirmed. Ask Smart Router to retry this saved report."
+        )
         return {
-            "delivery": "unconfirmed",
-            "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}. Ask Smart Router to retry this saved report.",
-            "feedback_id": report_id,
+            "delivery": "submitted" if sent else "unconfirmed",
+            "message": f"{message} Feedback ID: {report_id}",
         }
 
     def execute(self, params: dict) -> dict:
@@ -390,87 +363,85 @@ class CodexSmartRouter:
         if (
             not isinstance(arguments, dict)
             or set(arguments) - {"action", "reason", "feedback_id"}
-            or arguments.get("action") not in ("on", "off", "cancel", "status", "retry")
+            or arguments.get("action") not in ("on", "off", "cancel", "retry")
             or (arguments.get("reason") is not None and not isinstance(arguments["reason"], str))
+            or (arguments.get("reason") is not None and arguments["action"] != "off")
             or (
                 arguments.get("feedback_id") is not None
                 and not isinstance(arguments["feedback_id"], str)
             )
-            or (arguments.get("reason") is not None and arguments["action"] != "off")
-            or (
-                arguments.get("feedback_id") is not None
-                and arguments["action"] not in ("status", "retry")
-            )
+            or (arguments.get("feedback_id") is not None and arguments["action"] != "retry")
         ):
             raise ValueError("Invalid Smart Router action.")
         action = arguments["action"]
         env = {**self.environment, "CODEX_THREAD_ID": thread_id, "CODEX_SESSION_ID": thread_id}
-        if action in ("status", "retry"):
-            report_id, directory = self.saved_report(arguments.get("feedback_id") or "", thread_id)
-            if action == "retry":
-                try:
-                    executable = feedback._isaac()
-                except RuntimeError as exc:
-                    raise RuntimeError(
-                        f"Isaac feedback is unavailable. Report {report_id} is still saved; routing is unchanged."
-                    ) from exc
-                report = feedback.CapturedFeedback(executable, report_id, directory)
-                self.uploads[report_id] = feedback.submit_codex_feedback(report, env)
-            return self.delivery(report_id)
+        if action == "retry":
+            report_id = str(UUID(arguments.get("feedback_id") or ""))
+            self.uploads[report_id] = feedback.submit_codex_feedback(report_id, env)
+            return self.sending(report_id)
         enabled = session_routing_enabled(self.controls)
         if action == "cancel":
-            self.pending_threads.discard(thread_id)
+            self.pending_feedback.pop(thread_id, None)
             return {"message": f"Canceled. Smart Router remains {'on' if enabled else 'off'}."}
         requested = action == "on"
         if enabled == requested:
             return {
                 "message": f"Smart Router is already {'on' if enabled else 'off'} for this session."
             }
-        report = None
-        reason = arguments.get("reason")
+        result = {}
         if not requested and self.feedback_required:
-            if reason is None and thread_id not in self.pending_threads:
-                feedback.prepare_codex_feedback(env)
-                self.pending_threads.add(thread_id)
-            if len((reason or "").strip()) < 16:
-                if reason is not None:
-                    return {
-                        "validation_error": "reason_too_short",
-                        "message": (
-                            f"Reason too short ({len(reason.strip())}/16 characters). "
-                            "Smart Router is still on; nothing was sent. "
-                            "Run $smart-router off again to retry."
-                        ),
-                    }
+            reason = arguments.get("reason")
+            if reason is None:
+                self.pending_feedback[thread_id] = feedback.prepare_codex_feedback(env)
+                return {"needs_reason": True}
+            if len(reason.strip()) < 16:
+                self.pending_feedback.pop(thread_id, None)
                 return {
-                    "needs_reason": True,
+                    "validation_error": "reason_too_short",
                     "message": (
-                        "Why are you turning Smart Router off? Enter at least 16 characters. "
-                        "Your reason and session details will be sent to the Isaac team. "
-                        "You can cancel to keep routing on. Smart Router is still on."
+                        f"Reason too short ({len(reason.strip())}/16 characters). "
+                        "Smart Router is still on; nothing was sent. Run $smart-router off again to retry."
                     ),
                 }
-            if thread_id not in self.pending_threads:
+            if thread_id not in self.pending_feedback:
                 raise ValueError(
-                    "Call off without a reason first to anchor the preceding task. Smart Router is still on."
+                    "Open the Smart Router feedback prompt first. Smart Router is still on."
                 )
-            report = feedback.capture_codex_feedback(reason, env)
-        set_session_environment(
-            {} if requested else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), env=env
-        )
-        result: dict[str, Any] = {
-            "message": f"Smart Router is {'on' if requested else 'off'} for this session."
-        }
-        self.pending_threads.discard(thread_id)
-        if report is not None:
-            result.update(feedback_id=report.feedback_id, notices=list(report.notices))
+            turn_id = self.pending_feedback.pop(thread_id)
+            report_id = str(uuid4())
             try:
-                self.uploads[report.feedback_id] = feedback.submit_codex_feedback(report, env)
-                result.update(self.delivery(report.feedback_id))
-                result["message"] = "Smart Router is off. " + result["message"]
-            except (OSError, ValueError):
-                result.update(
-                    delivery="unconfirmed",
-                    message="Smart Router is off. Feedback is saved but delivery could not start. Ask Smart Router to retry this saved report.",
+                self.uploads[report_id] = feedback.submit_codex_feedback(
+                    report_id, env, reason=reason, turn_id=turn_id
                 )
-        return result
+                result = self.sending(report_id)
+                if turn_id is None:
+                    result["notices"] = [
+                        "No earlier task was found; this feedback has no task or model request to analyze."
+                    ]
+            except (OSError, RuntimeError):
+                result = {
+                    "delivery": "unconfirmed",
+                    "message": "Feedback delivery could not start.",
+                }
+        try:
+            set_session_environment(
+                {} if requested else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), env=env
+            )
+        except RuntimeError:
+            if not result:
+                raise
+            result["message"] = (
+                f"Could not turn Smart Router off. {result['message']} Routing is unchanged."
+            )
+            return result
+        self.pending_feedback.pop(thread_id, None)
+        message = f"Smart Router is {'on' if requested else 'off'} for this session."
+        return {**result, "message": message + (" " + result["message"] if result else "")}
+
+    @staticmethod
+    def sending(report_id: str) -> dict:
+        return {
+            "delivery": "pending",
+            "feedback_id": report_id,
+            "message": f"Sending feedback in the background. You can keep working. Feedback ID: {report_id}",
+        }

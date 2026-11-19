@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.10.1"
+  version: "1.10.2"
 ---
 
 # Smart Router
@@ -67,14 +67,15 @@ or pad their input.
 If the result reports a validation error, relay it and stop. A short reason ends
 this attempt with routing still on and nothing sent. Do not reopen the prompt,
 ask another question, or retry automatically; wait for the user's next request.
-The launcher anchors the preceding task,
-saves evidence before disabling, and sends through Isaac in the background.
+The launcher identifies the preceding task, freezes its routing context, starts
+Isaac's background feedback submission, and turns routing off, as Claude does.
+Delivery failures leave routing off.
 Reason submission needs no additional shell approval. Do not submit the same
 report through `/isaac-feedback` or another command.
 Relay the native result briefly, including any notices. If delivery is pending,
 say the user can keep working; do not poll or block the conversation. The launcher
-reports completion. If the user asks to check or retry a saved report, use the
-same native tool with `action="status"` or `action="retry"` and its `feedback_id`.
+reports completion. If the user asks to retry a saved report, use the
+same native tool with `action="retry"` and its `feedback_id`.
 Keep routing off throughout delivery and retry; never claim delivery succeeded
 merely because routing is off.
 In Claude's skill fallback, if the off result requires feedback, routing is still
