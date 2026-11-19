@@ -1,4 +1,4 @@
-"""CUJ2: configure two real agents from per-agent MPS resources with one MCP."""
+"""CUJ2: configure three real agents from per-agent MPS resources with one MCP."""
 
 from __future__ import annotations
 
@@ -10,13 +10,21 @@ from types import SimpleNamespace
 
 from databricks.sdk.service.catalog import ListModelProviderServicesRequestView
 
-from tests.integration.utils.evidence import fresh_id
+from tests.integration.utils.constants import COPILOT_HEADLESS_FLAGS
+from tests.integration.utils.evidence import (
+    FileTask,
+    assert_completed_task_model,
+    assert_no_session_registry_left,
+    fresh_id,
+)
+from ucode.config_io import parse_dotenv
 
 from .base import BaseCujTest
 from .helpers.constants import (
     CLAUDE,
     CODEX,
     CODING_AGENT_BY_CLI_NAME,
+    COPILOT,
     FIXTURE_SUMMARY_SKILL_NAME,
     INFERENCE_PATHS,
     MODEL_PROVIDER_SERVICE_FIXTURES,
@@ -33,32 +41,42 @@ from .helpers.terminal import Terminal
 from .helpers.workspace import Workspace
 
 CUJ_NAME = "CUJ 2 · MPS and named MCP"
+ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 
 WORKSPACE_URL = "https://dbc-0dcf95cf-e357.cloud.databricks.com"
 # One budget for the inference request to appear and for its response to complete.
 INFERENCE_WAIT_SECONDS = 240
 
 
+# Copilot runs on Claude's Anthropic MPS.
+COPILOT_MPS = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+
+
 def expected_agent_config(agent: str) -> dict:
-    mps_name, model = MODEL_PROVIDER_SERVICE_FIXTURES[agent]
-    return {
-        "agent": CODING_AGENT_BY_CLI_NAME[agent],
-        "config": {
-            "models": {"model_provider_service": mps_name},
-            "default_models": {"default_model": model},
-            "smart_routing": {"enabled": False},
-            "tracing": {"enabled": False},
-        },
+    mps_name, model = COPILOT_MPS if agent == COPILOT else MODEL_PROVIDER_SERVICE_FIXTURES[agent]
+    config = {
+        "models": {"model_provider_service": mps_name},
+        "default_models": {"default_model": model},
+        "smart_routing": {"enabled": False},
+        "tracing": {"enabled": False},
     }
+    if agent == COPILOT:
+        config["vscode_integration"] = {"enabled": True}
+    return {"agent": CODING_AGENT_BY_CLI_NAME[agent], "config": config}
 
 
 def _assert_cuj2_config(config: dict) -> None:
     actual = Workspace.policy(config)
     actual.pop("name", None)
+    # The published order of agents isn't a contract.
+    actual["enabled_agents"] = sorted(actual.get("enabled_agents") or [], key=lambda e: e["agent"])
     expected = {
         "spec_version": 1,
         "default_agent": CODING_AGENT_BY_CLI_NAME[CODEX],
-        "enabled_agents": [expected_agent_config(CLAUDE), expected_agent_config(CODEX)],
+        "enabled_agents": sorted(
+            (expected_agent_config(agent) for agent in (CLAUDE, CODEX, COPILOT)),
+            key=lambda entry: entry["agent"],
+        ),
         "mcp_servers": {"names": [SANDBOX_MCP_SERVICE_NAME]},
         "skills": {"names": [FIXTURE_SUMMARY_SKILL_NAME]},
     }
@@ -148,6 +166,10 @@ def _assert_configured_files(session, workspace_url: str) -> None:
     assert codex_provider["wire_api"] == "responses", codex_provider
     assert codex_provider["base_url"] == workspace_url.rstrip("/") + "/ai-gateway/codex/v1"
 
+    copilot_env = session.home / ".copilot" / "ucode.env"
+    assert copilot_env.is_file(), copilot_env
+    assert parse_dotenv(copilot_env).get("COPILOT_OFFLINE") == "true", copilot_env
+
 
 def _mcp_name_listed(output: str, name: str) -> bool:
     dashed = registered_name(name)
@@ -155,7 +177,7 @@ def _mcp_name_listed(output: str, name: str) -> bool:
 
 
 def _assert_generated_mcp_listings(session) -> None:
-    for agent in (CLAUDE, CODEX):
+    for agent in (CLAUDE, CODEX, COPILOT):
         binary = shutil.which(agent, path=session.env["PATH"])
         assert binary, f"Required agent is not on the isolated PATH: {agent}"
 
@@ -213,12 +235,12 @@ class _Cuj2Base(BaseCujTest):
 
 class TestCuj2Configuration(_Cuj2Base):
     def test_cuj_configuration(self, cuj):
-        """Scenario: configure ug from the preconfigured two-agent MPS/MCP workspace.
+        """Scenario: configure ug from the preconfigured three-agent MPS/MCP workspace.
 
-        Expected: the read-only CodingAgentConfig selects the two exact MPS resources and sandbox
-        MCP; both native MPS APIs advertise their selected model, generated agent settings use
+        Expected: the read-only CodingAgentConfig selects the two exact MPS resources (Copilot
+        shares the Anthropic one) and sandbox MCP; both native MPS APIs advertise their selected model, generated agent settings use
         the exact provider/model values, the complete Desktop profile/metadata match the
-        Anthropic MPS contract with the readable Claude Haiku 4.5 label, and agent MCP listings
+        Anthropic MPS contract with the readable Claude Haiku 5.5 label, and agent MCP listings
         exclude web_search.
         """
         session, workspace, _ = cuj
@@ -243,7 +265,7 @@ class TestCuj2Configuration(_Cuj2Base):
             session,
             config_library,
             workspace.url,
-            models=[{"name": claude_model, "labelOverride": "Claude Haiku 4.5"}],
+            models=[{"name": claude_model, "labelOverride": "Claude Haiku 5.5"}],
             mcp_services=(SANDBOX_MCP_SERVICE_NAME,),
             custom_headers={
                 "x-databricks-use-coding-agent-mode": "true",
@@ -307,11 +329,126 @@ class TestCuj2CodexInference(_Cuj2Base):
         session.record("cuj2-codex-evidence", {"marker": marker, **asdict(turn)})
 
 
+class TestCuj2CopilotInference(_Cuj2Base):
+    def test_cuj_copilot_inference(self, cuj):
+        """Scenario: configure through the recorder and run a real Copilot CLI headless file task
+        with no `--model`.
+
+        Expected: Copilot starts on the managed default, claude-haiku-5-5 of the Anthropic MPS,
+        and completes the task with the file's value. Its Messages requests that carry the task
+        name the MPS in the provider header, ask for that model, and get a non-empty HTTP 200;
+        no session registry is left.
+        """
+        session, workspace, recorder = cuj
+        _assert_cuj2_config(workspace.config())
+        recorder.configure_session(
+            session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
+        )
+        _assert_configured_files(session, workspace.url)
+
+        mps_name, model = COPILOT_MPS
+        task = FileTask(session)
+        checkpoint = recorder.checkpoint()
+        recorder.prepare_launch()
+        result = session.run(COPILOT, "-p", task.prompt, *COPILOT_HEADLESS_FLAGS, timeout=240)
+        task.assert_headless_answer(COPILOT, result)
+        assert_completed_task_model(session, COPILOT, task.value, model)
+
+        requests = [
+            request
+            for request in recorder.requests_after(checkpoint)
+            if request.method == "POST"
+            and request.path == INFERENCE_PATHS[CLAUDE]
+            and task.filename.encode() in request.body
+        ]
+        assert requests, "No Copilot Messages request carried the task"
+        for request in requests:
+            assert request.headers[PROVIDER_HEADER] == mps_name, request.headers
+            assert_served(recorder, request, model)
+        assert_no_session_registry_left(session)
+        session.record("cuj2-copilot-evidence", {"task": task.filename, "requests": len(requests)})
+
+
+class TestCuj2ClaudeSmartRouting(_Cuj2Base):
+    def test_cuj_claude_mps_smart_routing_header(self, cuj):
+        """A managed MPS reaches the real router during a Claude TUI first prompt."""
+        session, workspace, recorder = cuj
+        _assert_cuj2_config(workspace.config())
+        recorder.configure_session(
+            session, ["configure", "--skip-upgrade", "--disable-databricks-ai-tools"]
+        )
+        _assert_configured_files(session, workspace.url)
+        settings = {
+            "SMART_ROUTER_CONFIG_VERSION": "first_prompt_and_subagent_no_orch_v0",
+        }
+        previous = {key: session.env.get(key) for key in settings}
+        session.env.update(settings)
+        try:
+            recorder.prepare_launch()
+            marker = f"CUJ2-CLAUDE-ROUTER-{fresh_id()}"
+            task = SimpleNamespace(prompt=_agent_prompt(marker), value=None)
+            evidence = SessionEvidence(session.home, CLAUDE)
+            checkpoint = recorder.checkpoint()
+            with Terminal(
+                session,
+                "cuj2-claude-router",
+                [CLAUDE, "--", "--disallowedTools", "ScheduleWakeup,CronCreate"],
+            ) as tui:
+                tui.boot(timeout=150)
+                tui.submit(task.prompt)
+                tui.wait_until(lambda: evidence.completed(task), "completed Claude task")
+                route = recorder.expect_request(method="POST", path=ROUTING_PATH, after=checkpoint)
+                assert route.payload["task"]["prompt"] == task.prompt
+                assert route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
+                assert recorder.response_for(route).status_code == 200
+                request = _served_marker_request(recorder, checkpoint, CLAUDE, marker)
+                _assert_inference_request(
+                    recorder,
+                    request,
+                    provider=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0],
+                    model=MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][1],
+                    marker=marker,
+                )
+
+                child = FileTask(session)
+                child.prompt = child.delegate_prompt
+                checkpoint = recorder.checkpoint()
+                tui.submit(child.prompt)
+                tui.wait_until(
+                    lambda: (
+                        child.completed(session, CLAUDE, child=True)
+                        and child.completed(session, CLAUDE)
+                    ),
+                    "completed native subagent task and parent reply",
+                )
+                routes = [
+                    request
+                    for request in recorder.requests_after(checkpoint)
+                    if request.method == "POST"
+                    and request.path == ROUTING_PATH
+                    and child.filename in request.payload.get("task", {}).get("prompt", "")
+                ]
+                assert routes, "No route request matched the delegated task"
+                for route in routes:
+                    assert (
+                        route.headers[PROVIDER_HEADER] == MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE][0]
+                    )
+                    assert recorder.response_for(route).status_code == 200
+                tui.wait_for_background_tasks()
+                tui.exit_normally()
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    session.env.pop(key, None)
+                else:
+                    session.env[key] = value
+
+
 class TestCuj2ClaudeInference(_Cuj2Base):
     def test_cuj_claude_inference(self, cuj):
         """Scenario: configure through the recorder and complete a real Claude inference.
 
-        Expected: Claude sends a Messages request for claude-haiku-4-5-20251001 with the
+        Expected: Claude sends a Messages request for claude-haiku-5-5 with the
         ug_e2e.providers.anthropic target header and receives its paired HTTP 200 response; its
         parent transcript contains a completed turn with a nonempty answer to the greeting prompt.
         """

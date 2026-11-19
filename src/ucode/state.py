@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import cast
 
-from ucode.config_io import APP_DIR, is_dry_run
+from ucode.config_io import APP_DIR, atomic_write_json, is_dry_run
 from ucode.constants import MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY
 from ucode.custom_oauth import (
     CUSTOM_OAUTH_TIMEOUT_MS,
@@ -46,6 +46,7 @@ CONFIG_SCOPE_KEY = "config_scope"
 # Set when `ug configure --global` switches workspace without updating per-user MCP entries, so the
 # next configure without --global runs that workspace-switch reconcile even though it sees no switch.
 PENDING_USER_MCP_RECONCILE_KEY = "pending_user_mcp_reconcile"
+CLAUDE_AUTO_REVERT_TARGETS_KEY = "claude_auto_revert_targets"
 # Transient key holding the developer's own values for whatever a managed config layered over them.
 # Present only in memory: the layered values render the agent settings files, while `save_state`
 # restores what's under it so `state.json` keeps recording the developer's own configuration.
@@ -62,6 +63,31 @@ def load_full_state() -> dict:
 def load_config_scope() -> str:
     scope = load_full_state().get(CONFIG_SCOPE_KEY)
     return scope if scope in CONFIG_SCOPES else DEFAULT_CONFIG_SCOPE
+
+
+def get_claude_auto_revert_targets() -> dict[str, str]:
+    targets = load_full_state().get(CLAUDE_AUTO_REVERT_TARGETS_KEY)
+    if not isinstance(targets, dict):
+        return {}
+    return {
+        alias: target
+        for alias, target in targets.items()
+        if isinstance(alias, str) and isinstance(target, str)
+    }
+
+
+def set_claude_auto_revert_targets(targets: dict[str, str]) -> None:
+    if is_dry_run() or get_claude_auto_revert_targets() == targets:
+        return
+    full = load_full_state()
+    if targets:
+        full[CLAUDE_AUTO_REVERT_TARGETS_KEY] = targets
+    else:
+        full.pop(CLAUDE_AUTO_REVERT_TARGETS_KEY, None)
+    try:
+        atomic_write_json(STATE_PATH, full)
+    except OSError as exc:
+        raise RuntimeError(f"Failed to retain Claude Auto model targets at {STATE_PATH}") from exc
 
 
 def save_config_scope(scope: str) -> None:
@@ -359,6 +385,7 @@ def clear_state() -> None:
     """Remove the current workspace entry and the config scope from state."""
     full = load_full_state()
     full.pop(CONFIG_SCOPE_KEY, None)
+    full.pop(CLAUDE_AUTO_REVERT_TARGETS_KEY, None)
     key = current_workspace_key(full)
     if key:
         workspaces = full.get("workspaces", {})
@@ -479,6 +506,21 @@ def set_managed_model_source_expansions(
     else:
         state.pop(MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY, None)
     return state
+
+
+# Set when Claude launches relayed only because its static model list names a relay-backed
+# model service (no relayed Model Provider Service source).
+CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY = "claude_relayed_for_model_services"
+
+
+def desktop_uses_claude_subscription_relay(state: dict) -> bool:
+    """True when Claude Desktop should take the subscription relay.
+
+    Relay-backed model services in a static list are CLI-only for now: Desktop has no
+    per-model proxy, so it keeps gateway auth unless a relayed provider is the source."""
+    return bool(state.get("claude_relayed")) and not state.get(
+        CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY
+    )
 
 
 def get_provider_service(state: dict, tool: str) -> str | None:

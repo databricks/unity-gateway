@@ -19,13 +19,16 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ucode import metrics
+from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.smart_routing.rationale import format_rationale
-from ucode.ug_headers import ug_headers
+from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import parse_header_line, ug_headers
 from ucode.workspace import workspace_headers
 
 ROUTER_NAME = "stable"
@@ -74,16 +77,22 @@ def format_subagent_message(
 
 
 def _format_box(lines: list[str]) -> str:
-    wrapped_lines = [
-        wrapped
-        for line in lines
-        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
-    ]
+    return draw_box(
+        [
+            wrapped
+            for line in lines
+            for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+        ]
+    )
+
+
+def draw_box(fitted_lines: list[str]) -> str:
+    """Draw lines already no wider than ROUTING_BOX_WIDTH in the routing-card box."""
     border = "─" * (ROUTING_BOX_WIDTH + 2)
     return "\n".join(
         [
             f"┌{border}┐",
-            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in fitted_lines),
             f"└{border}┘",
         ]
     )
@@ -200,6 +209,40 @@ def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, st
     return [(model, harness) for model in dict.fromkeys(models)]
 
 
+# Per-harness session and subagent header names that AI Gateway reads.
+_SESSION_HEADER_NAMES = {
+    "claude": ("x-claude-code-session-id", "x-claude-code-agent-id"),
+    "codex": ("session-id", "thread-id"),
+}
+
+
+def attribution_headers(
+    harness: str,
+    *,
+    session_id: Any = None,
+    agent_id: Any = None,
+    harness_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Headers that attribute a routing call to the harness session and subagent that made it.
+
+    ``harness_headers`` are the custom headers the harness sends on its own inference requests;
+    without a User-Agent there, it names ucode. Session and agent IDs come from the hook payload.
+    Absent or unsendable values are omitted, never sent empty.
+    """
+    session_name, agent_name = _SESSION_HEADER_NAMES[harness]
+    ids = {session_name: session_id, agent_name: agent_id}
+    headers: dict[str, tuple[str, str]] = {}
+    for name, value in [*(harness_headers or {}).items(), *ids.items()]:
+        parsed = parse_header_line(f"{name}: {value}") if isinstance(value, str) else None
+        if parsed:
+            headers[parsed[0].casefold()] = parsed
+    headers.setdefault("user-agent", ("User-Agent", ucode_user_agent(ug_version())))
+    return dict(headers.values())
+
+
+@metrics.timed(
+    metrics.ROUTING_DECISION_DURATION_MS, reason_result=True, continued_with_fallback=True
+)
 def select_route(
     workspace: str,
     token: str,
@@ -207,7 +250,9 @@ def select_route(
     route_options: Iterable[tuple[str, str | None]],
     *,
     router_name: str,
+    provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
+    attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """POST one ``routes:select`` request and return the router's pick.
 
@@ -216,6 +261,7 @@ def select_route(
     pick that was not offered is rejected. Returns ``(decision, error)``; a
     failed call yields ``(None, reason)`` so callers can fail open.
     """
+    metrics.annotate(routing_trigger=metrics.routing_trigger())
     offered_routes = tuple(route_options)
     body = {
         "route_options": [
@@ -228,17 +274,23 @@ def select_route(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
         headers={
+            **(attribution_headers or {}),
             **ug_headers(),
             **workspace_headers(workspace),
+            **({MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else {}),
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         },
         method="POST",
     )
+    request_started = time.perf_counter()
+    status = None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", None)
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
+        status = exc.code
         detail = ""
         try:
             detail = exc.read().decode("utf-8", errors="replace").strip()
@@ -250,6 +302,17 @@ def select_route(
         return None, reason
     except (urllib.error.URLError, OSError, TimeoutError, ValueError) as exc:
         return None, f"router request failed: {exc}"
+    finally:
+        metrics.record(
+            metrics.HTTP_REQUEST_DURATION_MS,
+            (time.perf_counter() - request_started) * 1000,
+            workspace=workspace,
+            api_operation=metrics.api_operation(request.full_url),
+            http_method="POST",
+            http_status_code=status,
+            attempt=1,
+        )
+        metrics.annotate(http_status_code=status)
 
     model = _selected_model(payload)
     if model is None:
@@ -297,7 +360,8 @@ def resolve_spawn_route(
         ),
         default_task_label,
     )
-    decision, reason = decision_fn(task)
+    with metrics.subagent_routing():
+        decision, reason = decision_fn(task)
     if decision is None:
         logging.getLogger(__name__).debug(
             "Smart Router could not route subagent: %s", reason or "no routing decision"

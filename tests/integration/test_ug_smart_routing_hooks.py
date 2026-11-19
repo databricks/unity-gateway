@@ -40,7 +40,7 @@ from utils.managed import (
     use_managed_config_fixture,
     use_smart_routing_fixture,
 )
-from utils.request_recorder import TuiRequestRecorder, served_inference_request
+from utils.request_recorder import record_claude_response_protocol, served_inference_request
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
 pytestmark = pytest.mark.harness_latest
@@ -112,7 +112,11 @@ def _run_calculation(
 ):
     task = SubagentCalculation(expression, expected)
     before = _routing_decisions(session, agent)
-    tui.submit(task.prompt)
+    prompt = task.prompt
+    if agent == "claude":
+        # Native forks inherit their model and deliberately bypass Smart Router.
+        prompt += ' Use the Agent tool with subagent_type "general-purpose"; do not fork or resume.'
+    tui.submit(prompt)
 
     if routed:
         tui.wait_for(
@@ -236,6 +240,7 @@ def _toggle_with_skill(
             "ENABLE_SMART_ROUTING_V2": "0",
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
+            "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
         }
     )
     assert json.loads(controls[0].read_text()) != expected
@@ -748,7 +753,7 @@ def test_smart_router_routes_claude_subagent_at_launch(
         SMART_ROUTER_CONFIG_VERSION,
         routing_fixture,
     )
-    with TuiRequestRecorder(workspace) as recorder:
+    with record_claude_response_protocol(session, workspace) as recorder:
         # Configure through the forwarding URL using the public CLI, keeping ug state real.
         session.run(
             "configure",
@@ -803,7 +808,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_off(
     _select_smart_router_version(
         session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
     )
-    with TuiRequestRecorder(workspace) as recorder:
+    with record_claude_response_protocol(session, workspace) as recorder:
         session.run(
             "configure",
             "--workspace",
@@ -862,7 +867,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
     _select_smart_router_version(
         session, "claude", workspace, tmp_path, orchestration_enabled, SMART_ROUTER_CONFIG_VERSION
     )
-    with TuiRequestRecorder(workspace) as recorder:
+    with record_claude_response_protocol(session, workspace) as recorder:
         session.run(
             "configure",
             "--workspace",

@@ -1,7 +1,10 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import os
 import re
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -14,7 +17,106 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
-from tests.integration.utils.terminal import codex_command_approval_pending
+from tests.integration.utils.harness import UserSession
+from tests.integration.utils.terminal import (
+    claude_workspace_trust_dialog_shown,
+    codex_command_approval_pending,
+    codex_session_footer_shown,
+    codex_trust_dialog_shown,
+)
+
+
+def test_antigravity_native_log_evidence_is_bounded_and_redacted(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(7):
+        text = f"Making Gateway streaming request to: http://127.0.0.1/models/model-{index}\n"
+        text += "x" * 70_000 + "secret-session-bearer\nrequest timed out; retrying\n"
+        (directory / f"cli-{index}.log").write_text(text)
+        os.utime(directory / f"cli-{index}.log", (index + 1, index + 1))
+
+    assert antigravity.requested_urls(session) == [
+        f"http://127.0.0.1/models/model-{index}" for index in range(7)
+    ]
+    artifact = (session.artifacts / "antigravity-logs.json").read_text()
+    assert "secret-session-bearer" not in artifact
+    value = json.loads(artifact)
+    assert value["files_omitted"] == 2
+    assert [log["name"] for log in value["logs"]] == [f"cli-{index}.log" for index in range(2, 7)]
+    for log in value["logs"]:
+        assert log["truncated"]
+        assert len(log["tail"]) == 64_000
+        assert log["tail"].endswith("<redacted>\nrequest timed out; retrying\n")
+
+
+def test_antigravity_native_log_evidence_without_logs(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    assert antigravity.requested_urls(session) == []
+    assert json.loads((session.artifacts / "antigravity-logs.json").read_text()) == {
+        "files_omitted": 0,
+        "logs": [],
+    }
+
+
+def test_antigravity_native_log_evidence_keeps_recent_files_by_modification_time(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(12):
+        path = directory / f"cli-{index}.log"
+        path.write_text(f"Making Gateway streaming request to: http://127.0.0.1/{index}\n")
+        os.utime(path, (index + 1, index + 1))
+
+    urls = antigravity.requested_urls(session)
+
+    assert urls == [
+        f"http://127.0.0.1/{index}" for index in sorted(range(12), key=lambda i: f"cli-{i}.log")
+    ]
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["files_omitted"] == 7
+    assert {log["name"] for log in value["logs"]} == {f"cli-{index}.log" for index in range(7, 12)}
+    assert all(not log["truncated"] for log in value["logs"])
+
+
+def test_antigravity_native_log_redacts_token_crossing_tail_boundary(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    (directory / "cli-1.log").write_text("prefixsecret-session-bearer" + "x" * 63_990)
+
+    antigravity.requested_urls(session)
+
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["logs"][0]["tail"] == "<redacted>" + "x" * 63_990
+
+
+@pytest.mark.parametrize("wrap", ["", "\n "])
+def test_claude_workspace_trust_requires_full_project_path(wrap):
+    cwd = PureWindowsPath(r"D:\a\_temp\ug-integration-project-8725e2e1b7c0\project with spaces")
+    screen = f"Accessing workspace:\n{str(cwd).replace('with spaces', 'with' + wrap + ' spaces')}\n❯ No, exit\n  Yes, I trust this folder"
+    assert claude_workspace_trust_dialog_shown(screen, cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("8725e2e1b7c0", "other"), cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("Accessing workspace:", ""), cwd)
 
 
 @pytest.mark.parametrize(
@@ -66,34 +168,147 @@ def test_codex_approval_requires_the_exact_local_command(
         )
 
 
+# Codex 0.156.0 folder-trust screens captured in CI run 42283317759. Windows ConPTY rendered the
+# selection marker and the footer separator as U+FFFD.
+_TRUST_TEXT = (
+    "  Trust this folder? Codex can read, edit, and run files here, subject to your permission "
+    "settings. Folder settings can run code\n"
+    "  automatically, even without a model request. Continue only if you trust these files. "
+    "Your trust decision will be saved.\n"
+)
+_LINUX_CWD = PurePosixPath("/tmp/ug-integration-project-pf6kf82t/project with spaces")
+_LINUX_TRUST = (
+    f"  Folder access\n  {_LINUX_CWD}\n\n{_TRUST_TEXT}\n"
+    "› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit"
+)
+_WINDOWS_CWD = PureWindowsPath(
+    r"D:\a\_temp\ug-integration\ug-integration-project-da67c71c70c8\project with spaces"
+)
+_WINDOWS_TRUST = (
+    f"  Folder access\n  {_WINDOWS_CWD}\n{_TRUST_TEXT}"
+    "\ufffd 1. Trust and continue\n  2. Quit\n  enter continue \ufffd esc quit"
+)
+
+
+@pytest.mark.parametrize(
+    ("screen", "cwd", "change", "shown"),
+    [
+        (_LINUX_TRUST, _LINUX_CWD, None, True),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, None, True),
+        (_LINUX_TRUST, _LINUX_CWD, ("project with spaces", "other project"), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("project with spaces", "other project"), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("› 1.", "  1."), False),
+        (_WINDOWS_TRUST, _WINDOWS_CWD, ("\ufffd 1.", "  1."), False),
+        (_LINUX_TRUST, _LINUX_CWD, ("Folder access", "Folder"), False),
+    ],
+)
+def test_codex_trust_dialog_requires_the_test_project(screen, cwd, change, shown):
+    if change:
+        screen = screen.replace(*change)
+    assert codex_trust_dialog_shown(screen, cwd) is shown
+
+
+# Codex 0.156.0's ready screen captured in CI run 42294239789; its footer ends in a warning badge.
+_FOOTER_CWD = PurePosixPath("/tmp/ug-integration-project-jhrdmhry/project with spaces")
+_CODEX_0_156_READY = (
+    "╭───────────────────────────────────────────╮\n"
+    "│ >_ OpenAI Codex (v0.156.0)                │\n"
+    "│                                           │\n"
+    "│ model:     GPT-5.6-Sol   /model to change │\n"
+    "│ directory: /tmp/…/project with spaces     │\n"
+    "╰───────────────────────────────────────────╯\n"
+    "\n"
+    "  Tip: Use /feedback to send logs to the maintainers when something looks off.\n"
+    "\n"
+    "\n"
+    "› Ask Codex to do anything\n"
+    "\n"
+    "  GPT-5.6-Sol default · /tmp/ug-integration-project-jhrdmhry/project with spaces                                   ⚠ 1 warning · f2 to view"
+)
+
+
+@pytest.mark.parametrize(
+    ("change", "shown"),
+    [
+        (None, True),
+        (("                                   ⚠ 1 warning · f2 to view", ""), True),
+        (("⚠ 1 warning", "⚠ 2 warnings"), True),
+        (("⚠ 1 warning · f2 to view", "something else"), False),
+        (("project with spaces    ", "other project    "), False),
+        (("GPT-5.6-Sol default · ", ""), False),
+    ],
+)
+def test_codex_session_footer_accepts_the_warning_badge(change, shown):
+    screen = _CODEX_0_156_READY.replace(*change) if change else _CODEX_0_156_READY
+    assert codex_session_footer_shown(screen, _FOOTER_CWD) is shown
+
+
 @pytest.mark.parametrize(
     "missing_message",
     ['"SMART_ROUTER_ENV_UNSET"', "'MISSING_SMART_ROUTER_ENV'", '"$(Remove-Item important.txt)"'],
 )
 @pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
+@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
+@pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE",
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+    ],
+    ids=["unset", "whitespace"],
+)
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
-    extra_command, missing_message, guard_style
+    extra_command, missing_message, guard_style, write_output, selected, condition
 ):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
     branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
     suffix = "" if guard_style == "exit" else " }"
-    guard = (
-        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
-        f"{{ Write-Output {missing_message}{branch}"
-    )
+    guard = f"if ({condition}) {{ {write_output}{missing_message}{branch}"
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
         f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
-        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+        f"{selected} 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
     )
-    expected_guard = guard.replace(missing_message, '"SMART_ROUTER_ENV_UNSET"')
+    expected_guard = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        f'{{ Write-Output "SMART_ROUTER_ENV_UNSET"{branch}'
+    )
     expected = (command, f"{expected_guard} {command[2:]}{suffix}")
     if extra_command or "$" in missing_message:
         with pytest.raises(AssertionError, match="unexpected command approval"):
             codex_command_approval_pending(screen, expected)
     else:
         assert codex_command_approval_pending(screen, expected)
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "[string]::IsNullOrWhiteSpace($env:OTHER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -and "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrWhiteSpace($(Remove-Item important.txt)) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+    ],
+    ids=["other-variable", "wrong-operator", "command-substitution"],
+)
+def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition):
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    expected = (
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        '{ Write-Output "ENV_UNSET" } else { ' + command + " }"
+    )
+    screen = (
+        "Would you like to run the following command?\nEnvironment: local\n"
+        f'  $ if ({condition}) {{ Write-Output "ENV_UNSET" }} else {{ {command} }}\n\n'
+        "› 1. Yes, proceed (y)\nPress enter to confirm or esc to cancel"
+    )
+    with pytest.raises(AssertionError, match="unexpected command approval"):
+        codex_command_approval_pending(screen, expected)
 
 
 @pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])

@@ -13,6 +13,7 @@ import os
 import re
 import signal
 
+from ucode import metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -23,6 +24,7 @@ from ucode.config_io import (
     write_json_file,
     write_text_file,
 )
+from ucode.constants import AI_GATEWAY_REQUEST_TAGS_HEADER
 from ucode.databricks import (
     build_auth_token_argv,
     build_opencode_base_urls,
@@ -35,6 +37,7 @@ from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.workspace import workspace_headers
 
 from .args import LaunchOptions, explicit_model_arg_value, has_explicit_model_arg
+from .request_tags import request_tags_header_value
 
 KILO_XDG_CONFIG_HOME = APP_DIR / "kilo-xdg"
 KILO_CONFIG_DIR = KILO_XDG_CONFIG_HOME / "kilo"
@@ -259,6 +262,10 @@ def render_overlay(
     ua_header = {
         "User-Agent": ucode_user_agent(ug_version(), f"kilo/{agent_version('kilo')}"),
     }
+    # Request tags go on the per-model headers with the User-Agent.
+    request_tags = request_tags_header_value()
+    if request_tags:
+        ua_header[AI_GATEWAY_REQUEST_TAGS_HEADER] = request_tags
     gateway_url = next(iter(opencode_base_urls.values()), None)
     selector = workspace_headers(gateway_url) if gateway_url else {}
     auth_headers.update(selector)
@@ -441,6 +448,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             *tool_args[separator:],
         ]
 
+    metrics.agent_handoff()
     proc = subprocess_cross_os.popen([SPEC["binary"], *tool_args], env=env)
     try:
         returncode = proc.wait()

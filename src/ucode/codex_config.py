@@ -22,6 +22,7 @@ DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / f"{CODEX_PROFILE_NAME}.conf
 # neither carry nor forward it: a forwarded snapshot outranks ``config.toml``,
 # so a stale hash would make Codex re-ask for hook approval on every launch.
 HOOK_TRUST_STATE_KEY = "state"
+CODEX_MODEL_PROVIDER_NAME = "Databricks"
 
 
 class ModelVisibility(StrEnum):
@@ -78,6 +79,33 @@ def custom_catalog_path() -> Path | None:
             continue
         return Path(catalog_ref).expanduser()
     return None
+
+
+def provider_http_headers() -> dict[str, str]:
+    """The Databricks provider's request headers, merged across Codex's config layers."""
+    try:
+        paths = codex_config_precedence_paths(
+            codex_managed_config_path(), DEFAULT_CODEX_CONFIG_PATH
+        )
+    except OSError:
+        return {}
+    headers: dict[str, tuple[str, str]] = {}
+    for path in reversed(paths):
+        providers = read_toml_safe(path).get("model_providers")
+        provider = (
+            providers.get(CODEX_MODEL_PROVIDER_NAME) if isinstance(providers, Mapping) else None
+        )
+        if not isinstance(provider, Mapping):
+            continue
+        static = provider.get("http_headers")
+        from_env = provider.get("env_http_headers")
+        pairs = list(static.items()) if isinstance(static, Mapping) else []
+        if isinstance(from_env, Mapping):
+            pairs += [(name, os.environ.get(str(var), "")) for name, var in from_env.items()]
+        for name, value in pairs:
+            if isinstance(value, str) and value:
+                headers[str(name).casefold()] = (str(name), str(value))
+    return dict(headers.values())
 
 
 def custom_catalog_models() -> list[str] | None:

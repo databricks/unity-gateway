@@ -25,6 +25,7 @@ _REAL_MANAGED_FILES_SUPPORTED = managed_files.managed_files_supported
 _REAL_WINDOWS_REPLACE = managed_files._windows_replace
 _REAL_SUBPROCESS_RUN = managed_files.subprocess_cross_os.run
 _REAL_SUDO_NEEDS_PASSWORD = managed_files._sudo_needs_password
+_REAL_CLAUDE_MANAGED_SETTINGS_PATH = claude_agent._managed_settings_path
 
 
 @pytest.fixture(autouse=True)
@@ -591,7 +592,7 @@ class TestSudoReplace:
         monkeypatch.setattr(claude_agent, "current_os", lambda: os_enum)
         monkeypatch.setattr(codex_config, "current_os", lambda: os_enum)
         allowed = managed_files._SUDO_REPLACE_TARGETS[os_enum]
-        assert claude_agent._managed_settings_path() in allowed
+        assert _REAL_CLAUDE_MANAGED_SETTINGS_PATH() in allowed
         assert codex_config.codex_managed_config_path() in allowed
 
 
@@ -1347,7 +1348,7 @@ class TestWindowsManagedWrites:
         monkeypatch.setattr(claude_agent, "current_os", lambda: managed_files.OS.WINDOWS)
         monkeypatch.setattr(codex_config, "current_os", lambda: managed_files.OS.WINDOWS)
 
-        assert claude_agent._managed_settings_path() == windows
+        assert _REAL_CLAUDE_MANAGED_SETTINGS_PATH() == windows
         assert codex_config.codex_managed_config_path() == (
             managed_files.windows_codex_managed_settings_path()
         )
@@ -1923,6 +1924,19 @@ class TestManagedFileLifecycle:
         assert masked == {"User-Agent": "ucode/* claude/*"}
         header = managed_files.mask_user_agent_versions({"h": f"a: 1\nUser-Agent: {user_agent}"})
         assert header == {"h": "a: 1\nUser-Agent: ucode/* claude/*"}
+
+    def test_mdm_marker_counts_only_for_explicit_configure(self, monkeypatch):
+        plain = {"User-Agent": "ucode/1.0 claude/2.2 (macos 15.1; arm64)"}
+        mdm = {"User-Agent": "ucode/1.1 claude/2.3 (macos 15.2; arm64; mdm)"}
+        # A launch ignores the marker, so an unsaved --mdm can't make a root-owned file conflict.
+        assert managed_files.mask_user_agent_versions(mdm) == {"User-Agent": "ucode/* claude/*"}
+        assert managed_files.managed_file_conflicts(mdm, plain, [["User-Agent"]]) == []
+        monkeypatch.setattr(managed_files, "_explicit_managed_command", "ug configure")
+        assert managed_files.mask_user_agent_versions(mdm) == {
+            "User-Agent": "ucode/* claude/* (mdm)"
+        }
+        assert managed_files.managed_file_conflicts(plain, mdm, [["User-Agent"]]) == ["User-Agent"]
+        assert managed_files.managed_file_conflicts(mdm, plain, [["User-Agent"]]) == ["User-Agent"]
 
     def test_ug_upgrade_adding_platform_suffix_is_not_a_conflict(self):
         # A file written by an older ug (no suffix) must not force a sudo rewrite on upgrade.

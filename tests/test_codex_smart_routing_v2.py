@@ -674,7 +674,7 @@ class TestCustomCatalogModels:
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
         monkeypatch.setattr(v2, "_free_port", lambda: 41001)
         monkeypatch.setattr(v2, "_wait_for_app_server", lambda port, timeout: True)
-        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.145.0")
+        monkeypatch.setattr(codex, "agent_version", lambda _binary: "0.156.0")
         monkeypatch.setattr(codex, "ug_version", lambda: "test")
         launched = []
 
@@ -985,7 +985,9 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
     captured = {}
     logged = []
 
-    def select_route(workspace, token, task, route_options, *, router_name, timeout):
+    def select_route(
+        workspace, token, task, route_options, *, router_name, timeout, attribution_headers
+    ):
         captured.update(
             workspace=workspace,
             token=token,
@@ -1051,7 +1053,9 @@ def test_routing_request_uses_models_prompt_and_same_token(monkeypatch):
 def test_routing_request_sends_each_model_id_once_as_given(monkeypatch):
     captured = {}
 
-    def select_route(workspace, token, task, route_options, *, router_name, timeout):
+    def select_route(
+        workspace, token, task, route_options, *, router_name, timeout, attribution_headers
+    ):
         captured["route_options"] = list(route_options)
         return None, "not selected"
 
