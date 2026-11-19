@@ -341,11 +341,7 @@ def apply_auto_context_windows(
                 # A personal or project preference may belong to a disabled --setting-sources scope.
                 continue
             limits = catalog.model_id_to_limits.get(model)
-            window = (
-                min(limits[0], _MAX_COMPACT_WINDOW)
-                if limits and limits[0] > 0
-                else _MIN_COMPACT_WINDOW
-            )
+            window = min(limits[0], _MAX_COMPACT_WINDOW) if limits and limits[0] > 0 else 200_000
         if window != "auto" and not (
             isinstance(window, int) and _MIN_COMPACT_WINDOW <= window <= _MAX_COMPACT_WINDOW
         ):
