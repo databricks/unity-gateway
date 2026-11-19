@@ -289,3 +289,4 @@ must return its value. Recorded requests require the saved provider header on ro
 inference, successful paired responses, and a selected offered model applied to the child.
 These fixtures have small catalogs. The allow-all Bedrock startup and oversized-catalog cases
 remain separate staging validation and are not established by these CUJs.
+CI pins Codex 0.165.0 for CUJ7, matching CUJ4's routing-capable version.

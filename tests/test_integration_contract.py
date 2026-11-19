@@ -461,7 +461,8 @@ def test_dedicated_cuj_ci_runs_each_discovered_file_on_its_own_runner():
     assert "UG_CUJ1_WORKSPACE: ${{ secrets.UG_CUJ1_WORKSPACE }}" in job
     assert '"@github/copilot@$COPILOT_VERSION"' in job
     assert (
-        "CODEX_VERSION: ${{ matrix.test == 'test_cuj4_smart_routing.py' && '0.165.0' || "
+        "CODEX_VERSION: ${{ (matrix.test == 'test_cuj4_smart_routing.py' || "
+        "matrix.test == 'test_cuj7_model_discovery.py') && '0.165.0' || "
         "inputs.codex_version || '0.156.0' }}"
     ) in job
 
