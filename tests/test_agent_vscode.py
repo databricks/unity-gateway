@@ -370,9 +370,31 @@ class TestSeatRelay:
             "authCommand": vscode.build_auth_shell_command(WS, "dev"),
             "models": [],
             "provider": self.SEATS,
-            "seatRelay": {"command": ["/bin/ug", "copilot-seat-runtime", "--provider", self.SEATS]},
+            "seatRelay": {
+                "command": [
+                    "/bin/ug",
+                    "copilot-seat-runtime",
+                    "--provider",
+                    self.SEATS,
+                    "--host",
+                    WS,
+                    "--profile",
+                    "dev",
+                ]
+            },
         }
         assert f"routing Copilot through {self.SEATS}" in _printed(capsys)
+
+    def test_a_failed_seat_relay_check_leaves_vscode_unchanged(self, code, monkeypatch, capsys):
+        def uses_seat_relay(state, provider, tool):
+            raise RuntimeError("DATABRICKS_BEARER_COMMAND failed.")
+
+        monkeypatch.setattr(vscode, "uses_seat_relay", uses_seat_relay)
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert code.config is None
+        assert "VS Code was left unchanged" in _printed(capsys)
 
     def test_revert_removes_the_runtime_wrapper_setting_only(self, code, seats):
         assert vscode.configure(STATE, provider=self.SEATS)
@@ -381,16 +403,39 @@ class TestSeatRelay:
         ours.parent.mkdir(parents=True, exist_ok=True)
         wrapper = str(user / "globalStorage" / vscode.EXTENSION_ID / vscode.RUNTIME_WRAPPER_NAME)
         ours.write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: wrapper, "editor.tabSize": 2}))
-        theirs = user / "profiles" / "p1" / "settings.json"
-        theirs.parent.mkdir(parents=True)
-        theirs.write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: "/opt/my/copilot-runtime"}))
+        profile = user / "profiles" / "p1"
+        profile.mkdir(parents=True)
+        profile_wrapper = profile / "globalStorage" / vscode.EXTENSION_ID / "ug-copilot-runtime"
+        (profile / "settings.json").write_text(
+            json.dumps({vscode.RUNTIME_PATH_SETTING: str(profile_wrapper)})
+        )
+        theirs = {}
+        for name, runtime in {
+            "p2": "/opt/my/copilot-runtime",
+            "p3": "/opt/custom/ug-copilot-runtime-custom",
+            "p4": "/opt/custom/ug-copilot-runtime",
+        }.items():
+            path = user / "profiles" / name / "settings.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: runtime}))
+            theirs[path] = runtime
 
         assert vscode.revert() == "removed"
 
         assert json.loads(ours.read_text()) == {"editor.tabSize": 2}
-        assert json.loads(theirs.read_text()) == {
-            vscode.RUNTIME_PATH_SETTING: "/opt/my/copilot-runtime"
-        }
+        assert json.loads((profile / "settings.json").read_text()) == {}
+        for path, runtime in theirs.items():
+            assert json.loads(path.read_text()) == {vscode.RUNTIME_PATH_SETTING: runtime}
+
+    def test_revert_names_the_runtime_setting_when_it_cant_edit_settings(self, code, seats, capsys):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        settings = vscode.user_dir(insiders=False) / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text('{\n  // mine\n  "editor.tabSize": 2,\n}\n')
+
+        vscode.revert()
+
+        assert vscode.RUNTIME_PATH_SETTING in _printed(capsys)
 
 
 class TestCopilotModels:

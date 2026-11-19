@@ -274,11 +274,15 @@ RUNTIME_WRAPPER_NAME = "ug-copilot-runtime"
 
 def seat_relay_command(state: dict, provider: str) -> list[str]:
     """The ug command the extension's wrapper runs in place of VS Code's Copilot runtime."""
+    profile = state.get("profile")
     return [
         ug_binary(),
         "copilot-seat-runtime",
         "--provider",
         provider,
+        "--host",
+        state["workspace"],
+        *(["--profile", profile] if profile else []),
         *workspace_id_args(state["workspace"]),
     ]
 
@@ -322,6 +326,15 @@ def _installed_config(folder: str, version: str) -> dict:
     return config if isinstance(config, dict) else {}
 
 
+def _is_runtime_wrapper(value: object) -> bool:
+    """Whether ``value`` is the wrapper the extension writes to its global storage folder, which
+    moves with the VS Code install and profile."""
+    if not isinstance(value, str):
+        return False
+    path = Path(value)
+    return path.name == RUNTIME_WRAPPER_NAME and path.parent.name.lower() == EXTENSION_ID.lower()
+
+
 def remove_written_settings(user: Path, config: dict) -> None:
     """Remove from each settings.json under ``user`` the values the extension wrote from
     ``config`` that the developer hasn't changed since."""
@@ -336,6 +349,8 @@ def remove_written_settings(user: Path, config: dict) -> None:
         except (OSError, ValueError):
             # Comments or trailing commas, which a rewrite would drop.
             ours = [key for group in groups for key in group]
+            if config.get("seatRelay"):
+                ours.append(RUNTIME_PATH_SETTING)
             print_warning(
                 f"Couldn't edit {path}. Remove the settings ug's VS Code extension wrote there "
                 f"if they're still set: {', '.join(ours)}."
@@ -350,9 +365,7 @@ def remove_written_settings(user: Path, config: dict) -> None:
             for key, value in group.items()
             if key in settings and settings[key] == value
         ]
-        runtime = settings.get(RUNTIME_PATH_SETTING)
-        # The wrapper's folder depends on the VS Code install, so match it by name.
-        if isinstance(runtime, str) and Path(runtime).name.startswith(RUNTIME_WRAPPER_NAME):
+        if _is_runtime_wrapper(settings.get(RUNTIME_PATH_SETTING)):
             stale.append(RUNTIME_PATH_SETTING)
         if not stale:
             continue
@@ -407,8 +420,8 @@ def configure(state: dict, *, provider: str | None = None, location: str | None 
             "rerun `ug configure --agents copilot`."
         )
         return False
-    seat_relay = bool(provider) and uses_seat_relay(state, cast(str, provider), tool="vscode")
     try:
+        seat_relay = bool(provider) and uses_seat_relay(state, cast(str, provider), tool="vscode")
         # A seat relay serves Copilot's own models, so the extension lists none of Databricks'.
         catalog = [] if seat_relay else _catalog(state, provider, location)
     except RuntimeError as exc:

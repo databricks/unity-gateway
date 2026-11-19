@@ -306,6 +306,8 @@ class TestGatewayDenials:
             "type": "error",
             "error": {"type": "invalid_request_error", "message": DENIAL},
         }
+        # The rewrite answers the retry with a refreshed token, not the first 403.
+        assert len(gateway.requests) == 2
         assert github.requests == []
 
     @pytest.mark.parametrize(

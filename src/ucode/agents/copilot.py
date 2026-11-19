@@ -1459,10 +1459,15 @@ def run_seat_runtime(
     try:
         env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
         proc = subprocess_cross_os.popen([runtime, *runtime_args], env=env)
-        if hasattr(signal, "SIGTERM"):
-            # VS Code stops the runtime by terminating this process, which must stop it too.
-            signal.signal(signal.SIGTERM, lambda *_args: proc.terminate())
-        return _wait_for_exit(proc)
+        if not hasattr(signal, "SIGTERM"):
+            return _wait_for_exit(proc)
+        # VS Code stops the runtime by terminating this process, which must stop it too.
+        previous = signal.signal(signal.SIGTERM, lambda *_args: proc.terminate())
+        try:
+            return _wait_for_exit(proc)
+        finally:
+            if previous is not None:
+                signal.signal(signal.SIGTERM, previous)
     except OSError as exc:
         sys.stderr.write(f"[ucode] Couldn't start the Copilot runtime {runtime}: {exc}\n")
         return 1
