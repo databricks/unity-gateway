@@ -15,12 +15,17 @@ const VALIDATION_POLL_MS = 100
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
 
-// A /smart-router toggle during the startup check wins over its result. Returns the previous
-// note so a failed toggle can restore it.
-export function noteRoutingToggle(enabled: boolean | undefined): boolean | undefined {
+let toggleNotes = 0
+
+// A /smart-router toggle during the startup check wins over its result. The returned undo for a
+// failed toggle restores the earlier note unless a later toggle has noted its own.
+export function noteRoutingToggle(enabled: boolean): () => void {
   const previous = validation.toggle
+  const note = ++toggleNotes
   if (validation.isPending) validation.toggle = enabled
-  return previous
+  return () => {
+    if (note === toggleNotes && validation.isPending) validation.toggle = previous
+  }
 }
 
 export function showStatusBand(): void {
