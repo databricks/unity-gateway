@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import json
 from email.message import Message
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -402,7 +403,7 @@ class TestAgentConfigs:
 
     def test_vscode_selection_comes_after_admin_headers(self, selected, monkeypatch):
         written = {}
-        monkeypatch.setattr(vscode, "find_code", lambda: "code")
+        monkeypatch.setattr(vscode, "find_code", lambda: Path("code"))
         monkeypatch.setattr(
             vscode, "install_extension", lambda code, config: written.update(config)
         )
