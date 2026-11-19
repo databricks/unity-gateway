@@ -1096,7 +1096,8 @@ class TestPiLaunch:
         combined = (result.stdout + result.stderr).strip()
         if result.returncode != 0 or not combined:
             pytest.fail(
-                f"Pi launch failure: family={family} model={model} rc={result.returncode} "
+                f"Pi launch failure: family={family} model={model} ug_ci_case={case_id} "
+                f"rc={result.returncode} "
                 f"stdout={result.stdout[:300]!r} stderr={result.stderr[:300]!r}"
             )
 
