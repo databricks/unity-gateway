@@ -255,20 +255,28 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
         shutil.rmtree(controls.parent)
 
 
-def test_saved_custom_auto_alias_uses_catalog_window_on_startup(
-    native_binary, tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("limits", "preferences", "window"),
+    [
+        ({"team.alias-claude-preview": (125_000, 8192)}, {}, "125k"),
+        ({}, {}, "100k"),
+        ({}, {"autoCompactWindow": 180_000}, "180k"),
+    ],
+)
+def test_saved_custom_auto_alias_window_on_startup(
+    native_binary, tmp_path, monkeypatch, limits, preferences, window
 ):
-    """A new Claude process reads a saved Auto alias and displays its advertised window."""
+    """Read the effective compaction window from a new Claude process."""
     from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
     from ucode.databricks import AnthropicModelCatalog
 
     monkeypatch.setattr(
         "ucode.agents.claude.native_settings_paths", lambda: (tmp_path / "settings.json",)
     )
-    model = "custom-support-model"
+    model = "team.alias-claude-preview"
     alias = auto_variant({"model": model})
-    settings = {"modelOverrides": {alias: model}}
-    catalog = AnthropicModelCatalog([model], {}, model_id_to_limits={model: (125_000, 8192)})
+    settings = {"modelOverrides": {alias: model}, **preferences}
+    catalog = AnthropicModelCatalog([model], {}, model_id_to_limits=limits)
     apply_auto_context_windows(settings, {}, [{"model": model, "autoModel": alias}], catalog)
 
     with Session(
@@ -282,7 +290,7 @@ def test_saved_custom_auto_alias_uses_catalog_window_on_startup(
         report = session.send("/context")["result"]
     assert f"**Model:** {alias}" in report
     tokens = next(line for line in report.splitlines() if line.startswith("**Tokens:**"))
-    assert " / 125k " in tokens, tokens
+    assert f" / {window} " in tokens, tokens
 
 
 def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp_path):

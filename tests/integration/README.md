@@ -2179,10 +2179,8 @@ Outside the Databricks network, use reachable package indexes explicitly instead
 
 The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the prompt
 hint after a main-model switch and verifies that the selected model serves a file task
-both before and after restart. Launcher component tests cover fresh and continued sessions,
-catalog-supplied windows, aliases with missing limits, and explicit native compaction preferences.
-A native Claude process also opens a fixture home with a saved custom Auto alias and checks
-that `/context` displays its catalog window.
+both before and after restart. Native component tests open a saved custom alias and check the
+window displayed by `/context` with a catalog limit, a missing limit, and an explicit preference.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive
