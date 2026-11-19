@@ -1469,7 +1469,10 @@ def run_seat_runtime(
             if previous is not None:
                 signal.signal(signal.SIGTERM, previous)
     except OSError as exc:
-        sys.stderr.write(f"[ucode] Couldn't start the Copilot runtime {runtime}: {exc}\n")
+        sys.stderr.write(
+            f"[ucode] Couldn't start the Copilot runtime {runtime}: {exc}. Rerun "
+            "`ug configure --agents copilot`.\n"
+        )
         return 1
     finally:
         _stop_seat_relay(server, cache, client)
