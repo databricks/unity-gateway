@@ -901,8 +901,8 @@ test('the details view explains a relaunch after a denied routing attempt', { op
   on('agent.spawn', () => {
     spawns += 1;
     return spawns === 1
-      ? { value: { deny: 'router backoff' } }
-      : { value: { agentId: 'child-a', model: 'routed-model' } };
+      ? { deny: 'router backoff' }
+      : { agentId: 'child-a', model: 'routed-model' };
   });
   engine(on, env, [{ id: 'child-a', name: 'Otter', description: 'Map pane lifecycle', type: 'general-purpose', status: 'completed' }]);
   const spawn = { tool_use_id: 'spawn-denied', subagentType: 'general-purpose' as const, description: 'Map pane lifecycle',
@@ -1185,7 +1185,7 @@ test('roster sync without parentId keeps the captured nested parent', () => {
   agentTree.reset();
   const spawn = { tool_use_id: 'nested-spawn', description: 'Nested audit', subagentType: 'Explore',
     prompt: 'Private nested prompt', parentModel: 'main-model', background: false, fork: false, cwd: '/work',
-    parentId: 'outer-child', provider: { plugin: 'engine', tier: 'core' as const } };
+    parentAgentId: 'outer-child', provider: { plugin: 'engine', tier: 'core' as const } };
   agentTree.spawnStarted(spawn, 10);
   agentTree.spawnFinished(spawn, { agentId: 'deep-child' }, 20);
   expect(agentTree.nodes.get('deep-child')!.parentId).toBe('outer-child');
