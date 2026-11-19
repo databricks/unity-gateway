@@ -17,7 +17,8 @@ input with the permission mode) carries `smart router ON` or `smart router OFF`,
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
 prompt hint for the main model. Native's initial `/model` confirmation reads
-`Auto on: subagents smart-routed`; saving a main model prints a notice naming the saved model.
+`Auto on: subagents smart-routed`; the footer names the saved main model without an
+additional plugin transcript notice.
 The Auto main-model chooser opens Claude's native `/model` picker after Auto is
 confirmed in the first picker, or on `/model auto` and `/auto`. Claude handles its
 model list, numbering, scrolling, keyboard focus and inline effort controls. There

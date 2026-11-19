@@ -25,7 +25,7 @@ import {
   routingLogsPaneClosed,
   routingLogsPaneOpen,
 } from './routing-logs.ts';
-import { AUTO_KEPT_PREFIX, AUTO_SET_PREFIX, autoStatus, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_PREFIX, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
@@ -419,8 +419,9 @@ export function register(on: On, options: PluginOptions): void {
                   if (row) await $.store.set(auto.storeKey, chosenMain);
                   if (autoSave !== request) return;
                   await syncAutoRouting($, options, auto, routingSync);
-                  if (row) $.ui.log(active ? autoStatus(chosenMain) : `Auto main-model preference saved: ${row.label}.`);
-                  else if (accepted && !unchanged) $.ui.toast('That model is not available for Auto. Your previous selection was kept.');
+                  if (row) {
+                    if (!active) $.ui.log(`Auto main-model preference saved: ${row.label}.`);
+                  } else if (accepted && !unchanged) $.ui.toast('That model is not available for Auto. Your previous selection was kept.');
                 } catch (error) {
                   if (autoSave !== request) return;
                   if (auto.staticModel) auto.variant = previousMain;

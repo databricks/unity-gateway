@@ -171,17 +171,25 @@ export function register(on) {
         tui.wait_for(lambda s: "High effort" in s, "native inline effort")
         tui.send("\r", "choose model twelve")
         tui.wait_for(
-            lambda s: (
-                "Select model" not in s
-                and "test-model-12, subagents smart routed." in " ".join(s.split())
-            ),
+            lambda s: "Select model" not in s and "Auto on: subagents smart-routed" in s,
             "Auto on model twelve",
         )
+        assert "Auto mode: main model" not in "".join(tui.output)
         first = observe(tui, "model-twelve")
         assert first["routing"] == "1", first
         assert first["model"] == (
             catalog["model"] if static else catalog["models"][11]["autoModel"]
         ), first
+        # Claude may hide the footer tail at 60 columns. Verify its model name
+        # with room to render, then return to the narrow native-picker journey.
+        tui.child.child.setwinsize(36, 120)
+        tui.screen.resize(lines=36, columns=120)
+        tui.wait_for(
+            lambda s: "Auto (Model 12)" in "\n".join(s.splitlines()[-4:]),
+            "the main model in the footer",
+        )
+        tui.child.child.setwinsize(36, 60)
+        tui.screen.resize(lines=36, columns=60)
         tui.submit("/effort status")
         tui.wait_for(lambda s: "Current effort level: high" in s, "native effort persisted")
         tui.submit("/auto")

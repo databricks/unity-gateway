@@ -363,15 +363,6 @@ class TestCujAutoModelPicker(BaseCujTest):
             label = row["label"].removeprefix("Claude ")
             alternate = next(row for row in rows if row["model"] != default)
             alternate_label = alternate["label"].removeprefix("Claude ")
-            neighbor_label = next(
-                row["label"].removeprefix("Claude ")
-                for row in rows
-                if row["model"] != alternate["model"]
-            )
-            saved_notice = (
-                f"Auto mode: main model {alternate['model'].removeprefix('system.ai.')}, "
-                "subagents smart routed."
-            )
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
             evidence = SessionEvidence(session.home, CLAUDE)
@@ -419,30 +410,25 @@ class TestCujAutoModelPicker(BaseCujTest):
 
                 def main_model_focused(label):
                     return re.search(
-                        r"\d+\.\s+" + re.escape(label) + r"\s*$",
-                        tui.selected_line(after="Auto: choose your main model"),
+                        r"\d+\.\s+(?:Claude )?" + re.escape(label) + r"(?:\s|$)",
+                        tui.selected_line(after="Select model"),
                     )
 
                 tui.wait_for(
-                    lambda s: "Auto: choose your main model" in s and main_model_focused(label),
+                    lambda s: "Select model" in s and main_model_focused(label),
                     "the Auto selector focused on the current main model",
                 )
-                tui.send("\x1b[B", "focus " + alternate_label + " as the Auto main model")
-                tui.wait_for(
-                    lambda s: main_model_focused(alternate_label),
-                    "the selected Auto main model before saving",
-                )
-                tui.send("\r", "save " + alternate_label + " as the Auto main model")
+                tui.choose("Select model", alternate_label)
                 tui.wait_for(
                     lambda s: (
-                        "Auto: choose your main model" not in s
-                        and saved_notice in " ".join(s.split())
+                        "Select model" not in s
                         and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                         and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
                         and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the restored Auto ON band and footer",
                 )
+                assert "Auto mode: main model" not in "".join(tui.output)
                 # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
                 # assert "ug-auto" not in tui.visible
                 task = _file_task(session, CLAUDE)
@@ -460,20 +446,20 @@ class TestCujAutoModelPicker(BaseCujTest):
                 )
                 tui.submit("/model auto")
                 tui.wait_for(
-                    lambda s: (
-                        "Auto: choose your main model" in s and main_model_focused(alternate_label)
-                    ),
+                    lambda s: "Select model" in s and main_model_focused(alternate_label),
                     "the current Auto main model",
                 )
                 tui.send("\x1b[B", "focus another main model without selecting it")
-                tui.wait_for(lambda s: main_model_focused(neighbor_label), "another model's focus")
+                tui.wait_for(
+                    lambda s: not main_model_focused(alternate_label), "another model's focus"
+                )
                 tui.send("\x1b[A", "return to the unchanged Auto main model")
                 tui.wait_for(lambda s: main_model_focused(alternate_label), "the unchanged model")
                 tui.send("\r", "save the unchanged Auto main model")
                 tui.wait_for(
                     lambda s: (
-                        "Auto: choose your main model" not in s
-                        and saved_notice in " ".join(s.split())
+                        "Select model" not in s
+                        and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                         and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the unchanged Auto selection saved without reopening its selector",

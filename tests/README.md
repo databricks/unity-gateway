@@ -272,7 +272,8 @@ Auto chooser coverage uses Claude's real native picker in
 fixture catalog and an observer plugin, not gateway inference). With 23 models at
 60 columns, it checks scrolling past model ten without numbering resets, selection
 and native inline effort, Escape and reopening, Default, regular-model routing off,
-and inactive `/auto` preference edits. Both static managed catalogs and the
+and inactive `/auto` preference edits. The selected main model appears in the footer
+without an extra `Auto mode: main model` transcript notice. Both static managed catalogs and the
 process-local custom option are exercised. The existing Claude 2.1.290 CI job runs
 these journeys without changing its version pin.
 

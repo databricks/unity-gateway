@@ -210,11 +210,10 @@ The native saved model temporarily changes while the second picker is open; forc
 termination during that interval remains a draft limitation. The static Auto
 capability profile and missing non-Claude model metadata are separate unresolved issues.
 Native confirms the row as its picker closes, before the chooser opens, so that confirmation
-reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
-a visible `$.ui.log` notice after saving the chosen model, such as
-`Auto mode: main model claude-opus-5-5, subagents smart routed.` Native prefixes this notice
-with the plugin name. `$.session.append` system and user-meta rows are hidden in normal mode.
-The prompt hint row's `Auto (<main model>)` also names the main model. Native `/effort`
+reads `Auto on: subagents smart-routed` and names no main model in either order.
+Saving an active Auto main model updates the `Auto (<main model>)` footer without
+an additional plugin transcript notice. Inactive `/auto` preference edits still
+confirm the saved preference. Native `/effort`
 continues to work independently. A fresh launch
 without a launch-only model starts on the stored main model; a per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.

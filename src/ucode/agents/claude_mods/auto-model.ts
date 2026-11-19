@@ -56,10 +56,6 @@ export const AUTO_MAIN_TITLE = 'Auto: choose your main model';
 export const AUTO_SET_PREFIX = 'Auto on: ';
 export const AUTO_KEPT_PREFIX = 'Auto still on: ';
 
-export function autoStatus(mainModel: string): string {
-  return `Auto mode: main model ${mainModel.replace(/^system\.ai\./, '')}, subagents smart routed.`;
-}
-
 // Native confirms Auto before the chooser saves the main model.
 export function formatAutoConfirmation(text: string, setModel: boolean): string {
   return text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
