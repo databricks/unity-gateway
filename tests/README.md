@@ -1129,6 +1129,19 @@ orchestration on and off. It mocks the router response, not native Claude render
 Existing launch tests cover caller argument preservation and file removal after exit. These checks
 do not cover plugin-write/process-start failures, native plugin refresh, or daemon behavior.
 
+Personal launch-only static Auto coverage in the same file checks that a personal
+Auto launch with no published picker builds the ordinary replacement picker with one
+static Auto row first (`[1m]`-hinted family rows deduped against raw discovered ids),
+per-model aliases without an allowlist, `staticModel`/`preferSaved` plumbing, and a
+start on the static alias — all in the temporary settings only, with user settings
+untouched and the temp settings removed after exit. It also checks that managed
+`deniedModels` narrow the picker rows and aliases, that provider launches and foreign
+non-replacing pickers keep the native custom-model option, that all-denied rows fall
+back to a plain non-replacing picker without Auto, and that an empty or unreachable
+model catalog warns and fails routing setup so the launch continues without Auto or
+smart routing while non-Auto launches keep their existing error. These are component
+checks; the live personal `/model` TUI experience is not executed here.
+
 `test_claude_smart_routing_v2.py` checks that the decision log retains the exact candidate
 models and router name sent in the request. `test_codex_routing.py` checks that
 Codex decisions carry the same request metadata. These use mocked HTTP responses.

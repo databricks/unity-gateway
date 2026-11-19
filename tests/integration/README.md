@@ -10,6 +10,11 @@ in `../test_cli.py` verify that this launch does not reinstall a shared replacem
 after reconfigure removes UG's ordinary discovery picker. Ordinary launches, other versions,
 an internal Auto flag alone, routing disabled, and print mode keep their existing catalog path.
 The live journey retains saved-model restart, successful inference, and no-router assertions.
+`../test_claude_smart_routing_v2.py` covers the launch-only static picker for personal
+Auto launches — built each launch in temporary settings with one static Auto row and
+per-model aliases, never persisted — plus managed-denial narrowing, custom-option
+fallbacks, and the empty-catalog fallback to an unrouted launch. The static row's live
+`/model` rendering on a personal launch is not covered by an integration journey.
 
 Comment-triggered `/integration-test` runs require authorization and a successful shared
 Security Scan for the same pinned PR commit before CI secrets are supplied. The gate verifies
