@@ -1,4 +1,4 @@
-"""Windows launch settings lifetime and command length, with process boundaries controlled."""
+"""Claude launch settings and Windows command-line handling."""
 
 from __future__ import annotations
 
@@ -17,6 +17,34 @@ from ucode.agents import LaunchOptions, claude
 from ucode.managed_files import OS
 
 PINNED_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def test_auto_window_respects_limits_and_native_settings(tmp_path, monkeypatch):
+    from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+    from ucode.databricks import AnthropicModelCatalog
+
+    path = tmp_path / "settings.json"
+    monkeypatch.setattr(claude, "native_settings_paths", lambda: (path,))
+    models = ["small", "large", "managed"]
+    rows = [{"model": model, "autoModel": auto_variant({"model": model})} for model in models]
+    catalog = AnthropicModelCatalog(
+        models, {}, model_id_to_limits={"small": (32_000, 4096), "large": (2_000_000, 8192)}
+    )
+    managed = {"modelSettings": {"managed": {"autoCompactWindow": 175_000}}}
+    settings = {}
+    apply_auto_context_windows(settings, managed, rows, catalog)
+    assert settings == {
+        "modelSettings": {
+            rows[1]["autoModel"]: {"autoCompactWindow": 1_000_000},
+            rows[2]["autoModel"]: {"autoCompactWindow": 175_000},
+        }
+    }
+
+    for contents in ('{"autoCompactWindow": 150000}', "invalid JSON"):
+        path.write_text(contents)
+        settings = {}
+        apply_auto_context_windows(settings, managed, rows, catalog)
+        assert settings == {}
 
 
 @pytest.fixture

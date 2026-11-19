@@ -56,6 +56,7 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
   const chooser: {
     beforeModel?: () => Promise<void>;
     beforeOpen?: () => Promise<void>;
+    beforeClose?: () => void;
     beforeStore?: () => void;
   } = {};
   on('env.get', ($, e) => ({ value: env[e.name] }));
@@ -94,6 +95,7 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
   });
   on('ui.close', ($, e) => {
     closed.push(e.id);
+    chooser.beforeClose?.();
     return { value: undefined };
   });
   on('ui.render', {component:'Pane'}, ($, e) => $.ui.resolve(e).Box({children:[]}));
@@ -606,6 +608,7 @@ for (const interrupt of ['model', 'end'] as const) {
     };
     const saving = session.choose(OTHER);
     await ready;
+    session.chooser.beforeClose = () => { throw new Error('pane already dismissed'); };
     if (interrupt === 'model') await $.command.run({command:'model', args:MAIN});
     else await $.session.end({reason:'prompt_input_exit'});
     release!();

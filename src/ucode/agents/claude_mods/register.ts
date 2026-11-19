@@ -326,7 +326,7 @@ export function register(on: On, options: PluginOptions): void {
 
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     sessionActive = false;
-    if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id});
+    if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
     pendingChooser = undefined;
     awaitingModelChoice = false;
     manualOffRequest = undefined;
@@ -375,7 +375,7 @@ export function register(on: On, options: PluginOptions): void {
     });
     on('session.append', {door:'prompt'}, async ($, e, next) => {
       if (!e.agentId && !e.message.isMeta) {
-        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id});
+        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
         pendingChooser = undefined;
         awaitingModelChoice = false;
         manualOffRequest = undefined;
@@ -558,7 +558,7 @@ export function register(on: On, options: PluginOptions): void {
         && (switchingAuto || (e.origin?.kind === 'plugin' && e.origin.name === 'ug-smart-router'));
       let entry: string | undefined;
       if (!internalCommand) {
-        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id});
+        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
         pendingChooser = undefined;
         manualOffRequest = undefined;
         clearAutoSave();

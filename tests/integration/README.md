@@ -2181,6 +2181,7 @@ The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the
 hint after a main-model switch and verifies that the selected model serves a file task
 both before and after restart. Native component tests open a saved custom alias and check the
 window displayed by `/context` with a catalog limit, a missing limit, and an explicit preference.
+Launch-settings tests cover out-of-range limits and unreadable native settings.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive

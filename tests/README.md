@@ -258,7 +258,9 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 TypeScript event-forwarding and launch-option tests in CI. Auto picker tests cover
 selection beyond the first screen, saving silently, and retrying after a failed chooser open.
 A fresh Claude process reads a saved custom Auto alias. Its `/context` output verifies the catalog
-window, the fallback when the catalog omits limits, and an explicit compaction preference. The existing Claude
+window, the fallback when the catalog omits limits, and an explicit compaction preference.
+`test_claude_launch_settings.py` checks catalog bounds and precedence with native settings on disk,
+including an unreadable settings document. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
 Native request-construction checks verify the
