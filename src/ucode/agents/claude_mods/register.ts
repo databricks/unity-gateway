@@ -183,7 +183,7 @@ export function register(on: On, options: PluginOptions): void {
     try {
       if (launchedEnabled) {
         const current = await readEnvironment($);
-        await setRouting($, options, isRoutingEnabled(current), false);
+        await serialized(() => setRouting($, options, isRoutingEnabled(current), false));
       }
     } finally {
       // After the launch write, so a disabling result cannot be overwritten by it.

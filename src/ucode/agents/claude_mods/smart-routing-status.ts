@@ -31,7 +31,8 @@ export function showStatusBand(): void {
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  if (!band.isHideArmed) return false
+  // A turn that ends before the startup check settles keeps the hide for the band's first turn.
+  if (!band.isHideArmed || validation.isPending) return false
   band.isVisible = false
   band.isHideArmed = false
   return true
@@ -92,7 +93,7 @@ export async function watchStartupValidation(
     }
     const check = async (): Promise<void> => {
       if (complete) return
-      let result: any
+      let result: unknown
       try {
         result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
       } catch {}
@@ -131,7 +132,7 @@ export const registerStatusBand = (on: On): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
-    if (band.isVisible && !validation.isPending) band.isHideArmed = true
+    if (band.isVisible) band.isHideArmed = true
     return next(e)
   })
 

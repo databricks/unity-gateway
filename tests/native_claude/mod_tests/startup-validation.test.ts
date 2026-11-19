@@ -177,3 +177,18 @@ test('a turn that ends while the check is pending does not hide the band', { opt
   expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
   await ui.unmount();
 });
+
+test('a band that appears mid-turn hides when that turn ends', { options: ROUTED }, async ($, on) => {
+  const { clock, files } = engine(on);
+  on('prompt.submit', ($, e) => ({ text: e.text }));
+  on('turn.complete', () => ({ text: '' }));
+  const ui = await $.ui.mount(abovePrompt);
+  await $.session.start(start);
+  await $.prompt.submit({ text: 'early prompt' });
+  files['/session/env.validation.json'] = '{"routing_disabled":false}';
+  await clock.advance(100);
+  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+  await $.turn.complete({ answer: 'done' });
+  expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+  await ui.unmount();
+});
