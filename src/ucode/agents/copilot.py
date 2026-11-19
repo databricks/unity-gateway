@@ -1461,6 +1461,15 @@ def run_seat_runtime(
         headers=headers,
         sign_in_hint="Run `ug configure --agents copilot`, then restart VS Code.",
     )
+    from ucode.gateway_proxy import log_proxy_diagnostic
+
+    log_proxy_diagnostic(
+        "seat_relay_started",
+        provider=provider_service,
+        port=server.server_address[1],
+        runtime=runtime,
+        pid=os.getpid(),
+    )
     try:
         env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
         proc = subprocess_cross_os.popen([runtime, *runtime_args], env=env)
@@ -1480,6 +1489,7 @@ def run_seat_runtime(
         )
         return 1
     finally:
+        log_proxy_diagnostic("seat_relay_stopped", pid=os.getpid())
         _stop_seat_relay(server, cache, client)
 
 

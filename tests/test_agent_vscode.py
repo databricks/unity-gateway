@@ -391,7 +391,8 @@ class TestSeatRelay:
         settings = json.loads(self._settings().read_text())
         assert settings == {vscode.RUNTIME_PATH_SETTING: str(self._wrapper())}
         script = self._wrapper().read_text()
-        assert script.startswith("#!/bin/sh\nexec /bin/ug copilot-seat-runtime --provider ")
+        assert "UCODE_RELAYED_PROXY_DIAGNOSTICS=1" in script
+        assert "\nexec /bin/ug copilot-seat-runtime --provider " in script
         assert f'--profile dev --runtime {runtime} -- "$@"' in script
         assert self._wrapper().stat().st_mode & 0o777 == 0o700
         printed = _printed(capsys)

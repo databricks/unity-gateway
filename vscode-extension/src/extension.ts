@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import * as vscode from "vscode";
 import { version } from "../package.json";
@@ -317,8 +318,52 @@ const offerToTurnOn = async (context: vscode.ExtensionContext): Promise<void> =>
   }
 };
 
+// Debug only: shows the seat relay's diagnostics, which ug's runtime wrapper writes to this file.
+const tailSeatRelayLog = (context: vscode.ExtensionContext, output: vscode.LogOutputChannel): void => {
+  const variant = vscode.env.appName.includes("Insiders") ? "code-insiders" : "code";
+  const path = join(homedir(), ".ucode", "vscode", variant, "relay.log");
+  const size = (): number => {
+    try {
+      return statSync(path).size;
+    } catch {
+      return 0;
+    }
+  };
+  let offset = size();
+  output.info(`Showing the seat relay log ${path} (${offset} bytes already there)`);
+  const timer = setInterval(() => {
+    const now = size();
+    if (now < offset) {
+      offset = 0;
+    }
+    if (now === offset) {
+      return;
+    }
+    const buffer = Buffer.alloc(now - offset);
+    try {
+      const fd = openSync(path, "r");
+      try {
+        readSync(fd, buffer, 0, buffer.length, offset);
+      } finally {
+        closeSync(fd);
+      }
+    } catch (error) {
+      output.warn(`Couldn't read ${path}: ${String(error)}`);
+      return;
+    }
+    offset = now;
+    for (const line of buffer.toString("utf8").split("\n")) {
+      if (line.trim()) {
+        output.info(`[relay] ${line.replace(/^\[ucode-relay\] /, "")}`);
+      }
+    }
+  }, 1000);
+  context.subscriptions.push({ dispose: () => clearInterval(timer) });
+};
+
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel("Unity Gateway", { log: true });
+  tailSeatRelayLog(context, output);
   // Read once: ug changes the file only by reinstalling the extension, which takes a restart to load.
   const configText = readConfigFile(join(context.extensionPath, CONFIG_FILE));
   const settings = readConfig(configText);

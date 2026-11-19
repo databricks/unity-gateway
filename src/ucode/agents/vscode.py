@@ -309,11 +309,17 @@ def runtime_wrapper_path(*, insiders: bool) -> Path:
     return config_io.APP_DIR / "vscode" / variant / RUNTIME_WRAPPER_NAME
 
 
-def wrapper_script(command: list[str], runtime: Path) -> str:
+def wrapper_script(command: list[str], runtime: Path, log: Path | None = None) -> str:
     """A POSIX shell script that runs ``command`` on ``runtime`` with the arguments VS Code
     passes."""
     parts = " ".join(shlex.quote(part) for part in [*command, "--runtime", str(runtime), "--"])
-    return f'#!/bin/sh\nexec {parts} "$@"\n'
+    debug = (
+        f"export UCODE_RELAYED_PROXY_DIAGNOSTICS=1 "
+        f"UCODE_RELAYED_PROXY_DIAGNOSTICS_FILE={shlex.quote(str(log))}\n"
+        if log
+        else ""
+    )
+    return f'#!/bin/sh\n{debug}exec {parts} "$@"\n'
 
 
 def _edit_user_settings(path: Path, edit: Callable[[str], str]) -> None:
@@ -341,7 +347,11 @@ def route_through_seat_relay(state: dict, provider: str, code: Path) -> str | No
     settings = user_dir(insiders) / "settings.json"
     try:
         wrapper.parent.mkdir(parents=True, exist_ok=True)
-        wrapper.write_text(wrapper_script(seat_relay_command(state, provider), runtime))
+        wrapper.write_text(
+            wrapper_script(
+                seat_relay_command(state, provider), runtime, wrapper.parent / "relay.log"
+            )
+        )
         wrapper.chmod(0o700)
         _edit_user_settings(
             settings, lambda text: jsonc.set_member(text, RUNTIME_PATH_SETTING, str(wrapper))

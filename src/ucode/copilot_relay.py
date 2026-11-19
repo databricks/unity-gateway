@@ -227,8 +227,17 @@ class _CopilotRelayHandler(_ProxyHandler):
     _api_host = ""
     _gateway_call = False
 
+    def _log_call(self, call: str | None, outcome: str) -> None:
+        log_proxy_diagnostic(
+            "copilot_relay_call",
+            method=self.command,
+            call=call if call is not None else "<outside the session secret>",
+            outcome=outcome,
+        )
+
     def _handle(self) -> None:
         self._gateway_call = False
+        self._debug_call: str | None = None
         raw_path, _, query = self.path.partition("?")
         if not _is_normalized(raw_path):
             self._reject(404, "This path is not served by the Unity Gateway Copilot relay.")
@@ -241,6 +250,7 @@ class _CopilotRelayHandler(_ProxyHandler):
             self._reject(403, "Browser requests are not served by the Unity Gateway Copilot relay.")
             return
         call = self._relay_path(raw_path)
+        self._debug_call = call
         if call is None:
             self._reject(404, "This path is not served by the Unity Gateway Copilot relay.")
             return
@@ -250,9 +260,11 @@ class _CopilotRelayHandler(_ProxyHandler):
             return
         suffix = f"?{query}" if query else ""
         if (self.command, call) == _OTEL_METRICS_CALL:
+            self._log_call(call, "otel-metrics-dropped")
             self._discard()
             return
         if (self.command, call) == _OTEL_TRACES_CALL:
+            self._log_call(call, "otel-traces")
             self.path = call + suffix
             super()._handle()
             return
@@ -274,8 +286,10 @@ class _CopilotRelayHandler(_ProxyHandler):
             else GATEWAY_ROUTES.get((self.command, call))
         )
         if gateway_path is None:
+            self._log_call(call, f"direct to {host}")
             self._forward_direct(host, call + suffix)
             return
+        self._log_call(call, f"gateway {gateway_path}")
         self._api_host = host
         self._gateway_call = True
         self.path = gateway_path + suffix
@@ -376,6 +390,7 @@ class _CopilotRelayHandler(_ProxyHandler):
             pass
 
     def _reject(self, status: int, message: str) -> None:
+        self._log_call(getattr(self, "_debug_call", None), f"refused {status}")
         self._drain()
         self._send_json_error(status, message)
 
