@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import threading
@@ -54,7 +53,7 @@ def test_delayed_http_is_nonblocking_and_preserves_resolved_menu(tmp_path, monke
         options.clear()
     finally:
         release.set()
-    assert _wait_for_result(validation.result_path(controls)) == {"message": None}
+    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
     assert captured == {
         "url": "https://example.com/ai-gateway/routing/v1/routes:validate",
         "token": "test-token",
@@ -107,18 +106,11 @@ def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
         session_controls=controls,
     )
     result = _wait_for_result(validation.result_path(controls))
-    message = result["message"]
     post.assert_called_once()
     unsupported = isinstance(response, tuple) and (response[0] or {}).get("is_supported") is False
+    assert result == {"routing_disabled": unsupported}
     assert session_routing_enabled(controls) is not unsupported
-    assert result.get("routing_disabled", False) is unsupported
-    if unsupported:
-        assert "Need two families." in message
-        assert "custom.model: No matching harness." in message
-        assert "system.ai.other (claude)" in message
-        assert message.endswith("Smart routing is off for this session.")
-    else:
-        assert result == {"message": None}
+    if not unsupported:
         assert controls.read_text() == "{}"
 
 
@@ -144,7 +136,7 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
         router_name="stable",
         session_controls=controls,
     )
-    assert _wait_for_result(validation.result_path(controls)) == {"message": None}
+    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
     assert len(captured) == 1
     request = captured[0]
     assert request.full_url == "https://example.com/ai-gateway/routing/v1/routes:validate"
@@ -182,55 +174,3 @@ def test_result_write_failure_is_isolated(tmp_path, monkeypatch):
         session_controls=tmp_path / "env.json",
     )
     writer.assert_called_once()
-
-
-@pytest.mark.parametrize("message", [None, "Smart Router compatibility check unavailable."])
-def test_codex_notification_is_async_once_and_keeps_connection_open(message, tmp_path):
-    from websockets.asyncio.client import connect
-    from websockets.asyncio.server import serve
-
-    from ucode.smart_routing.codex_interposer import _serve
-
-    async def exercise():
-        async def echo(socket):
-            async for frame in socket:
-                await socket.send(frame)
-
-        controls = tmp_path / "env.json"
-        async with serve(echo, "127.0.0.1", 0) as upstream:
-            port = upstream.sockets[0].getsockname()[1]
-            interposer = await _serve(
-                "127.0.0.1",
-                0,
-                f"ws://127.0.0.1:{port}",
-                None,
-                lambda _: None,
-                session_controls=controls,
-            )
-            try:
-                proxy_port = interposer.sockets[0].getsockname()[1]
-                async with connect(f"ws://127.0.0.1:{proxy_port}") as tui:
-                    await tui.send('{"id":1,"result":{}}')
-                    assert await asyncio.wait_for(tui.recv(), 1) == '{"id":1,"result":{}}'
-                    validation.result_path(controls).write_text(json.dumps({"message": message}))
-                    with pytest.raises(TimeoutError):
-                        await asyncio.wait_for(tui.recv(), 0.15)
-                    await tui.send('{"method":"initialized"}')
-                    received = [await asyncio.wait_for(tui.recv(), 1)]
-                    if message:
-                        received.append(await asyncio.wait_for(tui.recv(), 1))
-                        assert {
-                            "method": "warning",
-                            "params": {"message": message},
-                        } in [json.loads(frame) for frame in received]
-                    assert {"method": "initialized"} in [json.loads(frame) for frame in received]
-                    await asyncio.sleep(0.2)
-                    await tui.send('{"id":2,"result":{}}')
-                    assert await asyncio.wait_for(tui.recv(), 1) == '{"id":2,"result":{}}'
-                    with pytest.raises(TimeoutError):
-                        await asyncio.wait_for(tui.recv(), 0.15)
-            finally:
-                interposer.close()
-                await interposer.wait_closed()
-
-    asyncio.run(exercise())

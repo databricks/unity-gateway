@@ -107,7 +107,7 @@ function engine(on: On, env: Record<string, string | undefined>, agents: AgentIn
   on('session.start', () => ({ cwd: '/work' }));
   // The startup check already found the menu supported, so session.start releases the band.
   on('fs.read', ($, e) => {
-    if (e.path === '/session/env.validation.json') return { value: '{"message":null}' };
+    if (e.path === '/session/env.validation.json') return { value: '{"routing_disabled":false}' };
     throw new Error('no such file');
   });
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));

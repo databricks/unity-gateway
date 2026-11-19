@@ -75,11 +75,11 @@ export async function watchStartupValidation(
     }
     let complete = false
     let waited = 0
-    let notice: { cancel: () => void } | undefined
+    let poll: { cancel: () => void } | undefined
     const finish = (): void => {
       complete = true
       validation.isPending = false
-      notice?.cancel()
+      poll?.cancel()
       $.ui.invalidate('ui.render')
     }
     const check = async (): Promise<void> => {
@@ -89,33 +89,22 @@ export async function watchStartupValidation(
         result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
       } catch {}
       if (complete) return
-      if (!result || !('message' in result)) {
+      if (!result || !('routing_disabled' in result)) {
         if (waited >= VALIDATION_WAIT_MS) finish()
         return
       }
       complete = true
-      const isDisabled = result.routing_disabled === true
-      if (isDisabled) {
+      if (result.routing_disabled === true) {
         band.isVisible = false
         try {
           await disableRouting()
         } catch {}
       }
       finish()
-      if (isDisabled && typeof result.message === 'string' && result.message) {
-        try {
-          await $.session.append({
-            message: {
-              type: 'system',
-              content: [{ type: 'text', text: 'Smart Router validation\n' + result.message }],
-            },
-          })
-        } catch {}
-      }
     }
     await check()
     if (!complete) {
-      notice = $.clock.every(VALIDATION_POLL_MS, () => {
+      poll = $.clock.every(VALIDATION_POLL_MS, () => {
         waited += VALIDATION_POLL_MS
         return check()
       })

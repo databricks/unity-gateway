@@ -14,7 +14,6 @@ const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as cons
 const abovePrompt = {
   plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
 } as const;
-const UNSUPPORTED = 'Smart Router does not support this model menu. Available options: claude-sonnet (claude_code), glm-5 (claude_code). Smart routing is off for this session.';
 
 // The engine beneath the mod: a routed environment, the session-controls file Python owns,
 // and a validation result that stays pending until the test publishes it.
@@ -63,8 +62,8 @@ function engine(on: On) {
 
 const cases = [
   // A failed check publishes the same silent result as a supported menu.
-  { name: 'supported or failed', result: { message: null }, routed: true },
-  { name: 'unsupported', result: { message: UNSUPPORTED, routing_disabled: true }, routed: false },
+  { name: 'supported or failed', result: { routing_disabled: false }, routed: true },
+  { name: 'unsupported', result: { routing_disabled: true }, routed: false },
 ];
 
 for (const { name, result, routed } of cases) {
@@ -100,10 +99,8 @@ for (const { name, result, routed } of cases) {
       expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
         .toBe(routed ? 'task_v3' : DISABLED_RECIPE);
       expect(shown).not.toContain('"borderStyle":"round"');
-      expect(state.notices).toEqual(result.message ? [{
-        type: 'system',
-        content: [{ type: 'text', text: 'Smart Router validation\n' + result.message }],
-      }] : []);
+      // The check is invisible: no transcript notice for any result.
+      expect(state.notices).toEqual([]);
 
       if (submittedBeforeResult) {
         await $.turn.complete({ answer: 'earlier turn done' });
@@ -117,13 +114,13 @@ for (const { name, result, routed } of cases) {
       const afterTurn = JSON.stringify(await ui.drawn());
       expect(afterTurn).not.toContain('unity gateway smart router');
 
-      // A later session start neither polls again nor repeats the notice.
+      // A later session start does not poll again.
       const reads = state.reads;
       await $.session.start(start);
       await clock.advance(2000);
       expect(state.reads).toBe(reads);
       expect(state.opened).toBe(0);
-      expect(state.notices.length).toBe(result.message ? 1 : 0);
+      expect(state.notices).toEqual([]);
       expect(await hint($)).toBe(routed ? 'smart router ON' : 'smart router OFF');
       await ui.unmount();
     });
@@ -150,7 +147,7 @@ test('startup validation shows the band ON after 5 seconds without a result and 
 
 test('a result already written by session start shows the band without polling', { options: ROUTED }, async ($, on) => {
   const { clock, files, state, hint } = engine(on);
-  files['/session/env.validation.json'] = '{"message":null}';
+  files['/session/env.validation.json'] = '{"routing_disabled":false}';
   const ui = await $.ui.mount(abovePrompt);
   expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
   await $.session.start(start);

@@ -1,6 +1,6 @@
 """Startup Smart Router menu check; an unsupported menu turns routing off for the session.
 
-A failed or timed-out check is silent and leaves routing on.
+Nothing is shown to the user. A failed or timed-out check leaves routing on.
 """
 
 from __future__ import annotations
@@ -20,28 +20,6 @@ VALIDATION_TIMEOUT_SECONDS = 4
 
 def result_path(session_controls: Path) -> Path:
     return session_controls.with_suffix(".validation.json")
-
-
-def _message(payload: object, reason: str | None) -> str | None:
-    if reason or not isinstance(payload, dict) or payload.get("is_supported") is not False:
-        return None
-    parts = ["Smart Router does not support this model menu."]
-    metadata = payload.get("metadata")
-    if isinstance(metadata, dict) and isinstance(metadata.get("routing_unsupported_reason"), str):
-        parts.append(metadata["routing_unsupported_reason"])
-    for option in payload.get("ineligible_route_options", [])[:3]:
-        if isinstance(option, dict) and isinstance(option.get("reason"), str):
-            parts.append(f"{option.get('model', 'Model')}: {option['reason']}")
-    available = payload.get("available_route_options", [])
-    suggestions = [
-        f"{option['model']} ({option['harness']})" if option.get("harness") else option["model"]
-        for option in available[:5]
-        if isinstance(option, dict) and isinstance(option.get("model"), str)
-    ]
-    if suggestions:
-        parts.append("Available options: " + ", ".join(suggestions) + ".")
-    parts.append("Smart routing is off for this session.")
-    return " ".join(" ".join(parts).split())[:1000]
 
 
 def start(
@@ -65,11 +43,13 @@ def start(
                 body,
                 timeout=VALIDATION_TIMEOUT_SECONDS,
             )
-            message = _message(payload, reason)
+            unsupported = (
+                not reason and isinstance(payload, dict) and payload.get("is_supported") is False
+            )
         except Exception:
-            message = None
-        result: dict[str, object] = {"message": message}
-        if message:
+            unsupported = False
+        result = {"routing_disabled": False}
+        if unsupported:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True
