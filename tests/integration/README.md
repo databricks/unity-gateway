@@ -507,12 +507,16 @@ ends short-reason attempts with a validation error and character count instead o
 reopening the prompt, and handles Escape/turn completion/disconnect without
 uploading. Its replies stay local; unrelated replies continue upstream. Off requires
 an explicit skill command in the matching native turn. Plain chat and model-provided
-reasons cannot bypass the disclosed native feedback flow; CLI compatibility is unchanged.
+reasons cannot bypass the disclosed native feedback flow. Shared CLI toggles validate
+the reason and change controls without capturing or uploading feedback, matching the
+existing Claude CLI behavior. Native Codex owns capture, upload, status, and retry;
+the unused CLI feedback-status command was removed. Its delivery-state checks and
+the former CLI capture-failure checks now exercise the adapter or native entry point.
 Isaac subprocesses and transport are controlled in these component checks.
 Component regressions also verify that malformed tool/completion/interrupt frames
-do not end the relay, and that CLI or native re-enable clears the previous feedback
-task before routing changes. A later CLI off-with-reason cannot upload that old task;
-fresh preparation captures the new task. Cleanup failure keeps routing off, while
+do not end the relay, and that either CLI or native Codex re-enable clears the previous
+feedback task through shared session controls before routing changes. The next native
+off requires fresh preparation and captures the new task. Cleanup failure keeps routing off, while
 short-reason retries preserve their anchor. Live journeys do not inject malformed
 protocol frames or task-reference cleanup failures.
 The live Codex skill-toggle and metadata journeys now require completed native

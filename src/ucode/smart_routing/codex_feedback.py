@@ -455,8 +455,6 @@ class CodexSmartRouter:
                     "Call off without a reason first to anchor the preceding task. Smart Router is still on."
                 )
             report = feedback.capture_codex_feedback(reason, env)
-        if requested:
-            feedback.clear_codex_feedback_target(env)
         set_session_environment(
             {} if requested else dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"), env=env
         )

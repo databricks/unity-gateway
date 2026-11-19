@@ -1,4 +1,4 @@
-"""Codex's inline off prompt uses Isaac's existing evidence capture and uploader."""
+"""Isaac evidence capture and delivery for native Codex feedback."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from ucode.config_io import atomic_write_json
 from ucode.constants import ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR
 from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
-from ucode.smart_routing.session_env import effective_environment, session_env_path
+from ucode.smart_routing.session_env import effective_environment, feedback_target_path
 
 
 def smart_router_feedback_required() -> bool:
@@ -32,19 +32,6 @@ def _isaac() -> str:
     if not executable:
         raise RuntimeError("Isaac feedback is unavailable. Smart Router is still on.")
     return executable
-
-
-def _target_path(env: Mapping[str, str] | None = None) -> Path:
-    return session_env_path(env).with_name("feedback-target.json")
-
-
-def clear_codex_feedback_target(env: Mapping[str, str] | None = None) -> None:
-    try:
-        _target_path(env).unlink(missing_ok=True)
-    except OSError as exc:
-        raise RuntimeError(
-            "Could not clear the saved Smart Router feedback task. Routing is unchanged."
-        ) from exc
 
 
 def _native_session_id(env: Mapping[str, str] | None = None) -> str:
@@ -100,7 +87,7 @@ def prepare_codex_feedback(env: Mapping[str, str] | None = None) -> None:
         turn_id = target.get("turn_id") or target.get("message_id") or "no-prior-task"
         if not isinstance(turn_id, str) or len(turn_id) > 128:
             raise ValueError("Invalid native task identity.")
-        atomic_write_json(_target_path(env), {"session_id": session_id, "turn_id": turn_id})
+        atomic_write_json(feedback_target_path(env), {"session_id": session_id, "turn_id": turn_id})
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         raise RuntimeError(
             "Could not prepare Isaac feedback. Smart Router is still on; retry the off command."
@@ -123,7 +110,7 @@ def capture_codex_feedback(reason: str, env: Mapping[str, str] | None = None) ->
     """Freeze evidence locally while routing is on; this never uploads it."""
     executable = _isaac()
     try:
-        target = json.loads(_target_path(env).read_text(encoding="utf-8"))
+        target = json.loads(feedback_target_path(env).read_text(encoding="utf-8"))
         session_id = str(UUID(target["session_id"]))
         if session_id != _native_session_id(env):
             raise ValueError("Feedback belongs to a different native session.")
@@ -179,7 +166,7 @@ def capture_codex_feedback(reason: str, env: Mapping[str, str] | None = None) ->
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         raise RuntimeError(
             "Could not save Isaac feedback. Smart Router is still on. "
-            "Run the off command without a reason first, then provide the user's reason."
+            "Run $smart-router off again to retry."
         ) from exc
     notices = tuple(
         notice
@@ -209,10 +196,6 @@ def submit_codex_feedback(
             env=dict(os.environ if env is None else env),
             **options,
         )
-
-
-def codex_feedback_status(feedback_id: str) -> str:
-    return codex_feedback_delivery(feedback_id)["message"]
 
 
 def codex_feedback_delivery(feedback_id: str) -> dict[str, str]:

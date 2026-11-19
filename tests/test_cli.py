@@ -223,7 +223,6 @@ class TestHelp:
 
         assert result.exit_code == 0, result.output
         assert toggle.call_args.args == (expected, None)
-        assert toggle.call_args.kwargs == {"agent": "codex"}
         assert flag.call_args.args == (expected,)
         assert launch.call_args.kwargs["routing_already_chosen"] is (
             expected is not None or smart_routing_config.known_version()
@@ -237,7 +236,7 @@ class TestHelp:
             result = runner.invoke(app, ["codex", "--enable-smart-routing"])
 
         assert result.exit_code == 0, result.output
-        toggle.assert_called_once_with(True, None, agent="codex")
+        toggle.assert_called_once_with(True, None)
         launch.assert_not_called()
 
     @pytest.mark.parametrize(("args", "expected"), [([], False), (["--mdm"], True)])

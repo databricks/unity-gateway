@@ -3671,9 +3671,7 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
             smart_routing_v2.restore_smart_routing_env(previous)
 
 
-def _toggle_current_smart_routing_session(
-    enabled: bool | None, reason: str | None = None, *, agent: str
-) -> bool:
+def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
     if enabled is None:
         return False
     try:
@@ -3692,14 +3690,6 @@ def _toggle_current_smart_routing_session(
         return True
     feedback_required = not enabled and smart_router_feedback_required()
     if feedback_required and len((reason or "").strip()) < 16:
-        if agent == AGENT_CODEX and reason is None:
-            from ucode.smart_routing.feedback import prepare_codex_feedback
-
-            try:
-                prepare_codex_feedback()
-            except RuntimeError as exc:
-                print_err(str(exc))
-                raise typer.Exit(1) from None
         print_err(
             "Turning Smart Router off requires a reason of at least 16 characters, excluding "
             "surrounding whitespace. Ask the user why in chat and explain that their reason and "
@@ -3707,58 +3697,14 @@ def _toggle_current_smart_routing_session(
             "Then pass their exact reason with --smart-router-feedback."
         )
         raise typer.Exit(2)
-    feedback = None
-    if feedback_required and agent == AGENT_CODEX:
-        from ucode.smart_routing.feedback import capture_codex_feedback
-
-        try:
-            feedback = capture_codex_feedback(reason or "")
-        except RuntimeError as exc:
-            print_err(str(exc))
-            raise typer.Exit(1) from None
     try:
-        if enabled and agent == AGENT_CODEX:
-            from ucode.smart_routing.feedback import clear_codex_feedback_target
-
-            clear_codex_feedback_target()
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
         metrics.failure(metrics.COMMAND_OPERATION, exc)
         print_err(str(exc))
         raise typer.Exit(1) from None
     print_success(f"Smart Router is {'on' if enabled else 'off'} for this session")
-    if feedback is not None:
-        from ucode.smart_routing.feedback import submit_codex_feedback
-
-        for notice in feedback.notices:
-            print_warning(notice)
-        try:
-            submit_codex_feedback(feedback)
-        except OSError:
-            print_warning(
-                "Could not start feedback delivery. Smart Router is still off. "
-                f"Retry with /isaac-feedback retry {feedback.feedback_id}."
-            )
-        else:
-            console.print(
-                "Feedback is sending in the background. You can keep working. "
-                f"Feedback ID: {feedback.feedback_id}"
-            )
     return True
-
-
-@app.command("smart-router-feedback-status", hidden=True)
-def smart_router_feedback_status_cmd(
-    feedback_id: Annotated[str, typer.Option("--feedback-id")],
-) -> None:
-    """Show delivery of a saved Codex off report without submitting it again."""
-    from ucode.smart_routing.feedback import codex_feedback_status
-
-    try:
-        console.print(codex_feedback_status(feedback_id))
-    except (OSError, ValueError) as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
 
 
 @contextmanager
@@ -4994,9 +4940,7 @@ def codex_cmd(
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
-    if _toggle_current_smart_routing_session(
-        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CODEX
-    ):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -5099,9 +5043,7 @@ def claude_cmd(
     ] = None,
 ) -> None:
     """Launch Claude Code via Databricks."""
-    if _toggle_current_smart_routing_session(
-        enable_smart_routing_flag, smart_router_feedback, agent=AGENT_CLAUDE
-    ):
+    if _toggle_current_smart_routing_session(enable_smart_routing_flag, smart_router_feedback):
         return
     try:
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)

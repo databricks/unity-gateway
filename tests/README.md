@@ -1181,6 +1181,9 @@ first in PATH and a launching interpreter path containing spaces. Codex's skill 
 It never requests shell approval or falls back to a shell toggle. Launcher lifecycle
 checks isolate the developer machine's optional managed catalog. Existing CLI commands
 remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
+The shared CLI only validates the reason and toggles routing; neither harness's CLI
+prepares, captures, or uploads feedback. Native Codex owns that flow. CLI parity cases
+verify that valid reasons work without Isaac and that repeated off calls collect nothing.
 With Isaac's feedback rule on, an off outside Omnigent without a 16-character
 reason keeps routing on. Claude and Codex CLI controls share the
 `ISAAC_LAUNCH_MODE=omni` exemption. Native Codex uses that same rule; Omnigent off
@@ -1199,11 +1202,14 @@ with native skill-selection metadata authorizes the matching turn's off call, on
 Plain prompts, quoted commands, appended reasons, foreign/finished turns, and
 model-provided reasons cannot start feedback or disable routing. Correlated
 turn-start replies bind authorization even when the tool request arrives first.
-Status needs no Isaac executable.
-Re-enabling through either Codex entry point clears the saved task reference before
-routing changes. A later CLI off-with-reason cannot reuse the previous task's evidence;
-it must prepare a fresh target. Cleanup failure keeps routing off. Short-reason retries
-within the same attempt retain their original task reference.
+Native status needs no Isaac executable. The unused CLI feedback-status command and
+duplicate CLI capture/upload cases were removed. Native and adapter cases retain
+capture ordering, permission failures, cross-session targets, control-write failures,
+upload-start failures, saved delivery states, and malformed-state coverage.
+Re-enabling through either CLI or native Codex clears the saved task reference in
+shared session controls before routing changes. The next native off must prepare
+a fresh target; old evidence cannot be recaptured. Cleanup failure keeps routing off.
+Short-reason retries within the same attempt retain their original task reference.
 `test_codex_metadata.py` checks native request/response transport, unrelated-tool
 forwarding, locally consumed feedback replies (including stale replies), native
 prompt cancellation on interrupt, completed turn, or disconnect, responsive

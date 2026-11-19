@@ -85,7 +85,7 @@ def off(reason=None, *, agent="codex"):
 @pytest.mark.parametrize("agent", ["claude", "codex"])
 @pytest.mark.parametrize("mode", ["omni", "direct", "", None])
 def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, agent, mode):
-    controls, run, popen, calls = inline_feedback
+    controls, run, popen, _ = inline_feedback
     if mode is None:
         monkeypatch.delenv("ISAAC_LAUNCH_MODE")
     else:
@@ -93,13 +93,13 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
 
     result = off(agent=agent)
 
+    run.assert_not_called()
     popen.assert_not_called()
+    assert not controls.with_name("feedback-target.json").exists()
     if mode == "omni":
         assert result.exit_code == 0, result.output
         assert "Smart Router is off" in result.output
         assert not session_env.session_routing_enabled(controls)
-        assert not controls.with_name("feedback-target.json").exists()
-        run.assert_not_called()
         return
     assert result.exit_code == 2, result.output
     text = " ".join(result.output.split())
@@ -107,77 +107,62 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     assert "session details will be sent to the Isaac team" in text
     assert "cancel to keep routing on" in text
     assert json.loads(controls.read_text()) == {}
-    if agent == "codex":
-        assert run.call_count == 1
-        assert calls[0][0][-2:] == ["--session-id", SESSION_ID]
-        assert (
-            json.loads(controls.with_name("feedback-target.json").read_text())["turn_id"] == TASK_ID
-        )
-    else:
-        run.assert_not_called()
 
 
 @pytest.mark.parametrize("reason", ["", "  too short  ", "界" * 15])
-def test_short_reason_does_not_capture_or_disable(inline_feedback, reason):
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_short_cli_reason_does_not_capture_or_disable(inline_feedback, reason, agent):
     controls, run, popen, _ = inline_feedback
-    assert off().exit_code == 2
 
-    result = off(reason)
+    result = off(reason, agent=agent)
 
     assert result.exit_code == 2
     assert json.loads(controls.read_text()) == {}
-    assert run.call_count == 1
+    run.assert_not_called()
     popen.assert_not_called()
 
 
-def test_valid_reason_freezes_original_task_then_disables_then_submits(inline_feedback):
-    controls, run, popen, calls = inline_feedback
-    assert off().exit_code == 2
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_cli_reason_toggles_without_capturing_or_uploading(inline_feedback, monkeypatch, agent):
+    controls, run, popen, _ = inline_feedback
+    monkeypatch.setattr(feedback.shutil, "which", lambda _: None)
+    assert off(agent=agent).exit_code == 2
 
-    result = off(REASON)
+    result = off(REASON, agent=agent)
 
     assert result.exit_code == 0, result.output
     assert "Smart Router is off" in result.output
-    assert "sending in the background" in result.output
-    assert run.call_count == 2
-    args, kwargs = calls[1]
-    assert args[args.index("--turn-id") + 1] == TASK_ID
-    assert args[args.index("--session-id") + 1] == SESSION_ID
-    assert "--full-capture" in args
-    assert kwargs["input"] == REASON
-    assert kwargs["env"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
-    report_id = args[args.index("--feedback-id") + 1]
-    assert popen.call_args.args[0] == ["/installed isaac", "feedback", "--retry", report_id]
-    assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
-    assert "Feedback ID: " + report_id in " ".join(result.output.split())
+    assert not controls.with_name("feedback-target.json").exists()
+    assert "Feedback ID:" not in result.output
 
-    repeated = off()
+    repeated = off(agent=agent)
     assert repeated.exit_code == 0, repeated.output
     assert "already off" in repeated.output
-    assert run.call_count == 2
-    popen.assert_called_once()
+    run.assert_not_called()
+    popen.assert_not_called()
     assert not session_env.session_routing_enabled(controls)
 
 
-@pytest.mark.parametrize("reenable", ["cli", "native"])
+@pytest.mark.parametrize("reenable", ["claude", "codex", "native"])
 def test_reenabled_session_cannot_upload_previous_tasks_evidence(
     native_router, inline_feedback, reenable
 ):
     controls, run, popen, calls = inline_feedback
-    assert off().exit_code == 2
-    assert off(REASON).exit_code == 0
+    assert native_call(native_router, "off")["needs_reason"]
+    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
     target = controls.with_name("feedback-target.json")
-    if reenable == "cli":
-        result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+    if reenable != "native":
+        result = runner.invoke(cli.app, [reenable, "--enable-smart-routing"])
         assert result.exit_code == 0, result.output
     else:
         assert "is on" in native_call(native_router, "on")["message"]
     assert not target.exists()
     assert session_env.session_routing_enabled(controls)
 
-    stale_attempt = off(REASON)
-    assert stale_attempt.exit_code == 1, stale_attempt.output
-    assert "still on" in stale_attempt.output
+    with pytest.raises(RuntimeError, match="still on"):
+        feedback.capture_codex_feedback(REASON)
+    with pytest.raises(ValueError, match="anchor the preceding task"):
+        native_call(native_router, "off", reason=REASON)
     assert run.call_count == 2
     assert popen.call_count == 1
     assert session_env.session_routing_enabled(controls)
@@ -192,23 +177,23 @@ def test_reenabled_session_cannot_upload_previous_tasks_evidence(
         return result
 
     run.side_effect = current_task
-    assert off().exit_code == 2
-    assert off(REASON).exit_code == 0
+    assert native_call(native_router, "off")["needs_reason"]
+    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
     captures = [args for args, _ in calls if "--capture-local" in args]
     assert [args[args.index("--turn-id") + 1] for args in captures] == [TASK_ID, next_task]
     assert popen.call_count == 2
     assert not session_env.session_routing_enabled(controls)
 
 
-@pytest.mark.parametrize("reenable", ["cli", "native"])
+@pytest.mark.parametrize("reenable", ["claude", "codex", "native"])
 def test_failed_task_reference_cleanup_keeps_routing_off(
     native_router, inline_feedback, monkeypatch, reenable
 ):
     import asyncio
 
     controls, run, popen, _ = inline_feedback
-    assert off().exit_code == 2
-    assert off(REASON).exit_code == 0
+    assert native_call(native_router, "off")["needs_reason"]
+    assert native_call(native_router, "off", reason=REASON)["feedback_id"]
     target = controls.with_name("feedback-target.json")
     unlink = Path.unlink
 
@@ -218,8 +203,8 @@ def test_failed_task_reference_cleanup_keeps_routing_off(
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", deny_target_removal)
-    if reenable == "cli":
-        result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+    if reenable != "native":
+        result = runner.invoke(cli.app, [reenable, "--enable-smart-routing"])
         assert result.exit_code == 1, result.output
         message = " ".join(result.output.split())
     else:
@@ -261,38 +246,27 @@ def test_turning_on_needs_no_feedback(inline_feedback):
     popen.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "failure", ["missing_isaac", "missing_session", "bad_inspection", "timeout"]
-)
-def test_unavailable_collection_keeps_routing_on(inline_feedback, monkeypatch, failure):
+@pytest.mark.parametrize("failure", ["missing_isaac", "bad_inspection", "timeout"])
+def test_unavailable_native_collection_keeps_routing_on(
+    native_router, inline_feedback, monkeypatch, failure
+):
+    import asyncio
+
     controls, run, popen, _ = inline_feedback
     if failure == "missing_isaac":
         monkeypatch.setattr(feedback.shutil, "which", lambda name: None)
-    elif failure == "missing_session":
-        monkeypatch.delenv("CODEX_THREAD_ID")
-        monkeypatch.delenv("CODEX_SESSION_ID", raising=False)
     elif failure == "bad_inspection":
         run.side_effect = lambda *a, **k: subprocess.CompletedProcess([], 0, "not json", "")
     else:
         run.side_effect = subprocess.TimeoutExpired("isaac", 15)
 
-    result = off()
-
-    assert result.exit_code == 1, result.output
-    assert "still on" in result.output
-    assert json.loads(controls.read_text()) == {}
-    popen.assert_not_called()
-
-
-def test_failed_capture_keeps_routing_on(inline_feedback):
-    controls, run, popen, _ = inline_feedback
-    assert off().exit_code == 2
-    run.side_effect = lambda *a, **k: subprocess.CompletedProcess([], 1, "", "failure")
-
-    result = off(REASON)
-
-    assert result.exit_code == 1
-    assert "still on" in result.output
+    result = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}
+        )
+    )
+    assert not result["success"], result
+    assert "still on" in result["contentItems"][0]["text"]
     assert json.loads(controls.read_text()) == {}
     popen.assert_not_called()
 
@@ -301,61 +275,47 @@ def test_failed_capture_keeps_routing_on(inline_feedback):
 @pytest.mark.parametrize(
     "error", ["permission denied", "read-only file system", "Access is denied"]
 )
-def test_isaac_permission_failure_keeps_routing_on(inline_feedback, stage, error):
+def test_native_isaac_permission_failure_keeps_routing_on(
+    native_router, inline_feedback, stage, error
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+
     controls, run, popen, _ = inline_feedback
-    if stage == "capture":
-        assert off().exit_code == 2
-    run.side_effect = lambda *a, **k: subprocess.CompletedProcess([], 1, "", error)
+    isaac = run.side_effect
 
-    result = off(REASON if stage == "capture" else None)
+    def denied(args, **kwargs):
+        if (stage == "prepare") == ("--inspect-target" in args):
+            return subprocess.CompletedProcess(args, 1, "", error)
+        return isaac(args, **kwargs)
 
-    assert result.exit_code == 1
-    text = " ".join(result.output.split())
+    run.side_effect = denied
+    result = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}},
+            AsyncMock(return_value=["Provide a reason", "user_note: " + REASON]),
+        )
+    )
+    assert not result["success"], result
+    text = result["contentItems"][0]["text"]
     assert "Permission denied accessing Isaac feedback" in text
     assert "Check that Isaac can access" in text
     assert json.loads(controls.read_text()) == {}
     popen.assert_not_called()
 
 
-def test_feedback_target_cannot_be_reused_in_another_session(inline_feedback, monkeypatch):
+def test_feedback_target_cannot_be_reused_in_another_session(
+    native_router, inline_feedback, monkeypatch
+):
     controls, run, popen, _ = inline_feedback
-    assert off().exit_code == 2
+    assert native_call(native_router, "off")["needs_reason"]
     monkeypatch.setenv("CODEX_THREAD_ID", str(uuid4()))
 
-    result = off(REASON)
-
-    assert result.exit_code == 1
-    assert "still on" in result.output
+    with pytest.raises(RuntimeError, match="still on"):
+        feedback.capture_codex_feedback(REASON)
     assert json.loads(controls.read_text()) == {}
     assert run.call_count == 1
     popen.assert_not_called()
-
-
-def test_failed_toggle_does_not_upload_saved_preview(inline_feedback, monkeypatch):
-    controls, _, popen, _ = inline_feedback
-    assert off().exit_code == 2
-    monkeypatch.setattr(
-        cli, "set_session_environment", Mock(side_effect=RuntimeError("write denied"))
-    )
-
-    result = off(REASON)
-
-    assert result.exit_code == 1
-    assert json.loads(controls.read_text()) == {}
-    popen.assert_not_called()
-
-
-def test_failed_upload_start_keeps_routing_off_and_reports_retry(inline_feedback):
-    controls, _, popen, _ = inline_feedback
-    assert off().exit_code == 2
-    popen.side_effect = OSError("cannot start uploader")
-
-    result = off(REASON)
-
-    assert result.exit_code == 0, result.output
-    assert not session_env.session_routing_enabled(controls)
-    assert "still off" in result.output
-    assert "/isaac-feedback retry" in result.output
 
 
 @pytest.mark.parametrize(
@@ -366,7 +326,7 @@ def test_failed_upload_start_keeps_routing_off_and_reports_retry(inline_feedback
         ({"evidence_status": "pending", "last_error": "network"}, "delivery is unconfirmed"),
     ],
 )
-def test_status_reports_delivery_without_resubmitting(inline_feedback, tmp_path, state, expected):
+def test_saved_delivery_status_does_not_resubmit(inline_feedback, tmp_path, state, expected):
     _, run, popen, _ = inline_feedback
     report_id = str(uuid4())
     directory = tmp_path / ".isaac" / "feedback" / report_id
@@ -374,10 +334,10 @@ def test_status_reports_delivery_without_resubmitting(inline_feedback, tmp_path,
     (directory / "receipt.json").write_text("{}")
     (directory / "submission.json").write_text(json.dumps(state))
 
-    result = runner.invoke(cli.app, ["smart-router-feedback-status", "--feedback-id", report_id])
+    result = feedback.codex_feedback_delivery(report_id)
 
-    assert result.exit_code == 0, result.output
-    assert expected in " ".join(result.output.split())
+    assert result["feedback_id"] == report_id
+    assert expected in result["message"]
     run.assert_not_called()
     popen.assert_not_called()
 
@@ -389,10 +349,8 @@ def test_malformed_delivery_status_reports_error(inline_feedback, tmp_path):
     (directory / "receipt.json").write_text("{}")
     (directory / "submission.json").write_text("[]")
 
-    result = runner.invoke(cli.app, ["smart-router-feedback-status", "--feedback-id", report_id])
-
-    assert result.exit_code == 1
-    assert "delivery status is unavailable" in result.output
+    with pytest.raises(ValueError, match="delivery status is unavailable"):
+        feedback.codex_feedback_delivery(report_id)
 
 
 @pytest.fixture
@@ -453,7 +411,17 @@ def test_native_host_captures_then_disables_without_a_shell(native_router, inlin
     assert calls[1][1]["input"] == REASON
     assert calls[1][1]["env"]["CODEX_THREAD_ID"] == SESSION_ID
     assert calls[1][0][calls[1][0].index("--turn-id") + 1] == TASK_ID
+    assert calls[1][0][calls[1][0].index("--session-id") + 1] == SESSION_ID
+    assert "--full-capture" in calls[1][0]
+    assert calls[1][1]["env"]["ENABLE_SMART_ROUTING_SUBAGENT_ONLY"] == "1"
     assert all(args[0] == "/installed isaac" for args, _ in calls)
+    assert popen.call_args.args[0] == [
+        "/installed isaac",
+        "feedback",
+        "--retry",
+        result["feedback_id"],
+    ]
+    assert popen.call_args.kwargs["stdin"] == subprocess.DEVNULL
     assert popen.call_args.kwargs["env"]["CODEX_THREAD_ID"] == SESSION_ID
     assert "already off" in native_call(native_router, "off")["message"]
     assert run.call_count == 2
