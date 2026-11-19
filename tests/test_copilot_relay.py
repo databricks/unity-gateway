@@ -310,6 +310,79 @@ class TestOtelExport:
         assert [str(exc) for exc in reported] == ["refresh token expired"]
 
 
+DENIAL = "Model 'some-model' is not in the allowed models list for 'main.default.copilot'."
+
+
+class TestGatewayDenials:
+    def test_a_gateway_403_becomes_a_400_with_the_gateway_message(self, gateway, github):
+        gateway._status = 403
+        gateway._body = json.dumps({"error_code": "PERMISSION_DENIED", "message": DENIAL}).encode()
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert resp.json() == {
+            "type": "error",
+            "error": {"type": "invalid_request_error", "message": DENIAL},
+        }
+        assert github.requests == []
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(b"<html>denied</html>", id="html"),
+            pytest.param(b"", id="empty"),
+            pytest.param(b'{"message": "no error code"}', id="no-error-code"),
+            pytest.param(b'{"error_code": 7, "message": "bad code"}', id="code-not-a-string"),
+            pytest.param(b'{"error_code": "PERMISSION_DENIED", "message": ""}', id="empty-message"),
+            pytest.param(
+                json.dumps(
+                    {"error_code": "PERMISSION_DENIED", "message": "x" * (64 * 1024)}
+                ).encode(),
+                id="oversized",
+            ),
+        ],
+    )
+    def test_other_403_bodies_get_the_generic_message(self, gateway, github, body):
+        gateway._status = 403
+        gateway._body = body
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == copilot_relay._GENERIC_GATEWAY_DENIAL
+
+    @pytest.mark.parametrize("status", [404, 429])
+    def test_other_gateway_errors_are_relayed_unchanged(self, gateway, github, status):
+        gateway._status = status
+        gateway._body = b'{"error_code":"NOT_FOUND","message":"gone"}'
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == status
+        assert resp.content == gateway._body
+
+    def test_a_direct_403_is_relayed_unchanged(self, gateway, github):
+        github._status = 403
+        github._body = b'{"message":"Resource not accessible"}'
+        with _relay(gateway, github) as (http, _port, direct):
+            resp = http.get(f"/{SECRET}/agents/swe/custom-agents/o/r", headers=_auth())
+
+        assert resp.status_code == 403
+        assert resp.content == github._body
+        assert gateway.requests == []
+        assert direct == [("GET", "/agents/swe/custom-agents/o/r")]
+
+    def test_a_gateway_2xx_stream_is_relayed_unchanged(self, gateway, github):
+        gateway._headers = {"Content-Type": "text/event-stream"}
+        gateway._body = b'data: {"error":{"message":"not a failure"}}\n\n'
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 200
+        assert resp.content == gateway._body
+
+
 class TestDirectCalls:
     @pytest.mark.parametrize(
         ("method", "path"),
