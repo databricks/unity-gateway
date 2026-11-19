@@ -36,6 +36,7 @@ class FakeApp:
         self.handshakes: list[dict] = []
         self.busy = 0
         self.fail: str | None = None
+        self.drop: str | None = None
         self._server = serve(self._handle, "127.0.0.1", 0, process_request=self._check)
         port = self._server.socket.getsockname()[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -94,6 +95,9 @@ class FakeApp:
         for text in websocket:
             message = json.loads(text)
             self.received.append(message)
+            if message["type"] == self.drop:
+                websocket.close()
+                return
             reply = self._reply(message)
             if "request_id" in message and "request_id" not in reply:
                 reply["request_id"] = message["request_id"]
@@ -224,12 +228,29 @@ def test_a_refusal_stops_the_registration(app):
         copilot_app.register(BASE, CATALOG)
 
 
+def test_an_app_that_quits_mid_registration_is_not_running(app):
+    app.drop = "upsert_provider_model"
+
+    with pytest.raises(copilot_app.CopilotAppNotRunning):
+        copilot_app.register(BASE, CATALOG)
+
+
+def test_a_listed_model_without_an_id_is_left_alone(app):
+    copilot_app.register(BASE, CATALOG)
+    claude = _by_name(app)["Databricks Claude"]["id"]
+    app.models["odd"] = {"providerId": claude, "modelId": "claude-odd"}
+
+    copilot_app.register(BASE, CATALOG)
+
+    assert "odd" in app.models
+
+
 def test_an_unknown_app_version_warns_and_still_registers(app, capsys):
     app.version = "9.0.0"
 
     copilot_app.register(BASE, CATALOG)
 
-    assert "GitHub Copilot app 9.0.0 is newer than ug knows" in " ".join(
+    assert "GitHub Copilot app 9.0.0 hasn't been verified with ug" in " ".join(
         capsys.readouterr().out.split()
     )
     assert len(app.providers) == 3

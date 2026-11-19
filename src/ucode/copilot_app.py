@@ -178,11 +178,18 @@ class _AppConnection:
         except (OSError, TimeoutError, InvalidHandshake):
             raise CopilotAppNotRunning("The GitHub Copilot app isn't running.") from None
         self._backlog: list[dict[str, Any]] = []
-        if self._wait(lambda message: message.get("type") == "server_hello") is None:
+        try:
+            hello = self._wait(lambda message: message.get("type") == "server_hello")
+        except Exception:
+            self.close()
+            raise
+        if hello is None:
             self.close()
             raise CopilotAppError("The GitHub Copilot app didn't greet ug.")
 
     def _next(self, deadline: float) -> dict[str, Any] | None:
+        from websockets.exceptions import ConnectionClosed
+
         if self._backlog:
             return self._backlog.pop(0)
         while (remaining := deadline - time.monotonic()) > 0:
@@ -190,6 +197,10 @@ class _AppConnection:
                 text = self._ws.recv(timeout=remaining)
             except TimeoutError:
                 return None
+            except ConnectionClosed:
+                raise CopilotAppNotRunning(
+                    "The GitHub Copilot app closed ug's connection."
+                ) from None
             try:
                 message = json.loads(text)
             except ValueError:
@@ -212,9 +223,16 @@ class _AppConnection:
 
     def request(self, message: dict[str, Any], reply: str, **match: str) -> dict[str, Any]:
         """Send ``message`` and return the ``reply`` to it; ``match`` pins reply fields."""
+        from websockets.exceptions import ConnectionClosed
+
         for attempt in range(6):
             request_id = f"ug-{uuid.uuid4().hex[:12]}"
-            self._ws.send(json.dumps({**message, "request_id": request_id}))
+            try:
+                self._ws.send(json.dumps({**message, "request_id": request_id}))
+            except ConnectionClosed:
+                raise CopilotAppNotRunning(
+                    "The GitHub Copilot app closed ug's connection."
+                ) from None
 
             def answers(candidate: dict[str, Any], request_id=request_id) -> bool:
                 if candidate.get("request_id") not in (request_id, None):
@@ -264,7 +282,13 @@ def _models(app: _AppConnection, provider_id: str) -> list[dict[str, Any]]:
     ).get("models")
     if not isinstance(models, list):
         raise CopilotAppError("The GitHub Copilot app listed its models in a new shape.")
-    return [m for m in models if isinstance(m, dict) and m.get("providerId") == provider_id]
+    return [
+        m
+        for m in models
+        if isinstance(m, dict)
+        and isinstance(m.get("id"), str)
+        and m.get("providerId") == provider_id
+    ]
 
 
 def _connect() -> _AppConnection:
@@ -276,8 +300,8 @@ def _connect() -> _AppConnection:
         raise
     if version not in VERIFIED_APP_VERSIONS:
         print_warning(
-            f"GitHub Copilot app {version or '(unknown version)'} is newer than ug knows; "
-            "registering its Databricks providers anyway."
+            f"GitHub Copilot app {version or '(unknown version)'} hasn't been verified with ug; "
+            "continuing anyway."
         )
     return app
 
