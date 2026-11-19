@@ -1,4 +1,6 @@
 import type { On, PluginOptions } from 'claude-code'
+import { matchesAutoModel } from './auto-model.ts'
+import { isRoutingEnabled } from './routing-state.ts'
 
 type NumericDetails = Record<string, number>
 export type ExplanationModel = {
@@ -226,7 +228,11 @@ export function endSubagentRoutingTurn(aborted: boolean): void {
   if (aborted) cards.unplaced = []
 }
 
-export const registerSubagentRouting = (on: On, options: PluginOptions): void => {
+export const registerSubagentRouting = (
+  on: On,
+  options: PluginOptions,
+  autoModels?: readonly string[],
+): void => {
   routedModels.reset()
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
@@ -245,7 +251,15 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
   on('tool.call', { tool: ['Agent', 'Task'] }, async ($, e, next) => {
     const command = options.routeCommand as readonly string[] | undefined
     if (!command?.length || e.subagent_type === 'fork' || e.resume) return next(e)
-    const { tool, tool_use_id, agentId: _agentId, ...input } = e
+    const selected = autoModels ? await $.session.model() : ''
+    if (autoModels && (
+      !autoModels.some(model => matchesAutoModel(model, selected)) ||
+      !isRoutingEnabled({
+        ENABLE_SMART_ROUTING_V2: await $.env.get('ENABLE_SMART_ROUTING_V2'),
+        ENABLE_SMART_ROUTING_SUBAGENT_ONLY: await $.env.get('ENABLE_SMART_ROUTING_SUBAGENT_ONLY'),
+      })
+    )) return next(e)
+    const { tool, tool_use_id, agentId, ...input } = e
     let route
     let spinner: { cancel: () => void } | undefined
     if (tool_use_id) {
@@ -278,7 +292,7 @@ export const registerSubagentRouting = (on: On, options: PluginOptions): void =>
     try {
       const session_id = await $.session.id()
       const result = await $.process.run(command, {
-        stdin: JSON.stringify({ session_id, tool_use_id, tool_name: tool, tool_input: input }),
+        stdin: JSON.stringify({ session_id, agent_id: agentId, tool_use_id, tool_name: tool, tool_input: input }),
         timeoutMs: 35000,
       })
       if (result.exitCode !== 0) throw new Error('Router command failed')

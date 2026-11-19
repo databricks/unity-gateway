@@ -3316,6 +3316,23 @@ def get_model_service(
     return payload, None
 
 
+def model_service_backing_model(service: dict) -> str | None:
+    """The foundation model behind ``service``'s first live primary destination, if it has one."""
+    routing = (service.get("config") or {}).get("routing") or {}
+    destinations = routing.get("destinations")
+    for destination in destinations if isinstance(destinations, list) else []:
+        if (
+            not isinstance(destination, dict)
+            or destination.get("is_deleted")
+            or not (destination.get("traffic_percentage") or 0) > 0
+        ):
+            continue
+        model = (destination.get("pay_per_token_config") or {}).get("model")
+        if isinstance(model, str) and model:
+            return model.removeprefix("models/")
+    return None
+
+
 def model_service_primary_providers(service: dict) -> list[str]:
     """The Model Provider Services behind ``service``'s live primary destinations."""
     routing = (service.get("config") or {}).get("routing") or {}

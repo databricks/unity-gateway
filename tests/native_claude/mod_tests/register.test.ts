@@ -3,6 +3,7 @@ import { expect, mock, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
 import { parseSmartRouterCommand } from '../hooks/isaac-feedback.ts';
+import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
@@ -52,6 +53,31 @@ test('session start carries the launch recipe and forwards the event and result'
   expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY!)).toEqual({ caller_field: 'keep', [RECIPE_FIELD]: RECIPE });
   // The recipe left ANTHROPIC_CUSTOM_HEADERS, which a managed config pins.
   expect(writes).not.toContain('ANTHROPIC_CUSTOM_HEADERS');
+});
+
+test('an Auto flag without a launch picker leaves model and effort commands native', {
+  options: { ...ROUTED, ENABLE_SMART_ROUTER_AUTO_MODE: '1' },
+}, async ($, on) => {
+  const { env } = setup(on);
+  env.ENABLE_SMART_ROUTER_AUTO_MODE = '1';
+  const registered: string[] = [];
+  const commands: { command: string; args: string }[] = [];
+  on('session.start', () => ({ cwd: '/work' }));
+  on('command.register', ($, e) => {
+    registered.push(e.name);
+    return { value: undefined };
+  });
+  on('command.run', ($, e) => {
+    commands.push({ command: e.command, args: e.args });
+    return { ref: 1, text: `native ${e.command} ${e.args}` };
+  });
+  on('ui.invalidate', () => ({ value: undefined }));
+  await $.session.start(start);
+
+  expect((await $.command.run({ command: 'model', args: 'sonnet' })).text).toBe('native model sonnet');
+  expect((await $.command.run({ command: 'effort', args: 'high' })).text).toBe('native effort high');
+  expect(commands).toEqual([{ command: 'model', args: 'sonnet' }, { command: 'effort', args: 'high' }]);
+  expect(registered).not.toContain('auto');
 });
 
 test('a denied extra-body write restores the environment and reports failure', { options: ROUTED }, async ($, on) => {
@@ -128,6 +154,28 @@ async function hintTail($: any, tails: unknown[]): Promise<unknown> {
   await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: '' } });
   return tails.at(-1);
 }
+
+test('native Auto aliases preserve the configured digest, mapping and context', () => {
+  const model = 'system.ai.claude-opus-4-6[1m]';
+  const alias = 'ug-auto-111111111111-claude-opus-4-6[1m]';
+  const bare = 'ug-auto-222222222222-claude-opus-4-6';
+  const auto = {model: alias, mainModel: model, storeKey: 'main', description: 'Auto', models: [
+    {model, label: '1M', autoModel: alias}, {model: model.slice(0, -4), label: 'bare', autoModel: bare},
+  ]};
+  const overrides = {[alias]: model, [bare]: model.slice(0, -4)};
+  for (const selected of [alias, alias.slice(0, -4)]) {
+    expect(resolveAutoModel(auto, selected)).toBe(alias);
+    expect(sameAutoTarget(auto, model, selected, overrides)).toBe(true);
+    expect(sameAutoTarget(auto, selected, alias, overrides)).toBe(true);
+    expect(sameAutoTarget(auto, bare, selected, overrides)).toBe(false);
+    expect(sameAutoTarget(auto, model.slice(0, -4), selected, overrides)).toBe(false);
+    expect(sameAutoTarget(auto, model, selected, {[alias]: model.slice(0, -4)})).toBe(false);
+  }
+  for (const manual of [model, model.slice(0, -4), bare + '[1m]', alias.replace('111111111111', '333333333333').slice(0, -4)]) {
+    expect(resolveAutoModel(auto, manual)).toBe(manual);
+    expect(sameAutoTarget(auto, model, manual, overrides)).toBe(false);
+  }
+});
 
 test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);

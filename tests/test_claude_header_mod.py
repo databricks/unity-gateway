@@ -414,3 +414,32 @@ def test_routed_launch_warns_without_current_language_mod_and_keeps_launching(
         warning.assert_not_called()
     assert writes == []
     assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+
+
+@pytest.mark.parametrize("managed_run", [False, True], ids=["merge", "managed-run"])
+def test_launch_warns_when_ug_headers_cannot_reach_claude(monkeypatch, managed_run):
+    warnings: list[str] = []
+    monkeypatch.setenv("UG_HEADERS", "X-Team: eng")
+    monkeypatch.setattr(claude, "header_mod_active", lambda: False)
+    monkeypatch.setattr(claude, "published_agent_config_used", lambda: managed_run)
+    monkeypatch.setattr(claude, "print_warning", warnings.append)
+    claude._warn_if_launch_headers_dropped()
+    assert len(warnings) == 1
+    if managed_run:
+        assert "published agent configuration" in warnings[0]
+        assert "`http_headers`" in warnings[0]
+        assert "Run `ug configure`" not in warnings[0]
+    else:
+        assert "Run `ug configure`" in warnings[0]
+
+
+def test_launch_without_ug_headers_or_with_an_active_mod_says_nothing(monkeypatch):
+    warnings: list[str] = []
+    monkeypatch.setattr(claude, "print_warning", warnings.append)
+    monkeypatch.setattr(claude, "published_agent_config_used", lambda: True)
+    monkeypatch.delenv("UG_HEADERS", raising=False)
+    claude._warn_if_launch_headers_dropped()
+    monkeypatch.setenv("UG_HEADERS", "X-Team: eng")
+    monkeypatch.setattr(claude, "header_mod_active", lambda: True)
+    claude._warn_if_launch_headers_dropped()
+    assert warnings == []

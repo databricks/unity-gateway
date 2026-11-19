@@ -116,12 +116,13 @@ def test_root_runs_privileged_commands_without_sudo(monkeypatch):
 
 
 @pytest.mark.parametrize("args", [["configure"], ["revert"]], ids=["configure", "revert"])
-def test_configure_and_revert_request_explicit_writes(monkeypatch, args):
+def test_configure_and_revert_request_explicit_writes(monkeypatch, tmp_path, args):
     def stop(*_a, **_kw):
         raise RuntimeError("stop after the flag is set")
 
     monkeypatch.setattr(cli_mod, "install_databricks_cli", stop)
     monkeypatch.setattr(cli_mod, "revert", stop)
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "managed.json")
 
     CliRunner().invoke(cli_mod.app, args)
 

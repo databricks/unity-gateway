@@ -133,7 +133,9 @@ def test_filesystem_errors_are_nonfatal(log_dir, decision, monkeypatch, failure)
 
 def test_claude_subagent_audit_writes_one_timed_record(log_dir, tmp_path, decision, monkeypatch):
     monkeypatch.setattr(v2.claude_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
-    monkeypatch.setattr(v2, "_request_claude_routing_decision", lambda *args: (decision, None))
+    monkeypatch.setattr(
+        v2, "_request_claude_routing_decision", lambda *args, **kwargs: (decision, None)
+    )
     payload = {
         "session_id": "s1",
         "tool_name": "Agent",
@@ -158,7 +160,9 @@ def test_claude_subagent_audit_writes_one_timed_record(log_dir, tmp_path, decisi
 
 
 def test_no_session_record_without_audit_or_route(log_dir, decision, monkeypatch):
-    monkeypatch.setattr(v2, "_request_claude_routing_decision", lambda *args: (decision, None))
+    monkeypatch.setattr(
+        v2, "_request_claude_routing_decision", lambda *args, **kwargs: (decision, None)
+    )
     payload = {"session_id": "s1", "tool_name": "Agent", "tool_input": {"prompt": "inspect"}}
     kwargs = {
         "workspace": "https://example.com",
@@ -178,3 +182,135 @@ def test_clear_routing_artifacts_removes_session_logs(log_dir, decision, tmp_pat
     assert log_dir.exists()
     claude_routing.clear_routing_artifacts()
     assert not log_dir.exists()
+
+
+def listed(**overrides):
+    return {
+        "v": 1,
+        "type": "decision",
+        "decision_id": "abcd1234",
+        "at": 1000.0,
+        "prompt": {"preview": "line one\n  line two"},
+        "selected_model": "m",
+        "routing_ms": 5,
+        **overrides,
+    }
+
+
+def box(*lines):
+    return ["┌" + "─" * 75 + "┐", *(f"│ {line:<73} │" for line in lines), "└" + "─" * 75 + "┘"]
+
+
+def test_render_table_formats_age_and_collapses_whitespace():
+    lines = session_log.render_table([listed()], now=1000.0 + 7200).splitlines()
+    assert lines[2:-1] == box(
+        "ID        WHEN    TASK               MODEL  ROUTING",
+        "abcd1234  2h ago  line one line two  m      5 ms",
+    )
+
+
+def test_render_table_with_no_listable_records_is_boxed_empty_message():
+    text = session_log.render_table([{"v": 1, "type": "decision"}])
+    assert text.splitlines() == box("No routed subagents recorded this session yet.")
+
+
+def test_render_table_shrinks_task_column_to_fit_the_box():
+    long = listed(prompt={"preview": "t" * 200}, selected_model="system.ai.gpt-5-6-sol")
+    lines = session_log.render_table([long], now=1000.0).splitlines()
+    assert lines[0] == "1 routed subagents this session (showing last 1)"
+    assert lines[1] == ""
+    assert lines[-1] == "Show one: $smart-router logs --id <ID>"
+    assert all(len(line) == 77 for line in lines[2:-1])
+    # 73 columns minus ID 8, WHEN 8, MODEL 11, ROUTING 7 and four 2-column gaps leaves 31 for TASK.
+    assert lines[4] == f"│ abcd1234  just now  {'t' * 30}…  gpt-5-6-sol  5 ms    │"
+
+
+def test_render_table_truncates_model_only_after_task_hits_its_minimum():
+    wide = listed(prompt={"preview": "t" * 200}, selected_model="m" * 80)
+    lines = session_log.render_table([wide], now=1000.0).splitlines()
+    assert all(len(line) == 77 for line in lines[2:-1])
+    assert lines[4].count("…") == 2
+    assert f"  {'t' * 11}…  " in lines[4]
+
+
+def test_render_detail_exact_boxed_layout_with_hanging_indent():
+    record = {
+        "decision_id": "e789d49a" + "0" * 24,
+        "at": 1000.0,
+        "prompt": {"preview": "Investigate the service named ai-gateway. " * 3},
+        "original": {"subagent_type": None},
+        "selected_model": "system.ai.databricks-gpt-5-6-terra",
+        "routing_ms": 4040,
+        "rationale": "This task involves several related components. " * 2,
+        "candidates": [
+            {"model": "system.ai.gpt-6-astra"},
+            {"model": "system.ai.databricks-gpt-5-6-terra"},
+        ],
+    }
+    assert session_log.render_detail(record, now=1120.0).splitlines() == [
+        *box(
+            "Routing decision e789d49a · 2m ago",
+            "",
+            "Prompt preview:  Investigate the service named ai-gateway. Investigate",
+            "                 the service named ai-gateway. Investigate the service",
+            "                 named ai-gateway.",
+            "Selected:        gpt-5-6-terra",
+            "Routing time:    4.0s",
+            "Rationale:       This task involves several related components. This task",
+            "                 involves several related components.",
+            "",
+            "Candidates",
+            "  ○ gpt-6-astra",
+            "  ● gpt-5-6-terra  (selected)",
+        ),
+        "Back to the list: $smart-router logs",
+    ]
+
+
+def test_routing_card_box_is_unchanged():
+    assert routing.format_subagent_message("m", "why", subagent_name="s").splitlines() == box(
+        "Using Unity Gateway Smart Router - Subagent",
+        "Subagent : s",
+        "Selected Model : m",
+        "Reason : why",
+    )
+
+
+def test_session_logs_are_isolated_from_the_real_home(tmp_path):
+    assert session_log.LOG_DIR.is_relative_to(tmp_path)
+
+
+def _detail_record(**overrides):
+    record = {
+        "decision_id": "abcdef0123456789",
+        "at": 1_000.0,
+        "prompt": {"preview": "first line"},
+        "original": None,
+        "selected_model": "system.ai.gpt-5-6-luna",
+        "routing_ms": 1200,
+        "rationale": "short reason",
+        "candidates": [{"model": "system.ai.gpt-5-6-luna"}],
+    }
+    return {**record, **overrides}
+
+
+@pytest.mark.parametrize("at", [10**400, float("inf"), float("nan")])
+def test_render_detail_shows_unknown_age_for_out_of_range_timestamps(at):
+    assert "Routing decision abcdef01 · ?" in session_log.render_detail(
+        _detail_record(at=at), now=2_000.0
+    )
+
+
+def test_render_detail_collapses_whitespace_in_preview_and_rationale():
+    out = session_log.render_detail(
+        _detail_record(prompt={"preview": "line one\n\tline two"}, rationale="because\nreasons"),
+        now=2_000.0,
+    )
+    assert "�" not in out
+    assert "line one line two" in out
+    assert "because reasons" in out
+
+
+def test_render_detail_keeps_the_label_for_an_empty_value():
+    out = session_log.render_detail(_detail_record(prompt={"preview": "   "}), now=2_000.0)
+    assert "Prompt preview:" in out

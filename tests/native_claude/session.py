@@ -36,6 +36,7 @@ class Session:
         api="http://127.0.0.1:1",
         route_command=(),
         resume=None,
+        auto_picker=None,
         user_settings=None,
     ):
         self.root = root
@@ -58,6 +59,8 @@ class Session:
         if user_settings is not None:
             (root / "config/settings.json").write_text(json.dumps(user_settings))
         options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
+        if auto_picker is not None:
+            options["autoPicker"] = json.dumps(auto_picker)
         settings = {
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),

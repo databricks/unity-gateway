@@ -33,6 +33,7 @@ jobs:
       labels: linux-ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       pull-requests: read
     outputs:
       metadata: ${{ steps.pr.outputs.metadata }}
@@ -49,14 +50,42 @@ jobs:
           import re
           import subprocess
           import sys
+          import urllib.parse
 
           event = json.load(open(os.environ["GITHUB_EVENT_PATH"]))
-          request = event["workflow_run"]
-          match = re.fullmatch(r"CI #([1-9][0-9]*)", request["display_title"])
-          if (request["event"] != "pull_request" or
-                  request["path"] != ".github/workflows/ci.yml" or not match):
-              sys.exit("::error::Expected a PR CI request with its PR number in the run name.")
-          repo, number = os.environ["REPO"], int(match[1])
+          run_id = event["workflow_run"].get("id")
+          if type(run_id) is not int or run_id <= 0:
+              sys.exit("::error::Security Scan requires a valid triggering CI run ID.")
+          repo = os.environ["REPO"]
+          request = json.loads(subprocess.check_output(
+              ["gh", "api", f"repos/{repo}/actions/runs/{run_id}"], timeout=30
+          ))
+          if request["id"] != run_id:
+              sys.exit("::error::GitHub returned a different CI run ID.")
+          if request["event"] != "pull_request":
+              sys.exit(f"::error::CI run {run_id} event must be pull_request.")
+          if request["path"] != ".github/workflows/ci.yml":
+              sys.exit(f"::error::CI run {run_id} path must be .github/workflows/ci.yml.")
+          # The run name is the PR title while a fork's CI awaits approval, so find the PR by
+          # head alone; the title is never a selector, and several open PRs can share a head.
+          head_repository = request.get("head_repository") or {}
+          head_branch = request.get("head_branch") or ""
+          owner = (head_repository.get("owner") or {}).get("login") or ""
+          if not (head_repository.get("id") and owner and head_branch):
+              sys.exit(f"::error::CI run {run_id} is missing its head repository or branch.")
+          head = f"{owner}:{head_branch}"
+          query = urllib.parse.urlencode({"head": head, "state": "open", "per_page": 100})
+          candidates = [
+              c for c in json.loads(subprocess.check_output(
+                  ["gh", "api", f"repos/{repo}/pulls?{query}"], timeout=30
+              ))
+              if c["head"]["sha"] == request["head_sha"] and c["head"]["repo"] and
+              c["head"]["repo"]["id"] == head_repository["id"]
+          ]
+          if len(candidates) != 1:
+              sys.exit(f"::error::CI run {run_id} must match exactly one open PR head, "
+                       f"found {len(candidates)}.")
+          number = candidates[0]["number"]
           pr = json.loads(subprocess.check_output(
               ["gh", "api", f"repos/{repo}/pulls/{number}"], timeout=30
           ))
@@ -64,7 +93,7 @@ jobs:
           if (pr["number"] != number or pr["state"] != "open" or not head_repo or
                   pr["base"]["repo"]["full_name"] != repo or
                   pr["head"]["sha"] != request["head_sha"] or
-                  head_repo["id"] != request["head_repository"]["id"] or
+                  head_repo["id"] != head_repository["id"] or
                   pr["head"]["ref"] != request["head_branch"]):
               sys.exit("::error::CI request no longer matches the open PR's head and repository.")
           if not all(re.fullmatch(r"[0-9a-f]{40}", pr[side]["sha"]) for side in ("head", "base")):

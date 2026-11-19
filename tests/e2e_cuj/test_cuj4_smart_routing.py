@@ -18,6 +18,7 @@ from tests.integration.utils.evidence import (
 )
 from ucode.smart_routing.config import (
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
+    SUBAGENT_AUTO_V0_CLAUDE_ONLY,
     SUBAGENT_ONLY_V0,
     SUBAGENT_ONLY_V1,
     SUBAGENT_ORCH_V0,
@@ -27,7 +28,7 @@ from ucode.smart_routing.config import (
 )
 
 from .base import BaseCujTest
-from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, CodingAgent
+from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS, CodingAgent
 from .helpers.evidence import (
     SessionEvidence,
     SessionObservation,
@@ -331,11 +332,164 @@ def completed_smart_routing_runs(cuj):
     return run_smart_routing_journeys(cuj)
 
 
+class TestCujAutoModelPicker(BaseCujTest):
+    WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
+
+    def test_auto_preset_starts_on_managed_default_and_toggles_routing(self, cuj):
+        """Scenario: select the Auto preset, launch Claude, switch to manual, then back.
+
+        Expected: Auto starts with the managed default and ON in its band and footer.
+        Both show OFF for a regular model and ON after selecting a different Auto main model.
+        Launch preserves model metadata while retargeting the recording proxy.
+        Model selections preserve the launched managed settings.
+        The selected alternate main model then completes real inference. The existing
+        preset journey also exercises Auto main/subagent inference and routing decisions.
+        """
+        with smart_router_preset(cuj, SUBAGENT_AUTO_V0_CLAUDE_ONLY) as (
+            session,
+            workspace,
+            recorder,
+            configs,
+        ):
+            default = configs[CLAUDE]["default_models"]["default_model"]
+            settings = json.loads(MANAGED_PATHS[0].read_text())
+            assert settings["modelPicker"]["replaceBuiltInOptions"] is True
+            picker_rows = settings["modelPicker"]["options"]
+            auto_rows = [row for row in picker_rows if row["model"].startswith("ug-auto-")]
+            assert len(auto_rows) == 1 and auto_rows[0]["label"] == "Auto"
+            assert settings["modelOverrides"][auto_rows[0]["model"]] == default
+            rows = [row for row in picker_rows if not row["model"].startswith("ug-auto-")]
+            row = next(row for row in rows if row["model"] == default)
+            label = row["label"].removeprefix("Claude ")
+            alternate = next(row for row in rows if row["model"] != default)
+            alternate_label = alternate["label"].removeprefix("Claude ")
+            neighbor_label = next(
+                row["label"].removeprefix("Claude ")
+                for row in rows
+                if row["model"] != alternate["model"]
+            )
+            saved_notice = (
+                f"Auto mode: main model {alternate['model'].removeprefix('system.ai.')}, "
+                "subagents smart routed."
+            )
+            checkpoint = recorder.checkpoint()
+            recorder.prepare_launch()
+            evidence = SessionEvidence(session.home, CLAUDE)
+            with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
+                tui.boot(timeout=150)
+                expected_settings = {
+                    **settings,
+                    "apiKeyHelper": settings["apiKeyHelper"].replace(
+                        workspace.url.rstrip("/"), recorder.url
+                    ),
+                    "env": {
+                        **settings["env"],
+                        "ANTHROPIC_BASE_URL": settings["env"]["ANTHROPIC_BASE_URL"].replace(
+                            workspace.url.rstrip("/"), recorder.url
+                        ),
+                    },
+                }
+                managed_before = MANAGED_PATHS[0].read_bytes()
+                assert json.loads(managed_before) == expected_settings
+                tui.wait_for(
+                    lambda s: (
+                        f"Auto ({label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "startup Auto with the managed default and ON band and footer",
+                )
+                tui.submit("/model")
+                tui.wait_for(lambda s: "Select model" in s, "the native model picker")
+                auto_rows = [
+                    line for line in tui.visible.splitlines() if re.search(r"\d+\. Auto\b", line)
+                ]
+                assert len(auto_rows) == 1 and "✔" in auto_rows[0], tui.visible
+                tui.choose("Select model", label)
+                tui.wait_for(
+                    lambda s: (
+                        "Set model to" in s
+                        and "Auto (" not in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=False, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=False)
+                    ),
+                    "manual model with OFF band and footer",
+                )
+                tui.submit("/model auto")
+
+                def main_model_focused(label):
+                    return re.search(
+                        r"\d+\.\s+" + re.escape(label) + r"\s*$",
+                        tui.selected_line(after="Auto: choose your main model"),
+                    )
+
+                tui.wait_for(
+                    lambda s: "Auto: choose your main model" in s and main_model_focused(label),
+                    "the Auto selector focused on the current main model",
+                )
+                tui.send("\x1b[B", "focus " + alternate_label + " as the Auto main model")
+                tui.wait_for(
+                    lambda s: main_model_focused(alternate_label),
+                    "the selected Auto main model before saving",
+                )
+                tui.send("\r", "save " + alternate_label + " as the Auto main model")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto: choose your main model" not in s
+                        and saved_notice in " ".join(s.split())
+                        and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the restored Auto ON band and footer",
+                )
+                # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
+                # assert "ug-auto" not in tui.visible
+                task = _file_task(session, CLAUDE)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                requests = recorder.requests_after(checkpoint)
+                inference = _task_inference_request(requests, CLAUDE, task.prompt)
+                inference = served_inference_request(recorder, requests, inference, CLAUDE)
+                assert canonical_model(inference.payload["model"]) == canonical_model(
+                    alternate["model"]
+                )
+                assert not any(request.path == ROUTING_PATH for request in requests)
+                evidence.assert_applied(
+                    task, workspace.model_ids(CLAUDE), expected=alternate["model"]
+                )
+                tui.submit("/model auto")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto: choose your main model" in s and main_model_focused(alternate_label)
+                    ),
+                    "the current Auto main model",
+                )
+                tui.send("\x1b[B", "focus another main model without selecting it")
+                tui.wait_for(lambda s: main_model_focused(neighbor_label), "another model's focus")
+                tui.send("\x1b[A", "return to the unchanged Auto main model")
+                tui.wait_for(lambda s: main_model_focused(alternate_label), "the unchanged model")
+                tui.send("\r", "save the unchanged Auto main model")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto: choose your main model" not in s
+                        and saved_notice in " ".join(s.split())
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the unchanged Auto selection saved without reopening its selector",
+                )
+                assert "re-read the full conversation" not in " ".join(tui.visible.split())
+                tui.exit_normally()
+            assert MANAGED_PATHS[0].read_bytes() == managed_before
+
+
 class TestCujSmartRouting(BaseCujTest):
     WORKSPACE_URL = "https://dbc-1a9622fc-2e91.cloud.databricks.com/"
 
     @pytest.mark.parametrize("agent", AGENTS)
-    @pytest.mark.parametrize("SMART_ROUTER_CONFIG_VERSION", SMART_ROUTER_CONFIG_VERSIONS)
+    @pytest.mark.parametrize(
+        "SMART_ROUTER_CONFIG_VERSION", (*SMART_ROUTER_CONFIG_VERSIONS, SUBAGENT_AUTO_V0_CLAUDE_ONLY)
+    )
     def test_smart_router_preset_routes_first_prompt_then_explicit_native_subagent(
         self, cuj, agent, SMART_ROUTER_CONFIG_VERSION
     ):
