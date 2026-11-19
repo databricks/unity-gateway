@@ -229,6 +229,7 @@ class _CopilotRelayHandler(_ProxyHandler):
     _gateway_call = False
 
     def _handle(self) -> None:
+        self._gateway_call = False
         raw_path, _, query = self.path.partition("?")
         if not _is_normalized(raw_path):
             self._reject(404, "This path is not served by the Unity Gateway Copilot relay.")
