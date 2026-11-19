@@ -758,12 +758,14 @@ class ServiceRoute:
 
     ``upstream`` is the gateway path (None answers locally with an empty 200). ``headers`` go on
     the forwarded request. With ``sign_in_error``, a dead Databricks login gets a local 400, for
-    agents that hide a 401; ``bad_request_rewriter`` may replace the body of a gateway 400."""
+    agents that hide a 401; ``bad_request_rewriter`` may replace the body of a gateway 400, and
+    ``dropped_fields`` are removed from Chat Completions request bodies."""
 
     upstream: str | None
     headers: Mapping[str, str] = dataclasses.field(default_factory=dict)
     sign_in_error: bool = False
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    dropped_fields: frozenset[str] = frozenset()
 
 
 class _ServiceHandler(_GatewayAuthProxyHandler):
@@ -795,6 +797,7 @@ class _ServiceHandler(_GatewayAuthProxyHandler):
             return False
         self.path = upstream
         self.bad_request_rewriter = self._route.bad_request_rewriter
+        self.dropped_chat_completions_fields = self._route.dropped_fields
         return True
 
     def _added_headers(self, body: bytes | None) -> dict[str, str]:

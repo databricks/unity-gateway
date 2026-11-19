@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 
 import pytest
-from utils.constants import CLAUDE_TEST_MODEL, COPILOT_GPT_TEST_MODEL
+from utils.constants import CLAUDE_TEST_MODEL, COPILOT_GLM_TEST_MODEL, COPILOT_GPT_TEST_MODEL
 from utils.harness import process_group_options, stop_process
 
 pytestmark = [pytest.mark.live, pytest.mark.copilot]
@@ -47,9 +47,10 @@ def _wait_for_port(proc: subprocess.Popen, port: int) -> None:
 
 def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
     """Scenario: configure Copilot, run ug's login service the way its desktop unit does, and
-    send the streamed Claude and GPT turns the GitHub Copilot app sends to its two providers.
+    send the streamed Claude, GPT and open-model turns the GitHub Copilot app sends to its three
+    providers. The open-model turn carries the `reasoning_effort` Copilot sends.
 
-    Expected: both turns stream a completed answer from the workspace gateway although the app
+    Expected: all three turns stream a completed answer from the workspace gateway although the app
     holds no Databricks credential; any other path is refused.
     """
     session = live_session
@@ -96,6 +97,15 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
             f"{base}/copilot/responses/v1/responses",
             {"model": COPILOT_GPT_TEST_MODEL, "input": prompt, "stream": True},
         )
+        glm_status, glm = _post(
+            f"{base}/copilot/completions/v1/chat/completions",
+            {
+                "model": COPILOT_GLM_TEST_MODEL,
+                "stream": True,
+                "reasoning_effort": "none",
+                "messages": [{"role": "user", "content": prompt}],
+            },
+        )
         other_status, _ = _post(f"{base}/api/2.0/clusters/list", {})
     finally:
         stop_process(proc)
@@ -109,10 +119,13 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
         {
             "claude": [claude_status, claude.decode(errors="replace")[-2000:]],
             "gpt": [gpt_status, gpt.decode(errors="replace")[-2000:]],
+            "glm": [glm_status, glm.decode(errors="replace")[-2000:]],
         },
     )
     assert claude_status == 200, claude
     assert b"event: message_stop" in claude
     assert gpt_status == 200, gpt
     assert b"response.completed" in gpt
+    assert glm_status == 200, glm
+    assert b'"choices"' in glm
     assert other_status == 404

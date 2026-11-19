@@ -787,6 +787,12 @@ _EXACT_ROUTES = {
         {**_APP_HEADERS, "Databricks-Model-Provider-Service": "cat.s.mps"},
         sign_in_error=True,
     ),
+    ("POST", "/copilot/completions/v1/chat/completions"): gateway_proxy.ServiceRoute(
+        "/ai-gateway/mlflow/v1/chat/completions",
+        _APP_HEADERS,
+        sign_in_error=True,
+        dropped_fields=frozenset({"reasoning_effort"}),
+    ),
     ("POST", "/copilot/otel/v1/traces"): gateway_proxy.ServiceRoute(
         "/ai-gateway/otel/v1/traces", _APP_HEADERS, sign_in_error=True
     ),
@@ -877,6 +883,22 @@ class TestLoginServicePortEndToEnd:
         assert req.path == "/ai-gateway/openai/v1/responses"
         assert req.header("Databricks-Model-Provider-Service") == "cat.s.mps"
         assert req.names.count("databricks-model-provider-service") == 1
+
+    def test_drops_the_route_fields_only_from_chat_completions(self, make_gateway):
+        body = {"model": "system.ai.glm-5-2", "stream": True, "reasoning_effort": "high"}
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            for path in (
+                "/copilot/completions/v1/chat/completions",
+                "/copilot/responses/v1/responses",
+            ):
+                resp = httpx.post(f"{url}{path}", json=body, timeout=10)
+                assert resp.status_code == 200
+        completions, responses = gw.requests
+        assert completions.path == "/ai-gateway/mlflow/v1/chat/completions"
+        assert json.loads(completions.body) == {"model": "system.ai.glm-5-2", "stream": True}
+        assert responses.path == "/ai-gateway/openai/v1/responses"
+        assert json.loads(responses.body) == body
 
     def test_forwards_app_traces_and_answers_metrics_locally(self, make_gateway):
         gw = make_gateway()

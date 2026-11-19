@@ -2133,8 +2133,19 @@ class TestAppServiceRoutes:
         assert claude.headers["x-databricks-use-coding-agent-mode"] == "true"
         assert "copilot/1.0.91" in claude.headers["User-Agent"]
         assert claude.sign_in_error and claude.bad_request_rewriter is not None
+        assert not claude.dropped_fields and not gpt.dropped_fields
         # Without workspace tracing the app's OTLP export has nowhere to go.
         assert not any(path.startswith("/copilot/otel/") for _, path in routes)
+
+    def test_open_model_turns_go_to_chat_completions_without_reasoning_effort(self):
+        routes = copilot.app_service_routes({"workspace": self.WS})
+
+        completions = routes[("POST", "/copilot/completions/v1/chat/completions")]
+
+        assert completions.upstream == "/ai-gateway/mlflow/v1/chat/completions"
+        assert completions.dropped_fields == {"reasoning_effort"}
+        assert completions.sign_in_error and completions.bad_request_rewriter is not None
+        assert copilot.MODEL_PROVIDER_SERVICE_HEADER not in completions.headers
 
     def test_a_provider_service_routes_only_the_turns(self):
         routes = copilot.app_service_routes(
@@ -2148,6 +2159,9 @@ class TestAppServiceRoutes:
         traces = routes[("POST", "/copilot/otel/v1/traces")]
         assert gpt.upstream == "/ai-gateway/openai/v1/responses"
         assert gpt.headers[copilot.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+        completions = routes[("POST", "/copilot/completions/v1/chat/completions")]
+        assert completions.upstream == "/ai-gateway/openai/v1/chat/completions"
+        assert completions.headers[copilot.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
         assert (
             routes[("POST", "/copilot/anthropic/v1/messages")].headers[
                 copilot.MODEL_PROVIDER_SERVICE_HEADER
