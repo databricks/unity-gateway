@@ -724,7 +724,7 @@ class TestGeminiLaunch:
             pytest.fail(f"model={model} timed out after {timeout_seconds}s (ug_ci_case={case_id})")
         if result.returncode != 0 or not result.stdout.strip():
             pytest.fail(
-                f"Gemini launch failure: model={model} rc={result.returncode} "
+                f"Gemini launch failure: model={model} rc={result.returncode} ug_ci_case={case_id} "
                 f"stdout={result.stdout[-500:]!r} stderr={result.stderr[-1500:]!r}"
             )
 
