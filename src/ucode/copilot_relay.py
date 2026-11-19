@@ -7,7 +7,8 @@ Databricks token rides the swap header, with the Model Provider Service and the 
 API host. Every other Copilot API call goes straight to that Copilot API host with the caller's
 own headers. Copilot's OTLP export posts below the same secret: traces go to the gateway's OTel
 route with a Databricks token in ``Authorization``, and metrics, which the gateway doesn't take,
-get an empty success. Responses are relayed as they arrive, never rewritten.
+get an empty success. Responses are relayed as they arrive, except that a gateway 403 becomes a 400
+carrying the gateway's message, because Copilot hides 401 and 403 bodies but shows 400 bodies.
 
 Security invariants:
   - Binds 127.0.0.1 and serves only requests addressed to it, from no browser origin, whose first
@@ -30,7 +31,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -224,8 +225,10 @@ class _CopilotRelayHandler(_ProxyHandler):
     on_direct_request: Callable[[str, str], None]
 
     _api_host = ""
+    _gateway_call = False
 
     def _handle(self) -> None:
+        self._gateway_call = False
         raw_path, _, query = self.path.partition("?")
         if not _is_normalized(raw_path):
             self._reject(404, "This path is not served by the Unity Gateway Copilot relay.")
@@ -274,6 +277,7 @@ class _CopilotRelayHandler(_ProxyHandler):
             self._forward_direct(host, call + suffix)
             return
         self._api_host = host
+        self._gateway_call = True
         self.path = gateway_path + suffix
         super()._handle()
 
@@ -331,6 +335,11 @@ class _CopilotRelayHandler(_ProxyHandler):
         self._send_json_error(400, f"Databricks sign-in expired. {self.sign_in_hint}")
         return True
 
+    def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
+        if not self._gateway_call or resp.status_code != 403:
+            return super()._relay_response(resp, **kwargs)
+        self._send_json_error(400, _gateway_denial_message(resp))
+
     def _forward_direct(self, host: str, path: str) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
         body = self.rfile.read(length) if length else None
@@ -382,6 +391,35 @@ class _CopilotRelayHandler(_ProxyHandler):
             self.wfile.write(body)
         except OSError:
             pass
+
+
+_GATEWAY_DENIAL_BODY_LIMIT = 64 * 1024
+_GENERIC_GATEWAY_DENIAL = "Unity Gateway denied this request. Check your access to the model."
+
+
+def _gateway_denial_message(resp: httpx.Response) -> str:
+    """The message of a Databricks error body (``error_code`` and ``message``), or a generic one
+    when the body is missing, has another shape, or is over the limit."""
+    buffer = bytearray()
+    try:
+        for chunk in resp.iter_bytes():
+            buffer.extend(chunk)
+            if len(buffer) > _GATEWAY_DENIAL_BODY_LIMIT:
+                return _GENERIC_GATEWAY_DENIAL
+    except httpx.HTTPError:
+        return _GENERIC_GATEWAY_DENIAL
+    try:
+        payload = json.loads(bytes(buffer))
+    except ValueError:
+        return _GENERIC_GATEWAY_DENIAL
+    if (
+        isinstance(payload, dict)
+        and isinstance(payload.get("error_code"), str)
+        and isinstance(payload.get("message"), str)
+        and payload["message"]
+    ):
+        return payload["message"]
+    return _GENERIC_GATEWAY_DENIAL
 
 
 def _https_base_url(host: str) -> str:
