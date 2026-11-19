@@ -29,16 +29,17 @@ cleans up the files when Claude exits.
 The same entry point routes Agent/Task calls in a native `tool.call` hook. It pipes the
 call as JSON to `ug claude-router-hook route-subagent-mod`, whose argument list arrives in
 the `routeCommand` plugin option, and continues with the original input. The matching
-`agent.spawn` hook applies the selected model and its model-based task description,
+`agent.spawn` hook applies the selected model and an animal-and-model task label,
 preserving the agent's type, prompt, name and permissions. The routing response contains
 only `model` and `rationale`;
 the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
-Routing cards and individual tool rows use a task description derived from the selected
-model rather than a model-written title such as `Joke from Sonnet`. The native task registry
-receives the same description at spawn, so its completion notices also identify the routed
-model. Reviewed tool inputs, full prompts, native agent addresses and parent prose are unchanged.
+Routing-card titles and individual tool rows identify the selected model rather than using
+a model-written title such as `Joke from Sonnet`. Cards retain the original description as
+explicit task-request context. The native task registry receives the animal-and-model label
+at spawn, so same-model children have distinct completion notices. Reviewed tool inputs,
+full prompts, native agent addresses and parent prose are unchanged.
 Claude's collapsed parallel-agent header still renders the stored request description and
 does not expose a mod render event in Claude Code 2.1.325 or 2.1.328. Those header labels retain the
 original requested text. Rewriting the tool input or its response stream invalidates the

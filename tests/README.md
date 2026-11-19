@@ -149,8 +149,9 @@ Smart Router catalog, preserve the host description in routing-only mode, append
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
 Native routing components check model-written joke titles against one routed selection,
-model-based card and row descriptions, unchanged reviewed arguments,
-and native spawn descriptions with preserved agent addresses and permissions. Native
+card and row model labels, retained task-request context, unchanged reviewed arguments,
+and distinct native spawn labels with preserved agent addresses and permissions. Malformed
+display inputs pass through unchanged. Native
 auto-mode cases retain their approval/denial and zero fallback-classification assertions.
 The collapsed parallel-agent header has no mod render event in Claude Code 2.1.325 or
 2.1.328 and is not covered as a corrected surface.

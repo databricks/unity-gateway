@@ -72,7 +72,7 @@ test('animal names stay distinct and stable without changing routed calls or row
       const name = displayed.tool;
       expect(name).toMatch(/^[A-Z][a-z]+(?: 2)?$/);
       expect(displayed).toEqual({ ...event.props, tool: name,
-        input: { ...input, description: 'claude-haiku-5-5 task' },
+        input: { ...input, description: 'claude-haiku-5-5' },
       });
       expect(event.props.input).toEqual(input);
       expect(await mounted.find({ type: 'Text', text: /Backgrounded agent/ })).toBeDefined();
@@ -134,7 +134,7 @@ test('routing changes the matching spawn model and task description while preser
     };
     const result = await $.agent.spawn(spawn);
     expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
-      : { ...spawn, model: routedModel, description: 'gpt-5-6-sol task' });
+      : { ...spawn, model: routedModel, description: `${shown.get(id)} — gpt-5-6-sol` });
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
@@ -270,8 +270,8 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   releases.get('call-c')!();
   await third;
   const next = await $.ui.mount(reply('next'));
-  expect(await next.find({ type: 'Text', text: 'claude-opus-4-8 task' })).toBeDefined();
-  expect(await next.find({ type: 'Text', text: 'claude-sonnet-5 task' })).toBeUndefined();
+  expect(await next.find({ type: 'Text', text: 'Compute 1+1 (agent C)' })).toBeDefined();
+  expect(await next.find({ type: 'Text', text: 'Compute 1+1 (agent A)' })).toBeUndefined();
   await next.unmount();
   const prompt = await $.ui.mount(panel);
   expect(await prompt.find({ type: 'Text', text: /Selected Model|claude-/ })).toBeUndefined();
@@ -392,10 +392,12 @@ test('the router hears which subagent made the call, and nothing for the main lo
   });
   await $.agent.spawn(spawn('call-main', 'main'));
   await $.agent.spawn(spawn('call-nested', 'agent-parent'));
-  expect(spawns).toEqual([
-    { ...spawn('call-main', 'main'), model: 'system.ai.claude-sonnet-5', description: 'claude-sonnet-5 task' },
-    { ...spawn('call-nested', 'agent-parent'), model: 'system.ai.claude-sonnet-5', description: 'claude-sonnet-5 task' },
-  ]);
+  expect(spawns.map(({ description, ...rest }) => rest)).toEqual(
+    [spawn('call-main', 'main'), spawn('call-nested', 'agent-parent')]
+      .map(({ description, ...rest }) => ({ ...rest, model: 'system.ai.claude-sonnet-5' })),
+  );
+  expect(spawns.every(s => s.description.endsWith(' — claude-sonnet-5'))).toBe(true);
+  expect(new Set(spawns.map(s => s.description)).size).toBe(2);
 });
 
 for (const [name, result, warningCount] of [
@@ -661,9 +663,10 @@ test('routed children leave native parent synthesis and stream errors unchanged'
     };
     const child = await $.agent.spawn(spawn);
     expect(child).toEqual({ agentId: 'child-' + input.tool_use_id, model: launched[input.tool_use_id] });
-    expect(forwardedSpawns[forwardedSpawns.length - 1]).toEqual({
-      ...spawn, model: selected[input.tool_use_id], description: `${selected[input.tool_use_id]} task`,
-    });
+    const { description, ...forwarded } = forwardedSpawns[forwardedSpawns.length - 1];
+    const { description: originalDescription, ...original } = spawn;
+    expect(forwarded).toEqual({ ...original, model: selected[input.tool_use_id] });
+    expect(description.endsWith(` — ${selected[input.tool_use_id]}`)).toBe(true);
     await $.turn.complete({
       agentId: child.agentId, turnId: 'child-turn-' + input.tool_use_id,
       answer: 'Answer from ' + input.tool_use_id, reason: 'answer',
@@ -727,6 +730,8 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
 
 test('routed joke titles use the selected model without rewriting reviewed arguments', async ($, on) => {
   const forwarded: any[] = [];
+  const spawned: any[] = [];
+  const displayed = new Map<string, any>();
   const gates: (() => void)[] = [];
   let ready: () => void = () => {};
   const started = new Promise<void>(resolve => { ready = resolve; });
@@ -738,9 +743,16 @@ test('routed joke titles use the selected model without rewriting reviewed argum
     }) } };
   });
   on('tool.call', ($, e) => { forwarded.push(e); return { result: 'launched' }; });
-  on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [
-    e.component === 'ToolUse' ? e.props.input.description : 'parent answer',
-  ] }));
+  on('agent.spawn', ($, e) => {
+    spawned.push(e);
+    return { agentId: `child-${e.tool_use_id}`, model: e.model };
+  });
+  on('ui.render', ($, e) => {
+    displayed.set(e.requestId, e.props);
+    return { type: 'Text', props: {}, children: [
+      e.component === 'ToolUse' ? String(e.props.input?.description ?? 'native row') : 'parent answer',
+    ] };
+  });
   const calls = ['Sonnet', 'Haiku', 'Opus'].map((model, index) => ({
     tool: 'Agent' as const, tool_use_id: `joke-${index}`, ...originalInput,
     description: `Joke from ${model}`, name: `address-${model}`, run_in_background: true,
@@ -752,13 +764,33 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   expect(forwarded).toEqual(calls);
   const cards = await $.ui.mount(reply('jokes'));
   expect(await cards.findAll({ type: 'Text', text: '↳ Selected Model: ' })).toHaveLength(3);
-  expect(await cards.findAll({ type: 'Text', text: 'routed-model task' })).toHaveLength(3);
-  expect(JSON.stringify(await cards.drawn())).not.toContain('Joke from');
+  expect(await cards.findAll({ type: 'Text', text: ' — routed-model' })).toHaveLength(3);
   for (const call of calls) {
+    expect(await cards.find({ type: 'Text', text: `Task request: ${call.description}` })).toBeDefined();
     const event = row(call.tool_use_id);
     const ui = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
-    expect(await ui.find({ type: 'Text', text: 'routed-model task' })).toBeDefined();
+    expect(await ui.find({ type: 'Text', text: 'routed-model' })).toBeDefined();
     expect(JSON.stringify(await ui.drawn())).not.toContain('Joke from');
+    expect(displayed.get(call.tool_use_id).input).toEqual({ ...call, description: 'routed-model' });
+    const spawn = {
+      tool_use_id: call.tool_use_id, prompt: call.prompt, description: call.description,
+      subagentType: call.subagent_type, parentModel: 'parent-model',
+      provider: { plugin: 'engine', tier: 'core' as const }, background: true, fork: false,
+      name: call.name, permissionMode: 'default', parentAgentId: undefined, cwd: '/workspace',
+    };
+    await $.agent.spawn(spawn);
+    const label = `${displayed.get(call.tool_use_id).tool} — routed-model`;
+    expect(spawned[spawned.length - 1]).toEqual({
+      ...spawn, model: 'catalog.schema.routed-model', description: label,
+    });
+    expect(await cards.find({ type: 'Text', text: label })).toBeDefined();
+    await ui.unmount();
+  }
+  expect(new Set(spawned.map(s => s.description)).size).toBe(3);
+  for (const input of [undefined, null, false, 42, 'native input', []]) {
+    const event = row(calls[0].tool_use_id);
+    const ui = await $.ui.mount({ ...event, props: { ...event.props, input } });
+    expect(displayed.get(calls[0].tool_use_id).input).toEqual(input);
     await ui.unmount();
   }
   await cards.unmount();

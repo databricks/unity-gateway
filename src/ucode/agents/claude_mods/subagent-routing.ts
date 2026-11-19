@@ -59,6 +59,7 @@ const shortModel = (model: string): string => {
     : parts.length === 3 ? parts[2] : unwrapped
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }
+const taskLabel = (record: RoutingRecord): string => `${record.name} — ${shortModel(record.model)}`
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -112,7 +113,11 @@ const card = ($: any, e: any, record: RoutingRecord) => {
     flexDirection: 'column',
     paddingLeft: 2,
     marginBottom: 1,
-    children: [Text({ bold: true, children: [record.name, ' — ', record.task] }), ...selection($, e, record, '↳ ', 2)],
+    children: [
+      Text({ bold: true, children: [taskLabel(record)] }),
+      Text({ dimColor: true, children: ['Task request: ', record.task] }),
+      ...selection($, e, record, '↳ ', 2),
+    ],
   })
 }
 
@@ -213,7 +218,7 @@ export const registerSubagentRouting = (
       if (route) {
         records.set(tool_use_id, {
           name: names.get(tool_use_id)!,
-          task: `${shortModel(route.model)} task`,
+          task: input.description || input.subagent_type || tool,
           model: route.model,
           rationale: route.rationale,
           seconds,
@@ -239,7 +244,7 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
-    const result = await next(route ? { ...e, model: route.model, description: route.task } : e)
+    const result = await next(route ? { ...e, model: route.model, description: taskLabel(route) } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
@@ -260,10 +265,12 @@ export const registerSubagentRouting = (
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     const record = records.get(e.requestId)
     const name = names.get(e.requestId)
+    const input = e.props.input
     const original = await next(name && (record || pending.has(e.requestId)) ? {
       ...e,
       props: { ...e.props, tool: name,
-        ...(record ? { input: { ...(e.props.input as Record<string, unknown>), description: record.task } } : {}),
+        ...(record && input !== null && typeof input === 'object' && !Array.isArray(input)
+          ? { input: { ...input, description: shortModel(record.model) } } : {}),
       },
     } : e)
     if (!record && !pending.has(e.requestId)) return original
