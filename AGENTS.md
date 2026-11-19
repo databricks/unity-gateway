@@ -204,15 +204,10 @@ main model and reopens the chooser. This check includes cold contexts and does n
 that a warm cache exists. Other hooks' blocks and explicit confirmation requests still apply.
 The main-model chooser opens only after the person confirms the Auto row in `/model` and
 the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
-on Esc. The chooser uses a compact native modal above the prompt, including in narrow
-terminals. The current model appears first; larger catalogs use a More models choice
-to cycle through pages. It has no effort controls and runs no `/effort` commands.
-Native confirms the row as its picker closes, before the chooser opens, so that confirmation
-reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
-a visible `$.ui.log` notice after saving the chosen model, such as
-`Auto mode: main model claude-opus-5-5, subagents smart routed.` Native prefixes this notice
-with the plugin name. `$.session.append` system and user-meta rows are hidden in normal mode.
-The prompt hint row's `Auto (<main model>)` also names the main model. Native `/effort`
+on Esc. The chooser presents every allowed main model in one scrollable list with the
+current model first. The chooser names the current model and explains that subagents will be smart routed.
+Native displays `Auto mode: Subagents smart routed.` before the chooser opens. Saving updates the prompt hint row's
+`Auto (<main model>)` without writing a confirmation to the transcript. Native `/effort`
 continues to work independently. A fresh launch
 without a launch-only model starts on the stored main model; a per-model alias selected
 natively (an earlier version's saved selection) still counts as Auto with that model.
@@ -316,6 +311,7 @@ Fields live in `~/.claude/ucode-settings.json` and the OS-managed settings file 
 | `env.ANTHROPIC_MODEL` | Ignore | Create/replace | The config's `default_model`, written by `ug configure` and identically by a plain launch (launch never changes it). A budget recommendation that differs, `--model`, or a forwarded `-- --model` reaches only that session through Claude Code's native `--model` flag, which outranks a managed `ANTHROPIC_MODEL`; no file is written |
 | `env.ANTHROPIC_DEFAULT_*_MODEL` | Create/replace | Create/replace | Per-family default (opus, sonnet, haiku, fable); the config's family default wins under managed config. Without a managed config, left as the OS-managed file has them (model discovery skipped) when that file has a `modelPicker` with family defaults |
 | Model picker | Ignore | Create/replace | `availableModels`, `enforceAvailableModels`, `modelPicker`; only for a managed static model list. A static list naming a model service whose primary destination is a subscription-relay MPS makes Claude Code CLI launch relayed for a user already signed in to a Claude subscription (credential swap, no `apiKeyHelper`; others keep gateway auth with a sign-in note) with the list still owning the picker; Claude Desktop keeps gateway auth for it (CLI-only for now) |
+| `modelSettings.<Auto alias>.autoCompactWindow` | Launch-only | Launch-only | For an Auto alias without a native profile, uses the catalog input limit up to 1M tokens, or 200k when the limit is unknown. A known limit below Claude’s 100k minimum is left to Claude. Explicit window settings take precedence. |
 | UG Auto metadata and saved selection | Merge | Merge | Explicit configure outside eligible Auto and revert remove UG-reserved aliases from `modelOverrides`, `availableModels`, and picker rows, plus an Auto custom-model environment triplet. Saved Auto `model` and Anthropic model environment values resolve to permitted real targets or are removed. Cleanup also covers native `settings.json` within the command's scope; unrelated models, aliases and policy remain unchanged. Launches and toggles do not clean these fields |
 | `permissions.deny` | Merge | Merge | Add `ug`'s own `WebSearch` rule when it replaces web search; other rules left alone. `UG_CLAUDE_SERVER_SIDE_WEB_SEARCH=1` makes one launch strip the bare rule and hide `web_search` in its inline `--settings`; a managed, drop-in or user `WebSearch` deny makes it keep ug's MCP. The managed file never gets the deny; `ug configure --enable-server-side-web-search` (saved as `claude_server_side_web_search`) makes an explicit configure remove an existing bare one unless the admin's settings request it |
 | Tracing | Ignore | Create/replace | The seven `CLAUDE_CODE_*`/`OTEL_*` trace keys and `otelHeadersHelper`; only when the config enables tracing |

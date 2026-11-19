@@ -15,8 +15,12 @@ from uuid import uuid4
 
 import pytest
 from session import Session, install_header_mod
+from test_credentials import _STREAM
 
 from ucode.agents.claude import _enable_header_mod
+from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
@@ -220,7 +224,6 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
     Routing stays off without a feedback-gated disable. Inference deliberately fails
     without credentials; this checks native startup/next-turn state, not a live answer.
     """
-    from ucode.constants import SMART_ROUTING_ENV_KEYS
 
     env = {
         "ENABLE_SMART_ROUTING_V2": "0",
@@ -253,6 +256,41 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
                 assert not session_env.session_routing_enabled(controls)
     finally:
         shutil.rmtree(controls.parent)
+
+
+@pytest.mark.parametrize(
+    ("limits", "preferences", "window"),
+    [
+        ({"team.alias-claude-preview": (125_000, 8192)}, {}, "125k"),
+        ({}, {"autoCompactWindow": 180_000}, "180k"),
+    ],
+)
+def test_saved_custom_auto_alias_window_on_startup(
+    native_binary, tmp_path, monkeypatch, limits, preferences, window
+):
+    """Read the effective compaction window from a new Claude process."""
+
+    monkeypatch.setattr(
+        "ucode.agents.claude.native_settings_paths", lambda: (tmp_path / "settings.json",)
+    )
+    model = "team.alias-claude-preview"
+    alias = auto_variant({"model": model})
+    settings = {"modelOverrides": {alias: model}, **preferences}
+    catalog = AnthropicModelCatalog([model], {}, model_id_to_limits=limits)
+    apply_auto_context_windows(settings, {}, [{"model": model, "autoModel": alias}], catalog)
+
+    with Session(
+        native_binary,
+        tmp_path / "restarted",
+        {},
+        user_settings={"model": alias},
+        launch_settings=settings,
+        model=None,
+    ) as session:
+        report = session.send("/context")["result"]
+    assert f"**Model:** {alias}" in report
+    tokens = next(line for line in report.splitlines() if line.startswith("**Tokens:**"))
+    assert f" / {window} " in tokens, tokens
 
 
 def test_native_process_inherits_settings_and_runs_python_cli(native_binary, tmp_path):
@@ -693,8 +731,6 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
 
 
 def test_native_language_reload_updates_parent_context_once(native_binary, tmp_path):
-    from test_credentials import _STREAM
-
     requests = []
 
     class Handler(BaseHTTPRequestHandler):

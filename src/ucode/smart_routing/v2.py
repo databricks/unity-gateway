@@ -867,18 +867,18 @@ def launch_claude(
             auto_picker = False
     if auto_picker:
         try:
-            auto_config = json.loads(
-                picker_config(
-                    catalog,
-                    workspace,
-                    auto_settings,
-                    default_model=launch_model
-                    or default_model
-                    or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
-                    or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
-                    or os.environ.get("ANTHROPIC_MODEL")
-                    or state.get("claude_models", {}).get("opus"),
-                )
+            auto_config = picker_config(
+                catalog,
+                workspace,
+                auto_settings,
+                launch_settings=settings,
+                managed_settings=managed_auto,
+                default_model=launch_model
+                or default_model
+                or (managed_auto.get("env") or {}).get("ANTHROPIC_MODEL")
+                or (settings.get("env") or {}).get("ANTHROPIC_MODEL")
+                or os.environ.get("ANTHROPIC_MODEL")
+                or state.get("claude_models", {}).get("opus"),
             )
         except ValueError as exc:
             print_warning(f"Skipped Claude Auto: {exc}")
