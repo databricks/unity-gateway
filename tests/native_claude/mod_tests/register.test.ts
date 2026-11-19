@@ -1260,10 +1260,7 @@ test('a SubagentHandback never manufactures a child or flags one', () => {
 });
 
 test('a denied launch superseded by a relaunch folds into the child that ran', () => {
-  // Captured order from the routed live run: the router's first spawn pair is
-  // denied, then the same tasks relaunch successfully under new identities.
-  // State-level assertions: the kit loads the test module separately from the
-  // plugin's, so pane renders cannot see directly injected route state.
+  // Test and plugin modules have separate state, so these assertions use state directly.
   agentTree.reset();
   const first = { tool_use_id: 'route-1', description: 'Map pane lifecycle', subagentType: 'general-purpose', background: true };
   const second = { tool_use_id: 'route-2', description: 'Map tree state', subagentType: 'general-purpose', background: true };

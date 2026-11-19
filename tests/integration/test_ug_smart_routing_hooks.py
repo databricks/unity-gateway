@@ -850,6 +850,12 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 description="the routed child answer delivered to its parent",
             )
 
+            # An unsent draft typed into Main before the pane work must survive
+            # every pane interaction below, including a native view round trip.
+            draft = "Which safeguard matters most for trust? One sentence."
+            tui.send(draft, "type the unsent Main draft")
+            tui.wait_for(lambda screen: draft in screen, "the unsent draft in Main", timeout=12)
+
             sessions_before = agent_sessions(session, "claude")
             task.assert_completed(session, "claude")
             task.assert_completed(session, "claude", child=True)
@@ -982,6 +988,27 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
             )
             assert f"Router selection · {selected_model}" in tui.visible, tui.visible
             assert f"Launch model · {launched_model}" in tui.visible, tui.visible
+
+            # Back to the overview, then step into the child: a capable host
+            # switches the main view to the child's own transcript (the pane
+            # header shows Back to main); the CI pin's stub reopens the details.
+            tui.click_label("Back to all subagents", "return to the overview")
+            tui.wait_for(lambda screen: "SUBAGENTS" in screen, "the tree overview", timeout=30)
+            tui.click_label("SUBAGENTS", "give the pane the keyboard")
+            tui.send("1", "open the first child")
+            tui.wait_for(
+                lambda screen: "Back to all subagents" in screen or "Back to main" in screen,
+                "the child opened from the tile",
+                timeout=30,
+            )
+            if "Back to main" in tui.visible:
+                tui.click_label("Back to main", "return the main view to Main")
+                tui.wait_for(
+                    lambda screen: task.value in screen and "Back to main" not in screen,
+                    "the parent answer back in the main view",
+                    timeout=30,
+                )
+            assert draft in tui.visible, "the unsent draft did not survive the view round trip"
             tui.send("\x1b", "close the reopened native subagent tree")
             tui.wait_for(
                 lambda screen: "SUBAGENTS" not in screen and task.value in screen,

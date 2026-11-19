@@ -125,7 +125,9 @@ function omitCode(value: string): string {
     result += value.slice(cursor, start)
     if (end < 0) return result + ' [code omitted]'
     const code = value.slice(start + marker.length, end).trim()
-    const pathLike = !fenced && !isShellCommand(code) && /^[^|;&<>$]*[\\/][^\\/\s]+$/.test(code)
+    // A credential assignment must be omitted whole, never basename-shortened.
+    const credentialCode = isCredentialName(code.split(/[=:]/)[0])
+    const pathLike = !fenced && !isShellCommand(code) && !credentialCode && /^[^|;&<>$]*[\\/][^\\/\s]+$/.test(code)
     result += pathLike ? pathBasename(code) : fenced || isShellCommand(code) || code.includes('/') || code.includes('\\')
       ? ' [code omitted]' : code
     cursor = end + marker.length

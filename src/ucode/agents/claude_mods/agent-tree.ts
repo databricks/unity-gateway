@@ -278,7 +278,9 @@ export function registerAgentTree(on: On): void {
     page = Math.min(page, pageCount - 1)
     const pageItems = visible.slice(page * pageSize, (page + 1) * pageSize)
     const pageIds = new Set(pageItems.map(item => item.node.id))
-    const routeEvents = [...agentTree.routes.values()].filter(route => !route.agentId && route.status !== 'selected').slice(-3)
+    // Folded denials are explained in the child's details; only unresolved
+    // ones belong in the visible rows.
+    const routeEvents = [...agentTree.routes.values()].filter(route => !route.agentId && route.status !== 'selected' && !route.supersededBy).slice(-3)
     const history = agentTree.events.filter(event => event.agentId !== 'main' && logText(event))
     const recent = history.filter(event => !pinned || event.agentId === pinned).slice(-6)
     const latestMessages = nodes.flatMap(node => {
@@ -342,7 +344,7 @@ export function registerAgentTree(on: On): void {
       const indent = Math.min(depth * 2, Math.floor(width / 4))
       const title = Box({ flexDirection: compact && !tiny ? 'column' : 'row', justifyContent: 'space-between', children: [
         Button({ key: 'agent:' + node.id, label: name, plain: true, hover: { bold: true },
-          ...(e.props.isFocused && pageItems.length <= 9
+          ...(e.props.isFocused && tileIndex < 9
             ? { hotkey: String(tileIndex + 1) } : {}),
           ...(tileIndex === 0 && !ringPresent ? { autoFocus: true } : {}),
           onPress: () => { if (!pressSwitchedView(node.id)) openDetail(node.id) } }),
