@@ -2358,3 +2358,43 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+## Opaque Codex model service
+
+`test_ug_codex_custom_service.py` configures Codex with `main.ucode.ci_e2e_opaque` as its
+only model and default, then completes a real TUI file task without model or effort
+overrides. The service name contains no model hint. Its permanent pay-per-token destination
+is `models/system.ai.databricks-gpt-5`, which rejects `reasoning.effort: none`.
+
+The test checks UG's live metadata GETs, requires the generated GPT-5 compatibility ladder
+(`low`, `medium`, `high`, default `medium`), and requires the full service ID, `medium`
+effort, and HTTP 200 on every task request. The hidden file value must appear in
+a completed native turn. Missing services, unreadable metadata, and inference failures fail
+the test. It neither provisions nor changes remote fixtures.
+
+Pinned Codex 0.156.0 no longer bundles GPT-5; this journey exercises UG's known-GPT
+compatibility metadata selected from the destination identity, rather than a native preset.
+
+The `codex_custom_service.json` CodingAgentConfig is ordinary admin input supplied through
+the existing `managed_fixture` hook. Service configuration, gateway inference, and native
+Codex remain real. This tests the static-list path that regressed in issue #1042; personal
+model-location discovery uses a different catalog path. The `custom_model_service` marker
+keeps this case in the required us-east-1 Linux/Windows full Codex lanes and out of the
+separate managed-workspace lane.
+
+Provisioned fixture (2026-11-19): workspace
+`https://eng-ml-inference-team-us-east-1.cloud.databricks.com`, schema `main.ucode`, service
+`ci_e2e_opaque`, single pay-per-token GPT-5 destination. CI's principal needs `USE CATALOG`,
+`USE SCHEMA`, `READ METADATA`, and `EXECUTE`; the owner must retain access to GPT-5.
+No workspace CodingAgentConfig was changed. Keep this service for recurring CI.
+
+On a clean disposable runner, use the existing integration runner with the explicit
+us-east-1 workspace/profile and a pinned Codex version:
+
+```bash
+python3.12 scripts/run_integration.py \
+  --python 3.12 --ug-version checkout --codex-version 0.156.0 \
+  --workspace https://eng-ml-inference-team-us-east-1.cloud.databricks.com \
+  --profile eng-ml-inference-team-us-east-1 \
+  -- -k test_ug_codex_custom_service_inherits_reasoning_and_completes_file_task
+```
