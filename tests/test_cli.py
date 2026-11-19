@@ -7718,37 +7718,35 @@ class TestConfigureSharedStateUsePat:
         }
 
 
-class TestConfigureSharedStateDiscoveryAccess:
+class TestConfigureSharedStateGatewayAccess:
     WS = "https://example.databricks.com"
-    LISTING = {
+    MODEL_SERVICES_RESPONSE = {
         "model_services": [
             {"name": "model-services/system.ai.claude-opus-4-8"},
             {"name": "model-services/system.ai.gpt-5"},
         ]
     }
 
-    def test_fresh_setup_uses_one_scoped_request_for_discovery_and_access(
-        self, monkeypatch, capsys
-    ):
+    def test_successful_discovery_skips_separate_access_check(self, monkeypatch, capsys):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
         monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
-        requests = []
+        requested_urls = []
 
-        def get(url, token, **kwargs):
-            requests.append(url)
-            return self.LISTING, None
+        def get_json(url, token, **kwargs):
+            requested_urls.append(url)
+            return self.MODEL_SERVICES_RESPONSE, None
 
-        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        monkeypatch.setattr(db_mod, "_http_get_json", get_json)
 
         state = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
 
         assert state["claude_models"] == {"opus": "system.ai.claude-opus-4-8"}
         assert state["codex_models"] == ["system.ai.gpt-5"]
-        assert len(requests) == 1
-        assert "parent=schemas%2Fsystem.ai" in requests[0]
+        assert len(requested_urls) == 1
+        assert "parent=schemas%2Fsystem.ai" in requested_urls[0]
         assert "Unity Gateway connected" in _strip_ansi(capsys.readouterr().out)
 
     @pytest.mark.parametrize(
@@ -7760,7 +7758,7 @@ class TestConfigureSharedStateDiscoveryAccess:
             ("network error: timed out", "usually transient"),
         ],
     )
-    def test_failed_discovery_preserves_probe_diagnostics(self, monkeypatch, reason, message):
+    def test_failed_discovery_keeps_access_error_diagnostics(self, monkeypatch, reason, message):
         cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
             monkeypatch, pat_token=None
         )
@@ -7774,7 +7772,7 @@ class TestConfigureSharedStateDiscoveryAccess:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
-    def test_listing_exception_preserves_state(self, monkeypatch):
+    def test_discovery_exception_does_not_save_state(self, monkeypatch):
         cli_mod, _, _, saved = TestConfigureSharedStateUsePat._stub_deps(
             monkeypatch, pat_token=None
         )
@@ -7788,18 +7786,18 @@ class TestConfigureSharedStateDiscoveryAccess:
             cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         assert saved == []
 
-    def test_skip_model_discovery_keeps_probe_and_web_search_lookup(self, monkeypatch):
+    def test_provider_mode_checks_access_and_discovers_web_search_model(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
-        requests = []
+        requested_urls = []
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
 
-        def get(url, token, **kwargs):
-            requests.append(url)
-            return self.LISTING, None
+        def get_json(url, token, **kwargs):
+            requested_urls.append(url)
+            return self.MODEL_SERVICES_RESPONSE, None
 
-        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        monkeypatch.setattr(db_mod, "_http_get_json", get_json)
         monkeypatch.setattr(
             cli_mod, "discover_codex_models", lambda w, t: (["system.ai.gpt-5"], None)
         )
@@ -7807,29 +7805,29 @@ class TestConfigureSharedStateDiscoveryAccess:
             self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
         )
 
-        assert len(requests) == 1
-        assert "parent=" not in requests[0]
+        assert len(requested_urls) == 1
+        assert "parent=" not in requested_urls[0]
         assert state["web_search_model"] == "system.ai.gpt-5"
 
-    def test_successful_discovery_reuses_process_cache(self, monkeypatch):
+    def test_repeated_setup_reuses_discovery_without_extra_requests(self, monkeypatch):
         cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
         monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
         monkeypatch.setattr(
             cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
         )
-        requests = []
+        requested_urls = []
 
-        def get(url, token, **kwargs):
-            requests.append(url)
-            return self.LISTING, None
+        def get_json(url, token, **kwargs):
+            requested_urls.append(url)
+            return self.MODEL_SERVICES_RESPONSE, None
 
-        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        monkeypatch.setattr(db_mod, "_http_get_json", get_json)
         first = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
         second = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
 
         assert first["claude_models"] == second["claude_models"]
         assert first["codex_models"] == second["codex_models"]
-        assert len(requests) == 1
+        assert len(requested_urls) == 1
 
 
 class TestConfigureNoLongerValidates:

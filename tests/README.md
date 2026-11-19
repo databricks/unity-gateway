@@ -974,9 +974,9 @@ profile/token preservation, and replay without refreshing workspace credentials.
 PAT and non-401 errors retain their behavior.
 These checks do not establish live login or launch-time savings.
 
-`TestConfigureSharedStateDiscoveryAccess` verifies that a fresh setup uses its successful
-scoped model discovery to verify access without an additional gateway probe. Failed or
-empty discovery keeps existing probe diagnostics; provider mode keeps its probe and
+`TestConfigureSharedStateGatewayAccess` verifies that a fresh setup uses its successful
+scoped model discovery to verify access without a separate model-service access check. Failed or
+empty discovery keeps existing access diagnostics; provider mode keeps its access check and
 web-search lookup. Cases cover authentication, permissions, unavailable services,
 network failure, exception preservation, and process-local discovery reuse. These
 component checks do not measure live request latency.

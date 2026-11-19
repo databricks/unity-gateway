@@ -754,19 +754,17 @@ def configure_shared_state(
     with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
-        # Successful discovery already proves model-service access.
-        model_services_discovery = (
+        model_discovery = (
             None if skip_model_discovery else discover_model_services(workspace, token)
         )
-        model_service_probe = (
-            None
-            if model_services_discovery is not None and any(model_services_discovery[:4])
-            else probe_unity_gateway_capabilities(workspace, token)
+        has_discovered_models = model_discovery is not None and any(model_discovery[:4])
+        model_service_access = (
+            None if has_discovered_models else probe_unity_gateway_capabilities(workspace, token)
         )
-    if model_service_probe is None or model_service_probe.resource_available:
+    if model_service_access is None or model_service_access.resource_available:
         print_success("Unity Gateway connected")
     else:
-        print_warning(f"Model service: {model_service_probe.detail}")
+        print_warning(f"Model service: {model_service_access.detail}")
 
     want_claude = (
         fetch_all
@@ -821,30 +819,36 @@ def configure_shared_state(
         # back empty (workspace without UC model-services, or the listing
         # failed), fall back to the per-family Unity Gateway listing for that
         # family only.
-        assert model_services_discovery is not None
+        assert model_discovery is not None
         with spinner("Fetching available models..."):
-            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery
+            (
+                discovered_claude_models,
+                discovered_codex_models,
+                discovered_gemini_models,
+                discovered_oss_models,
+                discovery_reason,
+            ) = model_discovery
             if want_claude:
-                claude_models, claude_reason = ms_claude, ms_reason
+                claude_models, claude_reason = discovered_claude_models, discovery_reason
                 if not claude_models:
                     claude_models, claude_reason = discover_claude_models(workspace, token)
             if want_gemini:
-                gemini_models, gemini_reason = ms_gemini, ms_reason
+                gemini_models, gemini_reason = discovered_gemini_models, discovery_reason
                 if not gemini_models:
                     gemini_models, gemini_reason = discover_gemini_models(workspace, token)
             if want_codex:
-                codex_models, codex_reason = ms_codex, ms_reason
+                codex_models, codex_reason = discovered_codex_models, discovery_reason
                 if not codex_models:
                     codex_models, codex_reason = discover_codex_models(workspace, token)
             if want_oss:
-                oss_models, oss_reason = ms_oss, ms_reason
+                oss_models, oss_reason = discovered_oss_models, discovery_reason
             if want_copilot:
                 copilot_models = copilot_agent.catalog_from_listings(
                     cached_model_service_entries(workspace),
                     [*claude_models.values(), *codex_models],
                     list_anthropic_model_catalog(workspace, token),
                 )
-                copilot_reason = ms_reason or claude_reason or codex_reason
+                copilot_reason = discovery_reason or claude_reason or codex_reason
         if claude_models:
             opencode_models["anthropic"] = list(claude_models.values())
         if gemini_models:

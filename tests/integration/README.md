@@ -650,7 +650,7 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
-Successful model-service discovery replaces the extra access probe, with component
+Successful model-service discovery replaces the separate access check, with component
 coverage in `../test_cli.py` for request count, error diagnostics, provider mode, and
 process-local discovery reuse. This suite does not measure live startup latency or
 establish a regional speedup.
