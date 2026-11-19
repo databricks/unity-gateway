@@ -406,21 +406,21 @@ test('the hint row names the main model chosen under the static Auto row', { opt
   const session = staticCatalogSession($, on, DEFAULT_ALIAS);
   const hint = await hintTail($, on);
   await $.session.start(START);
-  expect(await hint()).toBe('Auto (Sonnet 5) · smart router ON');
+  expect(await hint()).toBe('Auto (Sonnet 5)');
 
   await $.command.run({ command: 'auto', args: '' });
   await session.choose(OTHER);
 
   // Native still selects the default variant's alias; the row follows the mod's main model.
   expect(session.selected()).toBe(DEFAULT_ALIAS);
-  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
+  expect(await hint()).toBe('Auto (Haiku 4.5)');
 });
 
 test('a fresh static Auto session names the saved main model in the hint row', { options: OPTIONS }, async ($, on) => {
   staticCatalogSession($, on, DEFAULT_ALIAS, OTHER);
   const hint = await hintTail($, on);
   await $.session.start(START);
-  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
+  expect(await hint()).toBe('Auto (Haiku 4.5)');
 });
 
 test('each /model auto main-model save updates the hint without logging', { options: OPTIONS }, async ($, on) => {
@@ -436,7 +436,7 @@ test('each /model auto main-model save updates the hint without logging', { opti
     expect(rows).toEqual([]);
     await session.choose(model);
     expect(rows).toEqual([]);
-    expect(await hint()).toBe(`Auto (${label}) · smart router ON`);
+    expect(await hint()).toBe(`Auto (${label})`);
     sent.length = 0;
     await step($, DEFAULT_ALIAS);
     await step($, DEFAULT_ALIAS, 'child');

@@ -2184,7 +2184,8 @@ window displayed by `/context` with a catalog limit and an explicit preference.
 Launch-settings tests cover missing and out-of-range limits and unreadable native settings.
 The native mod component suite also exercises managed model-switch forwarding past user
 hooks, preserving allow, deny, and ask decisions without a skipped UG hook. UG leaves
-Claude's native permission and cache-cost confirmations unchanged.
+Claude's native permission and cache-cost confirmations unchanged. Auto hint component
+assertions require `Auto (model name)` without a redundant `smart router ON` suffix.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive

@@ -256,7 +256,8 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. Auto picker tests cover
-selection beyond the first screen, saving silently, and retrying after a failed chooser open.
+selection beyond the first screen, saving silently, retrying after a failed chooser open,
+and an `Auto (model name)` hint without a redundant `smart router ON` suffix.
 Model-switch regression tests preserve native decisions and exercise managed forwarding
 past user hooks for allow, deny, and ask, requiring no skipped UG hook in the trace.
 A fresh Claude process reads a saved custom Auto alias. Its `/context` output verifies the catalog

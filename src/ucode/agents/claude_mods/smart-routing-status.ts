@@ -78,7 +78,10 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       // The static Auto row is the default variant's alias; name the session's main model.
       const target = autoTarget(auto, await $.session.model())
       const main = target === undefined ? undefined : auto.models.find((row) => row.model === target)
-      if (main) state = `Auto (${main.label}) · ${state}`
+      if (main) {
+        const label = `Auto (${main.label})`
+        state = enabled ? `${label}${agents}` : `${label} · ${state}`
+      }
     }
     const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
     return next({ ...e, props: { ...e.props, tail } })
