@@ -194,10 +194,10 @@ export function registerAgentTree(on: On): void {
           [...agentTree.routes.values()].some(route => route.status === 'selecting')) $.ui.invalidate('ui.render')
     })
 
-    const motionSetting = await $.settings.read({ key: 'prefersReducedMotion' })
+    const motionSetting = await $.settings.read({ key: 'prefersReducedMotion' }).catch(() => undefined)
     const preference = typeof motionSetting === 'boolean' ? motionSetting : motionSetting?.prefersReducedMotion
     const reducedMotion = preference === true
-    const theme = (await $.config.list()).find(row => row.key === 'theme')?.value
+    const theme = (await $.config.list().catch(() => [])).find(row => row.key === 'theme')?.value
     const light = typeof theme === 'string' && theme.startsWith('light')
     const palette = light ? {
       background: '#f4f5f7', surface: '#ffffff', foreground: '#20242b', muted: '#626a76',

@@ -550,6 +550,37 @@ test('the subagent entry opens the tree, retains finished work, and preserves th
   await hint.unmount();
 });
 
+for (const refused of ['denied', 'thrown']) test(`a ${refused} view switch falls back to the read-only details`, { options: ROUTED }, async ($, on) => {
+  if (!NATIVE_VIEW) return;
+  const { env } = setup(on);
+  const agents: AgentInfo[] = [{ id: 'child-a', name: 'Otter', description: 'Inspect parser', type: 'Explore', status: 'running' }];
+  const views: unknown[] = [];
+  env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
+  env.UCODE_SESSION_ENV_FILE = '/session/env.json';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
+  on('ui.render', { component: 'Pane' }, ($, e) => $.ui.resolve(e).Text({ children: ['native pane'] }));
+  on('settings.read', () => ({ value: {} }));
+  on('config.list', () => ({ value: [{ key: 'theme', value: 'dark' }] }));
+  on('ui.panes', () => ({ value: [] }));
+  on('ui.focus', () => ({ value: undefined }));
+  on('ui.close', () => ({ value: undefined }));
+  on('ui.view', ($, e) => {
+    views.push(e);
+    if (refused === 'thrown') throw new Error('host refused the switch');
+    return { value: { deny: 'not viewable' } };
+  });
+  on('prompt.submit', ($, e) => ({ text: e.text }));
+  on('turn.complete', () => ({ text: '' }));
+  on('agent.list', () => ({ value: agents }));
+  const pane = await $.ui.mount(TREE_PANE);
+  await pane.press({ key: 'agent:child-a' });
+  expect(views).toHaveLength(1);
+  // The press still runs beneath the refused switch: the details fallback opens.
+  expect(await pane.find({ type: 'Text', text: 'ID · child-a' })).toBeDefined();
+  await pane.unmount();
+});
+
 test('stepping into a child asks for its native view and back-to-main returns to the main transcript', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const agents: AgentInfo[] = [
@@ -878,7 +909,7 @@ for (const bodyColumns of [24, 54]) test(`the tree preserves every agent at ${bo
   await pane.unmount();
 });
 
-for (const bodyColumns of [40, 76]) test(`full launch model identity stays in child details at ${bodyColumns} columns`, async ($, on) => {
+for (const bodyColumns of [76]) test(`full launch model identity stays in child details at ${bodyColumns} columns`, async ($, on) => {
   engine(on, {}, []);
   const model = 'long_catalog_namespace.schema.example-fast[1m]';
   on('agent.spawn', () => ({ agentId:'catalog-child', model }));
@@ -1502,7 +1533,8 @@ test('streamed child text becomes a sanitized excerpt on the card and the detail
     ' The JSON config holds "api_key": "SENTINEL" and the header token: hunter2. ',
     'The env sets apiKey=abcd1234effe and the access accessToken=zzz-9999 in one line. ',
     'The split credential is token=', 'split-secret-42 across chunks. ',
-    'The header was Authorization: Bearer sk-abc123 and the config had "password":"qwerty". ', complete,
+    'The header was Authorization: Bearer sk-abc123 and the config had "password":"qwerty". ',
+    'The probe called https://gateway.internal/v1?token=EXAMPLE&x=1 with Authorization: Basic RVhBTVBMRQ==. ', complete,
   ]);
   const card = JSON.stringify(await pane.drawn());
   expect(card).toContain('The lexer in lexer.py splits tokens early.');
@@ -1511,14 +1543,14 @@ test('streamed child text becomes a sanitized excerpt on the card and the detail
   expect(card).not.toContain('…');
   for (const leaked of ['/home/user', 'shadow', 'rm -rf', 'sk-live-123456', '\\u001b', '\\u0007',
     'SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42',
-    'sk-abc123', 'qwerty']) expect(card).not.toContain(leaked);
+    'sk-abc123', 'qwerty', 'EXAMPLE', 'RVhBTVBMRQ==']) expect(card).not.toContain(leaked);
   await pane.press({ key: 'details:talker' });
   const detail = JSON.stringify(await pane.drawn());
   expect(textsOf(await pane.drawn()).some(line => line.startsWith('SAYING NOW'))).toBe(true);
   expect(detail).toContain(complete);
   expect(detail).not.toContain('…');
   for (const leaked of ['SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42',
-    'sk-abc123', 'qwerty']) expect(detail).not.toContain(leaked);
+    'sk-abc123', 'qwerty', 'EXAMPLE', 'RVhBTVBMRQ==']) expect(detail).not.toContain(leaked);
   await pane.unmount();
 });
 

@@ -1010,7 +1010,10 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 f"No recorded inference at the routed model {routed_model}; recorded models: "
                 f"{sorted({request.payload.get('model') for request in recorder.requests_after(checkpoint) if request.path == '/ai-gateway/anthropic/v1/messages'})}"
             )
-            assert_served(recorder, child_requests[0], routed_model)
+            # Every matching request must have asked for the routed model and
+            # drawn a completed response; no selection of one survivor.
+            for request in child_requests:
+                assert_served(recorder, request, routed_model)
             tui.exit_normally()
 
     sessions_after = agent_sessions(session, "claude")

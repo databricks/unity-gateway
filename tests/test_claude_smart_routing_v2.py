@@ -1560,15 +1560,17 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
 
 
-def _version_binary(tmp_path: Path, version: str) -> str:
-    binary = tmp_path / f"claude-{version.split()[0] or 'unknown'}"
-    binary.write_text(f"#!/bin/sh\necho '{version}'\n")
-    binary.chmod(0o755)
-    return str(binary)
-
-
-def test_claude_host_has_view_gates_on_the_binary_version(tmp_path):
-    assert v2._claude_host_has_view(_version_binary(tmp_path, "2.1.318 (Claude Code)")) is False
-    assert v2._claude_host_has_view(_version_binary(tmp_path, "2.1.319 (Claude Code)")) is True
-    assert v2._claude_host_has_view(_version_binary(tmp_path, "3.0.0 (Claude Code)")) is True
-    assert v2._claude_host_has_view(_version_binary(tmp_path, "no version here")) is False
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("2.1.318 (Claude Code)", False),
+        ("2.1.319 (Claude Code)", True),
+        ("3.0.0 (Claude Code)", True),
+        ("no version here", False),
+        ("unknown", False),
+    ],
+)
+def test_claude_host_has_view_gates_on_the_binary_version(monkeypatch, reported, expected):
+    # Stub the probe: a shell fixture cannot execute on the Windows unit leg.
+    monkeypatch.setattr(v2, "agent_version", lambda *_args, **_kwargs: reported)
+    assert v2._claude_host_has_view("claude") is expected

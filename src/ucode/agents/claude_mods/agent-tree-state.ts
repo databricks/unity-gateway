@@ -162,6 +162,16 @@ function safeToken(value: string): string {
       && isCredentialName(token.slice(0, colon).replace(/["']/g, ''))) {
     return prefix + token.slice(0, colon + 1) + '[redacted]' + suffix
   }
+  // Query strings carry credentials in otherwise ordinary URLs.
+  const query = token.indexOf('?')
+  if (query >= 0) {
+    const params = token.slice(query + 1)
+    const redacted = params.replace(/([&]?)([^&=]+)=([^&]*)/g, (all, amp, name, value) =>
+      value && isCredentialName(name) ? `${amp}${name}=[redacted]` : all)
+    if (redacted !== params) {
+      return prefix + token.slice(0, query + 1) + redacted + suffix
+    }
+  }
   const path = equal > 0 ? token.slice(equal + 1) : token
   const assignment = equal > 0 ? token.slice(0, equal + 1) : ''
   if (path.toLowerCase().startsWith('file://')) return prefix + assignment + pathBasename(path.slice(7)) + suffix
@@ -199,7 +209,7 @@ export function safePreviewText(value: unknown, maxLength = 240): string {
       const token = safeToken(word)
       // A marker word is shown, not consumed: `Authorization: Bearer <token>`
       // must still redact the token after Bearer.
-      const marker = token.toLowerCase() === 'bearer' || colonCredentialKey(word)
+      const marker = ['bearer', 'basic'].includes(token.toLowerCase()) || colonCredentialKey(word)
       if (redactNext && !marker) { redactNext = false; return '[redacted]' }
       if (marker) redactNext = true
       return token
@@ -256,7 +266,7 @@ const startedSteps = new Set<string>()
 const turnUsage = new Map<string, TurnUsage>()
 const failedTurns = new Set<string>()
 const tools = new Map<string, ToolRecord>()
-const assistantBuffers = new Map<string, { step: string; text: string }>()
+const assistantBuffers = new Map<string, { step: string; text: string; capped?: boolean }>()
 let main = makeMain()
 // Set by tree-relevant child activity and consumed by the registration's
 // invalidation gates, so main-loop steps and turns do not redraw the session.
@@ -451,7 +461,13 @@ export const agentTree = {
       }
       nodeFor(parentId).activity = 'Spawn denied'
       emit(now, parentId, 'spawn denied', route?.name)
-      pendingSpawns.delete(id)
+      // A denied resume request leaves only a placeholder target behind; an
+      // empty roster would never retire it.
+      if (spawn?.resumeId) {
+        const target = nodes.get(spawn.resumeId)
+        if (target && target.status === 'pending' && target.toolCount === 0) nodes.delete(spawn.resumeId)
+      }
+      if (id !== undefined) pendingSpawns.delete(id)
       return
     }
 
@@ -518,12 +534,16 @@ export const agentTree = {
     if (endedChild(node) || staleTurn(node, turnId)) return
     const step = turnKey(node.id, turnId) + ':' + index
     let buffer = assistantBuffers.get(node.id)
-    if (!buffer || buffer.step !== step) { buffer = { step, text: '' }; assistantBuffers.set(node.id, buffer) }
+    if (!buffer || buffer.step !== step) { buffer = { step, text: '', capped: false }; assistantBuffers.set(node.id, buffer) }
+    // Once the preview is full, later chunks cannot change the retained head:
+    // stop appending, sanitizing, and re-emitting the same text.
+    if (buffer.capped) return
     // The capture cap only needs the full code-point pass once the buffer is
     // full; growing buffers append directly.
     buffer.text = buffer.text.length + text.length <= MAX_ASSISTANT_TEXT + 1
       ? buffer.text + text
       : Array.from(buffer.text + text).slice(0, MAX_ASSISTANT_TEXT + 1).join('')
+    if (buffer.text.length > MAX_ASSISTANT_TEXT) buffer.capped = true
     node.assistantText = safePreviewText(buffer.text, MAX_ASSISTANT_TEXT)
     emitMessage(now ?? Date.now(), node.id, step, node.assistantText)
   },
