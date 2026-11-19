@@ -4,7 +4,7 @@ import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
 import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
 import { agentTree, activityMark, activityText, safePreviewText } from '../hooks/agent-tree-state.ts';
-import { NATIVE_VIEW } from '../hooks/agent-view.ts';
+import { NATIVE_VIEW, pressSwitchedView, registerAgentView } from '../hooks/agent-view.ts';
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';
@@ -579,6 +579,77 @@ for (const refused of ['denied', 'thrown']) test(`a ${refused} view switch falls
   // The press still runs beneath the refused switch: the details fallback opens.
   expect(await pane.find({ type: 'Text', text: 'ID · child-a' })).toBeDefined();
   await pane.unmount();
+});
+
+test('a taken view switch answers the press itself and never presses a released handle', async () => {
+  if (!NATIVE_VIEW) return;
+  // The live host rejects the beneath-the-chain press of an element whose
+  // handler the switch's re-render released; drive the hook the way the host
+  // delivered that rejection ("...no handler is held under handle 946").
+  const registered = new Map<string, Array<(...args: unknown[]) => unknown>>();
+  const on = ((event: string, ...rest: unknown[]) => {
+    const list = registered.get(event) ?? [];
+    list.push(rest[rest.length - 1] as (...args: unknown[]) => unknown);
+    registered.set(event, list);
+  }) as unknown as On;
+  registerAgentView(on);
+  const press = registered.get('ui.press')?.[0] as (
+    $: any,
+    e: { plugin: string; element: string },
+    next: () => Promise<undefined>,
+  ) => Promise<unknown>;
+  expect(press).toBeDefined();
+  const views: unknown[] = [];
+  const invalidated: string[] = [];
+  let answer: { deny?: string } | undefined = {};
+  const $ = {
+    plugin: { name: 'ug-smart-router' },
+    ui: {
+      view: async (view: unknown) => { views.push(view); return answer; },
+      invalidate: (scope: string) => { invalidated.push(scope); },
+    },
+  };
+  const released = () => Promise.reject(new Error('ui.press/ui.input/ui.select: no handler is held under handle 946'));
+  let handed = 0;
+  const next = () => { handed++; return released(); };
+
+  // The tile press switches: the hook answers the press itself, so the pressed
+  // element's released handler is never pressed beneath the chain, and the
+  // hook settles with the press event (the host rejects a resultless hook).
+  const tileEvent = { plugin: 'ug-smart-router', element: 'agent:child' };
+  expect(await press($, tileEvent, next)).toEqual(tileEvent);
+  expect(views).toEqual([{ agentId: 'child' }]);
+  expect(handed).toBe(0);
+  expect(pressSwitchedView('child')).toBe(true);
+
+  // Back to main: the return resets the switch and folds the button's own
+  // render refresh into the hook instead of pressing its released handle.
+  const backEvent = { plugin: 'ug-smart-router', element: 'back-to-main' };
+  expect(await press($, backEvent, next)).toEqual(backEvent);
+  expect(views).toEqual([{ agentId: 'child' }, {}]);
+  expect(handed).toBe(0);
+  expect(invalidated).toEqual(['ui.render']);
+  expect(pressSwitchedView('child')).toBe(false);
+
+  // A denied switch still hands the press beneath the chain (the details
+  // fallback), and a released handle there is tolerated without a thrown skip.
+  answer = { deny: 'not viewable' };
+  expect(await press($, tileEvent, next)).toEqual(tileEvent);
+  expect(handed).toBe(1);
+  expect(pressSwitchedView('child')).toBe(false);
+
+  // A press on another plugin's element is handed down; a released handle
+  // there is tolerated too, while any other error still propagates.
+  const foreignEvent = { plugin: 'other-plugin', element: 'theirs' };
+  expect(await press($, foreignEvent, next)).toEqual(foreignEvent);
+  expect(handed).toBe(2);
+  let propagated: unknown;
+  try {
+    await press($, { plugin: 'other-plugin', element: 'theirs' }, () => Promise.reject(new Error('downstream exploded')));
+  } catch (error) {
+    propagated = error;
+  }
+  expect((propagated as Error).message).toBe('downstream exploded');
 });
 
 test('stepping into a child asks for its native view and back-to-main returns to the main transcript', { options: ROUTED }, async ($, on) => {
