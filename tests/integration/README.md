@@ -500,7 +500,9 @@ completed task rows, or a completed task detail panel before submitting `/exit`.
 Detail panels accept native and routed agent-type titles, with the completed status and
 native footer still required. Claude 2.1.290 retains finished children in a
 `Completed (N)` list, so the empty-state message is not required when the list has exactly N
-checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
+checkmarked `done` rows and no running or scheduled section. Claude 2.1.327 omits that count
+and changes the footer to "↑/↓ to navigate"; every visible task must still be checkmarked
+`done`, and an empty Completed section is not completion evidence. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, running detail panels, and completed-task text outside the native task view.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second

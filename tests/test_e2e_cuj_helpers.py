@@ -285,6 +285,13 @@ time.sleep(30)
         "empty",
         "completed",
         "completed_empty_history",
+        "completed_latest",
+        "running_latest",
+        "mixed_latest",
+        "scheduled_latest",
+        "partial_latest",
+        "empty_latest",
+        "transcript_latest",
         "detail",
         "routed_detail",
         "resumed",
@@ -356,11 +363,26 @@ def test_claude_waits_for_background_task_completion_before_exit(tmp_path, view)
     views["nonempty_history"] = views["completed_empty_history"].replace(
         "Earlier in this session (0)", "Earlier in this session (1)"
     )
+    for name in ("completed", "running", "mixed", "scheduled", "partial", "transcript"):
+        views[f"{name}_latest"] = (
+            views[name]
+            .replace("Completed (2)", "Completed")
+            .replace("Completed (1)", "Completed")
+            .replace("↑/↓ to select", "↑/↓ to navigate")
+        )
+    views["completed_latest"] = views["completed_latest"].replace(
+        "↑/↓ to navigate", "  Earlier in this session (0)\n\n↑/↓ to navigate"
+    )
+    views["partial_latest"] = views["partial_latest"].replace("done · Sonnet 5", "")
+    views["empty_latest"] = (
+        "Background\n\nCompleted\n\n↑/↓ to navigate · Enter to view · Esc to close"
+    )
     views["resumed"] = views["mixed"]
     complete = view in (
         "empty",
         "completed",
         "completed_empty_history",
+        "completed_latest",
         "nonempty_history",
         "detail",
         "routed_detail",
