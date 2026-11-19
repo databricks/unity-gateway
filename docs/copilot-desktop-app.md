@@ -16,8 +16,7 @@ the app.
 - Both providers point at ug's login service, the background service that also serves Codex
   desktop, on `http://127.0.0.1:<port>`. It adds a fresh Databricks token to each request, so the
   app holds no Databricks credential; the Claude provider's key is a placeholder.
-- The service only answers programs on this machine that aren't a browser page. It has no other
-  secret, so use it on a single-user machine.
+- The service needs no secret from the app, so use it on a single-user machine.
 - When your Databricks sign-in expires, the app's requests fail with "Databricks sign-in
   expired"; run `databricks auth login` and try again.
 - The app supports GitHub Copilot's own models too. Only the Databricks providers go through the
