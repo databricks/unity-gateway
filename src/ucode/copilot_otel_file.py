@@ -109,16 +109,21 @@ def to_otlp_json(lines: Iterable[bytes]) -> dict[str, Any] | None:
     groups: dict[tuple[str, str], tuple[dict, dict, list[dict]]] = {}
     for line in lines:
         try:
-            record = json.loads(line)
+            # A writer without O_APPEND leaves NULs where the file was emptied under it.
+            record = json.loads(line.lstrip(b"\0"))
         except ValueError:
             continue
         if not isinstance(record, dict) or record.get("type") != "span":
+            continue
+        try:
+            span = _span(record)
+        except (TypeError, ValueError, AttributeError):
             continue
         resource = record.get("resource") if isinstance(record.get("resource"), dict) else {}
         scope = record.get("instrumentationScope")
         scope = scope if isinstance(scope, dict) else {}
         key = (json.dumps(resource, sort_keys=True), json.dumps(scope, sort_keys=True))
-        groups.setdefault(key, (resource, scope, []))[2].append(_span(record))
+        groups.setdefault(key, (resource, scope, []))[2].append(span)
     if not groups:
         return None
     resource_spans = []

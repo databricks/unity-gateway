@@ -68,6 +68,21 @@ class TestConverter:
 
         assert copilot_otel_file.to_otlp_json(lines) is None
 
+    def test_skips_a_malformed_span_and_keeps_the_rest(self):
+        good = SAMPLE.read_bytes().splitlines()[0]
+        lines = [
+            b'{"type":"span","name":"a","kind":"server"}',
+            b'{"type":"span","name":"b","links":[{"context":"x"}]}',
+            b"\0\0\0" + good,
+        ]
+
+        payload = copilot_otel_file.to_otlp_json(lines)
+
+        spans = [
+            s for rs in payload["resourceSpans"] for ss in rs["scopeSpans"] for s in ss["spans"]
+        ]
+        assert len(spans) == 1
+
     def test_groups_spans_by_resource(self):
         def span(service: str) -> bytes:
             return json.dumps(
@@ -388,6 +403,26 @@ class TestAppTracingVariables:
 
         assert not (home / ".zshenv").exists()
         assert shell_profile_env.profile_file("fish").is_file()
+
+    def test_a_failed_profile_write_still_leaves_revert_the_written_blocks(self, home, monkeypatch):
+        monkeypatch.setattr(shell_profile_env, "login_shells", lambda: ["bash", "zsh"])
+        write = shell_profile_env.write
+        calls = []
+
+        def fail_second(path, env):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("disk full")
+            return write(path, env)
+
+        monkeypatch.setattr(shell_profile_env, "write", fail_second)
+        with pytest.raises(OSError):
+            copilot_app_tracing.enable()
+        assert shell_profile_env.BEGIN in calls[0].read_text()
+
+        monkeypatch.setattr(shell_profile_env, "write", write)
+        assert copilot_app_tracing.disable()
+        assert not calls[0].exists()
 
     def test_an_unprobed_login_shell_warns_and_writes_nothing(self, home, monkeypatch, capsys):
         monkeypatch.setattr(shell_profile_env, "login_shells", lambda: ["ksh"])

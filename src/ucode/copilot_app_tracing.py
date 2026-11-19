@@ -67,12 +67,19 @@ def enable() -> bool:
         return False
     recorded, created = _record()
     created = list(dict.fromkeys([*created, *(path for path in paths if not path.exists())]))
+    # Recorded before writing, so a write that fails partway still leaves revert every block.
+    _save_record(list(dict.fromkeys([*recorded, *paths])), created)
     changed = False
     for path in paths:
         changed = shell_profile_env.write(path, env) or changed
     for stale in recorded:
         if stale not in paths:
             _remove_profile(stale, created)
+    _save_record(paths, created)
+    return changed
+
+
+def _save_record(paths: list[Path], created: list[Path]) -> None:
     atomic_write_json(
         RECORD,
         {
@@ -80,7 +87,6 @@ def enable() -> bool:
             "created": [str(path) for path in created if path in paths],
         },
     )
-    return changed
 
 
 def _remove_profile(path: Path, created: list[Path]) -> bool:
