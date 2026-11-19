@@ -146,9 +146,10 @@ an error. Existing legacy flags and explicit launch/session controls retain thei
 Restore the inherited environment on every exit.
 `--disable-smart-routing` and session on/off controls still apply after version expansion.
 `--enable-smart-routing` and managed smart routing turn routing on only through
-`apply_enabled_version` in `config.py`: keep a known version, otherwise select
-`DEFAULT_ENABLED_VERSION` (an unknown selector is replaced for that launch). Neither may rewrite
-already-resolved version flags.
+`apply_enabled_version` in `config.py`: keep a known version.
+Otherwise, managed enablement uses `DEFAULT_ENABLED_VERSION`. Explicit enablement uses
+`copilot_subagent_orch_v0` for Copilot and `DEFAULT_ENABLED_VERSION` for other agents.
+An unknown selector is replaced for that launch. Neither path may rewrite already-resolved flags.
 
 Every new `smart_routing` or `smart_router` environment variable must be registered in
 `SMART_ROUTING_ENV_KEYS` in the same change, including orchestration controls.

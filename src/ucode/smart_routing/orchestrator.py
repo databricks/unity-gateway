@@ -16,6 +16,7 @@ from ucode import claude_answer_delivery, skills
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
 )
 from ucode.smart_routing.config import resolve_environment
@@ -105,8 +106,20 @@ def sync_hooks(doc: dict, *, agent: str) -> None:
 
 
 def hook_output(payload: object, *, agent: str) -> dict | None:
-    if not isinstance(payload, dict) or payload.get("agent_id"):
+    if not isinstance(payload, dict) or payload.get("agent_id") or payload.get("agentId"):
         return None
+    if agent == AGENT_COPILOT:
+        if payload.get("hook_event_name", "sessionStart") != "sessionStart":
+            return None
+        if not enabled(agent=agent):
+            return None
+        try:
+            workflow = skills.skill_entrypoint(skill_directory(), agent).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
+        return {
+            "additionalContext": "Smart Router Orchestrator is on for this session.\n\n" + workflow
+        }
     event = payload.get("hook_event_name")
     if event != "UserPromptSubmit" and not (
         event == "SessionStart" and payload.get("source") == "compact"
@@ -141,7 +154,9 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--agent", choices=(AGENT_CLAUDE, AGENT_CODEX), required=True)
+    parser.add_argument(
+        "--agent", choices=(AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT), required=True
+    )
     args = parser.parse_args()
     try:
         payload = json.load(sys.stdin)

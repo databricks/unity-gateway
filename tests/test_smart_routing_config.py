@@ -7,6 +7,7 @@ import pytest
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
@@ -193,9 +194,10 @@ def test_known_version(selector, expected):
     assert config.known_version(env) is expected
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT])
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
+@pytest.mark.parametrize("managed", [False, True])
+def test_enabled_version_selects_agent_default_over_legacy_flags(agent, selector, managed):
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -206,10 +208,10 @@ def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
         inherited[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     applied = inherited.copy()
 
-    previous = config.apply_enabled_version(applied, agent=agent)
+    previous = config.apply_enabled_version(applied, agent=agent, managed=managed)
 
     expected = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
-    if agent == AGENT_CODEX:
+    if agent == AGENT_CODEX or (agent == AGENT_COPILOT and managed):
         expected = dict.fromkeys(expected, "0")
     assert applied == {
         **expected,
@@ -219,7 +221,7 @@ def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
     assert applied == inherited
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT])
 @pytest.mark.parametrize("version", sorted(config._VERSIONS))
 def test_enabled_version_keeps_a_known_version(agent, version):
     inherited = {
@@ -239,32 +241,44 @@ def test_enabled_version_keeps_a_known_version(agent, version):
     assert applied == inherited
 
 
+_CLAUDE_ONLY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: False}
+_COPILOT_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: True}
+_LEGACY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: False}
+
+
 @pytest.mark.parametrize(
-    ("selector", "routes"),
+    ("selector", "explicit_routes", "managed_routes"),
     [
-        (None, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
-        ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: False}),
-        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
-        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (None, _COPILOT_ROUTES, _CLAUDE_ONLY_ROUTES),
+        ("unsupported_version", _COPILOT_ROUTES, _CLAUDE_ONLY_ROUTES),
+        (config.COPILOT_SUBAGENT_ONLY_V0, _COPILOT_ROUTES, _COPILOT_ROUTES),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES, _CLAUDE_ONLY_ROUTES),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES, _CLAUDE_ONLY_ROUTES),
+        (config.COPILOT_SUBAGENT_ORCH_V0, _COPILOT_ROUTES, _COPILOT_ROUTES),
+        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, _LEGACY_ROUTES, _LEGACY_ROUTES),
         *(
-            (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
-            for version in sorted(
-                set(config._VERSIONS)
-                - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY}
+            (version, _LEGACY_ROUTES, _LEGACY_ROUTES)
+            for version in (
+                config.SUBAGENT_ONLY_V0,
+                config.SUBAGENT_ONLY_V1,
+                config.SUBAGENT_ORCH_V0,
+                config.SUBAGENT_ORCH_V1,
             )
         ),
     ],
 )
-def test_enabled_version_routes(selector, routes):
+@pytest.mark.parametrize("managed", [False, True])
+def test_enabled_version_routes(selector, explicit_routes, managed_routes, managed):
     env = {ENABLE_SMART_ROUTING_ENV_VAR: "1", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
     if selector is not None:
         env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     before = env.copy()
 
+    routes = managed_routes if managed else explicit_routes
     for agent, expected in routes.items():
-        assert config.enabled_version_routes(env, agent=agent) is expected
+        assert config.enabled_version_routes(env, agent=agent, managed=managed) is expected
         applied = env.copy()
-        config.apply_enabled_version(applied, agent=agent)
+        config.apply_enabled_version(applied, agent=agent, managed=managed)
         assert v2.smart_routing_enabled(applied, default=False, agent=agent) is expected
     assert env == before
 
@@ -321,6 +335,9 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
         (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.COPILOT_SUBAGENT_ONLY_V0, (AGENT_CLAUDE, AGENT_COPILOT)),
+        (config.COPILOT_SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_COPILOT)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):
@@ -415,3 +432,19 @@ def test_nested_version_scope_overrides_and_restores_identity(monkeypatch, overr
                     raise RuntimeError("stop")
         assert config.auto_mode_enabled()
     assert not config.auto_mode_enabled()
+
+
+@pytest.mark.parametrize("version", sorted(config._VERSIONS))
+def test_copilot_orchestration_is_enabled_only_by_the_new_preset(version):
+    resolved = config.resolve_environment(
+        {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: version}, agent=AGENT_COPILOT
+    )
+    assert resolved[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+    assert resolved[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == (
+        "1" if version == config.COPILOT_SUBAGENT_ORCH_V0 else "0"
+    )
+    assert resolved[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == (
+        "1"
+        if version in {config.COPILOT_SUBAGENT_ONLY_V0, config.COPILOT_SUBAGENT_ORCH_V0}
+        else "0"
+    )

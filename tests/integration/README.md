@@ -42,6 +42,9 @@ discovery, implicit PAT classification, and the separate selected-workspace auth
 subprocess boundaries. Unrelated-profile network isolation and startup latency are
 not currently measured by a live integration journey.
 
+Copilot routing and orchestration component coverage is listed in the [main test guide](../README.md).
+Live child routing is verified separately from these component checks.
+
 `test_ug_codex_routing_metadata.py` drives installed UG and native Codex through
 empty-tree off/on transitions, a repeated-state no-op, and a busy child spanning an
 off toggle. Native transcripts and exclusive file receipts verify old-child identity
@@ -810,6 +813,7 @@ are starting, within a single 120-second deadline. It still requires both connec
 servers and their exact tools; the CUJ then calls both tools and verifies their receipts.
 Offline checks in `../test_integration_terminal_screen.py` cover stale startup snapshots,
 connection/tool failures, and permanent startup. They do not establish live MCP coverage.
+Those tests isolate their fake clock from unrelated process sleeps, retaining the same deadline.
 
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
 parsing, session paths, and child-session detection. `utils/evidence.py` dispatches
@@ -1251,8 +1255,9 @@ their original legacy-env cases remain, and the Claude skill toggles add a manag
 which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
 first-prompt wrapper starts. Codex's managed default is covered by its launch-only opt-out test,
 `test_smart_router_managed_default_leaves_codex_unrouted_at_launch`, which requires the
-workspace smart-routing warning ("enabled for Codex in this workspace, but it is currently
-only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
+workspace smart-routing warning ("This launch's Smart Router configuration does not route Codex.")
+and its `SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0` guidance
+in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json` or `codex_smart_routing_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars. The shared Claude fixtures omit GLM. Only
 `test_smart_router_routes_claude_subagent_at_launch[subagent_only_v0-glm]` loads

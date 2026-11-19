@@ -32,6 +32,7 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
@@ -73,6 +74,7 @@ from ucode.smart_routing.config import (
     apply_config,
     apply_enabled_version,
     auto_mode_enabled,
+    known_version,
     resolve_environment,
     selected_version,
 )
@@ -242,8 +244,9 @@ def describe_routing(env: MutableMapping[str, str] | None = None) -> RoutingDesc
     return RoutingDescription(
         harnesses=tuple(
             agent
-            for agent in (AGENT_CLAUDE, AGENT_CODEX)
-            if smart_routing_enabled(source, default=False, agent=agent)
+            for agent in (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)
+            if (agent != AGENT_COPILOT or known_version(source))
+            and smart_routing_enabled(source, default=False, agent=agent)
         )
     )
 
@@ -253,10 +256,11 @@ def override_smart_routing(
     env: MutableMapping[str, str] | None = None,
     *,
     agent: str,
+    managed: bool = False,
 ) -> dict[str, str | None]:
     """Set an explicit launch-scoped routing choice and return the prior values."""
     if enabled:
-        return apply_enabled_version(env, agent=agent)
+        return apply_enabled_version(env, agent=agent, managed=managed)
     target = os.environ if env is None else env
     previous = {var: target.get(var) for var in SMART_ROUTING_ENV_KEYS}
     previous.update(apply_config(target, agent=agent))

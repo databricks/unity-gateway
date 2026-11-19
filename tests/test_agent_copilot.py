@@ -5,15 +5,18 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shlex
 import uuid
 from pathlib import Path
 
 import httpx
 import pytest
 
-from ucode import custom_oauth
+from tests.conftest import metric_observations
+from ucode import custom_oauth, metrics
 from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
+from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR
 from ucode.telemetry import client_platform
 
 WS = "https://example.databricks.com"
@@ -1784,6 +1787,176 @@ class TestLaunch:
             copilot.launch(dict(STATE), [], options=copilot.LaunchOptions(launch_model=GPT))
 
         assert seen["env"]["COPILOT_MODEL"] == GPT_REF
+
+    def _launch_capturing_plugin(self, monkeypatch, tmp_path, *, routed):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        parent_controls = str(tmp_path / "parent-controls.json")
+        parent_python = str(tmp_path / "parent-python")
+        fresh_controls = str(tmp_path / "fresh-controls.json")
+        fresh_python = str(tmp_path / "fresh-python")
+        monkeypatch.setenv(SESSION_ENV_VAR, parent_controls)
+        monkeypatch.setenv(SESSION_PYTHON_ENV_VAR, parent_python)
+        started = []
+
+        def start_session():
+            started.append(None)
+            os.environ[SESSION_ENV_VAR] = fresh_controls
+            os.environ[SESSION_PYTHON_ENV_VAR] = fresh_python
+
+        monkeypatch.setattr(copilot, "start_session", start_session)
+        seen = _stub_launch(monkeypatch)
+        stubbed_popen = copilot.subprocess_cross_os.popen
+
+        def popen(argv, *, env):
+            if "--plugin-dir" in argv:
+                plugin = Path(argv[argv.index("--plugin-dir") + 1])
+                seen["hook"] = json.loads((plugin / "hooks/hooks.json").read_text())
+            return stubbed_popen(argv, env=env)
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        permission_args = ["--allow-tool", "read", "--deny-tool", "shell"]
+        with pytest.raises(SystemExit):
+            copilot.launch(
+                dict(STATE),
+                permission_args,
+                options=copilot.LaunchOptions(launch_smart_routing=routed, launch_model=GPT),
+            )
+        assert seen["argv"][-len(permission_args) :] == permission_args
+        assert seen["env"]["COPILOT_MODEL"] == GPT_REF
+        seen["start_session_calls"] = len(started)
+        seen["parent_controls"] = parent_controls
+        seen["parent_python"] = parent_python
+        seen["fresh_controls"] = fresh_controls
+        seen["fresh_python"] = fresh_python
+        return seen
+
+    def test_smart_routed_launch_loads_a_hook_plugin_offering_the_registry_models(
+        self, tmp_path, monkeypatch
+    ):
+        seen = self._launch_capturing_plugin(monkeypatch, tmp_path, routed=True)
+
+        plugin = Path(seen["argv"][seen["argv"].index("--plugin-dir") + 1])
+        (hook,) = seen["hook"]["hooks"]["preToolUse"]
+        assert shlex.split(hook["bash"])[1:3] == ["copilot-router-hook", "route-subagent"]
+        assert f"--model {SONNET}={SONNET_REF}" in hook["bash"]
+        assert f"--model {GPT}={GPT_REF}" in hook["bash"]
+        assert not plugin.exists()
+        assert seen["start_session_calls"] == 1
+        assert seen["env"][SESSION_ENV_VAR] == seen["fresh_controls"]
+        assert seen["env"][SESSION_PYTHON_ENV_VAR] == seen["fresh_python"]
+
+    def test_plain_launch_loads_no_routing_plugin(self, tmp_path, monkeypatch):
+        seen = self._launch_capturing_plugin(monkeypatch, tmp_path, routed=False)
+
+        assert "--plugin-dir" not in seen["argv"]
+        assert "hook" not in seen
+        assert seen["start_session_calls"] == 0
+        assert seen["env"][SESSION_ENV_VAR] == seen["parent_controls"]
+        assert seen["env"][SESSION_PYTHON_ENV_VAR] == seen["parent_python"]
+
+    @pytest.mark.parametrize("failure", ["creation", "write", "controls"])
+    def test_routing_setup_failure_warns_and_launches_plain_copilot_once(
+        self, tmp_path, monkeypatch, capsys, failure, metrics_recorder
+    ):
+        metrics.set_command("copilot")
+        metrics.start_agent("copilot")
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        parent_controls = str(tmp_path / "parent-controls.json")
+        parent_python = str(tmp_path / "parent-python")
+        monkeypatch.setenv(SESSION_ENV_VAR, parent_controls)
+        monkeypatch.setenv(SESSION_PYTHON_ENV_VAR, parent_python)
+        started = []
+
+        def start_session():
+            started.append(None)
+            if failure == "controls":
+                raise RuntimeError("Failed to write controls file")
+
+        monkeypatch.setattr(copilot, "start_session", start_session)
+        seen = _stub_launch(monkeypatch)
+        stubbed_popen = copilot.subprocess_cross_os.popen
+        launches = []
+        partial_roots = []
+
+        def popen(argv, *, env):
+            launches.append(argv)
+            return stubbed_popen(argv, env=env)
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        if failure == "creation":
+            original_temp_directory = copilot.tempfile.TemporaryDirectory
+
+            def fail_routing_temp_directory(*args, **kwargs):
+                if kwargs.get("prefix") == "ug-copilot-routing-":
+                    raise OSError("temporary directory unavailable")
+                return original_temp_directory(*args, **kwargs)
+
+            monkeypatch.setattr(copilot.tempfile, "TemporaryDirectory", fail_routing_temp_directory)
+        elif failure == "write":
+
+            def fail_plugin_write(directory, _argv):
+                directory.mkdir(parents=True)
+                (directory / "partial.json").write_text("{}", encoding="utf-8")
+                partial_roots.append(directory.parent)
+                raise OSError("plugin write unavailable")
+
+            monkeypatch.setattr(copilot.copilot_routing, "write_plugin", fail_plugin_write)
+
+        tool_args = ["-p", "synthetic prompt"]
+        with pytest.raises(SystemExit) as exit_info:
+            copilot.launch(
+                dict(STATE),
+                tool_args,
+                options=copilot.LaunchOptions(launch_smart_routing=True),
+            )
+
+        assert exit_info.value.code == 0
+        assert len(launches) == 1
+        session_id = seen["argv"][seen["argv"].index("--session-id") + 1]
+        assert seen["argv"] == [
+            "copilot",
+            *copilot.MCP_LAUNCH_ARGS,
+            "--session-id",
+            session_id,
+            *tool_args,
+        ]
+        if failure == "write":
+            assert len(partial_roots) == 1
+            assert not partial_roots[0].exists()
+        else:
+            assert not partial_roots
+        assert len(started) == (1 if failure == "controls" else 0)
+        assert seen["env"][SESSION_ENV_VAR] == parent_controls
+        assert seen["env"][SESSION_PYTHON_ENV_VAR] == parent_python
+        output = capsys.readouterr()
+        assert "Smart Router setup failed" in output.out + output.err
+        ((value, labels),) = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert value == 1
+        assert labels["operation"] == "copilot"
+        assert labels["continued_with_fallback"] is True
+        assert labels["phase"] == "startup"
+
+    def test_native_popen_error_is_not_treated_as_a_routing_setup_failure(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setattr(copilot, "start_session", lambda: None)
+        _stub_launch(monkeypatch)
+        launches = []
+
+        def fail_popen(argv, *, env):
+            launches.append(argv)
+            raise OSError("native Copilot launch failed")
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", fail_popen)
+        with pytest.raises(OSError, match="native Copilot launch failed"):
+            copilot.launch(
+                dict(STATE), [], options=copilot.LaunchOptions(launch_smart_routing=True)
+            )
+
+        assert len(launches) == 1
+        output = capsys.readouterr()
+        assert "Smart Router setup failed" not in output.out + output.err
 
     def test_a_wire_model_override_applies_to_the_start_model(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)

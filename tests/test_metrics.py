@@ -78,6 +78,14 @@ def test_no_credentials_means_no_upload_or_login(monkeypatch):
     login.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    "command", ["claude-router-hook", "codex-router-hook", "copilot-router-hook"]
+)
+def test_routing_helpers_keep_agent_session_metrics_phase(metrics_recorder, command):
+    metrics.set_command(command)
+    assert metrics_recorder.phase == "agent_session"
+
+
 def test_startup_includes_login_and_stops_once_at_handoff(metrics_recorder, monkeypatch):
     ticks = iter([12.0, 12.0])
     metrics_recorder.started = 2.0

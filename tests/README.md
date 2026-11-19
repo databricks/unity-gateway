@@ -34,6 +34,10 @@ HTTP 200 through the relay. Its dedicated protected Linux CI job maps `CODEX_OAU
 to `CODEX_ACCESS_TOKEN`; `test_cuj_session.py` covers credential redaction from evidence.
 File tools, desktop configure/revert, desktop inference, and browser sign-in are not covered.
 
+Copilot orchestration component coverage checks command-based session-start context,
+native task guidance, disabled and child contexts, and preservation of older presets.
+Live child routing is verified separately from these component checks.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
@@ -193,6 +197,8 @@ uses a real Python subprocess and PTY to check that proxy diagnostics stay outsi
 the screen, ordinary stderr remains visible, and redacted evidence survives both
 successful and failed tests. This is harness coverage, not live agent inference.
 Headless diagnostic capture remains covered by `test_integration_contract.py`.
+MCP deadline tests scope their fake clock to terminal helpers; a regression checks that
+unrelated process sleeps do not advance it or interfere with the 120-second assertions.
 
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,
@@ -1080,6 +1086,24 @@ real version gate: declining blocks launch, upgrading to 0.164 allows routing, a
 `test_codex_routing.py` checks that long Unicode assignments reach the router and hook
 unchanged while audits contain their hash and length, and bound each reason to 1,000
 characters. Shared-writer coverage keeps Claude's full task and reason fields intact.
+`test_copilot_routing.py` checks that a Copilot `task` call is rewritten to the routed registry
+model, that the router is offered `claude` harness options capped at its model limit while
+retaining the starting model, that the
+launch-scoped plugin hook matches only `task`, and that hook failures covered by these cases exit
+zero (Copilot denies the tool call otherwise); `test_agent_copilot.py` checks that a routed launch
+passes the plugin and a plain launch does not. Hook regressions cover object and JSON-string
+arguments, malformed/non-object input, and unreadable orchestration skills. Configuration and
+CLI tests preserve every pre-existing preset's Copilot opt-out, reject inherited legacy-flag
+opt-in, check both new opt-in presets,
+and verify explicit enable, disable, managed-default behavior and launch-environment restoration.
+Launch cases also check fresh controls only on routed success, inherited controls on plain/fallback
+launches, setup creation/write/wrapped-control failures, and native launch errors without a second launch.
+An unwritable audit path leaves the selected model intact through the shared best-effort writer.
+Setup fallback records the existing CLI error metric without changing launch success.
+`test_smart_routing_attribution_headers.py` checks Copilot's outgoing router session header,
+User-Agent, custom-header precedence and malformed-id omission without inventing a child id.
+The plugin command test executes Bash on POSIX and PowerShell on Windows with spaced paths
+and literal shell characters. Routing-helper metrics retain the agent-session phase.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.
@@ -1318,7 +1342,7 @@ integration utilities; only CUJ-specific evidence correlation stays in a test fi
 | `test_ug_codex_app_server_client_initializes` | Connect a stdio client, direct/`--` separator, with legacy smart routing off/on | Actual JSON-RPC initialize response; no non-JSON stdout; no routing |
 | `test_smart_routing_claude_route_subagent_hook`, `test_smart_routing_codex_route_subagent_hook` | Pipe a native spawn payload to the installed Claude mod command or Codex PreToolUse hook with legacy subagent routing or each supported routing preset | Claude returns model/rationale/updatedInput JSON naming the routed agent the mod labels; Codex returns an allow-hook decision; requested model replaced by a routed agent definition (Claude) or bundled catalog slug (Codex) from the offered models; one audited decision matching the session and task |
 | `test_smart_router_routes_claude_subagent_at_launch`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_off`, `test_smart_router_skill_turns_{claude,codex}_subagent_routing_back_on` | Configure, launch a real subagent-only TUI with legacy routing-only/orchestration flags or the three subagent-only presets, each in its own fresh session: spawn a tagged child at launch (Claude also with `subagent_only_v0` and a GLM-only menu; Codex launch coverage is the first phase of its back-on journey); invoke the installed Smart Router skill to turn routing off then spawn a child; or spawn a routed child, turn routing off and spawn an unrouted child, then turn routing back on and spawn a routed child | Routing-only cases install `smart-router`; orchestration cases also install `smart-router-orchestrator`; each tagged native child completes; routed children (launch, before off and after back on) show a native model/rationale row (Claude) or subagent banner (Codex) and produce a live routing decision correlated with the child, while each child after off shows neither and has no decision; Claude's recorded task inference payloads carry `smart_router_recipe_name` as the launch recipe (`at_launch`, `back_on`, where the second child must match the launch child) or DISABLED (after off), omit the recipe header, and receive successful gateway responses; opted-in Codex banners include `[orchestrator on]`; no first-prompt routing wrapper; the customer full-mode preset is intentionally outside this journey; normal exit |
-| `test_smart_router_managed_default_leaves_codex_unrouted_at_launch` | Configure with only the managed config's `smart_routing.enabled` (selects `subagent_orch_v0_claude_only`), launch the real Codex TUI, and spawn one tagged child without touching the Smart Router skill | ug warns that smart routing is enabled for Codex in this workspace but currently only supported for Claude Code; neither `smart-router` nor the orchestrator skill is installed; the tagged child completes natively with no subagent-routing banner and no live routing decision; no first-prompt interposer; normal exit |
+| `test_smart_router_managed_default_leaves_codex_unrouted_at_launch` | Configure with only the managed config's `smart_routing.enabled` (selects `subagent_orch_v0_claude_only`), launch the real Codex TUI, and spawn one tagged child without touching the Smart Router skill | ug names `SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0` to opt Codex in; neither `smart-router` nor the orchestrator skill is installed; the tagged child completes natively with no subagent-routing banner and no live routing decision; no first-prompt interposer; normal exit |
 | `test_ug_codex_native_v2_plain_assignment_routing` | Configure and launch subagent-only routing with a native v2 catalog and a user-owned observer hook; delegate a multiline Unicode file task | Exact plaintext at the hook, router, and native child; observer retains the original task name while the child has its enabled attribution suffix; completed child uses the routed model; parent model, Databricks provider, and user settings are preserved |
 | `test_ug_configure_claude_repeat_and_revert`, `test_ug_configure_codex_repeat_and_revert` | Configure twice over user settings; complete a task; revert twice | Settings preserved; no bearer in ug state; generated config removed; status unconfigured |
 | `test_ug_configure_claude_cleans_stale_skills_mcp_on_workspace_switch` | Configure the first workspace, register its skills MCP, switch to a second real workspace, and use Claude | One cross-workspace removal reported; old registration removed from Claude and the new workspace state; old workspace bucket preserved; repeat configure stays clean; real file task completes on the second workspace |

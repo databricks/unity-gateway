@@ -214,6 +214,7 @@ def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, st
 _SESSION_HEADER_NAMES = {
     "claude": ("x-claude-code-session-id", "x-claude-code-agent-id"),
     "codex": ("session-id", "thread-id"),
+    "copilot": ("session-id", "thread-id"),
 }
 
 

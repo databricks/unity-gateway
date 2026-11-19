@@ -34,6 +34,7 @@ import json
 import os
 import re
 import secrets
+import tempfile
 import threading
 import time
 from collections import Counter
@@ -90,7 +91,9 @@ from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
     release_file_lock,
 )
+from ucode.smart_routing import copilot_routing
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
+from ucode.smart_routing.session_env import start_session
 from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -1312,6 +1315,17 @@ def _session_catalog(
     return catalog
 
 
+def _routing_plugin_args(
+    state: dict, catalog: list[CopilotModel], plugin_dir: Path, *, start_model: str
+) -> list[str]:
+    """Load the plugin whose hook routes each ``task`` subagent to a registry model."""
+    refs = {model.id: model.ref for model in catalog}
+    copilot_routing.write_plugin(
+        plugin_dir, copilot_routing.hook_argv(state, refs, start_model=start_model)
+    )
+    return ["--plugin-dir", str(plugin_dir)]
+
+
 def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
     provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
     model_location = state.pop(LAUNCH_MODEL_LOCATION_KEY, None)
@@ -1355,6 +1369,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         discarded_paths=(OTEL_METRICS_PATH,) if tracing else (),
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    routing_temp = None
     try:
         proxy_base_url = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
         config = render_providers_config(
@@ -1368,6 +1383,26 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             for entry in config["models"]:
                 if entry["id"] == start_model.registry_id:
                     entry["wireModel"] = wire_override
+        routing_args = []
+        if options.launch_smart_routing:
+            try:
+                routing_temp = tempfile.TemporaryDirectory(
+                    prefix="ug-copilot-routing-", ignore_cleanup_errors=True
+                )
+                routing_args = _routing_plugin_args(
+                    state, catalog, Path(routing_temp.name) / "plugin", start_model=start_model.id
+                )
+                # Keep inherited routing controls from steering this child.
+                start_session()
+            except (OSError, RuntimeError) as exc:
+                routing_args = []
+                metrics.failure(metrics.COMMAND_OPERATION, exc, continued_with_fallback=True)
+                print_warning(
+                    f"Smart Router setup failed; launching Copilot without routing: {exc}"
+                )
+                if routing_temp is not None:
+                    routing_temp.cleanup()
+                    routing_temp = None
         with session_registry(config) as registry_path:
             env = build_runtime_env(
                 registry_path,
@@ -1376,14 +1411,18 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             )
             metrics.agent_handoff()
             proc = subprocess_cross_os.popen(
-                [SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env
+                [SPEC["binary"], *MCP_LAUNCH_ARGS, *routing_args, *tool_args], env=env
             )
             returncode = _wait_for_exit(proc)
     finally:
-        cache.stop()
-        server.shutdown()
-        server.server_close()
-        client.close()
+        try:
+            cache.stop()
+            server.shutdown()
+            server.server_close()
+            client.close()
+        finally:
+            if routing_temp is not None:
+                routing_temp.cleanup()
     raise SystemExit(returncode)
 
 
