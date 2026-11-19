@@ -74,14 +74,16 @@ for (const { name, result, box, routed } of cases) {
     test(`startup validation ${name} holds the band until the result, with earlier prompt ${submittedBeforeResult}`, { options: ROUTED }, async ($, on) => {
       const { clock, env, files, state, hint } = engine(on);
 
-      expect(await $.session.start(start)).toEqual({ cwd: '/resolved-work' });
+      // Claude draws before session.start; the band is held from the first paint.
       const ui = await $.ui.mount(abovePrompt);
+      expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+      expect(await $.session.start(start)).toEqual({ cwd: '/resolved-work' });
       const pending = JSON.stringify(await ui.drawn());
       expect(pending).toContain('host content');
       expect(pending).not.toContain('unity gateway smart router');
       expect(await hint($)).toBe('');
       await clock.advance(1000);
-      expect(state.reads).toBe(10);
+      expect(state.reads).toBe(11);
       expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
       if (submittedBeforeResult) {
         expect((await $.prompt.submit({ text: 'before validation' })).text).toBe('before validation');
@@ -139,8 +141,8 @@ for (const { name, result, box, routed } of cases) {
 
 test('startup validation shows the band after 12 seconds without a result and stops polling', { options: ROUTED }, async ($, on) => {
   const { clock, state, hint } = engine(on);
-  await $.session.start(start);
   const ui = await $.ui.mount(abovePrompt);
+  await $.session.start(start);
   await clock.advance(11900);
   expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
   await clock.advance(100);
@@ -152,5 +154,29 @@ test('startup validation shows the band after 12 seconds without a result and st
   await clock.advance(2000);
   expect(state.reads).toBe(reads);
   expect(state.notices).toEqual([]);
+  await ui.unmount();
+});
+
+test('a result already written by session start shows the band without polling', { options: ROUTED }, async ($, on) => {
+  const { clock, files, state, hint } = engine(on);
+  files['/session/env.validation.json'] = '{"message":null}';
+  const ui = await $.ui.mount(abovePrompt);
+  expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+  await $.session.start(start);
+  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+  expect(await hint($)).toBe('smart router ON');
+  await clock.advance(1000);
+  expect(state.reads).toBe(1);
+  await ui.unmount();
+});
+
+test('a session without controls shows the band once session start runs', { options: ROUTED }, async ($, on) => {
+  const { env, state } = engine(on);
+  env.UCODE_SESSION_ENV_FILE = undefined;
+  const ui = await $.ui.mount(abovePrompt);
+  expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+  await $.session.start(start);
+  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+  expect(state.reads).toBe(0);
   await ui.unmount();
 });

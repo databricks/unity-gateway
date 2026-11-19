@@ -104,6 +104,12 @@ function engine(on: On, env: Record<string, string | undefined>, agents: AgentIn
   env.UCODE_SMART_ROUTER_PYTHON = '/ug/python';
   env.UCODE_SESSION_ENV_FILE = '/session/env.json';
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  on('session.start', () => ({ cwd: '/work' }));
+  // The startup check already found the menu supported, so session.start releases the band.
+  on('fs.read', ($, e) => {
+    if (e.path === '/session/env.validation.json') return { value: '{"message":null}' };
+    throw new Error('no such file');
+  });
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => $.ui.resolve(e).Text({ children: ['theirs'] }));
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
@@ -127,6 +133,7 @@ async function hintTail($: any, tails: unknown[]): Promise<unknown> {
 test('the band hides after a turn and returns after a toggle while the hint row tracks the state', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const { tails } = engine(on, env);
+  await $.session.start(start);
   const hint = () => hintTail($, tails);
   const band = await $.ui.mount(ABOVE_PROMPT);
   expect(hasBand(await band.drawn())).toBe(true);
@@ -155,6 +162,7 @@ test('the band hides after a turn and returns after a toggle while the hint row 
 test('the hint row reads ON or OFF from each toggle through the second turn', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const { tails } = engine(on, env);
+  await $.session.start(start);
   const hint = () => hintTail($, tails);
   expect(await hint()).toBe('smart router ON');
 
@@ -174,6 +182,7 @@ test('the hint row reads ON or OFF from each toggle through the second turn', { 
 test('the hint row keeps a tail another hook already set', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const { tails } = engine(on, env);
+  await $.session.start(start);
   await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: 'theirs' } });
   expect(tails.at(-1)).toBe('theirs · smart router ON');
 });
@@ -184,6 +193,7 @@ test('the hint row counts running subagents across parent turns and routing togg
     id: status, description: status, type: 'general-purpose', status,
   }));
   const { tails, clock } = engine(on, env, agents);
+  await $.session.start(start);
   const row = await $.ui.mount({ ...ABOVE_PROMPT, component: 'PromptHint', props: { tail: 'theirs' } });
   const hint = async () => {
     await clock.advance(1000);
@@ -216,6 +226,7 @@ test('the hint row counts running subagents across parent turns and routing togg
 test('the band is gone by the second turn after either toggle', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const { tails } = engine(on, env);
+  await $.session.start(start);
   const band = await $.ui.mount(ABOVE_PROMPT);
   const turn = async (text: string) => {
     await $.prompt.submit({ text });

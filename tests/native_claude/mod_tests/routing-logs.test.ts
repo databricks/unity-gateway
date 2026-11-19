@@ -441,6 +441,8 @@ test('turn completion and status cleanup do not wait for the open-pane reader', 
     }
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({ v: 1, decisions: records }) } };
   });
+  on('session.start', () => ({ cwd: '/work' }));
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' });
   await $.command.run(command);
   const band = await $.ui.mount(statusBand);
   expect(JSON.stringify(await band.drawn())).toContain('unity gateway smart router');

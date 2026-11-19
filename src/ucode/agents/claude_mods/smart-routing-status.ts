@@ -8,8 +8,9 @@ const BANNER = 'unity gateway smart router'
 // next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
 const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
-const validation = { message: '', isHideArmed: false, isPending: false }
-// An unsupported menu turns routing off, so the band waits for the check rather than flash ON.
+// Claude draws before session.start, so the band starts held until the startup check settles;
+// an unsupported menu turns routing off and must never flash ON.
+const validation = { message: '', isHideArmed: false, isPending: true }
 const VALIDATION_POLL_MS = 100
 const VALIDATION_WAIT_MS = 12000
 
@@ -68,19 +69,22 @@ export async function watchStartupValidation(
   validationWatchStarted = true
   try {
     const controls = await $.env.get('UCODE_SESSION_ENV_FILE')
-    if (typeof controls !== 'string' || !controls.endsWith('.json')) return
+    if (typeof controls !== 'string' || !controls.endsWith('.json')) {
+      validation.isPending = false
+      $.ui.invalidate('ui.render')
+      return
+    }
     let complete = false
     let waited = 0
-    validation.isPending = true
+    let notice: { cancel: () => void } | undefined
     const finish = (): void => {
       complete = true
       validation.isPending = false
-      notice.cancel()
+      notice?.cancel()
       $.ui.invalidate('ui.render')
     }
-    const notice = $.clock.every(VALIDATION_POLL_MS, async () => {
+    const check = async (): Promise<void> => {
       if (complete) return
-      waited += VALIDATION_POLL_MS
       let result: any
       try {
         result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
@@ -110,8 +114,17 @@ export async function watchStartupValidation(
           })
         } catch {}
       }
-    })
-  } catch {}
+    }
+    await check()
+    if (!complete) {
+      notice = $.clock.every(VALIDATION_POLL_MS, () => {
+        waited += VALIDATION_POLL_MS
+        return check()
+      })
+    }
+  } catch {
+    validation.isPending = false
+  }
 }
 
 export const registerStatusBand = (on: On): void => {
