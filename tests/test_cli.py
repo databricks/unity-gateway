@@ -7098,7 +7098,7 @@ class TestConfigureScopeFlags:
     @pytest.mark.parametrize(
         ("enabled", "installs"), [(["gemini"], []), (["gemini", "copilot"], ["copilot"])]
     )
-    def test_global_flag_is_a_noop_when_managed_config_enables_only_per_user_agents(
+    def test_global_flag_writes_no_settings_when_managed_config_enables_only_per_user_agents(
         self, enabled, installs
     ):
         managed_files.set_machine_wide_only(True)
