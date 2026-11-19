@@ -974,12 +974,13 @@ profile/token preservation, and replay without refreshing workspace credentials.
 PAT and non-401 errors retain their behavior.
 These checks do not establish live login or launch-time savings.
 
-`TestConfigureSharedStateGatewayAccess` verifies that a fresh setup uses its successful
-scoped model discovery to verify access without a separate model-service access check. Failed or
-empty discovery keeps existing access diagnostics; provider mode keeps its access check and
-web-search lookup. Cases cover authentication, permissions, unavailable services,
-network failure, exception preservation, and process-local discovery reuse. These
-component checks do not measure live request latency.
+`TestConfigureSharedStateDiscovery` checks one scoped request for a single-page UC catalog,
+legacy fallback and state persistence after failed or empty discovery, the usual availability
+error when fallback finds no models, and catalog reuse after a credential change. Claude provider
+mode fetches only the web-search catalog and preserves saved models. Setup no longer makes a
+separate gateway probe. HTTP workspace identity checks remain in `test_workspace_selection.py`.
+The probe-only E2E test was removed. `test_e2e.py` still covers authentication and model
+discovery. The component checks provide no live gateway, launch, or latency evidence.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

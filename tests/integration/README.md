@@ -650,10 +650,11 @@ attempt and fresh tokens on async proxy retries. This suite
 does not assert live token-fetch counts, stale-profile recovery, or launch-time
 savings; credential/profile routing is unchanged.
 
-Successful model-service discovery replaces the separate access check, with component
-coverage in `../test_cli.py` for request count, error diagnostics, provider mode, and
-process-local discovery reuse. This suite does not measure live startup latency or
-establish a regional speedup.
+Setup no longer runs a separate gateway probe. Component tests in `../test_cli.py` cover
+scoped discovery, fallback after a failed or empty catalog, provider-mode web-search lookup,
+and process-local catalog reuse. The removed probe-only E2E case leaves authentication and
+model-discovery E2E coverage in `../test_e2e.py`. The component tests make no live gateway
+requests and provide no startup latency or inference evidence.
 
 `test_ug_configure_scope.py` runs, for Claude and Codex separately (Linux/macOS only), plain
 `ug configure`, `--user`, `UG_SKIP_OS_SETTINGS=1`, and `--global` over a user-owned

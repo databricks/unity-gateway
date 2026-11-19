@@ -105,7 +105,6 @@ from ucode.databricks import (
     list_tool_provider_services,
     map_claude_family_models,
     normalize_workspace_url,
-    probe_unity_gateway_capabilities,
     profile_choices,
     resolve_pat_token,
     resolve_provider_launch_model,
@@ -585,7 +584,7 @@ def configure_shared_state(
     clear_custom_oauth: bool = False,
     claude_server_side_web_search: bool | None = None,
 ) -> dict:
-    """Log into Databricks, verify Unity Gateway, fetch model lists, persist state.
+    """Authenticate to Databricks, fetch model lists, and persist state.
 
     If tools is provided, only fetch models for those tools. Otherwise fetch all.
     If force_login is True, always run databricks auth login (used by explicit configure).
@@ -597,12 +596,9 @@ def configure_shared_state(
     ``--profile`` to every CLI invocation so ambiguous `~/.databrickscfg`
     entries (e.g. DEFAULT and a named profile both pointing at the same host)
     don't error out. If ``None``, we resolve it from the host after login.
-    If skip_preflight is True, skip the entire preflight block below — auth
-    validation, the Unity Gateway probe, and model discovery — trusting a prior
-    ``ug configure``. The PAT/bearer is already exported (``apply_pat_environment``
-    in ``_launch_tool``) and the gateway was verified by that earlier configure.
-    Only the local profile resolution and the shared state assembly still run;
-    the saved model lists are preserved.
+    If skip_preflight is True, trust a prior ``ug configure`` for authentication
+    and model discovery. The PAT/bearer is already exported (``apply_pat_environment``
+    in ``_launch_tool``). Resolve the local profile and preserve the saved model lists.
     """
     workspace = normalize_workspace_url(workspace)
     if not split_workspace_key(workspace)[1]:
@@ -626,13 +622,6 @@ def configure_shared_state(
         databricks_ai_tools_enabled = False
     fetch_all = tools is None
 
-    # Assemble the shared workspace state that doesn't depend on model discovery:
-    # workspace, profile, auth mode, base URLs. `profile` may still be None here;
-    # each path below resolves it once, where a host->profile lookup is reliable
-    # (the skip branch trusts the prior configure; the preflight resolves after
-    # login). --skip-preflight persists exactly this and returns, trusting a prior
-    # `ug configure` — it already validated auth + the Unity Gateway and saved the
-    # model lists (carried over by load_state, left untouched).
     state = load_state()
     state["workspace"] = workspace
     if workspace_id:
@@ -718,8 +707,6 @@ def configure_shared_state(
         return state
 
     login_kwargs = {"workspace_id": workspace_id} if workspace_id else {}
-    # ── Preflight (bypassed above under --skip-preflight): validate Databricks
-    #    auth + the Unity Gateway, then discover the available models. ──
     if cli_custom_oauth:
         pass  # The dedicated profile was authenticated above.
     elif use_pat:
@@ -751,20 +738,8 @@ def configure_shared_state(
         profile = _find_profile_name(workspace, workspace_id)
         if profile:
             state["profile"] = profile
-    with spinner("Verifying Unity Gateway..."):
-        if not cli_custom_oauth:
-            token = get_databricks_token(workspace, profile)
-        model_discovery = (
-            None if skip_model_discovery else discover_model_services(workspace, token)
-        )
-        has_discovered_models = model_discovery is not None and any(model_discovery[:4])
-        model_service_access = (
-            None if has_discovered_models else probe_unity_gateway_capabilities(workspace, token)
-        )
-    if model_service_access is None or model_service_access.resource_available:
-        print_success("Unity Gateway connected")
-    else:
-        print_warning(f"Model service: {model_service_access.detail}")
+    if not cli_custom_oauth:
+        token = get_databricks_token(workspace, profile)
 
     want_claude = (
         fetch_all
@@ -819,7 +794,6 @@ def configure_shared_state(
         # back empty (workspace without UC model-services, or the listing
         # failed), fall back to the per-family Unity Gateway listing for that
         # family only.
-        assert model_discovery is not None
         with spinner("Fetching available models..."):
             (
                 discovered_claude_models,
@@ -827,7 +801,7 @@ def configure_shared_state(
                 discovered_gemini_models,
                 discovered_oss_models,
                 discovery_reason,
-            ) = model_discovery
+            ) = discover_model_services(workspace, token)
             if want_claude:
                 claude_models, claude_reason = discovered_claude_models, discovery_reason
                 if not claude_models:
@@ -4646,24 +4620,17 @@ def _launch_tool(
         smart_routing_v2.restore_smart_routing_env(previous)
 
 
-# Launch-only escape hatch for managed/headless launchers (e.g. omnigent) that
-# have already run `ug configure`: skip the ~5-10s per-launch auth + AI
-# Gateway re-validation, plus the Databricks CLI minimum-version check (whose
-# `databricks aitools` floor otherwise false-positives on a usable public-preview
-# build). Distinct from the configure-only `--skip-validate`, which skips the
-# model smoke test.
 SkipPreflightOption = Annotated[
     bool,
     typer.Option(
         "--skip-preflight",
-        help="Skip the per-launch Databricks auth + Unity Gateway re-validation (and the "
-        "Databricks CLI minimum-version check), trusting a prior `ug configure`.",
+        help="Reuse a prior `ug configure` and skip Databricks authentication, model discovery, "
+        "and the Databricks CLI minimum-version check.",
     ),
 ]
 
 REFRESH_HELP = (
-    "Refresh Databricks auth, gateway, models, managed config, and agent configuration before "
-    "launching."
+    "Refresh Databricks auth, models, managed config, and agent configuration before launching."
 )
 
 # Target this launch at a specific workspace, auto-configuring (and logging in)
