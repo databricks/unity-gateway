@@ -611,13 +611,15 @@ export function register(on: On, options: PluginOptions): void {
       const stdout = text.replace(/^<local-command-stdout>/, '');
       const retryModel = MODEL_SWITCH_RETRY.test(stdout);
       const cancelledModel = MODEL_SWITCH_CANCELLED.test(stdout);
-      const selected = setModel || keptModel || cancelledModel || retryModel ? await selectedModel($, auto) : undefined;
+      const switchAborted = cancelledModel || retryModel;
+      const keptOrAborted = keptModel || switchAborted;
+      const selected = setModel || keptOrAborted ? await selectedModel($, auto) : undefined;
       const saving = autoSave && !e.agentId
-        && ((e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router') || ((keptModel || cancelledModel || retryModel) && e.origin.kind === 'engine'))
-        && ((setModel && selected === autoSave.model) || (cancelledModel || retryModel || (keptModel && selected === autoSave.baseline)))
+        && ((e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router') || (keptOrAborted && e.origin.kind === 'engine'))
+        && ((setModel && selected === autoSave.model) || switchAborted || (keptModel && selected === autoSave.baseline))
         ? autoSave : undefined;
       if (saving) {
-        saving.confirmation = keptModel || cancelledModel || retryModel ? 'cancelled' : 'accepted';
+        saving.confirmation = keptOrAborted ? 'cancelled' : 'accepted';
         const index = internalModels.indexOf(saving.model);
         if (index >= 0) internalModels.splice(index, 1);
       }
