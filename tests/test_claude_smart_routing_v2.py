@@ -722,17 +722,17 @@ class TestV2Launch:
         # The managed aliases stay in the managed file; launch settings carry no copies.
         assert not any(is_auto_model(k) for k in captured.get("modelOverrides", {}))
 
-    @pytest.mark.parametrize("resume", [False, True], ids=["fresh", "continue"])
     @pytest.mark.parametrize(
-        ("model", "listed_limit", "expected_window"),
+        ("model", "listed_limit", "expected_window", "resume"),
         [
-            ("system.ai.kimi-k3-1-pro", 0, 1_000_000),
-            ("system.ai.glm-5-3", 262_144, 262_144),
-            ("system.ai.glm-5-3", None, None),
-            ("system.ai.glm-5-3", 0, None),
-            ("system.ai.claude-haiku-4-5", 262_144, None),
-            ("system.ai.glm-5-3[1m]", 262_144, None),
-            ("anthropic-aigw-726013b5-system.ai.kimi-k3-1-pro", 262_144, 262_144),
+            ("system.ai.glm-5-3", 262_144, 262_144, False),
+            ("system.ai.glm-5-3", 262_144, 262_144, True),
+            ("team.alias-claude-preview", None, 100_000, False),
+            ("system.ai.kimi-k3-1-pro", 0, 100_000, False),
+            ("team.models.small", 32_000, None, False),
+            ("team.models.large", 1_048_576, 1_000_000, False),
+            ("system.ai.claude-haiku-4-5", 262_144, None, False),
+            ("system.ai.glm-5-3[1m]", 262_144, None, False),
         ],
     )
     def test_auto_restart_supplies_catalog_window_for_unrecognized_alias(
@@ -802,7 +802,7 @@ class TestV2Launch:
             ("launch", "alias", 200_000, 200_000),
         ],
     )
-    def test_kimi_auto_respects_native_window_preferences(
+    def test_auto_respects_native_window_preferences(
         self, tmp_path, monkeypatch, scope, key, window, expected
     ):
         from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
@@ -816,10 +816,13 @@ class TestV2Launch:
         managed = native if scope == "managed" else {}
         if scope == "launch":
             settings["modelSettings"].setdefault(name, {}).update(preference)
-        # The native sources may include a user preference or a managed drop-in.
-        native_file = tmp_path / "settings.json"
-        native_file.write_text(json.dumps({} if scope == "launch" else native))
-        monkeypatch.setattr(claude, "native_settings_paths", lambda: (native_file,))
+        if scope == "managed":
+            settings["modelSettings"][model] = {"autoCompactWindow": 200_000}
+        user_file = tmp_path / "user-settings.json"
+        project_file = tmp_path / "project-settings.json"
+        user_file.write_text(json.dumps(native if scope == "user" else {}))
+        project_file.write_text(json.dumps(native if scope == "project" else {}))
+        monkeypatch.setattr(claude, "native_settings_paths", lambda: (user_file, project_file))
         apply_auto_context_windows(
             settings,
             managed,

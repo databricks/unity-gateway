@@ -28,7 +28,8 @@ import {
 import { AUTO_KEPT_PREFIX, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
-const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
+const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
+const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook)/;
 const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, closeOnEscape:true} as const;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
@@ -282,9 +283,11 @@ export function register(on: On, options: PluginOptions): void {
   const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   const routingSync: RoutingSyncState = {};
   type MainModelChooser = {
+    key: string;
     options?: {value:string; label:string}[];
     choose?: (model: string) => Promise<void>;
   };
+  let chooserGeneration = 0;
   let pendingChooser: MainModelChooser | undefined;
   let reopenChooser: (() => Promise<void>) | undefined;
   let awaitingModelChoice = false;
@@ -323,7 +326,7 @@ export function register(on: On, options: PluginOptions): void {
 
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     sessionActive = false;
-    if (pendingChooser || awaitingModelChoice) await $.ui.close({id:AUTO_MODELS_PANE.id});
+    if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id});
     pendingChooser = undefined;
     awaitingModelChoice = false;
     manualOffRequest = undefined;
@@ -354,12 +357,15 @@ export function register(on: On, options: PluginOptions): void {
       const chooser = pendingChooser;
       if (!chooser?.options || !chooser.choose) return next(e);
       return $.ui.resolve(e).Select({
-        key:'main-model', label:AUTO_MAIN_TITLE, options:chooser.options, value:chooser.options[0].value,
+        key:chooser.key, label:AUTO_MAIN_TITLE, options:chooser.options, value:chooser.options[0].value,
         autoFocus:true, onSelect:chooser.choose,
       });
     });
     on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
-      if (e.origin.kind === 'person') pendingChooser = undefined;
+      if (e.origin.kind === 'person') {
+        pendingChooser = undefined;
+        clearAutoSave();
+      }
       return next(e);
     });
     on('ui.close', {id:'auto-main'}, ($, e, next) => {
@@ -369,7 +375,7 @@ export function register(on: On, options: PluginOptions): void {
     });
     on('session.append', {door:'prompt'}, async ($, e, next) => {
       if (!e.agentId && !e.message.isMeta) {
-        if (pendingChooser || awaitingModelChoice) await $.ui.close({id:AUTO_MODELS_PANE.id});
+        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id});
         pendingChooser = undefined;
         awaitingModelChoice = false;
         manualOffRequest = undefined;
@@ -391,12 +397,10 @@ export function register(on: On, options: PluginOptions): void {
         ? {...result, permissionDecision:'allow'} : result;
     });
     on('command.run', { command: ['model', 'auto'] }, async ($, e, next) => {
-      const save = async (selected: AutoPicker['models'][number], chooserRequest: object) => {
+      const save = async (selected: AutoPicker['models'][number], chooserRequest: object, baseline: string) => {
         if (autoSave) return;
         manualOffRequest = undefined;
-        const active = await autoSelected($, auto);
-        if (autoSave) return;
-        const baseline = await selectedModel($, auto);
+        const active = auto.models.some(row => row.autoModel === baseline);
         const previousMain = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
         if (pendingChooser !== chooserRequest || !sessionActive) return;
         pendingChooser = undefined;
@@ -432,6 +436,9 @@ export function register(on: On, options: PluginOptions): void {
               await syncAutoRouting($, options, auto, routingSync);
               if (autoSave !== request) return;
               $.ui.invalidate('ui.render');
+              await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => {
+                $.ui.toast('Auto saved. Press Esc to close the main model chooser.');
+              });
             } catch (error) {
               if (autoSave !== request) return;
               if (auto.staticModel) auto.variant = previousMain;
@@ -478,7 +485,7 @@ export function register(on: On, options: PluginOptions): void {
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
               if (confirmation && (confirmation.startsWith('Set model to ') || confirmation.startsWith(AUTO_SET_PREFIX))) request.confirmation = 'accepted';
-              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_PREFIX) || MODEL_SWITCH_CANCELLED.test(confirmation))) request.confirmation = 'cancelled';
+              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_PREFIX) || MODEL_SWITCH_CANCELLED.test(confirmation) || MODEL_SWITCH_RETRY.test(confirmation))) request.confirmation = 'cancelled';
               else if (confirmation) throw new Error(confirmation);
               request.phase = 'waiting';
               if (!request.confirmation) return;
@@ -499,7 +506,8 @@ export function register(on: On, options: PluginOptions): void {
 
       async function openChooser(): Promise<void> {
         if (pendingChooser || !sessionActive) return;
-        const request: MainModelChooser = {};
+        // Native retains a Select's last submitted value by key, including a cancelled switch.
+        const request: MainModelChooser = {key:`main-model-${++chooserGeneration}`};
         pendingChooser = request;
         async function recover(error: unknown): Promise<void> {
           if (pendingChooser !== request) return;
@@ -520,9 +528,11 @@ export function register(on: On, options: PluginOptions): void {
           const choose = async (model: string) => {
             const selected = rows.find(row => row.model === model);
             if (!selected || pendingChooser !== request) return;
-            await $.ui.close({id:AUTO_MODELS_PANE.id});
-            if (await selectedModel($, auto) === baseline) await save(selected, request);
-            if (pendingChooser === request) pendingChooser = undefined;
+            const current = await selectedModel($, auto);
+            if (pendingChooser !== request) return;
+            if (current !== baseline) throw new Error('The model changed while the chooser was open');
+            // Keep the seat behind native confirmations so cancellation can refocus it at any width.
+            await save(selected, request, baseline);
           };
           request.choose = model => choose(model).catch(recover);
           const focusPane = async () => {
@@ -548,7 +558,7 @@ export function register(on: On, options: PluginOptions): void {
         && (switchingAuto || (e.origin?.kind === 'plugin' && e.origin.name === 'ug-smart-router'));
       let entry: string | undefined;
       if (!internalCommand) {
-        if (pendingChooser || awaitingModelChoice) await $.ui.close({id:AUTO_MODELS_PANE.id});
+        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id});
         pendingChooser = undefined;
         manualOffRequest = undefined;
         clearAutoSave();
@@ -598,14 +608,16 @@ export function register(on: On, options: PluginOptions): void {
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
       const keptModel = text.startsWith(MODEL_KEPT_PREFIX);
       const setModel = text.startsWith(MODEL_SET_PREFIX);
-      const cancelledModel = MODEL_SWITCH_CANCELLED.test(text.replace(/^<local-command-stdout>/, ''));
-      const selected = setModel || keptModel || cancelledModel ? await selectedModel($, auto) : undefined;
+      const stdout = text.replace(/^<local-command-stdout>/, '');
+      const retryModel = MODEL_SWITCH_RETRY.test(stdout);
+      const cancelledModel = MODEL_SWITCH_CANCELLED.test(stdout);
+      const selected = setModel || keptModel || cancelledModel || retryModel ? await selectedModel($, auto) : undefined;
       const saving = autoSave && !e.agentId
-        && ((e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router') || ((keptModel || cancelledModel) && e.origin.kind === 'engine'))
-        && ((setModel && selected === autoSave.model) || (cancelledModel || (keptModel && selected === autoSave.baseline)))
+        && ((e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router') || ((keptModel || cancelledModel || retryModel) && e.origin.kind === 'engine'))
+        && ((setModel && selected === autoSave.model) || (cancelledModel || retryModel || (keptModel && selected === autoSave.baseline)))
         ? autoSave : undefined;
       if (saving) {
-        saving.confirmation = keptModel || cancelledModel ? 'cancelled' : 'accepted';
+        saving.confirmation = keptModel || cancelledModel || retryModel ? 'cancelled' : 'accepted';
         const index = internalModels.indexOf(saving.model);
         if (index >= 0) internalModels.splice(index, 1);
       }

@@ -32,6 +32,7 @@ from .helpers.constants import CLAUDE, CODEX, INFERENCE_PATHS, MANAGED_PATHS, Co
 from .helpers.evidence import (
     SessionEvidence,
     SessionObservation,
+    assert_inference_evidence,
     canonical_model,
     claude_file_task,
     served_inference_request,
@@ -342,8 +343,8 @@ class TestCujAutoModelPicker(BaseCujTest):
         Both show OFF for a regular model and ON after selecting a different Auto main model.
         Launch preserves model metadata while retargeting the recording proxy.
         Model selections preserve the launched managed settings.
-        The selected alternate main model completes real inference and remains selected
-        after restarting Claude without a model override. The existing
+        The selected alternate main model serves a file task before and after restarting
+        Claude without a model override. The existing
         preset journey also exercises Auto main/subagent inference and routing decisions.
         """
         with smart_router_preset(cuj, SUBAGENT_AUTO_V0_CLAUDE_ONLY) as (
@@ -362,14 +363,28 @@ class TestCujAutoModelPicker(BaseCujTest):
             rows = [row for row in picker_rows if not row["model"].startswith("ug-auto-")]
             row = next(row for row in rows if row["model"] == default)
             label = row["label"].removeprefix("Claude ")
-            alternate = next(row for row in rows if row["model"] != default)
+            alternatives = [row for row in rows if row["model"] != default]
+            alternate = alternatives[-1]
+            assert canonical_model(alternate["model"]) in {
+                canonical_model(model) for model in configs[CLAUDE]["models"]["model_services"]
+            }
             alternate_label = alternate["label"].removeprefix("Claude ")
             neighbor_label = next(
                 row["label"].removeprefix("Claude ")
                 for row in rows
                 if row["model"] != alternate["model"]
             )
-            checkpoint = recorder.checkpoint()
+
+            def check_main_model_turn(tui):
+                checkpoint = recorder.checkpoint()
+                task = _file_task(session, CLAUDE)
+                tui.submit(task.prompt)
+                tui.task(evidence, task)
+                assert_inference_evidence(recorder, checkpoint, CLAUDE, task, alternate["model"])
+                assert not any(
+                    request.path == ROUTING_PATH for request in recorder.requests_after(checkpoint)
+                )
+
             recorder.prepare_launch()
             evidence = SessionEvidence(session.home, CLAUDE)
             with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
@@ -428,11 +443,13 @@ class TestCujAutoModelPicker(BaseCujTest):
                     lambda s: "Auto: choose your main model" in s and main_model_focused(label),
                     "the Auto selector focused on the current main model",
                 )
-                tui.send("\x1b[B", "focus " + alternate_label + " as the Auto main model")
-                tui.wait_for(
-                    lambda s: main_model_focused(alternate_label),
-                    "the selected Auto main model before saving",
-                )
+                for option in alternatives:
+                    option_label = option["label"].removeprefix("Claude ")
+                    tui.send("\x1b[B", "focus " + option_label)
+                    tui.wait_for(
+                        lambda _, name=option_label: main_model_focused(name),
+                        "the next Auto main model",
+                    )
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
@@ -446,19 +463,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 assert "Auto mode: main model" not in " ".join(tui.visible.split())
                 # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
                 # assert "ug-auto" not in tui.visible
-                task = _file_task(session, CLAUDE)
-                tui.submit(task.prompt)
-                tui.task(evidence, task)
-                requests = recorder.requests_after(checkpoint)
-                inference = _task_inference_request(requests, CLAUDE, task.prompt)
-                inference = served_inference_request(recorder, requests, inference, CLAUDE)
-                assert canonical_model(inference.payload["model"]) == canonical_model(
-                    alternate["model"]
-                )
-                assert not any(request.path == ROUTING_PATH for request in requests)
-                evidence.assert_applied(
-                    task, workspace.model_ids(CLAUDE), expected=alternate["model"]
-                )
+                check_main_model_turn(tui)
                 tui.submit("/model auto")
                 tui.wait_for(
                     lambda s: (
@@ -468,7 +473,15 @@ class TestCujAutoModelPicker(BaseCujTest):
                 )
                 tui.send("\x1b[B", "focus another main model without selecting it")
                 tui.wait_for(lambda s: main_model_focused(neighbor_label), "another model's focus")
-                tui.send("\x1b[A", "return to the unchanged Auto main model")
+                tui.send("\x1b", "dismiss the chooser without saving")
+                tui.wait_for(
+                    lambda s: (
+                        "Auto: choose your main model" not in s
+                        and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                    ),
+                    "the unchanged model after Escape",
+                )
+                tui.submit("/model auto")
                 tui.wait_for(lambda s: main_model_focused(alternate_label), "the unchanged model")
                 tui.send("\r", "save the unchanged Auto main model")
                 tui.wait_for(
@@ -491,6 +504,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                     "the saved Auto main model after restart",
                 )
                 assert "isn't recognized" not in " ".join(tui.visible.split())
+                check_main_model_turn(tui)
                 tui.exit_normally()
             assert MANAGED_PATHS[0].read_bytes() == managed_before
 

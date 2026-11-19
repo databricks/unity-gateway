@@ -8,11 +8,14 @@ import re
 from collections.abc import Mapping
 from copy import deepcopy
 
-from ucode.databricks import AnthropicModelCatalog
+from ucode.databricks import AnthropicModelCatalog, bare_model_name
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 
 AUTO_MODEL = "ug-auto"  # Legacy identity, accepted during migration only.
 AUTO_PREFIX = "ug-auto-"
+# Native modelSettings.autoCompactWindow accepts 100k to 1M tokens.
+_MIN_COMPACT_WINDOW = 100_000
+_MAX_COMPACT_WINDOW = 1_000_000
 AUTO_DESCRIPTION = "Delivers frontier-model quality at lower cost through Smart Routing."
 AUTO_CUSTOM_MODEL_ENV_KEYS = (
     "ANTHROPIC_CUSTOM_MODEL_OPTION",
@@ -298,12 +301,10 @@ def picker_is_configured(settings: dict) -> bool:
     )
 
 
-def _auto_window_preference(settings: dict, model: str) -> object:
+def _model_window(settings: dict, model: str) -> object:
     preferences = settings.get("modelSettings", {})
     row = preferences.get(model) if isinstance(preferences, dict) else None
-    if isinstance(row, dict) and "autoCompactWindow" in row:
-        return row["autoCompactWindow"]
-    return settings.get("autoCompactWindow")
+    return row.get("autoCompactWindow") if isinstance(row, dict) else None
 
 
 def apply_auto_context_windows(
@@ -318,18 +319,10 @@ def apply_auto_context_windows(
         target = unwrap_anthropic_gateway_model(model)
         # Claude recognizes its model names, context suffixes, and configured behavesAs aliases.
         if (
-            re.search(r"\bclaude-", target, re.IGNORECASE)
+            model_behavior({"model": bare_model_name(target)})
             or model.lower().endswith(("[1m]", "[200k]"))
             or alias != auto_variant({"model": model})
         ):
-            continue
-        limits = catalog.model_id_to_limits.get(model)
-        if limits and limits[0] > 0:
-            catalog_window = min(limits[0], 1_000_000)
-        elif target == "system.ai.kimi-k3-1-pro":
-            # Static and older catalogs omit limits. Kimi serves 1,048,576; Claude accepts 1M.
-            catalog_window = 1_000_000
-        else:
             continue
         if native_settings is None:
             try:
@@ -338,19 +331,25 @@ def apply_auto_context_windows(
                 # An unreadable scope could contain an explicit compaction preference.
                 return
         if any(
-            _auto_window_preference(source, alias) is not None
-            for source in [settings, *native_settings]
+            "autoCompactWindow" in source or _model_window(source, alias) is not None
+            for source in (managed, settings, *native_settings)
         ):
             continue
-        window = _auto_window_preference(managed, model) or _auto_window_preference(settings, model)
+        window = _model_window(managed, model) or _model_window(settings, model)
         if window is None:
-            if any(
-                _auto_window_preference(source, model) is not None for source in native_settings
-            ):
+            if any(_model_window(source, model) is not None for source in native_settings):
                 # A personal or project preference may belong to a disabled --setting-sources scope.
                 continue
-            window = catalog_window
-        if window != "auto" and not (isinstance(window, int) and 100_000 <= window <= 1_000_000):
+            limits = catalog.model_id_to_limits.get(model)
+            window = (
+                min(limits[0], _MAX_COMPACT_WINDOW)
+                if limits and limits[0] > 0
+                else _MIN_COMPACT_WINDOW
+            )
+        if window != "auto" and not (
+            isinstance(window, int) and _MIN_COMPACT_WINDOW <= window <= _MAX_COMPACT_WINDOW
+        ):
+            # A smaller advertised window cannot be represented without overstating capacity.
             continue
         per_model = settings.setdefault("modelSettings", {})
         if isinstance(per_model, dict) and isinstance(

@@ -56,7 +56,7 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
   const chooser: {
     beforeModel?: () => Promise<void>;
     beforeOpen?: () => Promise<void>;
-    beforeClose?: () => Promise<void>;
+    beforeStore?: () => void;
   } = {};
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
@@ -71,6 +71,7 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
   }));
   on('store.get', ($, e) => ({ value: store[e.key] }));
   on('store.set', ($, e) => {
+    chooser.beforeStore?.();
     store[e.key] = e.value;
     return { value: undefined };
   });
@@ -91,9 +92,8 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     opened.push(e.id);
     return { value: { isPlaced: true } };
   });
-  on('ui.close', async ($, e) => {
+  on('ui.close', ($, e) => {
     closed.push(e.id);
-    if (e.id === 'auto-models') await chooser.beforeClose?.();
     return { value: undefined };
   });
   on('ui.render', {component:'Pane'}, ($, e) => $.ui.resolve(e).Box({children:[]}));
@@ -112,10 +112,12 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     },
     async choose(model: string) {
       const picker = await this.picker();
-      await picker.select({key:'main-model', value:model});
+      const select = await picker.find({type:'Select'});
+      await picker.select({key:select.props.key, value:model});
       await picker.unmount();
     },
     selected: () => selected,
+    setSelected: (model: string) => { selected = model; },
   };
 }
 
@@ -291,7 +293,11 @@ for (const answer of ['Yes, switch model', 'No, go back', undefined]) {
     expect(session.store[AUTO.storeKey]).toBe(accepted ? MAIN : OTHER);
     expect(rows).toEqual([]);
     expect(session.selected()).toBe(DEFAULT_ALIAS);
-    if (!accepted) expect((await (await session.picker()).find({type:'Select'})).props.value).toBe(OTHER);
+    if (!accepted) {
+      expect(session.closed).not.toContain('auto-models');
+      await session.choose(OTHER);
+    }
+    expect(session.closed).toContain('auto-models');
   });
 }
 
@@ -354,21 +360,6 @@ for (const decision of ['deny', 'ask'] as const) {
   });
 }
 
-test('choosing a main model saves silently and sends the new model', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession($, on, DEFAULT_ALIAS);
-  const sent = captureSteps(on);
-  const rows = captureNotices(on);
-  await $.session.start(START);
-  await $.command.run({ command: 'model', args: 'auto' });
-  expect(rows).toEqual([]);
-
-  await session.choose(OTHER);
-  expect(rows).toEqual([]);
-  await step($, DEFAULT_ALIAS);
-  await step($, DEFAULT_ALIAS, 'child');
-  expect(sent).toEqual([OTHER, OTHER]);
-});
-
 // The tail the mod hands the engine for the prompt hint row under the input.
 async function hintTail($: any, on: On): Promise<() => Promise<unknown>> {
   const tails: unknown[] = [];
@@ -415,6 +406,7 @@ test('each /model auto main-model save updates the hint without logging', { opti
   for (const [model, label] of [[OTHER, 'Haiku 4.5'], [MAIN, 'Sonnet 5']] as const) {
     rows.length = 0;
     await $.command.run({ command: 'model', args: 'auto' });
+    expect(rows).toEqual([]);
     await session.choose(model);
     expect(rows).toEqual([]);
     expect(await hint()).toBe(`Auto (${label}) · smart router ON`);
@@ -426,19 +418,20 @@ test('each /model auto main-model save updates the hint without logging', { opti
   }
 });
 
-test('leaving the chooser without a pick appends no notice and keeps the main model', { options: OPTIONS }, async ($, on) => {
+test('ending a session dismisses the chooser and keeps the model for the next launch', {options:OPTIONS}, async ($, on) => {
   const session = staticCatalogSession($, on, DEFAULT_ALIAS, OTHER);
-  const sent = captureSteps(on);
   const rows = captureNotices(on);
-  const hint = await hintTail($, on);
   await $.session.start(START);
-  await $.command.run({ command: 'model', args: 'auto' });
-  await session.clock.advance(0);
-
+  await $.command.run({command:'model', args:'auto'});
+  await $.session.end({reason:'prompt_input_exit'});
+  expect(session.closed).toContain('auto-models');
+  expect(session.store[AUTO.storeKey]).toBe(OTHER);
   expect(rows).toEqual([]);
-  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
-  await step($, DEFAULT_ALIAS);
-  expect(sent).toEqual([OTHER]);
+
+  await $.session.start(START);
+  await $.command.run({command:'auto', args:''});
+  await session.choose(MAIN);
+  expect(session.store[AUTO.storeKey]).toBe(MAIN);
 });
 
 test('opening /model without a pick leaves the chooser closed', { options: OPTIONS }, async ($, on) => {
@@ -459,15 +452,6 @@ test('a direct non-Auto model command never opens the chooser', { options: OPTIO
   expect(session.opened).not.toContain('auto-models');
 });
 
-test('/model auto opens the chooser directly', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession($, on, DEFAULT_ALIAS);
-  await $.session.start(START);
-  expect(session.opened).not.toContain('auto-models');
-  await $.command.run({ command: 'model', args: 'auto' });
-  await session.clock.advance(0);
-  expect(session.opened).toContain('auto-models');
-});
-
 for (const stage of ['model lookup', 'pane open', 'deferred focus', 'selection'] as const) {
   test(`the chooser can be retried after ${stage} fails`, {options:OPTIONS}, async ($, on) => {
     const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
@@ -481,12 +465,11 @@ for (const stage of ['model lookup', 'pane open', 'deferred focus', 'selection']
       await session.clock.advance(0);
     }
     if (stage === 'selection') {
-      session.chooser.beforeClose = fail;
+      session.chooser.beforeModel = fail;
       await session.choose(OTHER);
     }
     session.chooser.beforeModel = undefined;
     session.chooser.beforeOpen = undefined;
-    session.chooser.beforeClose = undefined;
     expect(session.toasts.at(-1)).toContain('Try /model auto');
     expect(session.closed).toContain('auto-models');
     expect(session.store[AUTO.storeKey]).toBe(MAIN);
@@ -520,6 +503,57 @@ test('a failed deferred refocus cannot close a newer chooser', {options:OPTIONS}
   expect(session.store[AUTO.storeKey]).toBe(OTHER);
 });
 
+test('a model change while the chooser is open explains how to retry', {options:OPTIONS}, async ($, on) => {
+  const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
+  await $.session.start(START);
+  await $.command.run({command:'auto', args:''});
+  session.setSelected(OTHER);
+  await session.choose(OTHER);
+  expect(session.toasts.at(-1)).toContain('The model changed');
+  expect(session.store[AUTO.storeKey]).toBe(MAIN);
+  expect(session.closed).toContain('auto-models');
+});
+
+test('a failed preference write keeps the chooser seat until a successful retry', {options:OPTIONS}, async ($, on) => {
+  const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
+  await $.session.start(START);
+  await $.command.run({command:'auto', args:''});
+  session.chooser.beforeStore = () => { throw new Error('write denied'); };
+  await session.choose(OTHER);
+  expect(session.store[AUTO.storeKey]).toBe(MAIN);
+  expect(session.closed).not.toContain('auto-models');
+  session.chooser.beforeStore = undefined;
+  await session.choose(OTHER);
+  expect(session.store[AUTO.storeKey]).toBe(OTHER);
+  expect(session.closed).toContain('auto-models');
+});
+
+test('a native request to pick again leaves the reservation for the next pick', {options:OPTIONS}, async ($, on) => {
+  const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
+  await $.session.start(START);
+  await $.command.run({command:'model', args:''});
+  const append = async (text: string) => {
+    try {
+      await $.session.append({
+        door:'command', origin:{kind:'engine'}, uuid:'notice',
+        message:{type:'system',content:[{type:'text',text:`<local-command-stdout>${text}</local-command-stdout>`}]},
+      });
+      return true;
+    } catch (error) {
+      // 2.1.290 has no transcript sink. It still runs the hook up to next(e).
+      if (!String(error).includes('no implementation for session.append')) throw error;
+      return false;
+    }
+  };
+  const hasTranscript = await append('The model changed while you were confirming; pick again');
+  expect(session.closed).not.toContain('auto-models');
+  if (hasTranscript) {
+    await append(`Set model to \`${DEFAULT_ALIAS}\``);
+    await session.choose(OTHER);
+    expect(session.store[AUTO.storeKey]).toBe(OTHER);
+  }
+});
+
 const LARGE_AUTO = {
   ...AUTO,
   models: Array.from({length:12}, (_, index) => index < 2 ? AUTO.models[index] : {
@@ -537,7 +571,7 @@ test('one Select includes the entire catalog and saves the last model', {
   const select = await picker.find({type:'Select'});
   expect(select.props.options.map((row: {label:string}) => row.label))
     .toEqual(['Haiku 4.5', 'Sonnet 5', ...Array.from({length:10}, (_, index) => `Model ${index + 2}`)]);
-  await picker.select({key:'main-model', value:'system.ai.model-11'});
+  await picker.select({key:select.props.key, value:'system.ai.model-11'});
   expect(session.store[AUTO.storeKey]).toBe('system.ai.model-11');
   await picker.unmount();
 });
@@ -549,10 +583,11 @@ test('models with identical labels can be selected by their distinct IDs', {
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   const picker = await session.picker();
-  expect((await picker.find({type:'Select'})).props.options).toEqual([
+  const select = await picker.find({type:'Select'});
+  expect(select.props.options).toEqual([
     {value:MAIN, label:`Shared (${MAIN})`}, {value:OTHER, label:`Shared (${OTHER})`},
   ]);
-  await picker.select({key:'main-model', value:OTHER});
+  await picker.select({key:select.props.key, value:OTHER});
   expect(session.store[AUTO.storeKey]).toBe(OTHER);
   await picker.unmount();
 });
@@ -565,8 +600,8 @@ for (const interrupt of ['model', 'end'] as const) {
     const ready = new Promise<void>(resolve => { started = resolve; });
     await $.session.start(START);
     await $.command.run({command:'auto', args:''});
-    session.chooser.beforeClose = async () => {
-      session.chooser.beforeClose = undefined;
+    session.chooser.beforeModel = async () => {
+      session.chooser.beforeModel = undefined;
       await new Promise<void>(resolve => { release = resolve; started(); });
     };
     const saving = session.choose(OTHER);

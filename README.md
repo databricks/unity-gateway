@@ -637,7 +637,8 @@ Claude's native model precedence without UG injecting a new Auto selection. A co
 `ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
 uses the exact Claude ID or an explicit admin `behavesAs` hint. For other Auto aliases without a native
 profile, UG uses the catalog's input limit for Claude's launch-only compaction window, up to
-1M tokens. Kimi K3.1 Pro defaults to 1M when the catalog omits its limit. Explicit native
+1M tokens. When the catalog omits the limit, UG uses 100k tokens, the smallest window Claude
+accepts. If the catalog reports a smaller limit, UG leaves compaction to Claude. Explicit native
 window settings take precedence.
 Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
 uses the managed Claude catalog. Native Windows/macOS execution and actual compaction

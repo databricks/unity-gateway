@@ -191,14 +191,14 @@ The CUJ derives routing and orchestration assertions from each agent's resolved 
 An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns
-to Auto and verifies both show ON. It observes the chosen main-model row before
-pressing Enter to save, with the current model first, and checks that saving updates
+to Auto and verifies both show ON. It walks from the current model to the last row with the arrow keys,
+presses Enter, and checks that saving updates
 the prompt hint without adding a transcript notice. The managed replacement
 picker contains one Auto row; only regular model rows supply alternate inference targets.
 The journey completes a real main-model file task with paired gateway request/response
-evidence, saves the unchanged main model without a cache warning after that task,
-and checks that a fresh launch restores the selection. Managed settings stay byte-identical
-across model selections. Launch may retarget only
+evidence, dismisses a pending choice with Escape, and reopens on the saved model.
+Saving that same model skips the cache warning. After restart, it serves a second file task.
+Managed settings stay byte-identical across model selections. Launch may retarget only
 the gateway URL and auth helper host to the recording proxy; all other configured settings
 must remain identical. The existing main/subagent journey also includes Auto
 and verifies its correlated routing decision, real model IDs, and completed answers.
