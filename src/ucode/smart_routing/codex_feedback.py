@@ -13,8 +13,7 @@ from uuid import UUID, uuid4
 
 from websockets.exceptions import ConnectionClosed
 
-from ucode.constants import ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR, SMART_ROUTING_ENV_KEYS
-from ucode.env import env_bool
+from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.smart_routing import feedback
 from ucode.smart_routing.session_env import (
     SESSION_ENV_VAR,
@@ -175,7 +174,7 @@ class CodexSmartRouter:
     def __init__(self, controls: Path):
         self.controls = controls
         self.environment = {**os.environ, SESSION_ENV_VAR: str(controls)}
-        self.feedback_required = env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        self.feedback_required = feedback.smart_router_feedback_required()
         self.pending_threads: set[str] = set()
         self.collecting_threads: set[str] = set()
         self.root_threads: set[str] = set()

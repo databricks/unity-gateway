@@ -72,8 +72,6 @@ from ucode.constants import (
     AGENT_CODEX,
     AGENT_COPILOT,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
-    ISAAC_LAUNCH_MODE_ENV_VAR,
-    ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
@@ -3682,6 +3680,7 @@ def _toggle_current_smart_routing_session(
         controls = session_env_path()
     except RuntimeError:
         return False
+    from ucode.smart_routing.feedback import smart_router_feedback_required
     from ucode.smart_routing.session_env import session_routing_enabled
 
     try:
@@ -3691,11 +3690,7 @@ def _toggle_current_smart_routing_session(
     if unchanged:
         print_success(f"Smart Router is already {'on' if enabled else 'off'} for this session")
         return True
-    feedback_required = (
-        not enabled
-        and env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
-        and (agent == AGENT_CODEX or os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni")
-    )
+    feedback_required = not enabled and smart_router_feedback_required()
     if feedback_required and len((reason or "").strip()) < 16:
         if agent == AGENT_CODEX and reason is None:
             from ucode.smart_routing.feedback import prepare_codex_feedback

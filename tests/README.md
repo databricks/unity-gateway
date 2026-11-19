@@ -1181,9 +1181,12 @@ first in PATH and a launching interpreter path containing spaces. Codex's skill 
 It never requests shell approval or falls back to a shell toggle. Launcher lifecycle
 checks isolate the developer machine's optional managed catalog. Existing CLI commands
 remain compatible. A denied CLI control-file read/write leaves saved controls unchanged.
-With Isaac's feedback rule on, an off without a 16-character reason keeps routing on.
-Claude's CLI retains its `ISAAC_LAUNCH_MODE=omni` exemption for native-form feedback.
-Codex requires feedback in every launch mode.
+With Isaac's feedback rule on, an off outside Omnigent without a 16-character
+reason keeps routing on. Claude and Codex CLI controls share the
+`ISAAC_LAUNCH_MODE=omni` exemption. Native Codex uses that same rule; Omnigent off
+turns routing off without opening a prompt, preparing evidence, or uploading.
+Component cases cover both CLIs with Omni, direct, empty, and unset launch modes,
+and native Codex with feedback disabled or an Omni launch.
 `test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
 arguments, original-task anchoring, exact reason text, capture before disabling,

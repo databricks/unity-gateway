@@ -14,8 +14,17 @@ from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from ucode.config_io import atomic_write_json
+from ucode.constants import ISAAC_LAUNCH_MODE_ENV_VAR, ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.smart_routing.session_env import effective_environment, session_env_path
+
+
+def smart_router_feedback_required() -> bool:
+    return (
+        env_bool(ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR)
+        and os.environ.get(ISAAC_LAUNCH_MODE_ENV_VAR) != "omni"
+    )
 
 
 def _isaac() -> str:

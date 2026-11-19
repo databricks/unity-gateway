@@ -3,7 +3,7 @@ name: smart-router
 description: Enable or disable Unity Gateway subagent model routing for the current smart-routed Claude or Codex session, along with Smart Router Orchestrator when opted in.
 allowed-tools: ug_smart_router, Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --enable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli claude --disable-smart-routing --smart-router-feedback *), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table), Bash("$UCODE_SMART_ROUTER_PYTHON" -m ucode.cli smart-router-logs --harness codex --session "$CODEX_SESSION_ID" --format table --decision *)
 metadata:
-  version: "1.10.0"
+  version: "1.10.1"
 ---
 
 # Smart Router
@@ -54,6 +54,8 @@ to restart through an updated Unity Gateway with smart routing enabled.
 If the command reports that Smart Router is already on or already off, return that
 result and stop. Do not retry, restart a turn, or request feedback for unchanged settings.
 
+Omnigent launches (`ISAAC_LAUNCH_MODE=omni`) are exempt from this feedback flow.
+Relay the toggle result and stop if no feedback is requested.
 In Codex, the off call opens a native selection prompt when feedback is required:
 "Provide a reason" opens text entry, and "Cancel" keeps routing on and sends nothing.
 The launcher requires at least 16 characters, discloses that the reason and session
@@ -84,9 +86,9 @@ stop without disabling routing or submitting feedback.
 Repeat off with `--smart-router-feedback '<reason>'`
 appended, quoting the exact text as one shell argument, then submit it through
 `/isaac-feedback --category smart-routing <reason>` as before. Report a submission
-failure without re-enabling routing. This requirement applies when Isaac sets
-`ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on` (case-insensitive);
-do not change that flag to bypass it.
+failure without re-enabling routing. This requirement applies outside Omnigent
+when Isaac sets `ISAAC_SMART_ROUTER_FEEDBACK` to `1`, `true`, `yes`, or `on`
+(case-insensitive); do not change that flag to bypass it.
 
 With no argument, explain that only `on`, `off`, and (in Codex) `logs` and `logs --id <ID>` are accepted. Do not edit the state file.
 This affects subsequent subagent model selection in the current session, not the root model

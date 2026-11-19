@@ -25,7 +25,7 @@ def inline_feedback(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
     monkeypatch.setenv("CODEX_THREAD_ID", SESSION_ID)
     monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "1")
-    monkeypatch.setenv("ISAAC_LAUNCH_MODE", "omni")
+    monkeypatch.setenv("ISAAC_LAUNCH_MODE", "direct")
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
     monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "0")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
@@ -75,30 +75,46 @@ def inline_feedback(tmp_path, monkeypatch):
     return controls, run, popen, calls
 
 
-def off(reason=None):
-    args = ["codex", "--disable-smart-routing"]
+def off(reason=None, *, agent="codex"):
+    args = [agent, "--disable-smart-routing"]
     if reason is not None:
         args.extend(["--smart-router-feedback", reason])
     return runner.invoke(cli.app, args)
 
 
-@pytest.mark.parametrize("mode", ["omni", "direct", ""])
-def test_codex_asks_in_every_launch_mode(inline_feedback, monkeypatch, mode):
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize("mode", ["omni", "direct", "", None])
+def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, agent, mode):
     controls, run, popen, calls = inline_feedback
-    monkeypatch.setenv("ISAAC_LAUNCH_MODE", mode)
+    if mode is None:
+        monkeypatch.delenv("ISAAC_LAUNCH_MODE")
+    else:
+        monkeypatch.setenv("ISAAC_LAUNCH_MODE", mode)
 
-    result = off()
+    result = off(agent=agent)
 
+    popen.assert_not_called()
+    if mode == "omni":
+        assert result.exit_code == 0, result.output
+        assert "Smart Router is off" in result.output
+        assert not session_env.session_routing_enabled(controls)
+        assert not controls.with_name("feedback-target.json").exists()
+        run.assert_not_called()
+        return
     assert result.exit_code == 2, result.output
     text = " ".join(result.output.split())
     assert "16 characters" in text
     assert "session details will be sent to the Isaac team" in text
     assert "cancel to keep routing on" in text
     assert json.loads(controls.read_text()) == {}
-    assert run.call_count == 1
-    assert calls[0][0][-2:] == ["--session-id", SESSION_ID]
-    assert json.loads(controls.with_name("feedback-target.json").read_text())["turn_id"] == TASK_ID
-    popen.assert_not_called()
+    if agent == "codex":
+        assert run.call_count == 1
+        assert calls[0][0][-2:] == ["--session-id", SESSION_ID]
+        assert (
+            json.loads(controls.with_name("feedback-target.json").read_text())["turn_id"] == TASK_ID
+        )
+    else:
+        run.assert_not_called()
 
 
 @pytest.mark.parametrize("reason", ["", "  too short  ", "界" * 15])
@@ -221,11 +237,12 @@ def test_failed_task_reference_cleanup_keeps_routing_off(
 
 
 @pytest.mark.parametrize("flag", ["0", "false", "off", ""])
-def test_feedback_disabled_keeps_ordinary_toggle(inline_feedback, monkeypatch, flag):
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+def test_feedback_disabled_keeps_ordinary_toggle(inline_feedback, monkeypatch, flag, agent):
     controls, run, popen, _ = inline_feedback
     monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", flag)
 
-    assert off().exit_code == 0
+    assert off(agent=agent).exit_code == 0
 
     assert not session_env.session_routing_enabled(controls)
     run.assert_not_called()
@@ -455,15 +472,31 @@ def test_native_cancel_clears_pending_without_upload(native_router, inline_feedb
     popen.assert_not_called()
 
 
-def test_native_disabled_feedback_and_on_do_not_call_isaac(inline_feedback, monkeypatch):
+@pytest.mark.parametrize("flag,mode", [("0", "direct"), ("1", "omni"), ("0", "omni")])
+def test_native_feedback_exemptions_skip_prompt_and_isaac(inline_feedback, monkeypatch, flag, mode):
+    import asyncio
+    from unittest.mock import AsyncMock
+
     controls, run, popen, _ = inline_feedback
-    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", flag)
+    monkeypatch.setenv("ISAAC_LAUNCH_MODE", mode)
     router = CodexSmartRouter(controls)
     router.root_threads.add(SESSION_ID)
+    register_off_command(router)
+    ask = AsyncMock()
 
-    assert "is off" in native_call(router, "off")["message"]
+    response = asyncio.run(
+        router.call(
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}}, ask
+        )
+    )
+    assert response["success"], response
+    assert "is off" in response["contentItems"][0]["text"]
+    assert not session_env.session_routing_enabled(controls)
+    assert not controls.with_name("feedback-target.json").exists()
     assert "is on" in native_call(router, "on")["message"]
     assert json.loads(controls.read_text()) == {}
+    ask.assert_not_called()
     run.assert_not_called()
     popen.assert_not_called()
 

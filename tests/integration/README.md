@@ -499,7 +499,7 @@ TypeScript event-forwarding and launch-option tests in a dedicated CI job. The
 existing Claude skill-toggle journeys check the live recipe payload field (launch recipe at launch and after off/on, DISABLED after off).
 Codex's native off-feedback selector has component coverage in
 `../test_smart_router_feedback.py` and `../test_codex_metadata.py`: session-bound native
-tool registration/dispatch, Omni and direct collection, original-task identity,
+tool registration/dispatch, direct collection and the Omni exemption, original-task identity,
 16-character validation, exact text, capture before disabling, background upload after,
 cancellation, same-report retry, failures, delivery notices, and forwarding during capture.
 The two-choice menu opens free-text entry, accepts notes on the selected reason option,
@@ -524,7 +524,10 @@ enter a short reason, verify the turn ends with a clear error and no reopened pr
 then cancel and verify routing stays on without upload. An authorized submission must
 retain the original task and pre-toggle routing state, return a feedback ID, and keep
 routing off if delivery fails. Check that background notices render after the turn and
-that notices follow the model's final reply and no shell approval appears. Omnigent must not bypass collection. Backend feedback
+that notices follow the model's final reply and no shell approval appears.
+In Omnigent, verify that off skips the native prompt and sends no feedback, matching
+the shared CLI exemption. This launch-mode rule has component coverage; the updated
+Omnigent flow has not been rerun live. Backend feedback
 uploads remain separate from gateway toggle journeys. New threads get the native tool;
 resuming an old thread without it requires an updated launch/new thread rather than a
 shell fallback. Protocol support alone does not establish live resume coverage.
