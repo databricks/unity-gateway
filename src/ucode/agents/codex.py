@@ -22,7 +22,7 @@ from xml.sax.saxutils import escape
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import metrics
+from ucode import agents, metrics
 from ucode.codex_config import (
     CODEX_MODEL_PROVIDER_NAME,
     catalog_slugs,
@@ -102,7 +102,7 @@ from ucode.smart_routing.codex_hooks import (
     routing_models,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.smart_routing.codex_routing import codex_model_id, prioritize_gpt_models
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -1956,14 +1956,15 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     relayed = bool(state.get("codex_relayed"))
+    if options.launch_smart_routing and relayed:
+        raise RuntimeError(
+            "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
+            "`--disable-smart-routing` or pick another provider."
+        )
     if options.launch_smart_routing:
-        if relayed:
-            raise RuntimeError(
-                "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
-                "`--disable-smart-routing` or pick another provider."
-            )
-        _launch_smart_routing(state, tool_args)
-        return
+        agents.ensure_minimum_version(
+            "codex", lambda: minimum_version_error(smart_routing_enabled=True)
+        )
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -1984,6 +1985,9 @@ def launch(
     provider = transient_provider or (
         None if parent_schema else get_provider_service(state, "codex")
     )
+    if options.launch_smart_routing and not (provider or parent_schema):
+        _launch_smart_routing(state, tool_args)
+        return
     if workspace and (provider or parent_schema):
         _reject_managed_model_catalog()
     token = None
@@ -2026,6 +2030,7 @@ def launch(
         profile_doc.update(_bedrock_runtime_web_search_overlay(state, workspace, token, provider))
     if updating and _is_ucode_catalog_reference(profile_doc.get("model_catalog_json")):
         profile_doc.pop("model_catalog_json")
+    source_models = None
     if workspace and token and (provider or parent_schema) and not updating and not relayed:
         try:
             if provider is not None:
@@ -2047,6 +2052,10 @@ def launch(
             validate_codex_catalog(binary, catalog)
         except CodexMpsModelCatalogUnavailable:
             detach_app_model_catalog()
+            if options.launch_smart_routing:
+                raise RuntimeError(
+                    "Smart routing needs the selected source's Codex model catalog."
+                ) from None
         except RuntimeError:
             # A failed discovery/validation must not leave a previous workspace's
             # catalog active in independently launched app servers.
@@ -2057,14 +2066,23 @@ def launch(
             _write_model_catalog(catalog_path, catalog)
             sync_app_model_catalog(catalog)
             profile_doc["model_catalog_json"] = str(catalog_path)
+            source_models = catalog_slugs(catalog)
             # Codex otherwise boots on its bundled default model (e.g. gpt-5.6-sol),
             # which an MPS's allowlist doesn't route, so the first request 403s. Pin
             # the MPS's primary (first) target unless the user chose a model or a
             # managed default already applies.
             if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
                 slugs = catalog_slugs(catalog)
+                if options.launch_smart_routing:
+                    slugs = prioritize_gpt_models(slugs)
                 if slugs:
                     profile_doc["model"] = slugs[0]
+    if options.launch_smart_routing:
+        routing_state = {**state, "_codex_launch_provider": provider}
+        _launch_smart_routing(
+            routing_state, tool_args, launch_config=profile_doc, available_models=source_models
+        )
+        return
     relay = None
     if relayed and workspace and not updating:
         _ensure_chatgpt_login(binary)
@@ -2092,16 +2110,26 @@ def launch(
     )
 
 
-def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
+def _launch_smart_routing(
+    state: dict,
+    tool_args: list[str],
+    *,
+    launch_config: dict | None = None,
+    available_models: list[str] | None = None,
+) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
-    from ucode.agents import ensure_minimum_version
-
     binary = SPEC["binary"]
-    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
-
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
-    models = custom_catalog_models() or routing_models(state)
+    models = (
+        available_models
+        if available_models is not None
+        else custom_catalog_models() or routing_models(state)
+    )
+    if launch_config is not None:
+        configured_model = (
+            configured_model if configured_model in models else launch_config.get("model")
+        )
     start_model = (
         configured_model
         or (codex_model_id(models[0]) if models else None)
@@ -2113,6 +2141,11 @@ def _launch_smart_routing(state: dict, tool_args: list[str]) -> None:
         binary=binary,
         start_model=start_model,
         render_overlay=_render_launch_overlay,
+        **(
+            {"launch_config": launch_config, "available_models": models}
+            if launch_config is not None
+            else {}
+        ),
     )
 
 

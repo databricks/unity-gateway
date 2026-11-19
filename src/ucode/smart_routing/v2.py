@@ -46,6 +46,7 @@ from ucode.databricks import (
     build_auth_token_argv,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -528,6 +529,14 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     )
 
 
+def _claude_route_options(model_ids: list[str]) -> list[tuple[str, str]]:
+    models = _canonical_claude_models(model_ids)
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        preferred = map_claude_family_models(models).values()
+        models = list(dict.fromkeys([*preferred, *models]))[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "claude")
+
+
 def _request_claude_routing_decision(
     workspace: str,
     token: str,
@@ -536,7 +545,7 @@ def _request_claude_routing_decision(
     provider: str | None = None,
     attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    route_options = _claude_route_options(model_ids)
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     if attribution_headers is None:
@@ -1080,6 +1089,8 @@ def launch_codex(
     binary: str,
     start_model: str | None,
     render_overlay: Callable[..., dict],
+    launch_config: dict | None = None,
+    available_models: list[str] | None = None,
 ) -> NoReturn:
     workspace = state.get("workspace")
     if not workspace:
@@ -1092,25 +1103,29 @@ def launch_codex(
         )
 
     os.environ[OAUTH_TOKEN_ENV_VAR] = launch_token(state, workspace)
-    catalog_models = custom_catalog_models()
-    available_models = catalog_models or _cached_routing_models(state)
+    if available_models is None:
+        available_models = custom_catalog_models() or _cached_routing_models(state)
     if not available_models:
         print_warning(
             "Smart routing model metadata is unavailable; automatic model switching is unavailable. "
             "Run `ucode configure codex` to enable routing."
         )
-    custom_oauth = state.get("custom_oauth")
-    overlay = render_overlay(
-        workspace,
-        start_model,
-        state.get("profile"),
-        use_pat=bool(state.get("use_pat")),
-        custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
-        managed_http_headers=state.get("codex_http_headers"),
-    )
-    catalog_path = custom_catalog_path()
-    if catalog_path is not None:
-        overlay["model_catalog_json"] = str(catalog_path)
+    if launch_config is None:
+        custom_oauth = state.get("custom_oauth")
+        overlay = render_overlay(
+            workspace,
+            start_model,
+            state.get("profile"),
+            use_pat=bool(state.get("use_pat")),
+            custom_oauth=(custom_oauth if custom_oauth_cli_enabled(custom_oauth) else None),
+            managed_http_headers=state.get("codex_http_headers"),
+        )
+        catalog_path = custom_catalog_path()
+        if catalog_path is not None:
+            overlay["model_catalog_json"] = str(catalog_path)
+    else:
+        overlay = dict(launch_config)
+        overlay["model"] = start_model
     overlay["hooks"] = _v2_hooks(state, available_models)
     overlay["responses_api_metadata.smart_router_recipe_name"] = routing.configured_router_name()
     overlay["features.hooks"] = True
@@ -1163,6 +1178,11 @@ def launch_codex(
             switch_message_fn=format_routing_notice,
             log_path=CODEX_INTERPOSER_LOG,
             session_controls=session_env_path,
+            **(
+                {"provider": state["_codex_launch_provider"]}
+                if state.get("_codex_launch_provider")
+                else {}
+            ),
         )
         tui_url = _loopback_websocket_url(tui_port)
         provider_args = []

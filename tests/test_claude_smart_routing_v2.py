@@ -26,6 +26,31 @@ requires_pty = pytest.mark.skipif(
 )
 
 
+@pytest.mark.parametrize("catalog_size", [128, 129, 256])
+def test_claude_route_options_keep_latest_families_within_api_limit(catalog_size):
+    preferred = [
+        "global.anthropic.claude-opus-5-5",
+        "us.anthropic.claude-sonnet-5-5",
+        "us.anthropic.claude-haiku-5-5",
+    ]
+    models = [
+        "anthropic.claude-opus-5-5",
+        "anthropic.claude-sonnet-5-5",
+        "anthropic.claude-haiku-5-5",
+        *(f"anthropic.claude-sonnet-4-{index}" for index in range(catalog_size - 6)),
+    ]
+    models += preferred
+
+    options = v2._claude_route_options(models)
+    offered = [model for model, _harness in options]
+
+    assert len(options) == 128
+    assert set(preferred) <= set(offered) <= set(models)
+    assert all(harness == "claude" for _model, harness in options)
+    if catalog_size == routing.MAX_ROUTE_OPTIONS:
+        assert offered == models
+
+
 def _plugin_agent_models(plugin_dir: Path) -> set[str]:
     models = set()
     for agent_path in (plugin_dir / "agents").glob("*.md"):
