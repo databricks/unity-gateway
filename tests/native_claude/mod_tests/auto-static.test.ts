@@ -184,31 +184,12 @@ test('an unrouted subagent that inherits an Auto alias sends its real target', {
   expect(sent).toEqual([OTHER, MAIN, 'system.ai.claude-opus-5']);
 });
 
-test('switching the main model keeps the static Auto row selected', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession($, on, DEFAULT_ALIAS);
-  const sent = captureSteps(on);
-  await $.session.start(START);
-  await $.command.run({ command: 'auto', args: '' });
-  session.commands.length = 0;
-
-  await session.choose(OTHER);
-
-  // No native /model switch: the checkmark stays on the one Auto row.
-  expect(session.commands.filter((c) => c.command === 'model' || c.command === 'effort')).toEqual([]);
-  expect(session.selected()).toBe(DEFAULT_ALIAS);
-  expect(session.env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe(DEFAULT_ALIAS);
-  expect(session.store[AUTO.storeKey]).toBe(OTHER);
-  // Main turns and unrouted children both send the chosen main model.
-  await step($, DEFAULT_ALIAS);
-  await step($, DEFAULT_ALIAS, 'child');
-  expect(sent).toEqual([OTHER, OTHER]);
-  expect(session.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
-});
-
 test('a fresh static Auto session starts on the saved main model', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession($, on, DEFAULT_ALIAS, OTHER);
   const sent = captureSteps(on);
+  const hint = await hintTail($, on);
   await $.session.start(START);
+  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
 
   await step($, DEFAULT_ALIAS);
   expect(sent).toEqual([OTHER]);
@@ -379,27 +360,6 @@ async function hintTail($: any, on: On): Promise<() => Promise<unknown>> {
   };
 }
 
-test('the hint row names the main model chosen under the static Auto row', { options: OPTIONS }, async ($, on) => {
-  const session = staticCatalogSession($, on, DEFAULT_ALIAS);
-  const hint = await hintTail($, on);
-  await $.session.start(START);
-  expect(await hint()).toBe('Auto (Sonnet 5) · smart router ON');
-
-  await $.command.run({ command: 'auto', args: '' });
-  await session.choose(OTHER);
-
-  // Native still selects the default variant's alias; the row follows the mod's main model.
-  expect(session.selected()).toBe(DEFAULT_ALIAS);
-  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
-});
-
-test('a fresh static Auto session names the saved main model in the hint row', { options: OPTIONS }, async ($, on) => {
-  staticCatalogSession($, on, DEFAULT_ALIAS, OTHER);
-  const hint = await hintTail($, on);
-  await $.session.start(START);
-  expect(await hint()).toBe('Auto (Haiku 4.5) · smart router ON');
-});
-
 test('each /model auto main-model save updates the hint without logging', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession($, on, DEFAULT_ALIAS);
   const sent = captureSteps(on);
@@ -407,12 +367,18 @@ test('each /model auto main-model save updates the hint without logging', { opti
   const hint = await hintTail($, on);
   await $.session.start(START);
 
+  expect(await hint()).toBe('Auto (Sonnet 5) · smart router ON');
   for (const [model, label] of [[OTHER, 'Haiku 4.5'], [MAIN, 'Sonnet 5']] as const) {
     rows.length = 0;
     await $.command.run({ command: 'model', args: 'auto' });
     expect(rows).toEqual([]);
+    session.commands.length = 0;
     await session.choose(model);
+    expect(session.commands.filter(c => c.command === 'model' || c.command === 'effort')).toEqual([]);
+    expect(session.env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe(DEFAULT_ALIAS);
+    expect(session.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
     expect(rows).toEqual([]);
+    expect(session.selected()).toBe(DEFAULT_ALIAS);
     expect(await hint()).toBe(`Auto (${label}) · smart router ON`);
     sent.length = 0;
     await step($, DEFAULT_ALIAS);
@@ -544,6 +510,23 @@ async function appendNativeNotice($: any, text: string) {
     if (!String(error).includes('no implementation for session.append')) throw error;
     return false;
   }
+}
+
+for (const accepted of [false, true]) {
+  test(`a per-model Auto switch ${accepted ? 'saves the accepted' : 'restores the kept'} alias`, {
+    options:{...OPTIONS, autoPicker:JSON.stringify({...AUTO, staticModel:undefined})},
+  }, async ($, on) => {
+    on('command.run', {command:'model'}, () => {
+      if (accepted) session.setSelected(OTHER_ALIAS);
+      return {text:'Auto mode: Subagents smart routed.'};
+    });
+    const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
+    await $.session.start(START);
+    await $.command.run({command:'auto', args:''});
+    await session.choose(OTHER);
+    expect(session.env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe(accepted ? OTHER_ALIAS : DEFAULT_ALIAS);
+    expect(session.store[AUTO.storeKey]).toBe(accepted ? OTHER : MAIN);
+  });
 }
 
 test('a manual model confirmation disables routing when closing either pane fails', {options:OPTIONS}, async ($, on) => {

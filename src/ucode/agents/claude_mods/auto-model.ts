@@ -53,15 +53,14 @@ export function sameAutoTarget(auto: AutoPicker, from: string, to: string, overr
 const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2([^\n<]*)/;
 
 export const AUTO_MAIN_TITLE = 'Auto mode: Choose your main model';
-export const AUTO_SET_CONFIRMATION = 'Auto mode: Subagents smart routed.';
-export const AUTO_KEPT_CONFIRMATION = 'Auto still on: subagents smart-routed';
+export const AUTO_CONFIRMATION = 'Auto mode: Subagents smart routed.';
 
 // Native confirms Auto before the chooser saves the main model.
-export function formatAutoConfirmation(text: string, setModel: boolean): string {
+export function formatAutoConfirmation(text: string): string {
   return text.replace(MODEL_CONFIRMATION, (_match, _before, _quotes, details) => {
     const suffix = details.trim().replace(/^and /, '')
       .replace(/^saved as your default for new sessions\b/, '').trim();
-    return `<local-command-stdout>${setModel ? AUTO_SET_CONFIRMATION : AUTO_KEPT_CONFIRMATION}`
+    return `<local-command-stdout>${AUTO_CONFIRMATION}`
       + (suffix ? `\n${suffix[0].toUpperCase()}${suffix.slice(1)}` : '');
   });
 }

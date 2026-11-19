@@ -25,7 +25,7 @@ import {
   routingLogsPaneClosed,
   routingLogsPaneOpen,
 } from './routing-logs.ts';
-import { AUTO_KEPT_CONFIRMATION, AUTO_MAIN_TITLE, AUTO_SET_CONFIRMATION, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_CONFIRMATION, AUTO_MAIN_TITLE, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
@@ -378,14 +378,13 @@ export function register(on: On, options: PluginOptions): void {
     });
     on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
       if (e.origin.kind === 'person') {
+        if (autoSave) return {value:undefined};
         pendingChooser = undefined;
-        clearAutoSave();
       }
       return next(e);
     });
     on('ui.close', {id:'auto-main'}, ($, e, next) => {
       if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
-      if (e.origin.kind === 'person') clearAutoSave();
       return next(e);
     });
     on('session.append', {door:'prompt'}, async ($, e, next) => {
@@ -496,8 +495,10 @@ export function register(on: On, options: PluginOptions): void {
               if (autoSave !== request) return;
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
-              if (confirmation && (confirmation.startsWith('Set model to ') || confirmation.startsWith(AUTO_SET_CONFIRMATION))) request.confirmation = 'accepted';
-              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_CONFIRMATION) || MODEL_SWITCH_CANCELLED.test(confirmation) || MODEL_SWITCH_RETRY.test(confirmation))) request.confirmation = 'cancelled';
+              if (confirmation?.startsWith(AUTO_CONFIRMATION)) {
+                request.confirmation ??= await selectedModel($, auto) === selected.autoModel ? 'accepted' : 'cancelled';
+              } else if (confirmation?.startsWith('Set model to ')) request.confirmation = 'accepted';
+              else if (confirmation && (confirmation.startsWith('Kept model as ') || MODEL_SWITCH_CANCELLED.test(confirmation) || MODEL_SWITCH_RETRY.test(confirmation))) request.confirmation = 'cancelled';
               else if (confirmation) throw new Error(confirmation);
               request.phase = 'waiting';
               if (!request.confirmation) return;
@@ -685,7 +686,7 @@ export function register(on: On, options: PluginOptions): void {
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? formatAutoConfirmation(block.text, setModel) : block.text,
+            : autoConfirmation ? formatAutoConfirmation(block.text) : block.text,
         } : block) },
       } : e;
       const result = await next(confirmation);

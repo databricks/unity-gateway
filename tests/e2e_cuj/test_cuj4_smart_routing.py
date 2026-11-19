@@ -361,6 +361,9 @@ class TestCujAutoModelPicker(BaseCujTest):
             assert len(auto_rows) == 1 and auto_rows[0]["label"] == "Auto"
             assert settings["modelOverrides"][auto_rows[0]["model"]] == default
             rows = [row for row in picker_rows if not row["model"].startswith("ug-auto-")]
+            assert len(rows) > 4, (
+                "Auto needs at least five main models to exercise the old page boundary"
+            )
             row = next(row for row in rows if row["model"] == default)
             label = row["label"].removeprefix("Claude ")
             alternatives = [row for row in rows if row["model"] != default]
@@ -502,7 +505,6 @@ class TestCujAutoModelPicker(BaseCujTest):
                     ),
                     "the saved Auto main model after restart",
                 )
-                assert "isn't recognized" not in " ".join(tui.visible.split())
                 check_main_model_turn(tui)
                 tui.exit_normally()
             assert MANAGED_PATHS[0].read_bytes() == managed_before

@@ -2190,11 +2190,11 @@ restore has removed the source mapping (with and without workspace state), and t
 exact-version plus effective-routing provisioning gate. These cases exercise temporary
 settings through the real Python lifecycle; they do not establish live gateway coverage.
 
-The Auto chooser's native component tests cover scrolling through a large catalog, cancellation,
+The Auto chooser's native component tests cover selecting from the full catalog, cancellation,
 quiet saves, and stale selections after
 a model command or session end. Claude 2.1.290's plugin test runner lacks a
 `session.append` implementation, so these component tests do not cover picker-confirmation
-ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
+ordering, picker cancellation, native effort transcript
 preservation, or prompt interruption. The chooser has no
 effort controls or internal effort commands.
 

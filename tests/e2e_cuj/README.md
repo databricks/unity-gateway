@@ -191,7 +191,7 @@ The CUJ derives routing and orchestration assertions from each agent's resolved 
 An additional Claude-only selector journey overrides the version with
 `subagent_auto_v0_claude_only`, checks startup Auto with the managed default model,
 selects a regular model and verifies the band and footer show OFF, then returns
-to Auto and verifies both show ON. It walks from the current model to the last row with the arrow keys,
+to Auto and verifies both show ON. With at least five main models, it walks from the current model to the last row with the arrow keys,
 presses Enter, and checks that saving updates
 the prompt hint without adding a transcript notice. The managed replacement
 picker contains one Auto row; only regular model rows supply alternate inference targets.
