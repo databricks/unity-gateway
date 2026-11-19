@@ -181,6 +181,48 @@ class TestLaunchCodex:
 
         assert launches == [["codex", "--config", 'model_provider="ucode-databricks"', *tool_args]]
 
+    @pytest.mark.parametrize(
+        ("installed_version", "routed"), [("0.163.0", False), ("0.164.0", True)]
+    )
+    def test_app_server_routes_only_from_codex_routing_floor(
+        self, tmp_path, monkeypatch, capsys, installed_version, routed
+    ):
+        launches = []
+        profile_path = tmp_path / "ucode.config.toml"
+        profile_path.write_text('model_provider = "ucode-databricks"\n', encoding="utf-8")
+        monkeypatch.setenv(v2.ENABLE_SMART_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(codex, "CODEX_CONFIG_PATH", profile_path)
+        monkeypatch.setattr(codex, "clear_model_preferences", lambda state: False)
+        monkeypatch.setattr(codex, "_smart_routing_config_model", lambda state: "gpt-start")
+        monkeypatch.setattr(codex, "agent_version", lambda *_args, **_kw: installed_version)
+        monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kw: "token")
+        monkeypatch.setattr(
+            agents, "prompt_yes_no_default", lambda *_args, **_kw: pytest.fail("prompted")
+        )
+        monkeypatch.setattr(
+            agents.subprocess_cross_os, "run", lambda *_args, **_kw: pytest.fail("updated")
+        )
+        monkeypatch.setattr(
+            v2, "launch_codex", lambda _state, args, **_kw: launches.append(("routed", args))
+        )
+        monkeypatch.setattr(codex, "exec_or_spawn", lambda argv: launches.append(("plain", argv)))
+        tool_args = ["app-server", "--listen", "stdio://"]
+
+        codex.launch({"workspace": WS}, tool_args, options=LaunchOptions(launch_smart_routing=True))
+
+        warning = " ".join(capsys.readouterr().err.split())
+        if routed:
+            assert launches == [("routed", tool_args)]
+            assert "without smart routing" not in warning
+        else:
+            assert launches == [
+                ("plain", ["codex", "--config", 'model_provider="ucode-databricks"', *tool_args])
+            ]
+            assert (
+                "Smart routing requires Codex 0.164.0 or newer; found 0.163.0. "
+                "Running the app-server without smart routing."
+            ) in warning
+
     def test_codex_launch_normalizes_cached_bootstrap_model(self, monkeypatch):
         calls = []
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.164.0")

@@ -694,7 +694,9 @@ run `ug codex --disable-smart-routing`. UG offers its usual upgrade prompt for a
 known older version and checks the result before launching. Declining, failing, or
 remaining below 0.164.0 after the upgrade keeps the routed launch blocked. This
 intentional requirement ensures native v2 provides readable delegated assignments;
-UG does not silently disable routing. Ordinary launches require Codex 0.156.0
+UG does not silently disable routing. A routed `ug codex app-server` cannot prompt,
+because its stdin carries the client's protocol, so on a known older Codex it warns
+on stderr and runs without smart routing instead. Ordinary launches require Codex 0.156.0
 and newer. The general integration CI baseline is 0.156.0; routing cases use
 0.165.0.
 
