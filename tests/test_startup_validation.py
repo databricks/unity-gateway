@@ -137,7 +137,7 @@ def test_result_write_failure_is_isolated(tmp_path, monkeypatch):
     validation.start(
         "https://example.com",
         "test-token",
-        [],
+        [("m", "claude")],
         router_name="stable",
         session_controls=tmp_path / "env.json",
     )

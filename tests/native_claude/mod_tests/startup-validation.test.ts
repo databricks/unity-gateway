@@ -163,3 +163,17 @@ test('a toggle during the startup check wins over a disabling result', { options
   expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
   await ui.unmount();
 });
+
+test('a turn that ends while the check is pending does not hide the band', { options: ROUTED }, async ($, on) => {
+  const { clock, files } = engine(on);
+  on('prompt.submit', ($, e) => ({ text: e.text }));
+  on('turn.complete', () => ({ text: '' }));
+  const ui = await $.ui.mount(abovePrompt);
+  await $.session.start(start);
+  await $.prompt.submit({ text: 'early prompt' });
+  await $.turn.complete({ answer: 'done' });
+  files['/session/env.validation.json'] = '{"routing_disabled":false}';
+  await clock.advance(100);
+  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+  await ui.unmount();
+});

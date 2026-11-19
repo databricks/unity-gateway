@@ -127,7 +127,7 @@ export const registerStatusBand = (on: On): void => {
   let running = 0
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
-    if (band.isVisible) band.isHideArmed = true
+    if (band.isVisible && !validation.isPending) band.isHideArmed = true
     return next(e)
   })
 

@@ -14,8 +14,8 @@ from ucode import metrics
 from ucode.config_io import atomic_write_json
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, SMART_ROUTING_ENV_KEYS
 from ucode.databricks import _http_post_json, workspace_origin
+from ucode.smart_routing import routing
 
-_VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
 # urllib applies the timeout per socket operation, so the whole check also has this deadline.
 VALIDATION_TIMEOUT_SECONDS = 4
@@ -57,7 +57,7 @@ def start(
         controls_before = _file_version(session_controls)
         try:
             payload, reason = _http_post_json(
-                workspace_origin(workspace) + _VALIDATION_PATH,
+                workspace_origin(workspace) + routing.VALIDATION_PATH,
                 token,
                 body,
                 timeout=VALIDATION_TIMEOUT_SECONDS,

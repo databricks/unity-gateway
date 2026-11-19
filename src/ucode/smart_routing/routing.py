@@ -33,6 +33,7 @@ from ucode.workspace import workspace_headers
 ROUTER_NAME = "stable"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
+VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
