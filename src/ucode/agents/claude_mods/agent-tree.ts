@@ -132,23 +132,24 @@ export function registerAgentTree(on: On): void {
     clock = await $.clock.now().catch(() => clock)
     agentTree.turnStarted(e, clock)
     if (e.agentId) await autoOpenTreeForNewBatch($).catch(() => undefined)
-    $.ui.invalidate('ui.render')
+    if (agentTree.consumeRenderDirty()) $.ui.invalidate('ui.render')
     return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
     clock = await $.clock.now().catch(() => clock)
     agentTree.toolStarted(e, clock)
-    $.ui.invalidate('ui.render')
+    if (agentTree.consumeRenderDirty()) $.ui.invalidate('ui.render')
     try {
       const result = await next(e)
       clock = await $.clock.now().catch(() => clock)
       agentTree.toolFinished(e, result, clock)
-      $.ui.invalidate('ui.render')
+      if (agentTree.consumeRenderDirty()) $.ui.invalidate('ui.render')
       return result
     } catch (error) {
-      agentTree.toolFinished(e, { isError: true }, clock)
-      $.ui.invalidate('ui.render')
+      // A denial records its own time instead of the pre-tool read.
+      agentTree.toolFinished(e, { isError: true }, await $.clock.now().catch(() => clock))
+      if (agentTree.consumeRenderDirty()) $.ui.invalidate('ui.render')
       throw error
     }
   })
@@ -224,7 +225,9 @@ export function registerAgentTree(on: On): void {
       Text({ color, bold, wrap, children: [value] })
     const compact = width < 40 || bodyRows < 18
     const tiny = bodyRows < 8
-    const attention = (node: TreeNode) => node.status === 'failed' || node.errorCount > 0
+    // A finished child with one failed tool call is not attention-worthy; a
+    // failed status or a failed last outcome is.
+    const attention = (node: TreeNode) => node.status === 'failed' || node.lastOutcome === 'failed'
     const viewing = (e.props as { view?: { agentId?: string } }).view?.agentId
     const viewName = viewing ? nodeById.get(viewing)?.name : undefined
     // A tile press reaches the host's view switch through registerAgentView's

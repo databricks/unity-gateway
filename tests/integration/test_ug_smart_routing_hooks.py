@@ -1026,12 +1026,14 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 and request.payload.get("model") == routed_model
             ]
             if parent_model.removesuffix("[1m]") == routed_model:
-                # The parent shares the routed model; a marker filter cannot
-                # separate them, so served-inference evidence stays model-level.
+                # The parent shares the routed model and its own messages also
+                # carry the task text, so this filter narrows the matches to the
+                # requests that read the task file and report its contents; the
+                # served check below still validates every remaining one.
                 child_requests = [
                     request
                     for request in child_requests
-                    if task.marker in json.dumps(request.payload.get("messages", []))
+                    if task.filename in json.dumps(request.payload.get("messages", []))
                 ]
             assert child_requests, (
                 f"No recorded inference at the routed model {routed_model}; recorded models: "
