@@ -1193,6 +1193,10 @@ and native Codex with feedback disabled or an Omni launch.
 `test_smart_router_feedback.py` controls the Isaac subprocess boundary to check root
 session binding, preserved user tools, rejection of child/foreign sessions and invalid
 arguments, original-task selection, exact reason text, and pre-toggle routing context.
+Caller-supplied `ug_smart_router` definitions keep ownership on thread start/resume;
+their calls and replies pass through unchanged, including alongside a UG-owned thread.
+Only responses can bind ownership or authorize an off turn; server requests with
+matching IDs leave those pending replies intact.
 Like Claude, Codex starts `isaac feedback --with-evidence` in the background before
 turning routing off, reports the command's exit result, and retries saved reports with
 `isaac feedback --retry`. Delivery or process-start failure leaves routing off;

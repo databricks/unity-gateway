@@ -416,7 +416,9 @@ def test_native_binds_only_correlated_root_responses(inline_feedback, method):
     else:
         assert request["params"]["dynamicTools"] == [existing]
     router.observe({"id": 41, "result": {"thread": {"id": SESSION_ID}}})
+    router.observe({"id": 42, "method": "item/tool/call", "params": {"tool": "caller_tool"}})
     assert not router.root_threads
+    assert 42 in router.thread_requests
     router.observe({"id": 42, "result": {"thread": {"id": SESSION_ID}}})
     assert router.root_threads == {SESSION_ID}
     assert not router.thread_requests
@@ -439,13 +441,29 @@ def test_native_does_not_bind_child_or_malformed_thread(inline_feedback, thread)
 
 
 @pytest.mark.parametrize("tools", ["invalid", [{"name": TOOL_NAME}]])
-def test_native_preserves_conflicting_user_tools(inline_feedback, tools):
+@pytest.mark.parametrize("method", ["thread/start", "thread/resume"])
+def test_native_preserves_conflicting_user_tools(inline_feedback, tools, method):
     controls, *_ = inline_feedback
     router = CodexSmartRouter(controls)
-    request = {"id": 1, "method": "thread/start", "params": {"dynamicTools": tools}}
+    request = {"id": 1, "method": method, "params": {"dynamicTools": tools}}
     router.before_tui(request)
     assert request["params"]["dynamicTools"] == tools
+    assert router.thread_requests == ({} if tools == "invalid" else {1: False})
+    router.observe({"id": 1, "result": {"thread": {"id": SESSION_ID}}})
     assert not router.thread_requests
+    assert not router.root_threads
+    assert not router.handles(
+        {
+            "id": "caller-tool",
+            "method": "item/tool/call",
+            "params": {
+                "threadId": SESSION_ID,
+                "turnId": "caller-turn",
+                "tool": TOOL_NAME,
+                "arguments": {"action": "on"},
+            },
+        }
+    )
 
 
 @pytest.mark.parametrize(
@@ -887,6 +905,9 @@ def test_native_off_waits_for_correlated_turn_start_reply(
         )
         await asyncio.sleep(0)
         native_router.observe({"id": "unrelated", "result": {"turn": {"id": "delayed-turn"}}})
+        native_router.observe(
+            {"id": "delayed-command", "method": "item/tool/call", "params": {"tool": "caller_tool"}}
+        )
         await asyncio.sleep(0)
         assert not task.done()
         reply = (

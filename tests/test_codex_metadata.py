@@ -525,6 +525,72 @@ def test_native_tool_is_serviced_by_host_and_other_requests_forward(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("method", ["thread/start", "thread/resume"])
+def test_caller_owned_smart_router_calls_and_replies_forward(
+    running_interposer, monkeypatch, method
+):
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            caller_thread = "2cbd36a0-177f-4df1-a5c2-5495a86a04a7"
+            tool = {
+                "type": "function",
+                "name": "ug_smart_router",
+                "description": "Caller-owned routing control",
+                "inputSchema": {"type": "object", "properties": {"action": {"type": "string"}}},
+            }
+            params = {"dynamicTools": [tool]}
+            if method == "thread/resume":
+                params["threadId"] = caller_thread
+            request = {"id": "caller-start", "method": method, "params": params}
+            tui.incoming.put_nowait(request)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == request
+            bound = {"id": "caller-start", "result": {"thread": {"id": caller_thread}}}
+            upstream.incoming.put_nowait(bound)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == bound
+
+            async def caller_handles_tool():
+                before = controls.read_text()
+                call = native_tool_request(caller_thread, "on")
+                call["id"] = "caller-call"
+                upstream.incoming.put_nowait(call)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == call
+                reply = {
+                    "id": "caller-call",
+                    "result": {
+                        "success": True,
+                        "contentItems": [{"type": "inputText", "text": "Caller handled routing"}],
+                    },
+                }
+                tui.incoming.put_nowait(reply)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == reply
+                assert controls.read_text() == before
+
+            await caller_handles_tool()
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            response = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert response["result"]["success"] is True
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            await caller_handles_tool()
+            caller_thread = thread_id
+            request = {
+                "id": "caller-takes-over",
+                "method": "thread/resume",
+                "params": {"threadId": caller_thread, "dynamicTools": [tool]},
+            }
+            tui.incoming.put_nowait(request)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == request
+            bound = {"id": request["id"], "result": {"thread": {"id": caller_thread}}}
+            upstream.incoming.put_nowait(bound)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == bound
+            await caller_handles_tool()
+            assert not task.done()
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize(
     "method,params",
     [

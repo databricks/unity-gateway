@@ -501,6 +501,8 @@ Codex's native off-feedback selector has component coverage in
 `../test_smart_router_feedback.py` and `../test_codex_metadata.py`: native tool binding,
 explicit-command authorization, original-task selection, 16-character validation,
 exact reason text, pre-toggle routing context, cancellation, and the Omni exemption.
+Transport component cases also verify caller-owned same-name tool calls and replies
+pass through on thread start/resume while UG-owned controls continue working.
 The menu offers Provide a reason or Cancel. A short submission ends the attempt with
 an error; the user must explicitly retry. Interrupted open prompts send nothing.
 

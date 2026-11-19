@@ -177,7 +177,7 @@ class CodexSmartRouter:
         self.pending_feedback: dict[str, str | None] = {}
         self.collecting_threads: set[str] = set()
         self.root_threads: set[str] = set()
-        self.thread_requests: set[str | int] = set()
+        self.thread_requests: dict[str | int, bool] = {}
         self.off_requests: dict[str | int, tuple[str, asyncio.Event]] = {}
         self.off_turns: set[tuple[str, str]] = set()
         self.uploads: dict[str, feedback.FeedbackUpload] = {}
@@ -218,16 +218,15 @@ class CodexSmartRouter:
             or not isinstance(request_id, (str, int))
         ):
             return
-        if method == "thread/start":
-            tools = params.get("dynamicTools")
-            if tools is not None and not isinstance(tools, list):
-                return
-            if any(
-                isinstance(tool, dict) and tool.get("name") == TOOL_NAME for tool in tools or []
-            ):
-                return
+        tools = params.get("dynamicTools")
+        if tools is not None and not isinstance(tools, list):
+            return
+        owns_tool = not any(
+            isinstance(tool, dict) and tool.get("name") == TOOL_NAME for tool in tools or []
+        )
+        if method == "thread/start" and owns_tool:
             params["dynamicTools"] = [*(tools or []), TOOL_SPEC]
-        self.thread_requests.add(request_id)
+        self.thread_requests[request_id] = owns_tool
 
     def observe(self, message: dict) -> None:
         request_id = message.get("id")
@@ -240,16 +239,21 @@ class CodexSmartRouter:
                 and isinstance(turn.get("id"), str)
             ):
                 self.off_turns.discard((params["threadId"], turn["id"]))
-        if isinstance(request_id, (str, int)) and request_id in self.off_requests:
+        is_response = message.get("method") is None
+        if is_response and isinstance(request_id, (str, int)) and request_id in self.off_requests:
             thread_id, ready = self.off_requests.pop(request_id)
             result = message.get("result")
             turn = result.get("turn") if isinstance(result, dict) else None
             if isinstance(turn, dict) and isinstance(turn.get("id"), str):
                 self.off_turns.add((thread_id, turn["id"]))
             ready.set()
-        if not isinstance(request_id, (str, int)) or request_id not in self.thread_requests:
+        if (
+            not is_response
+            or not isinstance(request_id, (str, int))
+            or request_id not in self.thread_requests
+        ):
             return
-        self.thread_requests.remove(request_id)
+        owns_tool = self.thread_requests.pop(request_id)
         result = message.get("result")
         thread = result.get("thread") if isinstance(result, dict) else None
         if not isinstance(thread, dict):
@@ -260,9 +264,13 @@ class CodexSmartRouter:
         if not isinstance(thread.get("id"), str):
             return
         try:
-            self.root_threads.add(str(UUID(thread["id"])))
+            thread_id = str(UUID(thread["id"]))
         except (ValueError, KeyError, TypeError):
             return
+        if owns_tool:
+            self.root_threads.add(thread_id)
+        else:
+            self.root_threads.discard(thread_id)
 
     def handles(self, message: dict) -> bool:
         params = message.get("params")
@@ -271,6 +279,7 @@ class CodexSmartRouter:
             and isinstance(message.get("id"), (str, int))
             and isinstance(params, dict)
             and isinstance(params.get("threadId"), str)
+            and params["threadId"] in self.root_threads
             and isinstance(params.get("turnId"), str)
             and params.get("tool") == TOOL_NAME
             and params.get("namespace") in (None, "")
