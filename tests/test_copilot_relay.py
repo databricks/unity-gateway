@@ -359,6 +359,7 @@ class TestGate:
             f"/{SECRET}/%2e%2e/chat/completions",
             f"/{SECRET}%2fchat/completions",
             f"/{SECRET}/chat%5ccompletions",
+            f"/{SECRET}/%63hat/completions",
             "/mcp/readonly/extra",
         ],
     )

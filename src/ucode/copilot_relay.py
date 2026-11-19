@@ -68,7 +68,6 @@ _OTEL_SESSION_CREDENTIAL_HEADER = "x-api-key"
 _SECRETLESS_DIRECT_CALLS = frozenset({("POST", "/mcp/readonly")})
 
 _GITHUB_TOKEN_PREFIXES = ("gho_", "ghu_", "github_pat_", "tid=")
-_ENCODED_SEPARATOR = re.compile(r"%(2f|5c|2e|25)", re.IGNORECASE)
 _COPILOT_API_HOST = re.compile(
     r"api(\.(individual|business|enterprise))?\.githubcopilot\.com"
     r"|copilot-api\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.ghe\.com"
@@ -192,8 +191,9 @@ class CopilotHostResolver:
 
 
 def _is_normalized(path: str) -> bool:
-    # A fragment would miss the gateway routes and then be dropped on the way upstream.
-    if not path.startswith("/") or "\\" in path or "#" in path or _ENCODED_SEPARATOR.search(path):
+    # A fragment would miss the gateway routes and then be dropped on the way upstream. A percent escape
+    # would miss them too, and an upstream that decodes it could serve a route the gateway never saw.
+    if not path.startswith("/") or "\\" in path or "#" in path or "%" in path:
         return False
     return all(segment not in ("", ".", "..") for segment in path[1:].split("/"))
 
