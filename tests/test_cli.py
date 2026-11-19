@@ -10061,6 +10061,68 @@ class TestHeadlessConfigureModelSource:
         assert cli_mod.get_provider_service(saved[-1], "claude") == "main.default.new"
         assert cli_mod.get_provider_service(saved[-1], "codex") == "main.default.old"
 
+    SEAT_MPS = "main.default.copilot_seats"
+
+    def _stub_copilot_service(self, monkeypatch, service, error=None):
+        agent = cli_mod.copilot_agent
+        monkeypatch.setattr(agent, "launch_token", lambda *a, **k: "dbx-token")
+        monkeypatch.setattr(
+            agent,
+            "resolve_provider_service",
+            lambda tool, name, workspace, token: (None, error) if error else (service, None),
+        )
+        monkeypatch.setattr(
+            agent,
+            "list_provider_service_models",
+            lambda *a: pytest.fail("a seat relay doesn't list the service's models"),
+        )
+
+    SEAT_SERVICE = {
+        "provider_type": "github_copilot",
+        "relayed": True,
+        "allow_all_targets": True,
+        "targets": [],
+    }
+
+    @pytest.mark.parametrize("flag", ["--agent", "--agents"])
+    def test_seat_relay_provider_configures_copilot_without_its_catalog(self, monkeypatch, flag):
+        self._stub_copilot_service(monkeypatch, self.SEAT_SERVICE)
+        if flag == "--agent":
+            state, saved, configure = self._base_patches(monkeypatch, "copilot")
+        else:
+            state = {**MINIMAL_STATE, "available_tools": []}
+            saved, calls = self._agents_patches(monkeypatch, state)
+
+        result = self._invoke(flag, "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code == 0, result.output
+        assert cli_mod.get_provider_service(saved[-1], "copilot") == self.SEAT_MPS
+        if flag == "--agent":
+            configure.assert_called_once_with(
+                "copilot", state, parent_schema=None, provider=self.SEAT_MPS, with_vscode=True
+            )
+        else:
+            assert calls[0]["providers"] == {"copilot": self.SEAT_MPS}
+
+    @pytest.mark.parametrize("flag", ["--agent", "--agents"])
+    def test_unusable_seat_relay_provider_fails_before_configuring(self, monkeypatch, flag):
+        reason = "this version of ug can't route GitHub Copilot through yet"
+        self._stub_copilot_service(monkeypatch, None, error=reason)
+        if flag == "--agent":
+            _state, saved, configure = self._base_patches(monkeypatch, "copilot")
+        else:
+            saved, calls = self._agents_patches(monkeypatch, {**MINIMAL_STATE})
+
+        result = self._invoke(flag, "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code != 0
+        assert reason in " ".join(_strip_ansi(result.output).split())
+        assert not any(cli_mod.get_provider_service(s, "copilot") for s in saved)
+        if flag == "--agent":
+            configure.assert_not_called()
+        else:
+            assert calls == []
+
 
 class TestLaunchWithManagedFilePicker:
     PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}
