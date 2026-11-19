@@ -467,7 +467,7 @@ export function registerAgentTree(on: On): void {
           text('RECENT ACTIVITY', palette.muted, true),
           ...history.filter(event => event.agentId === detail.id &&
             (!['assistant message', 'final answer'].includes(event.action) || event.detail !== detail.assistantText)).slice(-12).map(event => logRow(event)),
-          ...(Object.values(agentTree.routes).some(route => route.supersededBy === detail.id)
+          ...([...agentTree.routes.values()].some(route => route.supersededBy === detail.id)
             ? [text('Relaunched after a denied routing attempt', palette.muted, false, 'wrap')] : []),
           text(`Launch model · ${detail.model || 'not reported'}`, palette.muted, false, 'wrap'),
           text(`Parent · ${detail.parentId === 'main' ? 'Main session' : detail.parentId ? nodeById.get(detail.parentId)?.name || detail.parentId : 'not reported'}`, palette.muted, false, 'wrap'),

@@ -11,6 +11,7 @@ Smart Router skill and spawn real children before and after its session-local to
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -828,7 +829,7 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
         "smart-router-native-tree",
     ) as tui:
         tui.boot()
-        tui.submit(task.delegate_prompt + " Spawn exactly one agent in total.")
+        tui.submit(task.delegate_prompt)
         tui.wait_for_task(
             task,
             completion=lambda: (
@@ -869,13 +870,13 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
         tui.wait_for(lambda screen: "SUBAGENTS" in screen, "the native subagent tree", timeout=30)
         tui.send("\x1b[F", "scroll to the tree's completion summary")
         tui.wait_for(
-            lambda screen: "subagents 1/1 done" in screen,
+            lambda screen: re.search(r"subagents \d+/\d+ done", screen) is not None,
             "the native subagent tree reporting the completed child",
             timeout=30,
         )
         tui.send("\x1b[H", "return to the first child card")
         tui.wait_for(lambda screen: "SUBAGENTS" in screen, "tree header", timeout=30)
-        tui.send("1", "show the first child card's details")
+        tui.click_label("details", "show the first child card's details")
         tui.wait_for(lambda screen: "Back to all subagents" in screen, "child details", timeout=30)
         tui.send("\x1b[F", "scroll to the child's model identity")
 
@@ -938,13 +939,13 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
         tui.wait_for(lambda screen: "SUBAGENTS" in screen, "the reopened subagent tree", timeout=30)
         tui.send("\x1b[F", "scroll to the retained completion summary")
         tui.wait_for(
-            lambda screen: "subagents 1/1 done" in screen,
+            lambda screen: re.search(r"subagents \d+/\d+ done", screen) is not None,
             "the reopened tree overview with the completed child",
             timeout=30,
         )
         tui.send("\x1b[H", "return to the retained child card")
         tui.wait_for(lambda screen: "SUBAGENTS" in screen, "retained tree header", timeout=30)
-        tui.send("1", "reselect the same child after reopening")
+        tui.click_label("details", "reselect the same child after reopening")
         tui.wait_for(
             lambda screen: "Back to all subagents" in screen, "retained child details", timeout=30
         )

@@ -91,10 +91,15 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
     return Box({ flexDirection: 'column', children: [original,
       Button({ key: 'view-subagents', label: 'View subagents', plain: true,
         onPress: async () => {
-          resetAgentTreeView()
-          const own = (await $.ui.panes()).find(pane => pane.id === AGENT_TREE_PANE.id)
-          if (own && !own.isShown) await $.ui.close({id: AGENT_TREE_PANE.id})
-          return $.ui.open(AGENT_TREE_PANE)
+          try {
+            resetAgentTreeView()
+            const own = (await $.ui.panes()).find(pane => pane.id === AGENT_TREE_PANE.id)
+            if (own && !own.isShown) await $.ui.close({id: AGENT_TREE_PANE.id})
+            return await $.ui.open(AGENT_TREE_PANE)
+          } catch {
+            $.ui.log('Could not open the subagent view; retry, or use /smart-router tree.')
+            return undefined
+          }
         } }),
     ] })
   })

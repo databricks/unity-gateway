@@ -133,6 +133,17 @@ function omitCode(value: string): string {
   return result
 }
 
+function isCredentialName(name: string): boolean {
+  return /(?:^|[_-])(?:token|key|secret|password|authorization|credential)(?:$|[_-])/i.test(name)
+    || /[a-z0-9](?:Token|Key|Secret|Password|Authorization|Credential)(?:$|[_-])/i.test(name)
+}
+
+function colonCredentialKey(word: string): boolean {
+  if (!word.includes(':')) return false
+  const key = word.replace(/^["'{\s]+/, '').replace(/["':\s]+$/, '')
+  return key.length > 0 && key !== word && isCredentialName(key)
+}
+
 function safeToken(value: string): string {
   let start = 0
   let end = value.length
@@ -142,7 +153,7 @@ function safeToken(value: string): string {
   const suffix = value.slice(end)
   const token = value.slice(start, end)
   const equal = token.indexOf('=')
-  if (equal > 0 && /(?:^|[_-])(?:token|key|secret|password|authorization)(?:$|[_-])/i.test(token.slice(0, equal))) {
+  if (equal > 0 && isCredentialName(token.slice(0, equal))) {
     return prefix + token.slice(0, equal + 1) + '[redacted]' + suffix
   }
   const path = equal > 0 ? token.slice(equal + 1) : token
@@ -181,7 +192,7 @@ export function safePreviewText(value: unknown, maxLength = 240): string {
     return words.map(word => {
       if (redactNext) { redactNext = false; return '[redacted]' }
       const token = safeToken(word)
-      if (token.toLowerCase() === 'bearer') redactNext = true
+      if (token.toLowerCase() === 'bearer' || colonCredentialKey(word)) redactNext = true
       return token
     }).join(' ')
   }).filter((line): line is string => line !== undefined)
@@ -483,7 +494,11 @@ export const agentTree = {
     const step = turnKey(node.id, turnId) + ':' + index
     let buffer = assistantBuffers.get(node.id)
     if (!buffer || buffer.step !== step) { buffer = { step, text: '' }; assistantBuffers.set(node.id, buffer) }
-    buffer.text = Array.from(buffer.text + text).slice(0, MAX_ASSISTANT_TEXT + 1).join('')
+    // The capture cap only needs the full code-point pass once the buffer is
+    // full; growing buffers append directly.
+    buffer.text = buffer.text.length + text.length <= MAX_ASSISTANT_TEXT + 1
+      ? buffer.text + text
+      : Array.from(buffer.text + text).slice(0, MAX_ASSISTANT_TEXT + 1).join('')
     node.assistantText = safePreviewText(buffer.text, MAX_ASSISTANT_TEXT)
     emitMessage(now ?? Date.now(), node.id, step, node.assistantText)
   },
@@ -622,7 +637,10 @@ export const agentTree = {
       if (agent.id === MAIN_ID) continue
       const node = nodeFor(agent.id)
       const life = lifeFor(agent.id)
-      node.parentId = agent.parentId ?? MAIN_ID
+      // A roster snapshot without parentId must not flatten a child whose spawn
+      // or route events already captured a nested parent.
+      if (agent.parentId !== undefined) node.parentId = agent.parentId
+      else node.parentId ??= MAIN_ID
       node.name = node.name || agent.name || agent.type
       node.role = agent.type
       node.task = node.task || agent.description

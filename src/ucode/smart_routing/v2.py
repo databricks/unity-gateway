@@ -440,15 +440,15 @@ def _claude_host_has_view(binary: str = "claude") -> bool:
 def _write_routed_claude_plugin(
     plugin_dir: Path,
     model_ids: list[str] | None = None,
-    native_view: bool | None = None,
+    *,
+    native_view: bool,
 ) -> None:
     """Write the native routing mod and roles; model IDs support legacy hook agents.
 
     `native_view` ships the real agent-view module only for hosts whose event
-    table accepts $.ui.view; None detects the host's `claude` on PATH.
+    table accepts $.ui.view; the caller detects the host so the generated plugin
+    never depends on whichever `claude` happens to be on this machine's PATH.
     """
-    if native_view is None:
-        native_view = _claude_host_has_view()
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {

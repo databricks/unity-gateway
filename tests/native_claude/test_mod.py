@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -20,21 +19,16 @@ from session import Session, install_header_mod
 from ucode.agents.claude import _enable_header_mod
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
+    _claude_host_has_view,
     _claude_mod_launch_options,
     _routed_claude_agent_name,
     _write_routed_claude_plugin,
 )
 
 
-def _host_has_native_view() -> bool:
-    version = os.environ.get("UCODE_TEST_CLAUDE_VERSION", "")
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", version)
-    return match is not None and tuple(map(int, match.groups())) >= (2, 1, 319)
-
-
 def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
     path = tmp_path / "plugin"
-    _write_routed_claude_plugin(path, [], native_view=_host_has_native_view())
+    _write_routed_claude_plugin(path, [], native_view=_claude_host_has_view(native_binary))
     manifest = path / ".claude-plugin/plugin.json"
     doc = json.loads(manifest.read_text())
     doc["userConfig"]["routeCommand"]["default"] = [
@@ -492,7 +486,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root = tmp_path / label
             root.mkdir()
             plugin = root / "plugin"
-            _write_routed_claude_plugin(plugin, native_view=_host_has_native_view())
+            _write_routed_claude_plugin(plugin, native_view=_claude_host_has_view(native_binary))
             config_dir = root / "config"
             config_dir.mkdir()
             (config_dir / "settings.json").write_text(

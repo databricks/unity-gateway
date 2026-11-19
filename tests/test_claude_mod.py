@@ -59,7 +59,7 @@ def test_plugin_without_native_view_ships_the_agent_view_stub(tmp_path):
 
 def test_native_subagent_statusline_command(tmp_path):
     plugin = tmp_path / "plugin with spaces"
-    v2._write_routed_claude_plugin(plugin, [])
+    v2._write_routed_claude_plugin(plugin, [], native_view=False)
     names = plugin / "agent-names"
     names.mkdir()
     (names / "agent-child-a.json").write_text('{"session_id":"s1","name":"Otter"}')

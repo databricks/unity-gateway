@@ -353,11 +353,12 @@ export function register(on: On, options: PluginOptions): void {
       ?? (auto ? autoTarget(auto, e.model) : undefined);
     const step = model ? {...e, model} : e;
     agentTree.stepStarted(step, await $.clock.now().catch(() => 0));
+    const chunkClock = await $.clock.now().catch(() => 0);
     try {
       const stream = next(step);
       for await (const chunk of stream) {
         if (step.agentId && chunk.kind === 'text') {
-          agentTree.assistantTextChunk(step.agentId, step.turnId, step.index, chunk.text, await $.clock.now().catch(() => 0));
+          agentTree.assistantTextChunk(step.agentId, step.turnId, step.index, chunk.text, chunkClock);
         }
         yield chunk;
       }

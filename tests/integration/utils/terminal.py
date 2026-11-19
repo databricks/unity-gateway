@@ -359,6 +359,22 @@ class TerminalProcess:
         self.actions.append({"reason": reason, "keys": keys, "screen_before": self.visible})
         self.child.send(keys)
 
+    def click_label(self, label, reason, min_col=0):
+        """Send a real mouse press on the first visible `label` at or after min_col."""
+        hit = next(
+            (
+                (y, line.find(label, min_col))
+                for y, line in enumerate(self.screen.display)
+                if line.find(label, min_col) >= 0
+            ),
+            None,
+        )
+        if hit is None:
+            raise AssertionError(f"native control is absent: {label}:\n{self.visible}")
+        y, x = hit
+        press = f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m"
+        self.send(press, reason)
+
     def wait_for(self, predicate, description, timeout=30, stable_for=0.3):
         deadline = time.monotonic() + timeout
         since = None

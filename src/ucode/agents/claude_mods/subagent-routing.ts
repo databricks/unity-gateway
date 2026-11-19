@@ -254,7 +254,6 @@ export const registerSubagentRouting = (
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
-      $.ui.invalidate('ui.render')
     }
     agentTree.spawnFinished(e, result, (await now($)) ?? 0)
     $.ui.invalidate('ui.render')

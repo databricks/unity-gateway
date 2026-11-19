@@ -622,20 +622,25 @@ test('the focus ring paints the yellow selection and follows stable child IDs ac
   await blurred.unmount();
 });
 
-test('unfocused panes carry no hotkeys and the focused pane exposes the keyboard path', { options: ROUTED }, async ($, on) => {
+test('the tree assigns keyboard shortcuts only while its pane is focused', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const agents: AgentInfo[] = [
-    { id: 'child-a', name: 'Otter', description: 'Inspect parser', type: 'Explore', status: 'running' },
+    { id: 'child', name: 'Otter', description: 'Inspect parser', type: 'Explore', status: 'running' },
     { id: 'child-b', name: 'Heron', description: 'Read logs', type: 'Explore', status: 'running' },
   ];
   engine(on, env, agents);
-  const blurred = await $.ui.mount({ ...TREE_PANE, props: { ...TREE_PANE.props, isFocused: false } });
-  expect(JSON.stringify(await blurred.drawn())).not.toContain('"hotkey"');
-  expect(JSON.stringify(await blurred.drawn())).toContain('ctrl+x tab focuses tiles');
-  await blurred.unmount();
+  const unfocused = await $.ui.mount({ ...TREE_PANE, props: { ...TREE_PANE.props, isFocused: false } });
+  const unfocusedDrawn = JSON.stringify(await unfocused.drawn());
+  expect(unfocusedDrawn).not.toContain('"hotkey"');
+  expect(JSON.stringify(await unfocused.find({ key: 'agent:child' }))).not.toContain('hotkey');
+  expect(JSON.stringify(await unfocused.find({ key: 'close-tree' }))).not.toContain('hotkey');
+  expect(unfocusedDrawn).toContain('ctrl+x tab focuses tiles');
+  await unfocused.unmount();
   const focused = await $.ui.mount(TREE_PANE);
   const drawn = JSON.stringify(await focused.drawn());
   expect(drawn).toContain('"hotkey"');
+  expect(JSON.stringify(await focused.find({ key: 'agent:child' }))).toContain('"hotkey":"1"');
+  expect(JSON.stringify(await focused.find({ key: 'close-tree' }))).toContain('"hotkey":"q"');
   expect(drawn).toContain(NATIVE_VIEW ? 'Tab picks a tile · Enter steps into it' : 'Tab picks a tile · Enter opens its details');
   await focused.unmount();
 });
@@ -890,6 +895,28 @@ for (const bodyColumns of [40, 76]) test(`full launch model identity stays in ch
   await pane.unmount();
 });
 
+test('the details view explains a relaunch after a denied routing attempt', { options: ROUTED }, async ($, on) => {
+  const { env } = setup(on);
+  let spawns = 0;
+  on('agent.spawn', () => {
+    spawns += 1;
+    return spawns === 1
+      ? { value: { deny: 'router backoff' } }
+      : { value: { agentId: 'child-a', model: 'routed-model' } };
+  });
+  engine(on, env, [{ id: 'child-a', name: 'Otter', description: 'Map pane lifecycle', type: 'general-purpose', status: 'completed' }]);
+  const spawn = { tool_use_id: 'spawn-denied', subagentType: 'general-purpose' as const, description: 'Map pane lifecycle',
+    prompt: 'Map pane lifecycle', parentModel: 'main-model', background: false, fork: false, cwd: '/work' };
+  await $.agent.spawn(spawn);
+  await $.agent.spawn({ ...spawn, tool_use_id: 'spawn-ok' });
+  const pane = await $.ui.mount(TREE_PANE);
+  await pane.press({ key: 'details:child-a' });
+  const drawn = JSON.stringify(await pane.drawn());
+  expect(drawn).toContain('Relaunched after a denied routing attempt');
+  expect(drawn).toContain('Launch model · routed-model');
+  await pane.unmount();
+});
+
 test('the tree keeps row order stable until Active first is chosen', async ($, on) => {
   const agents: AgentInfo[] = [
     { id: 'first', name: 'First', description: 'First task', type: 'Explore', status: 'running' },
@@ -1050,22 +1077,6 @@ test('the tree keeps singular and plural needs-attention counts grammatical', as
   await pane.unmount();
 });
 
-test('the tree assigns keyboard shortcuts only while its pane is focused', async ($, on) => {
-  const agents: AgentInfo[] = [{
-    id: 'child', name: 'Otter', description: 'Inspect parser', type: 'Explore', status: 'running',
-  }];
-  engine(on, {}, agents);
-  const unfocused = await $.ui.mount({ ...TREE_PANE, props: { ...TREE_PANE.props, isFocused: false } });
-  expect(JSON.stringify(await unfocused.find({ key: 'agent:child' }))).not.toContain('hotkey');
-  expect(JSON.stringify(await unfocused.find({ key: 'close-tree' }))).not.toContain('hotkey');
-  await unfocused.unmount();
-
-  const focused = await $.ui.mount(TREE_PANE);
-  expect(JSON.stringify(await focused.find({ key: 'agent:child' }))).toContain('"hotkey":"1"');
-  expect(JSON.stringify(await focused.find({ key: 'close-tree' }))).toContain('"hotkey":"q"');
-  await focused.unmount();
-});
-
 test('a finished overview stops redraws and wakes for a new child', async ($, on) => {
   const agents: AgentInfo[] = [{
     id: 'finished', name: 'Otter', description: 'Inspect parser', type: 'Explore', status: 'completed',
@@ -1168,6 +1179,26 @@ test('tree lifecycle joins actual child IDs and preserves early completion', asy
   agentTree.reset();
   expect(agentTree.nodes.size).toBe(0);
   expect(agentTree.routes.size).toBe(0);
+});
+
+test('roster sync without parentId keeps the captured nested parent', () => {
+  agentTree.reset();
+  const spawn = { tool_use_id: 'nested-spawn', description: 'Nested audit', subagentType: 'Explore',
+    prompt: 'Private nested prompt', parentModel: 'main-model', background: false, fork: false, cwd: '/work',
+    parentId: 'outer-child', provider: { plugin: 'engine', tier: 'core' as const } };
+  agentTree.spawnStarted(spawn, 10);
+  agentTree.spawnFinished(spawn, { agentId: 'deep-child' }, 20);
+  expect(agentTree.nodes.get('deep-child')!.parentId).toBe('outer-child');
+  // The roster snapshot omits parentId: the captured ancestry must survive.
+  agentTree.syncAgents([
+    { id: 'outer-child', name: 'Outer', description: 'Outer task', type: 'general-purpose', status: 'running' },
+    { id: 'deep-child', description: 'Nested audit', type: 'Explore', status: 'running' },
+  ], 30);
+  expect(agentTree.nodes.get('deep-child')!.parentId).toBe('outer-child');
+  // An explicit roster parentId stays authoritative.
+  agentTree.syncAgents([{ id: 'deep-child', description: 'Nested audit', type: 'Explore', status: 'running', parentId: 'main' }], 40);
+  expect(agentTree.nodes.get('deep-child')!.parentId).toBe('main');
+  agentTree.reset();
 });
 
 test('a SubagentHandback never manufactures a child or flags one', () => {
@@ -1465,15 +1496,26 @@ test('streamed child text becomes a sanitized excerpt on the card and the detail
   const say = childScript(on);
   engine(on, env, agents);
   const pane = await $.ui.mount(TREE_PANE);
+  const complete = 'The report preserves every complete sentence without shortening the useful result.';
   await say($, 'talker', [
     'The lexer in /home/user/secret/lexer.py splits tokens early. ', '```\ncat /etc/shadow\n```\n', '`rm -rf /tmp/x` is never called. ', '\u001b[31mColour\u0007 codes are stripped. ', 'token=sk-live-123456',
+    ' The JSON config holds "api_key": "SENTINEL" and the header token: hunter2. ',
+    'The env sets apiKey=abcd1234effe and the access accessToken=zzz-9999 in one line. ',
+    'The split credential is token=', 'split-secret-42 across chunks. ', complete,
   ]);
   const card = JSON.stringify(await pane.drawn());
   expect(card).toContain('The lexer in lexer.py splits tokens early.');
   expect(card).toContain('Colour codes are stripped.');
-  for (const leaked of ['/home/user', 'shadow', 'rm -rf', 'sk-live-123456', '\\u001b', '\\u0007']) expect(card).not.toContain(leaked);
+  expect(card).toContain(complete);
+  expect(card).not.toContain('…');
+  for (const leaked of ['/home/user', 'shadow', 'rm -rf', 'sk-live-123456', '\\u001b', '\\u0007',
+    'SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42']) expect(card).not.toContain(leaked);
   await pane.press({ key: 'details:talker' });
+  const detail = JSON.stringify(await pane.drawn());
   expect(textsOf(await pane.drawn()).some(line => line.startsWith('SAYING NOW'))).toBe(true);
+  expect(detail).toContain(complete);
+  expect(detail).not.toContain('…');
+  for (const leaked of ['SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42']) expect(detail).not.toContain(leaked);
   await pane.unmount();
 });
 
@@ -1517,22 +1559,6 @@ test('native step streaming forwards every chunk and result while state keeps on
   for (const privateValue of ['PRIVATE_REASONING', 'PRIVATE_TOOL_RESULT', 'PRIVATE_PROMPT', '/private/secret.txt']) {
     expect(state).not.toContain(privateValue);
   }
-  await pane.unmount();
-});
-
-test('complete streamed sentences remain unellipsized on the card and in finished-child details', { options: ROUTED }, async ($, on) => {
-  const { env } = setup(on);
-  const agents: AgentInfo[] = [{ id: 'long', name: 'Heron', description: 'Summarise', type: 'Explore', status: 'running' }];
-  const say = childScript(on);
-  engine(on, env, agents);
-  const pane = await $.ui.mount(TREE_PANE);
-  const answer = 'The report preserves every complete sentence without shortening the useful result.';
-  await say($, 'long', [answer]);
-  expect(JSON.stringify(await pane.drawn())).toContain(answer);
-  await pane.press({ key: 'details:long' });
-  const detail = JSON.stringify(await pane.drawn());
-  expect(detail).toContain(answer);
-  expect(detail).not.toContain('…');
   await pane.unmount();
 });
 
