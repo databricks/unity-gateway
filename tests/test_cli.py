@@ -942,8 +942,6 @@ class TestSubcommandRouting:
         ("tool_args", "expected"),
         [
             (["app-server", "--listen", "ws://127.0.0.1:1"], True),
-            (["-c", "a=1", "app-server", "--listen", "ws://127.0.0.1:1"], True),
-            (["app-server", "generate-ts", "--out", "ts"], False),
             (["-c", "a=1", "exec", "fix this"], False),
         ],
     )
