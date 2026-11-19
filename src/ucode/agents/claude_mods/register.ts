@@ -1,5 +1,13 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand, skipStartupValidation, watchStartupValidation } from './smart-routing-status.ts';
+import {
+  endStatusBandTurn,
+  hideStatusBand,
+  registerStatusBand,
+  settleStartupValidation,
+  showStatusBand,
+  skipStartupValidation,
+  startStartupValidation,
+} from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -167,6 +175,60 @@ async function setRouting(
   }
 }
 
+const VALIDATION_POLL_MS = 100;
+// Longer than the Python check's 4 s deadline, after which it never turns routing off.
+const VALIDATION_WAIT_MS = 5000;
+
+async function watchStartupValidation($: EngineInterface, options: PluginOptions): Promise<void> {
+  if (!startStartupValidation()) return;
+  try {
+    const controls = await $.env.get('UCODE_SESSION_ENV_FILE');
+    if (typeof controls !== 'string' || !controls.endsWith('.json')) {
+      settleStartupValidation();
+      $.ui.invalidate('ui.render');
+      return;
+    }
+    let complete = false;
+    let waited = 0;
+    let poll: { cancel: () => void } | undefined;
+    const finish = (): void => {
+      complete = true;
+      settleStartupValidation();
+      poll?.cancel();
+      $.ui.invalidate('ui.render');
+    };
+    const check = async (): Promise<void> => {
+      if (complete) return;
+      let result: any;
+      try {
+        result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'));
+      } catch {}
+      if (complete) return;
+      if (!result || !('routing_disabled' in result)) {
+        if (waited >= VALIDATION_WAIT_MS) finish();
+        return;
+      }
+      complete = true;
+      if (result.routing_disabled === true) {
+        hideStatusBand();
+        try {
+          await setRouting($, options, false, false);
+        } catch {}
+      }
+      finish();
+    };
+    await check();
+    if (!complete) {
+      poll = $.clock.every(VALIDATION_POLL_MS, () => {
+        waited += VALIDATION_POLL_MS;
+        return check();
+      });
+    }
+  } catch {
+    settleStartupValidation();
+  }
+}
+
 export function register(on: On, options: PluginOptions): void {
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
@@ -181,7 +243,7 @@ export function register(on: On, options: PluginOptions): void {
       }
     } finally {
       // After the launch write, so a disabling result cannot be overwritten by it.
-      await watchStartupValidation($, () => setRouting($, options, false, false));
+      await watchStartupValidation($, options);
     }
     return next(e);
   });

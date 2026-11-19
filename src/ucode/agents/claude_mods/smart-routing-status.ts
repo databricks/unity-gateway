@@ -1,4 +1,4 @@
-import type { EngineInterface, On } from 'claude-code'
+import type { On } from 'claude-code'
 import { SMART_ROUTING_KEY, SUBAGENT_ONLY_KEY } from './constants.ts'
 import { isRoutingEnabled } from './routing-state.ts'
 
@@ -11,9 +11,6 @@ let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the startup check settles;
 // an unsupported menu turns routing off and must never flash ON.
 const validation = { isPending: true }
-const VALIDATION_POLL_MS = 100
-// Longer than the Python check's 4 s deadline, after which it never turns routing off.
-const VALIDATION_WAIT_MS = 5000
 
 export function skipStartupValidation(): void {
   validationWatchStarted = true
@@ -66,58 +63,18 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export async function watchStartupValidation(
-  $: EngineInterface,
-  disableRouting: () => Promise<void>,
-): Promise<void> {
-  if (validationWatchStarted) return
+export function startStartupValidation(): boolean {
+  if (validationWatchStarted) return false
   validationWatchStarted = true
-  try {
-    const controls = await $.env.get('UCODE_SESSION_ENV_FILE')
-    if (typeof controls !== 'string' || !controls.endsWith('.json')) {
-      validation.isPending = false
-      $.ui.invalidate('ui.render')
-      return
-    }
-    let complete = false
-    let waited = 0
-    let poll: { cancel: () => void } | undefined
-    const finish = (): void => {
-      complete = true
-      validation.isPending = false
-      poll?.cancel()
-      $.ui.invalidate('ui.render')
-    }
-    const check = async (): Promise<void> => {
-      if (complete) return
-      let result: any
-      try {
-        result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
-      } catch {}
-      if (complete) return
-      if (!result || !('routing_disabled' in result)) {
-        if (waited >= VALIDATION_WAIT_MS) finish()
-        return
-      }
-      complete = true
-      if (result.routing_disabled === true) {
-        band.isVisible = false
-        try {
-          await disableRouting()
-        } catch {}
-      }
-      finish()
-    }
-    await check()
-    if (!complete) {
-      poll = $.clock.every(VALIDATION_POLL_MS, () => {
-        waited += VALIDATION_POLL_MS
-        return check()
-      })
-    }
-  } catch {
-    validation.isPending = false
-  }
+  return true
+}
+
+export function settleStartupValidation(): void {
+  validation.isPending = false
+}
+
+export function hideStatusBand(): void {
+  band.isVisible = false
 }
 
 export const registerStatusBand = (on: On): void => {
