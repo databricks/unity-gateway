@@ -102,7 +102,7 @@ from ucode.smart_routing.codex_hooks import (
     routing_models,
     sync_smart_routing_hooks,
 )
-from ucode.smart_routing.codex_routing import codex_model_id
+from ucode.smart_routing.codex_routing import codex_model_id, prioritize_gpt_models
 from ucode.smart_routing.routing import configured_router_name
 from ucode.state import get_provider_service, is_tool_managed, mark_tool_managed, save_state
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
@@ -2049,7 +2049,9 @@ def launch(
         except CodexMpsModelCatalogUnavailable:
             detach_app_model_catalog()
             if options.launch_smart_routing:
-                raise RuntimeError("Smart routing needs the selected source's Codex model catalog.") from None
+                raise RuntimeError(
+                    "Smart routing needs the selected source's Codex model catalog."
+                ) from None
         except RuntimeError:
             # A failed discovery/validation must not leave a previous workspace's
             # catalog active in independently launched app servers.
@@ -2067,6 +2069,8 @@ def launch(
             # managed default already applies.
             if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
                 slugs = catalog_slugs(catalog)
+                if options.launch_smart_routing and provider:
+                    slugs = prioritize_gpt_models(slugs)
                 if slugs:
                     profile_doc["model"] = slugs[0]
     if options.launch_smart_routing:

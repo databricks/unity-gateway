@@ -42,6 +42,11 @@ SUBAGENT_NOTICE_CONFIG = routing.SubagentNoticeConfig(
 _GPT_RE = re.compile(r"gpt-(\d+)(?:[.-](\d+))?(?:[.-](\d+))?(-.+|[a-z].*)?")
 
 
+def prioritize_gpt_models(models: list[str]) -> list[str]:
+    """Prefer numbered GPT targets while preserving provider IDs and relative order."""
+    return list(dict.fromkeys([*(model for model in models if _GPT_RE.search(model)), *models]))
+
+
 def request_routing_decision(
     workspace: str,
     token: str,
@@ -54,7 +59,10 @@ def request_routing_decision(
     provider: str | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
-    route_options = routing.route_options_for(available_models, "codex")
+    models = list(dict.fromkeys(available_models))
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        models = prioritize_gpt_models(models)[: routing.MAX_ROUTE_OPTIONS]
+    route_options = routing.route_options_for(models, "codex")
     if not route_options:
         return None, "no cached model services are available"
     if attribution_headers is None:
