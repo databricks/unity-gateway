@@ -192,24 +192,23 @@ Auto from one row inside it, first among UG's rows (below Claude's native Defaul
 `modelOverrides` mapping, and both aliases and targets in `availableModels`. That mode
 is written at configure only — launches preserve whichever installed mode the file
 carries, and a launch's own version selection never installs or converts the catalog.
-In that mode native always stays on the static row's alias (the launch passes it as
+In that mode native normally stays on the static row's alias (the launch passes it as
 `staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
 holds the chosen main model in memory and its `$.store` preference and resolves the
-real target from it. Main-model switches never run native `/model`.
-Entering static Auto compares the held main model with the current model for cache warnings,
-not the static alias's default target. Keeping the same main model skips the native warning.
-Saving a different main model while Auto is active asks for confirmation before changing
-the saved preference when the session has context. Cancellation keeps the current
-main model and reopens the chooser. This check includes cold contexts and does not claim
-that a warm cache exists. Other hooks' blocks and explicit confirmation requests still apply.
-The main-model chooser opens only after the person confirms the Auto row in `/model` and
-the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
-on Esc. Catalogs of four models or fewer use a compact native question. This draft
-uses a native pane for larger catalogs, with ten models per page, continuous numbering,
-and Previous/More models navigation. The current model appears first. Native pane
-placement after the stock picker closes and clipping in short terminals remain unresolved;
-do not treat the component tests as evidence of a working automatic terminal flow.
-It has no effort controls and runs no `/effort` commands.
+real target from it. The main-model chooser now uses native `/model`: prepare the real main model, open
+its picker after the first picker closes, then restore the Auto identity on
+confirmation or cancellation. The initial `/model` still opens unchanged. Never
+open an Auto pane in advance. Native owns scrolling, numbering and effort controls;
+there is no custom question or paginated model list. Keep administrator-owned
+static rows intact, including Auto in the second picker. In the custom-slot mode,
+hide only that process-local Auto option while the second picker is open.
+A regular model chosen in the initial picker disables routing as before. `/auto`
+while inactive saves a preference and restores the running manual model.
+Native confirmations from preparation/restoration must not count as user selections.
+Other hooks' blocks and explicit confirmation requests still apply.
+The native saved model temporarily changes while the second picker is open; forced
+termination during that interval remains a draft limitation. The static Auto
+capability profile and missing non-Claude model metadata are separate unresolved issues.
 Native confirms the row as its picker closes, before the chooser opens, so that confirmation
 reads `Auto on: subagents smart-routed` and names no main model in either order; the save appends
 a visible `$.ui.log` notice after saving the chosen model, such as

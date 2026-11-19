@@ -18,19 +18,27 @@ Under Auto it starts with `Auto (<main model>)`; with the static catalog row, th
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
 prompt hint for the main model. Native's initial `/model` confirmation reads
 `Auto on: subagents smart-routed`; saving a main model prints a notice naming the saved model.
-The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
-picker closes, or on `/model auto`. This draft keeps the compact native question for
-catalogs of four models or fewer. Larger catalogs use a native pane with ten models
-per page, continuous numbering, and Previous/More models navigation. Native `/effort`
-remains unchanged.
+The Auto main-model chooser opens Claude's native `/model` picker after Auto is
+confirmed in the first picker, or on `/model auto` and `/auto`. Claude handles its
+model list, numbering, scrolling, keyboard focus and inline effort controls. There
+is no custom model pane or More models page. The visible row count follows the
+terminal size and Claude's own layout.
 
-The larger chooser is experimental and not ready to merge. On Claude 2.1.290 and
-2.1.322, opening it after selecting Auto in the stock picker is classified as an
-unasked pane and can be refused below 144 terminal columns. Typing `/model auto`
-directly preserves the command context, but a short terminal can still clip rows
-and navigation. A 160-column, 60-row terminal displayed both full pages and selected
-a model, but reopening the list left keyboard input in the main prompt. Placement,
-clipping, and focus remain unresolved.
+The second picker starts on the real main model. Confirming a model restores the
+appropriate Auto identity and saves the main-model preference; Escape restores the
+previous identity without saving. While Auto is inactive, `/auto` restores the
+running manual model and saves only the preference. A model outside Auto's allowed
+catalog is rejected and the prior selection restored. Policy hook denials remain
+in force. Internal confirmations are distinguished from the person's second pick.
+
+The process-local custom Auto option is hidden in the second picker. A static
+managed catalog retains its administrator-defined Auto row; selecting it again
+keeps the existing main model. The standard heading remains `Select model`.
+This draft temporarily selects the real model to open the native list and restores
+Auto afterward; a forced process termination during that interval can leave the
+native saved model on the real model. Static Auto capability-profile limitations
+and missing metadata for unknown model IDs are not solved by this chooser change.
+
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

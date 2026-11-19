@@ -2191,26 +2191,23 @@ restore has removed the source mapping (with and without workspace state), and t
 exact-version plus effective-routing provisioning gate. These cases exercise temporary
 settings through the real Python lifecycle; they do not establish live gateway coverage.
 
-The Auto chooser's native component tests cover compact modal selection for small
-catalogs and the draft ten-model pane for larger catalogs: continuous numbering,
-forward/backward/wrap navigation, selection and cancellation. Invalid typed answers
-remain covered for small catalogs; the larger button list has no text input.
-Pane placement is mocked and the component tests redraw explicitly. Manual Linux
-checks found automatic opening after the stock picker refused below 144 columns
-on Claude 2.1.290/2.1.322, and a 36-row terminal clipped the direct command's list.
-A 160-column, 60-row terminal displayed two full pages and selected model 12,
-but reopening lost keyboard focus to the prompt. These remain draft blockers;
-no successful complete automatic terminal journey is claimed.
-Claude 2.1.290's plugin test runner lacks a
-`session.append` implementation, so these component tests do not cover picker-confirmation
-ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
-preservation, or prompt interruption. The chooser has no
-effort controls or internal effort commands.
+Auto chooser coverage uses Claude's real native picker in
+`tests/native_claude/test_auto_picker.py` (a component terminal journey with a
+fixture catalog and an observer plugin, not gateway inference). With 23 models at
+60 columns, it checks scrolling past model ten without numbering resets, selection
+and native inline effort, Escape and reopening, Default, regular-model routing off,
+and inactive `/auto` preference edits. Both static managed catalogs and the
+process-local custom option are exercised. The existing Claude 2.1.290 CI job runs
+these journeys without changing its version pin.
 
-The same component suite covers static Auto cache warnings at the final main-model choice,
-including unchanged models, fresh sessions, inactive preference edits, cancellation, stale
-answers, and preserved hook decisions. Native TUI checks use a controlled local response
-fixture to populate token accounting; they do not establish gateway cache hits or cost.
+The mod component tests retain startup routing, saved main-model resolution,
+unrouted-child aliases, deferred opening, ordinary `/model` isolation, interruption,
+and policy hook decisions. The old custom question, typed-answer validation and
+paged-pane tests are obsolete: native now owns those controls. Claude 2.1.290's
+component runner cannot dispatch `session.append`, so selection/cancellation and
+confirmation ordering are asserted through the real terminal instead. Forced
+termination while the second picker is open and authenticated gateway inference
+are not covered by these new tests.
 
 Native launch-option component tests (`native_claude/test_mod.py`) check two real Claude
 processes with different resolved routing baselines. Python cases cover Claude-specific presets,

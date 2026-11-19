@@ -267,17 +267,23 @@ These deliberately unauthenticated requests do not establish
 successful inference or delegation quality.
 See [the mod guide](../docs/claude-mod.md).
 
-The draft Auto list's component tests in `native_claude/mod_tests/auto-static.test.ts`
-cover 5/10/12/23-model catalogs, ten rows per page with continuous numbering,
-forward/backward/wrap navigation, selection, and cancellation without changing the
-saved preference. Small catalogs retain native-question validation. The old invalid
-typed-answer pagination case is obsolete for the button list, which has no text input.
-Component tests mock pane placement and redraw explicitly; they do not establish
-terminal focus or visibility. Manual Linux checks found the automatic stock-picker
-path refused below 144 columns on Claude 2.1.290/2.1.322, and a 36-row terminal clipped
-the direct command's list. A 160-column, 60-row terminal displayed two full pages
-and selected model 12, but reopening lost keyboard focus to the prompt. These are
-unresolved draft blockers, not passing end-to-end UI coverage.
+Auto chooser coverage uses Claude's real native picker in
+`tests/native_claude/test_auto_picker.py` (a component terminal journey with a
+fixture catalog and an observer plugin, not gateway inference). With 23 models at
+60 columns, it checks scrolling past model ten without numbering resets, selection
+and native inline effort, Escape and reopening, Default, regular-model routing off,
+and inactive `/auto` preference edits. Both static managed catalogs and the
+process-local custom option are exercised. The existing Claude 2.1.290 CI job runs
+these journeys without changing its version pin.
+
+The mod component tests retain startup routing, saved main-model resolution,
+unrouted-child aliases, deferred opening, ordinary `/model` isolation, interruption,
+and policy hook decisions. The old custom question, typed-answer validation and
+paged-pane tests are obsolete: native now owns those controls. Claude 2.1.290's
+component runner cannot dispatch `session.append`, so selection/cancellation and
+confirmation ordering are asserted through the real terminal instead. Forced
+termination while the second picker is open and authenticated gateway inference
+are not covered by these new tests.
 
 Native mod component tests cover stable random animal labels, 100 distinct names before
 numbered reuse, unchanged execution inputs and row controls, and pending-to-completed
