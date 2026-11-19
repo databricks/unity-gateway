@@ -1,5 +1,12 @@
 # Integration tests
 
+Saved-provider launches without managed config have component coverage in
+`../test_cli.py::TestSubcommandRouting::test_unmanaged_claude_routing_uses_saved_provider_default`.
+It checks the provider-scoped launch default and preservation of resume/model arguments and native
+saved selection. It does not run live inference or verify a router response.
+The 128-option routing API limit and preservation of current family targets in oversized
+catalogs have HTTP-boundary component coverage in `../test_claude_smart_routing_v2.py`.
+
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in

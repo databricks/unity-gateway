@@ -22,6 +22,16 @@ the shared catalog passed native validation and completed the hidden-file task w
 on the wire. The mixed primary/error/budget-fallback regression failed against the previous
 implementation (`none` instead of shared `high`).
 
+`test_cli.py::TestSubcommandRouting::test_unmanaged_claude_routing_uses_saved_provider_default`
+covers smart routing with a saved Model Provider Service and no managed config. The provider's
+catalog supplies Claude's process-local default; resume and explicit model arguments pass through,
+and the saved native model remains unchanged. This component check stubs the catalog and routed
+launcher; it does not establish live provider inference or router coverage.
+`test_claude_smart_routing_v2.py::TestSubagentRouting::test_large_provider_catalog_preserves_latest_family_targets`
+checks the routing HTTP boundary at 128, 129, and 256 catalog entries. Oversized catalogs keep
+the latest Opus, Sonnet, and Haiku targets within the API's 128-option limit; smaller catalogs
+retain their order, and selected provider IDs remain unchanged. The HTTP response is controlled.
+
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,

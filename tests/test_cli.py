@@ -1397,6 +1397,49 @@ class TestSubcommandRouting:
         calls["resolve_model"].assert_not_called()
         calls["launch"].assert_called_once()
 
+    @pytest.mark.parametrize(
+        "forwarded_args",
+        [[], ["--resume", "previous-session"], ["--", "--model", "anthropic.claude-sonnet-5-5"]],
+    )
+    def test_unmanaged_claude_routing_uses_saved_provider_default(
+        self, monkeypatch, tmp_path, forwarded_args
+    ):
+        from ucode.agents import claude
+
+        catalog = db_mod.AnthropicModelCatalog(
+            model_ids=["anthropic.claude-sonnet-5-5", "anthropic.claude-opus-5-5"],
+            model_id_to_display_name={},
+        )
+        saved_settings = tmp_path / "settings.json"
+        saved_settings.write_text(json.dumps({"model": "anthropic.claude-sonnet-5-5"}))
+        before = saved_settings.read_bytes()
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", saved_settings)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
+        routed_launches = []
+
+        def capture_routed_launch(state, args, **kwargs):
+            routed_launches.append(
+                (os.environ.get("ANTHROPIC_DEFAULT_MODEL"), list(args), kwargs["launch_model"])
+            )
+
+        monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_claude", capture_routed_launch)
+        with _launch_policy_patches(
+            None, persisted_provider="main.bugbash.bedrock_mps", picker_catalog=catalog
+        ) as calls:
+            calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
+                state, args, options=options
+            )
+            result = runner.invoke(app, ["claude", "--enable-smart-routing", *forwarded_args])
+
+        assert result.exit_code == 0, result.output
+        calls["list_catalog"].assert_called_once_with(
+            calls["state"]["workspace"], "token", provider="main.bugbash.bedrock_mps"
+        )
+        expected_args = forwarded_args[1:] if forwarded_args[:1] == ["--"] else forwarded_args
+        assert routed_launches == [("anthropic.claude-opus-5-5", expected_args, None)]
+        assert saved_settings.read_bytes() == before
+
     def test_unmanaged_claude_launch_lists_gateway_catalog(self):
         with _launch_policy_patches(None) as calls:
             result = runner.invoke(app, ["claude"])

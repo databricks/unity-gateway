@@ -4578,7 +4578,7 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
-            if managed is None and (explicit_provider or parent_schema) and not model:
+            if managed is None and (provider or parent_schema) and not model:
                 # The permanent Default row should also resolve within the selected catalog.
                 state["_claude_launch_default_model"] = (
                     claude_agent.default_model(

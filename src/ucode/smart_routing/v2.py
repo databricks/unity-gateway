@@ -46,6 +46,7 @@ from ucode.databricks import (
     build_auth_token_argv,
     list_anthropic_model_catalog,
     list_anthropic_models,
+    map_claude_family_models,
     maybe_add_gpt_1m_suffix,
 )
 from ucode.os_compatibility import subprocess_cross_os
@@ -536,7 +537,11 @@ def _request_claude_routing_decision(
     provider: str | None = None,
     attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    models = _canonical_claude_models(model_ids)
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        preferred = map_claude_family_models(models).values()
+        models = list(dict.fromkeys([*preferred, *models]))[: routing.MAX_ROUTE_OPTIONS]
+    route_options = routing.route_options_for(models, "claude")
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     if attribution_headers is None:

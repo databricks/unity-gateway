@@ -982,6 +982,49 @@ class TestV2ModelPickerDiscovery:
 
 
 class TestSubagentRouting:
+    @pytest.mark.parametrize("catalog_size", [128, 129, 256])
+    def test_large_provider_catalog_preserves_latest_family_targets(
+        self, monkeypatch, catalog_size
+    ):
+        preferred = [
+            "global.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ]
+        models = [f"anthropic.claude-sonnet-4-{index}" for index in range(catalog_size - 3)]
+        models += preferred
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["provider"] = request.get_header("Databricks-model-provider-service")
+            options = json.loads(request.data)["route_options"]
+            assert 1 <= len(options) <= 128
+            captured["models"] = [option["model"] for option in options]
+            selected = next(option for option in options if option["model"] == preferred[-1])
+            return io.BytesIO(
+                json.dumps({"route_selection": [{"route_option": selected}]}).encode()
+            )
+
+        monkeypatch.setattr(routing.urllib.request, "urlopen", fake_urlopen)
+        output = v2.route_claude_subagent(
+            {
+                "tool_name": "Agent",
+                "tool_input": {"subagent_type": "general-purpose", "prompt": "calculate 79 * 37"},
+            },
+            workspace="https://example.com",
+            token="token",
+            available_models=models,
+            provider="main.bugbash.bedrock_mps",
+        )
+
+        assert captured["provider"] == "main.bugbash.bedrock_mps"
+        assert len(captured["models"]) == 128
+        assert set(preferred) <= set(captured["models"]) <= set(models)
+        if catalog_size == 128:
+            assert captured["models"] == models
+        assert len(models) == catalog_size
+        assert output == {"model": preferred[-1], "rationale": ""}
+
     def test_offers_gateway_alias_ids_unchanged(self, monkeypatch):
         gateway_alias = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"
         captured = {}
