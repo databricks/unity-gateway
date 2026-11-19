@@ -59,7 +59,8 @@ const shortModel = (model: string): string => {
     : parts.length === 3 ? parts[2] : unwrapped
   return name.replace(/^databricks-/, '').replace(/\[1m\]$/, '')
 }
-const taskLabel = (record: RoutingRecord): string => `${record.name} — ${shortModel(record.model)}`
+const taskLabel = (record: RoutingRecord): string =>
+  `${record.name} — ${shortModel(record.spawned?.model || record.model)}`
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
 const SPINNER = [...SPINNER_GLYPHS, ...SPINNER_GLYPHS.slice(1, -1).reverse()]
@@ -243,18 +244,18 @@ export const registerSubagentRouting = (
 
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
-    const name = route?.name
-    const result = await next(route ? { ...e, model: route.model, description: taskLabel(route) } : e)
+    const description = route ? taskLabel(route) : e.description
+    const result = await next(route ? { ...e, model: route.model, description } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
       $.ui.invalidate('ui.render')
     }
-    if (name && result.agentId) {
+    if (route && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.
         await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(result.agentId)}.json`,
-          JSON.stringify({ session_id: await $.session.id(), name }))
+          JSON.stringify({ session_id: await $.session.id(), name: taskLabel(route), description }))
       } catch {
         $.ui.log('Could not save the subagent display name; its bottom bar will use the native label.')
       }
@@ -270,7 +271,7 @@ export const registerSubagentRouting = (
       ...e,
       props: { ...e.props, tool: name,
         ...(record && input !== null && typeof input === 'object' && !Array.isArray(input)
-          ? { input: { ...input, description: shortModel(record.model) } } : {}),
+          ? { input: { ...input, description: shortModel(record.spawned?.model || record.model) } } : {}),
       },
     } : e)
     if (!record && !pending.has(e.requestId)) return original
@@ -290,7 +291,10 @@ export const registerSubagentRouting = (
       })] })
     }
     if (grouped.has(e.requestId)) return original
-    return Box({ flexDirection: 'column', children: [original, ...selection($, e, record, '  ↳ ', 4)] })
+    return Box({ flexDirection: 'column', children: [original,
+      Text({ dimColor: true, children: ['  Task request: ', record.task] }),
+      ...selection($, e, record, '  ↳ ', 4),
+    ] })
   })
 
   // Claude's parallel-agent block hides the row spinner, so the turn's own spinner line

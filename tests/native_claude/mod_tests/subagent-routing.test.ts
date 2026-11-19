@@ -114,8 +114,10 @@ test('routing changes the matching spawn model and task description while preser
     return { value: undefined };
   });
   on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
+  const displayInputs: any[] = [];
   on('ui.render', ($, e) => {
     shown.set(e.requestId, e.props.tool);
+    displayInputs.push(e.props.input);
     return { type: 'Text', props: {}, children: [e.props.tool] };
   });
   for (const id of ['call-a', 'call-b', 'denied']) {
@@ -140,6 +142,7 @@ test('routing changes the matching spawn model and task description while preser
   }
   const launched = await $.ui.mount(row('call-a'));
   expect(await launched.find({ type: 'Text', text: 'Launched Model: claude-sonnet-5' })).toBeDefined();
+  expect(displayInputs[displayInputs.length - 1].description).toBe('claude-sonnet-5');
   await launched.unmount();
   const denied = await $.ui.mount(row('denied'));
   expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
@@ -147,7 +150,10 @@ test('routing changes the matching spawn model and task description while preser
   expect(writes.length).toBe(2);
   for (const [index, id] of ['call-b', 'call-a'].entries()) {
     expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
-    expect(JSON.parse(writes[index].text)).toEqual({ session_id: 'session-1', name: shown.get(id) });
+    expect(JSON.parse(writes[index].text)).toEqual({
+      session_id: 'session-1', name: `${shown.get(id)} — claude-sonnet-5`,
+      description: `${shown.get(id)} — gpt-5-6-sol`,
+    });
   }
   const resumed = { ...forwarded[0], description: originalInput.description,
     model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
@@ -198,6 +204,7 @@ test('a lone call ignores extra updatedInput and keeps its decision under its ow
   for (const [id, model] of [['call-a', 'claude-sonnet-5'], ['call-b', 'claude-opus-4-8']]) {
     const done = await $.ui.mount(row(id));
     expect(await done.find({ type: 'Text', text: 'original Agent row' })).toBeDefined();
+    expect(await done.find({ type: 'Text', text: `  Task request: ${originalInput.description}` })).toBeDefined();
     expect(await done.find({ type: 'Text', text: '  ↳ Selected Model: ' })).toBeDefined();
     expect(await done.find({ type: 'Text', text: model })).toBeDefined();
     expect(await done.find({ type: 'Text', text: new RegExp(`Selected for ${id}`) })).toBeDefined();

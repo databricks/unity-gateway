@@ -153,6 +153,8 @@ card and row model labels, retained task-request context, unchanged reviewed arg
 and distinct native spawn labels with preserved agent addresses and permissions. Malformed
 display inputs pass through unchanged. Native
 auto-mode cases retain their approval/denial and zero fallback-classification assertions.
+The native status command checks old animal-only mappings, model labels with unchanged
+live progress and counters, and identical activity labels without duplication.
 The collapsed parallel-agent header has no mod render event in Claude Code 2.1.325 or
 2.1.328 and is not covered as a corrected surface.
 

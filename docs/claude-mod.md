@@ -36,10 +36,14 @@ the model retains Claude's `[1m]` context hint for eligible GPT models.
 New native launches offer task roles without generated model-specific agent types.
 Smart Router chooses the execution model independently of the requested role or name.
 Routing-card titles and individual tool rows identify the selected model rather than using
-a model-written title such as `Joke from Sonnet`. Cards retain the original description as
-explicit task-request context. The native task registry receives the animal-and-model label
+a model-written title such as `Joke from Sonnet`. Cards and individual rows retain the
+original description as explicit task-request context. After launch, display labels use
+the model returned by the host. The native task registry receives the animal-and-model label
 at spawn, so same-model children have distinct completion notices. Reviewed tool inputs,
 full prompts, native agent addresses and parent prose are unchanged.
+The native status panel uses the same animal and model label, keeps live activity and
+counters, and does not repeat an identical activity label. Older animal-only mappings
+continue to render.
 Claude's collapsed parallel-agent header still renders the stored request description and
 does not expose a mod render event in Claude Code 2.1.325 or 2.1.328. Those header labels retain the
 original requested text. Rewriting the tool input or its response stream invalidates the
