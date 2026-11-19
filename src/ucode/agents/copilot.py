@@ -1299,13 +1299,8 @@ def app_service_routes(state: dict) -> dict:
     app's own OTLP export. A Model Provider Service gets its routing header and the gateway's
     native OpenAI route, as in ``render_providers_config``."""
     from ucode.gateway_proxy import ServiceRoute
-    from ucode.managed_config import load_managed_state
-    from ucode.managed_resolve import resolve_state
-    from ucode.workspace import state_workspace_key
 
-    # Admin headers, the provider service and tracing are managed values that state.json omits.
-    if managed := load_managed_state(state_workspace_key(state)):
-        state = resolve_state(managed, state, "copilot")
+    state = _with_managed(state)
     provider_service = get_provider_service(state, "copilot")
     headers = proxy_headers(state)
     routing = {MODEL_PROVIDER_SERVICE_HEADER: provider_service} if provider_service else {}
@@ -1334,6 +1329,25 @@ def app_service_routes(state: dict) -> dict:
         # The gateway takes no metrics, which the runtime always exports.
         routes[("POST", f"{APP_OTEL_PATH}/v1/metrics")] = ServiceRoute(None)
     return routes
+
+
+def _with_managed(state: dict) -> dict:
+    """``state`` with the workspace's managed values, which state.json omits (admin headers, the
+    provider service, tracing)."""
+    from ucode.managed_config import load_managed_state
+    from ucode.managed_resolve import resolve_state
+    from ucode.workspace import state_workspace_key
+
+    if managed := load_managed_state(state_workspace_key(state)):
+        return resolve_state(managed, state, "copilot")
+    return state
+
+
+def app_trace_headers(state: dict) -> dict[str, str] | None:
+    """The headers for the GitHub Copilot app's spans, or None when the workspace doesn't trace
+    Copilot."""
+    state = _with_managed(state)
+    return proxy_headers(state) if state.get("copilot_otel_tracing") else None
 
 
 class _ChildProcess(Protocol):

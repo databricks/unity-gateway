@@ -2137,6 +2137,21 @@ class TestAppServiceRoutes:
         # Without workspace tracing the app's OTLP export has nowhere to go.
         assert not any(path.startswith("/copilot/otel/") for _, path in routes)
 
+    def test_trace_headers_only_with_workspace_tracing(self):
+        assert copilot.app_trace_headers({"workspace": self.WS}) is None
+
+        headers = copilot.app_trace_headers(
+            {
+                "workspace": self.WS,
+                "copilot_otel_tracing": True,
+                "copilot_http_headers": {"X-Team": "ml"},
+            }
+        )
+
+        assert headers is not None
+        assert headers["X-Team"] == "ml"
+        assert "copilot/1.0.91" in headers["User-Agent"]
+
     def test_open_model_turns_go_to_chat_completions_without_reasoning_effort(self):
         routes = copilot.app_service_routes({"workspace": self.WS})
 

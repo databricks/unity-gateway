@@ -820,7 +820,12 @@ def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: s
     except RuntimeError as exc:
         print_warning(f"Skipped the GitHub Copilot app: {exc}")
         return
-    copilot_app_setup.configure(state["workspace"], catalog, provider_service=provider)
+    copilot_app_setup.configure(
+        state["workspace"],
+        catalog,
+        provider_service=provider,
+        tracing=bool(state.get("copilot_otel_tracing")),
+    )
 
 
 def configure_single_tool(

@@ -10,7 +10,7 @@ import pytest
 
 from tests.test_copilot_app import CATALOG, FakeApp
 from ucode import agents as agents_mod
-from ucode import copilot_app_setup, login_service, managed_files
+from ucode import copilot_app_setup, copilot_app_tracing, login_service, managed_files
 
 WS = "https://example.cloud.databricks.com"
 
@@ -244,3 +244,50 @@ def test_without_the_experiment_flag_configure_and_revert_leave_the_app_alone(
     configure.assert_not_called()
     assert copilot_app_setup.remove(keep_service=False) == "not set up"
     assert app.received == []
+
+
+@pytest.fixture
+def bash_user(monkeypatch):
+    from ucode import shell_profile_env
+
+    monkeypatch.setattr(shell_profile_env, "login_shells", lambda: ["bash"])
+    monkeypatch.setattr(copilot_app_tracing, "current_os", lambda: managed_files.OS.LINUX)
+    return shell_profile_env._home() / ".profile"
+
+
+def test_tracing_turns_on_the_apps_span_export_and_asks_for_a_restart(
+    service, app, bash_user, capsys
+):
+    copilot_app_setup.configure(WS, CATALOG, provider_service=None, tracing=True)
+
+    assert "COPILOT_OTEL_FILE_EXPORTER_PATH" in bash_user.read_text()
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Restart the GitHub Copilot app so it sends its traces to the workspace." in out
+
+    copilot_app_setup.configure(WS, CATALOG, provider_service=None, tracing=True)
+    assert "Restart" not in capsys.readouterr().out
+
+    copilot_app_setup.configure(WS, CATALOG, provider_service=None, tracing=False)
+    assert not bash_user.exists()
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Restart the GitHub Copilot app so it stops sending its traces." in out
+
+
+def test_an_app_ug_starts_reads_the_tracing_settings_without_a_restart(
+    service, closed_app, launches, bash_user, capsys
+):
+    home, started = closed_app
+    launches.side_effect = lambda command: started.append(FakeApp(home))
+
+    copilot_app_setup.configure(WS, CATALOG, provider_service=None, tracing=True)
+
+    assert bash_user.is_file()
+    assert "Restart" not in capsys.readouterr().out
+
+
+def test_remove_turns_the_apps_span_export_off(service, app, bash_user):
+    copilot_app_setup.configure(WS, CATALOG, provider_service=None, tracing=True)
+
+    copilot_app_setup.remove(keep_service=False)
+
+    assert not bash_user.exists()

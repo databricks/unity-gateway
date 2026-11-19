@@ -12,8 +12,10 @@ import re
 import socket
 import sys
 import threading
+from collections.abc import Mapping
 from pathlib import Path
 from subprocess import CalledProcessError, list2cmdline
+from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape
 
 from ucode.config_io import APP_DIR, write_text_file
@@ -27,6 +29,11 @@ from ucode.state import load_full_state
 from ucode.ui import print_err
 from ucode.workspace import pin, workspace_id_args
 from ucode.workspace_key import workspace_key
+
+if TYPE_CHECKING:
+    import httpx
+
+    from ucode import gateway_proxy
 
 SERVICE_NAME = "ug-codex-otel.service"
 UNIT_MARKER = "# Managed by unity-gateway; do not edit."
@@ -358,7 +365,7 @@ def serve(host: str, workspace_id: str | None, port: int, relay_port: int | None
         # One port for every desktop agent: Codex's trace exporter keeps its /v1/ URL, and the
         # GitHub Copilot app's routes are served once the app is set up.
         app_routes = copilot_app_recorded() or copilot_app_enabled()
-        server, _cache, _client = gateway_proxy.start_service_listener(
+        server, cache, client = gateway_proxy.start_service_listener(
             host,
             token_provider,
             port=port,
@@ -372,9 +379,38 @@ def serve(host: str, workspace_id: str | None, port: int, relay_port: int | None
                 host, token_provider, relay_port, agent=AGENT_CODEX, fallback_on_bind_error=False
             )
             threading.Thread(target=relay.serve_forever, daemon=True).start()
+        trace_headers = copilot.app_trace_headers(state) if app_routes else None
+        if trace_headers is not None:
+            _start_app_span_forwarding(host, cache, client, trace_headers)
         # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
         server.serve_forever()
     except (OSError, RuntimeError) as exc:
         print_err(str(exc))
         return 1
     return 0
+
+
+def _start_app_span_forwarding(
+    host: str,
+    cache: gateway_proxy.TokenCache,
+    client: httpx.Client,
+    headers: Mapping[str, str],
+) -> None:
+    """Forward the GitHub Copilot app's spans from Copilot's file exporter to ``host``."""
+    from ucode import copilot_otel_file
+    from ucode.agents.copilot import OTEL_TRACES_PATH
+    from ucode.workspace import workspace_headers
+
+    send = copilot_otel_file.gateway_sender(
+        client,
+        lambda: cache.token,
+        cache.refresh,
+        OTEL_TRACES_PATH,
+        {**headers, **workspace_headers(host)},
+    )
+    tailer = copilot_otel_file.SpanFileTailer(
+        copilot_otel_file.SPAN_FILE,
+        send,
+        on_drop=lambda reason: print_err(f"GitHub Copilot app tracing dropped {reason}."),
+    )
+    threading.Thread(target=tailer.run, args=(threading.Event(),), daemon=True).start()

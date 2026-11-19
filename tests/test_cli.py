@@ -4700,6 +4700,34 @@ class TestOtelProxyCommand:
         assert result.exit_code == 0, result.output
         assert ("POST", "/copilot/anthropic/v1/messages") in start.call_args.kwargs["exact_routes"]
 
+    @pytest.mark.parametrize(
+        ("app_routes", "tracing", "forwarded"),
+        [(True, True, True), (True, False, False), (False, True, False)],
+    )
+    def test_forwards_the_copilot_app_spans_with_app_routes_and_tracing(
+        self, monkeypatch, app_routes, tracing, forwarded
+    ):
+        workspace = "https://configured.example"
+        real_save_state(
+            {"workspace": workspace, "profile": "saved-profile", "copilot_otel_tracing": tracing}
+        )
+        if app_routes:
+            monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+        listener = (MagicMock(), MagicMock(), MagicMock())
+        with (
+            patch("ucode.gateway_proxy.start_service_listener", return_value=listener),
+            patch("ucode.custom_oauth.get_databricks_token", return_value="fresh-token"),
+            patch("ucode.agents.copilot.agent_version", return_value="1.0.91"),
+            patch("ucode.login_service._start_app_span_forwarding") as forward,
+        ):
+            result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
+        assert result.exit_code == 0, result.output
+        assert forward.called is forwarded
+        if forwarded:
+            host, cache, client, headers = forward.call_args.args
+            assert (host, cache, client) == (workspace, listener[1], listener[2])
+            assert "copilot/1.0.91" in headers["User-Agent"]
+
     def test_relay_port_also_starts_the_codex_relay_proxy(self):
         workspace = "https://configured.example"
         real_save_state({"workspace": workspace, "profile": "saved-profile"})

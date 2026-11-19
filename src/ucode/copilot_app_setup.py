@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
-from ucode import copilot_app, login_service
+from ucode import copilot_app, copilot_app_tracing, login_service
 from ucode.agents.copilot import CopilotModel
 from ucode.constants import LOOPBACK_HOST
 from ucode.managed_files import OS, current_os
@@ -123,9 +123,14 @@ def _register_after_launch(
 
 
 def configure(
-    workspace: str, catalog: Iterable[CopilotModel], *, provider_service: str | None
+    workspace: str,
+    catalog: Iterable[CopilotModel],
+    *,
+    provider_service: str | None,
+    tracing: bool = False,
 ) -> None:
     """Keep ug's login service up for the app on ``workspace`` and register ug's providers in it.
+    With ``tracing``, the app also exports its own spans, which the service forwards.
 
     Setup problems only warn, like the Codex app's."""
     catalog = list(catalog)
@@ -144,11 +149,18 @@ def configure(
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning(f"Could not set up ug's login service for the GitHub Copilot app: {exc}")
         return
+    try:
+        tracing_changed = copilot_app_tracing.enable() if tracing else copilot_app_tracing.disable()
+    except (OSError, RuntimeError) as exc:
+        print_warning(f"Could not set up the GitHub Copilot app's tracing: {exc}")
+        tracing_changed = False
     base_url = f"http://{LOOPBACK_HOST}:{port}"
     try:
         try:
             copilot_app.register(base_url, catalog, provider_service=provider_service)
         except copilot_app.CopilotAppNotRunning:
+            # An app ug starts now reads the new tracing settings anyway.
+            tracing_changed = False
             _register_after_launch(base_url, catalog, provider_service)
     except copilot_app.CopilotAppNotRunning:
         print_note(
@@ -162,6 +174,11 @@ def configure(
     print_success(
         "GitHub Copilot app: added the Databricks models. Open its model picker to choose one."
     )
+    if tracing_changed:
+        print_note(
+            "Restart the GitHub Copilot app so it "
+            + ("sends its traces to the workspace." if tracing else "stops sending its traces.")
+        )
 
 
 def remove(*, keep_service: bool) -> str:
@@ -169,6 +186,10 @@ def remove(*, keep_service: bool) -> str:
 
     ``keep_service`` keeps the unit running for Codex desktop. Returns a summary for revert."""
     recorded = login_service.copilot_app_recorded()
+    try:
+        copilot_app_tracing.disable()
+    except (OSError, RuntimeError) as exc:
+        print_warning(f"Could not remove the GitHub Copilot app's tracing settings: {exc}")
     if not recorded and not (login_service.copilot_app_enabled() and installed()):
         return "not set up"
     try:
