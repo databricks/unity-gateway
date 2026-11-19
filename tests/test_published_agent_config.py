@@ -939,13 +939,52 @@ class TestGlobalCli:
         assert result.exit_code == 0, result.output
         assert json.loads(policy.read_text()).get("mdm_os") == expected
 
-    def test_launches_read_the_mdm_mark_after_a_managed_run(self, monkeypatch):
+    def test_sign_in_and_fetch_carry_the_mdm_mark(self, monkeypatch, writes, global_cli):
+        import os
+
+        raw = _raw_config(claude_config={})
+        seen: list = []
+
+        def token(host, profile):
+            seen.append(("sign in", os.environ.get("MDM_OS")))
+            return "token"
+
+        def fetch(host, token):
+            seen.append(("fetch", os.environ.get("MDM_OS")))
+            return raw, None
+
+        monkeypatch.setattr(machine, "get_databricks_token", token)
+        monkeypatch.setattr(machine, "get_managed_config", fetch)
+        monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
+        result = _configure("--agents", "claude", "--mdm")
+        assert result.exit_code == 0, result.output
+        assert seen[:2] == [("sign in", "Linux"), ("fetch", "Linux")]
+
+    def test_per_user_agents_only_still_save_the_mdm_mark(self, monkeypatch, writes, global_cli):
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
+        result = _configure("--agent", "copilot", "--mdm")
+        assert result.exit_code == 0, result.output
+        policy = managed_config_mod.MANAGED_CONFIG_PATH
+        assert json.loads(policy.read_text()).get("mdm_os") == "Linux"
+
+    def test_launches_export_the_mdm_mark_after_a_managed_run(self, monkeypatch):
+        import os
+
         monkeypatch.setattr(managed_files_mod, "published_agent_config_used", lambda: True)
+        monkeypatch.setattr(managed_config_mod, "current_os", lambda: managed_files_mod.OS.LINUX)
         monkeypatch.setenv("UG_SKIP_OS_SETTINGS", "1")
+        monkeypatch.delenv("MDM_OS", raising=False)
+        assert managed_files_mod.managed_settings_skipped()
         policy = managed_config_mod.MANAGED_CONFIG_PATH
         policy.parent.mkdir(parents=True, exist_ok=True)
         policy.write_text(json.dumps({"workspace": WS, "mdm_os": "Linux"}))
-        assert managed_config_mod.saved_mdm_os() == "Linux"
+        restore = managed_config_mod.export_mdm_os()
+        try:
+            assert os.environ["MDM_OS"] == "Linux"
+        finally:
+            restore()
 
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_dropping_claude_removes_desktop_mdm(self, monkeypatch, writes, global_cli, dry_run):

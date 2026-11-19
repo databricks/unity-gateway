@@ -5809,6 +5809,9 @@ def _configure_global_from_agent_config(
         # the marker file.
         set_config_scope("global")
         set_machine_wide_only(True)
+        if not dry_run:
+            # As in the merge: MDM_OS marks this run's requests, and the policy keeps it after.
+            request_mdm_os(mdm)
         token: str | None = None
         if from_file is not None:
             raw: dict | None = published_agent_config.load_draft(from_file)
@@ -5862,13 +5865,13 @@ def _configure_global_from_agent_config(
             )
         agent, agents = _drop_per_user_agents(agent, agents)
         if agent is None and agents == "":
-            # Every requested agent has only per-user settings: nothing to write.
+            # Every requested agent has only per-user settings: nothing to write but the mark.
+            if not dry_run:
+                save_requested_mdm_os()
             raise typer.Exit(published_agent_config.EXIT_OK)
         selected = published_agent_config.parse_agents(agents if agents is not None else agent)
         if not dry_run:
             published_agent_config.check_privileges()
-            # As in the merge: MDM_OS marks this run's requests, and the policy keeps it after.
-            request_mdm_os(mdm)
         try:
             _require_shared_installation()
         except RuntimeError as exc:
