@@ -197,6 +197,8 @@ uses a real Python subprocess and PTY to check that proxy diagnostics stay outsi
 the screen, ordinary stderr remains visible, and redacted evidence survives both
 successful and failed tests. This is harness coverage, not live agent inference.
 Headless diagnostic capture remains covered by `test_integration_contract.py`.
+MCP deadline tests scope their fake clock to terminal helpers; a regression checks that
+unrelated process sleeps do not advance it or interfere with the 120-second assertions.
 
 MCP/Skills browsing has component coverage in `tests/test_catalog_browsing.py`
 (repository-relative path): paginated BASIC metadata, streamed rows, missing metadata,

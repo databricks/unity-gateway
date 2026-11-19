@@ -813,6 +813,7 @@ are starting, within a single 120-second deadline. It still requires both connec
 servers and their exact tools; the CUJ then calls both tools and verifies their receipts.
 Offline checks in `../test_integration_terminal_screen.py` cover stale startup snapshots,
 connection/tool failures, and permanent startup. They do not establish live MCP coverage.
+Those tests isolate their fake clock from unrelated process sleeps, retaining the same deadline.
 
 `utils/agents/claude.py` and `utils/agents/codex.py` own the existing native answer
 parsing, session paths, and child-session detection. `utils/evidence.py` dispatches

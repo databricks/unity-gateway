@@ -139,6 +139,9 @@ class _Clock:
     def elapsed(self):
         return self.now - self.start
 
+    def monotonic(self):
+        return self.now
+
     def sleep(self, seconds):
         self.now += seconds
 
@@ -146,9 +149,14 @@ class _Clock:
 @pytest.fixture
 def clock(monkeypatch):
     clock = _Clock()
-    monkeypatch.setattr(time, "monotonic", lambda: clock.now)
-    monkeypatch.setattr(time, "sleep", clock.sleep)
+    monkeypatch.setattr("tests.integration.utils.mcp.time", clock)
+    monkeypatch.setattr("tests.integration.utils.terminal.time", clock)
     return clock
+
+
+def test_mcp_clock_does_not_advance_on_unrelated_process_sleeps(clock):
+    time.sleep(0.001)
+    assert clock.elapsed == 0
 
 
 @dataclass
