@@ -257,6 +257,8 @@ Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin 
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
 TypeScript event-forwarding and launch-option tests in CI. Auto picker tests cover
 selection beyond the first screen, saving silently, and retrying after a failed chooser open.
+Model-switch regression tests preserve native decisions and exercise managed forwarding
+past user hooks for allow, deny, and ask, requiring no skipped UG hook in the trace.
 A fresh Claude process reads a saved custom Auto alias. Its `/context` output verifies the catalog
 window and an explicit compaction preference.
 `test_claude_launch_settings.py` checks the 200k fallback written to the alias, catalog bounds, and precedence with native settings on disk,

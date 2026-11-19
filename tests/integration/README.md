@@ -2182,6 +2182,9 @@ hint after a main-model switch and verifies that the selected model serves a fil
 both before and after restart. Native component tests open a saved custom alias and check the
 window displayed by `/context` with a catalog limit and an explicit preference.
 Launch-settings tests cover missing and out-of-range limits and unreadable native settings.
+The native mod component suite also exercises managed model-switch forwarding past user
+hooks, preserving allow, deny, and ask decisions without a skipped UG hook. UG leaves
+Claude's native permission and cache-cost confirmations unchanged.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive

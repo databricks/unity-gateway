@@ -260,7 +260,7 @@ const ENTER_AUTO = {
   estimated_cache_write_usd:0.01, pricing:'catalog',
 } as const;
 
-test('entering static Auto keeps Haiku without the native cache warning', { options: OPTIONS }, async ($, on) => {
+test('entering static Auto keeps Haiku without overriding native switch policy', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession($, on, OTHER, undefined, 1000);
   on('classic.PreModelSwitch', () => ({}));
   const questions: string[] = [];
@@ -270,7 +270,7 @@ test('entering static Auto keeps Haiku without the native cache warning', { opti
   });
   await $.session.start(START);
   await $.command.run({command:'model', args:''});
-  expect((await $.classic.PreModelSwitch(ENTER_AUTO)).permissionDecision).toBe('allow');
+  expect(await $.classic.PreModelSwitch(ENTER_AUTO)).toEqual({});
   await $.command.run({command:'model', args:'auto'});
   await session.choose(OTHER);
   expect(questions).toEqual([]);
@@ -354,13 +354,36 @@ test('saving an inactive Auto preference does not warn about the running model',
   expect(session.store[AUTO.storeKey]).toBe(MAIN);
 });
 
-for (const decision of ['deny', 'ask'] as const) {
-  test(`entering static Auto preserves another hook's ${decision}`, { options: OPTIONS }, async ($, on) => {
-    staticCatalogSession($, on, OTHER, undefined, 1000);
-    on('classic.PreModelSwitch', () => ({permissionDecision:decision}));
-    await $.session.start(START);
-    await $.command.run({command:'model', args:''});
-    expect((await $.classic.PreModelSwitch(ENTER_AUTO)).permissionDecision).toBe(decision);
+for (const decision of ['allow', 'deny', 'ask'] as const) {
+  test(`managed model-switch forwarding preserves ${decision} without skipping UG`, {
+    options: OPTIONS,
+    plugins: [
+      {
+        name: 'model-policy-first', tier: 'prepend',
+        register(on) {
+          on('classic.PreModelSwitch', async ($, e, next) => {
+            const result = await next.to(e, 'append');
+            $.ui.log(JSON.stringify(next.trace.map(link => ({plugin:link.plugin, outcome:link.outcome}))));
+            return result;
+          });
+        },
+      },
+      {
+        name: 'model-policy-final', tier: 'append',
+        register(on) {
+          on('classic.PreModelSwitch', ($, e) => ({
+            permissionDecision: e.requested_model === 'deny' ? 'deny' : e.requested_model === 'ask' ? 'ask' : 'allow',
+          }));
+        },
+      },
+    ],
+  }, async ($, on) => {
+    const traces: {plugin:string; outcome:string}[][] = [];
+    on('ui.log', ($, e) => {traces.push(JSON.parse(e.text)); return {value:undefined};});
+    const result = await $.classic.PreModelSwitch({...ENTER_AUTO, requested_model:decision});
+    expect(result.permissionDecision).toBe(decision);
+    expect(traces.length).toBe(1);
+    expect(traces[0].some(link => link.plugin === 'ug-smart-router' && link.outcome === 'skipped')).toBe(false);
   });
 }
 

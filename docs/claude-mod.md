@@ -21,6 +21,9 @@ when the user selects Auto. Saving a main model updates the prompt hint silently
 The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
 picker closes, or on `/model auto`. Use the arrow keys to scroll through the available main models.
 Use native `/effort` to change effort.
+Claude and managed security hooks handle native model-switch permission and cache-cost
+confirmation. UG registers no `classic.PreModelSwitch` hook, so a managed plugin that
+forwards past user hooks does not emit a skipped-hook notice for UG.
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

@@ -395,19 +395,9 @@ export function register(on: On, options: PluginOptions): void {
       }
       return next(e);
     });
-    on('classic.PreModelSwitch', async ($, e, next) => {
-      const result = await next(e);
-      if (result.permissionDecision === 'deny' || result.permissionDecision === 'ask' || result.block || result.preventContinuation) return result;
-      const to = resolveAutoModel(auto, e.to_model);
-      if (resolveAutoModel(auto, e.requested_model) !== to || !auto.models.some(row => row.autoModel === to)) return result;
-      const settings = await $.settings.read();
-      const usage = await $.session.usage();
-      const target = isStaticAuto(auto, to)
-        ? auto.models.find(row => row.model === (staticEntry ?? auto.variant))?.autoModel ?? to
-        : to;
-      return sameAutoTarget(auto, e.from_model, target, settings.modelOverrides, usage.context?.window)
-        ? {...result, permissionDecision:'allow'} : result;
-    });
+    // Native and managed security hooks own model-switch permission and cache-cost
+    // confirmation. An optional PreModelSwitch allow hook here is skipped (with a
+    // notice) when a managed plugin forwards directly to core.
     on('command.run', { command: ['model', 'auto'] }, async ($, e, next) => {
       const save = async (selected: AutoPicker['models'][number], chooserRequest: object, baseline: string) => {
         if (autoSave) return;

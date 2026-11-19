@@ -196,8 +196,9 @@ In that mode native always stays on the static row's alias (the launch passes it
 `staticModel` and starts on it), so `/model` checks Auto for every main model; the mod
 holds the chosen main model in memory and its `$.store` preference and resolves the
 real target from it. Main-model switches never run native `/model`.
-Entering static Auto compares the held main model with the current model for cache warnings,
-not the static alias's default target. Keeping the same main model skips the native warning.
+Entering Auto leaves native model-switch permission and cache-cost confirmation to Claude
+and managed security hooks; UG registers no optional PreModelSwitch allow hook.
+Keeping the same main model in the Auto chooser skips UG's additional warning.
 Saving a different main model while Auto is active asks for confirmation before changing
 the saved preference when the session has context. Cancellation keeps the current
 main model and reopens the chooser. This check includes cold contexts and does not claim
