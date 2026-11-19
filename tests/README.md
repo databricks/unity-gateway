@@ -974,14 +974,12 @@ profile/token preservation, and replay without refreshing workspace credentials.
 PAT and non-401 errors retain their behavior.
 These checks do not establish live login or launch-time savings.
 
-`TestConfigureSharedStateOverlapsProbeAndListing` in `test_cli.py` checks that the
-model-service listing starts on a daemon thread before the gateway probe returns, that a
-probe failure raises its own error while the listing is still blocked, that a listing error
-propagates without saving state, that `skip_model_discovery` never starts the listing but
-keeps its web-search lookup, and that the overlap reuses the process-local probe and listing
-caches. The skip-preflight tests also reject starting a background worker. These component
-checks control the HTTP boundary with events; they do not establish live gateway timing,
-agent launch, or launch-time savings.
+`TestConfigureSharedStateDiscoveryAccess` verifies that a fresh setup uses its successful
+scoped model discovery to verify access without an additional gateway probe. Failed or
+empty discovery keeps existing probe diagnostics; provider mode keeps its probe and
+web-search lookup. Cases cover authentication, permissions, unavailable services,
+network failure, exception preservation, and process-local discovery reuse. These
+component checks do not measure live request latency.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
 HTTP and authentication boundaries. It covers concurrent results and catalog requests,

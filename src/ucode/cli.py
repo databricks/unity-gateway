@@ -11,8 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from collections.abc import Callable, Iterator
-from concurrent.futures import Future
+from collections.abc import Iterator
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
 from enum import StrEnum
@@ -573,24 +572,6 @@ def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
     return find_profile_name_for_host(workspace)
 
 
-def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
-    """Run ``fn(*args)`` on a daemon thread; the returned future carries its result or exception.
-
-    Not a ``ThreadPoolExecutor`` worker, which interpreter exit joins: a caller that raises before
-    reading the result must exit without waiting out the abandoned call's network retries.
-    """
-    future: Future[T] = Future()
-
-    def run() -> None:
-        try:
-            future.set_result(fn(*args))
-        except BaseException as exc:
-            future.set_exception(exc)
-
-    threading.Thread(target=run, daemon=True).start()
-    return future
-
-
 def configure_shared_state(
     workspace: str,
     profile: str | None = None,
@@ -773,15 +754,16 @@ def configure_shared_state(
     with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
-        # The listing is independent of the probe, so overlap the two round trips. The probe still
-        # gates the launch; its failure abandons the listing rather than waiting for it.
+        # Successful discovery already proves model-service access.
         model_services_discovery = (
-            None
-            if skip_model_discovery
-            else _start_in_background(discover_model_services, workspace, token)
+            None if skip_model_discovery else discover_model_services(workspace, token)
         )
-        model_service_probe = probe_unity_gateway_capabilities(workspace, token)
-    if model_service_probe.resource_available:
+        model_service_probe = (
+            None
+            if model_services_discovery is not None and any(model_services_discovery[:4])
+            else probe_unity_gateway_capabilities(workspace, token)
+        )
+    if model_service_probe is None or model_service_probe.resource_available:
         print_success("Unity Gateway connected")
     else:
         print_warning(f"Model service: {model_service_probe.detail}")
@@ -841,7 +823,7 @@ def configure_shared_state(
         # family only.
         assert model_services_discovery is not None
         with spinner("Fetching available models..."):
-            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery.result()
+            ms_claude, ms_codex, ms_gemini, ms_oss, ms_reason = model_services_discovery
             if want_claude:
                 claude_models, claude_reason = ms_claude, ms_reason
                 if not claude_models:
