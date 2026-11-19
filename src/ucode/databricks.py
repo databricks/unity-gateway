@@ -47,7 +47,6 @@ from ucode.constants import (
     MODEL_PROVIDER_SERVICE_HEADER,
     MODEL_SERVICE_PARENT_SCHEMA_HEADER,
 )
-from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import acquire_exclusive_file_lock
 from ucode.string_utils import unqualified_model_name
@@ -3150,13 +3149,6 @@ OPENAI_PROVIDER_TYPE = "openai"
 GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
 # Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
-# Opts in to Copilot CLI and VS Code through a relayed GitHub Copilot service, which isn't
-# generally available yet.
-COPILOT_SEAT_RELAY_ENV = "UG_EXPERIMENTAL_COPILOT_SEAT_RELAY"
-
-
-def copilot_seat_relay_enabled() -> bool:
-    return env_bool(COPILOT_SEAT_RELAY_ENV)
 
 
 def is_copilot_seat_relay(service: dict) -> bool:
@@ -3643,12 +3635,6 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
                 f"Model provider service '{service_name}' relays a {subscription} subscription, "
                 f"which only {display} can use. Pick a Model Provider Service with an API key "
                 f"for {tool}."
-            )
-        if provider_type == GITHUB_COPILOT_PROVIDER_TYPE and not copilot_seat_relay_enabled():
-            return (
-                f"Model provider service '{service_name}' relays a GitHub Copilot subscription, "
-                "which this version of ug can't route GitHub Copilot through yet. Pick a Model "
-                "Provider Service with an API key, or use Databricks models."
             )
     elif provider_type == GITHUB_COPILOT_PROVIDER_TYPE:
         return (

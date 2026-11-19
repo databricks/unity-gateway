@@ -1860,19 +1860,11 @@ class TestServiceUsableForTool:
     }
 
     @pytest.mark.parametrize("tool", ["copilot", "vscode"])
-    def test_github_copilot_relay_is_refused_for_now(self, tool):
-        reason = db_mod._provider_service_unusable_reason(tool, self._COPILOT_RELAY, "svc")
-        assert reason is not None
-        assert "can't route GitHub Copilot through yet" in reason
-
-    @pytest.mark.parametrize("tool", ["copilot", "vscode"])
-    def test_github_copilot_relay_is_for_copilot_and_vscode_once_opted_in(self, tool, monkeypatch):
-        monkeypatch.setenv(db_mod.COPILOT_SEAT_RELAY_ENV, "1")
+    def test_github_copilot_relay_is_for_copilot_and_vscode(self, tool):
         assert db_mod.service_usable_for_tool(tool, self._COPILOT_RELAY)
         assert not db_mod.service_usable_for_tool("claude", self._COPILOT_RELAY)
 
     def test_choices_label_a_github_copilot_relay(self, monkeypatch):
-        monkeypatch.setenv(db_mod.COPILOT_SEAT_RELAY_ENV, "1")
         api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
         monkeypatch.setattr(
             db_mod,
@@ -1900,18 +1892,17 @@ class TestServiceUsableForTool:
         assert reason is not None
         assert "doesn't relay a subscription" in reason
 
-    def test_provider_flag_explains_a_github_copilot_relay(self, monkeypatch):
+    def test_provider_flag_resolves_a_github_copilot_relay(self, monkeypatch):
         monkeypatch.setattr(
             db_mod, "list_model_provider_services", lambda *a, **k: ([self._COPILOT_RELAY], None)
         )
 
         service, error = db_mod.resolve_provider_service("copilot", "main.s.copilot-seats", WS, "t")
 
-        assert service is None
-        assert error is not None
-        assert "relays a GitHub Copilot subscription" in error
+        assert error is None
+        assert service is not None and db_mod.is_copilot_seat_relay(service)
 
-    def test_picker_leaves_out_a_github_copilot_relay(self, monkeypatch):
+    def test_picker_lists_a_github_copilot_relay(self, monkeypatch):
         api_key = {"name": "main.s.anthropic", "provider_type": "anthropic", "targets": ["c"]}
         monkeypatch.setattr(
             db_mod,
@@ -1920,7 +1911,7 @@ class TestServiceUsableForTool:
         )
 
         assert db_mod.list_tool_provider_services("copilot", WS, "tok") == (
-            ["main.s.anthropic"],
+            ["main.s.anthropic", "main.s.copilot-seats"],
             None,
         )
 
