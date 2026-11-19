@@ -71,7 +71,9 @@ test('animal names stay distinct and stable without changing routed calls or row
       const displayed = displayInputs[displayInputs.length - 1];
       const name = displayed.tool;
       expect(name).toMatch(/^[A-Z][a-z]+(?: 2)?$/);
-      expect(displayed).toEqual({ ...event.props, tool: name });
+      expect(displayed).toEqual({ ...event.props, tool: name,
+        input: { ...input, description: 'claude-haiku-5-5 task' },
+      });
       expect(event.props.input).toEqual(input);
       expect(await mounted.find({ type: 'Text', text: /Backgrounded agent/ })).toBeDefined();
       expect(await mounted.find({ type: 'Text', text: 'claude-haiku-5-5' })).toBeDefined();
@@ -87,7 +89,7 @@ test('animal names stay distinct and stable without changing routed calls or row
   expect(names[100]).toMatch(/ 2$/);
 });
 
-test('routing changes only the matching spawn model and joins its display name to the child ID', async ($, on) => {
+test('routing changes the matching spawn model and task description while preserving its address', async ($, on) => {
   const writes: any[] = [];
   const forwarded: any[] = [];
   const shown = new Map<string, string>();
@@ -132,7 +134,7 @@ test('routing changes only the matching spawn model and joins its display name t
     };
     const result = await $.agent.spawn(spawn);
     expect(forwarded[forwarded.length - 1]).toEqual(id === 'unrouted' ? spawn
-      : { ...spawn, model: routedModel });
+      : { ...spawn, model: routedModel, description: 'gpt-5-6-sol task' });
     expect(result).toEqual(id === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${id}` });
   }
@@ -147,7 +149,8 @@ test('routing changes only the matching spawn model and joins its display name t
     expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
     expect(JSON.parse(writes[index].text)).toEqual({ session_id: 'session-1', name: shown.get(id) });
   }
-  const resumed = { ...forwarded[0], model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
+  const resumed = { ...forwarded[0], description: originalInput.description,
+    model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
   await $.agent.spawn(resumed);
   expect(forwarded[forwarded.length - 1]).toEqual(resumed);
   expect(writes.length).toBe(2);
@@ -267,8 +270,8 @@ test('parallel cards keep call order, skip replies drawn earlier, and wait for r
   releases.get('call-c')!();
   await third;
   const next = await $.ui.mount(reply('next'));
-  expect(await next.find({ type: 'Text', text: 'Compute 1+1 (agent C)' })).toBeDefined();
-  expect(await next.find({ type: 'Text', text: 'Compute 1+1 (agent A)' })).toBeUndefined();
+  expect(await next.find({ type: 'Text', text: 'claude-opus-4-8 task' })).toBeDefined();
+  expect(await next.find({ type: 'Text', text: 'claude-sonnet-5 task' })).toBeUndefined();
   await next.unmount();
   const prompt = await $.ui.mount(panel);
   expect(await prompt.find({ type: 'Text', text: /Selected Model|claude-/ })).toBeUndefined();
@@ -346,9 +349,10 @@ test('a turn that ends while the reply waits on a background agent keeps its car
   expect(await issuing.find({ type: 'Text', text: /Selected Model/ })).toBeUndefined();
   await issuing.unmount();
   const final = await $.ui.mount(reply('final'));
-  expect(await final.findAll({ type: 'Text', text: 'claude-sonnet-5' })).toHaveLength(2);
-  expect(await final.find({ type: 'Text', text: 'Inspect call-a' })).toBeDefined();
-  expect(await final.find({ type: 'Text', text: 'Inspect call-b' })).toBeDefined();
+  expect(await final.findAll({ type: 'Text', text: '↳ Selected Model: ' })).toHaveLength(2);
+  expect(await final.find({ type: 'Text', text: 'claude-sonnet-5' })).toBeDefined();
+  expect(await final.find({ type: 'Text', text: /Selected for call-a/ })).toBeDefined();
+  expect(await final.find({ type: 'Text', text: /Selected for call-b/ })).toBeDefined();
   await final.unmount();
 });
 
@@ -389,8 +393,8 @@ test('the router hears which subagent made the call, and nothing for the main lo
   await $.agent.spawn(spawn('call-main', 'main'));
   await $.agent.spawn(spawn('call-nested', 'agent-parent'));
   expect(spawns).toEqual([
-    { ...spawn('call-main', 'main'), model: 'system.ai.claude-sonnet-5' },
-    { ...spawn('call-nested', 'agent-parent'), model: 'system.ai.claude-sonnet-5' },
+    { ...spawn('call-main', 'main'), model: 'system.ai.claude-sonnet-5', description: 'claude-sonnet-5 task' },
+    { ...spawn('call-nested', 'agent-parent'), model: 'system.ai.claude-sonnet-5', description: 'claude-sonnet-5 task' },
   ]);
 });
 
@@ -658,7 +662,7 @@ test('routed children leave native parent synthesis and stream errors unchanged'
     const child = await $.agent.spawn(spawn);
     expect(child).toEqual({ agentId: 'child-' + input.tool_use_id, model: launched[input.tool_use_id] });
     expect(forwardedSpawns[forwardedSpawns.length - 1]).toEqual({
-      ...spawn, model: selected[input.tool_use_id],
+      ...spawn, model: selected[input.tool_use_id], description: `${selected[input.tool_use_id]} task`,
     });
     await $.turn.complete({
       agentId: child.agentId, turnId: 'child-turn-' + input.tool_use_id,
@@ -719,4 +723,43 @@ test('a spawn step preserves native text and thinking with reviewed tool inputs'
   expect(spawn.result.toolUses).toEqual(tools);
   expect(spawn.chunks.map(chunk => chunk.kind)).toEqual(['thinking', 'text', 'tool', 'input', 'tool', 'input']);
   expect(spawn.chunks[3].json).toBe(JSON.stringify(originalInput));
+});
+
+test('routed joke titles use the selected model without rewriting reviewed arguments', async ($, on) => {
+  const forwarded: any[] = [];
+  const gates: (() => void)[] = [];
+  let ready: () => void = () => {};
+  const started = new Promise<void>(resolve => { ready = resolve; });
+  on('session.id', () => ({ value: 'session-1' }));
+  on('process.run', async () => {
+    await new Promise<void>(resolve => { gates.push(resolve); if (gates.length === 3) ready(); });
+    return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
+      model: 'catalog.schema.routed-model', rationale: 'Selected for this task.',
+    }) } };
+  });
+  on('tool.call', ($, e) => { forwarded.push(e); return { result: 'launched' }; });
+  on('ui.render', ($, e) => ({ type: 'Text', props: {}, children: [
+    e.component === 'ToolUse' ? e.props.input.description : 'parent answer',
+  ] }));
+  const calls = ['Sonnet', 'Haiku', 'Opus'].map((model, index) => ({
+    tool: 'Agent' as const, tool_use_id: `joke-${index}`, ...originalInput,
+    description: `Joke from ${model}`, name: `address-${model}`, run_in_background: true,
+  }));
+  const pending = calls.map(call => $.tool.call(call));
+  await started;
+  for (const release of gates) release();
+  await Promise.all(pending);
+  expect(forwarded).toEqual(calls);
+  const cards = await $.ui.mount(reply('jokes'));
+  expect(await cards.findAll({ type: 'Text', text: '↳ Selected Model: ' })).toHaveLength(3);
+  expect(await cards.findAll({ type: 'Text', text: 'routed-model task' })).toHaveLength(3);
+  expect(JSON.stringify(await cards.drawn())).not.toContain('Joke from');
+  for (const call of calls) {
+    const event = row(call.tool_use_id);
+    const ui = await $.ui.mount({ ...event, props: { ...event.props, input: call } });
+    expect(await ui.find({ type: 'Text', text: 'routed-model task' })).toBeDefined();
+    expect(JSON.stringify(await ui.drawn())).not.toContain('Joke from');
+    await ui.unmount();
+  }
+  await cards.unmount();
 });

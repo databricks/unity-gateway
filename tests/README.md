@@ -148,6 +148,12 @@ Native Claude registration component checks distinguish the Agent model enum fro
 Smart Router catalog, preserve the host description in routing-only mode, append the same
 receipt-based guidance after orchestrator instructions and Usage notes, and leave the
 description unchanged when routing is off.
+Native routing components check model-written joke titles against one routed selection,
+model-based card and row descriptions, unchanged reviewed arguments,
+and native spawn descriptions with preserved agent addresses and permissions. Native
+auto-mode cases retain their approval/denial and zero fallback-classification assertions.
+The collapsed parallel-agent header has no mod render event in Claude Code 2.1.325 or
+2.1.328 and is not covered as a corrected surface.
 
 Windows Desktop detection allows up to 30 seconds for the native package query.
 Component coverage in `test_desktop_setup.py` verifies slow successful detection creates

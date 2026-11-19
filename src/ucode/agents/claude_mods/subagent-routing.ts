@@ -213,7 +213,7 @@ export const registerSubagentRouting = (
       if (route) {
         records.set(tool_use_id, {
           name: names.get(tool_use_id)!,
-          task: input.description || input.subagent_type || tool,
+          task: `${shortModel(route.model)} task`,
           model: route.model,
           rationale: route.rationale,
           seconds,
@@ -239,7 +239,7 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
-    const result = await next(route ? { ...e, model: route.model } : e)
+    const result = await next(route ? { ...e, model: route.model, description: route.task } : e)
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
@@ -262,7 +262,9 @@ export const registerSubagentRouting = (
     const name = names.get(e.requestId)
     const original = await next(name && (record || pending.has(e.requestId)) ? {
       ...e,
-      props: { ...e.props, tool: name },
+      props: { ...e.props, tool: name,
+        ...(record ? { input: { ...(e.props.input as Record<string, unknown>), description: record.task } } : {}),
+      },
     } : e)
     if (!record && !pending.has(e.requestId)) return original
 
