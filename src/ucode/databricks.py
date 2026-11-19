@@ -3144,10 +3144,10 @@ _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 # explicitly.
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
-# Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_PROVIDER_TYPE = "anthropic"
 OPENAI_PROVIDER_TYPE = "openai"
 GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
+# Provider types the gateway serves on its Anthropic Messages route.
 ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
 
 # Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
