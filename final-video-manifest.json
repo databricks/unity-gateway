@@ -1,0 +1,124 @@
+{
+  "head": "a2fd990af45efc6a7c4e23469d9dfe4a01ee3219",
+  "full_submission_head": "f0a90f834857fae83ddb4badbd4d9b77a783219f",
+  "scenes": [
+    {
+      "source": "direct",
+      "source_time": 8.676,
+      "label": "Ordinary chat leaves routing on",
+      "duration": 2
+    },
+    {
+      "source": "direct",
+      "source_time": 14.576,
+      "label": "Native menu discloses Isaac submission",
+      "duration": 4
+    },
+    {
+      "source": "direct",
+      "source_time": 15.045,
+      "label": "Provide a reason opens text entry",
+      "duration": 3
+    },
+    {
+      "source": "direct",
+      "source_time": 19.667,
+      "label": "Short reason ends attempt; routing on; nothing sent",
+      "duration": 4
+    },
+    {
+      "source": "direct",
+      "source_time": 24.816,
+      "label": "Explicit retry reopens menu",
+      "duration": 2
+    },
+    {
+      "source": "direct",
+      "source_time": 28.014,
+      "label": "Cancel keeps routing on and sends nothing",
+      "duration": 3
+    },
+    {
+      "source": "direct",
+      "source_time": 35.55,
+      "label": "Escape cancels collection; nothing sent",
+      "duration": 3
+    },
+    {
+      "source": "direct",
+      "source_time": 39.131,
+      "label": "Complete task before feedback",
+      "duration": 2
+    },
+    {
+      "source": "direct",
+      "source_time": 48.981,
+      "label": "Valid reason turns routing off; submission runs in background",
+      "duration": 4
+    },
+    {
+      "source": "direct",
+      "source_time": 50.123,
+      "label": "Isaac accepted test report; native completion notice visible",
+      "duration": 5
+    },
+    {
+      "source": "direct",
+      "source_time": 54.854,
+      "label": "Same conversation continues with routing off",
+      "duration": 3
+    },
+    {
+      "source": "direct",
+      "source_time": 62.315,
+      "label": "Re-enable needs no feedback",
+      "duration": 3
+    },
+    {
+      "source": "omni",
+      "source_time": 9.667,
+      "label": "Omnigent off skips feedback; no additional report",
+      "duration": 4
+    },
+    {
+      "source": "retry",
+      "source_time": 22.558,
+      "label": "Retry uses same report and immutable evidence; routing stays off",
+      "duration": 5
+    },
+    {
+      "source": "recheck-direct",
+      "source_time": 8.086,
+      "label": "Final head: native reason / Cancel menu",
+      "duration": 3
+    },
+    {
+      "source": "recheck-direct",
+      "source_time": 12.372,
+      "label": "Final head: short reason ends attempt; routing stays on",
+      "duration": 3
+    },
+    {
+      "source": "recheck-direct",
+      "source_time": 35.203,
+      "label": "Final head: saved report delivered; evidence unchanged",
+      "duration": 4
+    },
+    {
+      "source": "recheck-omni",
+      "source_time": 10.138,
+      "label": "Final head: Omnigent off skips feedback",
+      "duration": 3
+    }
+  ],
+  "source_sha256": {
+    "retry-frames.jsonl": "d894f0f1873e04efd2446c00056246cf7d2f066742fe76e1502bf3883f599983",
+    "recheck-direct-frames.jsonl": "4e180d38a27ca1892c56aac5c1e7dc4e7cb1526a637abe762ecfc6c9dbca3183",
+    "omni-frames.jsonl": "11893b9bd6185e9d37b1368fd79546b06f284ac24f7f8aeaf2deaf52eacc94e5",
+    "recheck-omni-frames.jsonl": "77cc019832837f8d0621419610c290c17b971e08679a50df98147cbd099fe108",
+    "direct-frames.jsonl": "4a96885c2f41bfd66e4a893de895f3095c6a9b3df28cb37f31a2832b1db166c6"
+  },
+  "video_sha256": "f389ae1c51c4d39e9b0ddcfe02d6465437c125c47d8293d445d689b6dfad27fd",
+  "seconds": 59.959,
+  "bytes": 1410308
+}

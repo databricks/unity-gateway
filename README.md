@@ -1,24 +1,25 @@
-# Codex Smart Router feedback TUI demo
+# Codex Smart Router feedback TUI validation
 
-[Watch the native selection flow](./codex-smart-router-feedback-menu.mp4).
+[Watch final Arclet validation](./codex-smart-router-final.mp4).
 
-28-second replay of actual Codex 0.167.2 terminal screens from one Arclet session for
+60-second replay of actual Codex 0.167.2 terminal screens for
 [#1751](https://github.com/databricks/unity-gateway/pull/1751).
 
-Shows the native Provide a reason / Cancel menu, free-text entry, a short-reason
-error that ends the attempt without reopening the prompt, an explicit user retry,
-and cancellation with routing still on.
-No feedback report was captured or uploaded in this session. No shell approval.
+Shows the native reason / Cancel menu, text entry, short-reason rejection without
+reopening, explicit retry, Cancel/Escape, valid-reason submission, routing off,
+backend completion, continued work, re-enable, Omnigent exemption, and saved-report retry.
+No shell approval or sandbox error. One explicitly authorized test report reached Isaac.
 
-[Earlier delivery verification](./codex-smart-router-feedback.mp4) preserves the
-47-second replay from the previous inline-chat UI. It shows valid-reason capture,
-routing off, same-report retry, backend confirmation, and continued work. Separate
-cancel, submit, and resumed retry sessions are joined and labeled. The isolated test
-home initially lacked dbcert credentials; credentials were restored before retrying
-the same saved report. One authorized test report reached Isaac's backend.
+The full submission ran on f0a90f83. Final scenes repeat prompt, short input,
+saved-report delivery, and Omnigent checks on review-fix head a2fd990a. Final-head
+checks also passed Cancel/Escape and re-enable. They reused the same saved report;
+no second report was created and its original receipt stayed unchanged.
 
-Both videos replay saved native terminal screens with onboarding cropped, blank
-gaps collapsed, and pauses shortened. No product output is invented. Backend
-submission has not been repeated through the new selector.
+The replay joins labeled sessions, crops onboarding, and shortens pauses.
+Product output comes from captured native terminal screens. Source capture hashes,
+scene timestamps, tested commits, and video hash are in
+[final-video-manifest.json](./final-video-manifest.json).
 
-This media-only branch keeps videos out of the feature PR's code diff.
+[Earlier native-menu demo](./codex-smart-router-feedback-menu.mp4) and
+[earlier inline-chat demo](./codex-smart-router-feedback.mp4) remain for reference.
+This media branch keeps videos out of the feature PR's code diff.
