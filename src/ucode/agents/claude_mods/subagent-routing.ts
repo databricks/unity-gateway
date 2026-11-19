@@ -61,13 +61,18 @@ const shortModel = (model: string): string => {
 }
 const taskLabel = (record: RoutingRecord): string =>
   `${record.name} — ${shortModel(record.spawned?.model || record.model)}`
-export const savedRoutedDisplay = (value: unknown, sessionId: string) => {
+type RoutedDisplay = { session_id: string; agent_id: string; name: string; description: string }
+export const routedDisplays: {
+  sessionId?: string; root?: string; records: Map<string, RoutedDisplay>
+} = { records: new Map() }
+export const savedRoutedDisplay = (value: unknown, sessionId: string): RoutedDisplay | undefined => {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || !('session_id' in value) || value.session_id !== sessionId
+      || !('agent_id' in value) || typeof value.agent_id !== 'string' || !value.agent_id
       || !('name' in value) || !('description' in value)) return undefined
   const name = safeText(value.name, 240)
   const description = safeText(value.description, 1000)
-  return name && description ? { session_id: sessionId, name, description } : undefined
+  return name && description ? { session_id: sessionId, agent_id: value.agent_id, name, description } : undefined
 }
 // Claude's own spinner glyphs, played forwards then back as Claude does.
 const SPINNER_GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽']
@@ -261,11 +266,18 @@ export const registerSubagentRouting = (
     if (route && result.agentId) {
       try {
         const session_id = await $.session.id()
-        const saved = { session_id, name: taskLabel(route), description: e.description }
+        const saved = savedRoutedDisplay({ session_id, agent_id: result.agentId, name: taskLabel(route),
+          description: safeText(e.description, 1000) || safeText(route.task, 1000) || 'Subagent task',
+        }, session_id)
+        if (!saved) throw new Error('Invalid subagent display metadata')
+        routedDisplays.sessionId ??= session_id
+        if (routedDisplays.sessionId === session_id) routedDisplays.records.set(result.agentId, saved)
+        const root = routedDisplays.root ??= await $.env.get('UCODE_AGENT_LABELS_DIR')
+        if (!root) throw new Error('Subagent display directory is unavailable')
+        const filename = `agent-${encodeURIComponent(result.agentId)}.json`
+        await $.fs.write(`${root}/${encodeURIComponent(session_id)}/${filename}`, JSON.stringify(saved))
         // The native bottom bar is outside ui.render; join its task ID to this call.
-        await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(result.agentId)}.json`,
-          JSON.stringify(saved))
-        await $.store.set(`routed-agent:${session_id}:${result.agentId}`, saved)
+        await $.fs.write(`${$.plugin.root}/agent-names/${filename}`, JSON.stringify(saved))
       } catch {
         $.ui.log('Could not persist the subagent display label; native labels remain where unavailable.')
       }
@@ -276,18 +288,13 @@ export const registerSubagentRouting = (
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const task = e.props.task
     if (e.props.origin?.kind !== 'task-notification' || task?.status !== 'completed' || !task.id) return next(e)
-    let saved
-    try {
-      const session_id = await $.session.id()
-      saved = savedRoutedDisplay(await $.store.get(`routed-agent:${session_id}:${task.id}`), session_id)
-    } catch {
-      return next(e)
-    }
+    const saved = routedDisplays.records.get(task.id)
     if (!saved) return next(e)
+    const summary = `Agent "${saved.name}" finished · Task request: ${saved.description}`
     return next({ ...e, props: { ...e.props,
-      text: e.props.isExpanded
+      text: e.props.isExpanded || e.props.text !== `Agent "${saved.description}" finished`
         ? `Launched agent: ${saved.name}\nTask request: ${saved.description}\n${e.props.text}`
-        : `Agent "${saved.name}" finished · Task request: ${saved.description}`,
+        : summary,
     } })
   })
 
@@ -352,6 +359,11 @@ export const registerSubagentRouting = (
   })
   on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     routedModels.reset()
+    if (e.reason === 'clear') {
+      routedDisplays.records.clear()
+      routedDisplays.sessionId = undefined
+      routedDisplays.root = undefined
+    }
     return next(e)
   })
 }

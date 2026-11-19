@@ -156,8 +156,10 @@ auto-mode cases retain their approval/denial and zero fallback-classification as
 The native status command checks old animal-only mappings, model labels with unchanged
 live progress and counters, and identical activity labels without duplication.
 Completed-notification render tests cover child-ID joins, actual launch-model mismatches,
-unchanged task metadata, expanded output, malformed records, session isolation and persisted
-status mappings restored at session start. The collapsed parallel-agent header and native
+unchanged task metadata, retained native summaries, malformed records, session isolation, zero
+storage reads on notification redraws, per-agent restore failures,
+empty descriptions, clear/resume lifecycle and persisted status mappings restored at session start.
+The collapsed parallel-agent header and native
 task-list titles have no matching mod render event in Claude Code 2.1.325 or
 2.1.328 and are not covered as corrected surfaces.
 

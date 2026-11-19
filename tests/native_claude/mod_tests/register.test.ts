@@ -19,10 +19,11 @@ const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as cons
 // raises; only the extra body may carry the recipe.
 function setup(on: On, { body = CALLER_BODY, pinned = '', launched = true } = {}) {
   on('session.id', () => ({ value: 'session-1' }));
-  on('store.keys', () => ({ value: [] }));
+  on('fs.exists', () => ({ value: false }));
   // A routed launch puts its flags in the environment; session.start reads them back
   // so a reload keeps the toggle the session last applied.
   const env: Record<string, string | undefined> = {
+    UCODE_AGENT_LABELS_DIR: '/plugin-data',
     CLAUDE_CODE_EXTRA_BODY: body,
     ENABLE_SMART_ROUTING_V2: launched ? ROUTED.ENABLE_SMART_ROUTING_V2 : '0',
     ENABLE_SMART_ROUTING_SUBAGENT_ONLY: launched ? ROUTED.ENABLE_SMART_ROUTING_SUBAGENT_ONLY : '0',
@@ -371,7 +372,6 @@ function feedbackSession(on: On, extra: Record<string, string> = {}, offExitCode
     const exitCode = e.argv.includes('--disable-smart-routing') ? offExitCode : 0;
     return { value: { exitCode, stdout: e.argv.includes('--inspect-target') ? '{"message_id":"m1"}' : '', stderr: '' } };
   });
-  on('fs.exists', () => ({ value: false }));
   on('ui.log', ($, e) => {
     logs.push(e.text);
     return { value: undefined };

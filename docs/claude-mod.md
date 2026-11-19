@@ -41,13 +41,16 @@ Cards and lone rows retain the original description as explicit task-request con
 Native task descriptions, reviewed inputs, full prompts, agent addresses and parent prose
 are unchanged. Completed task-notification rows use the child ID to display its launch
 identity and original task request; expanded rows retain the full original content.
-Native plugin storage preserves those display mappings across session resume, and the
+Session-scoped display files preserve those mappings across session resume, and the
 status command keeps live activity and counters without repeating the task description.
-Older animal-only mappings continue to render.
+Notification redraws use an in-memory cache; startup reads only the current session directory.
+A failed label restore does not block other agents. Older animal-only mappings continue to render.
 Claude's collapsed parallel-agent header and native task-list titles still render the
 stored request description outside these display sites in Claude Code 2.1.325 and 2.1.328.
 Those surfaces require a native renderer change. Rewriting the tool input or its response
 stream invalidates the server's auto-mode review and is not used to change these labels.
+On resume, historical notification rows already written to terminal scrollback can retain
+their native titles until the transcript is reopened; UI invalidation refreshes mounted rows.
 In subagent-only mode, the native tool description explains that a requested model
 outside the built-in choices does not prevent a general-purpose launch; the router
 selects an available execution model.

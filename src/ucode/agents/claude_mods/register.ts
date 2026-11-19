@@ -1,6 +1,6 @@
 import type { EngineInterface, On, PluginOptions, PromptOrigin } from 'claude-code';
 import { endStatusBandTurn, registerStatusBand, showStatusBand } from './smart-routing-status.ts';
-import { endSubagentRoutingTurn, registerSubagentRouting, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
+import { endSubagentRoutingTurn, registerSubagentRouting, routedDisplays, routedModels, savedRoutedDisplay } from './subagent-routing.ts';
 import {
   CLI_AGENT,
   MODEL_SET_PREFIX,
@@ -318,19 +318,29 @@ export function register(on: On, options: PluginOptions): void {
   }
 
   on('session.start', async ($, e, next) => {
+    routedDisplays.records.clear();
     try {
       const session_id = await $.session.id();
-      const prefix = `routed-agent:${session_id}:`;
-      for (const key of await $.store.keys()) {
-        if (!key.startsWith(prefix)) continue;
-        const saved = savedRoutedDisplay(await $.store.get(key), session_id);
-        if (!saved) continue;
-        await $.fs.write(`${$.plugin.root}/agent-names/agent-${encodeURIComponent(key.slice(prefix.length))}.json`,
-          JSON.stringify(saved));
+      routedDisplays.sessionId = session_id;
+      const root = await $.env.get('UCODE_AGENT_LABELS_DIR');
+      if (!root) throw new Error('Subagent display directory is unavailable');
+      routedDisplays.root = root;
+      const directory = `${root}/${encodeURIComponent(session_id)}`;
+      if (await $.fs.exists(directory)) for (const entry of await $.fs.list(directory)) {
+        if (entry.kind !== 'file' || entry.isLink || !entry.name.startsWith('agent-') || !entry.name.endsWith('.json')) continue;
+        try {
+          const saved = savedRoutedDisplay(JSON.parse(await $.fs.read(`${directory}/${entry.name}`)), session_id);
+          if (!saved || entry.name !== `agent-${encodeURIComponent(saved.agent_id)}.json`) continue;
+          routedDisplays.records.set(saved.agent_id, saved);
+          await $.fs.write(`${$.plugin.root}/agent-names/${entry.name}`, JSON.stringify(saved));
+        } catch {
+          $.ui.log('Could not restore a subagent display label; native labels remain where unavailable.');
+        }
       }
     } catch {
       $.ui.log('Could not restore subagent display labels; native labels remain where unavailable.');
     }
+    $.ui.invalidate('ui.render');
     sessionActive = true;
     if (auto) {
       await $.command.register({ name: 'auto', description: 'Customize main agent model', immediate: true });

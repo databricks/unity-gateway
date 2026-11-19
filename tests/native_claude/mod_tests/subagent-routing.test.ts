@@ -97,7 +97,7 @@ test('routing changes the matching spawn model while preserving the task and its
   const logs: string[] = [];
   const routedModel = 'system.ai.gpt-5-6-sol[1m]';
   on('session.id', () => ({ value: 'session-1' }));
-  on('store.set', () => ({ value: undefined }));
+  on('env.get', ($, e) => ({ value: e.name === 'UCODE_AGENT_LABELS_DIR' ? '/plugin-data' : undefined }));
   on('process.run', () => {
     return { value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: routedModel, rationale: 'Selected for the task',
@@ -148,11 +148,16 @@ test('routing changes the matching spawn model while preserving the task and its
   const denied = await $.ui.mount(row('denied'));
   expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
   await denied.unmount();
-  expect(writes.length).toBe(2);
+  expect(writes.length).toBe(4);
+  const visibleWrites = writes.filter(write => write.path.includes('/agent-names/'));
+  const persistentWrites = writes.filter(write => write.path.startsWith('/plugin-data/'));
+  expect(visibleWrites.length).toBe(2);
+  expect(persistentWrites.length).toBe(2);
   for (const [index, id] of ['call-b', 'call-a'].entries()) {
-    expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
-    expect(JSON.parse(writes[index].text)).toEqual({
-      session_id: 'session-1', name: `${shown.get(id)} — claude-sonnet-5`,
+    expect(visibleWrites[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
+    expect(persistentWrites[index].text).toBe(visibleWrites[index].text);
+    expect(JSON.parse(visibleWrites[index].text)).toEqual({
+      session_id: 'session-1', agent_id: `child-${id}`, name: `${shown.get(id)} — claude-sonnet-5`,
       description: originalInput.description,
     });
   }
@@ -160,11 +165,11 @@ test('routing changes the matching spawn model while preserving the task and its
     model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
   await $.agent.spawn(resumed);
   expect(forwarded[forwarded.length - 1]).toEqual(resumed);
-  expect(writes.length).toBe(2);
+  expect(writes.length).toBe(4);
   failWrite = true;
   const result = await $.agent.spawn(forwarded[0]);
   expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
-  expect(writes.length).toBe(2);
+  expect(writes.length).toBe(4);
   expect(logs).toEqual(['Could not persist the subagent display label; native labels remain where unavailable.']);
 });
 
@@ -802,26 +807,41 @@ test('routed joke titles use the selected model without rewriting reviewed argum
   await cards.unmount();
 });
 
-test('completed notification labels persist by native child ID without changing task identity', async ($, on) => {
-  const stored = new Map<string, unknown>();
+test('completed notification labels restore per child and render without storage reads', async ($, on) => {
+  const files = new Map<string, string>();
   const writes: any[] = [];
   const renders: any[] = [];
   const forwarded: any[] = [];
-  on('session.id', () => ({ value: 'session-1' }));
-  on('env.get', () => ({ value: undefined }));
+  const warnings: string[] = [];
+  let idReads = 0, fileReads = 0, environmentReads = 0;
+  let sessionId = 'session-1';
+  let failRestore = false;
+  const directory = '/plugin-data/session-1';
+  on('session.id', () => { idReads++; return { value: sessionId }; });
+  on('env.get', ($, e) => {
+    if (e.name === 'UCODE_AGENT_LABELS_DIR') { environmentReads++; return { value: '/plugin-data' }; }
+    return { value: undefined };
+  });
   on('env.set', () => ({ value: undefined }));
   on('session.start', ($, e) => ({ cwd: e.cwd }));
-  on('store.set', ($, e) => { stored.set(e.key, e.value); return { value: undefined }; });
-  on('store.get', ($, e) => ({ value: stored.get(e.key) }));
-  on('store.keys', () => ({ value: [...stored.keys()] }));
-  on('fs.write', ($, e) => { writes.push(e); return { value: undefined }; });
+  on('session.end', () => ({ sessionId }));
+  on('fs.exists', ($, e) => ({ value: [...files.keys()].some(path => path.startsWith(e.path + '/')) }));
+  on('fs.list', ($, e) => ({ value: [...files.keys()]
+    .filter(path => path.startsWith(e.path + '/'))
+    .map(path => ({ name: path.slice(e.path.length + 1), kind: 'file', size: 100, mtimeMs: 0, isLink: false })) }));
+  on('fs.read', ($, e) => { fileReads++; return { value: files.get(e.path) }; });
+  on('fs.write', ($, e) => {
+    if (failRestore && e.path.endsWith('/agent-names/agent-bad.json')) return { deny: 'write denied' };
+    writes.push(e); files.set(e.path, e.text); return { value: undefined };
+  });
+  on('ui.log', ($, e) => { warnings.push(e.text); return { value: undefined }; });
   on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
     model: 'catalog.schema.selected-model', rationale: 'Selected for this task.',
   }) } }));
   on('tool.call', () => ({ result: 'launched' }));
   on('agent.spawn', ($, e) => {
     forwarded.push(e);
-    return { agentId: 'child-1', model: 'catalog.schema.launched-model' };
+    return { agentId: e.tool_use_id === 'call-1' ? 'child-1' : e.tool_use_id, model: 'catalog.schema.launched-model' };
   });
   on('ui.render', ($, e) => {
     renders.push(e);
@@ -837,48 +857,91 @@ test('completed notification labels persist by native child ID without changing 
   };
   await $.agent.spawn(spawn);
   expect(forwarded).toEqual([{ ...spawn, model: 'catalog.schema.selected-model' }]);
-  const key = 'routed-agent:session-1:child-1';
-  const saved = JSON.parse(writes[0].text);
-  expect(stored.get(key)).toEqual(saved);
+  const key = `${directory}/agent-child-1.json`;
+  const saved = JSON.parse(files.get(key)!);
+  expect(writes.length).toBe(2);
+  expect(writes[0].text).toBe(writes[1].text);
   expect(saved.name.endsWith(' — launched-model')).toBe(true);
   expect(saved.description).toBe(input.description);
+  expect(saved.agent_id).toBe('child-1');
   const notice = {
     ...panel, component: 'UserMessage' as const, requestId: 'notice-1',
     props: { text: 'Agent "Joke from Sonnet" finished', origin: { kind: 'task-notification' as const },
       task: { id: 'child-1', status: 'completed', toolUseId: 'call-1', durationMs: 4200 }, isExpanded: false },
   };
-  const ui = await $.ui.mount(notice);
-  const { plugin: selector, ...expected } = notice;
-  expect(await ui.find({ type: 'Text', text: `Agent "${saved.name}" finished · Task request: ${input.description}` })).toBeDefined();
-  expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props,
-    text: `Agent "${saved.name}" finished · Task request: ${input.description}`,
-  } });
+  const { plugin: _plugin, ...expected } = notice;
+  const counts = [idReads, fileReads, environmentReads];
+  for (let index = 0; index < 3; index++) {
+    const ui = await $.ui.mount(notice);
+    expect(await ui.find({ type: 'Text', text: `Agent "${saved.name}" finished · Task request: ${input.description}` })).toBeDefined();
+    expect(renders[renders.length - 1]).toEqual({ ...expected, props: { ...notice.props,
+      text: `Agent "${saved.name}" finished · Task request: ${input.description}`,
+    } });
+    await ui.unmount();
+  }
+  expect([idReads, fileReads, environmentReads]).toEqual(counts);
   expect(notice.props.text).toBe('Agent "Joke from Sonnet" finished');
-  await ui.unmount();
-  const expanded = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded: true,
-    text: 'Original task summary\nFull child output stays visible.' } });
-  expect(await expanded.find({ type: 'Text', text: `Launched agent: ${saved.name}\nTask request: ${input.description}\nOriginal task summary\nFull child output stays visible.` })).toBeDefined();
-  await expanded.unmount();
-  stored.set('routed-agent:another-session:child-2', { ...saved, session_id: 'another-session' });
+  for (const isExpanded of [false, true]) {
+    const ui = await $.ui.mount({ ...notice, props: { ...notice.props, isExpanded,
+      text: 'Original task summary\nFull child output stays visible.' } });
+    expect(await ui.find({ type: 'Text', text: `Launched agent: ${saved.name}\nTask request: ${input.description}\nOriginal task summary\nFull child output stays visible.` })).toBeDefined();
+    await ui.unmount();
+  }
+  files.clear();
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
-  expect(writes.length).toBe(2);
-  expect(writes[1]).toEqual(writes[0]);
-  for (const value of [undefined, null, [], {}, { ...saved, session_id: 'another-session' },
-    { ...saved, name: 42 }, { ...saved, description: '' }]) {
-    stored.set(key, value);
+  const resumed = await $.ui.mount(notice);
+  expect(renders[renders.length - 1]).toEqual(expected);
+  files.set(`${directory}/agent-bad.json`, JSON.stringify({ ...saved, agent_id: 'bad' }));
+  files.set(key, JSON.stringify(saved));
+  files.set('/plugin-data/another-session/agent-other.json', JSON.stringify({ ...saved, session_id: 'another-session' }));
+  failRestore = true;
+  const before = writes.length;
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
+  expect(writes.length).toBe(before + 1);
+  expect(writes[writes.length - 1].path.endsWith('/agent-names/agent-child-1.json')).toBe(true);
+  expect(warnings).toEqual(['Could not restore a subagent display label; native labels remain where unavailable.']);
+  expect(await resumed.find({ type: 'Text', text: saved.name })).toBeDefined();
+  await resumed.unmount();
+  failRestore = false;
+  for (const value of [null, [], {}, { ...saved, session_id: 'another-session' },
+    { ...saved, agent_id: 'wrong-child' }, { ...saved, name: 42 }, { ...saved, description: '' }]) {
+    files.clear(); files.set(key, JSON.stringify(value));
+    await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/workspace' });
     const invalid = await $.ui.mount(notice);
     expect(renders[renders.length - 1]).toEqual(expected);
     await invalid.unmount();
   }
-  stored.set(key, saved);
+  for (const [index, description] of ['', ' \t'].entries()) {
+    const id = `empty-${index}`;
+    await $.tool.call({ tool: 'Agent', tool_use_id: id, ...input, description });
+    await $.agent.spawn({ ...spawn, tool_use_id: id, description });
+    const actual = JSON.parse(files.get(`${directory}/agent-${id}.json`)!);
+    expect(actual.description).toBe(index ? 'Subagent task' : 'Explore');
+    expect(forwarded[forwarded.length - 1].description).toBe(description);
+  }
   for (const props of [
     { ...notice.props, origin: { kind: 'composer' as const }, task: undefined },
     { ...notice.props, task: { ...notice.props.task, id: 'unrouted-child' } },
     { ...notice.props, task: { ...notice.props.task, status: 'failed' } },
   ]) {
-    const untouched = { ...notice, props };
-    const other = await $.ui.mount(untouched);
+    const other = await $.ui.mount({ ...notice, props });
     expect(renders[renders.length - 1]).toEqual({ ...expected, props });
     await other.unmount();
   }
+  await $.session.end({ reason: 'clear' });
+  sessionId = 'session-2';
+  await $.tool.call({ tool: 'Agent', tool_use_id: 'after-clear', ...input });
+  await $.agent.spawn({ ...spawn, tool_use_id: 'after-clear' });
+  const fresh = JSON.parse(files.get('/plugin-data/session-2/agent-after-clear.json')!);
+  const cleared = await $.ui.mount({ ...notice, props: { ...notice.props,
+    task: { ...notice.props.task, id: 'after-clear' },
+  } });
+  expect(await cleared.find({ type: 'Text', text: fresh.name })).toBeDefined();
+  await cleared.unmount();
+  await $.session.end({ reason: 'resume' });
+  const retained = await $.ui.mount({ ...notice, props: { ...notice.props,
+    task: { ...notice.props.task, id: 'after-clear' },
+  } });
+  expect(await retained.find({ type: 'Text', text: fresh.name })).toBeDefined();
+  await retained.unmount();
 });
