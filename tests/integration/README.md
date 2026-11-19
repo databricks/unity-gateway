@@ -1135,7 +1135,7 @@ test_ug_copilot_providers.py            # Copilot via Model Provider Services: A
 test_ug_copilot_model_location.py       # Copilot on a Unity Catalog model location: fresh --model-location file task
 test_ug_copilot_mcp.py                  # Copilot MCP: ug mcp add, tool call, ug mcp list, revert keeps the user's server
 test_ug_copilot_tracing.py              # Copilot CLI OTLP export through the session proxy reaches the configured trace table
-test_ug_login_service_routes.py         # ug's login service port: GitHub Copilot app Claude + GPT turns, other paths and browsers refused
+test_ug_login_service_routes.py         # ug's login service port: GitHub Copilot app Claude + GPT turns, other paths refused
 test_ug_antigravity_headless.py         # Antigravity via ug's proxy: file task, --model (ug agy), Gemini MPS targets, MCP SQL tool, skill dir
 test_ug_configure_antigravity.py        # Antigravity: configure picker + TUI task + reopen; External Models picker; revert keeps user files
 test_ug_configure_copilot_vscode.py     # VS Code: extension configure/revert; Copilot Chat Claude -> GPT, an MPS, after a reconfigure, all in the real window

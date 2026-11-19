@@ -50,7 +50,7 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
     send the streamed Claude and GPT turns the GitHub Copilot app sends to its two providers.
 
     Expected: both turns stream a completed answer from the workspace gateway although the app
-    holds no Databricks credential; any other path, and any browser request, is refused.
+    holds no Databricks credential; any other path is refused.
     """
     session = live_session
     session.run(
@@ -95,11 +95,6 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
             {"model": COPILOT_GPT_TEST_MODEL, "input": prompt, "stream": True},
         )
         other_status, _ = _post(f"{base}/api/2.0/clusters/list", {})
-        browser_status, _ = _post(
-            f"{base}/copilot/anthropic/v1/messages",
-            {"model": CLAUDE_TEST_MODEL, "max_tokens": 8, "messages": []},
-            {"Origin": "https://example.com"},
-        )
     finally:
         stop_process(proc)
         proc.wait(timeout=10)
@@ -119,4 +114,3 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
     assert gpt_status == 200, gpt
     assert b"response.completed" in gpt
     assert other_status == 404
-    assert browser_status == 403

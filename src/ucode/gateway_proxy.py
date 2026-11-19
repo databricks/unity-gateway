@@ -668,7 +668,6 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
             error_type = {
                 400: "invalid_request_error",
                 401: "authentication_error",
-                403: "permission_error",
             }.get(status, "not_found_error")
             payload = {"type": "error", "error": {"type": error_type, "message": message}}
         else:
@@ -768,26 +767,14 @@ class ServiceRoute:
 
 
 class _ServiceHandler(_GatewayAuthProxyHandler):
-    """The login service's shared port: exact (method, path) routes and path-prefix routes, only
-    for a non-browser client on this machine. Every forwarded request gets a fresh token."""
+    """The login service's shared port: exact (method, path) routes and path-prefix routes.
+    Every forwarded request gets a fresh token."""
 
     exact_routes: Mapping[tuple[str, str], ServiceRoute] = {}
     prefix_routes: Mapping[str, ServiceRoute] = {}
     sign_in_status = 400
     anthropic_path_prefixes = (_ANTHROPIC_PATH_PREFIX, "/copilot/anthropic/")
     _route = ServiceRoute(None)
-
-    def _from_local_client(self) -> bool:
-        address = self.server.server_address
-        port = address[1] if isinstance(address, tuple) else None
-        host = (self.headers.get("Host") or "").lower()
-        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
-            return False
-        # A browser page can reach a loopback port; desktop agents send none of these.
-        return not any(
-            name.lower() in ("origin", "cookie") or name.lower().startswith("sec-fetch-")
-            for name in self.headers
-        )
 
     def _match(self) -> tuple[ServiceRoute, str] | None:
         if route := self.exact_routes.get((self.command, self.path)):
@@ -798,9 +785,6 @@ class _ServiceHandler(_GatewayAuthProxyHandler):
         return None
 
     def _authorize(self) -> bool:
-        if not self._from_local_client():
-            self._reject(403, "This port only serves desktop agents on this machine.")
-            return False
         match = self._match()
         if match is None:
             self._reject(404, "This path is not served by the Unity Gateway proxy.")

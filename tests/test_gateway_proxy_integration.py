@@ -937,24 +937,6 @@ class TestLoginServicePortEndToEnd:
         assert b" 404 " in reply.split(b"\r\n", 1)[0]
         assert gw.requests == []
 
-    @pytest.mark.parametrize("path", ["/copilot/anthropic/v1/messages", "/v1/traces"])
-    @pytest.mark.parametrize(
-        "headers",
-        [
-            {"Origin": "https://evil.example"},
-            {"Cookie": "a=b"},
-            {"Sec-Fetch-Site": "cross-site"},
-            {"Host": "evil.example"},
-            {"Host": "127.0.0.1:1"},
-        ],
-    )
-    def test_refuses_browsers_and_other_hosts_on_every_route(self, make_gateway, headers, path):
-        gw = make_gateway()
-        with _running_service(gw) as url:
-            resp = httpx.post(f"{url}{path}", headers=headers, content=b"{}", timeout=10)
-        assert resp.status_code == 403
-        assert gw.requests == []
-
     def test_a_dead_login_gets_a_400_the_app_shows(self, make_gateway):
         minted: list[bool] = []
 
