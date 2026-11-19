@@ -176,6 +176,7 @@ export function register(on) {
         )
         assert "Auto mode: main model" not in "".join(tui.output)
         assert "classic.PreModelSwitch hook was skipped" not in "".join(tui.output)
+        assert "subagentStatusLine" not in "".join(tui.output)
         first = observe(tui, "model-twelve")
         assert first["routing"] == "1", first
         assert first["model"] == (
