@@ -4,6 +4,14 @@ import time
 from pathlib import Path
 
 import pytest
+from utils.codex_desktop import (
+    MCP_SERVICE,
+    SKILL_NAME,
+    assert_desktop_skill_mcp_session,
+    wait_for_skill_answer,
+    wait_for_submitted_prompt,
+    write_search_skill,
+)
 from utils.evidence import (
     agent_sessions,
     assert_completed_task_model,
@@ -28,7 +36,7 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
     Expected: the app shows the answer, and its own Codex Desktop rollout, using ug's Databricks
     provider, records exactly that answer in a completed turn whose model is the managed system.ai
     GPT default. Onboarding is skipped through its visible buttons with mouse clicks and the prompt
-    is typed with real keystrokes; nothing is seeded. GUI rendering of other screens, MCP, tracing
+    is typed with real keystrokes, then submitted with Send; nothing is seeded. GUI rendering of other screens, MCP, tracing
     and revert while the app runs are not covered. A subsequent click on an absent label fails
     with the native accessibility tree before the fatal error, captured in command evidence.
     """
@@ -46,8 +54,15 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         app.click("AXButton", "Go to ChatGPT")
         # Click the composer so the keystrokes cannot land in another control.
         app.click("AXTextArea", None, timeout=120)
-        app.type_line(f"Reply with exactly {marker} and nothing else.")
-        app.wait_for("AXStaticText", marker, 300)
+        prompt = f"Reply with exactly {marker} and nothing else."
+        app.type_line(prompt, submit=False)
+        app.wait_for("AXTextArea", prompt, 60)
+        app.click("AXButton", "Send")
+        try:
+            wait_for_submitted_prompt(session, prompt)
+            app.wait_for("AXStaticText", marker, 300)
+        finally:
+            session.record("agent-sessions.json", agent_sessions(session, "codex"))
         # The answer can render before the rollout records the completed turn; keep the app open.
         deadline = time.monotonic() + 60
         while not completed_task_models(session, "codex", marker):
@@ -91,3 +106,46 @@ def test_ug_codex_desktop_macos_completes_a_gateway_turn(live_session, workspace
         assert tree_rows, lines
         assert all(len(row.split("\t")) == 4 for row in tree_rows), tree_rows
         assert any(row.split("\t")[0].startswith("AX") for row in tree_rows), tree_rows
+
+
+def test_ug_codex_desktop_macos_skill_calls_mcp(live_session, workspace):
+    """Scenario: add web_search through ug and invoke a user-authored skill in the desktop GUI.
+
+    Expected: the skill's reference file supplies the otherwise-hidden query and answer token.
+    The app displays that token and its Databricks-backed completed turn records successful
+    native MCP web_search receipts with the exact query on the managed model. User onboarding
+    and Send use visible controls; the rollout must record the submitted prompt before the
+    answer wait. The expected search is approved with Allow once; no approval/config state is
+    seeded. UC skill downloads, connector
+    browser sign-in and built-in web search are outside this journey.
+    """
+    session = live_session
+    marker = fresh_id()
+    query = f"Databricks Unity Catalog documentation {fresh_id()}"
+    write_search_skill(session.home, query, marker)
+    use_managed_config_fixture(session, "managed_workspace_default")
+    session.run(
+        "configure", "--agents", "codex", "--workspace", workspace, "--skip-upgrade", timeout=240
+    )
+    session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
+
+    with MacApp(session, CHATGPT_APP, "chatgpt") as app:
+        app.click("AXRadioButton", "Engineering", timeout=180)
+        app.click("AXButton", "Continue")
+        app.click("AXButton", "Skip")
+        app.click("AXButton", "Go to ChatGPT")
+        try:
+            app.click("AXTextArea", None, timeout=120)
+            prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
+            app.type_line(prompt, submit=False)
+            app.wait_for("AXTextArea", prompt, 60)
+            app.click("AXButton", "Send")
+            wait_for_submitted_prompt(session, prompt)
+            wait_for_skill_answer(app, query, marker, "AXStaticText", "AXButton", 300)
+        finally:
+            session.record("agent-sessions.json", agent_sessions(session, "codex"))
+        deadline = time.monotonic() + 60
+        while not completed_task_models(session, "codex", marker):
+            assert time.monotonic() < deadline, "The app never recorded the completed skill turn"
+            time.sleep(1)
+        assert_desktop_skill_mcp_session(session, query, marker, MANAGED_CODEX_MODEL)

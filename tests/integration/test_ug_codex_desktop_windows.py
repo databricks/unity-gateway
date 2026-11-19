@@ -3,6 +3,16 @@
 import time
 
 import pytest
+from utils.codex_desktop import (
+    MCP_SERVICE,
+    SKILL_NAME,
+    assert_desktop_skill_mcp_session,
+    finish_windows_readiness_check,
+    wait_for_skill_answer,
+    wait_for_submitted_prompt,
+    wait_for_windows_sandbox,
+    write_search_skill,
+)
 from utils.evidence import (
     agent_sessions,
     assert_completed_task_model,
@@ -33,7 +43,7 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     the answer, and its own Codex Desktop rollout, using ug's Databricks provider, records exactly
     that answer in a completed turn whose model is the managed system.ai GPT default. Onboarding
     is skipped through its visible controls with UI Automation and the prompt is typed with real
-    keystrokes; nothing is seeded. Each screen gets 60 seconds and the answer four minutes,
+    keystrokes followed by Send; nothing is seeded. Each screen gets 60 seconds and the answer four minutes,
     without retries. GUI rendering of other screens, MCP, tracing and revert while the app runs
     are not covered.
     """
@@ -59,8 +69,15 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
         app.click("ControlType.Button", MODEL_PICKER)
         # Focus the composer so the keystrokes cannot land in another control.
         app.click("ControlType.Edit", None)
-        app.type_line(f"Reply with exactly {marker} and nothing else.")
-        app.wait_for("ControlType.Text", marker, ANSWER_TIMEOUT)
+        prompt = f"Reply with exactly {marker} and nothing else."
+        app.type_line(prompt, submit=False)
+        app.wait_for("ControlType.Edit", prompt)
+        app.click("ControlType.Button", "Send")
+        try:
+            wait_for_submitted_prompt(session, prompt)
+            app.wait_for("ControlType.Text", marker, ANSWER_TIMEOUT)
+        finally:
+            session.record("agent-sessions.json", agent_sessions(session, "codex"))
         # The answer can render before the rollout records the completed turn; keep the app open.
         deadline = time.monotonic() + 60
         while not completed_task_models(session, "codex", marker):
@@ -78,3 +95,54 @@ def test_ug_codex_desktop_windows_completes_a_gateway_turn(live_session, workspa
     answers = [answer for records in sessions for answer in assistant_answers("codex", records)]
     assert [answer.strip() for answer in answers] == [marker], answers
     assert_completed_task_model(session, "codex", marker, MANAGED_CODEX_MODEL)
+
+
+def test_ug_codex_desktop_windows_skill_calls_mcp(live_session, workspace):
+    """Scenario: add web_search through ug and invoke a user-authored skill in the desktop GUI.
+
+    Expected: the skill's reference file supplies the otherwise-hidden query and answer token.
+    The app displays that token and its Databricks-backed completed turn records successful
+    native MCP web_search receipts with the exact query on the managed model. User onboarding,
+    Windows sandbox setup and Send use visible controls; the rollout must record the prompt
+    before the answer wait. Setup must save elevated sandbox mode; a readiness error after its
+    app-server restart gets one visible recheck before Send. The expected search is
+    approved with Allow once; no approval/config
+    state is seeded. UC skill downloads, connector
+    browser sign-in and built-in web search are outside this journey.
+    """
+    session = live_session
+    marker = fresh_id()
+    query = f"Databricks Unity Catalog documentation {fresh_id()}"
+    write_search_skill(session.home, query, marker)
+    use_managed_config_fixture(session, "managed_workspace_default")
+    session.run(
+        "configure", "--agents", "codex", "--workspace", workspace, "--skip-upgrade", timeout=240
+    )
+    session.run("mcp", "add", "--agents", "codex", "--names", MCP_SERVICE, timeout=240)
+
+    with WindowsApp(session, CHATGPT_PACKAGE, CHATGPT_EXECUTABLE, "chatgpt") as app:
+        app.click("ControlType.RadioButton", "Engineering")
+        app.click("ControlType.Button", "Continue")
+        app.click("ControlType.Button", "Skip")
+        app.click("ControlType.Button", "Go to ChatGPT")
+        try:
+            app.wait_for("ControlType.Text", "Finish Windows setup to continue")
+            app.click("ControlType.Button", "Continue")
+            wait_for_windows_sandbox(app)
+            app.click("ControlType.Edit", None)
+            prompt = f"Use ${SKILL_NAME}. Follow its instructions and reply with only its completion token."
+            app.type_line(prompt, submit=False)
+            app.wait_for("ControlType.Edit", prompt)
+            finish_windows_readiness_check(app)
+            app.click("ControlType.Button", "Send")
+            wait_for_submitted_prompt(session, prompt)
+            wait_for_skill_answer(
+                app, query, marker, "ControlType.Text", "ControlType.Button", ANSWER_TIMEOUT
+            )
+        finally:
+            session.record("agent-sessions.json", agent_sessions(session, "codex"))
+        deadline = time.monotonic() + 60
+        while not completed_task_models(session, "codex", marker):
+            assert time.monotonic() < deadline, "The app never recorded the completed skill turn"
+            time.sleep(1)
+        assert_desktop_skill_mcp_session(session, query, marker, MANAGED_CODEX_MODEL)

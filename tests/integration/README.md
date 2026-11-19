@@ -365,6 +365,29 @@ accessibility tree captured before the fatal error in command evidence.
 Automation: each screen gets 60 seconds and the answer four minutes, with no retries, and it saves
 a screenshot of the app window as evidence. It also requires the app's model picker to list only
 the managed model, under its readable name (`5.6 Sol`) rather than the raw id.
+Both inference cases wait for the rendered draft, click Send, and require the user prompt in
+the native rollout before the answer wait. Failed answer waits also retain rollout evidence.
+Each module also runs `test_ug_codex_desktop_*_skill_calls_mcp`: after managed configure,
+`ug mcp add --agents codex --names system.ai.web_search` registers the real search service.
+A user-authored skill in the session's `$CODEX_HOME/skills` points to a reference file containing a fresh query
+and completion token. Windows completes sandbox setup through the visible Continue button.
+It reads the elevated mode saved by the app after success, without writing native settings or
+depending on the transient success banner, and retains early MCP/setup diagnostics in evidence.
+After setup's app-server restart, a visible readiness error gets one Try again recheck before
+Send. A persistent error fails; this does not resubmit a task or change sandbox permissions.
+Both platforms wait for the typed draft, click Send, and require the user prompt in the native
+rollout before the answer wait. The GUI prompt names only the skill. Success requires the token on screen,
+a completed Codex Desktop/Databricks turn on the managed model, and native `McpToolCall`
+receipts in that same turn with the reference query, successful status and nonempty MCP content.
+Every matching call is checked; additional successful calls are allowed, including calls made
+through code mode. Native approval dialogs must name web_search on the expected server and show
+the hidden query before the test clicks Allow once; unexpected or ambiguous approvals fail.
+These journeys use the same pinned apps and managed workspace as inference;
+the workspace identity must have access to `system.ai.web_search`. They cover local skill
+execution and MCP invocation, not UC skill downloads, connector browser sign-in or search ranking.
+`../test_codex_desktop_evidence.py` checks hidden reference inputs and rejects missing/failed
+receipts, unrelated servers/queries/turns, wrong origins/models and incomplete answers offline.
+It also rejects false submission evidence.
 `scripts/run_integration.py` ignores both modules unless `--desktop-app` is passed, which only the
 desktop CI jobs do, so a local run never drives a developer's installed app.
 
@@ -1147,8 +1170,8 @@ test_ug_codex_v2_routing.py              # exact native v2 assignments and route
 test_ug_configure_claude_lifecycle.py   # repeat setup, revert, rejected credentials
 test_ug_configure_claude_desktop.py     # Desktop lifecycle, system.ai/relay inference, installed Cowork MCP; no GUI
 test_ug_configure_codex_desktop.py      # stubbed managed Codex desktop catalog pointer, no GUI
-test_ug_codex_desktop_macos.py          # ChatGPT desktop app on macOS: GUI prompt, exact answer, model, completed turn
-test_ug_codex_desktop_windows.py        # the same journey on Windows through UI Automation
+test_ug_codex_desktop_macos.py          # macOS GUI: inference plus a local skill invoking real MCP web_search
+test_ug_codex_desktop_windows.py        # the same journeys on Windows through UI Automation
 test_ug_configure_claude_workspace_switch.py # real skills MCP cleanup across two workspaces
 test_ug_configure_codex_lifecycle.py    # repeat setup, revert, rejected credentials
 test_ug_configure_scope.py              # files written by default, --user, UG_SKIP_OS_SETTINGS, --global; launch after each
@@ -1646,7 +1669,7 @@ OpenAI's versioned appcast zip, pinned by version and SHA256 in `integration.yml
 Accessibility to the runner's shell, so no permission prompt is needed. It uploads
 `integration-codex-desktop-macos` evidence. To update the app, take a newer `<enclosure>` from
 `https://persistent.oaistatic.com/codex-app-prod/appcast.xml` and its SHA256. The
-harness-latest workflow runs the same journey against the newest appcast build, so it shows
+harness-latest workflow runs the same journeys against the newest appcast build, so it shows
 when a bump is due.
 The required **Codex desktop inference · Windows** job installs the ChatGPT MSIX that OpenAI keeps
 at `codex-app-prod/releases/<version>/ChatGPT-x64.msix`, pinned by version and SHA256 in
