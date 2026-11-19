@@ -1243,6 +1243,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "cryptography" },
     { name = "pexpect" },
     { name = "pyte" },
     { name = "pytest" },
@@ -1267,6 +1268,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "cryptography", specifier = ">=49.0.0" },
     { name = "pexpect", specifier = ">=4.9.0" },
     { name = "pyte", specifier = ">=0.8.2" },
     { name = "pytest", specifier = ">=9.0.3" },
