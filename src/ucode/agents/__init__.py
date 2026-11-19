@@ -800,7 +800,11 @@ def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: s
     if state.get("copilot_app_integration") is False:
         from . import codex
 
-        result = copilot_app_setup.remove(keep_service=codex.uses_login_service())
+        try:
+            result = copilot_app_setup.remove(keep_service=codex.uses_login_service())
+        except (OSError, RuntimeError, ValueError) as exc:
+            print_warning(f"Could not remove ug's models from the GitHub Copilot app: {exc}")
+            return
         if result != "not set up":
             print_note(
                 "This workspace's managed configuration turns off the GitHub Copilot app, so "

@@ -219,6 +219,19 @@ def test_managed_config_turns_the_app_off(monkeypatch, capsys, launches):
     assert "turns off the GitHub Copilot app" in " ".join(capsys.readouterr().out.split())
 
 
+def test_managed_config_turning_the_app_off_only_warns_when_the_service_fails(monkeypatch, capsys):
+    monkeypatch.setattr(
+        copilot_app_setup, "remove", Mock(side_effect=RuntimeError("systemctl failed"))
+    )
+
+    agents_mod.configure_copilot_app(
+        {"workspace": WS, "copilot_app_integration": False}, provider=None, parent_schema=None
+    )
+
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Could not remove ug's models from the GitHub Copilot app: systemctl failed" in out
+
+
 def test_without_the_experiment_flag_configure_and_revert_leave_the_app_alone(
     service, app, monkeypatch
 ):
