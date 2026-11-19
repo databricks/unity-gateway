@@ -65,6 +65,7 @@ def prepare_codex_feedback(env: Mapping[str, str]) -> str | None:
 
 
 class FeedbackUpload(Protocol):
+    def poll(self) -> int | None: ...
     def wait(self, timeout: float | None = None) -> int: ...
     def kill(self) -> None: ...
 
@@ -116,13 +117,14 @@ def submit_codex_feedback(
         )
 
 
-async def wait_for_feedback(process: FeedbackUpload) -> bool:
+async def wait_for_feedback(process: FeedbackUpload, timeout: float = 120) -> bool:
     try:
-        return await asyncio.to_thread(process.wait, timeout=120) == 0
-    except (subprocess.TimeoutExpired, asyncio.CancelledError) as exc:
+        async with asyncio.timeout(timeout):
+            while (exit_code := process.poll()) is None:
+                await asyncio.sleep(0.1)
+        return exit_code == 0
+    except TimeoutError:
         with contextlib.suppress(OSError):
             process.kill()
         await asyncio.to_thread(process.wait)
-        if isinstance(exc, asyncio.CancelledError):
-            raise
         return False

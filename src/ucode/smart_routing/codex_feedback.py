@@ -343,12 +343,12 @@ class CodexSmartRouter:
                 "success": False,
             }
 
-    async def delivery(self, report_id: str) -> dict[str, str]:
-        sent = await feedback.wait_for_feedback(self.uploads.pop(report_id))
+    async def delivery(self, report_id: str, process: feedback.FeedbackUpload) -> dict[str, str]:
+        sent = await feedback.wait_for_feedback(process)
         message = (
             "Feedback submitted successfully."
             if sent
-            else "Feedback delivery is unconfirmed. Ask Smart Router to retry this saved report."
+            else "Feedback delivery is unconfirmed. If Isaac saved this report, ask Smart Router to retry it."
         )
         return {
             "delivery": "submitted" if sent else "unconfirmed",

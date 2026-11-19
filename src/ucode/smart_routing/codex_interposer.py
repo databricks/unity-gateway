@@ -16,6 +16,7 @@ from websockets.asyncio.server import serve
 from ucode.smart_routing import codex_routing, routing
 from ucode.smart_routing.codex_feedback import CodexFeedbackInput, CodexSmartRouter
 from ucode.smart_routing.codex_metadata import RoutingMetadata
+from ucode.smart_routing.feedback import FeedbackUpload
 
 SETTINGS_UPDATED = "thread/settings/updated"
 SETTINGS_UPDATE = "thread/settings/update"
@@ -335,24 +336,25 @@ async def _handle_tui(
                 return await feedback_input.ask(params["threadId"], params["turnId"], question)
 
             response = await smart_router.call(params, ask)
+            result = json.loads(response["contentItems"][0]["text"]) if response["success"] else {}
+            report_id = result.get("feedback_id", "")
+            process = (
+                smart_router.uploads.pop(report_id)
+                if result.get("delivery") == "pending"
+                and params.get("arguments", {}).get("action") in ("off", "retry")
+                else None
+            )
             await upstream.send(json.dumps({"id": message["id"], "result": response}))
-            if not response["success"]:
-                return
-            result = json.loads(response["contentItems"][0]["text"])
-            if result.get("delivery") != "pending" or message["params"].get("arguments", {}).get(
-                "action"
-            ) not in ("off", "retry"):
-                return
-            report_id = result["feedback_id"]
-            await monitor_delivery(message, report_id)
+            if process is not None:
+                await monitor_delivery(message, report_id, process)
 
-        async def monitor_delivery(message: dict, report_id: str):
+        async def monitor_delivery(message: dict, report_id: str, process: FeedbackUpload):
             assert smart_router is not None
             try:
-                status = await smart_router.delivery(report_id)
+                status = await smart_router.delivery(report_id, process)
             except (OSError, ValueError):
                 status = {
-                    "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}. Ask Smart Router to retry this saved report.",
+                    "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}. If Isaac saved this report, ask Smart Router to retry it.",
                 }
             await delivery_notice(message, status["message"])
 

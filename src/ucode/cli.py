@@ -3692,9 +3692,9 @@ def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | No
     if feedback_required and len((reason or "").strip()) < 16:
         print_err(
             "Turning Smart Router off requires a reason of at least 16 characters, excluding "
-            "surrounding whitespace. Ask the user why in chat and explain that their reason and "
-            "session details will be sent to the Isaac team. They can cancel to keep routing on. "
-            "Then pass their exact reason with --smart-router-feedback."
+            "surrounding whitespace. Use the Smart Router skill to collect and submit feedback, "
+            "or pass a reason with --smart-router-feedback to toggle routing directly. "
+            "The direct CLI command does not submit feedback."
         )
         raise typer.Exit(2)
     try:

@@ -511,6 +511,9 @@ recapturing. UG no longer persists target files, validates captured-receipt sche
 or offers its own status reader. Those tests were replaced with command/exit-result,
 worker timeout/cancellation, and re-enable/new-task checks. Isaac subprocesses and
 transport are controlled in these component tests; backend delivery remains unverified.
+Additional component checks cover an upload surviving Codex shutdown and completion
+tracking for overlapping retries while the transport stalls. Live journeys do not
+exercise those process-lifecycle and backpressure cases.
 Shared CLI toggles only validate reasons and change controls, as Claude's CLI does.
 Malformed protocol frames still pass through without ending the relay. Background
 completion notices wait for the originating turn to finish, without another model turn.

@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import Mock
 from uuid import uuid4
@@ -44,7 +45,7 @@ def inline_feedback(tmp_path, monkeypatch):
 
     def upload(args, **kwargs):
         calls.append((args, {**kwargs, "input": kwargs["stdin"].read()}))
-        return Mock(wait=Mock(return_value=0))
+        return Mock(poll=Mock(return_value=0), wait=Mock(return_value=0))
 
     run = Mock(side_effect=isaac)
     popen = Mock(side_effect=upload)
@@ -82,8 +83,8 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     assert result.exit_code == 2, result.output
     text = " ".join(result.output.split())
     assert "16 characters" in text
-    assert "session details will be sent to the Isaac team" in text
-    assert "cancel to keep routing on" in text
+    assert "Smart Router skill to collect and submit feedback" in text
+    assert "direct CLI command does not submit feedback" in text
     assert json.loads(controls.read_text()) == {}
 
 
@@ -371,9 +372,9 @@ def test_native_delivery_result_matches_isaac_exit(native_router, inline_feedbac
     controls, _, _, _ = inline_feedback
     assert native_call(native_router, "off")["needs_reason"]
     report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    process = native_router.uploads[report_id]
-    process.wait.return_value = exit_code
-    result = asyncio.run(native_router.delivery(report_id))
+    process = native_router.uploads.pop(report_id)
+    process.poll.return_value = exit_code
+    result = asyncio.run(native_router.delivery(report_id, process))
     assert result["delivery"] == ("submitted" if exit_code == 0 else "unconfirmed")
     assert not session_env.session_routing_enabled(controls)
     assert not native_router.uploads
@@ -483,39 +484,41 @@ def test_codex_skill_requires_native_host_tool():
 def test_feedback_worker_stops_and_reaps_on_timeout():
     import asyncio
 
-    process = Mock()
-    process.wait.side_effect = [subprocess.TimeoutExpired("isaac", 120), 1]
-    assert asyncio.run(feedback.wait_for_feedback(process)) is False
+    process = Mock(poll=Mock(return_value=None))
+    assert asyncio.run(feedback.wait_for_feedback(process, timeout=0.01)) is False
     process.kill.assert_called_once()
-    assert process.wait.call_count == 2
+    process.wait.assert_called_once()
 
 
-def test_canceling_feedback_worker_stops_and_reaps_waiting_process():
+def test_closing_codex_leaves_detached_feedback_running():
     import asyncio
-    import threading
 
-    started, stopped = threading.Event(), threading.Event()
-
-    def wait(timeout=None):
-        started.set()
-        assert stopped.wait(3), "Canceled feedback worker left its process running"
-        return 1
-
-    process = Mock(wait=Mock(side_effect=wait), kill=Mock(side_effect=stopped.set))
+    process = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read(); print('finished')"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
 
     async def run():
         task = asyncio.create_task(feedback.wait_for_feedback(process))
-        try:
-            assert await asyncio.to_thread(started.wait, 2)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 2)
-        finally:
-            stopped.set()
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 2)
 
-    asyncio.run(run())
-    process.kill.assert_called_once()
-    assert process.wait.call_count == 2
+    try:
+        asyncio.run(run())
+        assert process.poll() is None, "Closing Codex killed feedback already sending"
+        stdout, stderr = process.communicate("", timeout=3)
+        assert process.returncode == 0, stderr
+        assert stdout.strip() == "finished"
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=3)
 
 
 def test_native_toggle_failure_does_not_cancel_feedback_or_request_approval(

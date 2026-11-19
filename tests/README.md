@@ -1197,8 +1197,10 @@ Like Claude, Codex starts `isaac feedback --with-evidence` in the background bef
 turning routing off, reports the command's exit result, and retries saved reports with
 `isaac feedback --retry`. Delivery or process-start failure leaves routing off;
 preparation failure before collection leaves it on. A toggle failure does not cancel
-feedback that is already sending. Worker timeout or cancellation kills and reaps the
-subprocess. These are component checks, not proof of backend delivery.
+feedback that is already sending. Worker timeout kills and reaps the subprocess;
+closing Codex leaves the detached Isaac upload running. A real local child process
+checks that cancellation lets the upload finish without blocking launcher shutdown.
+These are component checks, not proof of backend delivery.
 The native selector offers Provide a reason or Cancel, accepts option notes or text
 entry, and ends a short attempt with a validation error rather than reopening it.
 Each explicit retry identifies the current task again. Cancel and interrupted collection
@@ -1212,7 +1214,8 @@ command/exit-result, re-enable/new-task, and native failure-boundary coverage.
 forwarding, locally consumed feedback replies (including stale replies), native
 prompt cancellation on interrupt, completed turn, or disconnect, responsive
 interrupts during preparation, and completion/failure notices
-after the originating turn ends, without another model turn.
+after the originating turn ends, without another model turn. Overlapping retries of
+one report retain each process and completion notice while the response transport stalls.
 Malformed tool calls and completion/interrupt notifications pass through without
 being handled locally; a subsequent native toggle and messages in both directions
 still complete. These checks include missing IDs, null parameters/turns, and invalid

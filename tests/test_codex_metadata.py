@@ -625,14 +625,17 @@ def test_native_tool_preparation_does_not_block_interrupts_or_other_frames(
 def test_native_delivery_notice_after_turn_without_model_or_shell(
     running_interposer, monkeypatch, delivery, error
 ):
-    monkeypatch.setattr(
-        codex_interposer.CodexSmartRouter,
-        "execute",
-        lambda *_: {"delivery": "pending", "feedback_id": "report"},
-    )
+    process = object()
+
+    def execute(self, _params):
+        self.uploads["report"] = process
+        return {"delivery": "pending", "feedback_id": "report"}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
     checked = threading.Event()
 
-    async def status(_self, _report_id):
+    async def status(_self, _report_id, upload):
+        assert upload is process
         checked.set()
         if error:
             raise OSError("status unavailable")
@@ -664,6 +667,68 @@ def test_native_delivery_notice_after_turn_without_model_or_shell(
             text = ended["params"]["item"]["text"]
             assert ("unconfirmed" if error else delivery) in text
             assert upstream.outgoing.empty(), "notices must not start a new model turn"
+
+    asyncio.run(run())
+
+
+def test_overlapping_feedback_retries_keep_each_process_during_backpressure(
+    running_interposer, monkeypatch
+):
+    processes, monitored = [], []
+
+    def execute(self, params):
+        process = object()
+        processes.append(process)
+        report_id = params["arguments"]["feedback_id"]
+        self.uploads[report_id] = process
+        return {"delivery": "pending", "feedback_id": report_id}
+
+    async def wait_for_feedback(process):
+        monitored.append(process)
+        return True
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+    from ucode.smart_routing import feedback
+
+    monkeypatch.setattr(feedback, "wait_for_feedback", wait_for_feedback)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            blocked, release = asyncio.Queue(), asyncio.Event()
+            send = upstream.send
+
+            async def backpressure(raw):
+                message = json.loads(raw)
+                if message.get("id") in ("retry-1", "retry-2"):
+                    blocked.put_nowait(message["id"])
+                    await release.wait()
+                await send(raw)
+
+            monkeypatch.setattr(upstream, "send", backpressure)
+            try:
+                for call_id in ("retry-1", "retry-2"):
+                    request = native_tool_request(thread_id, "retry")
+                    request["id"] = call_id
+                    request["params"]["arguments"]["feedback_id"] = (
+                        "109e1ba3-d9b9-4fcd-8f0b-1a61d70e088f"
+                    )
+                    upstream.incoming.put_nowait(request)
+                    assert await asyncio.wait_for(blocked.get(), 2) == call_id
+            finally:
+                release.set()
+            for _ in range(2):
+                assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["result"]["success"]
+            completed = {
+                "method": "turn/completed",
+                "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+            }
+            upstream.incoming.put_nowait(completed)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            notices = [await asyncio.wait_for(tui.outgoing.get(), 2) for _ in range(4)]
+            assert sum(item["method"] == "item/completed" for item in notices) == 2
+            assert len(monitored) == 2
+            assert set(monitored) == set(processes)
 
     asyncio.run(run())
 
