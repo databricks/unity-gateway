@@ -25,7 +25,7 @@ def test_auto_window_respects_limits_and_native_settings(tmp_path, monkeypatch):
 
     path = tmp_path / "settings.json"
     monkeypatch.setattr(claude, "native_settings_paths", lambda: (path,))
-    models = ["small", "large", "managed"]
+    models = ["small", "large", "managed", "unlisted-limit"]
     rows = [{"model": model, "autoModel": auto_variant({"model": model})} for model in models]
     catalog = AnthropicModelCatalog(
         models, {}, model_id_to_limits={"small": (32_000, 4096), "large": (2_000_000, 8192)}
@@ -37,6 +37,7 @@ def test_auto_window_respects_limits_and_native_settings(tmp_path, monkeypatch):
         "modelSettings": {
             rows[1]["autoModel"]: {"autoCompactWindow": 1_000_000},
             rows[2]["autoModel"]: {"autoCompactWindow": 175_000},
+            rows[3]["autoModel"]: {"autoCompactWindow": 200_000},
         }
     }
 

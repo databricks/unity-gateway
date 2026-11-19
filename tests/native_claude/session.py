@@ -41,6 +41,9 @@ class Session:
         launch_settings=None,
         model="claude-sonnet-4-6",
     ):
+        assert not {"env", "pluginConfigs"}.intersection(launch_settings or {}), (
+            "Use env and auto_picker to configure the native session fixture"
+        )
         self.root = root
         root.mkdir()
         resume_args = []

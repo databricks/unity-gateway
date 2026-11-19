@@ -530,27 +530,44 @@ test('a failed preference write keeps the chooser seat until a successful retry'
   expect(session.closed).toContain('auto-models');
 });
 
+async function appendNativeNotice($: any, text: string) {
+  try {
+    await $.session.append({
+      door:'command', origin:{kind:'engine'}, uuid:'notice',
+      message:{type:'system',content:[{type:'text',text:`<local-command-stdout>${text}</local-command-stdout>`}]},
+    });
+    return true;
+  } catch (error) {
+    // 2.1.290 has no transcript sink. It still runs the hook up to next(e).
+    if (!String(error).includes('no implementation for session.append')) throw error;
+    return false;
+  }
+}
+
+test('a manual model confirmation disables routing when closing either pane fails', {options:OPTIONS}, async ($, on) => {
+  const session = staticCatalogSession($, on, DEFAULT_ALIAS);
+  const messages: string[] = [];
+  on('session.append', {door:'command'}, ($, e, next) => {
+    messages.push(e.message.content[0].text);
+    return next(e);
+  });
+  await $.session.start(START);
+  await $.command.run({command:'model', args:MAIN});
+  session.chooser.beforeClose = () => { throw new Error('pane already dismissed'); };
+  const text = `Set model to \`${MAIN}\``;
+  await appendNativeNotice($, text);
+  expect(messages).toEqual([`<local-command-stdout>${text}</local-command-stdout>`]);
+  expect(session.env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('0');
+});
+
 test('a native request to pick again leaves the reservation for the next pick', {options:OPTIONS}, async ($, on) => {
   const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
   await $.session.start(START);
   await $.command.run({command:'model', args:''});
-  const append = async (text: string) => {
-    try {
-      await $.session.append({
-        door:'command', origin:{kind:'engine'}, uuid:'notice',
-        message:{type:'system',content:[{type:'text',text:`<local-command-stdout>${text}</local-command-stdout>`}]},
-      });
-      return true;
-    } catch (error) {
-      // 2.1.290 has no transcript sink. It still runs the hook up to next(e).
-      if (!String(error).includes('no implementation for session.append')) throw error;
-      return false;
-    }
-  };
-  const hasTranscript = await append('The model changed while you were confirming; pick again');
+  const hasTranscript = await appendNativeNotice($, 'The model changed while you were confirming; pick again');
   expect(session.closed).not.toContain('auto-models');
   if (hasTranscript) {
-    await append(`Set model to \`${DEFAULT_ALIAS}\``);
+    await appendNativeNotice($, `Set model to \`${DEFAULT_ALIAS}\``);
     await session.choose(OTHER);
     expect(session.store[AUTO.storeKey]).toBe(OTHER);
   }

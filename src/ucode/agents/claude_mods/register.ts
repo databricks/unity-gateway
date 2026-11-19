@@ -650,8 +650,8 @@ export function register(on: On, options: PluginOptions): void {
         pendingChooser = undefined;
         awaitingModelChoice = false;
         pendingSelection?.cancel();
-        await $.ui.close({id:AUTO_MODELS_PANE.id});
-        await $.ui.close({ id: 'auto-main' });
+        await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+        await $.ui.close({id:'auto-main'}).catch(() => undefined);
         if (setModel && !request) await syncAutoRouting($, options, auto, routingSync);
       }
       const echo = MODEL_COMMAND_ECHO.exec(text);

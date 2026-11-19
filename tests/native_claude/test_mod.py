@@ -259,7 +259,6 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
     ("limits", "preferences", "window"),
     [
         ({"team.alias-claude-preview": (125_000, 8192)}, {}, "125k"),
-        ({}, {}, "200k"),
         ({}, {"autoCompactWindow": 180_000}, "180k"),
     ],
 )
