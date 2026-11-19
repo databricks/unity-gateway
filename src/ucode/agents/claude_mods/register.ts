@@ -25,7 +25,7 @@ import {
   routingLogsPaneClosed,
   routingLogsPaneOpen,
 } from './routing-logs.ts';
-import { AUTO_KEPT_PREFIX, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_CONFIRMATION, AUTO_MAIN_TITLE, AUTO_SET_CONFIRMATION, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
@@ -360,10 +360,14 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.render', {component:'Pane', requestId:AUTO_MODELS_PANE.id}, ($, e, next) => {
       const chooser = pendingChooser;
       if (!chooser?.options || !chooser.choose) return next(e);
-      return $.ui.resolve(e).Select({
-        key:chooser.key, label:AUTO_MAIN_TITLE, options:chooser.options, value:chooser.options[0].value,
-        autoFocus:true, onSelect:chooser.choose,
-      });
+      const {Box, Text, Select} = $.ui.resolve(e);
+      const current = chooser.options[0];
+      return Box({flexDirection:'row', columnGap:1, children:[
+        Box({width:'45%', children:[Text({children:[`${AUTO_MAIN_TITLE} (currently ${current.label}). Subagents will be smart routed.`]})]}),
+        Box({flexDirection:'column', flexGrow:1, children:[Select({
+          key:chooser.key, options:chooser.options, value:current.value, autoFocus:true, onSelect:chooser.choose,
+        })]}),
+      ]});
     });
     on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
       if (e.origin.kind === 'person') {
@@ -485,8 +489,8 @@ export function register(on: On, options: PluginOptions): void {
               if (autoSave !== request) return;
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
-              if (confirmation && (confirmation.startsWith('Set model to ') || confirmation.startsWith(AUTO_SET_PREFIX))) request.confirmation = 'accepted';
-              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_PREFIX) || MODEL_SWITCH_CANCELLED.test(confirmation) || MODEL_SWITCH_RETRY.test(confirmation))) request.confirmation = 'cancelled';
+              if (confirmation && (confirmation.startsWith('Set model to ') || confirmation.startsWith(AUTO_SET_CONFIRMATION))) request.confirmation = 'accepted';
+              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_CONFIRMATION) || MODEL_SWITCH_CANCELLED.test(confirmation) || MODEL_SWITCH_RETRY.test(confirmation))) request.confirmation = 'cancelled';
               else if (confirmation) throw new Error(confirmation);
               request.phase = 'waiting';
               if (!request.confirmation) return;

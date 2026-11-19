@@ -195,14 +195,14 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             )
             tui.submit("/model auto")
             tui.wait_for(
-                lambda screen: "Auto: choose your main model" in screen,
+                lambda screen: "Auto mode: Choose" in screen,
                 "Auto main-model selection",
                 stable_for=0.5,
             )
             tui.send("\r", "save the current main model in Auto")
             tui.wait_for(
                 lambda screen: (
-                    "Auto: choose your main model" not in screen
+                    "Auto mode: Choose" not in screen
                     and "Auto (" in "\n".join(screen.splitlines()[-4:])
                 ),
                 "saved Auto model",

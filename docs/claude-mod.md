@@ -16,8 +16,8 @@ input with the permission mode) carries `smart router ON` or `smart router OFF`,
 ` · N subagents running` while Claude's native agent list has running agents (singular for one).
 Under Auto it starts with `Auto (<main model>)`; with the static catalog row, that names the main
 model the mod holds, not the row's default-variant alias, and updates on each switch. It is the
-prompt hint for the main model. Native's initial `/model` confirmation reads
-`Auto on: subagents smart-routed`. Saving a main model updates the prompt hint silently.
+prompt hint for the main model. Native displays `Auto mode: Subagents smart routed.`
+when the user selects Auto. Saving a main model updates the prompt hint silently.
 The Auto main-model chooser opens only after the person confirms Auto in `/model` and the
 picker closes, or on `/model auto`. Use the arrow keys to scroll through the available main models.
 Use native `/effort` to change effort.

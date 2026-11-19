@@ -205,8 +205,8 @@ that a warm cache exists. Other hooks' blocks and explicit confirmation requests
 The main-model chooser opens only after the person confirms the Auto row in `/model` and
 the picker closes, or on `/model auto`; never when `/model` opens, on a non-Auto pick, or
 on Esc. The chooser presents every allowed main model in one scrollable list with the
-current model first. Native confirms the Auto row before the chooser opens with
-`Auto on: subagents smart-routed`. Saving updates the prompt hint row's
+current model first. The chooser names the current model and explains that subagents will be smart routed.
+Native displays `Auto mode: Subagents smart routed.` before the chooser opens. Saving updates the prompt hint row's
 `Auto (<main model>)` without writing a confirmation to the transcript. Native `/effort`
 continues to work independently. A fresh launch
 without a launch-only model starts on the stored main model; a per-model alias selected

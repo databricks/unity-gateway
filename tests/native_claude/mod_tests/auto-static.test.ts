@@ -109,7 +109,7 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     async picker() {
       return $.ui.mount({
         plugin:'ug-smart-router', component:'Pane', requestId:'auto-models', surface:'terminal',
-        props:{title:'Auto: choose your main model', isFocused:true, bodyColumns:80, placement:'inline', scroll:{offset:0,bodyRows:8}, view:{}},
+        props:{title:'Auto mode: Choose your main model', isFocused:true, bodyColumns:80, placement:'inline', scroll:{offset:0,bodyRows:8}, view:{}},
       });
     },
     async choose(model: string) {
@@ -149,6 +149,7 @@ test('/model auto opens a focused Select with the current model first', { option
   const picker = await session.picker();
   const select = await picker.find({type:'Select'});
   expect(select.props.options).toEqual([{value:MAIN, label:'Sonnet 5'}, {value:OTHER, label:'Haiku 4.5'}]);
+  expect((await picker.find({type:'Text'})).children).toContain('Auto mode: Choose your main model (currently Sonnet 5). Subagents will be smart routed.');
   expect(select.props.autoFocus).toBe(true);
   expect(select.props.value).toBe(MAIN);
   await picker.unmount();

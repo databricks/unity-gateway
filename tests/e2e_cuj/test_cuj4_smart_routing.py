@@ -440,7 +440,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                     )
 
                 tui.wait_for(
-                    lambda s: "Auto: choose your main model" in s and main_model_focused(label),
+                    lambda s: "Auto mode: Choose" in s and main_model_focused(label),
                     "the Auto selector focused on the current main model",
                 )
                 for option in alternatives:
@@ -453,7 +453,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
-                        "Auto: choose your main model" not in s
+                        "Auto mode: Choose" not in s
                         and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                         and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
                         and _smart_router_hint_shown(tui, enabled=True)
@@ -466,9 +466,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 check_main_model_turn(tui)
                 tui.submit("/model auto")
                 tui.wait_for(
-                    lambda s: (
-                        "Auto: choose your main model" in s and main_model_focused(alternate_label)
-                    ),
+                    lambda s: "Auto mode: Choose" in s and main_model_focused(alternate_label),
                     "the current Auto main model",
                 )
                 tui.send("\x1b[B", "focus another main model without selecting it")
@@ -476,7 +474,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.send("\x1b", "dismiss the chooser without saving")
                 tui.wait_for(
                     lambda s: (
-                        "Auto: choose your main model" not in s
+                        "Auto mode: Choose" not in s
                         and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                     ),
                     "the unchanged model after Escape",
@@ -486,8 +484,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.send("\r", "save the unchanged Auto main model")
                 tui.wait_for(
                     lambda s: (
-                        "Auto: choose your main model" not in s
-                        and _smart_router_hint_shown(tui, enabled=True)
+                        "Auto mode: Choose" not in s and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the unchanged Auto selection saved without reopening its selector",
                 )
