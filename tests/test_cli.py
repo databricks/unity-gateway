@@ -7885,6 +7885,119 @@ class TestConfigureNoLongerValidates:
         assert result == 0
 
 
+class TestConfigureSharedStateCachedDiscovery:
+    WS = "https://example.databricks.com"
+    LISTING = {
+        "model_services": [
+            {"name": "model-services/system.ai.claude-opus-4-8"},
+            {"name": "model-services/system.ai.gpt-5"},
+        ]
+    }
+
+    def test_first_use_discovery_is_reused_when_launch_preserves_picker(self, monkeypatch):
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(monkeypatch, pat_token=None)
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+        monkeypatch.setattr(cli_mod, "discover_codex_models", db_mod.discover_codex_models)
+        requests = []
+
+        def get(url, token, **kwargs):
+            requests.append(url)
+            return self.LISTING, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        configured = cli_mod.configure_shared_state(self.WS, profile="DEFAULT", tools=["claude"])
+        owned_models = {"opus": "another-writers-opus"}
+        configured["claude_models"] = owned_models
+        monkeypatch.setattr(cli_mod, "load_state", lambda: dict(configured))
+
+        launched = cli_mod.configure_shared_state(
+            self.WS, profile="DEFAULT", tools=["claude"], skip_model_discovery=True
+        )
+
+        assert launched["claude_models"] == owned_models
+        assert launched["web_search_model"] == "system.ai.gpt-5"
+        assert len(requests) == 2
+        assert sum("parent=schemas%2Fsystem.ai" in url for url in requests) == 1
+        assert sum("parent=" not in url for url in requests) == 1
+
+    @pytest.mark.parametrize(
+        "cached_listing",
+        ["claude_only", "empty", "failed", "other_workspace", "workspace_switch"],
+    )
+    def test_skipped_discovery_keeps_missing_inventory_fallbacks(self, monkeypatch, cached_listing):
+        existing_state = {"workspace": self.WS, "claude_models": {"opus": "owned-opus"}}
+        if cached_listing == "workspace_switch":
+            existing_state["workspace_id"] = "111"
+        cli_mod, *_ = TestConfigureSharedStateUsePat._stub_deps(
+            monkeypatch,
+            pat_token=None,
+            existing_state=existing_state,
+        )
+        if cached_listing == "workspace_switch":
+            monkeypatch.setattr(cli_mod, "ensure_databricks_auth", lambda *_a, **_k: None)
+        monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
+        monkeypatch.setattr(
+            cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
+        )
+        monkeypatch.setattr(cli_mod, "discover_codex_models", db_mod.discover_codex_models)
+        requests = []
+        priming = True
+
+        def get(url, token, **kwargs):
+            requests.append(url)
+            if priming:
+                if cached_listing == "failed":
+                    return None, "HTTP 403 Forbidden"
+                if cached_listing == "empty":
+                    return {"model_services": []}, None
+                return {"model_services": self.LISTING["model_services"][:1]}, None
+            if url.endswith("serving-endpoints:foundation-models"):
+                return {
+                    "endpoints": [
+                        {
+                            "name": "databricks-gpt-5",
+                            "config": {
+                                "served_entities": [
+                                    {
+                                        "foundation_model": {
+                                            "ai_gateway_v2_supported": True,
+                                            "api_types": [db_mod.API_OPENAI_RESPONSES],
+                                        }
+                                    }
+                                ]
+                            },
+                        }
+                    ]
+                }, None
+            return self.LISTING, None
+
+        monkeypatch.setattr(db_mod, "_http_get_json", get)
+        cached_workspace = (
+            "https://other.databricks.com" if cached_listing == "other_workspace" else self.WS
+        )
+        db_mod.discover_model_services(cached_workspace, "token")
+        priming = False
+        prime_requests = len(requests)
+
+        state = cli_mod.configure_shared_state(
+            f"{self.WS}?w=222" if cached_listing == "workspace_switch" else self.WS,
+            profile="DEFAULT",
+            tools=["claude"],
+            skip_model_discovery=True,
+        )
+
+        assert state["claude_models"] == {"opus": "owned-opus"}
+        assert state["web_search_model"] == "databricks-gpt-5"
+        assert len(requests) - prime_requests == (1 if cached_listing == "claude_only" else 2)
+        assert requests[-1] == f"{self.WS}/api/2.0/serving-endpoints:foundation-models"
+        if cached_listing != "claude_only":
+            assert requests[-2].startswith(f"{self.WS}/api/2.1/unity-catalog/model-services")
+            assert "parent=" not in requests[-2]
+
+
 class TestConfigureSharedStateMcpCleanup:
     """A workspace switch should scrub the previous workspace's MCP entries from
     installed client configs. Switching to the same workspace must not."""
