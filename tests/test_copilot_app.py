@@ -37,6 +37,7 @@ class FakeApp:
         self.busy = 0
         self.fail: str | None = None
         self.drop: str | None = None
+        self.before_reply: dict[str, list[dict]] = {}
         self._server = serve(self._handle, "127.0.0.1", 0, process_request=self._check)
         port = self._server.socket.getsockname()[1]
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -98,6 +99,8 @@ class FakeApp:
             if message["type"] == self.drop:
                 websocket.close()
                 return
+            for frame in self.before_reply.pop(message["type"], []):
+                websocket.send(json.dumps(frame))
             reply = self._reply(message)
             if "request_id" in message and "request_id" not in reply:
                 reply["request_id"] = message["request_id"]
@@ -225,6 +228,40 @@ def test_a_refusal_stops_the_registration(app):
     app.fail = "upsert_provider_model"
 
     with pytest.raises(copilot_app.CopilotAppError, match="refused upsert_provider_model"):
+        copilot_app.register(BASE, CATALOG)
+
+
+def _healthcheck(version, **fields):
+    return {"type": "command_result", "data": {"app": {"version": version}}, **fields}
+
+
+def test_a_reply_with_the_echoed_request_id_is_accepted(app, capsys):
+    app.version = "9.0.0"
+
+    copilot_app.register(BASE, CATALOG)
+
+    assert "GitHub Copilot app 9.0.0" in capsys.readouterr().out
+    assert all(message.get("request_id") for message in app.received)
+
+
+@pytest.mark.parametrize(
+    "stray",
+    [_healthcheck("0.0.1", request_id="ug-someone-else"), _healthcheck("0.0.1")],
+    ids=["another-request-id", "no-request-id"],
+)
+def test_a_reply_not_for_this_request_is_skipped(app, capsys, stray):
+    app.before_reply["get_healthcheck"] = [stray]
+
+    copilot_app.register(BASE, CATALOG)
+
+    assert "hasn't been verified" not in capsys.readouterr().out
+    assert len(app.providers) == 3
+
+
+def test_an_error_without_a_request_id_answers_the_pending_request(app):
+    app.before_reply["get_healthcheck"] = [{"type": "error", "message": "Invalid message format"}]
+
+    with pytest.raises(copilot_app.CopilotAppError, match="Invalid message format"):
         copilot_app.register(BASE, CATALOG)
 
 

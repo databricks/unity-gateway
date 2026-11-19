@@ -235,12 +235,14 @@ class _AppConnection:
                 ) from None
 
             def answers(candidate: dict[str, Any], request_id=request_id) -> bool:
-                if candidate.get("request_id") not in (request_id, None):
-                    return False
+                # The app echoes request_id on its replies, but not on errors about the
+                # message's format, which then answer the pending request.
                 if candidate.get("type") == "error":
-                    return True
-                return candidate.get("type") == reply and all(
-                    candidate.get(name) == value for name, value in match.items()
+                    return candidate.get("request_id") in (request_id, None)
+                return (
+                    candidate.get("request_id") == request_id
+                    and candidate.get("type") == reply
+                    and all(candidate.get(name) == value for name, value in match.items())
                 )
 
             answer = self._wait(answers)
