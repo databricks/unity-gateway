@@ -4674,9 +4674,31 @@ class TestOtelProxyCommand:
         assert kwargs["port"] == 43199
         # Codex's trace exporter keeps its URL; the Copilot app's turns share the port.
         assert kwargs["prefix_routes"]["/v1/"].upstream == "/ai-gateway/otel/v1/"
-        assert ("POST", "/copilot/anthropic/v1/messages") in kwargs["exact_routes"]
+        # The GitHub Copilot app's routes wait until the app is set up.
+        assert kwargs["exact_routes"] == {}
         token.assert_called_once_with(workspace, "saved-profile", force_refresh=True)
         server.serve_forever.assert_called_once()
+
+    @pytest.mark.parametrize("enable", ["marker", "env"])
+    def test_serves_the_copilot_app_routes_once_the_app_is_set_up(self, monkeypatch, enable):
+        workspace = "https://configured.example"
+        real_save_state({"workspace": workspace, "profile": "saved-profile"})
+        if enable == "marker":
+            monkeypatch.setattr("ucode.login_service.copilot_app_recorded", lambda: True)
+        else:
+            monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+        server = MagicMock()
+        with (
+            patch(
+                "ucode.gateway_proxy.start_service_listener",
+                return_value=(server, MagicMock(), MagicMock()),
+            ) as start,
+            patch("ucode.custom_oauth.get_databricks_token", return_value="fresh-token"),
+            patch("ucode.agents.copilot.agent_version", return_value="1.0.91"),
+        ):
+            result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
+        assert result.exit_code == 0, result.output
+        assert ("POST", "/copilot/anthropic/v1/messages") in start.call_args.kwargs["exact_routes"]
 
     def test_relay_port_also_starts_the_codex_relay_proxy(self):
         workspace = "https://configured.example"

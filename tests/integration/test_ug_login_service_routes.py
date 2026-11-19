@@ -63,6 +63,8 @@ def test_ug_login_service_serves_copilot_app_turns(live_session, workspace):
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    # The app's routes are behind this flag until the feature ships.
+    session.env["UG_EXPERIMENTAL_COPILOT_APP"] = "1"
     port = _free_port()
     # A file, not a pipe: nothing reads the service's log until it stops, and a full pipe
     # (4 KB on Windows) would block it mid-request.

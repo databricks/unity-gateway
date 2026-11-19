@@ -20,6 +20,7 @@ from ucode.config_io import APP_DIR, write_text_file
 from ucode.constants import AGENT_CODEX, LOOPBACK_HOST
 from ucode.custom_oauth import CUSTOM_OAUTH_CLI_ENV_VAR, launch_token
 from ucode.databricks import apply_pat_environment, ug_binary
+from ucode.env import env_bool
 from ucode.managed_files import OS, current_os
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.state import load_full_state
@@ -31,6 +32,14 @@ SERVICE_NAME = "ug-codex-otel.service"
 UNIT_MARKER = "# Managed by unity-gateway; do not edit."
 # Added to the marker while the GitHub Copilot app needs the service, so Codex keeps it.
 COPILOT_APP_NOTE = "Used by the GitHub Copilot app."
+# Turns on GitHub Copilot desktop app support while it is in development.
+COPILOT_APP_ENV = "UG_EXPERIMENTAL_COPILOT_APP"
+
+
+def copilot_app_enabled() -> bool:
+    return env_bool(COPILOT_APP_ENV)
+
+
 # The macOS LaunchAgent label and the Windows scheduled task name.
 SERVICE_LABEL = "com.databricks.ug-codex-otel"
 
@@ -333,12 +342,13 @@ def serve(host: str, workspace_id: str | None, port: int, relay_port: int | None
         from ucode.agents import copilot
 
         # One port for every desktop agent: Codex's trace exporter keeps its /v1/ URL, and the
-        # GitHub Copilot app's routes are always served.
+        # GitHub Copilot app's routes are served once the app is set up.
+        app_routes = copilot_app_recorded() or copilot_app_enabled()
         server, _cache, _client = gateway_proxy.start_service_listener(
             host,
             token_provider,
             port=port,
-            exact_routes=copilot.app_service_routes(state),
+            exact_routes=copilot.app_service_routes(state) if app_routes else {},
             prefix_routes={"/v1/": gateway_proxy.ServiceRoute("/ai-gateway/otel/v1/")},
             sign_in_hint=f"Run `databricks auth login --host {host}`, then retry.",
         )
