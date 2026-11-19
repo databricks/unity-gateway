@@ -1867,7 +1867,7 @@ class TestLaunch:
         def start_session():
             started.append(None)
             if failure == "controls":
-                raise OSError("controls file unavailable")
+                raise RuntimeError("Failed to write controls file")
 
         monkeypatch.setattr(copilot, "start_session", start_session)
         seen = _stub_launch(monkeypatch)

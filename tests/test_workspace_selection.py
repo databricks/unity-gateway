@@ -228,6 +228,7 @@ class TestHelperArgv:
         argv = hook_argv(
             {"workspace": SHARED, "profile": "p"},
             {"system.ai.fixture": "databricks/fixture"},
+            start_model="system.ai.fixture",
         )
         assert argv[argv.index("--workspace-id") + 1] == WSID
         assert argv[argv.index("--model") + 1] == "system.ai.fixture=databricks/fixture"

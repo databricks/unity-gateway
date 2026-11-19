@@ -1085,7 +1085,8 @@ real version gate: declining blocks launch, upgrading to 0.164 allows routing, a
 unchanged while audits contain their hash and length, and bound each reason to 1,000
 characters. Shared-writer coverage keeps Claude's full task and reason fields intact.
 `test_copilot_routing.py` checks that a Copilot `task` call is rewritten to the routed registry
-model, that the router is offered `claude` harness options capped at its model limit, that the
+model, that the router is offered `claude` harness options capped at its model limit while
+retaining the starting model, that the
 launch-scoped plugin hook matches only `task`, and that hook failures covered by these cases exit
 zero (Copilot denies the tool call otherwise); `test_agent_copilot.py` checks that a routed launch
 passes the plugin and a plain launch does not. Hook regressions cover object and JSON-string
@@ -1094,7 +1095,8 @@ CLI tests preserve every pre-existing preset's Copilot opt-out, reject inherited
 opt-in, check both new opt-in presets,
 and verify explicit enable, disable, managed-default behavior and launch-environment restoration.
 Launch cases also check fresh controls only on routed success, inherited controls on plain/fallback
-launches, setup creation/write/control failures, and native launch errors without a second launch.
+launches, setup creation/write/wrapped-control failures, and native launch errors without a second launch.
+An unwritable audit path leaves the selected model intact through the shared best-effort writer.
 The plugin command test executes Bash on POSIX and PowerShell on Windows with spaced paths
 and literal shell characters. Routing-helper metrics retain the agent-session phase.
 

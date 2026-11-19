@@ -84,6 +84,18 @@ def test_other_tools_and_failed_routes_are_left_alone(decisions_path):
     assert not decisions_path.exists()
 
 
+def test_audit_write_failure_does_not_discard_the_selected_model(decisions_path):
+    decisions_path.mkdir()
+    output = copilot_routing.route_pre_tool_use(
+        PAYLOAD,
+        workspace=WS,
+        token="tok",
+        refs=REFS,
+        decision_fn=lambda task: (_decision("system.ai.fixture-large"), None),
+    )
+    assert output == {"modifiedArgs": {**PAYLOAD["toolArgs"], "model": LARGE_REF}}
+
+
 def test_router_is_offered_claude_harness_options_for_the_registry_models(monkeypatch):
     seen = {}
 
@@ -103,14 +115,21 @@ def test_router_is_offered_claude_harness_options_for_the_registry_models(monkey
     ]
 
 
-def test_hook_argv_offers_at_most_the_routers_model_limit():
+@pytest.mark.parametrize("parent", [0, 29])
+def test_hook_argv_offers_at_most_the_routers_model_limit(parent):
     refs = {f"system.ai.fixture-{n}": f"databricks/fixture-{n}" for n in range(30)}
-    argv = copilot_routing.hook_argv({"workspace": WS, "profile": "p"}, refs)
+    start_model = f"system.ai.fixture-{parent}"
+    argv = copilot_routing.hook_argv(
+        {"workspace": WS, "profile": "p"}, refs, start_model=start_model
+    )
 
     offered = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--model"]
-    assert offered == [
+    expected = [
         f"{model}={ref}" for model, ref in list(refs.items())[: copilot_routing.MAX_ROUTE_OPTIONS]
     ]
+    if parent == 29:
+        expected[-1] = f"{start_model}={refs[start_model]}"
+    assert offered == expected
     assert argv[1:3] == [copilot_routing.ROUTING_HOOK_COMMAND_MARKER, "route-subagent"]
     assert argv[argv.index("--profile") + 1] == "p"
 

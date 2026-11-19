@@ -761,7 +761,7 @@ their models. The parent model and original task prompt stay unchanged.
 
 `ug copilot --enable-smart-routing` (hidden, like Codex's) routes each Copilot `task` subagent: a
 launch-scoped plugin passed with `--plugin-dir` runs a `preToolUse` hook that sends the
-subagent's prompt to the router, offering the first 20 registry models as `claude` harness options,
+subagent's prompt to the router, offering up to 20 registry models as `claude` harness options,
 and rewrites the call's `model` to the routed `<provider>/<model id>`, which Copilot honors over the
 agent definition and the session model. Decisions are appended to
 `~/.ucode/copilot-smart-routing-decisions.jsonl`, with task hashes and lengths rather than raw
@@ -772,6 +772,8 @@ Legacy routing flags alone do not opt Copilot in. Use the explicit enable flag o
 preset, including when launching from another smart-routed session.
 If optional plugin or session-controls setup cannot write its files, ug warns and launches
 Copilot without routing.
+The router menu follows catalog order but keeps the session's starting model if it would fall outside
+the first 20 entries, replacing the last entry in that case.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 

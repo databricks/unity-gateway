@@ -1315,10 +1315,14 @@ def _session_catalog(
     return catalog
 
 
-def _routing_plugin_args(state: dict, catalog: list[CopilotModel], plugin_dir: Path) -> list[str]:
+def _routing_plugin_args(
+    state: dict, catalog: list[CopilotModel], plugin_dir: Path, *, start_model: str
+) -> list[str]:
     """Load the plugin whose hook routes each ``task`` subagent to a registry model."""
     refs = {model.id: model.ref for model in catalog}
-    copilot_routing.write_plugin(plugin_dir, copilot_routing.hook_argv(state, refs))
+    copilot_routing.write_plugin(
+        plugin_dir, copilot_routing.hook_argv(state, refs, start_model=start_model)
+    )
     return ["--plugin-dir", str(plugin_dir)]
 
 
@@ -1386,11 +1390,11 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
                     prefix="ug-copilot-routing-", ignore_cleanup_errors=True
                 )
                 routing_args = _routing_plugin_args(
-                    state, catalog, Path(routing_temp.name) / "plugin"
+                    state, catalog, Path(routing_temp.name) / "plugin", start_model=start_model.id
                 )
                 # Keep inherited routing controls from steering this child.
                 start_session()
-            except OSError as exc:
+            except (OSError, RuntimeError) as exc:
                 routing_args = []
                 print_warning(
                     f"Smart Router setup failed; launching Copilot without routing: {exc}"

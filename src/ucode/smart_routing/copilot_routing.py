@@ -16,7 +16,7 @@ from typing import Any
 
 from ucode.config_io import APP_DIR
 from ucode.constants import AGENT_COPILOT
-from ucode.databricks import build_auth_token_argv
+from ucode.databricks import ug_binary
 from ucode.smart_routing import orchestrator, routing
 from ucode.smart_routing.routing import RoutingDecision
 from ucode.workspace import workspace_id_args
@@ -103,13 +103,11 @@ def route_pre_tool_use(
     return {"modifiedArgs": {**route.tool_input, "model": route.routed_model}}
 
 
-def hook_argv(state: dict, refs: Mapping[str, str]) -> list[str]:
+def hook_argv(state: dict, refs: Mapping[str, str], *, start_model: str) -> list[str]:
     """The ``ug`` command Copilot runs before each tool call."""
     workspace = str(state.get("workspace") or "")
     argv = [
-        build_auth_token_argv(workspace, state.get("profile"), use_pat=bool(state.get("use_pat")))[
-            0
-        ],
+        ug_binary(),
         ROUTING_HOOK_COMMAND_MARKER,
         "route-subagent",
         "--host",
@@ -121,8 +119,11 @@ def hook_argv(state: dict, refs: Mapping[str, str]) -> list[str]:
         argv += ["--profile", profile]
     if state.get("use_pat"):
         argv.append("--use-pat")
-    # shortcut: first 20 catalog entries; use a family-balanced menu when larger catalogs need it.
-    for model, ref in list(refs.items())[:MAX_ROUTE_OPTIONS]:
+    # shortcut: catalog order plus the parent; use a family-balanced menu if coverage needs it.
+    offered = list(refs.items())[:MAX_ROUTE_OPTIONS]
+    if start_model in refs and all(model != start_model for model, _ in offered):
+        offered[-1] = (start_model, refs[start_model])
+    for model, ref in offered:
         argv += ["--model", f"{model}={ref}"]
     return argv
 

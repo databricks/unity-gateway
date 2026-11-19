@@ -47,6 +47,7 @@ COPILOT_SUBAGENT_ORCH_V0 = "copilot_subagent_orch_v0"
 
 # Shared enable/managed default; the explicit Copilot flag selects its own opt-in preset.
 DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
+_EXPLICIT_ENABLE_DEFAULTS = {AGENT_COPILOT: COPILOT_SUBAGENT_ORCH_V0}
 
 _RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 
@@ -235,9 +236,9 @@ def _enabled_version(env: Mapping[str, str], *, agent: str, managed: bool) -> st
     if version in _VERSIONS:
         return version
     return (
-        COPILOT_SUBAGENT_ORCH_V0
-        if agent == AGENT_COPILOT and not managed
-        else DEFAULT_ENABLED_VERSION
+        DEFAULT_ENABLED_VERSION
+        if managed
+        else _EXPLICIT_ENABLE_DEFAULTS.get(agent, DEFAULT_ENABLED_VERSION)
     )
 
 

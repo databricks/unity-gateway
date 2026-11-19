@@ -247,17 +247,17 @@ _LEGACY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: False}
 
 
 @pytest.mark.parametrize(
-    ("selector", "routes"),
+    ("selector", "explicit_routes", "managed_routes"),
     [
-        (None, _CLAUDE_ONLY_ROUTES),
-        ("unsupported_version", _CLAUDE_ONLY_ROUTES),
-        (config.COPILOT_SUBAGENT_ONLY_V0, _COPILOT_ROUTES),
-        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES),
-        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES),
-        (config.COPILOT_SUBAGENT_ORCH_V0, _COPILOT_ROUTES),
-        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, _LEGACY_ROUTES),
+        (None, _COPILOT_ROUTES, _CLAUDE_ONLY_ROUTES),
+        ("unsupported_version", _COPILOT_ROUTES, _CLAUDE_ONLY_ROUTES),
+        (config.COPILOT_SUBAGENT_ONLY_V0, _COPILOT_ROUTES, _COPILOT_ROUTES),
+        (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES, _CLAUDE_ONLY_ROUTES),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES, _CLAUDE_ONLY_ROUTES),
+        (config.COPILOT_SUBAGENT_ORCH_V0, _COPILOT_ROUTES, _COPILOT_ROUTES),
+        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, _LEGACY_ROUTES, _LEGACY_ROUTES),
         *(
-            (version, _LEGACY_ROUTES)
+            (version, _LEGACY_ROUTES, _LEGACY_ROUTES)
             for version in (
                 config.SUBAGENT_ONLY_V0,
                 config.SUBAGENT_ONLY_V1,
@@ -268,15 +268,14 @@ _LEGACY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: False}
     ],
 )
 @pytest.mark.parametrize("managed", [False, True])
-def test_enabled_version_routes(selector, routes, managed):
+def test_enabled_version_routes(selector, explicit_routes, managed_routes, managed):
     env = {ENABLE_SMART_ROUTING_ENV_VAR: "1", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
     if selector is not None:
         env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     before = env.copy()
 
+    routes = managed_routes if managed else explicit_routes
     for agent, expected in routes.items():
-        if agent == AGENT_COPILOT and selector in {None, "unsupported_version"} and not managed:
-            expected = True
         assert config.enabled_version_routes(env, agent=agent, managed=managed) is expected
         applied = env.copy()
         config.apply_enabled_version(applied, agent=agent, managed=managed)
