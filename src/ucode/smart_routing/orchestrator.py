@@ -113,7 +113,10 @@ def hook_output(payload: object, *, agent: str) -> dict | None:
             return None
         if not enabled(agent=agent):
             return None
-        workflow = skills.skill_entrypoint(skill_directory(), agent).read_text(encoding="utf-8")
+        try:
+            workflow = skills.skill_entrypoint(skill_directory(), agent).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            return None
         return {
             "additionalContext": "Smart Router Orchestrator is on for this session.\n\n" + workflow
         }

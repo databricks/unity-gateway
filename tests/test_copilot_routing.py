@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import subprocess
+import sys
 
 import pytest
 from typer.testing import CliRunner
@@ -120,6 +123,25 @@ def test_plugin_hook_runs_only_for_task_calls(tmp_path):
     assert hook["timeoutSec"] > 30
 
 
+def test_plugin_commands_preserve_spaced_paths_and_literal_arguments(tmp_path):
+    script = tmp_path / "script's spaced directory" / "capture argv.py"
+    script.parent.mkdir()
+    script.write_text("import json, sys; print(json.dumps(sys.argv[1:]))", encoding="utf-8")
+    args = ["with spaces", "it's literal", "$not_a_variable", 'a"quote', "semi;colon", ""]
+    argv = [sys.executable, str(script), *args]
+    directory = copilot_routing.write_plugin(tmp_path / "plugin", argv)
+    (hook,) = json.loads((directory / "hooks/hooks.json").read_text())["hooks"]["preToolUse"]
+
+    assert hook["powershell"] == "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+    shell = (
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", hook["powershell"]]
+        if os.name == "nt"
+        else ["bash", "-c", hook["bash"]]
+    )
+    result = subprocess.run(shell, text=True, capture_output=True, check=True, timeout=10)
+    assert json.loads(result.stdout) == args
+
+
 def test_orchestration_uses_a_command_session_start_hook(tmp_path, monkeypatch):
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
     monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
@@ -134,6 +156,7 @@ def test_orchestration_uses_a_command_session_start_hook(tmp_path, monkeypatch):
         "--agent",
         "copilot",
     ]
+    assert hook["powershell"] == copilot_routing._powershell_command(shlex.split(hook["bash"]))
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "0")
     directory = tmp_path / "disabled"
     copilot_routing.write_plugin(directory, ["/bin/ug", "copilot-router-hook", "route-subagent"])
@@ -149,6 +172,25 @@ def test_orchestration_context_uses_native_tasks_and_respects_off_and_child(monk
     assert "do not delegate again" in context["additionalContext"]
     assert orchestrator.hook_output({"agentId": "child"}, agent="copilot") is None
     monkeypatch.setattr(orchestrator, "enabled", lambda **_kwargs: False)
+    assert orchestrator.hook_output({"sessionId": "parent"}, agent="copilot") is None
+
+
+@pytest.mark.parametrize(
+    "skill_contents",
+    [pytest.param(None, id="missing"), pytest.param(b"\xff", id="invalid-utf8")],
+)
+def test_copilot_orchestration_fails_open_when_skill_cannot_be_read(
+    tmp_path, monkeypatch, skill_contents
+):
+    from ucode.smart_routing import orchestrator
+
+    directory = tmp_path / "skill"
+    directory.mkdir()
+    if skill_contents is not None:
+        (directory / "SKILL.md").write_bytes(skill_contents)
+    monkeypatch.setattr(orchestrator, "skill_directory", lambda: directory)
+    monkeypatch.setattr(orchestrator, "enabled", lambda **_kwargs: True)
+
     assert orchestrator.hook_output({"sessionId": "parent"}, agent="copilot") is None
 
 
@@ -172,17 +214,52 @@ class TestRouterHookCommand:
     def invoke(self, payload):
         return self.runner.invoke(cli_mod.app, self.ARGS, input=json.dumps(payload))
 
-    def test_prints_the_rewritten_args(self, monkeypatch):
+    @pytest.mark.parametrize(
+        "tool_args",
+        [
+            pytest.param(PAYLOAD["toolArgs"], id="object"),
+            pytest.param(json.dumps(PAYLOAD["toolArgs"]), id="json-string"),
+        ],
+    )
+    def test_prints_the_rewritten_args(self, monkeypatch, tool_args):
         monkeypatch.setattr(
             copilot_routing,
             "request_routing_decision",
             lambda *_args, **_kwargs: (_decision("system.ai.fixture-large"), None),
         )
 
-        result = self.invoke(PAYLOAD)
+        result = self.invoke({**PAYLOAD, "toolArgs": tool_args})
 
         assert result.exit_code == 0
-        assert json.loads(result.stdout)["modifiedArgs"]["model"] == LARGE_REF
+        assert json.loads(result.stdout) == {
+            "modifiedArgs": {**PAYLOAD["toolArgs"], "model": LARGE_REF}
+        }
+
+    @pytest.mark.parametrize(
+        "tool_args",
+        [
+            pytest.param("{", id="malformed"),
+            pytest.param('"plain text"', id="string-scalar"),
+            pytest.param("1", id="number-scalar"),
+            pytest.param("true", id="boolean-scalar"),
+            pytest.param("[]", id="json-list"),
+            pytest.param("null", id="json-null"),
+            pytest.param([], id="list-value"),
+            pytest.param(None, id="null-value"),
+        ],
+    )
+    def test_non_object_tool_args_fail_open(self, monkeypatch, tool_args):
+        calls = []
+        monkeypatch.setattr(
+            copilot_routing,
+            "request_routing_decision",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+
+        result = self.invoke({**PAYLOAD, "toolArgs": tool_args})
+
+        assert (result.exit_code, result.stdout) == (0, "")
+        assert calls == []
 
     def test_disabled_routing_prints_nothing(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")

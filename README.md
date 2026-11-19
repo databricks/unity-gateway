@@ -649,13 +649,12 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
-`subagent_orch_v1_claude_copilot`. For Claude, that routes subagents and turns on Smart Router
-Orchestrator while the main session stays on its default model. Copilot uses its native task
-tool under the same delegation workflow and routes each subagent (see below). Codex stays unrouted and
-without orchestration under this default, and a Codex launch that turns routing on this way
-warns and runs without smart routing: `--enable-smart-routing` says smart routing on Codex is
-currently not supported, and workspace smart routing says it is enabled for Codex in this
-workspace but currently only supported for Claude Code. `ug codex --help` hides
+`subagent_orch_v0_claude_only`. For Claude, that routes subagents and turns on Smart Router
+Orchestrator while the main session stays on its default model. Codex and Copilot stay unrouted
+under this managed default; ug warns when the selected configuration excludes the agent.
+An explicit `ug copilot --enable-smart-routing` without a known version instead selects
+`copilot_subagent_orch_v0`, opting that launch into Copilot child routing and orchestration.
+`ug codex --help` hides
 `--enable-smart-routing` and `--disable-smart-routing` (the Smart Router skill still uses them)
 and notes that Smart Routing is currently only supported for the Claude Code harness.
 Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
@@ -727,20 +726,21 @@ would override dynamic values.
 Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configuration.
 Each version defines separate Claude Code, Codex and Copilot flag mappings; Claude Code and
 Codex share the base mapping in every version except the Claude-only and Claude-and-Copilot
-versions, which disable routing for Codex. Copilot routes only subagents; its orchestration
-context is enabled by `subagent_orch_v1_claude_copilot`:
+versions, which disable routing for Codex. Existing versions leave Copilot unrouted.
+The two `copilot_` versions opt in to Copilot child routing; only
+`copilot_subagent_orch_v0` adds its orchestration context:
 
 | Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker |
 | --- | --- | --- | --- | --- | --- |
 | `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
-| `subagent_only_v0` | Claude, Codex, Copilot | On | Off | Off | Off |
-| `subagent_only_v1` | Claude, Codex, Copilot | On | Off | Off | Off |
-| `subagent_orch_v0` | Claude, Codex, Copilot | On | Off | On (Claude, Codex) | Off |
-| `subagent_orch_v1` | Claude, Codex, Copilot | On | Off | On (Claude, Codex) | Off |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
 | `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
 | `subagent_auto_v0_claude_only` | Claude | On | Off | On | On |
-| `subagent_orch_v0_claude_copilot` | Claude, Copilot | On | Off | On (Claude only) | Off |
-| `subagent_orch_v1_claude_copilot` | Claude, Copilot | On | Off | On | Off |
+| `copilot_subagent_only_v0` | Claude, Copilot | On | Off | On (Claude only) | Off |
+| `copilot_subagent_orch_v0` | Claude, Copilot | On | Off | On | Off |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
@@ -748,13 +748,13 @@ orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=
 `subagent_only_v1` and `subagent_orch_v1` route the same way as their `_v0` versions.
 
 `subagent_orch_v0_claude_only` keeps Claude's `subagent_orch_v0` flags (`0`, `1`, `1`)
-and sets all routing flags to `"0"` for Codex. Codex uses its ordinary launch and
+and sets all routing flags to `"0"` for Codex and Copilot. Codex uses its ordinary launch and
 managed default model, without routing or orchestration. `--enable-smart-routing` and
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
-`subagent_orch_v0_claude_copilot` preserves routing-only Copilot sessions.
-`subagent_orch_v1_claude_copilot` is the default: Claude retains its existing flags,
+`copilot_subagent_only_v0` enables routing-only Copilot sessions.
+`copilot_subagent_orch_v0` is the explicit Copilot flag's default: Claude retains its existing flags,
 Codex stays unrouted, and Copilot receives orchestration guidance through a launch-scoped
 `sessionStart` command hook. The native `task` tool creates children; Smart Router selects
 their models. The parent model and original task prompt stay unchanged.
@@ -771,8 +771,9 @@ denies a tool call whose hook fails; a router failure leaves the subagent on its
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
-`--enable-smart-routing` and workspace smart routing select `subagent_orch_v1_claude_copilot`, which
-installs both skills for Claude only; Codex and Copilot get neither. For example:
+The shared managed default, `subagent_orch_v0_claude_only`, installs both skills for
+Claude only; Codex and Copilot get neither. Copilot's opt-in orchestration context is supplied
+by its plugin rather than a persistent skill install. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude

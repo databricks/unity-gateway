@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -70,6 +69,13 @@ def route_pre_tool_use(
 ) -> dict[str, Any] | None:
     """Route one ``task`` call and return Copilot's ``preToolUse`` output rewriting its model."""
     tool_args = payload.get("toolArgs")
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(tool_args, dict):
+        return None
     adapted = {
         "tool_name": payload.get("toolName"),
         "tool_input": tool_args,
@@ -116,6 +122,10 @@ def hook_argv(state: dict, refs: Mapping[str, str]) -> list[str]:
     return argv
 
 
+def _powershell_command(argv: list[str]) -> str:
+    return "& " + " ".join("'" + arg.replace("'", "''") + "'" for arg in argv)
+
+
 def write_plugin(directory: Path, argv: list[str]) -> Path:
     """Write the launch-scoped Copilot plugin whose hook routes ``task`` calls.
 
@@ -139,7 +149,7 @@ def write_plugin(directory: Path, argv: list[str]) -> Path:
         # Spawning ug on every tool call would slow the session for no routing benefit.
         "matcher": TASK_TOOL_NAME,
         "bash": shlex.join(argv),
-        "powershell": subprocess.list2cmdline(argv),
+        "powershell": _powershell_command(argv),
         "timeoutSec": HOOK_TIMEOUT_S,
     }
     hooks = {"preToolUse": [hook]}
@@ -149,7 +159,7 @@ def write_plugin(directory: Path, argv: list[str]) -> Path:
             {
                 "type": "command",
                 "bash": shlex.join(command),
-                "powershell": subprocess.list2cmdline(command),
+                "powershell": _powershell_command(command),
                 "timeoutSec": 5,
             }
         ]

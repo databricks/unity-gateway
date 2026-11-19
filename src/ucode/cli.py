@@ -75,6 +75,7 @@ from ucode.constants import (
     ISAAC_LAUNCH_MODE_ENV_VAR,
     ISAAC_SMART_ROUTER_FEEDBACK_ENV_VAR,
     MANAGED_MODEL_SOURCE_EXPANSIONS_STATE_KEY,
+    SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
     UG_HEADERS_ENV_VAR,
 )
@@ -3693,18 +3694,27 @@ SMART_ROUTING_AGENTS = CAN_USE_CACHED_CONFIG_AGENTS | {"copilot"}
 
 
 @contextmanager
-def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool]:
+def _smart_routing_v2_flag(
+    enabled: bool | None, *, agent: str, default_version: str | None = None
+) -> Iterator[bool]:
     """Apply an explicit routing choice without leaking into an embedding process.
 
     Yields whether the flag or a known version already chose this launch's routing.
     """
     with smart_routing_config.version_scope():
         routing_chosen = enabled is not None or smart_routing_config.known_version()
+        previous_selector = {}
+        if enabled and default_version and not smart_routing_config.known_version():
+            previous_selector[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = os.environ.get(
+                SMART_ROUTER_CONFIG_VERSION_ENV_VAR
+            )
+            os.environ[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = default_version
         previous = (
             smart_routing_v2.apply_config(agent=agent)
             if enabled is None
             else smart_routing_v2.override_smart_routing(enabled, agent=agent)
         )
+        previous.update(previous_selector)
         try:
             yield routing_chosen
         finally:
@@ -4291,11 +4301,8 @@ def _launch_tool(
         if routing_skipped and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
             display = TOOL_SPECS[tool]["display"]
             print_warning(
-                f"Smart routing is enabled for {display} in this workspace, but it is currently "
-                "only supported for Claude Code. Running without smart routing."
-                if managed_routing_unsupported
-                else f"Smart routing on {display} is currently not supported. "
-                "Running without smart routing."
+                f"The selected Smart Router configuration does not route {display}. "
+                "Choose a configuration that supports it. Running without smart routing."
             )
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
@@ -5215,10 +5222,13 @@ def copilot_cmd(
     # Read before the flag applies the version, which consumes the selector.
     routing_unsupported = (
         enable_smart_routing_flag is True
+        and smart_routing_config.known_version()
         and not smart_routing_config.enabled_version_routes(agent=AGENT_COPILOT)
     )
     with _smart_routing_v2_flag(
-        enable_smart_routing_flag, agent=AGENT_COPILOT
+        enable_smart_routing_flag,
+        agent=AGENT_COPILOT,
+        default_version=smart_routing_config.COPILOT_SUBAGENT_ORCH_V0,
     ) as routing_already_chosen:
         with _disable_smart_routing_for_subcommand("copilot", ctx):
             _launch_tool(

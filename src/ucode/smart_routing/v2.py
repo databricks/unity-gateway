@@ -32,6 +32,7 @@ from ucode.config_io import (
 from ucode.constants import (
     AGENT_CLAUDE,
     AGENT_CODEX,
+    AGENT_COPILOT,
     ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
@@ -242,7 +243,7 @@ def describe_routing(env: MutableMapping[str, str] | None = None) -> RoutingDesc
     return RoutingDescription(
         harnesses=tuple(
             agent
-            for agent in (AGENT_CLAUDE, AGENT_CODEX)
+            for agent in (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)
             if smart_routing_enabled(source, default=False, agent=agent)
         )
     )

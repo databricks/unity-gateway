@@ -767,6 +767,8 @@ class TestSubcommandRouting:
                     smart_routing_config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
                     smart_routing_config.SUBAGENT_ONLY_V0,
                     smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                    smart_routing_config.COPILOT_SUBAGENT_ONLY_V0,
+                    smart_routing_config.COPILOT_SUBAGENT_ORCH_V0,
                 )
             ),
         ],
@@ -779,6 +781,8 @@ class TestSubcommandRouting:
             "first-prompt-version",
             "subagent-only-version",
             "claude-only-version",
+            "copilot-routing-version",
+            "copilot-orchestration-version",
         ],
     )
     def test_enable_smart_routing_keeps_a_known_version_or_selects_the_default(
@@ -786,6 +790,8 @@ class TestSubcommandRouting:
     ):
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
+        if tool == "copilot" and not smart_routing_config.known_version():
+            expected_version = smart_routing_config.COPILOT_SUBAGENT_ORCH_V0
         env_before = _routing_env()
         observed = []
 
@@ -880,7 +886,7 @@ class TestSubcommandRouting:
         assert ctx.args == forwarded
         assert cli_mod._has_explicit_prompt(ctx) is has_separator
 
-    @pytest.mark.parametrize("tool", ["codex", "claude"])
+    @pytest.mark.parametrize("tool", ["codex", "claude", "copilot"])
     @pytest.mark.parametrize(
         ("tool_args", "explicit_prompt", "model", "provider", "expected"),
         [
@@ -890,7 +896,7 @@ class TestSubcommandRouting:
             (["update"], False, None, None, False),
         ],
     )
-    def test_codex_and_claude_share_smart_routing_policy(
+    def test_agents_share_smart_routing_policy(
         self, tool, tool_args, explicit_prompt, model, provider, expected
     ):
         options = cli_mod._launch_options(
@@ -990,7 +996,7 @@ class TestSubcommandRouting:
         assert cli_mod._managed_smart_routing_enabled(managed, "claude") is True
         assert cli_mod._managed_smart_routing_enabled(managed, "codex") is True
 
-    @pytest.mark.parametrize("tool", ["claude", "codex"])
+    @pytest.mark.parametrize("tool", ["claude", "codex", "copilot"])
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
@@ -1067,6 +1073,9 @@ class TestSubcommandRouting:
     ):
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
+        if tool == "copilot" and launch_args == ["--enable-smart-routing"]:
+            expected_version = smart_routing_config.COPILOT_SUBAGENT_ORCH_V0
+            routed_tools = {"claude", "copilot"}
         managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
         env_before = _routing_env()
         expected_env = (
@@ -1187,7 +1196,7 @@ class TestSubcommandRouting:
         assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
         if recovery == "managed-default":
             output = " ".join(_strip_ansi(result.output).split())
-            assert "only supported for Claude Code" in output
+            assert "selected Smart Router configuration does not route Codex" in output
         if recovery == "decline":
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
@@ -1229,6 +1238,33 @@ class TestSubcommandRouting:
             ("codex", ["--enable-smart-routing", "app"], {}, False, False, False),
             ("claude", ["--enable-smart-routing"], {}, False, False, True),
             ("claude", [], {}, True, False, True),
+            ("copilot", [], {}, True, True, False),
+            ("copilot", ["--enable-smart-routing"], {}, False, False, True),
+            (
+                "copilot",
+                ["--enable-smart-routing"],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.SUBAGENT_ORCH_V0},
+                False,
+                True,
+                False,
+            ),
+            (
+                "copilot",
+                [],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.COPILOT_SUBAGENT_ORCH_V0},
+                True,
+                False,
+                True,
+            ),
+            ("copilot", ["--disable-smart-routing"], {}, True, False, False),
+            (
+                "copilot",
+                ["--disable-smart-routing"],
+                {"SMART_ROUTER_CONFIG_VERSION": smart_routing_config.COPILOT_SUBAGENT_ORCH_V0},
+                True,
+                False,
+                False,
+            ),
         ],
         ids=[
             "codex-enable-flag-default",
@@ -1242,9 +1278,15 @@ class TestSubcommandRouting:
             "codex-native-subcommand",
             "claude-enable-flag",
             "claude-managed-default",
+            "copilot-managed-default",
+            "copilot-enable-flag",
+            "copilot-enable-flag-legacy-version",
+            "copilot-managed-opt-in-version",
+            "copilot-disable-flag-over-managed",
+            "copilot-disable-flag-over-opt-in-version",
         ],
     )
-    def test_warns_once_and_launches_unrouted_when_version_leaves_codex_unrouted(
+    def test_warns_once_and_launches_unrouted_when_version_excludes_agent(
         self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
     ):
         for name, value in launch_env.items():
@@ -1265,16 +1307,19 @@ class TestSubcommandRouting:
             result = runner.invoke(app, [tool, *launch_args])
 
         assert result.exit_code == 0, result.output
+        display = cli_mod.TOOL_SPECS[tool]["display"]
         unsupported = (
-            "Smart routing is enabled for Codex in this workspace, but it is currently only "
-            "supported for Claude Code. Running without smart routing."
-            if managed_routing and not launch_args
-            else "Smart routing on Codex is currently not supported. Running without smart routing."
+            f"The selected Smart Router configuration does not route {display}. "
+            "Choose a configuration that supports it. Running without smart routing."
         )
-        assert [w for w in warnings if "Smart routing" in w] == ([unsupported] if warned else [])
+        assert [w for w in warnings if "Smart Router configuration" in w] == (
+            [unsupported] if warned else []
+        )
         # An unrouted launch never reaches the routed path that installs skills and hooks.
         assert observed == [routed]
-        assert any("one-time hook review" in note for note in notes) is routed
+        assert any("one-time hook review" in note for note in notes) is (
+            routed and tool != "copilot"
+        )
 
     @pytest.mark.parametrize(
         ("version", "launch_args", "routed"),

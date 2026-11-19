@@ -1061,8 +1061,7 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     launch_text = " ".join(ANSI.sub("", transcript).split())
-    assert (
-        "Smart routing is enabled for Codex in this workspace, but it is currently only "
-        "supported for Claude Code." in launch_text
-    ), transcript
+    assert "The selected Smart Router configuration does not route Codex." in launch_text, (
+        transcript
+    )
     session.assert_not_routed()

@@ -241,26 +241,22 @@ def test_enabled_version_keeps_a_known_version(agent, version):
 
 
 _CLAUDE_ONLY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: False}
-_DEFAULT_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: True}
-# Copilot routes subagents only, so a version that routes only the first prompt leaves it unrouted.
-_ALL_AGENT_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: True}
+_COPILOT_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: False, AGENT_COPILOT: True}
+_LEGACY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: False}
 
 
 @pytest.mark.parametrize(
     ("selector", "routes"),
     [
-        (None, _DEFAULT_ROUTES),
-        ("unsupported_version", _DEFAULT_ROUTES),
-        (config.SUBAGENT_ORCH_V0_CLAUDE_COPILOT, _DEFAULT_ROUTES),
+        (None, _CLAUDE_ONLY_ROUTES),
+        ("unsupported_version", _CLAUDE_ONLY_ROUTES),
+        (config.COPILOT_SUBAGENT_ONLY_V0, _COPILOT_ROUTES),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES),
         (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, _CLAUDE_ONLY_ROUTES),
-        (config.SUBAGENT_ORCH_V1_CLAUDE_COPILOT, _DEFAULT_ROUTES),
-        (
-            config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0,
-            {**_ALL_AGENT_ROUTES, AGENT_COPILOT: False},
-        ),
+        (config.COPILOT_SUBAGENT_ORCH_V0, _COPILOT_ROUTES),
+        (config.FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0, _LEGACY_ROUTES),
         *(
-            (version, _ALL_AGENT_ROUTES)
+            (version, _LEGACY_ROUTES)
             for version in (
                 config.SUBAGENT_ONLY_V0,
                 config.SUBAGENT_ONLY_V1,
@@ -336,6 +332,9 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
         (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.COPILOT_SUBAGENT_ONLY_V0, (AGENT_CLAUDE, AGENT_COPILOT)),
+        (config.COPILOT_SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_COPILOT)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):
@@ -367,9 +366,9 @@ def test_describe_routing_reports_each_version_over_shell_flags(version, harness
                 SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "unsupported_version",
                 ENABLE_SMART_ROUTING_ENV_VAR: "1",
             },
-            (AGENT_CLAUDE, AGENT_CODEX),
+            (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT),
         ),
-        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, (AGENT_CLAUDE, AGENT_CODEX)),
+        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)),
     ],
 )
 def test_describe_routing_without_a_known_version_reports_shell_flags(source, harnesses):
@@ -439,5 +438,10 @@ def test_copilot_orchestration_is_enabled_only_by_the_new_preset(version):
     )
     assert resolved[ENABLE_SMART_ROUTING_ENV_VAR] == "0"
     assert resolved[ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR] == (
-        "1" if version == config.SUBAGENT_ORCH_V1_CLAUDE_COPILOT else "0"
+        "1" if version == config.COPILOT_SUBAGENT_ORCH_V0 else "0"
+    )
+    assert resolved[ENABLE_SUBAGENT_ROUTING_ENV_VAR] == (
+        "1"
+        if version in {config.COPILOT_SUBAGENT_ONLY_V0, config.COPILOT_SUBAGENT_ORCH_V0}
+        else "0"
     )

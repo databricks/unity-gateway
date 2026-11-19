@@ -110,6 +110,7 @@ _AGENT_SESSION_COMMANDS = frozenset(
         "mcp-proxy",
         "claude-router-hook",
         "codex-router-hook",
+        "copilot-router-hook",
         "cowork-hook",
         "claude-desktop-auth",
         "smart-router-describe",

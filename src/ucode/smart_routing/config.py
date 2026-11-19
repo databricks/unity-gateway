@@ -39,14 +39,14 @@ SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 
 SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
 
-# Claude keeps subagent_orch_v0, Codex stays unrouted, and Copilot routes its subagents.
-SUBAGENT_ORCH_V0_CLAUDE_COPILOT = "subagent_orch_v0_claude_copilot"
+# Opt-in Copilot subagent routing; Claude retains its default orchestration and Codex stays off.
+COPILOT_SUBAGENT_ONLY_V0 = "copilot_subagent_only_v0"
 
 # Enable Copilot's launch-scoped orchestration context as well as child routing.
-SUBAGENT_ORCH_V1_CLAUDE_COPILOT = "subagent_orch_v1_claude_copilot"
+COPILOT_SUBAGENT_ORCH_V0 = "copilot_subagent_orch_v0"
 
-# Selected by --enable-smart-routing and managed smart routing when no known version is set.
-DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V1_CLAUDE_COPILOT
+# Shared enable/managed default; the explicit Copilot flag selects its own opt-in preset.
+DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
 
 _RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 
@@ -91,41 +91,32 @@ _ALL_OFF = {
 }
 
 
-def _copilot_preset(base: Mapping[str, str]) -> dict[str, str]:
-    """Copilot routes subagents only: it has neither first-prompt routing nor orchestration."""
-    return {
-        **base,
-        ENABLE_SMART_ROUTING_ENV_VAR: "0",
-        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
-    }
-
-
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
 _VERSIONS = {
     FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
         AGENT_CODEX: _BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0],
-        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[FIRST_PROMPT_AND_SUBAGENT_NO_ORCH_V0]),
+        AGENT_COPILOT: _ALL_OFF,
     },
     SUBAGENT_ONLY_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
-        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ONLY_V0]),
+        AGENT_COPILOT: _ALL_OFF,
     },
     SUBAGENT_ONLY_V1: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ONLY_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ONLY_V1],
-        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ONLY_V1]),
+        AGENT_COPILOT: _ALL_OFF,
     },
     SUBAGENT_ORCH_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
-        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ORCH_V0]),
+        AGENT_COPILOT: _ALL_OFF,
     },
     SUBAGENT_ORCH_V1: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
-        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ORCH_V1]),
+        AGENT_COPILOT: _ALL_OFF,
     },
     # Codex and Copilot opt out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
@@ -134,12 +125,12 @@ _VERSIONS = {
         AGENT_COPILOT: _ALL_OFF,
     },
     # Codex opts out; Claude keeps subagent_orch_v0 and Copilot routes subagents.
-    SUBAGENT_ORCH_V0_CLAUDE_COPILOT: {
+    COPILOT_SUBAGENT_ONLY_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: _ALL_OFF,
-        AGENT_COPILOT: _copilot_preset(_BASE_VERSIONS[SUBAGENT_ORCH_V0]),
+        AGENT_COPILOT: _BASE_VERSIONS[SUBAGENT_ONLY_V0],
     },
-    SUBAGENT_ORCH_V1_CLAUDE_COPILOT: {
+    COPILOT_SUBAGENT_ORCH_V0: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
         AGENT_CODEX: _ALL_OFF,
         AGENT_COPILOT: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
@@ -156,7 +147,7 @@ _VERSIONS = {
 
 
 def _validate_versions(versions: Mapping[str, Mapping[str, Mapping[str, str]]]) -> None:
-    """Require both agents and a complete, explicit flag set for each."""
+    """Require every supported agent and a complete, explicit flag set for each."""
     expected_agents = {AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT}
     expected = set(SMART_ROUTING_ENV_KEYS)
     for version, agents in versions.items():
