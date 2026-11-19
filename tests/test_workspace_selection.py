@@ -17,6 +17,7 @@ import ucode.databricks as db_mod
 import ucode.workspace as workspace_mod
 from ucode import gateway_proxy, mcp, mcp_connection_login, skills_usage
 from ucode.agents import claude, codex, copilot, gemini, kilo, opencode, pi, vscode
+from ucode.smart_routing.codex_hooks import _routing_hook_argv
 from ucode.state import build_agent_state
 from ucode.workspace import (
     activate,
@@ -256,6 +257,15 @@ class TestHelperArgv:
         assert "--provider" not in routing_hook_argv(state, "session-start")
         del state["_claude_launch_provider"]
         assert "--provider" not in routing_hook_argv(state, ROUTE_SUBAGENT_MOD_EVENT)
+
+    def test_codex_router_hook_preserves_selection_and_launch_provider(self, selected):
+        state = {"workspace": SHARED, "_codex_launch_provider": "new.schema.provider"}
+        argv = _routing_hook_argv(state, "route-subagent")
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+        assert argv[argv.index("--provider") + 1] == "new.schema.provider"
+        assert "--provider" not in _routing_hook_argv(state, "session-start")
+        del state["_codex_launch_provider"]
+        assert "--provider" not in _routing_hook_argv(state, "route-subagent")
 
     def test_cowork_hook(self, selected):
         from ucode.agents.desktop import cowork

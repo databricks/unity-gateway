@@ -77,7 +77,6 @@ def _assert_turn(session, recorder, checkpoint, task, answer, model, route, head
     """The chat answer carries the file's value, and every request of the turn asked the gateway
     for ``model`` on ``route`` with ``headers``, from the bundled Copilot Chat, and got a non-empty
     HTTP 200."""
-    assert task.value in answer, answer
     requests = [
         request
         for request in recorder.requests_after(checkpoint)
@@ -90,6 +89,7 @@ def _assert_turn(session, recorder, checkpoint, task, answer, model, route, head
             for r in requests
         ],
     )
+    assert task.value in answer, answer
     assert requests, "The chat turn reached no gateway route"
     agent = f"githubcopilotchat/{copilot_chat_version(session)}"
     for request in requests:

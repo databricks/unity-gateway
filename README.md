@@ -598,10 +598,9 @@ retain their precedence. Other versions keep their existing Smart Router control
 
 The native `/model` picker includes **Auto**:
 “Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
-enables UG's existing subagent router and opens a compact main-model modal above the prompt.
-`/model auto` selects Auto and opens the same modal without a model request. The current model
-appears first, followed by the remaining models in catalog order. Larger catalogs use
-**More models** to cycle through pages. No wider terminal is required.
+enables UG's subagent router and opens the main-model picker. `/model auto` opens
+the same picker. Use the arrow keys to scroll through the full list and Enter to select.
+The current model appears first, followed by the remaining models in catalog order.
 
 With the Auto config version, fresh sessions start in Auto with the managed default
 model, or the first available model if no default is configured. An explicit ordinary model
@@ -611,8 +610,7 @@ A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosin
 a main model through `/model auto` changes the model used by the main agent,
 keeping the checkmark on Auto. The chooser has no effort controls; use native `/effort`
 to change effort separately.
-Invalid typed answers show a message and reopen the chooser. Escape preserves the
-current selection; Claude also treats an empty typed submission as cancellation.
+Escape keeps the current selection. Saving updates the Auto hint without adding a chat message.
 Each running session keeps its
 own selected profile, even when another session saves a different preference.
 Model-switch echoes and confirmations use Auto. Native `/status` and the header for non-Claude models still show the internal
@@ -648,7 +646,11 @@ The Codex integration is unchanged.
 Fresh launches using the Auto version start in Auto with the managed default model. Resume uses
 Claude's native model precedence without UG injecting a new Auto selection. A configured
 `ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
-uses the exact Claude ID or an explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
+uses the exact Claude ID or an explicit admin `behavesAs` hint. For other Auto aliases without a native
+profile, UG uses the catalog's input limit for Claude's launch-only compaction window, up to
+1M tokens. When the catalog omits the limit, UG uses 200k tokens.
+If the catalog reports a limit below Claude’s 100k minimum, UG leaves compaction to Claude. Explicit native
+window settings take precedence.
 Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
 uses the managed Claude catalog. Native Windows/macOS execution and actual compaction
 require separate validation.
@@ -660,16 +662,14 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
-`subagent_orch_v0_claude_only`. For Claude, that routes subagents and turns on Smart Router
-Orchestrator while the main session stays on its default model. Codex stays unrouted and
-without orchestration under this default, and a Codex launch that turns routing on this way
-warns and runs without smart routing: `--enable-smart-routing` says smart routing on Codex is
-currently not supported, and workspace smart routing says it is enabled for Codex in this
-workspace but currently only supported for Claude Code. `ug codex --help` hides
-`--enable-smart-routing` and `--disable-smart-routing` (the Smart Router skill still uses them)
-and notes that Smart Routing is currently only supported for the Claude Code harness.
-Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
-turns routing off for the launch, including over a workspace config.
+`subagent_orch_v0`. That routes subagents and enables Smart Router Orchestrator for Claude
+and Codex while each main session keeps its starting model. Saved Model Provider Services
+work with both agents, including without a workspace-managed configuration. UG discovers the
+provider's own model catalog and sends its provider header to routing and inference requests.
+Routing requests offer at most 128 models; oversized catalogs prioritize current Claude family
+targets or numbered GPT targets for Codex before filling the remaining positions.
+Like any version, the preset overrides individually set routing env vars.
+`--disable-smart-routing` turns routing off for the launch, including over a workspace config.
 
 In the Auto flow, an explicit ordinary `--model` starts with routing off. In other
 smart-routing launches, an explicit `--model`, from `ug claude --model` or a launcher
@@ -759,12 +759,18 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
+Managed smart routing launches Codex without routing when its installed version is too old
+or unavailable, or when it uses a ChatGPT subscription relay. These automatic fallbacks warn
+without prompting for an upgrade. Explicit routing requests still require a supported version
+and direct provider.
+
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
-`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0_claude_only`, which
-installs both skills for Claude only; Codex gets neither. For example:
+`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0`, which
+installs both skills for Claude and Codex. An explicit Claude-only version still leaves Codex
+unrouted. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude

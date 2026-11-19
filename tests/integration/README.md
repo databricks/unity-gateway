@@ -16,6 +16,15 @@ This `managed_fixture` case carries `claude_relay` and runs in the existing bloc
 journeys lane on the live CI workspace, where the relay MPS and OAuth credential already exist;
 it is excluded from the other workspace's Managed config lane.
 
+CUJ7's `test_ug_claude_saved_provider_smart_routing` and
+`test_ug_codex_saved_provider_smart_routing` configure a saved provider in the unmanaged
+workspace and launch the native TUI with `--enable-smart-routing`. They require a completed
+child file task and parent reply, provider headers on routing and inference, an offered
+selection with a paired HTTP 200, and native routing evidence. The shared Anthropic and OpenAI
+fixtures have small catalogs; allow-all startup and catalogs over 128 entries remain local staging
+validation, not automated CUJ coverage. These cases do not exercise resume or explicit-model
+overrides. Collection alone does not establish a live pass.
+
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
@@ -56,12 +65,8 @@ The macOS Jamf npm-provisioning path has component coverage in
 run, npm agent installation and standard-user launch remain manual validation steps; these
 component checks are not integration coverage.
 
-`../test_security_scan.py` covers the trusted scanner's policy and parsers with inert
-fixtures. Bash cases target the Linux scanner and do not run on Windows; Python parser
-checks run on both platforms. These are not live GitHub or credentialed integration checks.
-
-The trusted scan producer's component coverage and staged enforcement are documented in
-the [main test guide](../README.md). This prerequisite does not change integration authorization.
+`../test_security_scan.py` covers scanner policy and parsing with inert fixtures. Bash
+cases target the Linux scanner and do not run on Windows; Python parser checks run on both.
 `../test_security_scan_request.py` checks CI metadata refresh when the requested event carries
 the PR title, lookup failures, and preserved PR identity checks with controlled API responses,
 not live webhook delivery.
@@ -529,7 +534,9 @@ completed task rows, or a completed task detail panel before submitting `/exit`.
 Detail panels accept native and routed agent-type titles, with the completed status and
 native footer still required. Claude 2.1.290 retains finished children in a
 `Completed (N)` list, so the empty-state message is not required when the list has exactly N
-checkmarked `done` rows and no running or scheduled section. The helper observes menu dismissal
+checkmarked `done` rows and no running or scheduled section. Claude 2.1.327 omits that count
+and changes the footer to "↑/↓ to navigate"; every visible task must still be checkmarked
+`done`, and an empty Completed section is not completion evidence. The helper observes menu dismissal
 after Escape before typing `/exit`. Offline PTY checks reject active/scheduled tasks, partial
 lists, running detail panels, and completed-task text outside the native task view.
 It neither stops tasks nor confirms an exit dialog. Process exit retains its 30-second
@@ -1264,8 +1271,9 @@ Codex launch routing is covered by the initial phase of
 and preset cases as the former launch-only test. The separate off-before-first-child
 journey remains because it covers disabling before any child has been spawned.
 With orchestration enabled through legacy flags or a preset, both routed Codex children must show
-`[orchestrator on]` in their own subagent banner. Codex's managed default is opted out
-(`subagent_orch_v0_claude_only`) and has no skill-toggle case. Claude shows the selected
+`[orchestrator on]` in their own subagent banner. Codex's managed default uses the shared
+`subagent_orch_v0` preset. Its version-aware journey covers old-version fallback and
+supported-version routing; a separate routing-lane journey requires the supported behavior. Claude shows the selected
 model and rationale from each child's audited decision.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
@@ -1278,10 +1286,16 @@ remain uncovered.
 Preset parameterization augments only routing hooks, skill toggles, and first-prompt routing;
 their original legacy-env cases remain, and the Claude skill toggles add a managed-default case in
 which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
-first-prompt wrapper starts. Codex's managed default is covered by its launch-only opt-out test,
-`test_smart_router_managed_default_leaves_codex_unrouted_at_launch`, which requires the
-workspace smart-routing warning ("enabled for Codex in this workspace, but it is currently
-only supported for Claude Code") in the launch output and neither Smart Router skill installed. The skill toggles' legacy-env cases load the `_off` copy of the
+first-prompt wrapper starts. Codex's managed default has two launch journeys.
+`test_smart_router_managed_default_matches_codex_version_at_launch` reads the actual native
+version. Before 0.164.0 it requires a version warning, no upgrade prompt, no routing skills,
+and completed native child work without routing. On supported versions it instead requires
+both skills, a completed routed child and parent answer, and a correlated decision. This keeps
+the same journey valid for pinned, latest-agent, and explicit-version runs. `test_smart_router_managed_default_routes_supported_codex_at_launch`
+runs in the routing-capable Codex lane and requires both skills, a completed child and parent
+answer, and a correlated routing decision. Its recipe is temporarily pinned to
+`m2-r315-quality-20260929`. Automatic fallback for subscription relays and unknown versions
+has no live journey. The skill toggles' legacy-env cases load the `_off` copy of the
 workspace's routing fixture (`claude_smart_routing_off.json` or `codex_smart_routing_off.json`): the same models without `smart_routing`, because managed
 smart routing overrides individual routing env vars. The shared Claude fixtures omit GLM. Only
 `test_smart_router_routes_claude_subagent_at_launch[subagent_only_v0-glm]` loads
@@ -1939,8 +1953,9 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 `smart_routing` enabled in the agent config, run `ug configure`, then launch the real TUI with
 `first_prompt_and_subagent_no_orch_v0` and submit one small file task, asserting the
 "Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
-the file task, and normal exit. The managed default alone routes only Claude subagents, with the
-orchestrator; Codex's managed default is opted out and covered by its launch-only test.
+the file task, and normal exit. The managed default routes Claude and supported Codex subagents
+with the orchestrator. The version-aware Codex journey covers old-version fallback and routed child work; the
+routing-lane journey additionally requires supported-version routing.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:
@@ -2212,12 +2227,11 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
-Auto main-model confirmation component tests (`../native_claude/mod_tests/auto-static.test.ts`)
-check the saved-model transcript notice, repeated picks through `/model auto`,
-and cancellation without a save notice. Manual native TUI
-verification on Claude 2.1.290 and 2.1.325 covered normal-mode selection and the saved-model
-notice. This is not an authenticated
-gateway inference check or an automated integration journey.
+The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the prompt
+hint after a main-model switch and verifies that the selected model serves a file task
+both before and after restart. Native component tests open a saved custom alias and check the
+window displayed by `/context` with a catalog limit and an explicit preference.
+Launch-settings tests cover missing and out-of-range limits and unreadable native settings.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive
@@ -2226,11 +2240,11 @@ restore has removed the source mapping (with and without workspace state), and t
 exact-version plus effective-routing provisioning gate. These cases exercise temporary
 settings through the real Python lifecycle; they do not establish live gateway coverage.
 
-The Auto chooser's native component tests cover compact modal selection, cancellation,
-pagination, invalid typed answers with a visible retry message, and stale answers after
+The Auto chooser's native component tests cover selecting from the full catalog, cancellation,
+quiet saves, and stale selections after
 a model command or session end. Claude 2.1.290's plugin test runner lacks a
 `session.append` implementation, so these component tests do not cover picker-confirmation
-ordering, picker cancellation, nonstatic alias acceptance, native effort transcript
+ordering, picker cancellation, native effort transcript
 preservation, or prompt interruption. The chooser has no
 effort controls or internal effort commands.
 

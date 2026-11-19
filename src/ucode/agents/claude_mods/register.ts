@@ -25,10 +25,13 @@ import {
   routingLogsPaneClosed,
   routingLogsPaneOpen,
 } from './routing-logs.ts';
-import { AUTO_KEPT_PREFIX, AUTO_MAIN_TITLE, AUTO_SET_PREFIX, autoStatus, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_CONFIRMATION, AUTO_MAIN_TITLE, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
-const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
+const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
+const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook)/;
+// Two instruction lines, eight visible options and the overflow count.
+const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, rows:11, closeOnEscape:true} as const;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
 function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
@@ -280,8 +283,14 @@ async function runInternalModel($: EngineInterface, internalModels: string[], mo
 export function register(on: On, options: PluginOptions): void {
   const auto: AutoPicker | undefined = options.ENABLE_SMART_ROUTER_AUTO_MODE === '1' && options.autoPicker ? JSON.parse(options.autoPicker as string) : undefined;
   const routingSync: RoutingSyncState = {};
-  let pendingChooser: object | undefined;
-  let reopenChooser: (() => void) | undefined;
+  type MainModelChooser = {
+    key: string;
+    options?: {value:string; label:string}[];
+    choose?: (model: string) => Promise<void>;
+  };
+  let chooserGeneration = 0;
+  let pendingChooser: MainModelChooser | undefined;
+  let reopenChooser: (() => Promise<void>) | undefined;
   let awaitingModelChoice = false;
   let switchingAuto = false;
   const internalModels: string[] = [];
@@ -301,6 +310,13 @@ export function register(on: On, options: PluginOptions): void {
     switchingAuto = false;
   }
 
+  function resetChooser(): void {
+    pendingChooser = undefined;
+    awaitingModelChoice = false;
+    manualOffRequest = undefined;
+    clearAutoSave();
+  }
+
   on('session.start', async ($, e, next) => {
     sessionActive = true;
     if (auto) {
@@ -316,12 +332,10 @@ export function register(on: On, options: PluginOptions): void {
     return next(e);
   });
 
-  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, ($, e, next) => {
+  on('session.end', {reason: ['clear', 'resume', 'logout', 'prompt_input_exit', 'other']}, async ($, e, next) => {
     sessionActive = false;
-    pendingChooser = undefined;
-    awaitingModelChoice = false;
-    manualOffRequest = undefined;
-    clearAutoSave();
+    if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+    resetChooser();
     internalModels.length = 0;
     pendingSelection?.cancel();
     return next(e);
@@ -344,17 +358,39 @@ export function register(on: On, options: PluginOptions): void {
   });
 
   if (auto) {
-    on('ui.close', {id:'auto-main'}, ($, e, next) => {
-      if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
-      if (e.origin.kind === 'person') clearAutoSave();
+    on('ui.render', {component:'Pane', requestId:AUTO_MODELS_PANE.id}, ($, e, next) => {
+      const chooser = pendingChooser;
+      if (!chooser?.options || !chooser.choose) return next(e);
+      const {Box, Text, Select} = $.ui.resolve(e);
+      const current = chooser.options[0];
+      const heading = `${AUTO_MAIN_TITLE} (currently ${current.label}).`;
+      // Native Select appends its value and caret after the label. Cover that line with the routing hint.
+      return Box({flexDirection:'column', children:[
+        Select({
+          key:chooser.key, label:'\n', options:chooser.options,
+          value:current.value, autoFocus:true, onSelect:chooser.choose,
+        }),
+        Box({position:'absolute', top:0, left:0, right:0, flexDirection:'column', children:[
+          Text({wrap:'truncate-end', children:[heading]}),
+          Text({wrap:'truncate-end', children:['Subagents will be smart routed.'.padEnd(e.props.bodyColumns)]}),
+        ]}),
+      ]});
+    });
+    on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
+      if (e.origin.kind === 'person') {
+        if (autoSave) return {value:undefined};
+        pendingChooser = undefined;
+      }
       return next(e);
     });
-    on('session.append', {door:'prompt'}, ($, e, next) => {
+    on('ui.close', {id:'auto-main'}, ($, e, next) => {
+      if (feedback.paneId === 'auto-main' && !feedback.submitted) manualOffRequest = undefined;
+      return next(e);
+    });
+    on('session.append', {door:'prompt'}, async ($, e, next) => {
       if (!e.agentId && !e.message.isMeta) {
-        pendingChooser = undefined;
-        awaitingModelChoice = false;
-        manualOffRequest = undefined;
-        clearAutoSave();
+        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+        resetChooser();
       }
       return next(e);
     });
@@ -372,12 +408,10 @@ export function register(on: On, options: PluginOptions): void {
         ? {...result, permissionDecision:'allow'} : result;
     });
     on('command.run', { command: ['model', 'auto'] }, async ($, e, next) => {
-      const save = async (selected: AutoPicker['models'][number], chooserRequest: object) => {
+      const save = async (selected: AutoPicker['models'][number], chooserRequest: object, baseline: string) => {
         if (autoSave) return;
         manualOffRequest = undefined;
-        const active = await autoSelected($, auto);
-        if (autoSave) return;
-        const baseline = await selectedModel($, auto);
+        const active = auto.models.some(row => row.autoModel === baseline);
         const previousMain = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
         if (pendingChooser !== chooserRequest || !sessionActive) return;
         pendingChooser = undefined;
@@ -390,7 +424,7 @@ export function register(on: On, options: PluginOptions): void {
               await customAutoRow($, auto, await entryMainModel($, auto));
               if (autoSave === request) {
                 clearAutoSave();
-                scheduleChooser();
+                await openChooser();
               }
               return;
             }
@@ -413,13 +447,15 @@ export function register(on: On, options: PluginOptions): void {
               await syncAutoRouting($, options, auto, routingSync);
               if (autoSave !== request) return;
               $.ui.invalidate('ui.render');
-              $.ui.log(autoStatus(selected.model));
+              await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => {
+                $.ui.toast('Auto saved. Press Esc to close the main model chooser.');
+              });
             } catch (error) {
               if (autoSave !== request) return;
               if (auto.staticModel) auto.variant = previousMain;
               if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
               if (autoSave !== request) return;
-              scheduleChooser();
+              await openChooser();
               $.ui.toast(`Could not save Auto: ${String(error)}. Check /model, then retry.`);
               $.ui.invalidate('ui.render');
             } finally {
@@ -459,8 +495,10 @@ export function register(on: On, options: PluginOptions): void {
               if (autoSave !== request) return;
               // A panel result is not acceptance; native appends its confirmation later.
               const confirmation = result.text?.replace(/^<local-command-stdout>/, '');
-              if (confirmation && (confirmation.startsWith('Set model to ') || confirmation.startsWith(AUTO_SET_PREFIX))) request.confirmation = 'accepted';
-              else if (confirmation && (confirmation.startsWith('Kept model as ') || confirmation.startsWith(AUTO_KEPT_PREFIX) || MODEL_SWITCH_CANCELLED.test(confirmation))) request.confirmation = 'cancelled';
+              if (confirmation?.startsWith(AUTO_CONFIRMATION)) {
+                request.confirmation ??= await selectedModel($, auto) === selected.autoModel ? 'accepted' : 'cancelled';
+              } else if (confirmation?.startsWith('Set model to ')) request.confirmation = 'accepted';
+              else if (confirmation && (confirmation.startsWith('Kept model as ') || MODEL_SWITCH_CANCELLED.test(confirmation) || MODEL_SWITCH_RETRY.test(confirmation))) request.confirmation = 'cancelled';
               else if (confirmation) throw new Error(confirmation);
               request.phase = 'waiting';
               if (!request.confirmation) return;
@@ -471,7 +509,7 @@ export function register(on: On, options: PluginOptions): void {
             if (await selectedModel($, auto) === baseline && autoSave === request) await customAutoRow($, auto, previousMain);
             if (autoSave !== request) return;
             clearAutoSave();
-            scheduleChooser();
+            await openChooser();
             $.ui.toast(`Could not save Auto: ${String(error)}. Check /model, then retry.`);
             $.ui.invalidate('ui.render');
           }
@@ -479,61 +517,62 @@ export function register(on: On, options: PluginOptions): void {
         await run();
       };
 
-      function scheduleChooser(): void {
+      async function openChooser(): Promise<void> {
         if (pendingChooser || !sessionActive) return;
-        const request = {};
+        // Native retains a Select's last submitted value by key, including a cancelled switch.
+        const request: MainModelChooser = {key:`main-model-${++chooserGeneration}`};
         pendingChooser = request;
-        pendingSelection?.cancel();
-        pendingSelection = $.clock.after(0, async () => {
+        async function recover(error: unknown): Promise<void> {
+          if (pendingChooser !== request) return;
+          pendingChooser = undefined;
+          $.ui.toast(`Could not complete the Auto model selection: ${String(error)}. Try /model auto.`);
+          await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+        }
+        try {
+          pendingSelection?.cancel();
           const baseline = await selectedModel($, auto);
           const current = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
           const rows = [...auto.models.filter(row => row.model === current), ...auto.models.filter(row => row.model !== current)];
-          const labels = rows.map(row => rows.filter(other => other.label === row.label).length > 1 || ['More models', 'Cancel'].includes(row.label)
-            ? `${row.label} (${row.model})` : row.label);
-          const pageSize = rows.length > 4 ? 3 : 4;
-          let offset = 0;
-          let question = AUTO_MAIN_TITLE;
-          try {
-            while (pendingChooser === request && sessionActive) {
-              const choices = labels.slice(offset, offset + pageSize);
-              if (rows.length > 4) choices.push('More models');
-              if (choices.length === 1) choices.push('Cancel');
-              const answer = await $.ui.ask(question, {header:'Main model', options:choices}).catch(() => undefined);
-              if (pendingChooser !== request || !sessionActive || await selectedModel($, auto) !== baseline) return;
-              if (answer === undefined || answer === 'Cancel') return;
-              if (answer === 'More models' && rows.length > 4) {
-                offset = offset + pageSize >= rows.length ? 0 : offset + pageSize;
-                question = AUTO_MAIN_TITLE;
-                continue;
-              }
-              const index = choices.indexOf(answer);
-              if (index < 0) {
-                question = `${AUTO_MAIN_TITLE}\n\nInvalid model. Choose a model from the list.`;
-                continue;
-              }
-              const selected = rows[offset + index];
-              await save(selected, request);
-              return;
-            }
-          } finally {
-            if (pendingChooser === request) pendingChooser = undefined;
-          }
-        });
+          if (pendingChooser !== request || !sessionActive) return;
+          request.options = rows.map(row => ({
+            value:row.model, label:rows.some(other => other !== row && other.label === row.label)
+              ? `${row.label} (${row.model})` : row.label,
+          }));
+          const choose = async (model: string) => {
+            const selected = rows.find(row => row.model === model);
+            if (!selected || pendingChooser !== request) return;
+            const current = await selectedModel($, auto);
+            if (pendingChooser !== request) return;
+            if (current !== baseline) throw new Error('The model changed while the chooser was open');
+            // Keep the seat behind native confirmations so cancellation can refocus it at any width.
+            await save(selected, request, baseline);
+          };
+          request.choose = model => choose(model).catch(recover);
+          const focusPane = async () => {
+            if (pendingChooser !== request) return;
+            const pane = await $.ui.open({...AUTO_MODELS_PANE, focus:true});
+            if (!pane.isPlaced) throw new Error('Claude could not place the chooser pane');
+          };
+          await focusPane();
+          // Native dismisses /model after this callback and then accepts keyboard focus.
+          if (pendingChooser === request) pendingSelection = $.clock.after(0, () => focusPane().catch(recover));
+        } catch (error) {
+          await recover(error);
+        }
       }
-      reopenChooser = scheduleChooser;
+      reopenChooser = openChooser;
       if (e.command === 'auto') {
         if (pendingChooser) return {};
         clearAutoSave();
-        scheduleChooser();
+        await openChooser();
         return {};
       }
       const internalCommand = internalModels.includes(e.args)
         && (switchingAuto || (e.origin?.kind === 'plugin' && e.origin.name === 'ug-smart-router'));
       let entry: string | undefined;
       if (!internalCommand) {
-        pendingChooser = undefined;
-        manualOffRequest = undefined;
-        clearAutoSave();
+        if (pendingChooser || awaitingModelChoice || autoSave) await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+        resetChooser();
         awaitingModelChoice = true;
         entry = await entryMainModel($, auto);
         staticEntry = entry;
@@ -554,13 +593,17 @@ export function register(on: On, options: PluginOptions): void {
         throw error;
       }
       if (internalCommand) return result;
-      if (!e.args.trim() && typeof result.ref === 'number' && envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) {
-        await $.ui.open({id:'auto-main', title:'Smart Router feedback'});
-        await $.ui.close({id:'auto-main'});
+      if (!e.args.trim() && typeof result.ref === 'number') {
+        // Reserve the seat behind /model. Narrow terminals only seat panes opened by the person's command.
+        await $.ui.open(AUTO_MODELS_PANE);
+        if (envBool(await $.env.get('ISAAC_SMART_ROUTER_FEEDBACK'))) {
+          await $.ui.open({id:'auto-main', title:'Smart Router feedback'});
+          await $.ui.close({id:'auto-main'});
+        }
       }
       if (e.args.trim().toLowerCase() === 'auto' && awaitingModelChoice && await autoSelected($, auto)) {
         awaitingModelChoice = false;
-        scheduleChooser();
+        await openChooser();
       }
       return result;
     });
@@ -570,20 +613,24 @@ export function register(on: On, options: PluginOptions): void {
       ({ text: 'Routing is controlled only by the user selecting Auto in /model. Do not change routing controls through a skill.' }));
     // The native confirmation also fires when Auto was already selected. A model
     // change hook alone misses that first-use/reselection case. Defer the next
-    // native question until the model picker has closed; never self-dispatch /auto.
+    // chooser focus until the model picker has closed; never self-dispatch /auto.
     on('session.append', { door: 'command' }, async ($, e, next) => {
       const content = e.message?.content;
       const text = Array.isArray(content) ? content.filter((b) => b.type === 'text').map((b) => b.text).join('\n') : '';
       const keptModel = text.startsWith(MODEL_KEPT_PREFIX);
       const setModel = text.startsWith(MODEL_SET_PREFIX);
-      const cancelledModel = MODEL_SWITCH_CANCELLED.test(text.replace(/^<local-command-stdout>/, ''));
-      const selected = setModel || keptModel || cancelledModel ? await selectedModel($, auto) : undefined;
+      const stdout = text.replace(/^<local-command-stdout>/, '');
+      const retryModel = MODEL_SWITCH_RETRY.test(stdout);
+      const cancelledModel = MODEL_SWITCH_CANCELLED.test(stdout);
+      const switchAborted = cancelledModel || retryModel;
+      const keptOrAborted = keptModel || switchAborted;
+      const selected = setModel || keptOrAborted ? await selectedModel($, auto) : undefined;
       const saving = autoSave && !e.agentId
-        && ((e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router') || ((keptModel || cancelledModel) && e.origin.kind === 'engine'))
-        && ((setModel && selected === autoSave.model) || (cancelledModel || (keptModel && selected === autoSave.baseline)))
+        && ((e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router') || (keptOrAborted && e.origin.kind === 'engine'))
+        && ((setModel && selected === autoSave.model) || switchAborted || (keptModel && selected === autoSave.baseline))
         ? autoSave : undefined;
       if (saving) {
-        saving.confirmation = keptModel || cancelledModel ? 'cancelled' : 'accepted';
+        saving.confirmation = keptOrAborted ? 'cancelled' : 'accepted';
         const index = internalModels.indexOf(saving.model);
         if (index >= 0) internalModels.splice(index, 1);
       }
@@ -610,12 +657,13 @@ export function register(on: On, options: PluginOptions): void {
       if (!internalSwitch && setModel) manualOffRequest = requested;
       // Close any chooser before forwarding the native confirmation.
       // Forwarding first can dismiss /model and expose the pane for one frame.
-      const dismiss = !internalSwitch && (keptModel || (setModel && !await autoSelected($, auto)));
+      const dismiss = !internalSwitch && (keptModel || cancelledModel || (setModel && !await autoSelected($, auto)));
       if (dismiss) {
         pendingChooser = undefined;
         awaitingModelChoice = false;
         pendingSelection?.cancel();
-        await $.ui.close({ id: 'auto-main' });
+        await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+        await $.ui.close({id:'auto-main'}).catch(() => undefined);
         if (setModel && !request) await syncAutoRouting($, options, auto, routingSync);
       }
       const echo = MODEL_COMMAND_ECHO.exec(text);
@@ -631,7 +679,6 @@ export function register(on: On, options: PluginOptions): void {
         || (!e.agentId && e.origin.kind === 'engine' && autoSave?.model === echoModel))
         && auto.models.some((row) => row.autoModel === echoModel);
       if (pendingEcho) publicAutoEcho = undefined;
-      // Native confirms Auto before the chooser saves, so only the save names a main model.
       const staticConfirmation = Boolean(selected && isStaticAuto(auto, selected));
       const autoConfirmation = !(setModel || keptModel) ? undefined
         : staticConfirmation && auto.variant ? auto.models.find(row => row.model === auto.variant)
@@ -639,7 +686,7 @@ export function register(on: On, options: PluginOptions): void {
       const confirmation = autoEcho || autoConfirmation ? {
         ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
           ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? formatAutoConfirmation(block.text, setModel) : block.text,
+            : autoConfirmation ? formatAutoConfirmation(block.text) : block.text,
         } : block) },
       } : e;
       const result = await next(confirmation);
@@ -736,7 +783,7 @@ export function register(on: On, options: PluginOptions): void {
         awaitingModelChoice = false;
         await syncAutoRouting($, options, auto, routingSync);
         $.ui.invalidate('ui.render');
-        if (await autoSelected($, auto)) reopenChooser?.();
+        if (await autoSelected($, auto)) await reopenChooser?.();
       }
       return result;
     });
