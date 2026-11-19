@@ -43,6 +43,7 @@ def request_routing_decision(
     refs: Mapping[str, str],
     *,
     timeout: float = routing.REQUEST_TIMEOUT_S,
+    session_id: Any = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for one of the registry models Copilot can run."""
     route_options = routing.route_options_for(refs, ROUTE_HARNESS)
@@ -55,6 +56,7 @@ def request_routing_decision(
         route_options,
         router_name=routing.configured_router_name(),
         timeout=timeout,
+        attribution_headers=routing.attribution_headers("copilot", session_id=session_id),
     )
 
 
@@ -86,7 +88,11 @@ def route_pre_tool_use(
         adapted,
         is_spawn_agent=is_task_tool,
         decision_fn=decision_fn
-        or (lambda task: request_routing_decision(workspace, token, task, refs, timeout=timeout)),
+        or (
+            lambda task: request_routing_decision(
+                workspace, token, task, refs, timeout=timeout, session_id=payload.get("sessionId")
+            )
+        ),
         default_task_label="Copilot subagent task",
         model_id_mapper=lambda model: refs.get(model, model),
     )

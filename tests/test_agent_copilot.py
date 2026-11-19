@@ -12,7 +12,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from ucode import custom_oauth
+from tests.conftest import metric_observations
+from ucode import custom_oauth, metrics
 from ucode.agents import copilot, model_sources
 from ucode.databricks import AnthropicModelCatalog, ModelServiceEntry
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR
@@ -1855,8 +1856,10 @@ class TestLaunch:
 
     @pytest.mark.parametrize("failure", ["creation", "write", "controls"])
     def test_routing_setup_failure_warns_and_launches_plain_copilot_once(
-        self, tmp_path, monkeypatch, capsys, failure
+        self, tmp_path, monkeypatch, capsys, failure, metrics_recorder
     ):
+        metrics.set_command("copilot")
+        metrics.start_agent("copilot")
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         parent_controls = str(tmp_path / "parent-controls.json")
         parent_python = str(tmp_path / "parent-python")
@@ -1927,6 +1930,11 @@ class TestLaunch:
         assert seen["env"][SESSION_PYTHON_ENV_VAR] == parent_python
         output = capsys.readouterr()
         assert "Smart Router setup failed" in output.out + output.err
+        ((value, labels),) = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
+        assert value == 1
+        assert labels["operation"] == "copilot"
+        assert labels["continued_with_fallback"] is True
+        assert labels["phase"] == "startup"
 
     def test_native_popen_error_is_not_treated_as_a_routing_setup_failure(
         self, tmp_path, monkeypatch, capsys

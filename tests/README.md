@@ -1097,6 +1097,9 @@ and verify explicit enable, disable, managed-default behavior and launch-environ
 Launch cases also check fresh controls only on routed success, inherited controls on plain/fallback
 launches, setup creation/write/wrapped-control failures, and native launch errors without a second launch.
 An unwritable audit path leaves the selected model intact through the shared best-effort writer.
+Setup fallback records the existing CLI error metric without changing launch success.
+`test_smart_routing_attribution_headers.py` checks Copilot's outgoing router session header,
+User-Agent, custom-header precedence and malformed-id omission without inventing a child id.
 The plugin command test executes Bash on POSIX and PowerShell on Windows with spaced paths
 and literal shell characters. Routing-helper metrics retain the agent-session phase.
 

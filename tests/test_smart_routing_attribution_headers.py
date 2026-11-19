@@ -1,4 +1,4 @@
-"""Attribution headers that ucode sends on routes:select calls for Claude and Codex."""
+"""Attribution headers that ucode sends on routes:select calls for coding agents."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import json
 import pytest
 
 from ucode import codex_config
-from ucode.smart_routing import codex_routing, routing, v2
+from ucode.smart_routing import codex_routing, copilot_routing, routing, v2
 
 WS = "https://example.com"
 CLAUDE_MODELS = ["system.ai.claude-opus-4-8", "system.ai.claude-sonnet-5"]
@@ -178,6 +178,41 @@ class TestSelectRouteHeaders:
 
 
 class TestHarnessCallers:
+    @pytest.mark.parametrize(
+        ("session_id", "custom_headers", "expected_session"),
+        [
+            ("cp-1", "", "cp-1"),
+            ("cp-1", "session-id: admin-session\nUser-Agent: custom-ua", "admin-session"),
+            ("bad\nvalue", "", None),
+        ],
+    )
+    def test_copilot_routes_with_session_attribution(
+        self, tmp_path, monkeypatch, session_id, custom_headers, expected_session
+    ):
+        monkeypatch.setenv("UG_HEADERS", custom_headers)
+        monkeypatch.setattr(copilot_routing, "DECISIONS_PATH", tmp_path / "decisions.jsonl")
+        captured = _capture_select(monkeypatch)
+        model = "system.ai.fixture-small"
+        ref = "databricks/fixture-small"
+
+        output = copilot_routing.route_pre_tool_use(
+            {"sessionId": session_id, "toolName": "task", "toolArgs": {"prompt": "read a file"}},
+            workspace=WS,
+            token="tok",
+            refs={model: ref},
+        )
+
+        assert output == {"modifiedArgs": {"prompt": "read a file", "model": ref}}
+        sent = _sent(captured)
+        assert sent.get("session-id") == expected_session
+        if custom_headers:
+            assert sent["user-agent"] == "custom-ua"
+        else:
+            assert sent["user-agent"].startswith("ucode/")
+        assert "thread-id" not in sent
+        assert "x-claude-code-session-id" not in sent
+        assert sent["authorization"] == "Bearer tok"
+
     def test_claude_subagent_routing_sends_session_agent_and_surface(self, monkeypatch):
         monkeypatch.setenv(
             "ANTHROPIC_CUSTOM_HEADERS",

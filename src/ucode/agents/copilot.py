@@ -1396,6 +1396,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
                 start_session()
             except (OSError, RuntimeError) as exc:
                 routing_args = []
+                metrics.failure(metrics.COMMAND_OPERATION, exc, continued_with_fallback=True)
                 print_warning(
                     f"Smart Router setup failed; launching Copilot without routing: {exc}"
                 )
