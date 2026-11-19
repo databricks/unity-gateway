@@ -3444,16 +3444,29 @@ def custom_model_services(models: list[str]) -> list[str]:
     return candidates
 
 
+def subscription_relay_candidates(models: list[str]) -> list[str]:
+    """Custom model services and provider-qualified targets that may need Claude OAuth."""
+    return [
+        model
+        for model in models
+        if isinstance(model, str)
+        and len(parts := model.removesuffix("[1m]").split(".", 3)) in (3, 4)
+        and parts[0] != "system"
+        and all(parts)
+    ]
+
+
 def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayLookup:
-    """Whether ``model`` routes to a Claude subscription relay: a live primary destination on an
-    Anthropic MPS with relayed auth.
+    """Whether a model service or provider-qualified target needs Claude subscription auth.
+
+    Model services must have a live primary destination on a relayed Anthropic MPS.
 
     Such a service only accepts a credential-swapped request (the caller's subscription OAuth plus
     the Databricks token in the swap header). A relayed OpenAI (ChatGPT) MPS needs a different
     credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
     lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
     """
-    if not custom_model_services([model]):
+    if not subscription_relay_candidates([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
     key = (workspace, name)
@@ -3485,12 +3498,17 @@ def model_services_need_subscription_relay(workspace: str, token: str, models: l
 
 
 def _fetch_model_service_relay_lookup(name: str, workspace: str, token: str) -> RelayLookup:
-    service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
-    if service is None:
-        _debug("relay detection", f"{name}: {reason}")
-        return RelayLookup.UNKNOWN
+    parts = name.split(".", 3)
+    if len(parts) == 3:
+        service, reason = get_model_service(name, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S)
+        if service is None:
+            _debug("relay detection", f"{name}: {reason}")
+            return RelayLookup.UNKNOWN
+        providers = model_service_primary_providers(service)
+    else:
+        providers = [".".join(parts[:3])]
     lookup = RelayLookup.NOT_RELAYED
-    for provider in model_service_primary_providers(service):
+    for provider in providers:
         entry, reason = get_model_provider_service(
             provider, workspace, token, timeout=_RELAY_LOOKUP_TIMEOUT_S
         )

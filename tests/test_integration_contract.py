@@ -293,6 +293,9 @@ def test_live_ci_lanes_together_cover_every_blocking_live_case(agent):
     assert not smoke & full
     selected = smoke | full
     if agent == "claude":
+        relay = _collect_integration_cases("claude_relay")
+        assert relay <= full
+        assert not relay & _collect_integration_cases(_ci_marker_expression(jobs["managed"], agent))
         staging = _collect_integration_cases(
             f"({_ci_marker_expression(jobs['anthropic-mps'], agent)}) and live"
         )

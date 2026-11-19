@@ -782,7 +782,7 @@ class TestStaticModelsNeedSubscriptionRelay:
             looked_up.append(model)
             if model in unknown:
                 return RelayLookup.UNKNOWN
-            if model == "main.default.relayed":
+            if model == "main.default.relayed" or model.startswith("main.default.relayed."):
                 return RelayLookup.RELAYED
             return RelayLookup.NOT_RELAYED
 
@@ -798,10 +798,14 @@ class TestStaticModelsNeedSubscriptionRelay:
         assert not claude.static_models_need_subscription_relay(state)
         assert not claude.static_models_need_subscription_relay({"workspace": WS})
 
-    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        "relay_model", ["main.default.relayed", "main.default.relayed.claude-haiku-4-5"]
+    )
+    def test_signed_in_user_launches_relayed(self, monkeypatch, capsys, relay_model):
         looked_up = self._relay_backed(monkeypatch)
-        assert claude.static_models_need_subscription_relay(dict(self._STATE), configuring=True)
-        assert looked_up == ["main.default.relayed", "main.default.oss"]
+        state = {**self._STATE, "claude_static_models": [relay_model, "main.default.oss"]}
+        assert claude.static_models_need_subscription_relay(state, configuring=True)
+        assert looked_up == [relay_model, "main.default.oss"]
         assert "claude auth login" not in capsys.readouterr().out
 
     def test_user_without_a_subscription_login_keeps_gateway_auth(self, monkeypatch, capsys):

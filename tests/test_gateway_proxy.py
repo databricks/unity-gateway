@@ -895,7 +895,14 @@ class TestRelayedOssRouting:
 
 
 class TestRelayedModelServiceRouting:
-    def test_relay_backed_model_service_keeps_oauth_and_swap_without_mps(self):
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "my_catalog.my_schema.claude_seat_fallback",
+            "my_catalog.my_schema.relayed_mps.claude-haiku-4-5",
+        ],
+    )
+    def test_relay_backed_model_service_keeps_oauth_and_swap_without_mps(self, model):
         # A UC model service that routes to a relayed provider: the OAuth stays in
         # Authorization, the swap header carries the Databricks token, and the MPS header
         # is dropped so the service's own routing chooses the destination.
@@ -906,11 +913,11 @@ class TestRelayedModelServiceRouting:
             _FakeCache(),
             _Collect(),
             headers=TestRelayedOssRouting._CLIENT_HEADERS,
-            body=b'{"model": "my_catalog.my_schema.claude_seat_fallback"}',
+            body=json.dumps({"model": model}).encode(),
             routes_to_subscription_relay=lambda model, token: asked.append((model, token)) or True,
         )._handle()
         sent = client.sent_headers[0]
-        assert asked == [("my_catalog.my_schema.claude_seat_fallback", "tok1")]
+        assert asked == [(model, "tok1")]
         assert sent["Authorization"] == "Bearer anthropic-oauth"
         assert sent[gateway_proxy.AI_GATEWAY_TOKEN_HEADER] == "Bearer tok1"
         assert "Databricks-Model-Provider-Service" not in sent
