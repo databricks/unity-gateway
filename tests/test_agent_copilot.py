@@ -2151,6 +2151,12 @@ class TestSeatRelay:
         assert "COPILOT_PROVIDER_API_KEY" not in env
         assert "GITHUB_MCP_URL_OVERRIDE" not in copilot.seat_relay_env("u", mcp_host=None)
 
+    def test_a_service_lookup_error_is_raised_not_read_as_no_seat_relay(self, monkeypatch):
+        _stub_provider_service(monkeypatch, None)
+
+        with pytest.raises(RuntimeError, match="was not found"):
+            copilot.uses_seat_relay(dict(STATE), SEAT_MPS)
+
     def test_launch_runs_copilot_signed_in_through_the_relay(self, tmp_path, monkeypatch):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))

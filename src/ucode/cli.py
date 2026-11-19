@@ -984,10 +984,8 @@ def _check_copilot_model_source(
     relay registers no models, so only its service is checked.
     """
     if provider is not None:
-        if copilot_agent.uses_seat_relay(state, provider):
-            return
-        # Raises the service's own error, including for a seat relay ug can't use yet.
-        copilot_agent.provider_service_catalog(state, provider, None)
+        if not copilot_agent.uses_seat_relay(state, provider):
+            copilot_agent.provider_service_catalog(state, provider, None)
     elif model_location is not None:
         copilot_agent.location_catalog(state, model_location)
 
