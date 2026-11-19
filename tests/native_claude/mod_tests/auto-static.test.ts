@@ -145,6 +145,40 @@ for (const decision of ['deny', 'ask'] as const) {
   });
 }
 
+for (const decision of ['allow', 'deny', 'ask'] as const) {
+  test(`managed model-switch forwarding preserves ${decision} without skipping UG`, {
+    options: OPTIONS,
+    plugins: [
+      {
+        name: 'model-policy-first', tier: 'prepend',
+        register(on) {
+          on('classic.PreModelSwitch', async ($, e, next) => {
+            const result = await next.to(e, 'append');
+            $.ui.log(JSON.stringify(next.trace.map(link => ({plugin:link.plugin, outcome:link.outcome}))));
+            return result;
+          });
+        },
+      },
+      {
+        name: 'model-policy-final', tier: 'append',
+        register(on) {
+          on('classic.PreModelSwitch', ($, e) => ({
+            permissionDecision: e.requested_model === 'deny' ? 'deny' : e.requested_model === 'ask' ? 'ask' : 'allow',
+          }));
+        },
+      },
+    ],
+  }, async ($, on) => {
+    const traces: {plugin:string; outcome:string}[][] = [];
+    on('ui.log', ($, e) => {traces.push(JSON.parse(e.text)); return {value:undefined};});
+    const result = await $.classic.PreModelSwitch({from_model:DEFAULT_ALIAS, to_model:MAIN, requested_model:decision,
+      source:'command', context_tokens:1000, prompt_cache_warm:true, cache_ttl:'5m', estimated_cache_write_usd:0.01, pricing:'catalog'});
+    expect(result.permissionDecision).toBe(decision);
+    expect(traces.length).toBe(1);
+    expect(traces[0].some(link => link.plugin === 'ug-smart-router' && link.outcome === 'skipped')).toBe(false);
+  });
+}
+
 test('saved static main models and inherited aliases keep their real targets', {options:OPTIONS}, async ($, on) => {
   nativeSession(on, DEFAULT_ALIAS, OTHER);
   const sent = captureSteps(on);

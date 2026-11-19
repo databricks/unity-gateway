@@ -175,6 +175,7 @@ export function register(on) {
             "Auto on model twelve",
         )
         assert "Auto mode: main model" not in "".join(tui.output)
+        assert "classic.PreModelSwitch hook was skipped" not in "".join(tui.output)
         first = observe(tui, "model-twelve")
         assert first["routing"] == "1", first
         assert first["model"] == (
@@ -220,4 +221,5 @@ export function register(on) {
         inactive = observe(tui, "inactive")
         assert inactive["model"] == models[2], inactive
         assert inactive["routing"] == "0", inactive
+        assert "classic.PreModelSwitch hook was skipped" not in "".join(tui.output)
         tui.exit_normally()

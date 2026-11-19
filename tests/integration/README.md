@@ -2179,8 +2179,12 @@ Outside the Databricks network, use reachable package indexes explicitly instead
 
 Auto main-model terminal checks (`../native_claude/test_auto_picker.py`) assert
 the selected model in the footer and absence of the redundant plugin transcript
-notice. Selection, cancellation and inactive preference edits use real Claude with
-a fixture catalog; these are not authenticated gateway inference checks.
+notice, and require no skipped UG model-switch-hook notice. Separate tiered mod
+component plugins forward `PreModelSwitch` past user hooks and verify that
+allow/deny/ask results stand without skipping a UG hook. Native and managed security
+hooks retain model-switch permissions and cache-cost confirmations. Selection,
+cancellation and inactive preference edits use real Claude with a fixture catalog;
+these are not authenticated gateway inference checks or a live security-plugin audit.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive
