@@ -107,7 +107,11 @@ def test_ug_antigravity_headless_explicit_model(live_session, workspace):
     )
     assert model, f"ug configure found no second Gemini model to select: {discovered}"
     expected = re.sub(r"(?<=\d)-(?=\d)", ".", model.removeprefix("system.ai."))
-    session.record("model.json", {"model": model, "antigravity_name": expected})
+    case_id = fresh_id()
+    session.env["AI_GATEWAY_REQUEST_TAGS"] = json.dumps({"ug_ci_case": case_id})
+    session.record(
+        "model.json", {"model": model, "antigravity_name": expected, "ug_ci_case": case_id}
+    )
 
     result = _ask(session, task.prompt, "--model", model, command="agy")
 

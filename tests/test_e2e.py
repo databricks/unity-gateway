@@ -1048,7 +1048,7 @@ class TestPiLaunch:
         assert self._all_models(state) == [("codex", "databricks-gpt-5-4")]
 
     def test_launch_pi_per_model(
-        self, model_case, tmp_path, monkeypatch, e2e_state, e2e_workspace, e2e_token
+        self, model_case, tmp_path, monkeypatch, capsys, e2e_state, e2e_workspace, e2e_token
     ):
         import ucode.config_io as config_io_mod
         from ucode.agents import pi
@@ -1071,7 +1071,9 @@ class TestPiLaunch:
         monkeypatch.setattr(pi, "PI_SETTINGS_BACKUP_PATH", tmp_path / "pi-settings.backup.json")
         monkeypatch.setattr(pi, "PI_BACKUP_PATH", backup_path)
 
+        case_id = secrets.token_hex(12)
         with pytest.MonkeyPatch().context() as mp:
+            mp.setenv("AI_GATEWAY_REQUEST_TAGS", json.dumps({"ug_ci_case": case_id}))
             mp.setattr("ucode.state.save_state", lambda s: None)
             mp.setattr(
                 "ucode.agents.pi.get_databricks_token",
@@ -1085,7 +1087,12 @@ class TestPiLaunch:
 
         env = pi.build_runtime_env(e2e_token)
         cmd = pi.validate_cmd("pi")
-        result = _run_agent(cmd, env=env, timeout=120)
+        try:
+            result = _run_agent(cmd, env=env, timeout=120)
+        except subprocess.TimeoutExpired:
+            with capsys.disabled():
+                print(f"Pi timeout: model={model} ug_ci_case={case_id}", flush=True)
+            raise
         combined = (result.stdout + result.stderr).strip()
         if result.returncode != 0 or not combined:
             pytest.fail(
