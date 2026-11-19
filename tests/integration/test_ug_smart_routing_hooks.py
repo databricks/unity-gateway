@@ -51,8 +51,6 @@ from utils.request_recorder import (
 )
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
-from ucode.smart_routing.v2 import _claude_host_has_view
-
 pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
@@ -1005,8 +1003,13 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 timeout=30,
             )
             # A capable host must switch the main view; the 2.1.290 stub falls
-            # back to the read-only details.
-            native_view = _claude_host_has_view(str(session.binary))
+            # back to the read-only details. Capability comes from the generated
+            # plugin's own shipped module, not an application import.
+            shipped_views = [
+                path.read_text(encoding="utf-8")
+                for path in session.home.glob(".ucode/claude-v2-*/plugin/hooks/agent-view.ts")
+            ]
+            native_view = any("NATIVE_VIEW = true" in text for text in shipped_views)
             if native_view:
                 assert "Back to main" in tui.visible, (
                     f"a capable host did not switch to the child transcript:\n{tui.visible}"
