@@ -22,6 +22,11 @@ the shared catalog passed native validation and completed the hidden-file task w
 on the wire. The mixed primary/error/budget-fallback regression failed against the previous
 implementation (`none` instead of shared `high`).
 
+`mdm/windows-provision.Tests.ps1` checks Windows provisioning helpers without running the installer.
+On Windows it also repairs a temporary package file with a protected ACL, requiring Users read/execute
+but no write access, preserved owner access, and failure on an invalid target. These checks do not
+provision a machine or establish an Intune end-to-end pass.
+
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,
