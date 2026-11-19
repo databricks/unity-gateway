@@ -16,7 +16,6 @@ from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER, SMART_ROUTING_ENV_KEY
 from ucode.databricks import _http_post_json, workspace_origin
 
 _VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
-STARTUP_VALIDATION_OPERATION = "smart_routing_startup_validation"
 # The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
 # urllib applies the timeout per socket operation, so the whole check also has this deadline.
 VALIDATION_TIMEOUT_SECONDS = 4
@@ -26,11 +25,13 @@ def result_path(session_controls: Path) -> Path:
     return session_controls.with_suffix(".validation.json")
 
 
-def _read_bytes(path: Path) -> bytes | None:
+def _file_version(path: Path) -> tuple[int, int, int] | None:
+    # Session toggles replace the file atomically, so a toggle back to the same bytes still differs.
     try:
-        return path.read_bytes()
+        stat = path.stat()
     except OSError:
         return None
+    return stat.st_ino, stat.st_mtime_ns, stat.st_size
 
 
 def start(
@@ -42,6 +43,10 @@ def start(
     session_controls: Path,
     provider: str | None = None,
 ) -> None:
+    if not route_options:
+        with suppress(OSError, RuntimeError):
+            atomic_write_json(result_path(session_controls), {"routing_disabled": False})
+        return
     body = {
         "route_options": [{"model": model, "harness": harness} for model, harness in route_options],
         "route_selector": {"router_name": router_name},
@@ -49,7 +54,7 @@ def start(
 
     def check() -> None:
         started = time.monotonic()
-        controls_before = _read_bytes(session_controls)
+        controls_before = _file_version(session_controls)
         try:
             payload, reason = _http_post_json(
                 workspace_origin(workspace) + _VALIDATION_PATH,
@@ -63,13 +68,15 @@ def start(
         if not reason and time.monotonic() - started > VALIDATION_TIMEOUT_SECONDS:
             reason = "startup validation timed out"
         if reason:
-            metrics.failure(STARTUP_VALIDATION_OPERATION, reason, continued_with_fallback=True)
+            metrics.failure(
+                metrics.STARTUP_VALIDATION_OPERATION, reason, continued_with_fallback=True
+            )
         unsupported = (
             not reason and isinstance(payload, dict) and payload.get("is_supported") is False
         )
         result = {"routing_disabled": False}
         # A session toggle made while the check ran wins over the check.
-        if unsupported and _read_bytes(session_controls) == controls_before:
+        if unsupported and _file_version(session_controls) == controls_before:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True

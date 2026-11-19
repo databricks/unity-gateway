@@ -141,3 +141,18 @@ test('a session without controls shows the band once session start runs', { opti
   expect(state.reads).toBe(0);
   await ui.unmount();
 });
+
+test('a toggle during the startup check wins over a disabling result', { options: ROUTED }, async ($, on) => {
+  const { clock, env, files, hint } = engine(on);
+  env.UCODE_SMART_ROUTER_PYTHON = '/python';
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }));
+  const ui = await $.ui.mount(abovePrompt);
+  await $.session.start(start);
+  expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBe('Smart Router is on');
+  files['/session/env.validation.json'] = '{"routing_disabled":true}';
+  await clock.advance(100);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD]).toBe('task_v3');
+  expect(await hint($)).toBe('smart router ON');
+  await ui.unmount();
+});

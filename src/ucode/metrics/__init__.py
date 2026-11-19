@@ -38,6 +38,7 @@ HTTP_REQUEST_DURATION_MS = "http_request_duration_ms"
 HTTP_RETRY_COUNT = "http_retry_count"
 UG_USAGE_DURATION_MS = "ug_usage_duration_ms"
 ROUTING_DECISION_DURATION_MS = "routing_decision_duration_ms"
+STARTUP_VALIDATION_OPERATION = "smart_routing_startup_validation"
 
 MAX_OBSERVATIONS = 1000
 MAX_HANDOFF_BYTES = 2 * 1024 * 1024

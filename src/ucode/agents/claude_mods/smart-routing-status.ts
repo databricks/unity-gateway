@@ -10,12 +10,14 @@ const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the startup check settles;
 // an unsupported menu turns routing off and must never flash ON.
-const validation = { isPending: true }
+const validation = { isPending: true, isToggled: false }
 const VALIDATION_POLL_MS = 100
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
 
 export function showStatusBand(): void {
+  // A toggle during the startup check wins over its result.
+  if (validation.isPending) validation.isToggled = true
   band.isVisible = true
   band.isHideArmed = false
 }
@@ -94,7 +96,7 @@ export async function watchStartupValidation(
         return
       }
       complete = true
-      if (result.routing_disabled === true) {
+      if (result.routing_disabled === true && !validation.isToggled) {
         try {
           await disableRouting()
           band.isVisible = false
