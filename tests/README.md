@@ -22,6 +22,15 @@ the shared catalog passed native validation and completed the hidden-file task w
 on the wire. The mixed primary/error/budget-fallback regression failed against the previous
 implementation (`none` instead of shared `high`).
 
+`integration/test_ug_codex_custom_service.py` exercises an installed Codex TUI against the
+permanent opaque service `main.ucode.ci_e2e_opaque` in the us-east-1 integration workspace.
+Its GPT-5 destination rejects `none`; the journey requires a completed hidden-file task,
+the full service ID and `medium` effort in every task request, and paired HTTP 200
+responses. UG's own recorded metadata reads verify the destination. Only the admin
+CodingAgentConfig input uses the existing managed-fixture hook; no application functions,
+gateway responses, agent binaries, or workspace services are replaced. This runs in the
+required Linux and Windows Codex full lanes, separately from the other managed workspace.
+
 `test_macos_provision.py` runs the Jamf script with sandboxed paths and stubbed installers.
 It covers shared Node/npm reuse and installation, checksum rejection, configure's MDM flag and
 npm prefix, credential cleanup before alias setup, single-agent workspaces, configure failures,

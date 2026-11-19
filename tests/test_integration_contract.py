@@ -94,7 +94,7 @@ def test_managed_integration_ci_is_blocking():
     )
     assert not baseline & routing
     assert baseline | routing == _collect_integration_cases(
-        "(managed_fixture or workspace_switch) and codex and not soft_fail"
+        "(managed_fixture or workspace_switch) and codex and not soft_fail and not custom_model_service"
     )
     fallback = (
         "test_ug_configure_managed_models.py::test_ug_configure_managed_codex_catalog_fallback"
