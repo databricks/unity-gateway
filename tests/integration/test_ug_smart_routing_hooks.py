@@ -1061,7 +1061,8 @@ def test_smart_router_managed_default_leaves_codex_unrouted_at_launch(
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     launch_text = " ".join(ANSI.sub("", transcript).split())
-    assert "The selected Smart Router configuration does not route Codex." in launch_text, (
+    assert "This launch's Smart Router configuration does not route Codex." in launch_text, (
         transcript
     )
+    assert "SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0" in launch_text, transcript
     session.assert_not_routed()

@@ -3695,7 +3695,7 @@ SMART_ROUTING_AGENTS = CAN_USE_CACHED_CONFIG_AGENTS | {"copilot"}
 
 @contextmanager
 def _smart_routing_v2_flag(
-    enabled: bool | None, *, agent: str, default_version: str | None = None
+    enabled: bool | None, *, agent: str, managed: bool = False
 ) -> Iterator[bool]:
     """Apply an explicit routing choice without leaking into an embedding process.
 
@@ -3703,18 +3703,11 @@ def _smart_routing_v2_flag(
     """
     with smart_routing_config.version_scope():
         routing_chosen = enabled is not None or smart_routing_config.known_version()
-        previous_selector = {}
-        if enabled and default_version and not smart_routing_config.known_version():
-            previous_selector[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = os.environ.get(
-                SMART_ROUTER_CONFIG_VERSION_ENV_VAR
-            )
-            os.environ[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = default_version
         previous = (
             smart_routing_v2.apply_config(agent=agent)
             if enabled is None
-            else smart_routing_v2.override_smart_routing(enabled, agent=agent)
+            else smart_routing_v2.override_smart_routing(enabled, agent=agent, managed=managed)
         )
-        previous.update(previous_selector)
         try:
             yield routing_chosen
         finally:
@@ -4151,14 +4144,28 @@ def _launch_tool(
     try:
         tool = normalize_tool(tool_name)
         metrics.start_agent(tool, preflight_skipped=skip_preflight)
-        routing_chosen = routing_already_chosen or smart_routing_config.known_version()
-        previous = smart_routing_v2.apply_config(agent=tool)
-        if not custom_oauth_cli_enabled(custom_oauth):
-            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
-        # Before any status print: a stdio-protocol subcommand owns stdout, so
-        # every ug line from here on must go to stderr instead.
+        # Reserve stdout before any launch warning, including inherited routing flags.
         if _child_owns_stdout(tool, ctx.args):
             redirect_output_to_stderr()
+        routing_chosen = routing_already_chosen or smart_routing_config.known_version()
+        if (
+            tool == AGENT_COPILOT
+            and not routing_chosen
+            and provider
+            and smart_routing_v2.smart_routing_enabled(None, default=False, agent=tool)
+        ):
+            print_warning(
+                "Inherited Smart Router flags do not apply to this Copilot provider launch. "
+                "Running without smart routing."
+            )
+        # Legacy flags predate Copilot support and must not opt existing users in.
+        previous = (
+            smart_routing_v2.override_smart_routing(False, agent=tool)
+            if tool == AGENT_COPILOT and not routing_chosen
+            else smart_routing_v2.apply_config(agent=tool)
+        )
+        if not custom_oauth_cli_enabled(custom_oauth):
+            os.environ.pop(CUSTOM_OAUTH_CLI_ENV_VAR, None)
         explicit_prompt = _has_explicit_prompt(ctx)
         # Launchers such as isaac put their harness arguments after `--`, so the harness's own
         # `--model` lands in ctx.args instead of a ucode option. It still determines the effective
@@ -4291,7 +4298,7 @@ def _launch_tool(
         # The flag sets routing_chosen, so at most one of these holds.
         managed_routing_unsupported = (
             managed_smart_routing_applies
-            and not smart_routing_config.enabled_version_routes(agent=tool)
+            and not smart_routing_config.enabled_version_routes(agent=tool, managed=True)
         )
         routing_skipped = routing_unsupported or managed_routing_unsupported
         smart_routing_enabled = not routing_skipped and (
@@ -4300,9 +4307,15 @@ def _launch_tool(
         )
         if routing_skipped and _smart_routing_launch_shape(tool, ctx.args, explicit_prompt):
             display = TOOL_SPECS[tool]["display"]
+            opt_in = (
+                smart_routing_config.COPILOT_SUBAGENT_ORCH_V0
+                if tool == AGENT_COPILOT
+                else smart_routing_config.SUBAGENT_ORCH_V0
+            )
             print_warning(
-                f"The selected Smart Router configuration does not route {display}. "
-                "Choose a configuration that supports it. Running without smart routing."
+                f"This launch's Smart Router configuration does not route {display}. "
+                f"Set {SMART_ROUTER_CONFIG_VERSION_ENV_VAR}={opt_in} to enable routing. "
+                "Running without smart routing."
             )
         # Re-fetch model lists on every launch so newly-added Databricks
         # endpoints show up without a manual `ug configure` (and so that
@@ -4694,7 +4707,11 @@ def _launch_tool(
             launch_model=managed_model if tool == "copilot" else session_model,
         )
         print_success(f"Starting {TOOL_SPECS[tool]['display']}")
-        with _smart_routing_v2_flag(True if managed_smart_routing_applies else None, agent=tool):
+        with _smart_routing_v2_flag(
+            True if managed_smart_routing_applies else None,
+            agent=tool,
+            managed=managed_smart_routing_applies,
+        ):
             launch_agent(tool, state, ctx.args, options=launch_options)
     except RuntimeError as exc:
         metrics.failure(metrics.COMMAND_OPERATION, exc)
@@ -5222,13 +5239,10 @@ def copilot_cmd(
     # Read before the flag applies the version, which consumes the selector.
     routing_unsupported = (
         enable_smart_routing_flag is True
-        and smart_routing_config.known_version()
         and not smart_routing_config.enabled_version_routes(agent=AGENT_COPILOT)
     )
     with _smart_routing_v2_flag(
-        enable_smart_routing_flag,
-        agent=AGENT_COPILOT,
-        default_version=smart_routing_config.COPILOT_SUBAGENT_ORCH_V0,
+        enable_smart_routing_flag, agent=AGENT_COPILOT
     ) as routing_already_chosen:
         with _disable_smart_routing_for_subcommand("copilot", ctx):
             _launch_tool(

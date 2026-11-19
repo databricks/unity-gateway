@@ -1365,6 +1365,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         discarded_paths=(OTEL_METRICS_PATH,) if tracing else (),
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    routing_temp = None
     try:
         proxy_base_url = f"http://{LOOPBACK_HOST}:{server.server_address[1]}"
         config = render_providers_config(
@@ -1378,31 +1379,45 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
             for entry in config["models"]:
                 if entry["id"] == start_model.registry_id:
                     entry["wireModel"] = wire_override
+        routing_args = []
         if options.launch_smart_routing:
-            # A fresh controls file keeps an enclosing smart-routed session from steering this one.
-            start_session()
+            try:
+                routing_temp = tempfile.TemporaryDirectory(
+                    prefix="ug-copilot-routing-", ignore_cleanup_errors=True
+                )
+                routing_args = _routing_plugin_args(
+                    state, catalog, Path(routing_temp.name) / "plugin"
+                )
+                # Keep inherited routing controls from steering this child.
+                start_session()
+            except OSError as exc:
+                routing_args = []
+                print_warning(
+                    f"Smart Router setup failed; launching Copilot without routing: {exc}"
+                )
+                if routing_temp is not None:
+                    routing_temp.cleanup()
+                    routing_temp = None
         with session_registry(config) as registry_path:
             env = build_runtime_env(
                 registry_path,
                 start_model,
                 otel=otel_env(proxy_base_url, session_secret) if tracing else None,
             )
-            with tempfile.TemporaryDirectory(prefix="ug-copilot-routing-") as plugin_root:
-                routing_args = (
-                    _routing_plugin_args(state, catalog, Path(plugin_root) / "plugin")
-                    if options.launch_smart_routing
-                    else []
-                )
-                metrics.agent_handoff()
-                proc = subprocess_cross_os.popen(
-                    [SPEC["binary"], *MCP_LAUNCH_ARGS, *routing_args, *tool_args], env=env
-                )
-                returncode = _wait_for_exit(proc)
+            metrics.agent_handoff()
+            proc = subprocess_cross_os.popen(
+                [SPEC["binary"], *MCP_LAUNCH_ARGS, *routing_args, *tool_args], env=env
+            )
+            returncode = _wait_for_exit(proc)
     finally:
-        cache.stop()
-        server.shutdown()
-        server.server_close()
-        client.close()
+        try:
+            cache.stop()
+            server.shutdown()
+            server.server_close()
+            client.close()
+        finally:
+            if routing_temp is not None:
+                routing_temp.cleanup()
     raise SystemExit(returncode)
 
 

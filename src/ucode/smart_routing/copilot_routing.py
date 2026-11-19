@@ -93,7 +93,12 @@ def route_pre_tool_use(
     if route is None:
         return None
     routing.write_decision_record(
-        DECISIONS_PATH, adapted, route.task, route.decision, route.routed_model
+        DECISIONS_PATH,
+        adapted,
+        route.task,
+        route.decision,
+        route.routed_model,
+        include_task_text=False,
     )
     return {"modifiedArgs": {**route.tool_input, "model": route.routed_model}}
 

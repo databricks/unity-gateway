@@ -764,8 +764,14 @@ launch-scoped plugin passed with `--plugin-dir` runs a `preToolUse` hook that se
 subagent's prompt to the router, offering the first 20 registry models as `claude` harness options,
 and rewrites the call's `model` to the routed `<provider>/<model id>`, which Copilot honors over the
 agent definition and the session model. Decisions are appended to
-`~/.ucode/copilot-smart-routing-decisions.jsonl`. The hook never exits nonzero, because Copilot
+`~/.ucode/copilot-smart-routing-decisions.jsonl`, with task hashes and lengths rather than raw
+task text. This local append-only log has no automatic expiry; delete it when routing history
+is no longer needed. Router rationales can still contain task context. The hook never exits nonzero, because Copilot
 denies a tool call whose hook fails; a router failure leaves the subagent on its own model.
+Legacy routing flags alone do not opt Copilot in. Use the explicit enable flag or a Copilot
+preset, including when launching from another smart-routed session.
+If optional plugin or session-controls setup cannot write its files, ug warns and launches
+Copilot without routing.
 
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
@@ -783,7 +789,7 @@ The version takes precedence over conflicting legacy flags. Once the agent is se
 UG expands its mapping into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
 `ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_SMART_ROUTER_AUTO_MODE` for the launched session. When the version is
-unset or empty, the routing and orchestrator flags retain their existing behavior,
+unset or empty, Claude and Codex routing and orchestrator flags retain their existing behavior,
 including first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. The Auto flag is
 derived only from its config version and cannot enable Auto independently. Unknown versions are ignored:
 no preset is applied, the inherited environment is unchanged, and commands continue normally.

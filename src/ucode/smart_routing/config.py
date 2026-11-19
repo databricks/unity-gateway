@@ -230,31 +230,44 @@ def known_version(env: Mapping[str, str] | None = None) -> bool:
     return source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip() in _VERSIONS
 
 
-def enabled_version_routes(env: Mapping[str, str] | None = None, *, agent: str) -> bool:
+def _enabled_version(env: Mapping[str, str], *, agent: str, managed: bool) -> str:
+    version = env.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
+    if version in _VERSIONS:
+        return version
+    return (
+        COPILOT_SUBAGENT_ORCH_V0
+        if agent == AGENT_COPILOT and not managed
+        else DEFAULT_ENABLED_VERSION
+    )
+
+
+def enabled_version_routes(
+    env: Mapping[str, str] | None = None, *, agent: str, managed: bool = False
+) -> bool:
     """Whether the version ``apply_enabled_version`` would select routes this agent at all.
 
     Orchestration alone does not route, so only the V2 and subagent-only flags count. An agent
     the versions do not cover is never routed.
     """
     source = os.environ if env is None else env
-    version = source.get(SMART_ROUTER_CONFIG_VERSION_ENV_VAR, "").strip()
-    preset = _VERSIONS.get(version, _VERSIONS[DEFAULT_ENABLED_VERSION]).get(agent)
+    preset = _VERSIONS[_enabled_version(source, agent=agent, managed=managed)].get(agent)
     if preset is None:
         return False
     return "1" in (preset[ENABLE_SMART_ROUTING_ENV_VAR], preset[ENABLE_SUBAGENT_ROUTING_ENV_VAR])
 
 
 def apply_enabled_version(
-    env: MutableMapping[str, str] | None = None, *, agent: str
+    env: MutableMapping[str, str] | None = None, *, agent: str, managed: bool = False
 ) -> dict[str, str | None]:
     """Turn routing on through a version, returning the values needed to restore the input.
 
-    A known version is kept; otherwise the selector is set to ``DEFAULT_ENABLED_VERSION``. Either
-    way the version then overwrites every routing env var.
+    Keep a known version. Otherwise explicit Copilot enable opts into its orchestration preset;
+    managed enable and other agents retain the shared default. Restore the full input on exit.
     """
     target = os.environ if env is None else env
     previous = {key: target.get(key) for key in _RESTORE_KEYS}
-    if not known_version(target):
-        target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = DEFAULT_ENABLED_VERSION
+    target[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = _enabled_version(
+        target, agent=agent, managed=managed
+    )
     apply_config(target, agent=agent)
     return previous

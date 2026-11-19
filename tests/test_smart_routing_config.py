@@ -194,9 +194,10 @@ def test_known_version(selector, expected):
     assert config.known_version(env) is expected
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT])
 @pytest.mark.parametrize("selector", [None, "", "   ", "unsupported_version"])
-def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
+@pytest.mark.parametrize("managed", [False, True])
+def test_enabled_version_selects_agent_default_over_legacy_flags(agent, selector, managed):
     inherited = {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
@@ -207,10 +208,10 @@ def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
         inherited[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     applied = inherited.copy()
 
-    previous = config.apply_enabled_version(applied, agent=agent)
+    previous = config.apply_enabled_version(applied, agent=agent, managed=managed)
 
     expected = _EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0]
-    if agent == AGENT_CODEX:
+    if agent == AGENT_CODEX or (agent == AGENT_COPILOT and managed):
         expected = dict.fromkeys(expected, "0")
     assert applied == {
         **expected,
@@ -220,7 +221,7 @@ def test_enabled_version_selects_claude_only_over_legacy_flags(agent, selector):
     assert applied == inherited
 
 
-@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT])
 @pytest.mark.parametrize("version", sorted(config._VERSIONS))
 def test_enabled_version_keeps_a_known_version(agent, version):
     inherited = {
@@ -266,16 +267,19 @@ _LEGACY_ROUTES = {AGENT_CLAUDE: True, AGENT_CODEX: True, AGENT_COPILOT: False}
         ),
     ],
 )
-def test_enabled_version_routes(selector, routes):
+@pytest.mark.parametrize("managed", [False, True])
+def test_enabled_version_routes(selector, routes, managed):
     env = {ENABLE_SMART_ROUTING_ENV_VAR: "1", ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}
     if selector is not None:
         env[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = selector
     before = env.copy()
 
     for agent, expected in routes.items():
-        assert config.enabled_version_routes(env, agent=agent) is expected
+        if agent == AGENT_COPILOT and selector in {None, "unsupported_version"} and not managed:
+            expected = True
+        assert config.enabled_version_routes(env, agent=agent, managed=managed) is expected
         applied = env.copy()
-        config.apply_enabled_version(applied, agent=agent)
+        config.apply_enabled_version(applied, agent=agent, managed=managed)
         assert v2.smart_routing_enabled(applied, default=False, agent=agent) is expected
     assert env == before
 
@@ -366,9 +370,9 @@ def test_describe_routing_reports_each_version_over_shell_flags(version, harness
                 SMART_ROUTER_CONFIG_VERSION_ENV_VAR: "unsupported_version",
                 ENABLE_SMART_ROUTING_ENV_VAR: "1",
             },
-            (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT),
+            (AGENT_CLAUDE, AGENT_CODEX),
         ),
-        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, (AGENT_CLAUDE, AGENT_CODEX, AGENT_COPILOT)),
+        ({ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1"}, (AGENT_CLAUDE, AGENT_CODEX)),
     ],
 )
 def test_describe_routing_without_a_known_version_reports_shell_flags(source, harnesses):

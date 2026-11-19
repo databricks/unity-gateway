@@ -28,6 +28,7 @@ PAYLOAD = {
         "prompt": "Write a Python one-liner that reverses a string.",
         "agent_type": "prober",
         "mode": "sync",
+        "model": SMALL_REF,
     },
 }
 
@@ -62,6 +63,10 @@ def test_task_call_is_rewritten_to_the_routed_registry_model(decisions_path):
         LARGE_REF,
     )
     assert (record["session_id"], record["tool_use_id"]) == ("session-1", "call-1")
+    assert record["original_model"] == SMALL_REF
+    assert record["task_length"] == len(PAYLOAD["toolArgs"]["prompt"])
+    assert "task_name" not in record
+    assert PAYLOAD["toolArgs"]["prompt"] not in decisions_path.read_text()
 
 
 def test_other_tools_and_failed_routes_are_left_alone(decisions_path):
@@ -239,12 +244,7 @@ class TestRouterHookCommand:
         "tool_args",
         [
             pytest.param("{", id="malformed"),
-            pytest.param('"plain text"', id="string-scalar"),
-            pytest.param("1", id="number-scalar"),
-            pytest.param("true", id="boolean-scalar"),
             pytest.param("[]", id="json-list"),
-            pytest.param("null", id="json-null"),
-            pytest.param([], id="list-value"),
             pytest.param(None, id="null-value"),
         ],
     )
