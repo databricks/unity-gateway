@@ -56,15 +56,12 @@ is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name 
 the plugin is loaded. Animal names are display labels for routing rows, parallel
 decision cards and the bottom panel. Claude's messages retain the agent's native name
 or type; routing does not inject a name into the reviewed call.
-The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
-`ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
-returned child ID in the temporary plugin directory, with the session ID. The plugin's
-default status-line command reads that mapping and displays the same animal, current
-task label, token count, and running elapsed time. Claude retains the row controls and
-refreshes the custom text on its own status-line cadence. Unmapped tasks, stale-session
-records, and unreadable records retain native rendering; a failed write never prevents
-the agent from starting. User-configured status lines keep Claude's normal precedence.
-The mapping is removed with the launch directory, not written to user settings.
+On Claude 2.1.326 and newer, the native bottom subagent panel uses the mod's
+`ui.render` hook for `AgentRow`. The returned child ID selects the same animal name as
+its routing row. Only the display label changes; Claude retains the task body, model,
+usage, running status and row controls. Unmapped tasks keep their native labels, as do
+older Claude versions that do not expose this render site. No child-name files or
+`subagentStatusLine` command are installed.
 The matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,
@@ -232,8 +229,10 @@ It also checks Agent/Task descriptions in those requests: orchestrator instructi
 active phases, native guidance otherwise, without the conflicting native advice to avoid
 spawning when unsure.
 
-The `Claude mod · 2.1.290` CI job validates the packaged module and checks event
-forwarding and launch-local options. Native request-construction checks cover description
+The Claude mod CI jobs use 2.1.290 and 2.1.326 to validate the packaged module and check event
+forwarding and launch-local options. The `AgentRow` rendering test runs on 2.1.326 and newer;
+older engines run the common routing suite and keep native bottom-panel labels. The minimum
+Claude version and integration-test pin remain 2.1.290. Native request-construction checks cover description
 changes across native and CLI on/off/on toggles, a resume input containing a saved
 prompt snapshot, retained lifecycle guidance, an unchanged Agent schema, and
 ineligible launches. They inspect

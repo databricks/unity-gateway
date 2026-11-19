@@ -87,12 +87,8 @@ test('animal names stay distinct and stable without changing routed calls or row
   expect(names[100]).toMatch(/ 2$/);
 });
 
-test('routing changes only the matching spawn model and joins its display name to the child ID', async ($, on) => {
-  const writes: any[] = [];
+test('routing changes only the matching spawn model and preserves native spawn results', async ($, on) => {
   const forwarded: any[] = [];
-  const shown = new Map<string, string>();
-  let failWrite = false;
-  const logs: string[] = [];
   const routedModel = 'system.ai.gpt-5-6-sol[1m]';
   on('session.id', () => ({ value: 'session-1' }));
   on('process.run', () => {
@@ -106,14 +102,7 @@ test('routing changes only the matching spawn model and joins its display name t
     return e.name === 'denied' ? { deny: 'Permission denied' }
       : { model: 'claude-sonnet-5', agentId: `child-${e.tool_use_id}` };
   });
-  on('fs.write', ($, e) => {
-    if (failWrite) throw new Error('Read-only filesystem');
-    writes.push(e);
-    return { value: undefined };
-  });
-  on('ui.log', ($, e) => { logs.push(e.text); return { value: undefined }; });
   on('ui.render', ($, e) => {
-    shown.set(e.requestId, e.props.tool);
     return { type: 'Text', props: {}, children: [e.props.tool] };
   });
   for (const id of ['call-a', 'call-b', 'denied']) {
@@ -142,20 +131,9 @@ test('routing changes only the matching spawn model and joins its display name t
   const denied = await $.ui.mount(row('denied'));
   expect(await denied.find({ type: 'Text', text: /Launched Model:/ })).toBeUndefined();
   await denied.unmount();
-  expect(writes.length).toBe(2);
-  for (const [index, id] of ['call-b', 'call-a'].entries()) {
-    expect(writes[index].path.endsWith(`/agent-names/agent-child-${id}.json`)).toBe(true);
-    expect(JSON.parse(writes[index].text)).toEqual({ session_id: 'session-1', name: shown.get(id) });
-  }
   const resumed = { ...forwarded[0], model: 'existing-child-model', resume: { agentId: 'child-call-b' } };
   await $.agent.spawn(resumed);
   expect(forwarded[forwarded.length - 1]).toEqual(resumed);
-  expect(writes.length).toBe(2);
-  failWrite = true;
-  const result = await $.agent.spawn(forwarded[0]);
-  expect(result).toEqual({ model: 'claude-sonnet-5', agentId: 'child-call-b' });
-  expect(writes.length).toBe(2);
-  expect(logs).toEqual(['Could not save the subagent display name; its bottom bar will use the native label.']);
 });
 
 test('a lone call ignores extra updatedInput and keeps its decision under its own row', async ($, on) => {
@@ -366,7 +344,6 @@ test('the router hears which subagent made the call, and nothing for the main lo
   });
   on('tool.call', ($, e) => { calls.push(e); return { result: 'ok' }; });
   on('agent.spawn', ($, e) => { spawns.push(e); return { model: 'claude-sonnet-5', agentId: `child-${e.tool_use_id}` }; });
-  on('fs.write', () => ({ value: undefined }));
   on('ui.log', () => ({ value: undefined }));
   await $.tool.call({ tool: 'Agent', tool_use_id: 'call-main', ...originalInput });
   await $.tool.call({ tool: 'Agent', tool_use_id: 'call-nested', agentId: 'agent-parent', ...originalInput });
@@ -526,7 +503,6 @@ test('parent receives the successful child model without rewriting requested inp
   });
   on('agent.spawn', ($, e) => e.tool_use_id === 'denied' ? { deny: 'Permission denied' }
     : { agentId: `child-${e.tool_use_id}`, model: e.tool_use_id === 'unknown' ? '' : `launched-${e.tool_use_id}` });
-  on('fs.write', () => ({ value: undefined }));
   on('tool.call', ($, e) => {
     forwarded.push(e);
     return new Promise(resolve => {
@@ -622,7 +598,6 @@ test('routed children leave native parent synthesis and stream errors unchanged'
       model: selected[id], rationale: 'Selected for the task',
     }) } };
   });
-  on('fs.write', () => ({ value: undefined }));
   on('tool.call', () => ({ result: 'Child launched', text: 'Child launched' }));
   on('agent.spawn', ($, event) => {
     forwardedSpawns.push(event);

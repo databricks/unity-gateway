@@ -254,7 +254,7 @@ unit/component checks, not live workspace or sign-in coverage; CLI wiring is sep
 
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
-`native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
+`native_claude/test_mod.py` suite. Claude 2.1.290 and 2.1.326 validate the module and run its
 TypeScript event-forwarding and launch-option tests in CI. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
@@ -279,12 +279,15 @@ nothing above the prompt, pending row and turn-spinner routing timers, and disab
 routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
-The bottom-bar regression in the native mod suite checks the spawn's returned child ID
-against its transcript animal name, reverse completion order, a model-only spawn override,
-denied/unrouted spawns, and nonblocking mapping-write failures. `test_claude_mod.py` exercises
-the generated `subagentStatusLine` command, including paths with spaces, child-ID lookup,
-session isolation, missing/partial records, progress/token updates, and terminal-control
-filtering. These component checks do not establish interactive native-panel rendering.
+The native mod suite checks model-only spawn overrides, reverse completion order, and
+unchanged denied/unrouted results. The `AgentRow` test matches the spawn's returned child ID
+to its transcript animal name and leaves an unrouted row unchanged. The `AgentRow` hook changes only the label and preserves
+native model, usage, timing and task metadata. `test_claude_mod.py` verifies that generated
+plugins no longer install the deprecated `subagentStatusLine` command. These component
+checks do not establish interactive native-panel rendering; older Claude versions without
+`AgentRow` retain native bottom-panel labels. The rendering tests in
+`native_claude/agent_row_tests/` run on 2.1.326 and newer, while both CI versions run
+the common mod suite. The minimum version and integration pin remain 2.1.290.
 
 The native auto-mode regression serves controlled server verdicts to the real Claude binary.
 An approved Agent call retains its original input and starts a child on a different routed
@@ -374,7 +377,7 @@ not trigger reads.
 `test_claude_credential_blanks.py` covers the `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` blanks: always in
 the user file (relayed included), written to the managed file by `ug configure` only, a plain launch
 making no privileged write after another writer drops them, skip mode, revert, and admin passthrough
-not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude (2.1.290) against a
+not overriding them. `native_claude/test_credentials.py` runs the CI-pinned Claude versions against a
 fake API with both shell variables set: the blanks make it send the `apiKeyHelper` token, or on the relayed
 path its own OAuth token, with no empty header; without them the shell's values win (control cases). It
 skips on a machine with Claude managed settings, which would replace the fixture's.
