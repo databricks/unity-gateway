@@ -529,6 +529,14 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     )
 
 
+def _claude_route_options(model_ids: list[str]) -> list[tuple[str, str]]:
+    models = _canonical_claude_models(model_ids)
+    if len(models) > routing.MAX_ROUTE_OPTIONS:
+        preferred = map_claude_family_models(models).values()
+        models = list(dict.fromkeys([*preferred, *models]))[: routing.MAX_ROUTE_OPTIONS]
+    return routing.route_options_for(models, "claude")
+
+
 def _request_claude_routing_decision(
     workspace: str,
     token: str,
@@ -537,11 +545,7 @@ def _request_claude_routing_decision(
     provider: str | None = None,
     attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    models = _canonical_claude_models(model_ids)
-    if len(models) > routing.MAX_ROUTE_OPTIONS:
-        preferred = map_claude_family_models(models).values()
-        models = list(dict.fromkeys([*preferred, *models]))[: routing.MAX_ROUTE_OPTIONS]
-    route_options = routing.route_options_for(models, "claude")
+    route_options = _claude_route_options(model_ids)
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     if attribution_headers is None:

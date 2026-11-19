@@ -2073,7 +2073,7 @@ def launch(
             # managed default already applies.
             if not profile_doc.get("model") and not _tool_args_select_model(tool_args):
                 slugs = catalog_slugs(catalog)
-                if options.launch_smart_routing and provider:
+                if options.launch_smart_routing:
                     slugs = prioritize_gpt_models(slugs)
                 if slugs:
                     profile_doc["model"] = slugs[0]

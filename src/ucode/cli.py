@@ -4379,6 +4379,23 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CODEX and managed_smart_routing_applies:
+            if relayed:
+                routing_unavailable = (
+                    "Smart routing is unavailable with a ChatGPT subscription relay."
+                )
+            else:
+                try:
+                    routing_unavailable = codex_agent.minimum_version_error(
+                        smart_routing_enabled=True
+                    )
+                except RuntimeError as exc:
+                    routing_unavailable = str(exc)
+            if routing_unavailable:
+                print_warning(f"{routing_unavailable} Running without smart routing.")
+                smart_routing_enabled = False
+                managed_smart_routing_applies = False
+                previous = {**smart_routing_v2.disable_smart_routing(), **previous}
         if tool == AGENT_CLAUDE and not provider and not parent_schema:
             # A static model list (no provider) can still name a model service that routes to a
             # subscription relay; that launch must swap credentials like a relayed provider.
