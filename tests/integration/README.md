@@ -5,6 +5,8 @@ Relayed Claude smart-routing launcher coverage is currently component-level in
 provider/static catalogs, subscription credentials, and proxy cleanup/fallback.
 These component cases stub executable lookup and process creation; they do not require an
 installed Claude binary on Windows. Native executable resolution has separate component coverage.
+The setup-fallback regression uses a real local listener to verify reuse and port release,
+with a stubbed native child and no upstream inference.
 `test_ug_claude_relayed.py` exercises live relay and hybrid inference without smart routing;
 an automated live relay-plus-smart-routing journey remains a coverage gap.
 

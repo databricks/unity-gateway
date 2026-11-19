@@ -3007,6 +3007,12 @@ def _relayed_credential_override() -> dict:
     }
 
 
+def relayed_launch_args(tool_args: list[str], *, settings: dict) -> list[str]:
+    """Protect subscription auth in launch settings and restore excluded user MCP servers."""
+    settings.update(_merge_claude_settings(settings, _relayed_credential_override()))
+    return ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
+
+
 def _build_claude_argv(
     binary: str,
     tool_args: list[str],
@@ -3037,22 +3043,16 @@ def _build_claude_argv(
     servers, so they are handed back separately via ``--mcp-config`` (see
     :func:`_relayed_mcp_config_args`).
     """
-    source_args = (
-        ["--setting-sources", _RELAYED_SETTING_SOURCES, *_relayed_mcp_config_args(tool_args)]
-        if relayed
-        else []
-    )
     caller_values, remaining = _extract_caller_settings(tool_args)
-    credential_override = _relayed_credential_override() if relayed else None
     if (
         not caller_values
         and settings_override is None
         and not server_side_web_search
-        and credential_override is None
+        and not relayed
     ):
         # No caller --settings: hand Claude ucode's settings file directly (the
         # common path; behavior unchanged).
-        return [binary, *source_args, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
+        return [binary, "--settings", str(CLAUDE_SETTINGS_PATH), *tool_args]
     caller_settings: dict = {}
     for value in caller_values:
         caller_settings = _merge_claude_settings(caller_settings, _load_caller_settings(value))
@@ -3063,8 +3063,7 @@ def _build_claude_argv(
         merged = _merge_claude_settings(merged, settings_override)
     if server_side_web_search:
         _enable_server_side_web_search(merged)
-    if credential_override is not None:
-        merged = _merge_claude_settings(merged, credential_override)
+    source_args = relayed_launch_args(remaining, settings=merged) if relayed else []
     merged_env = merged.get("env")
     if isinstance(merged_env, dict):
         merged_env.pop("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", None)
@@ -3213,6 +3212,7 @@ def _relayed_proxy(state: dict) -> Iterator[None]:
     finally:
         cache.stop()
         server.shutdown()
+        server.server_close()
         client.close()
 
 
@@ -3220,17 +3220,16 @@ def _launch_relayed(
     state: dict, binary: str, tool_args: list[str], *, settings_override: dict | None = None
 ) -> None:
     """Spawn and wait so the relay proxy survives until Claude exits."""
-    with _relayed_proxy(state):
-        with _claude_launch_argv(
-            binary, tool_args, relayed=True, settings_override=settings_override
-        ) as argv:
-            metrics.agent_handoff()
-            proc = subprocess_cross_os.popen(argv)
-            try:
-                returncode = proc.wait()
-            except KeyboardInterrupt:
-                proc.send_signal(signal.SIGINT)
-                returncode = proc.wait()
+    with _claude_launch_argv(
+        binary, tool_args, relayed=True, settings_override=settings_override
+    ) as argv:
+        metrics.agent_handoff()
+        proc = subprocess_cross_os.popen(argv)
+        try:
+            returncode = proc.wait()
+        except KeyboardInterrupt:
+            proc.send_signal(signal.SIGINT)
+            returncode = proc.wait()
     raise SystemExit(returncode)
 
 
@@ -3256,7 +3255,6 @@ def launch(
     options: LaunchOptions,
 ) -> None:
     tool_args = _external_web_search_args(state, tool_args)
-    binary = SPEC["binary"]
     workspace = state.get("workspace")
     ensure_hooks_modules_gate()
     _warn_if_launch_headers_dropped()
@@ -3264,6 +3262,13 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
+    with _relayed_proxy(state) if state.get("claude_relayed") else nullcontext():
+        _launch_configured_claude(state, tool_args, options=options)
+
+
+def _launch_configured_claude(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None:
+    binary = SPEC["binary"]
+    workspace = state.get("workspace")
     relayed = bool(state.get("claude_relayed"))
     if relayed and not options.launch_smart_routing:
         # The relayed settings don't pin a picked or launch-only model, so pass it the way the
@@ -3336,25 +3341,24 @@ def launch(
                 "Routing continues."
             )
         try:
-            with _relayed_proxy(state) if relayed else nullcontext():
-                smart_routing_v2.launch_claude(
-                    state,
-                    tool_args,
-                    binary=binary,
-                    user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                    launch_model=pinned_model,
-                    default_model=session_model,
-                    compose_settings=functools.partial(
-                        _compose_v2_settings, server_side_web_search=server_side_search
-                    ),
-                    launch_model_args=(
-                        _launch_model_args
-                        if not session_model
-                        else lambda args, model: _launch_model_args(args, model or session_model)
-                    ),
-                    model_name=_maybe_add_1m_suffix,
-                    relayed=relayed,
-                )
+            smart_routing_v2.launch_claude(
+                state,
+                tool_args,
+                binary=binary,
+                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                launch_model=pinned_model,
+                default_model=session_model,
+                compose_settings=functools.partial(
+                    _compose_v2_settings, server_side_web_search=server_side_search
+                ),
+                launch_model_args=(
+                    _launch_model_args
+                    if not session_model
+                    else lambda args, model: _launch_model_args(args, model or session_model)
+                ),
+                model_name=_maybe_add_1m_suffix,
+                relayed=relayed,
+            )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
             routing_setup_failed = True

@@ -7,6 +7,9 @@ provider-scoped selection, proxy lifetime, and cleanup/fallback after routing er
 These use controlled transport and process boundaries; they do not establish live inference.
 Executable lookup is stubbed in these launcher cases so Windows unit runs need no installed
 Claude binary; native Windows executable resolution is covered in `test_agent_claude.py`.
+The setup-fallback regression retains real loopback listeners while injecting a routing setup
+error. It verifies one login/proxy, a stable fallback URL, and port release on exit; native
+process creation is stubbed and no upstream inference is sent.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.

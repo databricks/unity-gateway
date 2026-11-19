@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import ANY, MagicMock, Mock
@@ -3826,6 +3827,7 @@ class TestClaudeLaunch:
         calls: list[tuple[dict, str, list[str]]] = []
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "1")
         monkeypatch.delenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", raising=False)
+        monkeypatch.setattr(claude, "_relayed_proxy", lambda state: nullcontext())
         monkeypatch.setattr(
             claude,
             "_launch_relayed",
@@ -3871,6 +3873,9 @@ class TestClaudeLaunch:
 
             def shutdown(self):
                 calls.append(("shutdown",))
+
+            def server_close(self):
+                calls.append(("server_close",))
 
         class Cache:
             def stop(self):
@@ -3926,7 +3931,7 @@ class TestClaudeLaunch:
         assert len(model_flags) == (1 if model_args or "--model" in tool_args else 0)
         if model_args:
             assert argv[argv.index("--model") : argv.index("--model") + 2] == model_args
-        assert calls[-3:] == [("stop",), ("shutdown",), ("close",)]
+        assert calls[-4:] == [("stop",), ("shutdown",), ("server_close",), ("close",)]
 
     def test_smart_routing_on_windows_uses_native_binary(self, monkeypatch, tmp_path):
         npm_dir = tmp_path / "npm prefix with spaces"
@@ -5868,6 +5873,7 @@ class TestEnsureHooksModulesGate:
         )
         monkeypatch.setattr(claude, "CLAUDE_CODE_CONFIG_PATH", path)
         monkeypatch.setattr(claude, "_launch_relayed", lambda *args: None)
+        monkeypatch.setattr(claude, "_relayed_proxy", lambda state: nullcontext())
 
         claude.launch({"workspace": WS, "claude_relayed": True}, [], options=LaunchOptions())
 

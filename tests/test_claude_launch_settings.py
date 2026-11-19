@@ -97,7 +97,10 @@ def test_windows_relayed_settings_and_proxy_are_cleaned_up(
     saved_path, original = large_settings
     saved_bytes = saved_path.read_bytes()
     server = SimpleNamespace(
-        server_address=("127.0.0.1", 12345), serve_forever=lambda: None, shutdown=Mock()
+        server_address=("127.0.0.1", 12345),
+        serve_forever=lambda: None,
+        shutdown=Mock(),
+        server_close=Mock(),
     )
     cache = SimpleNamespace(stop=Mock())
     client = SimpleNamespace(close=Mock())
@@ -151,6 +154,7 @@ def test_windows_relayed_settings_and_proxy_are_cleaned_up(
     assert not seen[0].parent.exists()
     cache.stop.assert_called_once()
     server.shutdown.assert_called_once()
+    server.server_close.assert_called_once()
     client.close.assert_called_once()
     assert saved_path.read_bytes() == saved_bytes
 

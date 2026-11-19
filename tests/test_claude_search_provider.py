@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -234,6 +235,7 @@ def test_launch_paths_receive_external_override(search_config, monkeypatch, rout
     # External boundaries are captured; config reading and argument composition stay real.
     monkeypatch.setattr(claude, "get_databricks_token", lambda *a, **kw: "fixture")
     monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+    monkeypatch.setattr(claude, "_relayed_proxy", lambda state: nullcontext())
     monkeypatch.setattr(claude, "exec_or_spawn", lambda argv: calls.append(argv))
     monkeypatch.setattr(claude, "_launch_relayed", lambda state, binary, args: calls.append(args))
 

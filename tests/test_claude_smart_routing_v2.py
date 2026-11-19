@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import socket
 import sys
 import threading
 from pathlib import Path
@@ -354,6 +355,7 @@ class TestV2Launch:
             catalog.assert_not_called()
         cache.stop.assert_called_once()
         server.shutdown.assert_called_once()
+        server.server_close.assert_called_once()
         client.close.assert_called_once()
 
     @pytest.mark.parametrize("setup_failure", [False, True])
@@ -398,13 +400,79 @@ class TestV2Launch:
             assert captured["apiKeyHelper"] == ""
             assert captured["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
             assert captured["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
-            assert proxy.call_count == 2
+            proxy.assert_called_once()
         else:
             process.assert_not_called()
             proxy.assert_called_once()
         assert cache.stop.call_count == proxy.call_count
         assert server.shutdown.call_count == proxy.call_count
+        assert server.server_close.call_count == proxy.call_count
         assert client.close.call_count == proxy.call_count
+
+    def test_relayed_setup_fallback_reuses_listener_and_releases_port(self, monkeypatch):
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(claude, "header_mod_active", lambda **_kw: True)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
+        login = Mock()
+        monkeypatch.setattr(claude, "_ensure_subscription_login", login)
+        monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_kw: "db-token")
+        monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
+        monkeypatch.setattr(
+            v2, "launch_claude", Mock(side_effect=v2.ClaudeRoutingSetupError("setup failed"))
+        )
+        claude.CLAUDE_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        claude.CLAUDE_SETTINGS_PATH.write_text(
+            json.dumps({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:0"}})
+        )
+        saved_ports = []
+        monkeypatch.setattr(
+            claude, "save_state", lambda state: saved_ports.append(state["relayed_proxy_port"])
+        )
+        servers = []
+        start_proxy = gateway_proxy.start_relay_proxy
+
+        def retain_proxy(*args, **kwargs):
+            resources = start_proxy(*args, **kwargs)
+            servers.append(resources[0])
+            return resources
+
+        monkeypatch.setattr(gateway_proxy, "start_relay_proxy", retain_proxy)
+
+        def native_launch(argv):
+            assert len(servers) == 1
+            server = servers[0]
+            assert server.socket.fileno() != -1
+            with socket.socket() as occupied:
+                with pytest.raises(OSError):
+                    occupied.bind(server.server_address)
+            settings = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+            assert settings["env"]["ANTHROPIC_BASE_URL"] == (
+                f"http://127.0.0.1:{server.server_address[1]}"
+            )
+            assert settings["apiKeyHelper"] == ""
+            assert settings["env"][v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR] == "0"
+            assert settings["env"][v2.ENABLE_SMART_ROUTING_ENV_VAR] == "0"
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(claude.subprocess_cross_os, "popen", native_launch)
+        state = {
+            "workspace": "https://example.com",
+            "claude_relayed": True,
+            "relayed_proxy_port": 0,
+        }
+        try:
+            with pytest.raises(SystemExit) as exc:
+                claude.launch(state, [], options=LaunchOptions(launch_smart_routing=True))
+            assert exc.value.code == 0
+            login.assert_called_once()
+            assert len(servers) == 1
+            assert saved_ports == [servers[0].server_address[1]]
+            assert servers[0].socket.fileno() == -1
+            with socket.socket() as released:
+                released.bind(servers[0].server_address)
+        finally:
+            for server in servers:
+                server.server_close()
 
     def test_strips_gateway_prefix_for_interposer(self):
         model = "anthropic-aigw-73ea02b2-system.ai.glm-5-2"
@@ -637,7 +705,7 @@ class TestV2Launch:
         monkeypatch.setenv(claude.GATEWAY_MODEL_DISCOVERY_ENV_VAR, "")
         monkeypatch.setenv("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "")
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
-        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda **_kw: None)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
         monkeypatch.setattr(
@@ -1046,7 +1114,7 @@ class TestV2Launch:
         monkeypatch.setattr(
             v2,
             "_model_picker_catalog",
-            lambda: AnthropicModelCatalog(
+            lambda **_kw: AnthropicModelCatalog(
                 model_ids=["system.ai.claude-opus-4-8"], model_id_to_display_name={}
             ),
         )
@@ -1104,7 +1172,7 @@ class TestV2ModelPickerDiscovery:
         monkeypatch.setattr(v2, "CLAUDE_PTY_LOG", tmp_path / "v2.log")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
-        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: picker_catalog)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda **_kw: picker_catalog)
 
         discovery_calls = 0
 
@@ -1623,7 +1691,7 @@ class TestV2HeadlessClaude:
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
         monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])
-        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda **_kw: None)
         monkeypatch.setattr(
             v2,
             "list_anthropic_model_catalog",

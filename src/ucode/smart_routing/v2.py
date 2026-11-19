@@ -766,13 +766,7 @@ def launch_claude(
 ) -> NoReturn:
     """Launch Claude in the first-prompt routing PTY wrapper."""
     from ucode.agents.args import has_explicit_model_arg
-    from ucode.agents.claude import (
-        _RELAYED_SETTING_SOURCES,
-        GATEWAY_MODEL_DISCOVERY_ENV_VAR,
-        _merge_claude_settings,
-        _relayed_credential_override,
-        _relayed_mcp_config_args,
-    )
+    from ucode.agents.claude import GATEWAY_MODEL_DISCOVERY_ENV_VAR, relayed_launch_args
     from ucode.agents.claude_auto import AUTO_CUSTOM_MODEL_ENV_KEYS, AUTO_MODEL, picker_config
 
     if os.name != "nt":
@@ -786,9 +780,7 @@ def launch_claude(
     token = launch_token(state, workspace)
     os.environ[OAUTH_TOKEN_ENV_VAR] = token
     # if modelPicker is defined, then skip model discovery.
-    picker_catalog = (
-        _model_picker_catalog(include_user=False) if relayed else _model_picker_catalog()
-    )
+    picker_catalog = _model_picker_catalog(include_user=not relayed)
     if picker_catalog is None:
         os.environ[GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
@@ -806,8 +798,7 @@ def launch_claude(
 
     route_first_prompt = first_prompt_routing_enabled(agent=AGENT_CLAUDE)
     settings, remaining = compose_settings(tool_args)
-    if relayed:
-        settings = _merge_claude_settings(settings, _relayed_credential_override())
+    source_args = relayed_launch_args(remaining, settings=settings) if relayed else []
     # Auto's native model selection collects Isaac feedback before disabling routing.
     # Explicit first-prompt presets retain their own launch behavior.
     auto_picker = (
@@ -1027,15 +1018,7 @@ def launch_claude(
             model_args = launch_model_args(remaining, start_model)
             argv = [
                 binary,
-                *(
-                    [
-                        "--setting-sources",
-                        _RELAYED_SETTING_SOURCES,
-                        *_relayed_mcp_config_args(remaining),
-                    ]
-                    if relayed
-                    else []
-                ),
+                *source_args,
                 "--settings",
                 str(settings_path),
                 *_claude_mod_launch_args(mod_options),
