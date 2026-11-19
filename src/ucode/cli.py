@@ -3722,6 +3722,10 @@ def _toggle_current_smart_routing_session(
             print_err(str(exc))
             raise typer.Exit(1) from None
     try:
+        if enabled and agent == AGENT_CODEX:
+            from ucode.smart_routing.feedback import clear_codex_feedback_target
+
+            clear_codex_feedback_target()
         set_session_environment(dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0") if not enabled else {})
     except RuntimeError as exc:
         metrics.failure(metrics.COMMAND_OPERATION, exc)

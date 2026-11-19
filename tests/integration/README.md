@@ -509,6 +509,12 @@ uploading. Its replies stay local; unrelated replies continue upstream. Off requ
 an explicit skill command in the matching native turn. Plain chat and model-provided
 reasons cannot bypass the disclosed native feedback flow; CLI compatibility is unchanged.
 Isaac subprocesses and transport are controlled in these component checks.
+Component regressions also verify that malformed tool/completion/interrupt frames
+do not end the relay, and that CLI or native re-enable clears the previous feedback
+task before routing changes. A later CLI off-with-reason cannot upload that old task;
+fresh preparation captures the new task. Cleanup failure keeps routing off, while
+short-reason retries preserve their anchor. Live journeys do not inject malformed
+protocol frames or task-reference cleanup failures.
 The live Codex skill-toggle and metadata journeys now require completed native
 `ug_smart_router` results correlated to each action, actual controls, and completed
 root answers. They fail on a shell approval dialog; Claude's native journey is unchanged.

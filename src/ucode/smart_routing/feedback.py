@@ -29,6 +29,15 @@ def _target_path(env: Mapping[str, str] | None = None) -> Path:
     return session_env_path(env).with_name("feedback-target.json")
 
 
+def clear_codex_feedback_target(env: Mapping[str, str] | None = None) -> None:
+    try:
+        _target_path(env).unlink(missing_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            "Could not clear the saved Smart Router feedback task. Routing is unchanged."
+        ) from exc
+
+
 def _native_session_id(env: Mapping[str, str] | None = None) -> str:
     source = os.environ if env is None else env
     return str(UUID(source.get("CODEX_THREAD_ID") or source.get("CODEX_SESSION_ID") or ""))

@@ -525,6 +525,63 @@ def test_native_tool_is_serviced_by_host_and_other_requests_forward(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize(
+    "method,params",
+    [
+        ("item/tool/call", {"tool": "ug_smart_router", "threadId": "root"}),
+        ("item/tool/call", {"tool": "ug_smart_router", "turnId": "turn"}),
+        (
+            "item/tool/call",
+            {"tool": "ug_smart_router", "threadId": {}, "turnId": "turn"},
+        ),
+        (
+            "item/tool/call",
+            {"tool": "ug_smart_router", "threadId": "root", "turnId": []},
+        ),
+        ("turn/completed", None),
+        ("turn/completed", {"threadId": "root", "turn": None}),
+        ("turn/completed", {"threadId": "root", "turn": []}),
+        ("turn/completed", {"threadId": {}, "turn": {"id": "turn"}}),
+        ("turn/completed", {"threadId": "root", "turn": {"id": []}}),
+        ("turn/interrupt", None),
+        ("turn/interrupt", []),
+        ("turn/interrupt", {"threadId": {}, "turnId": "turn"}),
+        ("turn/interrupt", {"threadId": "root", "turnId": []}),
+    ],
+)
+def test_malformed_feedback_frames_preserve_relay_and_subsequent_toggle(
+    running_interposer, monkeypatch, method, params
+):
+    monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", "0")
+
+    async def run():
+        async with running_interposer() as (task, upstream, tui, controls):
+            thread_id = await register_native_router(upstream, tui)
+            malformed = {"id": "malformed", "method": method, "params": params}
+            source, destination = (tui, upstream) if method == "turn/interrupt" else (upstream, tui)
+            source.incoming.put_nowait(malformed)
+            assert await asyncio.wait_for(destination.outgoing.get(), 2) == malformed
+            assert json.loads(controls.read_text()) == {}
+
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            reply = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert reply["id"] == "native-call"
+            assert reply["result"]["success"]
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            completed = {
+                "method": "turn/completed",
+                "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+            }
+            upstream.incoming.put_nowait(completed)
+            assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            ping = {"id": "after-malformed", "method": "ping"}
+            tui.incoming.put_nowait(ping)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == ping
+            assert not task.done()
+
+    asyncio.run(run())
+
+
 def test_native_tool_capture_does_not_block_interrupts_or_other_frames(
     running_interposer, monkeypatch
 ):

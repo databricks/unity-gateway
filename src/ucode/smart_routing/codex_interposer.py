@@ -271,8 +271,13 @@ async def _handle_tui(
                 if message is not None and feedback_input.consume(message):
                     continue
                 if message is not None and message.get("method") == "turn/interrupt":
-                    params = message.get("params", {})
-                    feedback_input.cancel(params.get("threadId"), params.get("turnId"))
+                    params = message.get("params")
+                    if (
+                        isinstance(params, dict)
+                        and isinstance(params.get("threadId"), str)
+                        and (params.get("turnId") is None or isinstance(params.get("turnId"), str))
+                    ):
+                        feedback_input.cancel(params["threadId"], params.get("turnId"))
                 if message is not None and message.get("method") in (None, "turn/interrupt"):
                     await upstream.send(frame)
                 else:
@@ -419,12 +424,18 @@ async def _handle_tui(
                     controller.observe(message)
                 await tui.send(frame)
                 if message is not None and message.get("method") == "turn/completed":
-                    params = message.get("params", {})
-                    turn = params.get("turn", {})
-                    key = (params.get("threadId"), turn.get("id"))
-                    if key in tool_turns:
-                        feedback_input.cancel(*key)
-                        tool_turns[key].set()
+                    params = message.get("params")
+                    turn = params.get("turn") if isinstance(params, dict) else None
+                    if (
+                        isinstance(params, dict)
+                        and isinstance(params.get("threadId"), str)
+                        and isinstance(turn, dict)
+                        and isinstance(turn.get("id"), str)
+                    ):
+                        key = (params["threadId"], turn["id"])
+                        if key in tool_turns:
+                            feedback_input.cancel(*key)
+                            tool_turns[key].set()
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))

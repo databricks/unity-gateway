@@ -55,7 +55,10 @@ def inline_feedback(tmp_path, monkeypatch):
                         "harness": "codex",
                         "category": "smart-routing",
                     },
-                    "target": {"session_id": SESSION_ID, "turn_id": TASK_ID},
+                    "target": {
+                        "session_id": SESSION_ID,
+                        "turn_id": args[args.index("--turn-id") + 1],
+                    },
                 }
             )
         )
@@ -138,6 +141,83 @@ def test_valid_reason_freezes_original_task_then_disables_then_submits(inline_fe
     assert run.call_count == 2
     popen.assert_called_once()
     assert not session_env.session_routing_enabled(controls)
+
+
+@pytest.mark.parametrize("reenable", ["cli", "native"])
+def test_reenabled_session_cannot_upload_previous_tasks_evidence(
+    native_router, inline_feedback, reenable
+):
+    controls, run, popen, calls = inline_feedback
+    assert off().exit_code == 2
+    assert off(REASON).exit_code == 0
+    target = controls.with_name("feedback-target.json")
+    if reenable == "cli":
+        result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+        assert result.exit_code == 0, result.output
+    else:
+        assert "is on" in native_call(native_router, "on")["message"]
+    assert not target.exists()
+    assert session_env.session_routing_enabled(controls)
+
+    stale_attempt = off(REASON)
+    assert stale_attempt.exit_code == 1, stale_attempt.output
+    assert "still on" in stale_attempt.output
+    assert run.call_count == 2
+    assert popen.call_count == 1
+    assert session_env.session_routing_enabled(controls)
+
+    next_task = str(uuid4())
+    isaac = run.side_effect
+
+    def current_task(args, **kwargs):
+        result = isaac(args, **kwargs)
+        if "--inspect-target" in args:
+            result.stdout = json.dumps({"session_id": SESSION_ID, "turn_id": next_task})
+        return result
+
+    run.side_effect = current_task
+    assert off().exit_code == 2
+    assert off(REASON).exit_code == 0
+    captures = [args for args, _ in calls if "--capture-local" in args]
+    assert [args[args.index("--turn-id") + 1] for args in captures] == [TASK_ID, next_task]
+    assert popen.call_count == 2
+    assert not session_env.session_routing_enabled(controls)
+
+
+@pytest.mark.parametrize("reenable", ["cli", "native"])
+def test_failed_task_reference_cleanup_keeps_routing_off(
+    native_router, inline_feedback, monkeypatch, reenable
+):
+    import asyncio
+
+    controls, run, popen, _ = inline_feedback
+    assert off().exit_code == 2
+    assert off(REASON).exit_code == 0
+    target = controls.with_name("feedback-target.json")
+    unlink = Path.unlink
+
+    def deny_target_removal(path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("target is locked")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", deny_target_removal)
+    if reenable == "cli":
+        result = runner.invoke(cli.app, ["codex", "--enable-smart-routing"])
+        assert result.exit_code == 1, result.output
+        message = " ".join(result.output.split())
+    else:
+        result = asyncio.run(
+            native_router.call({"threadId": SESSION_ID, "arguments": {"action": "on"}})
+        )
+        assert not result["success"]
+        message = result["contentItems"][0]["text"]
+    assert "Could not clear the saved Smart Router feedback task" in message
+    assert "Routing is unchanged" in message
+    assert not session_env.session_routing_enabled(controls)
+    assert target.exists()
+    assert run.call_count == 2
+    assert popen.call_count == 1
 
 
 @pytest.mark.parametrize("flag", ["0", "false", "off", ""])

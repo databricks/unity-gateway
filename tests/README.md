@@ -1197,11 +1197,19 @@ Plain prompts, quoted commands, appended reasons, foreign/finished turns, and
 model-provided reasons cannot start feedback or disable routing. Correlated
 turn-start replies bind authorization even when the tool request arrives first.
 Status needs no Isaac executable.
+Re-enabling through either Codex entry point clears the saved task reference before
+routing changes. A later CLI off-with-reason cannot reuse the previous task's evidence;
+it must prepare a fresh target. Cleanup failure keeps routing off. Short-reason retries
+within the same attempt retain their original task reference.
 `test_codex_metadata.py` checks native request/response transport, unrelated-tool
 forwarding, locally consumed feedback replies (including stale replies), native
 prompt cancellation on interrupt, completed turn, or disconnect, responsive
 interrupts during capture, and completion/failure notices
 after the originating turn ends, without another model turn.
+Malformed tool calls and completion/interrupt notifications pass through without
+being handled locally; a subsequent native toggle and messages in both directions
+still complete. These checks include missing IDs, null parameters/turns, and invalid
+ID types, using controlled transport rather than malformed native-Codex output.
 `test_integration_evidence.py` validates native completed-tool
 receipts instead of treating shell output as Codex toggle evidence. These component
 checks do not establish live backend delivery or terminal rendering of prompts/notices.
