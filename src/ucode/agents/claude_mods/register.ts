@@ -173,7 +173,7 @@ export function register(on: On, options: PluginOptions): void {
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
-    await watchStartupValidation($);
+    await watchStartupValidation($, () => setRouting($, options, false, false));
     if (launchedEnabled) {
       const current = await readEnvironment($);
       await setRouting($, options, isRoutingEnabled(current), false);

@@ -4,11 +4,14 @@ import { isRoutingEnabled } from './routing-state.ts'
 
 const BANNER = 'unity gateway smart router'
 
-// The band shows at launch and after each toggle, and hides once the next prompt's turn
-// completes. A prompt submitted while it shows arms the hide for that prompt's turn.
+// The band shows once the startup check finishes and after each toggle, and hides once the
+// next prompt's turn completes. A prompt submitted while it shows arms the hide for that turn.
 const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
-const validation = { message: '', isHideArmed: false }
+const validation = { message: '', isHideArmed: false, isPending: false }
+// An unsupported menu turns routing off, so the band waits for the check rather than flash ON.
+const VALIDATION_POLL_MS = 100
+const VALIDATION_WAIT_MS = 12000
 
 export function showStatusBand(): void {
   band.isVisible = true
@@ -57,30 +60,56 @@ async function readRoutingState($: any): Promise<RoutingState> {
   }
 }
 
-export async function watchStartupValidation($: EngineInterface): Promise<void> {
+export async function watchStartupValidation(
+  $: EngineInterface,
+  disableRouting: () => Promise<void>,
+): Promise<void> {
   if (validationWatchStarted) return
   validationWatchStarted = true
   try {
     const controls = await $.env.get('UCODE_SESSION_ENV_FILE')
     if (typeof controls !== 'string' || !controls.endsWith('.json')) return
     let complete = false
-    const notice = $.clock.every(1000, async () => {
+    let waited = 0
+    validation.isPending = true
+    const finish = (): void => {
+      complete = true
+      validation.isPending = false
+      notice.cancel()
+      $.ui.invalidate('ui.render')
+    }
+    const notice = $.clock.every(VALIDATION_POLL_MS, async () => {
+      if (complete) return
+      waited += VALIDATION_POLL_MS
+      let result: any
       try {
-        const result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
-        if (complete || !result || !('message' in result)) return
-        complete = true
-        notice.cancel()
-        if (typeof result.message === 'string' && result.message) {
-          validation.message = result.message
-          $.ui.invalidate('ui.render')
+        result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
+      } catch {}
+      if (complete) return
+      if (!result || !('message' in result)) {
+        if (waited >= VALIDATION_WAIT_MS) finish()
+        return
+      }
+      complete = true
+      if (result.routing_disabled === true) {
+        band.isVisible = false
+        try {
+          await disableRouting()
+        } catch {}
+      } else if (typeof result.message === 'string') {
+        validation.message = result.message
+      }
+      finish()
+      if (typeof result.message === 'string' && result.message) {
+        try {
           await $.session.append({
             message: {
               type: 'system',
               content: [{ type: 'text', text: 'Smart Router validation\n' + result.message }],
             },
           })
-        }
-      } catch {}
+        } catch {}
+      }
     })
   } catch {}
 }
@@ -105,14 +134,15 @@ export const registerStatusBand = (on: On): void => {
       if (count !== running) $.ui.invalidate('ui.render')
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
-    const state = `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
-    const tail = e.props.tail ? `${e.props.tail} · ${state}` : state
+    const state = validation.isPending ? '' : `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
+    const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
     return next({ ...e, props: { ...e.props, tail } })
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
-    if (!band.isVisible && !validation.message) return theirs
+    const isBandShown = band.isVisible && !validation.isPending
+    if (!isBandShown && !validation.message) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
@@ -132,7 +162,7 @@ export const registerStatusBand = (on: On): void => {
       columnGap: 1,
       children: [Text({ bold: true, children: [BANNER] }), pill, trailer],
     })
-    const children = band.isVisible ? [line] : []
+    const children = isBandShown ? [line] : []
     if (validation.message) children.push(Box({
       flexDirection: 'column',
       borderStyle: 'round',

@@ -1,4 +1,4 @@
-"""One advisory compatibility check for a resolved smart-routing launch."""
+"""Startup Smart Router menu check; an unsupported menu turns routing off for the session."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from ucode.config_io import atomic_write_json
+from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.databricks import _http_post_json, workspace_origin
 
 _VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
@@ -37,7 +38,7 @@ def _message(payload: object, reason: str | None) -> str | None:
     ]
     if suggestions:
         parts.append("Available options: " + ", ".join(suggestions) + ".")
-    parts.append("Routing remains enabled.")
+    parts.append("Smart routing is off for this session.")
     return " ".join(" ".join(parts).split())[:1000]
 
 
@@ -62,8 +63,13 @@ def start(
             message = _message(payload, reason)
         except Exception:
             message = _UNAVAILABLE
+        result: dict[str, object] = {"message": message}
+        if message and message != _UNAVAILABLE:
+            with suppress(OSError, RuntimeError):
+                atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
+                result["routing_disabled"] = True
         with suppress(OSError, RuntimeError):
-            atomic_write_json(result_path(session_controls), {"message": message})
+            atomic_write_json(result_path(session_controls), result)
 
     with suppress(Exception):
         threading.Thread(target=check, daemon=True).start()

@@ -14,6 +14,7 @@ import pytest
 
 from ucode import databricks
 from ucode.smart_routing import startup_validation as validation
+from ucode.smart_routing.session_env import session_routing_enabled
 from ucode.workspace import activate
 
 
@@ -87,7 +88,9 @@ def test_delayed_http_is_nonblocking_and_preserves_resolved_menu(tmp_path, monke
         RuntimeError("private token diagnostics"),
     ],
 )
-def test_results_are_advisory_and_exceptions_are_isolated(response, tmp_path, monkeypatch):
+def test_unsupported_menu_turns_routing_off_and_failures_keep_it_on(
+    response, tmp_path, monkeypatch
+):
     post = (
         Mock(side_effect=response)
         if isinstance(response, Exception)
@@ -103,19 +106,22 @@ def test_results_are_advisory_and_exceptions_are_isolated(response, tmp_path, mo
         router_name="stable",
         session_controls=controls,
     )
-    message = _wait_for_result(validation.result_path(controls))["message"]
+    result = _wait_for_result(validation.result_path(controls))
+    message = result["message"]
     post.assert_called_once()
-    assert controls.read_text() == "{}"
+    unsupported = isinstance(response, tuple) and (response[0] or {}).get("is_supported") is False
+    assert session_routing_enabled(controls) is not unsupported
+    assert result.get("routing_disabled", False) is unsupported
     if isinstance(response, tuple) and response[0] and response[0].get("is_supported") is True:
         assert message is None
-    elif isinstance(response, tuple) and response[0] and response[0].get("is_supported") is False:
+    elif unsupported:
         assert "Need two families." in message
         assert "custom.model: No matching harness." in message
         assert "system.ai.other (claude)" in message
+        assert message.endswith("Smart routing is off for this session.")
     else:
         assert message == validation._UNAVAILABLE
-        assert "does not support" not in message
-    assert message is None or "Routing remains enabled." in message
+        assert controls.read_text() == "{}"
 
 
 def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monkeypatch):
