@@ -30,7 +30,8 @@ import { AUTO_KEPT_CONFIRMATION, AUTO_MAIN_TITLE, AUTO_SET_CONFIRMATION, autoTar
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook)/;
-const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, closeOnEscape:true} as const;
+// Two instruction lines, the selected value, eight visible options and the overflow count.
+const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, rows:12, closeOnEscape:true} as const;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
 function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
@@ -360,14 +361,11 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.render', {component:'Pane', requestId:AUTO_MODELS_PANE.id}, ($, e, next) => {
       const chooser = pendingChooser;
       if (!chooser?.options || !chooser.choose) return next(e);
-      const {Box, Text, Select} = $.ui.resolve(e);
       const current = chooser.options[0];
-      return Box({flexDirection:'row', columnGap:1, children:[
-        Box({width:'45%', children:[Text({children:[`${AUTO_MAIN_TITLE} (currently ${current.label}). Subagents will be smart routed.`]})]}),
-        Box({flexDirection:'column', flexGrow:1, children:[Select({
-          key:chooser.key, options:chooser.options, value:current.value, autoFocus:true, onSelect:chooser.choose,
-        })]}),
-      ]});
+      return $.ui.resolve(e).Select({
+        key:chooser.key, label:`${AUTO_MAIN_TITLE} (currently ${current.label}).\nSubagents will be smart routed.\nMain model`,
+        options:chooser.options, value:current.value, autoFocus:true, onSelect:chooser.choose,
+      });
     });
     on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
       if (e.origin.kind === 'person') {
