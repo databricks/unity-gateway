@@ -22,7 +22,7 @@ from xml.sax.saxutils import escape
 import tomlkit
 from tomlkit.exceptions import ParseError
 
-from ucode import metrics
+from ucode import agents, metrics
 from ucode.codex_config import (
     CODEX_MODEL_PROVIDER_NAME,
     catalog_slugs,
@@ -1962,9 +1962,9 @@ def launch(
             "`--disable-smart-routing` or pick another provider."
         )
     if options.launch_smart_routing:
-        from ucode.agents import ensure_minimum_version
-
-        ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
+        agents.ensure_minimum_version(
+            "codex", lambda: minimum_version_error(smart_routing_enabled=True)
+        )
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
