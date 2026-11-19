@@ -3449,6 +3449,45 @@ def codex_router_hook_cmd(
         sys.stdout.write(json.dumps(output))
 
 
+@app.command("copilot-router-hook", hidden=True)
+def copilot_router_hook_cmd(
+    event: str,
+    host: Annotated[str | None, typer.Option("--host")] = None,
+    profile: Annotated[str | None, typer.Option("--profile")] = None,
+    use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
+    model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
+) -> None:
+    """Run the Copilot smart-routing hook that picks each subagent's model."""
+    if event != "route-subagent" or not host:
+        return
+    if workspace_id:
+        pin(host, workspace_id)
+    import json
+    import sys
+
+    from ucode.smart_routing.copilot_routing import route_pre_tool_use
+
+    # Copilot denies the tool call when a hook exits nonzero, so any failure must leave it unrouted.
+    try:
+        environment = effective_environment(agent=AGENT_COPILOT, strict=True)
+        if not smart_routing_v2.smart_routing_enabled(
+            environment, default=False, agent=AGENT_COPILOT
+        ):
+            return
+        payload = json.loads(sys.stdin.buffer.read() or b"{}")
+        token = _router_hook_token(host, profile, use_pat)
+        if not isinstance(payload, dict) or not token:
+            return
+        refs = dict(entry.split("=", 1) for entry in model or [])
+        output = route_pre_tool_use(payload, workspace=host, token=token, refs=refs)
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).debug("Copilot smart routing failed", exc_info=True)
+        return
+    if output is not None:
+        sys.stdout.write(json.dumps(output))
+
+
 @app.command("smart-router-describe", hidden=True)
 def smart_router_describe_cmd() -> None:
     """Print, as JSON, which agents this environment's smart-routing settings route.
@@ -3650,6 +3689,7 @@ def _auto_configure_tool(
 
 
 CAN_USE_CACHED_CONFIG_AGENTS = frozenset({"claude", "codex"})
+SMART_ROUTING_AGENTS = CAN_USE_CACHED_CONFIG_AGENTS | {"copilot"}
 
 
 @contextmanager
@@ -3973,7 +4013,7 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
     """Whether the forwarded arguments represent an interactive launch."""
     if not tool_args or explicit_prompt:
         return True
-    return tool == "claude" and tool_args[0].startswith("-")
+    return tool in {"claude", "copilot"} and tool_args[0].startswith("-")
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
@@ -3994,8 +4034,8 @@ def _routes_launch(
     return (
         # Smart routing is enabled globally.
         smart_routing_enabled
-        # Only Claude Code and Codex currently support smart routing.
-        and tool in CAN_USE_CACHED_CONFIG_AGENTS
+        # Only Claude Code, Codex and Copilot currently support smart routing.
+        and tool in SMART_ROUTING_AGENTS
         # Model Provider Services are supported for Claude only.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
@@ -4332,7 +4372,7 @@ def _launch_tool(
         # Checked after the managed config settles `provider`: an admin-set provider must trip this
         # guard too, or routing would be persisted as on while a provider is active.
         if (
-            tool in CAN_USE_CACHED_CONFIG_AGENTS
+            tool in SMART_ROUTING_AGENTS
             and smart_routing_enabled
             and not _smart_routing_supported(tool, provider)
         ):
@@ -5157,16 +5197,40 @@ def copilot_cmd(
     ] = None,
     skip_preflight: SkipPreflightOption = False,
     workspace: WorkspaceOption = None,
+    # Hidden while smart routing is opt-in for Copilot.
+    enable_smart_routing: Annotated[
+        bool,
+        typer.Option("--enable-smart-routing", hidden=True),
+    ] = False,
+    disable_smart_routing: Annotated[
+        bool,
+        typer.Option("--disable-smart-routing", hidden=True),
+    ] = False,
 ) -> None:
     """Launch GitHub Copilot CLI via Databricks."""
-    _launch_tool(
-        "copilot",
-        ctx,
-        provider=provider,
-        skip_preflight=skip_preflight,
-        workspace_url=workspace,
-        parent_schema=model_location,
+    # Both flags cancel out: the launch behaves as if neither was passed.
+    enable_smart_routing_flag = (
+        None if enable_smart_routing == disable_smart_routing else enable_smart_routing
     )
+    # Read before the flag applies the version, which consumes the selector.
+    routing_unsupported = (
+        enable_smart_routing_flag is True
+        and not smart_routing_config.enabled_version_routes(agent=AGENT_COPILOT)
+    )
+    with _smart_routing_v2_flag(
+        enable_smart_routing_flag, agent=AGENT_COPILOT
+    ) as routing_already_chosen:
+        with _disable_smart_routing_for_subcommand("copilot", ctx):
+            _launch_tool(
+                "copilot",
+                ctx,
+                routing_already_chosen=routing_already_chosen,
+                routing_unsupported=routing_unsupported,
+                provider=provider,
+                skip_preflight=skip_preflight,
+                workspace_url=workspace,
+                parent_schema=model_location,
+            )
 
 
 @app.command(

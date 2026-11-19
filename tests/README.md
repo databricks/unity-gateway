@@ -34,6 +34,10 @@ HTTP 200 through the relay. Its dedicated protected Linux CI job maps `CODEX_OAU
 to `CODEX_ACCESS_TOKEN`; `test_cuj_session.py` covers credential redaction from evidence.
 File tools, desktop configure/revert, desktop inference, and browser sign-in are not covered.
 
+Copilot orchestration component coverage checks command-based session-start context,
+native task guidance, disabled and child contexts, and preservation of older presets.
+Live child routing is verified separately from these component checks.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.
@@ -1080,6 +1084,11 @@ real version gate: declining blocks launch, upgrading to 0.164 allows routing, a
 `test_codex_routing.py` checks that long Unicode assignments reach the router and hook
 unchanged while audits contain their hash and length, and bound each reason to 1,000
 characters. Shared-writer coverage keeps Claude's full task and reason fields intact.
+`test_copilot_routing.py` checks that a Copilot `task` call is rewritten to the routed registry
+model, that the router is offered `claude` harness options capped at its model limit, that the
+launch-scoped plugin hook matches only `task`, and that the hook command exits zero on every
+failure (Copilot denies the tool call otherwise); `test_agent_copilot.py` checks that a routed launch
+passes the plugin and a plain launch does not.
 
 Claude picker composition is checked directly through the catalog and renderer functions in
 `test_agent_claude.py`; focused CLI cases cover source selection and launch precedence.

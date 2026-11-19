@@ -222,6 +222,16 @@ class TestHttpChokepoints:
 
 
 class TestHelperArgv:
+    def test_copilot_router_hook(self, selected):
+        from ucode.smart_routing.copilot_routing import hook_argv
+
+        argv = hook_argv(
+            {"workspace": SHARED, "profile": "p"},
+            {"system.ai.fixture": "databricks/fixture"},
+        )
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+        assert argv[argv.index("--model") + 1] == "system.ai.fixture=databricks/fixture"
+
     def test_mcp_proxy(self, selected):
         argv = db_mod.build_mcp_proxy_argv(f"{SHARED}/api/2.0/mcp/x", SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
