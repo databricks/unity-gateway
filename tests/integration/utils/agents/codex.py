@@ -66,7 +66,9 @@ def completed_smart_router_results(records: list[dict], action: str) -> list[dic
             continue
         if item.get("arguments", {}).get("action") != action:
             continue
-        assert item.get("status") == "completed" and item.get("success") is True, item
+        if item.get("status") != "completed" or item.get("success") is not True:
+            # A rejected call can precede the accepted one; only successes count.
+            continue
         contents = item.get("content_items")
         assert isinstance(contents, list) and len(contents) == 1, item
         assert contents[0].get("type") == "inputText", item

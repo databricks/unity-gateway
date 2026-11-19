@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 from collections.abc import Awaitable, Callable
+from enum import Enum
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -21,6 +22,13 @@ from ucode.smart_routing.session_env import (
 )
 
 TOOL_NAME = "ug_smart_router"
+
+
+class ThreadOwnership(Enum):
+    CALLER = "caller"
+    ROOT = "root"
+
+
 PROVIDE_REASON = "Provide a reason"
 CANCEL = "Cancel"
 FEEDBACK_QUESTION_ID = "smart_router_feedback"
@@ -42,15 +50,11 @@ TOOL_SPEC = {
         "If validation_error is returned, relay its message and stop. Wait for the user to retry; "
         "do not reopen the prompt or automatically retry with another reason. "
         "Do not cite skills, file paths, or instructions. "
-        "Never invent feedback. Cancel sends nothing and keeps routing on. "
-        "Retry resends the saved report through Isaac without recapturing."
+        "Never invent feedback. Cancel sends nothing and keeps routing on."
     ),
     "inputSchema": {
         "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["on", "off", "cancel", "retry"]},
-            "feedback_id": {"type": ["string", "null"]},
-        },
+        "properties": {"action": {"type": "string", "enum": ["on", "off", "cancel"]}},
         "required": ["action"],
         "additionalProperties": False,
     },
@@ -176,8 +180,7 @@ class CodexSmartRouter:
         self.feedback_required = feedback.smart_router_feedback_required()
         self.pending_feedback: dict[str, str | None] = {}
         self.collecting_threads: set[str] = set()
-        self.root_threads: set[str] = set()
-        self.caller_threads: set[str] = set()
+        self.threads: dict[str, ThreadOwnership] = {}
         self.thread_requests: dict[str | int, bool] = {}
         self.off_requests: dict[str | int, tuple[str, asyncio.Event]] = {}
         self.off_turns: set[tuple[str, str]] = set()
@@ -257,26 +260,23 @@ class CodexSmartRouter:
         owns_tool = self.thread_requests.pop(request_id)
         result = message.get("result")
         thread = result.get("thread") if isinstance(result, dict) else None
-        if not isinstance(thread, dict):
-            return
-        if not isinstance(thread.get("id"), str):
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             return
         try:
             thread_id = str(UUID(thread["id"]))
-        except (ValueError, KeyError, TypeError):
+        except ValueError:
             return
         if not owns_tool:
-            self.caller_threads.add(thread_id)
-            self.root_threads.discard(thread_id)
+            self.threads[thread_id] = ThreadOwnership.CALLER
             return
         source = thread.get("source")
         if (
-            thread_id in self.caller_threads
+            self.threads.get(thread_id) is ThreadOwnership.CALLER
             or thread.get("parentThreadId")
             or (isinstance(source, dict) and "subAgent" in source)
         ):
             return
-        self.root_threads.add(thread_id)
+        self.threads[thread_id] = ThreadOwnership.ROOT
 
     def handles(self, message: dict) -> bool:
         params = message.get("params")
@@ -285,7 +285,7 @@ class CodexSmartRouter:
             and isinstance(message.get("id"), (str, int))
             and isinstance(params, dict)
             and isinstance(params.get("threadId"), str)
-            and params["threadId"] not in self.caller_threads
+            and self.threads.get(params["threadId"]) is not ThreadOwnership.CALLER
             and isinstance(params.get("turnId"), str)
             and params.get("tool") == TOOL_NAME
             and params.get("namespace") in (None, "")
@@ -361,9 +361,7 @@ class CodexSmartRouter:
     async def delivery(self, report_id: str, process: feedback.FeedbackUpload) -> dict[str, str]:
         sent = await feedback.wait_for_feedback(process)
         message = (
-            "Feedback submitted successfully."
-            if sent
-            else "Feedback delivery is unconfirmed. If Isaac saved this report, ask Smart Router to retry it."
+            "Feedback submitted successfully." if sent else "Feedback delivery is unconfirmed."
         )
         return {
             "delivery": "submitted" if sent else "unconfirmed",
@@ -372,28 +370,22 @@ class CodexSmartRouter:
 
     def execute(self, params: dict) -> dict:
         thread_id = params.get("threadId")
-        if not isinstance(thread_id, str) or thread_id not in self.root_threads:
+        if (
+            not isinstance(thread_id, str)
+            or self.threads.get(thread_id) is not ThreadOwnership.ROOT
+        ):
             raise ValueError("Smart Router controls are available only to this session's root.")
         arguments = params.get("arguments")
         if (
             not isinstance(arguments, dict)
-            or set(arguments) - {"action", "reason", "feedback_id"}
-            or arguments.get("action") not in ("on", "off", "cancel", "retry")
+            or set(arguments) - {"action", "reason"}
+            or arguments.get("action") not in ("on", "off", "cancel")
             or (arguments.get("reason") is not None and not isinstance(arguments["reason"], str))
             or (arguments.get("reason") is not None and arguments["action"] != "off")
-            or (
-                arguments.get("feedback_id") is not None
-                and not isinstance(arguments["feedback_id"], str)
-            )
-            or (arguments.get("feedback_id") is not None and arguments["action"] != "retry")
         ):
             raise ValueError("Invalid Smart Router action.")
         action = arguments["action"]
         env = {**self.environment, "CODEX_THREAD_ID": thread_id, "CODEX_SESSION_ID": thread_id}
-        if action == "retry":
-            report_id = str(UUID(arguments.get("feedback_id") or ""))
-            self.uploads[report_id] = feedback.submit_codex_feedback(report_id, env)
-            return self.sending(report_id)
         enabled = session_routing_enabled(self.controls)
         if action == "cancel":
             self.pending_feedback.pop(thread_id, None)

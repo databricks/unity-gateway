@@ -74,10 +74,8 @@ Reason submission needs no additional shell approval. Do not submit the same
 report through `/isaac-feedback` or another command.
 Relay the native result briefly, including any notices. If delivery is pending,
 say the user can keep working; do not poll or block the conversation. The launcher
-reports completion. If the user asks to retry a saved report, use the
-same native tool with `action="retry"` and its `feedback_id`.
-Keep routing off throughout delivery and retry; never claim delivery succeeded
-merely because routing is off.
+reports completion. Keep routing off throughout delivery; never claim delivery
+succeeded merely because routing is off.
 In Claude's skill fallback, if the off result requires feedback, routing is still
 on. Ask why the user is turning Smart Router off and explain that their reason and
 session details will be sent to the Isaac team. Require at least 16 characters

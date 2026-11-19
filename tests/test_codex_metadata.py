@@ -756,15 +756,15 @@ def test_native_delivery_notice_after_turn_without_model_or_shell(
     asyncio.run(run())
 
 
-def test_overlapping_feedback_retries_keep_each_process_during_backpressure(
+def test_overlapping_pending_deliveries_keep_each_process_during_backpressure(
     running_interposer, monkeypatch
 ):
     processes, monitored = [], []
 
-    def execute(self, params):
+    def execute(self, _params):
         process = object()
         processes.append(process)
-        report_id = params["arguments"]["feedback_id"]
+        report_id = f"report-{len(processes)}"
         self.uploads[report_id] = process
         return {"delivery": "pending", "feedback_id": report_id}
 
@@ -785,35 +785,89 @@ def test_overlapping_feedback_retries_keep_each_process_during_backpressure(
 
             async def backpressure(raw):
                 message = json.loads(raw)
-                if message.get("id") in ("retry-1", "retry-2"):
+                if message.get("id") in ("call-1", "call-2"):
                     blocked.put_nowait(message["id"])
                     await release.wait()
                 await send(raw)
 
             monkeypatch.setattr(upstream, "send", backpressure)
             try:
-                for call_id in ("retry-1", "retry-2"):
-                    request = native_tool_request(thread_id, "retry")
+                for n, call_id in enumerate(("call-1", "call-2"), start=1):
+                    request = native_tool_request(thread_id, "on")
                     request["id"] = call_id
-                    request["params"]["arguments"]["feedback_id"] = (
-                        "109e1ba3-d9b9-4fcd-8f0b-1a61d70e088f"
-                    )
+                    request["params"]["turnId"] = f"turn-{n}"
                     upstream.incoming.put_nowait(request)
                     assert await asyncio.wait_for(blocked.get(), 2) == call_id
             finally:
                 release.set()
             for _ in range(2):
                 assert (await asyncio.wait_for(upstream.outgoing.get(), 2))["result"]["success"]
-            completed = {
-                "method": "turn/completed",
-                "params": {"threadId": thread_id, "turn": {"id": "turn"}},
-            }
-            upstream.incoming.put_nowait(completed)
-            assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
-            notices = [await asyncio.wait_for(tui.outgoing.get(), 2) for _ in range(4)]
-            assert sum(item["method"] == "item/completed" for item in notices) == 2
+            notice_items = []
+            for n in (1, 2):
+                completed = {
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": f"turn-{n}"}},
+                }
+                upstream.incoming.put_nowait(completed)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+                notices = [await asyncio.wait_for(tui.outgoing.get(), 2) for _ in range(2)]
+                assert all(item["params"]["turnId"] == f"turn-{n}" for item in notices)
+                notice_items.extend(notices)
+            assert sum(item["method"] == "item/completed" for item in notice_items) == 2
             assert len(monitored) == 2
             assert set(monitored) == set(processes)
+
+    asyncio.run(run())
+
+
+def test_turn_completed_prunes_feedback_turn_state(running_interposer, monkeypatch):
+    inputs = []
+
+    real_input = codex_interposer.CodexFeedbackInput
+
+    class SpyInput(real_input):
+        def __init__(self, send):
+            super().__init__(send)
+            inputs.append(self)
+
+    monkeypatch.setattr(codex_interposer, "CodexFeedbackInput", SpyInput)
+
+    def execute(self, _params):
+        return {"needs_reason": True}
+
+    monkeypatch.setattr(codex_interposer.CodexSmartRouter, "execute", execute)
+
+    async def run():
+        async with running_interposer() as (_, upstream, tui, _):
+            thread_id = await register_native_router(upstream, tui)
+            upstream.incoming.put_nowait(native_tool_request(thread_id))
+            assert (await asyncio.wait_for(tui.outgoing.get(), 2))["method"] == (
+                "item/tool/requestUserInput"
+            )
+            interrupt = {
+                "id": "interrupt",
+                "method": "turn/interrupt",
+                "params": {"threadId": thread_id, "turnId": "turn"},
+            }
+            tui.incoming.put_nowait(interrupt)
+            assert await asyncio.wait_for(upstream.outgoing.get(), 2) == interrupt
+            feedback_input = inputs[0]
+            assert feedback_input.canceled_turns == {(thread_id, "turn")}
+            resolved = await asyncio.wait_for(tui.outgoing.get(), 2)
+            assert resolved == {
+                "method": "serverRequest/resolved",
+                "params": {"threadId": thread_id, "requestId": resolved["params"]["requestId"]},
+            }
+            for _ in range(2):
+                completed = {
+                    "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": "turn"}},
+                }
+                upstream.incoming.put_nowait(completed)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == completed
+            assert feedback_input.canceled_turns == set(), (
+                "a second completed turn must not re-mark the pruned turn as canceled"
+            )
 
     asyncio.run(run())
 

@@ -12,7 +12,12 @@ from typer.testing import CliRunner
 
 from ucode import cli
 from ucode.smart_routing import feedback, session_env, v2
-from ucode.smart_routing.codex_feedback import TOOL_NAME, TOOL_SPEC, CodexSmartRouter
+from ucode.smart_routing.codex_feedback import (
+    TOOL_NAME,
+    TOOL_SPEC,
+    CodexSmartRouter,
+    ThreadOwnership,
+)
 
 runner = CliRunner()
 SESSION_ID = "1cbd36a0-177f-4df1-a5c2-5495a86a04a7"
@@ -83,8 +88,9 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     assert result.exit_code == 2, result.output
     text = " ".join(result.output.split())
     assert "16 characters" in text
-    assert "Smart Router skill to collect and submit feedback" in text
-    assert "direct CLI command does not submit feedback" in text
+    assert "Ask the user why" in text
+    assert "--smart-router-feedback" in text
+    assert "/isaac-feedback --category smart-routing" in text
     assert json.loads(controls.read_text()) == {}
 
 
@@ -333,7 +339,7 @@ def test_native_feedback_exemptions_skip_prompt_and_isaac(inline_feedback, monke
     monkeypatch.setenv("ISAAC_SMART_ROUTER_FEEDBACK", flag)
     monkeypatch.setenv("ISAAC_LAUNCH_MODE", mode)
     router = CodexSmartRouter(controls)
-    router.root_threads.add(SESSION_ID)
+    router.threads[SESSION_ID] = ThreadOwnership.ROOT
     register_off_command(router)
     ask = AsyncMock()
 
@@ -392,16 +398,27 @@ def test_native_upload_start_failure_keeps_off(native_router, inline_feedback):
     assert "delivery could not start" in result["message"]
 
 
-def test_native_retry_uses_isaacs_saved_report(native_router, inline_feedback):
-    _, run, popen, calls = inline_feedback
-    assert native_call(native_router, "off")["needs_reason"]
-    report_id = native_call(native_router, "off", reason=REASON)["feedback_id"]
-    result = native_call(native_router, "retry", feedback_id=report_id)
-    assert result["feedback_id"] == report_id
-    assert popen.call_args.args[0] == ["/installed isaac", "feedback", "--retry", report_id]
-    assert calls[-1][1]["input"] == ""
-    assert popen.call_count == 2
-    run.assert_called_once()
+def test_native_unreadable_controls_during_submission_report_unconfirmed(
+    native_router, inline_feedback, monkeypatch
+):
+    import asyncio
+    from unittest.mock import AsyncMock, Mock
+
+    controls, _, popen, _ = inline_feedback
+    monkeypatch.setattr(feedback, "effective_environment", Mock(side_effect=UnicodeError("bad")))
+
+    response = asyncio.run(
+        native_router.call(
+            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}},
+            AsyncMock(return_value=["Provide a reason", "user_note: " + REASON]),
+        )
+    )
+
+    assert response["success"], response
+    result = json.loads(response["contentItems"][0]["text"])
+    assert result["delivery"] == "unconfirmed"
+    assert "delivery could not start" in result["message"]
+    assert not session_env.session_routing_enabled(controls)
 
 
 @pytest.mark.parametrize("method", ["thread/start", "thread/resume"])
@@ -417,10 +434,10 @@ def test_native_binds_only_correlated_root_responses(inline_feedback, method):
         assert request["params"]["dynamicTools"] == [existing]
     router.observe({"id": 41, "result": {"thread": {"id": SESSION_ID}}})
     router.observe({"id": 42, "method": "item/tool/call", "params": {"tool": "caller_tool"}})
-    assert not router.root_threads
+    assert not router.threads
     assert 42 in router.thread_requests
     router.observe({"id": 42, "result": {"thread": {"id": SESSION_ID}}})
-    assert router.root_threads == {SESSION_ID}
+    assert router.threads == {SESSION_ID: ThreadOwnership.ROOT}
     assert not router.thread_requests
 
 
@@ -437,7 +454,7 @@ def test_native_does_not_bind_child_or_malformed_thread(inline_feedback, thread)
     router = CodexSmartRouter(controls)
     router.before_tui({"id": 1, "method": "thread/resume", "params": {}})
     router.observe({"id": 1, "result": {"thread": thread}})
-    assert not router.root_threads
+    assert not router.threads
 
 
 @pytest.mark.parametrize("tools", ["invalid", [{"name": TOOL_NAME}]])
@@ -454,7 +471,7 @@ def test_native_preserves_conflicting_user_tools(inline_feedback, tools, method)
     assert router.thread_requests == {1: False}
     router.observe({"id": 1, "result": {"thread": {"id": SESSION_ID}}})
     assert not router.thread_requests
-    assert not router.root_threads
+    assert router.threads == {SESSION_ID: ThreadOwnership.CALLER}
     assert not router.handles(
         {
             "id": "caller-tool",
@@ -475,7 +492,6 @@ def test_native_preserves_conflicting_user_tools(inline_feedback, tools, method)
         {"action": "off", "command": "arbitrary"},
         {"action": "off", "session_id": SESSION_ID},
         {"action": "off", "reason": []},
-        {"action": "retry", "feedback_id": "../../report"},
         {"action": "status", "reason": REASON},
     ],
 )

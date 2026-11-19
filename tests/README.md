@@ -1200,8 +1200,8 @@ Unauthorized UG calls still return an error without changing routing.
 Only responses can bind ownership or authorize an off turn; server requests with
 matching IDs leave those pending replies intact.
 Like Claude, Codex starts `isaac feedback --with-evidence` in the background before
-turning routing off, reports the command's exit result, and retries saved reports with
-`isaac feedback --retry`. Delivery or process-start failure leaves routing off;
+turning routing off and reports the command's exit result. Delivery or process-start
+failure leaves routing off and is only reported, without a retry;
 preparation failure before collection leaves it on. A toggle failure does not cancel
 feedback that is already sending. Worker timeout kills and reaps the subprocess;
 closing Codex leaves the detached Isaac upload running. A real local child process
@@ -1220,8 +1220,9 @@ command/exit-result, re-enable/new-task, and native failure-boundary coverage.
 forwarding, locally consumed feedback replies (including stale replies), native
 prompt cancellation on interrupt, completed turn, or disconnect, responsive
 interrupts during preparation, and completion/failure notices
-after the originating turn ends, without another model turn. Overlapping retries of
-one report retain each process and completion notice while the response transport stalls.
+after the originating turn ends, without another model turn. Overlapping pending
+deliveries retain each process and completion notice while the response transport stalls.
+A completed turn prunes its feedback turn state.
 Malformed tool calls and completion/interrupt notifications pass through without
 being handled locally; a subsequent native toggle and messages in both directions
 still complete. These checks include missing IDs, null parameters/turns, and invalid

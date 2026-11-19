@@ -70,34 +70,36 @@ class FeedbackUpload(Protocol):
     def kill(self) -> None: ...
 
 
+NO_PRIOR_TASK_TURN_ID = "no-prior-task"
+
+
 def submit_codex_feedback(
     feedback_id: str,
     env: Mapping[str, str],
     *,
-    reason: str | None = None,
-    turn_id: str | None = None,
+    reason: str,
+    turn_id: str | None,
 ) -> FeedbackUpload:
     report_id = str(UUID(feedback_id))
-    args = [_isaac(), "feedback"]
-    if reason is None:
-        args.extend(["--retry", report_id])
-    else:
-        args.extend(
-            [
-                "--category",
-                "smart-routing",
-                "--harness",
-                "codex",
-                "--session-id",
-                env["CODEX_THREAD_ID"],
-                "--feedback-id",
-                report_id,
-                "--with-evidence",
-                "--turn-id",
-                turn_id or "no-prior-task",
-            ]
-        )
-    environment = effective_environment(env, agent="codex", strict=True)
+    args = [
+        _isaac(),
+        "feedback",
+        "--category",
+        "smart-routing",
+        "--harness",
+        "codex",
+        "--session-id",
+        env["CODEX_THREAD_ID"],
+        "--feedback-id",
+        report_id,
+        "--with-evidence",
+        "--turn-id",
+        turn_id or NO_PRIOR_TASK_TURN_ID,
+    ]
+    try:
+        environment = effective_environment(env, agent="codex", strict=True)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError("Smart Router session controls could not be read.") from exc
     environment[SESSION_ENV_VAR] = ""
     options = (
         {"creationflags": subprocess.CREATE_NO_WINDOW}
@@ -105,7 +107,7 @@ def submit_codex_feedback(
         else {"start_new_session": True}
     )
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stdin:
-        stdin.write(reason or "")
+        stdin.write(reason)
         stdin.seek(0)
         return subprocess_cross_os.popen(
             args,

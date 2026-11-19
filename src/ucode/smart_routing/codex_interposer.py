@@ -24,6 +24,7 @@ ITEM_STARTED = "item/started"
 ITEM_COMPLETED = "item/completed"
 TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
+NOTICE_TURN_WAIT_SECONDS = 300
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
 SwitchMessageFn = Callable[[str, str], str]
@@ -328,7 +329,7 @@ async def _handle_tui(
                 else:
                     await upstream.send(frame)
 
-        async def run_router_tool(message: dict):
+        async def run_router_tool(message: dict, turn_done: asyncio.Event):
             assert smart_router is not None
             params = message["params"]
 
@@ -339,28 +340,29 @@ async def _handle_tui(
             result = json.loads(response["contentItems"][0]["text"]) if response["success"] else {}
             report_id = result.get("feedback_id", "")
             process = (
-                smart_router.uploads.pop(report_id)
-                if result.get("delivery") == "pending"
-                and params.get("arguments", {}).get("action") in ("off", "retry")
-                else None
+                smart_router.uploads.pop(report_id) if result.get("delivery") == "pending" else None
             )
             await upstream.send(json.dumps({"id": message["id"], "result": response}))
             if process is not None:
-                await monitor_delivery(message, report_id, process)
+                await monitor_delivery(message, report_id, process, turn_done)
 
-        async def monitor_delivery(message: dict, report_id: str, process: FeedbackUpload):
+        async def monitor_delivery(
+            message: dict, report_id: str, process: FeedbackUpload, turn_done: asyncio.Event
+        ):
             assert smart_router is not None
             try:
                 status = await smart_router.delivery(report_id, process)
             except (OSError, ValueError):
                 status = {
-                    "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}. If Isaac saved this report, ask Smart Router to retry it.",
+                    "message": f"Feedback delivery is unconfirmed. Feedback ID: {report_id}.",
                 }
-            await delivery_notice(message, status["message"])
+            await delivery_notice(message, status["message"], turn_done)
 
-        async def delivery_notice(message: dict, text: str):
-            key = (message["params"]["threadId"], message["params"]["turnId"])
-            await tool_turns[key].wait()
+        async def delivery_notice(message: dict, text: str, turn_done: asyncio.Event):
+            try:
+                await asyncio.wait_for(turn_done.wait(), NOTICE_TURN_WAIT_SECONDS)
+            except TimeoutError:
+                pass  # report the delivery outcome even if the originating turn never completes
             item = {
                 "type": "agentMessage",
                 "id": f"ug-feedback-{uuid.uuid4().hex}",
@@ -396,8 +398,8 @@ async def _handle_tui(
                     smart_router.observe(message)
                     if smart_router.handles(message):
                         key = (message["params"]["threadId"], message["params"]["turnId"])
-                        tool_turns.setdefault(key, asyncio.Event())
-                        task = asyncio.create_task(run_router_tool(message))
+                        turn_done = tool_turns.setdefault(key, asyncio.Event())
+                        task = asyncio.create_task(run_router_tool(message, turn_done))
                         tool_tasks.add(task)
                         task.add_done_callback(tool_done)
                         continue
@@ -414,9 +416,11 @@ async def _handle_tui(
                         and isinstance(turn.get("id"), str)
                     ):
                         key = (params["threadId"], turn["id"])
-                        if key in tool_turns:
+                        turn_done = tool_turns.pop(key, None)
+                        if turn_done is not None:
                             feedback_input.cancel(*key)
-                            tool_turns[key].set()
+                            turn_done.set()
+                        feedback_input.canceled_turns.discard(key)
                 if isinstance(frame, str):
                     for inj in sess.on_engine_frame(frame):
                         await tui.send(json.dumps(inj))
