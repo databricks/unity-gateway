@@ -3,6 +3,7 @@ providers, against a fake of the app's WebSocket API."""
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -108,7 +109,7 @@ def test_configure_starts_a_closed_app_and_registers(service, closed_app, launch
 
     copilot_app_setup.configure(WS, CATALOG, provider_service=None)
 
-    launches.assert_called_once_with(["/usr/bin/github"])
+    launches.assert_called_once_with([str(Path("/usr/bin/github"))])
     assert len(started[0].providers) == 3
     out = " ".join(capsys.readouterr().out.split())
     assert "Starting the GitHub Copilot app" in out
