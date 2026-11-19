@@ -961,6 +961,7 @@ def test_claude_assistant_answers_include_subagent_handback():
             "isSidechain": True,
             "message": {
                 "role": "assistant",
+                "model": "catalog.models.claude_sonnet[1m]",
                 "content": [
                     {
                         "type": "tool_use",
@@ -974,6 +975,8 @@ def test_claude_assistant_answers_include_subagent_handback():
     ]
 
     assert claude.assistant_answers(records) == ["child answer"]
+    assert claude.completed_task_models(records, "child answer") == {"catalog.models.claude_sonnet"}
+    assert claude.completed_task_models(records, "different answer") == set()
 
 
 def test_claude_assistant_answers_ignore_parent_handback():
@@ -996,6 +999,7 @@ def test_claude_assistant_answers_ignore_parent_handback():
     ]
 
     assert claude.assistant_answers(records) == []
+    assert claude.completed_task_models(records, "not a child answer") == set()
 
 
 def completed_records(agent, model, answer="value", turn_id="matching"):

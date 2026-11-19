@@ -77,6 +77,7 @@ from ucode.smart_routing.config import (
     selected_version,
 )
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
+from ucode.telemetry import agent_version, parse_semver
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -413,8 +414,40 @@ def _claude_mod_launch_args(options: Mapping[str, object]) -> list[str]:
     return ["--system-prompt-snapshot", "off"] if options.get("orchestratorInstructions") else []
 
 
-def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = None) -> None:
-    """Write the native routing mod and roles; model IDs support legacy hook agents."""
+# The native view switch ($.ui.view) exists from Claude Code 2.1.319; older
+# engines refuse the event at load, so those hosts get a stub module and the
+# pane keeps the read-only in-pane detail.
+NATIVE_VIEW_CLAUDE_VERSION = (2, 1, 319)
+
+_AGENT_VIEW_STUB = """// Stub for hosts without the native view switch (Claude Code before 2.1.319):
+// stepping in keeps the read-only in-pane detail.
+export const NATIVE_VIEW = false
+
+export function pressSwitchedView(_: string): boolean {
+  return false
+}
+
+export function registerAgentView(_: unknown): void {}
+"""
+
+
+def _claude_host_has_view(binary: str = "claude") -> bool:
+    version = parse_semver(agent_version(binary))
+    return version is not None and version >= NATIVE_VIEW_CLAUDE_VERSION
+
+
+def _write_routed_claude_plugin(
+    plugin_dir: Path,
+    model_ids: list[str] | None = None,
+    *,
+    native_view: bool,
+) -> None:
+    """Write the native routing mod and roles; model IDs support legacy hook agents.
+
+    `native_view` ships the real agent-view module only for hosts whose event
+    table accepts $.ui.view; the caller detects the host so the generated plugin
+    never depends on whichever `claude` happens to be on this machine's PATH.
+    """
     write_json_file(
         plugin_dir / ".claude-plugin" / "plugin.json",
         {
@@ -504,6 +537,8 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     for name in (
         "register.ts",
         "auto-model.ts",
+        "agent-tree.ts",
+        "agent-tree-state.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
@@ -514,6 +549,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
         "subagent-statusline.py",
     ):
         write_text_file(plugin_dir / "hooks" / name, (mods / name).read_text(encoding="utf-8"))
+    write_text_file(
+        plugin_dir / "hooks" / "agent-view.ts",
+        (mods / "agent-view.ts").read_text(encoding="utf-8") if native_view else _AGENT_VIEW_STUB,
+    )
     write_json_file(plugin_dir / "hooks" / "hooks.json", {"modules": ["./register.ts"]})
     write_json_file(
         plugin_dir / "settings.json",
@@ -990,7 +1029,7 @@ def launch_claude(
             ] = mod_options
             try:
                 write_json_file(settings_path, settings)
-                _write_routed_claude_plugin(plugin_dir)
+                _write_routed_claude_plugin(plugin_dir, native_view=_claude_host_has_view(binary))
             except Exception as exc:  # noqa: BLE001 - optional setup must not block normal launch
                 raise ClaudeRoutingSetupError("Failed to write Claude smart-routing files") from exc
             start_model = routed_model or launch_model

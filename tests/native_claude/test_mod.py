@@ -19,6 +19,7 @@ from session import Session, install_header_mod
 from ucode.agents.claude import _enable_header_mod
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
+    _claude_host_has_view,
     _claude_mod_launch_options,
     _routed_claude_agent_name,
     _write_routed_claude_plugin,
@@ -27,7 +28,7 @@ from ucode.smart_routing.v2 import (
 
 def test_mod_validation_and_event_forwarding(native_binary, tmp_path):
     path = tmp_path / "plugin"
-    _write_routed_claude_plugin(path, [])
+    _write_routed_claude_plugin(path, [], native_view=_claude_host_has_view(native_binary))
     manifest = path / ".claude-plugin/plugin.json"
     doc = json.loads(manifest.read_text())
     doc["userConfig"]["routeCommand"]["default"] = [
@@ -485,7 +486,7 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
             root = tmp_path / label
             root.mkdir()
             plugin = root / "plugin"
-            _write_routed_claude_plugin(plugin)
+            _write_routed_claude_plugin(plugin, native_view=_claude_host_has_view(native_binary))
             config_dir = root / "config"
             config_dir.mkdir()
             (config_dir / "settings.json").write_text(

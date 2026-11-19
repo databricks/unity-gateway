@@ -164,10 +164,13 @@ def completed_task_models(records: list[dict], answer_value: str) -> set[str]:
         assert isinstance(content, list), "Malformed Claude assistant content"
         for part in content:
             assert isinstance(part, dict), "Malformed Claude assistant content block"
-            if part.get("type") != "text":
+            if _is_subagent_handback(record, part):
+                text = part["input"]["message"]
+            elif part.get("type") == "text":
+                text = part.get("text")
+                assert isinstance(text, str), "Malformed Claude assistant text"
+            else:
                 continue
-            text = part.get("text")
-            assert isinstance(text, str), "Malformed Claude assistant text"
             if answer_value in text:
                 model = _evidence_id(message.get("model"), "model")
                 found.add(_evidence_id(model.removesuffix("[1m]"), "model"))

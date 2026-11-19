@@ -475,7 +475,7 @@ test('turn completion and status cleanup do not wait for the open-pane reader', 
 
 test('unrouted launch declines logs and usage includes logs', { options: { ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '0' } }, async ($) => {
   expect((await $.command.run(command)).text).toContain('was not enabled');
-  expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs');
+  expect((await $.command.run({ command: 'smart-router', args: 'wrong' })).text).toBe('Usage: /smart-router on|off|logs|tree');
 });
 
 test('a UG route agent type is not shown as the prompt label', { options }, async ($, on) => {

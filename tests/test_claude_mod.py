@@ -14,7 +14,7 @@ from ucode.smart_routing import config, v2
 
 
 def test_plugin_contains_mod_entry_point(tmp_path):
-    v2._write_routed_claude_plugin(tmp_path, [])
+    v2._write_routed_claude_plugin(tmp_path, [], native_view=True)
 
     assert json.loads((tmp_path / "hooks/hooks.json").read_text()) == {"modules": ["./register.ts"]}
     mods = Path(v2.__file__).parents[1] / "agents" / "claude_mods"
@@ -22,6 +22,9 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     filenames = (
         "register.ts",
         "auto-model.ts",
+        "agent-tree.ts",
+        "agent-tree-state.ts",
+        "agent-view.ts",
         "constants.ts",
         "extra-body.ts",
         "isaac-feedback.ts",
@@ -45,9 +48,18 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     }
 
 
+def test_plugin_without_native_view_ships_the_agent_view_stub(tmp_path):
+    v2._write_routed_claude_plugin(tmp_path, [], native_view=False)
+
+    stub = (tmp_path / "hooks/agent-view.ts").read_text()
+    assert "NATIVE_VIEW = false" in stub
+    # The stub keeps the module loadable where the ui.view event does not exist.
+    assert "$.ui" not in stub
+
+
 def test_native_subagent_statusline_command(tmp_path):
     plugin = tmp_path / "plugin with spaces"
-    v2._write_routed_claude_plugin(plugin, [])
+    v2._write_routed_claude_plugin(plugin, [], native_view=False)
     names = plugin / "agent-names"
     names.mkdir()
     (names / "agent-child-a.json").write_text('{"session_id":"s1","name":"Otter"}')

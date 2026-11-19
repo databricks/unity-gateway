@@ -1253,7 +1253,7 @@ class TestSubagentRouting:
     ):
         monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestration)
-        v2._write_routed_claude_plugin(tmp_path)
+        v2._write_routed_claude_plugin(tmp_path, native_view=False)
 
         agents = list((tmp_path / "agents").glob("*.md"))
         assert not any(agent.stem.startswith("ucode-route-") for agent in agents)
@@ -1268,7 +1268,7 @@ class TestSubagentRouting:
         plugin_dir = tmp_path / "routing-plugin"
         models = ["databricks-claude-opus-4-8", "system.ai.glm-5-3", "system.ai.gpt-5-6-sol"]
 
-        v2._write_routed_claude_plugin(plugin_dir, models)
+        v2._write_routed_claude_plugin(plugin_dir, models, native_view=False)
 
         manifest = json.loads((plugin_dir / ".claude-plugin" / "plugin.json").read_text())
         assert manifest["name"] == "ug-smart-router"
@@ -1558,3 +1558,19 @@ def test_routing_hook_command_keeps_posix_quoting_on_windows(monkeypatch):
     monkeypatch.setattr(subprocess_cross_os.platform, "system", lambda: "Windows")
     hook = claude_hooks._routing_command_hook([r"C:\Users\me\.local\bin\ug.EXE", "route-subagent"])
     assert hook["command"] == r"'C:\Users\me\.local\bin\ug.EXE' route-subagent"
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("2.1.318 (Claude Code)", False),
+        ("2.1.319 (Claude Code)", True),
+        ("3.0.0 (Claude Code)", True),
+        ("no version here", False),
+        ("unknown", False),
+    ],
+)
+def test_claude_host_has_view_gates_on_the_binary_version(monkeypatch, reported, expected):
+    # Stub the probe: a shell fixture cannot execute on the Windows unit leg.
+    monkeypatch.setattr(v2, "agent_version", lambda *_args, **_kwargs: reported)
+    assert v2._claude_host_has_view("claude") is expected

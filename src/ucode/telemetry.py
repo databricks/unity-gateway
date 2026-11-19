@@ -31,6 +31,20 @@ from ucode.constants import MDM_OS_ENV, MDM_OS_NONE
 from ucode.os_compatibility import subprocess_cross_os
 
 _SEMVER_RE = re.compile(r"\d+\.\d+\.\d+[-+0-9A-Za-z.]*")
+
+
+def parse_semver(value: str) -> tuple[int, int, int] | None:
+    """First semver triple in the text, or None; shared by version checks."""
+    match = _SEMVER_RE.search(value)
+    if not match:
+        return None
+    major, minor, patch = match.group(0).split(".", 2)
+    digits = re.match(r"\d+", patch)
+    if digits is None:
+        return None
+    return int(major), int(minor), int(digits.group(0))
+
+
 _UNSAFE_TOKEN_CHARS = re.compile(r"[^a-z0-9_.-]+")
 _ARCH_ALIASES = {
     "amd64": "x86_64",

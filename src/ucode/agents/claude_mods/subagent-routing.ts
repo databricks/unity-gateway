@@ -1,6 +1,7 @@
 import type { On, PluginOptions } from 'claude-code'
 import { matchesAutoModel } from './auto-model.ts'
 import { isRoutingEnabled } from './routing-state.ts'
+import { agentTree } from './agent-tree-state.ts'
 
 type RoutingRecord = {
   name: string; task: string; model: string; rationale: string; seconds?: number
@@ -180,6 +181,7 @@ export const registerSubagentRouting = (
       }
       pending.set(tool_use_id, undefined)
       pending.set(tool_use_id, await now($))
+      try { agentTree.routeStarted(tool_use_id, names.get(tool_use_id)!, input.description || input.subagent_type || tool, e.agentId, pending.get(tool_use_id) ?? 0) } catch { /* observation only */ }
       // Mods have no global timers; $.clock redraws the spinner while the router answers.
       // The frame comes from the clock, so parallel calls do not speed it up.
       try {
@@ -210,6 +212,7 @@ export const registerSubagentRouting = (
     const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
     if (tool_use_id) {
       pending.delete(tool_use_id)
+      try { agentTree.routeFinished(tool_use_id, route ? { ...route, seconds } : undefined, (await now($)) ?? 0) } catch { /* observation only */ }
       if (route) {
         records.set(tool_use_id, {
           name: names.get(tool_use_id)!,
@@ -239,12 +242,21 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
-    const result = await next(route ? { ...e, model: route.model } : e)
+    try { agentTree.spawnStarted(e, (await now($)) ?? 0) } catch { /* observation only */ }
+    let result
+    try {
+      result = await next(route ? { ...e, model: route.model } : e)
+    } catch (error) {
+      try { agentTree.spawnFinished(e, { deny: 'Spawn failed' }, (await now($)) ?? 0) } catch { /* observation only */ }
+      $.ui.invalidate('ui.render')
+      throw error
+    }
     if (route && result.agentId && !result.deny) {
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
-      $.ui.invalidate('ui.render')
     }
+    try { agentTree.spawnFinished(e, result, (await now($)) ?? 0) } catch { /* observation only */ }
+    $.ui.invalidate('ui.render')
     if (name && result.agentId) {
       try {
         // The native bottom bar is outside ui.render; join its task ID to this call.

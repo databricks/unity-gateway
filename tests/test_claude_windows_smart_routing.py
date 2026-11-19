@@ -55,6 +55,9 @@ def test_windows_subagent_routing_uses_native_binary_without_unix_imports(tmp_pa
     monkeypatch.delenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, raising=False)
     monkeypatch.setattr(v2, "APP_DIR", tmp_path)
     monkeypatch.setattr(v2, "install_skill", lambda *_args, **_kwargs: None)
+    # The launch probes the CLI version to pick the agent-view module; pin it so the
+    # launch's own Popen stays the only subprocess this test's mock has to inspect.
+    monkeypatch.setattr(v2, "agent_version", lambda *_args, **_kwargs: "2.1.319 (Claude Code)")
     monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
     monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_args, **_kwargs: "token")
     monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_args, **_kwargs: ["ug"])

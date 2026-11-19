@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+import unicodedata
 from pathlib import PurePath
 
 import pyte
@@ -358,6 +359,28 @@ class TerminalProcess:
     def send(self, keys, reason):
         self.actions.append({"reason": reason, "keys": keys, "screen_before": self.visible})
         self.child.send(keys)
+
+    def click_label(self, label, reason, min_col=0):
+        """Send a real mouse press on the first visible `label` at or after min_col."""
+        hit = next(
+            (
+                (y, line.find(label, min_col))
+                for y, line in enumerate(self.screen.display)
+                if line.find(label, min_col) >= 0
+            ),
+            None,
+        )
+        if hit is None:
+            raise AssertionError(f"native control is absent: {label}:\n{self.visible}")
+        y, char_index = hit
+        # Mouse coordinates are terminal cells; wide characters before the
+        # label occupy two cells each.
+        x = sum(
+            2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+            for char in self.screen.display[y][:char_index]
+        )
+        press = f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m"
+        self.send(press, reason)
 
     def wait_for(self, predicate, description, timeout=30, stable_for=0.3):
         deadline = time.monotonic() + timeout
