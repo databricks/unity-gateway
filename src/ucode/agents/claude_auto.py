@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from collections.abc import Mapping
 from copy import deepcopy
 
+from ucode.agents import claude
 from ucode.databricks import AnthropicModelCatalog, bare_model_name
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 
@@ -307,51 +307,60 @@ def _model_window(settings: dict, model: str) -> object:
     return row.get("autoCompactWindow") if isinstance(row, dict) else None
 
 
+def _needs_compact_window(row: dict) -> bool:
+    model = row["model"]
+    target = bare_model_name(unwrap_anthropic_gateway_model(model))
+    return (
+        not model_behavior({"model": target})
+        and not model.lower().endswith(("[1m]", "[200k]"))
+        and row["autoModel"] == auto_variant({"model": model})
+    )
+
+
+def _compact_window(
+    model: str, managed: dict, settings: dict, native: list[dict], catalog: AnthropicModelCatalog
+) -> int | str | None:
+    window = _model_window(managed, model) or _model_window(settings, model)
+    if window is None:
+        # Native target preferences can belong to a disabled --setting-sources scope.
+        if any(_model_window(source, model) is not None for source in native):
+            return None
+        limits = catalog.model_id_to_limits.get(model)
+        window = min(limits[0], _MAX_COMPACT_WINDOW) if limits and limits[0] > 0 else 200_000
+    if window == "auto":
+        return "auto"
+    if isinstance(window, int) and _MIN_COMPACT_WINDOW <= window <= _MAX_COMPACT_WINDOW:
+        return window
+    return None
+
+
 def apply_auto_context_windows(
     settings: dict, managed: dict, rows: list[dict], catalog: AnthropicModelCatalog
 ) -> None:
-    """Give an unrecognized Auto alias its gateway model's compaction window."""
-    from ucode.agents.claude import native_settings_paths, read_native_settings
+    """Fill missing compaction windows for aliases without a native capability profile."""
+    candidates = [row for row in rows if _needs_compact_window(row)]
+    if not candidates:
+        return
+    try:
+        native = [claude.read_native_settings(path) for path in claude.native_settings_paths()]
+    except (OSError, RuntimeError, ValueError):
+        return  # An unreadable scope may own the compaction preference.
+    sources = (managed, settings, *native)
+    if any("autoCompactWindow" in source for source in sources):
+        return
 
-    native_settings = None
-    for row in rows:
+    for row in candidates:
         model, alias = row["model"], row["autoModel"]
-        target = unwrap_anthropic_gateway_model(model)
-        # Claude recognizes its model names, context suffixes, and configured behavesAs aliases.
-        if (
-            model_behavior({"model": bare_model_name(target)})
-            or model.lower().endswith(("[1m]", "[200k]"))
-            or alias != auto_variant({"model": model})
-        ):
+        if any(_model_window(source, alias) is not None for source in sources):
             continue
-        if native_settings is None:
-            try:
-                native_settings = [read_native_settings(path) for path in native_settings_paths()]
-            except (OSError, RuntimeError, ValueError):
-                # An unreadable scope could contain an explicit compaction preference.
-                return
-        if any(
-            "autoCompactWindow" in source or _model_window(source, alias) is not None
-            for source in (managed, settings, *native_settings)
-        ):
-            continue
-        window = _model_window(managed, model) or _model_window(settings, model)
+        window = _compact_window(model, managed, settings, native, catalog)
         if window is None:
-            if any(_model_window(source, model) is not None for source in native_settings):
-                # A personal or project preference may belong to a disabled --setting-sources scope.
-                continue
-            limits = catalog.model_id_to_limits.get(model)
-            window = min(limits[0], _MAX_COMPACT_WINDOW) if limits and limits[0] > 0 else 200_000
-        if window != "auto" and not (
-            isinstance(window, int) and _MIN_COMPACT_WINDOW <= window <= _MAX_COMPACT_WINDOW
-        ):
-            # A smaller advertised window cannot be represented without overstating capacity.
             continue
         per_model = settings.setdefault("modelSettings", {})
-        if isinstance(per_model, dict) and isinstance(
-            entry := per_model.setdefault(alias, {}), dict
-        ):
-            entry["autoCompactWindow"] = window
+        if isinstance(per_model, dict):
+            entry = per_model.setdefault(alias, {})
+            if isinstance(entry, dict):
+                entry["autoCompactWindow"] = window
 
 
 def picker_config(
@@ -359,9 +368,11 @@ def picker_config(
     workspace: str,
     settings: dict | None = None,
     *,
+    launch_settings: dict,
+    managed_settings: dict,
     default_model: str | None = None,
-) -> str:
-    """Give the mod only configured aliases for permitted inference targets."""
+) -> dict:
+    """Prepare launch-only alias windows and the mod's picker for permitted targets."""
     overrides = (settings or {}).get("modelOverrides", {})
     if not isinstance(overrides, dict):
         overrides = {}
@@ -398,12 +409,11 @@ def picker_config(
     configured_default = env.get("ANTHROPIC_MODEL") if isinstance(env, dict) else None
     preferred = default_model or configured_default
     default = next((row for row in rows if preferred in (row["model"], row["autoModel"])), rows[0])
-    return json.dumps(
-        {
-            "model": default["autoModel"],
-            "mainModel": default["model"],
-            "models": rows,
-            "description": AUTO_DESCRIPTION,
-            "storeKey": "main-model-" + hashlib.sha256(workspace.encode()).hexdigest()[:16],
-        }
-    )
+    apply_auto_context_windows(launch_settings, managed_settings, rows, catalog)
+    return {
+        "model": default["autoModel"],
+        "mainModel": default["model"],
+        "models": rows,
+        "description": AUTO_DESCRIPTION,
+        "storeKey": "main-model-" + hashlib.sha256(workspace.encode()).hexdigest()[:16],
+    }

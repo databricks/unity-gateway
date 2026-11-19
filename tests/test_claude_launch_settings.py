@@ -14,15 +14,14 @@ import pytest
 
 from ucode import gateway_proxy, launcher
 from ucode.agents import LaunchOptions, claude
+from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+from ucode.databricks import AnthropicModelCatalog
 from ucode.managed_files import OS
 
 PINNED_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 
 def test_auto_window_respects_limits_and_native_settings(tmp_path, monkeypatch):
-    from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
-    from ucode.databricks import AnthropicModelCatalog
-
     path = tmp_path / "settings.json"
     monkeypatch.setattr(claude, "native_settings_paths", lambda: (path,))
     models = ["small", "large", "managed", "unlisted-limit"]

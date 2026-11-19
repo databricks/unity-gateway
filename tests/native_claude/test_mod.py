@@ -15,8 +15,12 @@ from uuid import uuid4
 
 import pytest
 from session import Session, install_header_mod
+from test_credentials import _STREAM
 
 from ucode.agents.claude import _enable_header_mod
+from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+from ucode.constants import SMART_ROUTING_ENV_KEYS
+from ucode.databricks import AnthropicModelCatalog
 from ucode.smart_routing import config, orchestrator, session_env
 from ucode.smart_routing.v2 import (
     _claude_mod_launch_options,
@@ -220,7 +224,6 @@ def test_auto_manual_startup_with_feedback_stays_off_on_next_turn(native_binary,
     Routing stays off without a feedback-gated disable. Inference deliberately fails
     without credentials; this checks native startup/next-turn state, not a live answer.
     """
-    from ucode.constants import SMART_ROUTING_ENV_KEYS
 
     env = {
         "ENABLE_SMART_ROUTING_V2": "0",
@@ -266,8 +269,6 @@ def test_saved_custom_auto_alias_window_on_startup(
     native_binary, tmp_path, monkeypatch, limits, preferences, window
 ):
     """Read the effective compaction window from a new Claude process."""
-    from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
-    from ucode.databricks import AnthropicModelCatalog
 
     monkeypatch.setattr(
         "ucode.agents.claude.native_settings_paths", lambda: (tmp_path / "settings.json",)
@@ -730,8 +731,6 @@ print(json.dumps({"model": sys.argv[1], "rationale": "Synthetic route",
 
 
 def test_native_language_reload_updates_parent_context_once(native_binary, tmp_path):
-    from test_credentials import _STREAM
-
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
