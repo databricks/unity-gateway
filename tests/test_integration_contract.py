@@ -105,6 +105,18 @@ def test_managed_integration_ci_is_blocking():
         "test_ug_configure_managed_models.py::test_managed_fixture_codex_smart_routing_banner"
         in routing
     )
+    version_aware = (
+        "test_ug_smart_routing_hooks.py::"
+        "test_smart_router_managed_default_matches_codex_version_at_launch"
+    )
+    assert version_aware in baseline
+    assert version_aware in _collect_integration_cases(
+        "harness_latest and codex and managed_fixture"
+    )
+    assert (
+        "test_ug_smart_routing_hooks.py::"
+        "test_smart_router_managed_default_routes_supported_codex_at_launch"
+    ) in routing
 
 
 WORKFLOW = Path(__file__).parent.parent / ".github/workflows/integration.yml"

@@ -1258,8 +1258,8 @@ and preset cases as the former launch-only test. The separate off-before-first-c
 journey remains because it covers disabling before any child has been spawned.
 With orchestration enabled through legacy flags or a preset, both routed Codex children must show
 `[orchestrator on]` in their own subagent banner. Codex's managed default uses the shared
-`subagent_orch_v0` preset and has separate old-version fallback and supported-version routing
-journeys. Claude shows the selected
+`subagent_orch_v0` preset. Its version-aware journey covers old-version fallback and
+supported-version routing; a separate routing-lane journey requires the supported behavior. Claude shows the selected
 model and rationale from each child's audited decision.
 Their off-phase child is an explicit user-requested delegation;
 these journeys do not establish automatic orchestration behavior. Root-only
@@ -1273,9 +1273,11 @@ Preset parameterization augments only routing hooks, skill toggles, and first-pr
 their original legacy-env cases remain, and the Claude skill toggles add a managed-default case in
 which `smart_routing.enabled` alone routes Claude subagents with Smart Router Orchestrator and no
 first-prompt wrapper starts. Codex's managed default has two launch journeys.
-`test_smart_router_managed_default_old_codex_launches_without_routing` runs on 0.156.0 and
-requires a version warning, no upgrade prompt, no routing skills, and completed native child
-work without routing. `test_smart_router_managed_default_routes_supported_codex_at_launch`
+`test_smart_router_managed_default_matches_codex_version_at_launch` reads the actual native
+version. Before 0.164.0 it requires a version warning, no upgrade prompt, no routing skills,
+and completed native child work without routing. On supported versions it instead requires
+both skills, a completed routed child and parent answer, and a correlated decision. This keeps
+the same journey valid for pinned, latest-agent, and explicit-version runs. `test_smart_router_managed_default_routes_supported_codex_at_launch`
 runs in the routing-capable Codex lane and requires both skills, a completed child and parent
 answer, and a correlated routing decision. Its recipe is temporarily pinned to
 `m2-r315-quality-20260929`. Automatic fallback for subscription relays and unknown versions
@@ -1932,7 +1934,8 @@ The smart-routing banner journeys inject static Claude and Codex model lists wit
 `first_prompt_and_subagent_no_orch_v0` and submit one small file task, asserting the
 "Using Unity Gateway Smart Router." banner naming the selected model, a routed answer completing
 the file task, and normal exit. The managed default routes Claude and supported Codex subagents
-with the orchestrator. Separate Codex journeys cover old-version fallback and routed child work.
+with the orchestrator. The version-aware Codex journey covers old-version fallback and routed child work; the
+routing-lane journey additionally requires supported-version routing.
 
 That workspace authenticates as a service principal, so CI mints a short-lived token per run from
 these same-repository secrets rather than storing a long-lived bearer:

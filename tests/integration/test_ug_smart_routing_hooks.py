@@ -11,6 +11,7 @@ Smart Router skill and spawn real children before and after its session-local to
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -1023,17 +1024,24 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
 @pytest.mark.live
 @pytest.mark.codex
 @pytest.mark.managed_fixture
-def test_smart_router_managed_default_old_codex_launches_without_routing(
+def test_smart_router_managed_default_matches_codex_version_at_launch(
     live_session, workspace, tmp_path
 ):
-    """Scenario: launch Codex 0.156.0 with managed smart routing enabled and no explicit opt-in.
+    """Scenario: launch the installed Codex with managed smart routing and no explicit opt-in.
 
-    Expected: ug warns that routing requires a newer Codex and launches without an upgrade
-    prompt. Neither routing skill is installed; a native child completes the tagged calculation
-    without a routing banner, gateway routing decision, or interposer.
+    Expected: a native child and parent complete the tagged calculation. Before Codex 0.164.0,
+    ug warns without an upgrade prompt, routing skills, or a routing decision. Supported versions
+    install both skills and complete the child with a correlated decision and orchestration
+    notice. Neither version routes the first prompt.
     """
     session = live_session
-    _select_smart_router_version(session, "codex", workspace, tmp_path, False, MANAGED_DEFAULT)
+    version_output = session.run("--version", binary=session.which("codex")).stdout
+    version_match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", version_output)
+    assert version_match is not None, version_output
+    routing_supported = tuple(int(part) for part in version_match.groups()) >= (0, 164, 0)
+    _select_smart_router_version(
+        session, "codex", workspace, tmp_path, routing_supported, MANAGED_DEFAULT
+    )
     session.run(
         "configure",
         "--workspace",
@@ -1042,22 +1050,33 @@ def test_smart_router_managed_default_old_codex_launches_without_routing(
         "--skip-upgrade",
         "--disable-databricks-ai-tools",
     )
+    if routing_supported:
+        # TODO: remove once the latest recipe supports codex
+        session.env["SMART_ROUTER_NAME"] = "m2-r315-quality-20260929"
     with AgentTerminal(
         session, "codex", [str(session.binary), "codex"], "smart-router-managed-default"
     ) as tui:
         tui.boot()
         installed_skills = _installed_skills(session, "codex")
-        assert "smart-router" not in installed_skills, installed_skills
-        assert "smart-router-orchestrator" not in installed_skills, installed_skills
-        _run_calculation(tui, session, "codex", "1+1", "2", False, routed=False)
+        assert ("smart-router" in installed_skills) is routing_supported, installed_skills
+        assert ("smart-router-orchestrator" in installed_skills) is routing_supported, (
+            installed_skills
+        )
+        _run_calculation(
+            tui, session, "codex", "1+1", "2", routing_supported, routed=routing_supported
+        )
         tui.exit_normally()
         transcript = "".join(tui.output)
     assert SMART_ROUTING_BANNER not in transcript, transcript
     launch_text = " ".join(ANSI.sub("", transcript).split())
-    assert "Codex smart routing requires Codex 0.164.0 or newer" in launch_text, transcript
-    assert "Running without smart routing." in launch_text, transcript
     assert "Upgrade Codex if available?" not in launch_text, transcript
-    session.assert_not_routed()
+    if routing_supported:
+        assert "Running without smart routing." not in launch_text, transcript
+        assert "[ROUTE]" not in session.routing_log("codex")
+    else:
+        assert "Codex smart routing requires Codex 0.164.0 or newer" in launch_text, transcript
+        assert "Running without smart routing." in launch_text, transcript
+        session.assert_not_routed()
 
 
 @pytest.mark.live
