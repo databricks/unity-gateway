@@ -88,9 +88,8 @@ def test_cli_feedback_rule_matches_across_agents(inline_feedback, monkeypatch, a
     assert result.exit_code == 2, result.output
     text = " ".join(result.output.split())
     assert "16 characters" in text
-    assert "Ask the user why" in text
-    assert "--smart-router-feedback" in text
-    assert "/isaac-feedback --category smart-routing" in text
+    assert "Smart Router skill to collect and submit feedback" in text
+    assert "direct CLI command does not submit feedback" in text
     assert json.loads(controls.read_text()) == {}
 
 
@@ -396,29 +395,6 @@ def test_native_upload_start_failure_keeps_off(native_router, inline_feedback):
     assert not session_env.session_routing_enabled(controls)
     assert result["delivery"] == "unconfirmed"
     assert "delivery could not start" in result["message"]
-
-
-def test_native_unreadable_controls_during_submission_report_unconfirmed(
-    native_router, inline_feedback, monkeypatch
-):
-    import asyncio
-    from unittest.mock import AsyncMock, Mock
-
-    controls, _, popen, _ = inline_feedback
-    monkeypatch.setattr(feedback, "effective_environment", Mock(side_effect=UnicodeError("bad")))
-
-    response = asyncio.run(
-        native_router.call(
-            {"threadId": SESSION_ID, "turnId": OFF_TURN_ID, "arguments": {"action": "off"}},
-            AsyncMock(return_value=["Provide a reason", "user_note: " + REASON]),
-        )
-    )
-
-    assert response["success"], response
-    result = json.loads(response["contentItems"][0]["text"])
-    assert result["delivery"] == "unconfirmed"
-    assert "delivery could not start" in result["message"]
-    assert not session_env.session_routing_enabled(controls)
 
 
 @pytest.mark.parametrize("method", ["thread/start", "thread/resume"])

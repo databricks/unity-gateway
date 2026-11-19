@@ -245,7 +245,7 @@ def _toggle_with_skill(
     )
     assert json.loads(controls[0].read_text()) != expected
 
-    action = state
+    action = "on" if enabled else "off"
 
     def confirmation_count():
         confirmations = 0

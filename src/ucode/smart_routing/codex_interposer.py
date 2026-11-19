@@ -24,7 +24,6 @@ ITEM_STARTED = "item/started"
 ITEM_COMPLETED = "item/completed"
 TURN_START = "turn/start"
 TURN_STARTED = "turn/started"
-NOTICE_TURN_WAIT_SECONDS = 300
 
 RouteDecisionFn = Callable[[str], tuple[routing.RoutingDecision | None, str | None]]
 SwitchMessageFn = Callable[[str, str], str]
@@ -359,10 +358,7 @@ async def _handle_tui(
             await delivery_notice(message, status["message"], turn_done)
 
         async def delivery_notice(message: dict, text: str, turn_done: asyncio.Event):
-            try:
-                await asyncio.wait_for(turn_done.wait(), NOTICE_TURN_WAIT_SECONDS)
-            except TimeoutError:
-                pass  # report the delivery outcome even if the originating turn never completes
+            await turn_done.wait()
             item = {
                 "type": "agentMessage",
                 "id": f"ug-feedback-{uuid.uuid4().hex}",

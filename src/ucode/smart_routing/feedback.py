@@ -70,9 +70,6 @@ class FeedbackUpload(Protocol):
     def kill(self) -> None: ...
 
 
-NO_PRIOR_TASK_TURN_ID = "no-prior-task"
-
-
 def submit_codex_feedback(
     feedback_id: str,
     env: Mapping[str, str],
@@ -94,12 +91,9 @@ def submit_codex_feedback(
         report_id,
         "--with-evidence",
         "--turn-id",
-        turn_id or NO_PRIOR_TASK_TURN_ID,
+        turn_id or "no-prior-task",
     ]
-    try:
-        environment = effective_environment(env, agent="codex", strict=True)
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise RuntimeError("Smart Router session controls could not be read.") from exc
+    environment = effective_environment(env, agent="codex", strict=True)
     environment[SESSION_ENV_VAR] = ""
     options = (
         {"creationflags": subprocess.CREATE_NO_WINDOW}
