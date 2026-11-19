@@ -177,6 +177,7 @@ class CodexSmartRouter:
         self.pending_feedback: dict[str, str | None] = {}
         self.collecting_threads: set[str] = set()
         self.root_threads: set[str] = set()
+        self.caller_threads: set[str] = set()
         self.thread_requests: dict[str | int, bool] = {}
         self.off_requests: dict[str | int, tuple[str, asyncio.Event]] = {}
         self.off_turns: set[tuple[str, str]] = set()
@@ -258,19 +259,24 @@ class CodexSmartRouter:
         thread = result.get("thread") if isinstance(result, dict) else None
         if not isinstance(thread, dict):
             return
-        source = thread.get("source")
-        if thread.get("parentThreadId") or (isinstance(source, dict) and "subAgent" in source):
-            return
         if not isinstance(thread.get("id"), str):
             return
         try:
             thread_id = str(UUID(thread["id"]))
         except (ValueError, KeyError, TypeError):
             return
-        if owns_tool:
-            self.root_threads.add(thread_id)
-        else:
+        if not owns_tool:
+            self.caller_threads.add(thread_id)
             self.root_threads.discard(thread_id)
+            return
+        source = thread.get("source")
+        if (
+            thread_id in self.caller_threads
+            or thread.get("parentThreadId")
+            or (isinstance(source, dict) and "subAgent" in source)
+        ):
+            return
+        self.root_threads.add(thread_id)
 
     def handles(self, message: dict) -> bool:
         params = message.get("params")
@@ -279,7 +285,7 @@ class CodexSmartRouter:
             and isinstance(message.get("id"), (str, int))
             and isinstance(params, dict)
             and isinstance(params.get("threadId"), str)
-            and params["threadId"] in self.root_threads
+            and params["threadId"] not in self.caller_threads
             and isinstance(params.get("turnId"), str)
             and params.get("tool") == TOOL_NAME
             and params.get("namespace") in (None, "")

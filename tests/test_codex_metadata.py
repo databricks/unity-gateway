@@ -515,6 +515,11 @@ def test_native_tool_is_serviced_by_host_and_other_requests_forward(
             assert response["result"]["success"] is True
             assert "Smart Router is off" in response["result"]["contentItems"][0]["text"]
             assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
+            upstream.incoming.put_nowait(native_tool_request("child", "on"))
+            rejected = await asyncio.wait_for(upstream.outgoing.get(), 2)
+            assert rejected["result"]["success"] is False
+            assert "only to this session's root" in rejected["result"]["contentItems"][0]["text"]
+            assert json.loads(controls.read_text()) == dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0")
             foreign = native_tool_request(thread_id)
             foreign["params"]["tool"] = "another_tool"
             upstream.incoming.put_nowait(foreign)
@@ -568,6 +573,20 @@ def test_caller_owned_smart_router_calls_and_replies_forward(
                 assert controls.read_text() == before
 
             await caller_handles_tool()
+            for tools in (None, []):
+                resume = {
+                    "id": "caller-resume",
+                    "method": "thread/resume",
+                    "params": {"threadId": caller_thread},
+                }
+                if tools is not None:
+                    resume["params"]["dynamicTools"] = tools
+                tui.incoming.put_nowait(resume)
+                assert await asyncio.wait_for(upstream.outgoing.get(), 2) == resume
+                resumed = {"id": resume["id"], "result": {"thread": {"id": caller_thread}}}
+                upstream.incoming.put_nowait(resumed)
+                assert await asyncio.wait_for(tui.outgoing.get(), 2) == resumed
+                await caller_handles_tool()
             thread_id = await register_native_router(upstream, tui)
             upstream.incoming.put_nowait(native_tool_request(thread_id))
             response = await asyncio.wait_for(upstream.outgoing.get(), 2)

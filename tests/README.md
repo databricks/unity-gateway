@@ -1195,6 +1195,8 @@ session binding, preserved user tools, rejection of child/foreign sessions and i
 arguments, original-task selection, exact reason text, and pre-toggle routing context.
 Caller-supplied `ug_smart_router` definitions keep ownership on thread start/resume;
 their calls and replies pass through unchanged, including alongside a UG-owned thread.
+Later resumes preserve caller ownership even when they omit the tool definitions.
+Unauthorized UG calls still return an error without changing routing.
 Only responses can bind ownership or authorize an off turn; server requests with
 matching IDs leave those pending replies intact.
 Like Claude, Codex starts `isaac feedback --with-evidence` in the background before

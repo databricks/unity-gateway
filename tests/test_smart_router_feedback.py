@@ -448,7 +448,10 @@ def test_native_preserves_conflicting_user_tools(inline_feedback, tools, method)
     request = {"id": 1, "method": method, "params": {"dynamicTools": tools}}
     router.before_tui(request)
     assert request["params"]["dynamicTools"] == tools
-    assert router.thread_requests == ({} if tools == "invalid" else {1: False})
+    if tools == "invalid":
+        assert not router.thread_requests
+        return
+    assert router.thread_requests == {1: False}
     router.observe({"id": 1, "result": {"thread": {"id": SESSION_ID}}})
     assert not router.thread_requests
     assert not router.root_threads
