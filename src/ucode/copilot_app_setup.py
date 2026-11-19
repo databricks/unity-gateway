@@ -2,20 +2,56 @@
 
 The app's traffic goes to ug's login service, which runs anyway for Codex desktop: configure
 records the app in the service's unit so Codex keeps it, and registers ug's providers at the
-service's port while the app runs.
+service's port, starting the app first when it's closed.
 """
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
+import time
 from collections.abc import Iterable
 from pathlib import Path
+from typing import Any
 
 from ucode import copilot_app, login_service
 from ucode.agents.copilot import CopilotModel
 from ucode.constants import LOOPBACK_HOST
 from ucode.managed_files import OS, current_os
+from ucode.os_compatibility import subprocess_cross_os
 from ucode.ui import print_note, print_success, print_warning
+
+_MACOS_BUNDLE_ID = "com.github.githubapp"
+_LINUX_BINARY = Path("/usr/bin/github")
+_WINDOWS_KEY = r"Software\GitHub Inc.\GitHub Copilot"
+# How long configure waits for an app it started to open its WebSocket API.
+LAUNCH_TIMEOUT_S = 30.0
+LAUNCH_POLL_S = 0.5
+_DETACHED: dict[str, Any] = (
+    {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP}
+    if sys.platform == "win32"
+    else {"start_new_session": True}
+)
+
+
+def _windows_install_dir() -> str | None:
+    """The app's registry ``InstallDir`` ("" when its key has none), or None without the key."""
+    if sys.platform != "win32":
+        return None
+    import winreg
+
+    for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        try:
+            with winreg.OpenKey(hive, _WINDOWS_KEY) as key:
+                try:
+                    value, _ = winreg.QueryValueEx(key, "InstallDir")
+                except OSError:
+                    value = ""
+                return value if isinstance(value, str) else ""
+        except OSError:
+            continue
+    return None
 
 
 def installed() -> bool:
@@ -27,20 +63,63 @@ def installed() -> bool:
             for root in (Path("/Applications"), Path.home() / "Applications")
         )
     if system == OS.WINDOWS:
-        if sys.platform != "win32":
-            return False
-        import winreg
-
-        for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            try:
-                with winreg.OpenKey(hive, r"Software\GitHub Inc.\GitHub Copilot"):
-                    return True
-            except OSError:
-                continue
-        return False
+        return _windows_install_dir() is not None
     if system == OS.LINUX:
-        return Path("/usr/bin/github").is_file()
+        return _LINUX_BINARY.is_file()
     return False
+
+
+def _launch_command() -> list[str] | None:
+    """How to start the app on this machine, or None when ug can't start it."""
+    system = current_os()
+    if system == OS.MACOS:
+        return ["open", "-g", "-b", _MACOS_BUNDLE_ID]
+    if system == OS.WINDOWS:
+        install_dir = _windows_install_dir()
+        exe = Path(install_dir) / "github.exe" if install_dir else None
+        return [str(exe)] if exe and exe.is_file() else None
+    if system == OS.LINUX:
+        # A window needs a display; over plain SSH there is none.
+        if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+            return None
+        return [str(_LINUX_BINARY)]
+    return None
+
+
+def _spawn(command: list[str]) -> None:
+    subprocess_cross_os.popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        **_DETACHED,
+    )
+
+
+def _register_after_launch(
+    base_url: str, catalog: list[CopilotModel], provider_service: str | None
+) -> None:
+    """Start the closed app and register once its WebSocket API answers.
+
+    Raises :class:`copilot_app.CopilotAppNotRunning` when it can't be started or doesn't come up
+    in time."""
+    command = _launch_command()
+    if command is None:
+        raise copilot_app.CopilotAppNotRunning("The GitHub Copilot app isn't running.")
+    print_note("Starting the GitHub Copilot app to add the Databricks models to it...")
+    try:
+        _spawn(command)
+    except OSError:
+        raise copilot_app.CopilotAppNotRunning("The GitHub Copilot app didn't start.") from None
+    deadline = time.monotonic() + LAUNCH_TIMEOUT_S
+    while True:
+        try:
+            copilot_app.register(base_url, catalog, provider_service=provider_service)
+            return
+        except copilot_app.CopilotAppNotRunning:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(LAUNCH_POLL_S)
 
 
 def configure(
@@ -49,6 +128,7 @@ def configure(
     """Keep ug's login service up for the app on ``workspace`` and register ug's providers in it.
 
     Setup problems only warn, like the Codex app's."""
+    catalog = list(catalog)
     port = login_service.recorded_port("port") or login_service.allocate_port()
     was_recorded = login_service.copilot_app_recorded()
     try:
@@ -64,10 +144,12 @@ def configure(
     except (OSError, RuntimeError, ValueError) as exc:
         print_warning(f"Could not set up ug's login service for the GitHub Copilot app: {exc}")
         return
+    base_url = f"http://{LOOPBACK_HOST}:{port}"
     try:
-        copilot_app.register(
-            f"http://{LOOPBACK_HOST}:{port}", catalog, provider_service=provider_service
-        )
+        try:
+            copilot_app.register(base_url, catalog, provider_service=provider_service)
+        except copilot_app.CopilotAppNotRunning:
+            _register_after_launch(base_url, catalog, provider_service)
     except copilot_app.CopilotAppNotRunning:
         print_note(
             "Open the GitHub Copilot app, then run `ug configure --agents copilot` again to add "
