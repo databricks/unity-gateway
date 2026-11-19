@@ -769,3 +769,247 @@ class TestGatewayAuthProxyEndToEnd:
         assert failures == ["refresh token revoked"]
         assert len(gw.requests) == 1
         assert capsys.readouterr().err == ""
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _overflow_reword(body: bytes) -> bytes | None:
+    return b"reworded" if b"too long" in body else None
+
+
+_APP_HEADERS = {"User-Agent": "ucode/1 copilot/2", "X-Admin": "a"}
+_EXACT_ROUTES = {
+    ("POST", "/copilot/anthropic/v1/messages"): gateway_proxy.ServiceRoute(
+        "/ai-gateway/anthropic/v1/messages",
+        _APP_HEADERS,
+        sign_in_error=True,
+        bad_request_rewriter=_overflow_reword,
+    ),
+    ("POST", "/copilot/responses/v1/responses"): gateway_proxy.ServiceRoute(
+        "/ai-gateway/openai/v1/responses",
+        {**_APP_HEADERS, "Databricks-Model-Provider-Service": "cat.s.mps"},
+        sign_in_error=True,
+    ),
+    ("POST", "/copilot/completions/v1/chat/completions"): gateway_proxy.ServiceRoute(
+        "/ai-gateway/mlflow/v1/chat/completions",
+        _APP_HEADERS,
+        sign_in_error=True,
+        dropped_fields=frozenset({"reasoning_effort"}),
+    ),
+    ("POST", "/copilot/otel/v1/traces"): gateway_proxy.ServiceRoute(
+        "/ai-gateway/otel/v1/traces", _APP_HEADERS, sign_in_error=True
+    ),
+    ("POST", "/copilot/otel/v1/metrics"): gateway_proxy.ServiceRoute(None),
+}
+_PREFIX_ROUTES = {"/v1/": gateway_proxy.ServiceRoute("/ai-gateway/otel/v1/")}
+
+
+@contextlib.contextmanager
+def _running_service(gateway: _FakeGateway, token_provider=None):
+    port = _free_port()
+    server, cache, client = gateway_proxy.start_service_listener(
+        gateway.base_url,
+        token_provider or _counting_token("dbx-token"),
+        port=port,
+        exact_routes=_EXACT_ROUTES,
+        prefix_routes=_PREFIX_ROUTES,
+        sign_in_hint="Run `databricks auth login`.",
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        cache.stop()
+        client.close()
+        thread.join(timeout=2)
+
+
+def _raw_request(url: str, request_line: str, headers: dict[str, str]) -> bytes:
+    import socket
+
+    host, port = url.removeprefix("http://").split(":")
+    head = "".join(f"{name}: {value}\r\n" for name, value in headers.items())
+    with socket.create_connection((host, int(port)), timeout=10) as sock:
+        sock.sendall(f"{request_line}\r\n{head}Content-Length: 2\r\n\r\n{{}}".encode())
+        return sock.recv(65536)
+
+
+class TestLoginServicePortEndToEnd:
+    def test_codex_traces_keep_their_url_and_get_only_a_fresh_token(self, make_gateway):
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            resp = httpx.post(
+                f"{url}/v1/traces",
+                headers={"Content-Type": "application/x-protobuf"},
+                content=b"spans",
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        req = gw.requests[-1]
+        assert (req.path, req.body) == ("/ai-gateway/otel/v1/traces", b"spans")
+        assert req.header("Authorization") == "Bearer dbx-token"
+        assert req.header("X-Admin") is None
+
+    def test_forwards_a_claude_turn_with_a_fresh_token_instead_of_the_app_key(self, make_gateway):
+        gw = make_gateway(chunks=[b"event: message_start\n\n", b"event: message_stop\n\n"])
+        with _running_service(gw) as url:
+            resp = httpx.post(
+                f"{url}/copilot/anthropic/v1/messages",
+                headers={"x-api-key": "placeholder", "anthropic-version": "2023-06-01"},
+                content=b'{"model":"databricks-claude-sonnet-4-6","stream":true}',
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        assert resp.content == b"event: message_start\n\nevent: message_stop\n\n"
+        req = gw.requests[-1]
+        assert req.path == "/ai-gateway/anthropic/v1/messages"
+        assert req.header("Authorization") == "Bearer dbx-token"
+        assert req.header("x-api-key") is None
+        assert req.header("anthropic-version") == "2023-06-01"
+        assert req.header("User-Agent") == "ucode/1 copilot/2"
+        assert req.body == b'{"model":"databricks-claude-sonnet-4-6","stream":true}'
+
+    def test_route_headers_replace_the_app_ones(self, make_gateway):
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            resp = httpx.post(
+                f"{url}/copilot/responses/v1/responses",
+                headers={"databricks-model-provider-service": "app"},
+                content=b"{}",
+                timeout=10,
+            )
+        assert resp.status_code == 200
+        req = gw.requests[-1]
+        assert req.path == "/ai-gateway/openai/v1/responses"
+        assert req.header("Databricks-Model-Provider-Service") == "cat.s.mps"
+        assert req.names.count("databricks-model-provider-service") == 1
+
+    def test_drops_the_route_fields_only_from_chat_completions(self, make_gateway):
+        body = {"model": "system.ai.glm-5-2", "stream": True, "reasoning_effort": "high"}
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            for path in (
+                "/copilot/completions/v1/chat/completions",
+                "/copilot/responses/v1/responses",
+            ):
+                resp = httpx.post(f"{url}{path}", json=body, timeout=10)
+                assert resp.status_code == 200
+        completions, responses = gw.requests
+        assert completions.path == "/ai-gateway/mlflow/v1/chat/completions"
+        assert json.loads(completions.body) == {"model": "system.ai.glm-5-2", "stream": True}
+        assert responses.path == "/ai-gateway/openai/v1/responses"
+        assert json.loads(responses.body) == body
+
+    def test_forwards_app_traces_and_answers_metrics_locally(self, make_gateway):
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            metrics = httpx.post(f"{url}/copilot/otel/v1/metrics", content=b"m", timeout=10)
+            traces = httpx.post(f"{url}/copilot/otel/v1/traces", content=b"spans", timeout=10)
+        assert (metrics.status_code, metrics.content) == (200, b"")
+        assert traces.status_code == 200
+        assert [(req.path, req.body) for req in gw.requests] == [
+            ("/ai-gateway/otel/v1/traces", b"spans")
+        ]
+
+    def test_rewords_a_gateway_400_only_on_routes_that_ask_for_it(self, make_gateway):
+        gw = make_gateway(status=400, chunks=[b"prompt too long"])
+        with _running_service(gw) as url:
+            claude = httpx.post(f"{url}/copilot/anthropic/v1/messages", content=b"{}", timeout=10)
+            codex = httpx.post(f"{url}/v1/traces", content=b"{}", timeout=10)
+        assert claude.content == b"reworded"
+        assert codex.content == b"prompt too long"
+
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("GET", "/copilot/anthropic/v1/messages"),
+            ("POST", "/copilot/anthropic/v1/models"),
+            ("POST", "/copilot/anthropic/v1/messages?beta=true"),
+            ("POST", "/copilot/anthropic/v1/messages/"),
+            ("POST", "/copilot/otel/v1/logs"),
+            ("POST", "/ai-gateway/anthropic/v1/messages"),
+            ("POST", "/v1/../../api/2.0/clusters/list"),
+            ("POST", "/v1/%2e%2e/%2e%2e/api/2.0/clusters/list"),
+            ("POST", "/v2/traces"),
+        ],
+    )
+    def test_serves_only_its_routes(self, make_gateway, method, path):
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            reply = _raw_request(
+                url,
+                f"{method} {path} HTTP/1.1",
+                {"Host": url.removeprefix("http://"), "Connection": "close"},
+            )
+        assert b" 404 " in reply.split(b"\r\n", 1)[0]
+        assert gw.requests == []
+
+    @pytest.mark.parametrize(
+        "target",
+        ["http://gateway.example/v1/traces", "http://gateway.example/copilot/otel/v1/traces"],
+    )
+    def test_refuses_an_absolute_form_target(self, make_gateway, target):
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            reply = _raw_request(
+                url,
+                f"POST {target} HTTP/1.1",
+                {"Host": url.removeprefix("http://"), "Connection": "close"},
+            )
+        assert b" 404 " in reply.split(b"\r\n", 1)[0]
+        assert gw.requests == []
+
+    def test_a_dead_login_gets_a_400_the_app_shows(self, make_gateway):
+        minted: list[bool] = []
+
+        def provider(force_refresh: bool) -> str:
+            minted.append(force_refresh)
+            if len(minted) > 1:
+                raise RuntimeError("refresh token revoked")
+            return "token"
+
+        gw = make_gateway(status=401)
+        with _running_service(gw, provider) as url:
+            resp = httpx.post(f"{url}/copilot/anthropic/v1/messages", content=b"{}", timeout=10)
+        assert resp.status_code == 400
+        error = resp.json()["error"]
+        assert error["type"] == "invalid_request_error"
+        assert "Databricks sign-in expired. Run `databricks auth login`." in error["message"]
+
+    def test_a_dead_login_still_relays_codex_traces_as_before(self, make_gateway, capsys):
+        minted: list[bool] = []
+
+        def provider(force_refresh: bool) -> str:
+            minted.append(force_refresh)
+            if len(minted) > 1:
+                raise RuntimeError("refresh token revoked")
+            return "token"
+
+        gw = make_gateway(status=401)
+        with _running_service(gw, provider) as url:
+            resp = httpx.post(f"{url}/v1/traces", content=b"{}", timeout=10)
+        assert resp.status_code == 401
+        assert len(gw.requests) == 2
+        assert "refresh token revoked" in capsys.readouterr().err
+
+    def test_a_busy_port_raises(self, make_gateway):
+        gw = make_gateway()
+        with _running_service(gw) as url:
+            with pytest.raises(OSError):
+                gateway_proxy.start_service_listener(
+                    gw.base_url,
+                    _counting_token(),
+                    port=int(url.rsplit(":", 1)[1]),
+                    exact_routes={},
+                    prefix_routes={},
+                    sign_in_hint="",
+                )

@@ -13,7 +13,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from ucode import custom_oauth, gateway_proxy, managed_files
+from ucode import custom_oauth, gateway_proxy, login_service, managed_files
 from ucode.agents import LaunchOptions, codex
 from ucode.config_io import read_toml_safe
 from ucode.smart_routing import codex_routing
@@ -2939,9 +2939,9 @@ class TestCodexManagedConfig:
         app_path = codex._legacy_config_path()
         app_path.parent.mkdir(parents=True, exist_ok=True)
         app_path.write_text('[otel]\nenvironment = "existing"\n')
-        unit_path = codex._otel_service_path()
-        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
-        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug path/$bin%/ug")
+        unit_path = login_service.service_path()
+        monkeypatch.setattr(login_service, "allocate_port", lambda: 43199)
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug path/$bin%/ug")
         monkeypatch.setenv("PATH", "/tmp/$cli%bin:/usr/bin")
         monkeypatch.setenv("ENABLE_CUSTOM_OAUTH_FROM_CLI", "1")
         run = Mock(side_effect=OSError("no systemd user manager"))
@@ -2970,11 +2970,11 @@ class TestCodexManagedConfig:
         # Unchanged launches start a stopped proxy but never restart a running one.
         assert [call.args[0][2:] for call in run.call_args_list] == [
             ["daemon-reload"],
-            ["enable", "--now", codex.CODEX_OTEL_SERVICE_NAME],
-            ["enable", "--now", codex.CODEX_OTEL_SERVICE_NAME],
+            ["enable", "--now", login_service.SERVICE_NAME],
+            ["enable", "--now", login_service.SERVICE_NAME],
             ["daemon-reload"],
-            ["enable", codex.CODEX_OTEL_SERVICE_NAME],
-            ["restart", codex.CODEX_OTEL_SERVICE_NAME],
+            ["enable", login_service.SERVICE_NAME],
+            ["restart", login_service.SERVICE_NAME],
         ]
 
         codex.write_tool_config({"workspace": newer})
@@ -3000,11 +3000,11 @@ class TestCodexManagedConfig:
         managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
         app_path = codex._legacy_config_path()
         app_path.parent.mkdir(parents=True, exist_ok=True)
-        unit_path = codex._otel_service_path()
+        unit_path = login_service.service_path()
         # A repeated allocation is retried, so the service never gets the same port twice.
         ports = iter([43198, 43198, *range(43199, 43298)])
-        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: next(ports))
-        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(login_service, "allocate_port", lambda: next(ports))
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug")
         monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
         relayed = {"workspace": WS}
 
@@ -3075,40 +3075,123 @@ class TestCodexManagedConfig:
         user = 'model_provider = "mine"\n[model_providers.mine]\nbase_url = "https://x"\n'
         app_path.write_text(user)
         monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
-        monkeypatch.setattr(codex, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug")
         monkeypatch.setattr(codex, "_explicit_configure", True)
 
         codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
         assert app_path.read_text() == user
         assert "model provider" in capsys.readouterr().err
-        assert not codex._otel_service_path().exists()
+        assert not login_service.service_path().exists()
 
         app_path.write_text("")
         monkeypatch.setattr(codex, "is_dry_run", lambda: True)
         assert codex._sync_desktop_relay({}, WS, "cat.s.mps") is False
         assert app_path.read_text() == ""
 
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_codex_never_drops_or_moves_the_copilot_app_service(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        managed_path, _ = self._sudo_counting_env(tmp_path, monkeypatch)
+        codex._legacy_config_path().parent.mkdir(parents=True, exist_ok=True)
+        unit_path = login_service.service_path()
+        ports = iter(range(43198, 43298))
+        monkeypatch.setattr(login_service, "allocate_port", lambda: next(ports))
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
+        login_service.install(WS, 43199, copilot_app=True)
+        tracing = {"workspace": WS, "codex_otel_tracing": True}
+
+        codex.write_tool_config(dict(tracing))
+        assert login_service.copilot_app_recorded()
+        assert f'--host "{WS}" --port 43199' in unit_path.read_text()
+
+        # A traced launch elsewhere leaves the app's service on its workspace.
+        codex.write_tool_config({"workspace": "https://other.example", "codex_otel_tracing": True})
+        assert f'--host "{WS}"' in unit_path.read_text()
+
+        # Turning Codex tracing off keeps the service the app needs.
+        codex.write_tool_config({"workspace": WS})
+        assert login_service.copilot_app_recorded()
+
+        # Adding and dropping the Codex relay keeps the app's note.
+        monkeypatch.setattr(codex, "_explicit_configure", True)
+        managed_path.unlink(missing_ok=True)  # a non-relayed run owns it; relay refuses that file
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert "--relay-port" in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+        codex.write_tool_config({"workspace": WS})
+        assert "--relay-port" not in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+
+        # A revert keeps the app's service on its workspace, without the relay.
+        managed_path.unlink(missing_ok=True)
+        codex.write_tool_config({"workspace": WS}, provider="cat.s.mps", relayed=True)
+        assert codex._sync_desktop_relay({}, None, None) is True
+        assert "--relay-port" not in unit_path.read_text()
+        assert f'--host "{WS}"' in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+
+        # A relay for another workspace would move the app's traffic, so it is skipped.
+        managed_path.unlink(missing_ok=True)
+        codex.write_tool_config(
+            {"workspace": "https://other.example"}, provider="cat.s.mps", relayed=True
+        )
+        assert "GitHub Copilot app on another workspace" in capsys.readouterr().err
+        assert f'--host "{WS}"' in unit_path.read_text()
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="Linux systemd configuration")
+    def test_desktop_codex_keeps_the_app_on_its_workspace_id_on_a_shared_host(
+        self, tmp_path, monkeypatch
+    ):
+        self._sudo_counting_env(tmp_path, monkeypatch)
+        codex._legacy_config_path().parent.mkdir(parents=True, exist_ok=True)
+        unit_path = login_service.service_path()
+        monkeypatch.setattr(login_service, "allocate_port", lambda: 43199)
+        monkeypatch.setattr(login_service, "ug_binary", lambda: "/opt/ug")
+        monkeypatch.setattr(codex.subprocess_cross_os, "run", Mock())
+        pinned = ["--workspace-id", "111"]
+        for module in (codex, login_service):
+            monkeypatch.setattr(module, "workspace_id_args", lambda host: list(pinned))
+        login_service.install(WS, 43199, copilot_app=True)
+        assert login_service.recorded_workspace() == (WS, "111")
+
+        # Another workspace on the same host must not take over the app's traffic.
+        pinned[1] = "222"
+        codex.write_tool_config({"workspace": WS, "codex_otel_tracing": True})
+        assert '"--workspace-id" "111"' in unit_path.read_text()
+
+        # A revert drops the Codex relay but keeps the app's service exactly as recorded.
+        pinned[1] = "111"
+        login_service.install(WS, 43199, 43198, copilot_app=True)
+        pinned[1] = "222"
+        codex._sync_desktop_relay({}, None, None)
+        assert "--relay-port" not in unit_path.read_text()
+        assert '"--workspace-id" "111"' in unit_path.read_text()
+        assert login_service.copilot_app_recorded()
+
     def test_desktop_relay_service_argv_includes_relay_port(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         ensure = Mock()
-        monkeypatch.setattr(codex, "_ensure_launch_agent", ensure)
-        monkeypatch.setattr(codex, "_ensure_scheduled_task", ensure)
-        monkeypatch.setattr(codex, "ug_binary", lambda: str(tmp_path / "ug"))
+        monkeypatch.setattr(login_service, "_ensure_launch_agent", ensure)
+        monkeypatch.setattr(login_service, "_ensure_scheduled_task", ensure)
+        monkeypatch.setattr(login_service, "ug_binary", lambda: str(tmp_path / "ug"))
         for target in (managed_files.OS.MACOS, managed_files.OS.WINDOWS):
-            monkeypatch.setattr(codex, "current_os", lambda target=target: target)
-            codex._ensure_otel_service(WS, 43199, 43198)
+            monkeypatch.setattr(login_service, "current_os", lambda target=target: target)
+            login_service.install(WS, 43199, 43198)
             argv = ensure.call_args.args[1]
             assert argv[argv.index("--host") + 2 :] == ["--relay-port", "43198", "--port", "43199"]
 
     def test_desktop_tracing_launch_agent_lifecycle(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         app_path = codex._legacy_config_path()
-        plist_path = codex._otel_service_path()
+        plist_path = login_service.service_path()
         ug_path = str(tmp_path / "ug")
         monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.MACOS)
+        monkeypatch.setattr(login_service, "current_os", lambda: managed_files.OS.MACOS)
         monkeypatch.setattr(codex.os, "getuid", lambda: 501, raising=False)
-        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
-        monkeypatch.setattr(codex, "ug_binary", lambda: ug_path)
+        monkeypatch.setattr(login_service, "allocate_port", lambda: 43199)
+        monkeypatch.setattr(login_service, "ug_binary", lambda: ug_path)
         monkeypatch.setenv("PATH", "/opt/homebrew/bin")
         for name in (
             "DATABRICKS_CONFIG_FILE",
@@ -3116,7 +3199,7 @@ class TestCodexManagedConfig:
             "ENABLE_CUSTOM_OAUTH_FROM_CLI",
         ):
             monkeypatch.delenv(name, raising=False)
-        target = f"gui/501/{codex.CODEX_OTEL_SERVICE_LABEL}"
+        target = f"gui/501/{login_service.SERVICE_LABEL}"
         loaded = False
         commands = []
 
@@ -3137,7 +3220,7 @@ class TestCodexManagedConfig:
         exporter = codex._otel_proxy_overlay("http://127.0.0.1:43199/v1/traces")["otel"]
         assert read_toml_safe(app_path)["otel"] == exporter
         assert plistlib.loads(plist_path.read_bytes()) == {
-            "Label": codex.CODEX_OTEL_SERVICE_LABEL,
+            "Label": login_service.SERVICE_LABEL,
             "ProgramArguments": [ug_path, "otel-proxy", "--host", WS, "--port", "43199"],
             "EnvironmentVariables": {"PATH": "/opt/homebrew/bin"},
             "RunAtLoad": True,
@@ -3169,13 +3252,14 @@ class TestCodexManagedConfig:
     def test_desktop_tracing_scheduled_task_lifecycle(self, tmp_path, monkeypatch):
         self._sudo_counting_env(tmp_path, monkeypatch)
         app_path = codex._legacy_config_path()
-        task_path = codex._otel_service_path()
+        task_path = login_service.service_path()
         pythonw = tmp_path / "Scripts" / "pythonw.exe"
         pythonw.parent.mkdir()
         pythonw.write_text("")
         monkeypatch.setattr(codex, "current_os", lambda: managed_files.OS.WINDOWS)
-        monkeypatch.setattr(codex.sys, "executable", str(pythonw.with_name("python.exe")))
-        monkeypatch.setattr(codex, "_allocate_otel_port", lambda: 43199)
+        monkeypatch.setattr(login_service, "current_os", lambda: managed_files.OS.WINDOWS)
+        monkeypatch.setattr(login_service.sys, "executable", str(pythonw.with_name("python.exe")))
+        monkeypatch.setattr(login_service, "allocate_port", lambda: 43199)
         monkeypatch.setenv("USERDOMAIN", "CORP")
         monkeypatch.setenv("USERNAME", "dev")
         registered = running = False
@@ -3185,7 +3269,7 @@ class TestCodexManagedConfig:
             nonlocal registered, running
             verb = argv[1]
             verbs.append(verb)
-            assert argv[2:4] == ["/TN", codex.CODEX_OTEL_SERVICE_LABEL]
+            assert argv[2:4] == ["/TN", login_service.SERVICE_LABEL]
             if verb == "/Create":
                 assert argv[4:] == ["/XML", str(task_path), "/F"]
                 registered = True

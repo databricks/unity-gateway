@@ -780,6 +780,49 @@ def _remove_vscode_for_managed_config() -> None:
     )
 
 
+_copilot_app_with_copilot = True
+
+
+def request_copilot_app_with_copilot(requested: bool = True) -> None:
+    """Whether configuring Copilot in this run also sets up the GitHub Copilot desktop app
+    (``ug configure --no-copilot-app`` passes ``False``)."""
+    global _copilot_app_with_copilot
+    _copilot_app_with_copilot = requested
+
+
+def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
+    """Add ug's models to the GitHub Copilot desktop app when it is installed, or remove them when
+    the workspace's managed config turns the app off."""
+    from ucode import copilot_app_setup, login_service
+
+    if is_dry_run() or not login_service.copilot_app_enabled():
+        return
+    if state.get("copilot_app_integration") is False:
+        from . import codex
+
+        try:
+            result = copilot_app_setup.remove(keep_service=codex.uses_login_service())
+        except (OSError, RuntimeError, ValueError) as exc:
+            print_warning(f"Could not remove ug's models from the GitHub Copilot app: {exc}")
+            return
+        if result != "not set up":
+            print_note(
+                "This workspace's managed configuration turns off the GitHub Copilot app, so "
+                f"ug's Databricks models were removed from it ({result})."
+            )
+        return
+    if not _copilot_app_with_copilot or not copilot_app_setup.installed():
+        return
+    from . import vscode
+
+    try:
+        catalog = vscode._catalog(state, provider, parent_schema)
+    except RuntimeError as exc:
+        print_warning(f"Skipped the GitHub Copilot app: {exc}")
+        return
+    copilot_app_setup.configure(state["workspace"], catalog, provider_service=provider)
+
+
 def configure_single_tool(
     tool: str,
     state: dict,
@@ -806,6 +849,7 @@ def configure_single_tool(
         state = _configure_one(tool, state, provider, parent_schema=parent_schema)
     if with_vscode and tool == AGENT_COPILOT:
         configure_vscode(state, provider=provider, parent_schema=parent_schema)
+        configure_copilot_app(state, provider=provider, parent_schema=parent_schema)
     available_tools = list(set((state.get("available_tools") or []) + [tool]))
     state["available_tools"] = available_tools
     save_state(state)
@@ -905,6 +949,7 @@ def configure_selected_tools(
             # `ug configure` sets up Copilot Chat in VS Code along with the Copilot CLI.
             if tool == AGENT_COPILOT:
                 configure_vscode(state, provider=provider, parent_schema=parent_schema)
+                configure_copilot_app(state, provider=provider, parent_schema=parent_schema)
 
     existing = state.get("available_tools") or []
     state["available_tools"] = sorted(set(existing) | set(configured))
