@@ -1,4 +1,7 @@
-"""Startup Smart Router menu check; an unsupported menu turns routing off for the session."""
+"""Startup Smart Router menu check; an unsupported menu turns routing off for the session.
+
+A failed or timed-out check is silent and leaves routing on.
+"""
 
 from __future__ import annotations
 
@@ -11,7 +14,8 @@ from ucode.constants import SMART_ROUTING_ENV_KEYS
 from ucode.databricks import _http_post_json, workspace_origin
 
 _VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
-_UNAVAILABLE = "Smart Router compatibility check unavailable. Routing remains enabled."
+# The Claude mod shows routing ON after 5 s without a result, so the check must finish sooner.
+VALIDATION_TIMEOUT_SECONDS = 4
 
 
 def result_path(session_controls: Path) -> Path:
@@ -19,9 +23,7 @@ def result_path(session_controls: Path) -> Path:
 
 
 def _message(payload: object, reason: str | None) -> str | None:
-    if reason or not isinstance(payload, dict) or type(payload.get("is_supported")) is not bool:
-        return _UNAVAILABLE
-    if payload["is_supported"]:
+    if reason or not isinstance(payload, dict) or payload.get("is_supported") is not False:
         return None
     parts = ["Smart Router does not support this model menu."]
     metadata = payload.get("metadata")
@@ -58,13 +60,16 @@ def start(
     def check() -> None:
         try:
             payload, reason = _http_post_json(
-                workspace_origin(workspace) + _VALIDATION_PATH, token, body, timeout=10
+                workspace_origin(workspace) + _VALIDATION_PATH,
+                token,
+                body,
+                timeout=VALIDATION_TIMEOUT_SECONDS,
             )
             message = _message(payload, reason)
         except Exception:
-            message = _UNAVAILABLE
+            message = None
         result: dict[str, object] = {"message": message}
-        if message and message != _UNAVAILABLE:
+        if message:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True

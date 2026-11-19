@@ -15,8 +15,6 @@ const abovePrompt = {
   plugin: 'ug-smart-router', component: 'AbovePrompt', surface: 'terminal', props: {},
 } as const;
 const UNSUPPORTED = 'Smart Router does not support this model menu. Available options: claude-sonnet (claude_code), glm-5 (claude_code). Smart routing is off for this session.';
-const UNAVAILABLE = 'Smart Router compatibility check unavailable. Routing remains enabled.';
-const firstSentence = (message: string): string => message.split(/(?<=\.)\s/, 1)[0];
 
 // The engine beneath the mod: a routed environment, the session-controls file Python owns,
 // and a validation result that stays pending until the test publishes it.
@@ -64,12 +62,12 @@ function engine(on: On) {
 }
 
 const cases = [
-  { name: 'supported', result: { message: null }, box: '', routed: true },
-  { name: 'unsupported', result: { message: UNSUPPORTED, routing_disabled: true }, box: '', routed: false },
-  { name: 'unavailable', result: { message: UNAVAILABLE }, box: firstSentence(UNAVAILABLE), routed: true },
+  // A failed check publishes the same silent result as a supported menu.
+  { name: 'supported or failed', result: { message: null }, routed: true },
+  { name: 'unsupported', result: { message: UNSUPPORTED, routing_disabled: true }, routed: false },
 ];
 
-for (const { name, result, box, routed } of cases) {
+for (const { name, result, routed } of cases) {
   for (const submittedBeforeResult of [false, true]) {
     test(`startup validation ${name} holds the band until the result, with earlier prompt ${submittedBeforeResult}`, { options: ROUTED }, async ($, on) => {
       const { clock, env, files, state, hint } = engine(on);
@@ -101,12 +99,7 @@ for (const { name, result, box, routed } of cases) {
       expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
       expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
         .toBe(routed ? 'task_v3' : DISABLED_RECIPE);
-      expect(shown.includes('Ctrl+O for Smart Router validation details')).toBe(Boolean(box));
-      if (box) {
-        expect(shown).toContain(box);
-        expect(shown).toContain('"borderStyle":"round"');
-        expect(shown).not.toContain('Routing remains enabled.');
-      }
+      expect(shown).not.toContain('"borderStyle":"round"');
       expect(state.notices).toEqual(result.message ? [{
         type: 'system',
         content: [{ type: 'text', text: 'Smart Router validation\n' + result.message }],
@@ -117,14 +110,12 @@ for (const { name, result, box, routed } of cases) {
         const afterEarlierTurn = JSON.stringify(await ui.drawn());
         expect(afterEarlierTurn).toContain('host content');
         expect(afterEarlierTurn).not.toContain('unity gateway smart router');
-        expect(afterEarlierTurn.includes('Ctrl+O for Smart Router validation details')).toBe(Boolean(box));
       }
       expect((await $.prompt.submit({ text: 'a real prompt' })).text).toBe('a real prompt');
       if (!submittedBeforeResult) expect(JSON.stringify(await ui.drawn())).toEqual(shown);
       await $.turn.complete({ answer: 'done' });
       const afterTurn = JSON.stringify(await ui.drawn());
       expect(afterTurn).not.toContain('unity gateway smart router');
-      expect(afterTurn).not.toContain('Ctrl+O for Smart Router validation details');
 
       // A later session start neither polls again nor repeats the notice.
       const reads = state.reads;
@@ -139,11 +130,11 @@ for (const { name, result, box, routed } of cases) {
   }
 }
 
-test('startup validation shows the band after 12 seconds without a result and stops polling', { options: ROUTED }, async ($, on) => {
+test('startup validation shows the band ON after 5 seconds without a result and stops polling', { options: ROUTED }, async ($, on) => {
   const { clock, state, hint } = engine(on);
   const ui = await $.ui.mount(abovePrompt);
   await $.session.start(start);
-  await clock.advance(11900);
+  await clock.advance(4900);
   expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
   await clock.advance(100);
   const shown = JSON.stringify(await ui.drawn());

@@ -10,9 +10,10 @@ const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the startup check settles;
 // an unsupported menu turns routing off and must never flash ON.
-const validation = { message: '', isHideArmed: false, isPending: true }
+const validation = { isPending: true }
 const VALIDATION_POLL_MS = 100
-const VALIDATION_WAIT_MS = 12000
+// Longer than the Python check's 4 s HTTP timeout, so an unsupported result always lands first.
+const VALIDATION_WAIT_MS = 5000
 
 export function showStatusBand(): void {
   band.isVisible = true
@@ -22,11 +23,9 @@ export function showStatusBand(): void {
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  const changed = band.isHideArmed || validation.isHideArmed
+  const changed = band.isHideArmed
   if (band.isHideArmed) band.isVisible = false
-  if (validation.isHideArmed) validation.message = ''
   band.isHideArmed = false
-  validation.isHideArmed = false
   return changed
 }
 
@@ -95,16 +94,15 @@ export async function watchStartupValidation(
         return
       }
       complete = true
-      if (result.routing_disabled === true) {
+      const isDisabled = result.routing_disabled === true
+      if (isDisabled) {
         band.isVisible = false
         try {
           await disableRouting()
         } catch {}
-      } else if (typeof result.message === 'string') {
-        validation.message = result.message
       }
       finish()
-      if (typeof result.message === 'string' && result.message) {
+      if (isDisabled && typeof result.message === 'string' && result.message) {
         try {
           await $.session.append({
             message: {
@@ -132,7 +130,6 @@ export const registerStatusBand = (on: On): void => {
   let refresh: { cancel: () => void } | undefined
   on('prompt.submit', ($, e, next) => {
     if (band.isVisible) band.isHideArmed = true
-    if (validation.message) validation.isHideArmed = true
     return next(e)
   })
 
@@ -155,7 +152,7 @@ export const registerStatusBand = (on: On): void => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
     const isBandShown = band.isVisible && !validation.isPending
-    if (!isBandShown && !validation.message) return theirs
+    if (!isBandShown) return theirs
     const { Box, Text } = $.ui.resolve(e)
     const { enabled, firstPrompt } = await readRoutingState($)
 
@@ -175,17 +172,7 @@ export const registerStatusBand = (on: On): void => {
       columnGap: 1,
       children: [Text({ bold: true, children: [BANNER] }), pill, trailer],
     })
-    const children = isBandShown ? [line] : []
-    if (validation.message) children.push(Box({
-      flexDirection: 'column',
-      borderStyle: 'round',
-      borderColor: 'yellow',
-      paddingX: 1,
-      children: [
-        Text({ color: 'yellow', children: [validation.message.split(/(?<=\.)\s/, 1)[0]] }),
-        Text({ dimColor: true, children: ['Ctrl+O for Smart Router validation details'] }),
-      ],
-    }))
+    const children = [line]
     if (theirs) children.push(theirs)
     return Box({ flexDirection: 'column', children })
   })

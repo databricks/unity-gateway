@@ -88,7 +88,7 @@ def test_delayed_http_is_nonblocking_and_preserves_resolved_menu(tmp_path, monke
         RuntimeError("private token diagnostics"),
     ],
 )
-def test_unsupported_menu_turns_routing_off_and_failures_keep_it_on(
+def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
     response, tmp_path, monkeypatch
 ):
     post = (
@@ -112,15 +112,13 @@ def test_unsupported_menu_turns_routing_off_and_failures_keep_it_on(
     unsupported = isinstance(response, tuple) and (response[0] or {}).get("is_supported") is False
     assert session_routing_enabled(controls) is not unsupported
     assert result.get("routing_disabled", False) is unsupported
-    if isinstance(response, tuple) and response[0] and response[0].get("is_supported") is True:
-        assert message is None
-    elif unsupported:
+    if unsupported:
         assert "Need two families." in message
         assert "custom.model: No matching harness." in message
         assert "system.ai.other (claude)" in message
         assert message.endswith("Smart routing is off for this session.")
     else:
-        assert message == validation._UNAVAILABLE
+        assert result == {"message": None}
         assert controls.read_text() == "{}"
 
 
