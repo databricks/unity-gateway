@@ -1961,6 +1961,10 @@ def launch(
             "Smart routing can't be used with a ChatGPT subscription relay. Re-run with "
             "`--disable-smart-routing` or pick another provider."
         )
+    if options.launch_smart_routing:
+        from ucode.agents import ensure_minimum_version
+
+        ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
     clear_model_preferences(state)
     binary = SPEC["binary"]
     workspace = state.get("workspace")
@@ -2114,11 +2118,7 @@ def _launch_smart_routing(
     available_models: list[str] | None = None,
 ) -> None:
     """Launch the Codex TUI through the smart-routing interposer."""
-    from ucode.agents import ensure_minimum_version
-
     binary = SPEC["binary"]
-    ensure_minimum_version("codex", lambda: minimum_version_error(smart_routing_enabled=True))
-
     configured_model = _smart_routing_config_model(state)
     # Prefer the custom catalog if it exists.
     models = (
@@ -2127,8 +2127,8 @@ def _launch_smart_routing(
         else custom_catalog_models() or routing_models(state)
     )
     if launch_config is not None:
-        configured_model = launch_config.get("model") or (
-            configured_model if configured_model in models else None
+        configured_model = (
+            configured_model if configured_model in models else launch_config.get("model")
         )
     start_model = (
         configured_model

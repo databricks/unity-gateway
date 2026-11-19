@@ -3998,7 +3998,6 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services use their own catalogs and routing headers.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
