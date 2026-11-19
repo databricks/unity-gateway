@@ -168,6 +168,17 @@ latest refresh supplies the app's catalog; custom catalogs (including Isaac's) a
 custom providers are preserved. The app's gateway provider and authentication must
 already be configured. Validation covers the local Codex binary.
 
+For custom model services in a managed static list, UG reads the downstream model IDs
+from the service's routing configuration and uses their native Codex metadata. The full
+service name remains the request model. This covers external and pay-per-token
+destinations, including primary routes and fallbacks. Mixed-model services use shared
+reasoning levels and input types, the smallest context limits, and common optional features
+with ordinary tools. Incompatible reasoning levels or input types produce an actionable error.
+UG warns and keeps generic defaults if destinations are unreadable or do not expose a model ID
+(including provisioned endpoints).
+Lookups share a five-second budget. Offline `--from-file` previews keep generic metadata
+without signing in; authentication failures also warn and retain generic metadata.
+
 Codex loads the catalog at app-server startup. When ug reports a catalog change,
 finish active tasks, restart the app server on the **connected host**, then reconnect.
 Use `codex app-server daemon restart` for a standalone managed daemon; otherwise

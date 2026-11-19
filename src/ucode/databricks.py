@@ -3335,20 +3335,83 @@ def model_service_backing_model(service: dict) -> str | None:
 
 def model_service_primary_providers(service: dict) -> list[str]:
     """The Model Provider Services behind ``service``'s live primary destinations."""
-    routing = (service.get("config") or {}).get("routing") or {}
-    destinations = routing.get("destinations")
     providers: list[str] = []
-    for destination in destinations if isinstance(destinations, list) else []:
-        if (
-            not isinstance(destination, dict)
-            or destination.get("is_deleted")
-            or not (destination.get("traffic_percentage") or 0) > 0
-        ):
-            continue
+    for destination in _model_service_primary_destinations(service, strict=False) or []:
         provider = (destination.get("external_model_config") or {}).get("model_provider_service")
         if isinstance(provider, str) and provider:
             providers.append(provider.removeprefix("model-provider-services/"))
     return providers
+
+
+def _model_service_primary_destinations(service: dict, *, strict: bool = True) -> list[dict] | None:
+    config = service.get("config")
+    routing = config.get("routing") if isinstance(config, dict) else None
+    if not isinstance(routing, dict):
+        return None
+    primary = routing.get("destinations")
+    if not isinstance(primary, list) or not primary:
+        return None
+    destinations = []
+    for destination in primary:
+        if not isinstance(destination, dict):
+            if strict:
+                return None
+            continue
+        if destination.get("is_deleted"):
+            continue
+        traffic = destination.get("traffic_percentage")
+        if traffic is None:
+            traffic = 100 if len(primary) == 1 else 0
+        if not isinstance(traffic, (int, float)):
+            if strict:
+                return None
+            continue
+        if traffic > 0:
+            destinations.append(destination)
+    return destinations
+
+
+def model_service_destination_models(service: dict) -> list[str] | None:
+    """Backing model IDs for every usable primary and fallback, or None when unresolved."""
+    destinations = _model_service_primary_destinations(service)
+    if destinations is None:
+        return None
+    routing = service["config"]["routing"]
+    fallback = routing.get("fallback") or {}
+    if not isinstance(fallback, dict) or not isinstance(fallback.get("destinations", []), list):
+        return None
+    destinations.extend(fallback.get("destinations", []))
+    budget_fallbacks = routing.get("budget_fallbacks") or []
+    if not isinstance(budget_fallbacks, list):
+        return None
+    for entry in budget_fallbacks:
+        if not isinstance(entry, dict):
+            return None
+        destinations.append(entry.get("destination"))
+    models = []
+    for destination in destinations:
+        if not isinstance(destination, dict):
+            return None
+        if destination.get("is_deleted"):
+            continue
+        configs = [
+            destination[key]
+            for key in (
+                "external_model_config",
+                "pay_per_token_config",
+            )
+            if key in destination
+        ]
+        if len(configs) != 1 or not isinstance(configs[0], dict):
+            return None
+        target = configs[0]
+        if "external_model_config" in destination:
+            target = target.get("target")
+        model = target.get("model") if isinstance(target, dict) else None
+        if not isinstance(model, str) or not model:
+            return None
+        models.append(model.removeprefix("models/"))
+    return list(dict.fromkeys(models)) or None
 
 
 class RelayLookup(Enum):
@@ -3368,9 +3431,9 @@ _RELAY_BACKED_MODEL_SERVICES_CACHE: dict[tuple[str, str], bool] = {}
 _RELAY_LOOKUP_FAILED_AT: dict[tuple[str, str], float] = {}
 
 
-def relay_candidate_model_services(models: list[str]) -> list[str]:
+def custom_model_services(models: list[str]) -> list[str]:
     """The entries of ``models`` that name a customer model service (``catalog.schema.name``,
-    not ``system.*``), the only kind that can route to a subscription relay."""
+    not ``system.*``). Preserve context suffixes used by the caller."""
     candidates: list[str] = []
     for model in models:
         if not isinstance(model, str):
@@ -3390,7 +3453,7 @@ def model_service_relay_lookup(workspace: str, token: str, model: str) -> RelayL
     credential, so it doesn't count. Confirmed answers are cached for the process; after a failed
     lookup the answer stays UNKNOWN, without a refetch, for ``_RELAY_LOOKUP_RETRY_AFTER_S``.
     """
-    if not relay_candidate_model_services([model]):
+    if not custom_model_services([model]):
         return RelayLookup.NOT_RELAYED
     name = model.removesuffix("[1m]")
     key = (workspace, name)

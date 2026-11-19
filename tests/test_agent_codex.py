@@ -1003,7 +1003,7 @@ class TestCodexAppCatalog:
         original_catalog = codex.CODEX_MODEL_CATALOG_PATH.read_bytes()
         monkeypatch.setattr(codex, "agent_version", lambda _: "0.154.0")
 
-        def reject(*args):
+        def reject(*args, **kwargs):
             raise RuntimeError("catalog is incompatible")
 
         monkeypatch.setattr(codex, "prepare_codex_catalog", reject)
@@ -2106,7 +2106,7 @@ class TestCodexManagedConfig:
 
     def _patch_catalog(self, tmp_path, monkeypatch, managed_path):
         """Stub the catalog builder and the privileged writer; returns ug's catalog path."""
-        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: self.CATALOG)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: self.CATALOG)
 
         def fake_privileged(files, **kwargs):
             for path, text in files.items():
@@ -2132,6 +2132,29 @@ class TestCodexManagedConfig:
         assert read_toml_safe(config_path)["model_catalog_json"] == str(
             codex.CODEX_MODEL_CATALOG_PATH
         )
+
+    def test_static_catalog_uses_workspace_launch_credentials(self, tmp_path, monkeypatch):
+        _, managed_path = self._patch(tmp_path, monkeypatch)
+        self._patch_catalog(tmp_path, monkeypatch, managed_path)
+        state = {"workspace": WS, "profile": "chosen", "codex_static_models": ["main.team.opaque"]}
+        credentials = []
+
+        def token(current_state, workspace):
+            credentials.append((current_state["profile"], workspace))
+            return "selected-token"
+
+        def prepare(binary, names, *, workspace, get_token):
+            assert workspace == WS
+            assert names == ["main.team.opaque"]
+            assert get_token() == "selected-token"
+            return self.CATALOG
+
+        monkeypatch.setattr(codex, "launch_token", token)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", prepare)
+
+        codex.write_tool_config(state)
+
+        assert credentials == [("chosen", WS)]
 
     @pytest.mark.parametrize(
         "kwargs", [{}, {"provider": "main.default.openai"}, {"parent_schema": "main.models"}]
@@ -2187,7 +2210,7 @@ class TestCodexManagedConfig:
         state = {"workspace": WS}
         if replacement is not None:
             state["codex_static_models"] = ["gpt-6"]
-            monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: replacement)
+            monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: replacement)
         codex.write_tool_config(state)
         assert catalog_path.exists() is (replacement is not None)
 
@@ -2213,7 +2236,7 @@ class TestCodexManagedConfig:
         original_toml = managed_path.read_text()
         original_catalog = catalog_path.read_text()
         replacement = {"models": [{"slug": "gpt-6"}]}
-        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: replacement)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: replacement)
 
         def fail_toml(*args, **kwargs):
             assert json.loads(catalog_path.read_text()) == replacement
@@ -2236,7 +2259,7 @@ class TestCodexManagedConfig:
         original_toml = managed_path.read_text()
         replacement = {"models": [{"slug": "gpt-6"}]}
         external = {"models": [{"slug": "admin-model"}]}
-        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: replacement)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: replacement)
 
         def fail_toml(*args):
             if concurrent_edit:
@@ -2326,7 +2349,7 @@ class TestCodexManagedConfig:
                 managed_files, "MANAGED_BACKUP_MANIFEST_PATH", backups / "manifest.json"
             )
         monkeypatch.setattr(
-            codex, "prepare_codex_catalog", lambda *a: {"models": [{"slug": "gpt-6"}]}
+            codex, "prepare_codex_catalog", lambda *a, **kw: {"models": [{"slug": "gpt-6"}]}
         )
         codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-6"]})
         external = {"models": [{"slug": "admin-model"}]}
@@ -2367,7 +2390,7 @@ class TestCodexManagedConfig:
         catalog_path = self._patch_catalog(tmp_path, monkeypatch, managed_path)
         codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
         new_catalog = {"models": [{"slug": "gpt-6", "visibility": "list"}]}
-        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: new_catalog)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: new_catalog)
         # No terminal: only a conflict makes the run write the machine-wide files.
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
 
@@ -2386,7 +2409,7 @@ class TestCodexManagedConfig:
         codex.write_tool_config({"workspace": WS, "codex_static_models": ["gpt-5"]})
         # A Codex upgrade changes model details, not the admin's list: no sudo, no failed launch.
         upgraded = {"models": [{"slug": "gpt-5", "visibility": "list", "context_window": 1}]}
-        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a: upgraded)
+        monkeypatch.setattr(codex, "prepare_codex_catalog", lambda *a, **kw: upgraded)
         monkeypatch.setattr(codex, "managed_writes_allowed", lambda: False)
         monkeypatch.setattr(
             codex, "reconcile_privileged_files", lambda *a, **k: pytest.fail("wrote catalog")
