@@ -225,8 +225,8 @@ class _FakeResponseWithHeaders(_FakeResponse):
 class TestWorkspaceOrgId:
     def _stub_response(self, monkeypatch, headers: dict) -> None:
         monkeypatch.setattr(
-            db_mod.urllib_request,
-            "urlopen",
+            db_mod,
+            "_http_open",
             lambda request, timeout=None: _FakeResponseWithHeaders({"ok": True}, headers),
         )
 
@@ -4715,7 +4715,7 @@ class TestProbeUnityGatewayCapabilities:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
         assert db_mod.probe_unity_gateway_capabilities(WS, "fake-token") == db_mod.GatewayProbe(
@@ -4764,7 +4764,7 @@ class TestProbeUnityGatewayCapabilities:
             calls.append(request)
             raise TestHttpGetJsonRetries._http_error(499, "Unknown")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", lambda s: None)
 
         with pytest.raises(RuntimeError, match="Could not verify") as excinfo:
@@ -4811,7 +4811,7 @@ class TestHttpGetJsonReason:
         from ucode.databricks import _http_get_json
 
         exc = self._http_error(400, "Bad Request", body="Invalid Token")
-        with patch("ucode.databricks.urllib_request.urlopen", side_effect=exc):
+        with patch("ucode.databricks._http_open", side_effect=exc):
             payload, reason = _http_get_json("https://x/y", "tok")
         assert payload is None
         assert "HTTP 400" in reason
@@ -4823,7 +4823,7 @@ class TestHttpGetJsonReason:
         from ucode.databricks import _http_get_json
 
         exc = self._http_error(404, "Not Found")
-        with patch("ucode.databricks.urllib_request.urlopen", side_effect=exc):
+        with patch("ucode.databricks._http_open", side_effect=exc):
             payload, reason = _http_get_json("https://x/y", "tok")
         assert payload is None
         assert reason == "HTTP 404 Not Found"
@@ -4853,7 +4853,7 @@ class TestHttpGetJsonRetries:
         responses = [truncated, _FakeResponse({"complete": True})] if recovers else None
         urlopen = MagicMock(side_effect=responses, return_value=truncated)
         sleeps = []
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4880,7 +4880,7 @@ class TestHttpGetJsonRetries:
                 _FakeResponse({"complete": True}),
             ]
         )
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
 
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=1)
@@ -4906,7 +4906,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4929,7 +4929,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4952,7 +4952,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -4982,7 +4982,7 @@ class TestHttpGetJsonRetries:
             calls.append(request)
             raise self._http_error(code, "Nope")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
         payload, reason = db_mod._http_get_json("https://x/y", "tok", max_retries=2)
@@ -5000,7 +5000,7 @@ class TestHttpGetJsonRetries:
             calls.append(request)
             raise self._http_error(429, "Too Many Requests")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.random, "uniform", lambda low, high: high)
         monkeypatch.setattr(db_mod.time, "sleep", sleeps.append)
 
@@ -5018,7 +5018,7 @@ class TestHttpGetJsonRetries:
             calls.append(request)
             raise self._http_error(500, "Internal Server Error")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(
             db_mod.time,
             "sleep",
@@ -5040,7 +5040,7 @@ class TestHttpGetJsonRetries:
                 raise outcome
             return outcome
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
         monkeypatch.setattr(db_mod.time, "sleep", lambda delay: None)
 
         body, reason = db_mod._http_get_bytes("https://x/y", "tok", max_retries=2)
@@ -5058,7 +5058,7 @@ class TestHttpUgHeaders:
             requests.append(request)
             return _FakeResponse({})
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
 
         db_mod._http_get_json(f"{WS}/get", "tok")
         db_mod._http_post_json(f"{WS}/post", "tok", {})
@@ -5076,7 +5076,7 @@ class TestHttpUgHeaders:
             requests.append(request)
             return _FakeResponse({})
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", fake_urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", fake_urlopen)
 
         db_mod._http_get_json(f"{WS}/get", "tok")
         db_mod._http_post_json(f"{WS}/post", "tok", {})
@@ -5809,7 +5809,7 @@ class TestHttpGetJsonTimeout:
         def raise_timeout(request, timeout=None):
             raise TimeoutError("The read operation timed out")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+        monkeypatch.setattr(db_mod, "_http_open", raise_timeout)
 
         payload, reason = db_mod._http_get_json(f"{WS}/api/2.0/anything", "tok")
 
@@ -5821,7 +5821,7 @@ class TestHttpGetJsonTimeout:
         def raise_timeout(request, timeout=None):
             raise TimeoutError("The read operation timed out")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+        monkeypatch.setattr(db_mod, "_http_open", raise_timeout)
 
         payload, reason = db_mod._http_post_json(f"{WS}/api/2.0/anything", "tok", {"k": "v"})
 
@@ -5833,7 +5833,7 @@ class TestHttpGetJsonTimeout:
         def raise_timeout(request, timeout=None):
             raise TimeoutError("The read operation timed out")
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_timeout)
+        monkeypatch.setattr(db_mod, "_http_open", raise_timeout)
 
         body, reason = db_mod._http_get_bytes(f"{WS}/api/2.0/fs/files/anything", "tok")
 
@@ -6172,7 +6172,7 @@ class TestHttpDelete:
     def test_empty_body_is_success_not_a_decode_error(self, monkeypatch, metrics_recorder):
         # Without `allow_empty_body` this would fail with "response was not valid JSON".
         monkeypatch.setattr(
-            db_mod.urllib_request, "urlopen", lambda request, timeout=None: self._empty_response()
+            db_mod, "_http_open", lambda request, timeout=None: self._empty_response()
         )
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is None
@@ -6186,8 +6186,8 @@ class TestHttpDelete:
 
     def test_empty_json_object_is_also_success(self, monkeypatch):
         monkeypatch.setattr(
-            db_mod.urllib_request,
-            "urlopen",
+            db_mod,
+            "_http_open",
             lambda request, timeout=None: self._empty_response("{}"),
         )
         payload, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
@@ -6202,7 +6202,7 @@ class TestHttpDelete:
             seen["data"] = request.data
             return self._empty_response()
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        monkeypatch.setattr(db_mod, "_http_open", capture)
         db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert seen["method"] == "DELETE"
         assert seen["data"] is None
@@ -6219,7 +6219,7 @@ class TestHttpDelete:
                 url="", code=403, msg="Forbidden", hdrs=MagicMock(), fp=io.BytesIO(body.encode())
             )
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", raise_http_error)
+        monkeypatch.setattr(db_mod, "_http_open", raise_http_error)
         _, reason = db_mod._http_delete(f"{WS}/api/anything", "tok")
         assert reason is not None
         assert "403" in reason
@@ -6251,7 +6251,7 @@ class TestHttpPatchJson:
             response.status = 200
             return response
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        monkeypatch.setattr(db_mod, "_http_open", capture)
         payload, reason = db_mod._http_patch_json(f"{WS}/api/anything", "tok", {"k": "v"})
         assert reason is None
         assert payload == {"name": "coding-agent-configs/x"}
@@ -6279,7 +6279,7 @@ class TestHttpPostJson:
             response.status = 200
             return response
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", capture)
+        monkeypatch.setattr(db_mod, "_http_open", capture)
         payload, reason = db_mod._http_post_json(
             f"{WS}/api/anything", "tok", {"k": "v"}, headers={"User-Agent": "ucode/1.2.3"}
         )
@@ -6406,7 +6406,7 @@ class TestGetUsageDashboardUrl:
             requests.append((request, timeout))
             return _FakeResponse({"dashboard_id": "dashboard", "dashboard_url": dashboard_url})
 
-        monkeypatch.setattr(db_mod.urllib_request, "urlopen", urlopen)
+        monkeypatch.setattr(db_mod, "_http_open", urlopen)
 
         assert db_mod.get_usage_dashboard_url(WS, "workspace-token") == dashboard_url
         assert len(requests) == 1
@@ -7350,3 +7350,173 @@ def test_model_service_backing_model_reads_the_first_live_foundation_model():
 
     assert model_service_backing_model(service) == "system.ai.databricks-claude-sonnet-4-6"
     assert model_service_backing_model({"config": {}}) is None
+
+
+def test_http_get_reuses_keep_alive_connection(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class CountingServer(ThreadingHTTPServer):
+        daemon_threads = True
+
+        def __init__(self, address, handler):
+            self.connection_count = 0
+            self.connection_count_lock = threading.Lock()
+            super().__init__(address, handler)
+
+        def get_request(self):
+            request, address = super().get_request()
+            with self.connection_count_lock:
+                self.connection_count += 1
+            return request, address
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    server = CountingServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/api"
+        for _ in range(2):
+            body, reason = db_mod._http_get_bytes(url, "token")
+            assert body == b"{}"
+            assert reason is None
+        assert server.connection_count == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_http_transport_preserves_status_errors(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            if self.path == "/bad":
+                status, body = 400, b"Invalid Token"
+            elif self.path == "/redirect":
+                status, body = 302, b"redirect"
+            else:
+                status, body = 503, b"unavailable"
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}"
+        _, reason = db_mod._http_get_bytes(f"{url}/bad", "token")
+        assert reason == "HTTP 400 Bad Request: Invalid Token"
+        _, reason = db_mod._http_get_bytes(f"{url}/redirect", "token")
+        assert reason == "HTTP 302 Found: redirect"
+        _, reason = db_mod._http_get_bytes(f"{url}/failure", "token")
+        assert reason == "HTTP 503 Service Unavailable: unavailable"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_http_transport_maps_refused_connections_to_network_errors(monkeypatch):
+    import socket
+
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+    _, reason = db_mod._http_get_bytes(f"http://127.0.0.1:{port}/api", "token")
+    assert reason is not None
+    assert reason.startswith("network error:")
+    assert "Connection refused" in reason
+
+
+def test_http_transport_passes_headers_and_timeout(monkeypatch):
+    import httpx
+
+    captured = {}
+
+    class Client:
+        def send(self, request, *, follow_redirects):
+            captured.update(request=request, follow_redirects=follow_redirects)
+            return httpx.Response(200, content=b"{}", request=request)
+
+    monkeypatch.setattr(db_mod, "_get_http_client", lambda: Client())
+    body, reason = db_mod._http_get_bytes(
+        "https://example.test/api", "token", timeout=1.75, headers={"X-Transport-Test": "yes"}
+    )
+    assert body == b"{}"
+    assert reason is None
+    request = captured["request"]
+    assert request.extensions["timeout"] == httpx.Timeout(1.75).as_dict()
+    assert request.method == "GET"
+    assert str(request.url) == "https://example.test/api"
+    assert captured["follow_redirects"] is True
+    headers = dict(request.headers)
+    assert headers["authorization"] == "Bearer token"
+    assert headers["x-transport-test"] == "yes"
+    assert headers["accept-encoding"] == "identity"
+    assert headers["connection"] == "keep-alive"
+    assert headers["user-agent"] == f"Python-urllib/{db_mod.urllib_request.__version__}"
+    assert "accept" not in headers
+
+
+def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
+    parent_pid = os.getpid()
+    parent_client = db_mod._get_http_client()
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT", parent_client)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_PID", parent_pid)
+    monkeypatch.setattr(db_mod, "_HTTP_CLIENT_LOCK", db_mod._HTTP_CLIENT_LOCK)
+    monkeypatch.setattr(db_mod.os, "getpid", lambda: parent_pid + 1)
+
+    db_mod._reset_http_client_after_fork()
+    child_client = db_mod._get_http_client()
+    try:
+        assert child_client is not parent_client
+        assert db_mod._HTTP_CLIENT_PID == parent_pid + 1
+    finally:
+        child_client.close()

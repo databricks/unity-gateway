@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import configparser
 import functools
+import io
 import json
 import logging
 import logging.handlers
@@ -15,6 +16,7 @@ import random
 import re
 import shlex
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -27,11 +29,15 @@ from decimal import Decimal, InvalidOperation
 from email.message import Message
 from enum import Enum
 from http.client import HTTPException
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, TypeGuard, cast, overload
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 from urllib.parse import quote, urlencode, urlparse
+
+if TYPE_CHECKING:
+    import httpx
 
 from ucode import metrics, tls
 from ucode.codex_config import catalog_slugs
@@ -376,6 +382,126 @@ def clear_workspace_org_id_cache() -> None:
     _WORKSPACE_ORG_IDS.clear()
 
 
+class _RejectCookiesPolicy(DefaultCookiePolicy):
+    def set_ok(self, cookie, request) -> bool:
+        return False
+
+
+_HTTP_CLIENT: httpx.Client | None = None
+_HTTP_CLIENT_PID: int | None = None
+_HTTP_CLIENT_LOCK = threading.Lock()
+
+
+def _reset_http_client_after_fork() -> None:
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID, _HTTP_CLIENT_LOCK
+    _HTTP_CLIENT = None
+    _HTTP_CLIENT_PID = os.getpid()
+    _HTTP_CLIENT_LOCK = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_http_client_after_fork)
+
+
+def _get_http_client() -> httpx.Client:
+    import httpx
+
+    global _HTTP_CLIENT, _HTTP_CLIENT_PID
+    pid = os.getpid()
+    if _HTTP_CLIENT is not None and _HTTP_CLIENT_PID == pid:
+        return _HTTP_CLIENT
+    with _HTTP_CLIENT_LOCK:
+        if _HTTP_CLIENT is None or _HTTP_CLIENT_PID != pid:
+            # Before building the SSL context, so the pooled client verifies against the same
+            # trust store (os or python) as the urllib path did.
+            tls.apply()
+            client = httpx.Client(
+                verify=ssl.create_default_context(),
+                trust_env=True,
+                follow_redirects=True,
+                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                cookies=CookieJar(policy=_RejectCookiesPolicy()),
+            )
+            _HTTP_CLIENT = client
+            _HTTP_CLIENT_PID = pid
+    return _HTTP_CLIENT
+
+
+class _PooledResponse:
+    def __init__(self, response: httpx.Response):
+        self.status = response.status_code
+        self.headers = Message()
+        for name, value in response.headers.multi_items():
+            self.headers.add_header(name, value)
+        self._body = response.content
+        self._url = str(response.url)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def geturl(self) -> str:
+        return self._url
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _http_open(request: urllib_request.Request, *, timeout: float) -> _PooledResponse:
+    import httpx
+
+    request_headers = dict(request.header_items())
+    header_names = {name.casefold() for name in request_headers}
+    if "accept-encoding" not in header_names:
+        request_headers["Accept-Encoding"] = "identity"
+    if "connection" not in header_names:
+        request_headers["Connection"] = "keep-alive"
+    if "user-agent" not in header_names:
+        request_headers["User-Agent"] = f"Python-urllib/{urllib_request.__version__}"
+    httpx_request = httpx.Request(
+        request.get_method(),
+        request.full_url,
+        headers=request_headers,
+        content=request.data,
+        extensions={"timeout": httpx.Timeout(timeout).as_dict()},
+    )
+    try:
+        response = _get_http_client().send(httpx_request, follow_redirects=True)
+    except httpx.RequestError as exc:
+        pending = [exc]
+        seen: set[int] = set()
+        reason: BaseException = exc
+        while pending:
+            current = pending.pop()
+            if id(current) in seen:
+                continue
+            seen.add(id(current))
+            if isinstance(current, OSError):
+                reason = current
+                break
+            reason = current
+            if isinstance(current, BaseExceptionGroup):
+                pending.extend(current.exceptions)
+            if current.__cause__ is not None:
+                pending.append(current.__cause__)
+            elif current.__context__ is not None:
+                pending.append(current.__context__)
+        raise urllib_error.URLError(reason) from exc
+
+    pooled_response = _PooledResponse(response)
+    if not 200 <= response.status_code < 300:
+        raise urllib_error.HTTPError(
+            pooled_response.geturl(),
+            response.status_code,
+            response.reason_phrase,
+            pooled_response.headers,
+            io.BytesIO(pooled_response.read()),
+        )
+    return pooled_response
+
+
 @metrics.http_result
 def _http_get_bytes(
     url: str,
@@ -406,7 +532,7 @@ def _http_get_bytes(
         if attempt:
             metrics.record(metrics.HTTP_RETRY_COUNT, 1, api_operation=operation, http_method="GET")
         try:
-            with urllib_request.urlopen(request, timeout=timeout) as response:
+            with _http_open(request, timeout=timeout) as response:
                 status = response.status
                 body = response.read()
                 failure = _workspace_response_failure(url, response)
@@ -537,7 +663,7 @@ def _http_send_json(
     request_started = time.perf_counter()
     status = None
     try:
-        with urllib_request.urlopen(request, timeout=timeout) as response:
+        with _http_open(request, timeout=timeout) as response:
             status = response.status
             body = response.read().decode("utf-8")
             failure = _workspace_response_failure(url, response)
