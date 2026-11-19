@@ -709,9 +709,11 @@ For a routed launch, UG's `-c` overrides take precedence over saved values for
 `features.multi_agent_v2.subagent_usage_hint_text` (set to UG's collaboration guidance).
 Custom values for these fields do not apply during that session. The saved config
 files are unchanged, as are native delegation-mode controls. Requests use the
-configured Databricks provider directly. All routed Codex launches use the app-server
+configured Databricks provider directly. Routed Codex terminal launches use the app-server
 interposer, including subagent-only presets. First-prompt model selection still follows
-the selected preset.
+the selected preset. A routed `ug codex app-server` instead runs that command with UG's
+routing settings and no model: its caller picks the model and connects its own clients,
+so subagents are routed but no interposer or first-prompt routing runs.
 
 Smart Router toggles keep every conversation loaded and do not interrupt any turn.
 The toggle turn finishes normally with its original routing attribution; the next
@@ -721,7 +723,8 @@ including descendants spawned by an old child, get the latest state through the
 spawn hook. Repeating the current state leaves session controls unchanged.
 
 Backend attribution uses JSON in `x-codex-turn-metadata`. Every routed launch adds
-`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`).
+`smart_router_recipe_name`; main turns add `smart_router_state` (`on` or `off`),
+except under a routed `ug codex app-server`, which has no interposer.
 The hook stamps child task names with `__sr_on` or `__sr_off`, which Codex places in
 `agent_name`. Parse only the final path segment: `/root/old__sr_on/new__sr_off`
 means off for that grandchild. A child's marker takes precedence over main state.

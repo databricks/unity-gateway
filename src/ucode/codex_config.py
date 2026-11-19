@@ -201,3 +201,18 @@ def codex_config_args(config: dict) -> list[str]:
         else:
             args.extend(["--config", f"{key}={_toml_value(value)}"])
     return args
+
+
+def is_codex_app_server_launch(tool_args: list[str]) -> bool:
+    """Whether the arguments run Codex's app-server, after any leading ``-c`` settings."""
+    index = 0
+    while index < len(tool_args):
+        if tool_args[index] in {"-c", "--config"} and index + 1 < len(tool_args):
+            index += 2
+        elif tool_args[index].startswith("--config="):
+            index += 1
+        else:
+            break
+    command = tool_args[index:]
+    # `app-server` followed by a word is one of its subcommands, such as `generate-ts`.
+    return command[:1] == ["app-server"] and (len(command) == 1 or command[1].startswith("-"))

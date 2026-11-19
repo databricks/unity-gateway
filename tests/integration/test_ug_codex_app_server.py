@@ -6,12 +6,17 @@ pytestmark = [pytest.mark.live, pytest.mark.codex]
 
 
 @pytest.mark.parametrize("separator", [False, True], ids=["direct", "launcher-separator"])
-@pytest.mark.parametrize("routing", ["0", "1"], ids=["routing-off", "routing-on"])
+@pytest.mark.parametrize(
+    "routing",
+    ["0", pytest.param("1", marks=pytest.mark.codex_smart_routing)],
+    ids=["routing-off", "routing-on"],
+)
 def test_ug_codex_app_server_client_initializes(live_session, workspace, separator, routing):
     """Scenario: configure Codex and connect a real stdio client to ug codex app-server.
 
     Expected: initialize returns a valid JSON-RPC result, diagnostics stay off
-    the protocol stream, and this utility command never starts smart routing.
+    the protocol stream, and no routing wrapper starts. With routing on, ug only
+    adds its routing settings to the app-server command.
     """
     session = live_session
     session.run(

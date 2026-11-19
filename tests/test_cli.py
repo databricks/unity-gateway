@@ -819,6 +819,41 @@ class TestSubcommandRouting:
         assert observed == [None]
         assert os.environ[cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR] == "1"
 
+    @pytest.mark.parametrize(
+        ("launch_args", "routed"),
+        [
+            (["app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (
+                [
+                    "-c",
+                    "developer_instructions=x",
+                    "--",
+                    "-c",
+                    'model="gpt-5-5"',
+                    "app-server",
+                    "--listen",
+                    "ws://127.0.0.1:1",
+                ],
+                True,
+            ),
+            (["app-server", "generate-ts", "--out", "ts"], False),
+        ],
+    )
+    def test_codex_app_server_keeps_inherited_smart_routing(self, monkeypatch, launch_args, routed):
+        monkeypatch.setenv("ENABLE_SMART_ROUTING_V2", "1")
+        observed = []
+
+        with patch(
+            "ucode.cli._launch_tool",
+            side_effect=lambda *_args, **_kwargs: observed.append(
+                os.environ.get(cli_mod.smart_routing_v2.ENABLE_SMART_ROUTING_ENV_VAR)
+            ),
+        ):
+            result = runner.invoke(app, ["codex", *launch_args])
+
+        assert result.exit_code == 0, result.output
+        assert observed == ["1" if routed else None]
+
     @pytest.mark.parametrize("tool, subcommand", [("codex", "app"), ("claude", "update")])
     def test_native_subcommand_suppresses_inherited_subagent_routing(
         self, monkeypatch, tool, subcommand
@@ -899,6 +934,27 @@ class TestSubcommandRouting:
             explicit_prompt=explicit_prompt,
             user_pinned_model=model,
             provider=provider,
+        )
+
+        assert options.launch_smart_routing is expected
+
+    @pytest.mark.parametrize(
+        ("tool_args", "expected"),
+        [
+            (["app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (["-c", "a=1", "app-server", "--listen", "ws://127.0.0.1:1"], True),
+            (["app-server", "generate-ts", "--out", "ts"], False),
+            (["-c", "a=1", "exec", "fix this"], False),
+        ],
+    )
+    def test_codex_app_server_launch_routes(self, tool_args, expected):
+        options = cli_mod._launch_options(
+            "codex",
+            tool_args,
+            smart_routing_enabled=True,
+            explicit_prompt=False,
+            user_pinned_model=None,
+            provider=None,
         )
 
         assert options.launch_smart_routing is expected

@@ -66,6 +66,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.codex_config import is_codex_app_server_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -3972,9 +3973,11 @@ def _should_launch_smart_routing(
 
 
 def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt: bool) -> bool:
-    """Whether the forwarded arguments represent an interactive launch."""
+    """Whether the forwarded arguments represent an interactive launch or Codex's app-server."""
     if not tool_args or explicit_prompt:
         return True
+    if tool == AGENT_CODEX:
+        return is_codex_app_server_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 
