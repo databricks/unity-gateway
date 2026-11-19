@@ -162,7 +162,9 @@ def remove_auto_configuration(
     return result
 
 
-def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:
+def add_picker_entry(
+    settings: dict, *, static_auto_row: bool = False, preferred_model: str | None = None
+) -> dict:
     """Install immutable aliases and one native custom row at explicit configure.
 
     Aliases are not modelPicker rows: identical labels would create duplicate rows.
@@ -173,6 +175,8 @@ def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:
     and puts a single Auto row for the default variant first instead of exposing the
     custom option. The mod's in-process custom option still drives main-model
     switching; aliases stay in ``modelOverrides`` and ``availableModels``.
+    ``preferred_model`` names the main model that default variant serves; without
+    it the row falls back to ``env.ANTHROPIC_MODEL``, then the first available row.
     """
     picker = settings.get("modelPicker")
     if not isinstance(picker, dict) or not isinstance(picker.get("options", []), list):
@@ -229,9 +233,17 @@ def add_picker_entry(settings: dict, *, static_auto_row: bool = False) -> dict:
     if static_auto_row:
         # One Auto row, for the same default variant picker_config prefers.
         env_values = result.get("env")
-        preferred = env_values.get("ANTHROPIC_MODEL") if isinstance(env_values, dict) else None
+        preferred = preferred_model or (
+            env_values.get("ANTHROPIC_MODEL") if isinstance(env_values, dict) else None
+        )
         default_row = next(
-            (row for row in available if preferred in (row["model"], auto_variant(row))),
+            (
+                row
+                for row in available
+                if preferred
+                and preferred
+                in (row["model"], auto_variant(row), row["model"].removesuffix("[1m]"))
+            ),
             available[0],
         )
         # Auto leads UG's rows; Claude always renders its native Default row first.
@@ -340,7 +352,15 @@ def picker_config(
     env = (settings or {}).get("env", {})
     configured_default = env.get("ANTHROPIC_MODEL") if isinstance(env, dict) else None
     preferred = default_model or configured_default
-    default = next((row for row in rows if preferred in (row["model"], row["autoModel"])), rows[0])
+    default = next(
+        (
+            row
+            for row in rows
+            if preferred
+            and preferred in (row["model"], row["autoModel"], row["model"].removesuffix("[1m]"))
+        ),
+        rows[0],
+    )
     return json.dumps(
         {
             "model": default["autoModel"],

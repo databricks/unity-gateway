@@ -569,8 +569,14 @@ keeps the ordinary replacement picker.
 UG preserves pickers owned by other managers, including Isaac. Their manager must
 set `modelPicker.replaceBuiltInOptions=false` to expose Auto's native custom-model slot.
 When managed settings define neither `modelOverrides` nor `availableModels`, UG can
-supply Auto aliases for that session. Managed mappings and allowlists retain precedence
-and must already admit Auto. A foreign custom-model slot also prevents Auto.
+supply Auto aliases for that session. On a personal launch with no published picker,
+UG builds the picker at launch instead: the same replacement picker an ordinary
+launch shows, with one static Auto row first, and the session starts on that row.
+This launch-only catalog exists only in the temporary `--settings` — nothing is
+written to ucode settings or the OS managed file. If no Claude models are reachable,
+the launch warns and continues without Auto or smart routing. Managed mappings and
+allowlists retain precedence and must already admit Auto. A foreign custom-model slot
+also prevents Auto.
 Changing machine-wide picker settings can require sudo; launching `ug claude` does
 not install or rewrite those settings.
 
@@ -613,7 +619,9 @@ pickers, preserving foreign administrator pickers and custom model options. In t
 default Auto mode it enables
 Claude's native custom-model row (`replaceBuiltInOptions: false`); under managed
 routing with the Auto config version it keeps the replacement static catalog
-(`replaceBuiltInOptions: true`) and shows Auto as one row inside it instead. This also exposes
+(`replaceBuiltInOptions: true`) and shows Auto as one row inside it instead, and a
+personal launch with no published picker builds that same static-row catalog for its
+session only. This also exposes
 native built-in choices when no `availableModels` restriction is configured; existing
 `availableModels` and `deniedModels` policies still apply. The mod points that one row at the current Auto variant within each process; it never rewrites a
 shared capability profile. In the static-catalog mode native stays on the

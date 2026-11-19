@@ -226,10 +226,21 @@ permits only aliases whose real targets are allowed. Configure removes stale UG
 aliases and sets `modelPicker.replaceBuiltInOptions` false only for UG-owned
 pickers so the native custom option is visible. Preserve admin custom model options
 and replacement pickers; skip Auto when they occupy or hide its native custom slot.
-Personal configure does not discover or persist a picker for Auto; unrestricted
-personal launches and foreign non-replacing pickers build Auto aliases in launch-only
-settings when managed settings define neither `modelOverrides` nor `availableModels`.
-Managed denials still filter aliases and their real targets. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
+Personal configure does not discover or persist a picker for Auto. On an
+unrestricted personal launch with the Auto version — no higher-priority picker,
+composed launch settings without a `modelPicker`, and no model-provider launch —
+the launch builds the same replacement picker an ordinary launch would (family
+defaults with `[1m]` hints, then discovered models, one row per model), adds one
+static Auto row for the preferred default, and keeps its aliases, `staticModel`
+and start model entirely in the launch-only settings; nothing is written to
+ucode settings or the OS managed file. Foreign non-replacing pickers, a picker
+already present in the launch settings, and provider launches keep the native
+custom-model option instead. When no permitted model can carry the static row,
+the launch falls back to the native custom option; an empty or unreachable model
+catalog warns and fails routing setup so the launch continues without Auto or
+smart routing. Managed denials still narrow the picker rows, aliases and their
+real targets. Managed settings that define `modelOverrides` or `availableModels`
+retain precedence and must already admit Auto. Only the launcher/mod sets `ANTHROPIC_CUSTOM_MODEL_OPTION` and
 its display companions in the process environment: putting these in settings env
 would reset the pointer whenever native `/model` saves a selection. Keep one Auto
 row; aliases must not be separate modelPicker rows. Preserve other overrides and
