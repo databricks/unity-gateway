@@ -141,6 +141,28 @@ test('a session without controls shows the band once session start runs', { opti
   await ui.unmount();
 });
 
+test('a toggle during the startup check wins over a disabling result', { options: ROUTED }, async ($, on) => {
+  const { clock, env, files, hint } = engine(on);
+  env.UCODE_SMART_ROUTER_PYTHON = '/python';
+  const synced: unknown[] = [];
+  on('process.run', ($, e) => {
+    synced.push(e);
+    return { value: { exitCode: 0, stdout: '', stderr: '' } };
+  });
+  const ui = await $.ui.mount(abovePrompt);
+  await $.session.start(start);
+  expect((await $.command.run({ command: 'smart-router', args: 'on' })).text).toBe('Smart Router is on');
+  files['/session/env.validation.json'] = '{"routing_disabled":true}';
+  await clock.advance(100);
+  expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe('1');
+  expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD]).toBe('task_v3');
+  expect(await hint($)).toBe('smart router ON');
+  // The toggle is written to the session controls again, over the check's off values.
+  expect(synced.length).toBe(2);
+  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+  await ui.unmount();
+});
+
 test('a turn that ends while the check is pending does not hide the band', { options: ROUTED }, async ($, on) => {
   const { clock, files } = engine(on);
   on('prompt.submit', ($, e) => ({ text: e.text }));

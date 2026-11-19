@@ -10,10 +10,23 @@ const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the startup check settles;
 // an unsupported menu turns routing off and must never flash ON.
-const validation = { isPending: true }
+const validation: { isPending: boolean; toggle?: boolean } = { isPending: true }
 const VALIDATION_POLL_MS = 100
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
+
+let toggleNotes = 0
+
+// A /smart-router toggle during the startup check wins over its result. The returned undo for a
+// failed toggle restores the earlier note unless a later toggle has noted its own.
+export function noteRoutingToggle(enabled: boolean): () => void {
+  const previous = validation.toggle
+  const note = ++toggleNotes
+  if (validation.isPending) validation.toggle = enabled
+  return () => {
+    if (note === toggleNotes && validation.isPending) validation.toggle = previous
+  }
+}
 
 export function showStatusBand(): void {
   band.isVisible = true
@@ -63,7 +76,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
 
 export async function watchStartupValidation(
   $: EngineInterface,
-  disableRouting: () => Promise<void>,
+  applyRouting: (enabled: boolean, syncSessionControls: boolean) => Promise<void>,
 ): Promise<void> {
   if (validationWatchStarted) return
   validationWatchStarted = true
@@ -96,9 +109,11 @@ export async function watchStartupValidation(
       }
       complete = true
       if (result.routing_disabled === true) {
-        band.isVisible = false
+        // Python already wrote the session controls off; a toggle rewrites them to match.
+        const toggle = validation.toggle
+        if (toggle === undefined) band.isVisible = false
         try {
-          await disableRouting()
+          await applyRouting(toggle ?? false, toggle !== undefined)
         } catch {}
       }
       finish()

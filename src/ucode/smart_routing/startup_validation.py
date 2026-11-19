@@ -25,6 +25,15 @@ def result_path(session_controls: Path) -> Path:
     return session_controls.with_suffix(".validation.json")
 
 
+def _file_version(path: Path) -> tuple[int, int, int] | None:
+    # Session toggles replace the file atomically, so a toggle back to the same bytes still differs.
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return stat.st_ino, stat.st_mtime_ns, stat.st_size
+
+
 def start(
     workspace: str,
     token: str,
@@ -41,6 +50,7 @@ def start(
 
     def check() -> None:
         started = time.monotonic()
+        controls_before = _file_version(session_controls)
         try:
             payload, reason = _http_post_json(
                 workspace_origin(workspace) + routing.VALIDATION_PATH,
@@ -64,7 +74,8 @@ def start(
             not reason and isinstance(payload, dict) and payload.get("is_supported") is False
         )
         result = {"routing_disabled": False}
-        if unsupported:
+        # A session toggle made while the check ran wins over the check.
+        if unsupported and _file_version(session_controls) == controls_before:
             with suppress(OSError, RuntimeError):
                 atomic_write_json(session_controls, dict.fromkeys(SMART_ROUTING_ENV_KEYS, "0"))
                 result["routing_disabled"] = True

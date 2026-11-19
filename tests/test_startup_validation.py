@@ -121,6 +121,27 @@ def test_unsupported_result_past_the_deadline_leaves_routing_on(tmp_path, monkey
     assert controls.read_text() == "{}"
 
 
+def test_session_toggle_during_the_check_wins(tmp_path, monkeypatch):
+    controls = tmp_path / "env.json"
+    controls.write_text("{}")
+    toggled = '{"ENABLE_SMART_ROUTING_V2": "1"}'
+
+    def post(*args, **kwargs):
+        controls.write_text(toggled)
+        return {"is_supported": False}, None
+
+    monkeypatch.setattr(validation, "_http_post_json", post)
+    validation.start(
+        "https://example.com",
+        "test-token",
+        [("m", "claude")],
+        router_name="stable",
+        session_controls=controls,
+    )
+    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    assert controls.read_text() == toggled
+
+
 def test_result_write_failure_is_isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(
         validation.threading, "Thread", lambda *, target, daemon: SimpleNamespace(start=target)
