@@ -119,16 +119,25 @@ def _by_name(app):
     return {provider["name"]: provider for provider in app.providers.values()}
 
 
-def test_registers_both_providers_with_their_models(app):
+def test_registers_the_three_providers_with_their_models(app):
     copilot_app.register(BASE, CATALOG)
 
-    claude, gpt = _by_name(app)["Databricks Claude"], _by_name(app)["Databricks GPT"]
+    providers = _by_name(app)
+    claude, gpt = providers["Databricks Claude"], providers["Databricks GPT"]
+    open_models = providers["Databricks Open Models"]
     assert claude["kind"] == "anthropic"
     assert claude["settings"]["baseUrl"] == f"{BASE}/copilot/anthropic"
     assert gpt["kind"] == "custom"
     assert gpt["settings"] == {
         "baseUrl": f"{BASE}/copilot/responses/v1",
         "wireApi": "responses",
+        "authKind": "none",
+        "headersJson": "{}",
+    }
+    assert open_models["kind"] == "custom"
+    assert open_models["settings"] == {
+        "baseUrl": f"{BASE}/copilot/completions/v1",
+        "wireApi": "completions",
         "authKind": "none",
         "headersJson": "{}",
     }
@@ -141,8 +150,10 @@ def test_registers_both_providers_with_their_models(app):
     assert rows[gpt["id"]]["modelId"] == "gpt-5-2"
     assert rows[gpt["id"]]["wireModel"] == "system.ai.gpt-5-2"
     assert rows[gpt["id"]]["wireApiOverride"] == "responses"
-    # The login service serves no Chat Completions route.
-    assert len(app.models) == 2
+    assert rows[open_models["id"]]["modelId"] == "glm-5"
+    assert rows[open_models["id"]]["wireModel"] == "system.ai.glm-5"
+    assert "wireApiOverride" not in rows[open_models["id"]]
+    assert len(app.models) == 3
     assert all("Origin" not in headers for headers in app.handshakes)
 
 
@@ -151,7 +162,7 @@ def test_registering_again_updates_in_place_without_resending_the_key(app):
     ids = set(app.providers)
     app.received.clear()
 
-    copilot_app.register("http://127.0.0.1:43200", CATALOG[1:])
+    copilot_app.register("http://127.0.0.1:43200", CATALOG[1:2])
 
     assert set(app.providers) == ids
     assert all("secret" not in message for message in app.sent("upsert_model_provider"))
@@ -189,8 +200,10 @@ def test_two_models_with_one_copilot_id_keep_the_first(app):
 def test_unregister_deletes_only_ugs_providers(app):
     app.providers["mine"] = {"id": "mine", "name": "Databricks Claude", "kind": "anthropic"}
     copilot_app.register(BASE, CATALOG)
+    assert len(app.providers) == 4
 
     assert copilot_app.unregister() is True
+    assert len(app.sent("delete_model_provider")) == 3
     assert list(app.providers) == ["mine"]
     assert app.models == {}
     assert copilot_app.unregister() is False
@@ -201,7 +214,7 @@ def test_retries_while_the_app_applies_another_change(app):
 
     copilot_app.register(BASE, CATALOG)
 
-    assert len(app.providers) == 2
+    assert len(app.providers) == 3
 
 
 def test_a_refusal_stops_the_registration(app):
@@ -219,7 +232,7 @@ def test_an_unknown_app_version_warns_and_still_registers(app, capsys):
     assert "GitHub Copilot app 9.0.0 is newer than ug knows" in " ".join(
         capsys.readouterr().out.split()
     )
-    assert len(app.providers) == 2
+    assert len(app.providers) == 3
 
 
 def test_a_closed_app_is_not_running(tmp_path, monkeypatch):

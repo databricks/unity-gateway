@@ -19,6 +19,7 @@ from typing import Any
 
 from ucode.agents.copilot import (
     WIRE_ANTHROPIC,
+    WIRE_COMPLETIONS,
     WIRE_RESPONSES,
     CopilotModel,
     catalog_model_limits,
@@ -65,7 +66,7 @@ def _model_id(key: str, model_id: str) -> str:
     return str(uuid.uuid5(_ID_NAMESPACE, f"model/{key}/{model_id}"))
 
 
-_PROVIDER_KEYS = ("claude", "gpt")
+_PROVIDER_KEYS = ("claude", "gpt", "open-models")
 
 
 def copilot_home() -> Path:
@@ -108,7 +109,7 @@ def _model_rows(
 def desired_providers(
     base_url: str, catalog: Iterable[CopilotModel], *, provider_service: str | None = None
 ) -> list[_Provider]:
-    """ug's two providers on the login service at ``base_url``, each with its models."""
+    """ug's three providers on the login service at ``base_url``, each with its models."""
     catalog = list(catalog)
     return [
         _Provider(
@@ -136,6 +137,19 @@ def desired_providers(
             },
             None,
             _model_rows(catalog, WIRE_RESPONSES, provider_service=provider_service),
+        ),
+        _Provider(
+            "open-models",
+            "Databricks Open Models",
+            "custom",
+            {
+                "baseUrl": f"{base_url}/copilot/completions/v1",
+                "wireApi": "completions",
+                "authKind": "none",
+                "headersJson": "{}",
+            },
+            None,
+            _model_rows(catalog, WIRE_COMPLETIONS, provider_service=provider_service),
         ),
     ]
 
