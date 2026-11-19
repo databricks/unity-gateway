@@ -15,12 +15,12 @@ def _shows_auto_mode_billing_notice(screen):
 
 
 class Terminal(AgentTerminal):
-    def __init__(self, session, name, args, *, agent=None):
+    def __init__(self, session, name, args, *, agent=None, dimensions=(60, 140)):
         """Run `ug <args>`; bare `ug` (empty args) names the agent it is expected to launch."""
         agent = agent or (args[0] if args else None)
         if agent not in (CLAUDE, CODEX) or (args and args[0] != agent):
             raise ValueError("CUJ terminal requires a Claude or Codex command or bare ug agent.")
-        super().__init__(session, agent, [str(session.binary), *args], name)
+        super().__init__(session, agent, [str(session.binary), *args], name, dimensions=dimensions)
 
     def wait_until(
         self,

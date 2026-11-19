@@ -342,6 +342,8 @@ class TestCujAutoModelPicker(BaseCujTest):
         Expected: Auto starts with the managed default and ON in its band and footer.
         Both show OFF for a regular model and ON after selecting a different Auto main model.
         Launch preserves model metadata while retargeting the recording proxy.
+        Arrow-key selection stays visible in a 24-row, 80-column inline pane,
+        down the full model list and back up.
         Model selections preserve the launched managed settings.
         The selected alternate main model serves a file task before and after restarting
         Claude without a model override. The existing
@@ -387,7 +389,7 @@ class TestCujAutoModelPicker(BaseCujTest):
 
             recorder.prepare_launch()
             evidence = SessionEvidence(session.home, CLAUDE)
-            with Terminal(session, "auto-preset-toggles", [CLAUDE]) as tui:
+            with Terminal(session, "auto-preset-toggles", [CLAUDE], dimensions=(24, 80)) as tui:
                 tui.boot(timeout=150)
                 expected_settings = {
                     **settings,
@@ -430,7 +432,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.submit("/model auto")
 
                 def main_model_focused(label):
-                    # Claude draws the focused Select option in reverse video.
+                    # Claude draws the focused model button in reverse video.
                     return any(
                         "".join(
                             cell.data for _, cell in sorted(line.items()) if cell.reverse
@@ -451,6 +453,21 @@ class TestCujAutoModelPicker(BaseCujTest):
                     tui.wait_for(
                         lambda _, name=option_label: main_model_focused(name),
                         "the next Auto main model",
+                    )
+                # Traverse back through the viewport boundary, then save the last row.
+                for option in reversed([row, *alternatives[:-1]]):
+                    option_label = option["label"].removeprefix("Claude ")
+                    tui.send("\x1b[A", "focus " + option_label)
+                    tui.wait_for(
+                        lambda _, name=option_label: main_model_focused(name),
+                        "the previous Auto main model stays visible",
+                    )
+                for option in alternatives:
+                    option_label = option["label"].removeprefix("Claude ")
+                    tui.send("\x1b[B", "focus " + option_label)
+                    tui.wait_for(
+                        lambda _, name=option_label: main_model_focused(name),
+                        "the next Auto main model stays visible",
                     )
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(

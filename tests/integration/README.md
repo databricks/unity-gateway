@@ -2350,3 +2350,9 @@ Antigravity MCP web-search evidence compares homepage slash variants and ignores
 Closing Markdown may be followed by sentence punctuation; literal URL punctuation remains.
 Offline regressions in `../test_integration_evidence.py` reject different schemes,
 hosts, pages, meaningful queries and fragments. They do not establish a live MCP pass.
+
+The Auto selector CUJ runs in a 24-row, 80-column terminal and requires a visible
+keyboard highlight on every model while traversing the full list down, up, and down
+again before saving. This covers the inline pane clipping a nested Select's cursor.
+Native component tests cover the model buttons' current-first order, complete catalog,
+duplicate labels, saving and cancellation; they do not exercise terminal painting.

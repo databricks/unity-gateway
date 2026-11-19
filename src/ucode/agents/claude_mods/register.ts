@@ -30,7 +30,7 @@ import { AUTO_KEPT_CONFIRMATION, AUTO_MAIN_TITLE, AUTO_SET_CONFIRMATION, autoTar
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook)/;
-// Two instruction lines, eight visible options and the overflow count.
+// Request room for the instructions and model rows; short terminals grant less.
 const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, rows:11, closeOnEscape:true} as const;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
@@ -285,6 +285,7 @@ export function register(on: On, options: PluginOptions): void {
   const routingSync: RoutingSyncState = {};
   type MainModelChooser = {
     key: string;
+    focused?: number;
     options?: {value:string; label:string}[];
     choose?: (model: string) => Promise<void>;
   };
@@ -361,20 +362,37 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.render', {component:'Pane', requestId:AUTO_MODELS_PANE.id}, ($, e, next) => {
       const chooser = pendingChooser;
       if (!chooser?.options || !chooser.choose) return next(e);
-      const {Box, Text, Select} = $.ui.resolve(e);
+      const {Box, Text, Button} = $.ui.resolve(e);
       const current = chooser.options[0];
-      const heading = `${AUTO_MAIN_TITLE} (currently ${current.label}).`;
-      // Native Select appends its value and caret after the label. Cover that line with the routing hint.
       return Box({flexDirection:'column', children:[
-        Select({
-          key:chooser.key, label:'\n', options:chooser.options,
-          value:current.value, autoFocus:true, onSelect:chooser.choose,
-        }),
-        Box({position:'absolute', top:0, left:0, right:0, flexDirection:'column', children:[
-          Text({wrap:'truncate-end', children:[heading]}),
-          Text({wrap:'truncate-end', children:['Subagents will be smart routed.'.padEnd(e.props.bodyColumns)]}),
-        ]}),
+        Text({wrap:'truncate-end', children:[`${AUTO_MAIN_TITLE} (currently ${current.label}).`]}),
+        Text({wrap:'truncate-end', children:['Subagents will be smart routed.']}),
+        ...chooser.options.map((option, index) => Button({
+          key:`${chooser.key}-${index}`, label:option.label, plain:true,
+          ...(index === 0 ? {autoFocus:true} : {}),
+          onPress:() => chooser.choose!(option.value),
+        })),
       ]});
+    });
+    // A Select scrolls its own eight-row list independently of the pane's smaller
+    // viewport. Native buttons let one scroll position follow the focused model.
+    on('ui.focus', {requestId:AUTO_MODELS_PANE.id}, async ($, e, next) => {
+      const chooser = pendingChooser;
+      const index = chooser?.options?.findIndex((_, index) => e.element === `${chooser.key}-${index}`) ?? -1;
+      const result = await next(e);
+      if (index >= 0 && chooser === pendingChooser && !result?.deny) {
+        chooser!.focused = index;
+        await $.ui.scroll({in:AUTO_MODELS_PANE.id, to:index === 0 ? 'start' : {key:e.element!}});
+      }
+      return result;
+    });
+    on('ui.scroll', {requestId:AUTO_MODELS_PANE.id}, async ($, e, next) => {
+      const chooser = pendingChooser;
+      if (!chooser?.options || e.origin.kind !== 'person' || e.pointer) return next(e);
+      // When the pane overflows, native arrows scroll instead of walking its
+      // focus ring. Move the model selection, then ui.focus reveals that row.
+      const index = Math.max(0, Math.min(chooser.options.length - 1, (chooser.focused ?? 0) + e.by));
+      return $.ui.focus({requestId:AUTO_MODELS_PANE.id, key:`${chooser.key}-${index}`});
     });
     on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
       if (e.origin.kind === 'person') {
@@ -508,7 +526,7 @@ export function register(on: On, options: PluginOptions): void {
 
       async function openChooser(): Promise<void> {
         if (pendingChooser || !sessionActive) return;
-        // Native retains a Select's last submitted value by key, including a cancelled switch.
+        // Give each opening its own focus ring, including after a cancelled switch.
         const request: MainModelChooser = {key:`main-model-${++chooserGeneration}`};
         pendingChooser = request;
         async function recover(error: unknown): Promise<void> {

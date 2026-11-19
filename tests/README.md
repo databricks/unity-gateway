@@ -1797,3 +1797,9 @@ to refresh labels and the failed CI jobs. Later pushes need a new waiver; the ol
 (with a 25-minute job budget). Public API limits still
 fail closed; retry after the reported quota reset. A static scan does not replace human
 authorization for credentialed integration.
+
+The Auto selector CUJ runs in a 24-row, 80-column terminal and requires a visible
+keyboard highlight on every model while traversing the full list down, up, and down
+again before saving. This covers the inline pane clipping a nested Select's cursor.
+Native component tests cover the model buttons' current-first order, complete catalog,
+duplicate labels, saving and cancellation; they do not exercise terminal painting.

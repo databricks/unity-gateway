@@ -114,8 +114,9 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     },
     async choose(model: string) {
       const picker = await this.picker();
-      const select = await picker.find({type:'Select'});
-      await picker.select({key:select.props.key, value:model});
+      const buttons = await picker.findAll({type:'Button'});
+      const button = buttons.find(row => row.props.label === (model === MAIN ? 'Sonnet 5' : 'Haiku 4.5'));
+      await picker.press({key:button.props.key});
       await picker.unmount();
     },
     selected: () => selected,
@@ -142,17 +143,16 @@ test('the static catalog Auto row activates routing and reuses its own alias as 
   expect(JSON.stringify(runs)).toContain('"--enable-smart-routing"');
 });
 
-test('/model auto opens a focused Select with the current model first', { options: OPTIONS }, async ($, on) => {
+test('/model auto opens focused model buttons with the current model first', { options: OPTIONS }, async ($, on) => {
   const session = staticCatalogSession($, on, DEFAULT_ALIAS);
   await $.session.start(START);
   await $.command.run({command:'model', args:'auto'});
   const picker = await session.picker();
-  const select = await picker.find({type:'Select'});
-  expect(select.props.options).toEqual([{value:MAIN, label:'Sonnet 5'}, {value:OTHER, label:'Haiku 4.5'}]);
+  const buttons = await picker.findAll({type:'Button'});
+  expect(buttons.map(row => row.props.label)).toEqual(['Sonnet 5', 'Haiku 4.5']);
   const heading = await picker.find({type:'Text'});
   expect(heading.children).toEqual(['Auto mode: Choose your main model (currently Sonnet 5).']);
-  expect(select.props.autoFocus).toBe(true);
-  expect(select.props.value).toBe(MAIN);
+  expect(buttons[0].props.autoFocus).toBe(true);
   await picker.unmount();
   expect(session.commands.filter(command => command.command === 'effort')).toEqual([]);
 });
@@ -216,7 +216,7 @@ test('a fresh static Auto session starts on the saved main model', { options: OP
   await $.command.run({ command: 'auto', args: '' });
   await session.clock.advance(0);
   expect(session.toasts).toEqual([]);
-  expect((await (await session.picker()).find({type:'Select'})).props.options[0].label).toBe('Haiku 4.5');
+  expect((await (await session.picker()).find({type:'Button'})).props.label).toBe('Haiku 4.5');
 });
 
 test('a launch-only main model outranks the saved one', { options: { ...OPTIONS, autoPicker: JSON.stringify({ ...AUTO, preferSaved: false }) } }, async ($, on) => {
@@ -467,7 +467,7 @@ test('opening /model without a pick leaves the chooser closed', { options: OPTIO
   await $.command.run({ command: 'model', args: '' });
   await session.clock.advance(0);
   const picker = await session.picker();
-  expect(await picker.find({type:'Select'})).toBeUndefined();
+  expect(await picker.find({type:'Button'})).toBeUndefined();
   await picker.unmount();
 });
 
@@ -605,17 +605,17 @@ const LARGE_AUTO = {
   }),
 };
 
-test('one Select includes the entire catalog and saves the last model', {
+test('the model buttons include the entire catalog and save the last model', {
   options:{...OPTIONS, autoPicker:JSON.stringify(LARGE_AUTO)},
 }, async ($, on) => {
   const session = staticCatalogSession($, on, DEFAULT_ALIAS, OTHER);
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   const picker = await session.picker();
-  const select = await picker.find({type:'Select'});
-  expect(select.props.options.map((row: {label:string}) => row.label))
+  const buttons = await picker.findAll({type:'Button'});
+  expect(buttons.map(row => row.props.label))
     .toEqual(['Haiku 4.5', 'Sonnet 5', ...Array.from({length:10}, (_, index) => `Model ${index + 2}`)]);
-  await picker.select({key:select.props.key, value:'system.ai.model-11'});
+  await picker.press({key:buttons[11].props.key});
   expect(session.store[AUTO.storeKey]).toBe('system.ai.model-11');
   await picker.unmount();
 });
@@ -627,11 +627,9 @@ test('models with identical labels can be selected by their distinct IDs', {
   await $.session.start(START);
   await $.command.run({command:'auto', args:''});
   const picker = await session.picker();
-  const select = await picker.find({type:'Select'});
-  expect(select.props.options).toEqual([
-    {value:MAIN, label:`Shared (${MAIN})`}, {value:OTHER, label:`Shared (${OTHER})`},
-  ]);
-  await picker.select({key:select.props.key, value:OTHER});
+  const buttons = await picker.findAll({type:'Button'});
+  expect(buttons.map(row => row.props.label)).toEqual([`Shared (${MAIN})`, `Shared (${OTHER})`]);
+  await picker.press({key:buttons[1].props.key});
   expect(session.store[AUTO.storeKey]).toBe(OTHER);
   await picker.unmount();
 });
