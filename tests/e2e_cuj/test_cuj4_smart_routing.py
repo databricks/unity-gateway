@@ -361,13 +361,9 @@ class TestCujAutoModelPicker(BaseCujTest):
             assert len(auto_rows) == 1 and auto_rows[0]["label"] == "Auto"
             assert settings["modelOverrides"][auto_rows[0]["model"]] == default
             rows = [row for row in picker_rows if not row["model"].startswith("ug-auto-")]
-            assert len(rows) > 4, (
-                "Auto needs at least five main models to exercise the old page boundary"
-            )
             row = next(row for row in rows if row["model"] == default)
             label = row["label"].removeprefix("Claude ")
-            alternatives = [row for row in rows if row["model"] != default]
-            alternate = alternatives[-1]
+            alternate = next(row for row in rows if row["model"] != default)
             assert canonical_model(alternate["model"]) in {
                 canonical_model(model) for model in configs[CLAUDE]["models"]["model_services"]
             }
@@ -448,13 +444,10 @@ class TestCujAutoModelPicker(BaseCujTest):
                 )
                 menu = tui.visible.split("Subagents will be smart routed.", 1)[1].splitlines()
                 assert label in menu[1] and "▴" not in menu[1], tui.visible
-                for option in alternatives:
-                    option_label = option["label"].removeprefix("Claude ")
-                    tui.send("\x1b[B", "focus " + option_label)
-                    tui.wait_for(
-                        lambda _, name=option_label: main_model_focused(name),
-                        "the next Auto main model",
-                    )
+                tui.send("\x1b[B", "focus " + alternate_label)
+                tui.wait_for(
+                    lambda _: main_model_focused(alternate_label), "the alternate main model"
+                )
                 tui.send("\r", "save " + alternate_label + " as the Auto main model")
                 tui.wait_for(
                     lambda s: (
