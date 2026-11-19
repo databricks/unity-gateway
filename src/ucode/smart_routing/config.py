@@ -39,7 +39,7 @@ SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
 SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
 
 # Selected by --enable-smart-routing and managed smart routing when no known version is set.
-DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0_CLAUDE_ONLY
+DEFAULT_ENABLED_VERSION = SUBAGENT_ORCH_V0
 
 _RESTORE_KEYS = (*SMART_ROUTING_ENV_KEYS, SMART_ROUTER_CONFIG_VERSION_ENV_VAR)
 

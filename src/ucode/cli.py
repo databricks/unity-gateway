@@ -3372,6 +3372,7 @@ def codex_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
@@ -3443,6 +3444,7 @@ def codex_router_hook_cmd(
                 token=token,
                 available_models=model or [],
                 audit_decision=True,
+                **({"provider": provider} if provider else {}),
             )
     output = stamp_spawn(payload, enabled=enabled, output=output)
     if output is not None:
@@ -3978,7 +3980,7 @@ def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
     """Whether smart routing supports this agent and provider combination."""
-    return not provider or tool == "claude"
+    return not provider or tool in {AGENT_CLAUDE, AGENT_CODEX}
 
 
 def _routes_launch(
@@ -3996,7 +3998,7 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services are supported for Claude only.
+        # Model Provider Services use their own catalogs and routing headers.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
@@ -4908,24 +4910,20 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    # Hidden while Codex is unrouted by default; the Smart Router skill still toggles with them.
     enable_smart_routing: Annotated[
         bool,
-        typer.Option("--enable-smart-routing", hidden=True),
+        typer.Option("--enable-smart-routing", help="Enable smart routing for this session."),
     ] = False,
     disable_smart_routing: Annotated[
         bool,
-        typer.Option("--disable-smart-routing", hidden=True),
+        typer.Option("--disable-smart-routing", help="Disable smart routing for this session."),
     ] = False,
     smart_router_feedback: Annotated[
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
 ) -> None:
-    """Launch Codex via Databricks.
-
-    Smart Routing is currently only supported for the Claude Code harness.
-    """
+    """Launch Codex via Databricks."""
     # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing

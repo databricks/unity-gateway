@@ -51,6 +51,7 @@ def request_routing_decision(
     timeout: float = REQUEST_TIMEOUT_S,
     log: Callable[[str], None] | None = None,
     attribution_headers: Mapping[str, str] | None = None,
+    provider: str | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """Ask the router for a servable Codex model."""
     route_options = routing.route_options_for(available_models, "codex")
@@ -79,6 +80,7 @@ def request_routing_decision(
         router_name=router_name,
         timeout=timeout,
         attribution_headers=attribution_headers,
+        **({"provider": provider} if provider else {}),
     )
 
 
@@ -90,6 +92,7 @@ def route_pre_tool_use(
     available_models: list[str],
     timeout: float = REQUEST_TIMEOUT_S,
     audit_decision: bool = False,
+    provider: str | None = None,
 ) -> dict[str, Any] | None:
     """Route one Codex ``spawn_agent`` call and rewrite its model."""
     record = None
@@ -131,6 +134,7 @@ def route_pre_tool_use(
             available_models,
             timeout=timeout,
             attribution_headers=attribution,
+            **({"provider": provider} if provider else {}),
         ),
         default_task_label="Codex subagent task",
         model_id_mapper=codex_model_id,
