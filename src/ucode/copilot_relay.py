@@ -203,7 +203,6 @@ class _CopilotRelayHandler(_ProxyHandler):
     session_secret: str
     provider_service: str
     sign_in_hint: str
-    gateway_routes: Mapping[tuple[str, str], str]
     copilot_host: Callable[[str], str | None]
     direct_base_url: Callable[[str], str]
     on_direct_request: Callable[[str, str], None]
@@ -253,7 +252,7 @@ class _CopilotRelayHandler(_ProxyHandler):
         gateway_path = (
             None
             if (self.command, call) in _SECRETLESS_DIRECT_CALLS
-            else self.gateway_routes.get((self.command, call))
+            else GATEWAY_ROUTES.get((self.command, call))
         )
         if gateway_path is None:
             self._forward_direct(host, call + suffix)
@@ -375,7 +374,6 @@ def start_copilot_relay_proxy(
     provider_service: str,
     sign_in_hint: str,
     copilot_host: Callable[[str], str | None] | None = None,
-    gateway_routes: Mapping[tuple[str, str], str] = GATEWAY_ROUTES,
     direct_base_url: Callable[[str], str] = _https_base_url,
     on_direct_request: Callable[[str, str], None] = _log_direct_request,
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
@@ -384,10 +382,9 @@ def start_copilot_relay_proxy(
     ``http://127.0.0.1:<server.server_address[1]>/<session_secret>``, and its OTLP endpoint is that
     URL followed by :data:`OTEL_PATH`.
 
-    ``gateway_routes`` maps the calls AI Gateway serves (by method and path below the secret) to
-    their gateway paths; every other call goes direct to the Copilot API host that
-    ``copilot_host(authorization)`` finds for the caller (a :class:`CopilotHostResolver` by
-    default), at ``direct_base_url(host)``. ``on_direct_request(method, path)`` sees each direct
+    :data:`GATEWAY_ROUTES` are the calls AI Gateway serves; every other call goes direct to the
+    Copilot API host that ``copilot_host(authorization)`` finds for the caller (a
+    :class:`CopilotHostResolver` by default), at ``direct_base_url(host)``. ``on_direct_request(method, path)`` sees each direct
     call's method and path, never its headers or body."""
     return _start_proxy(
         workspace,
@@ -402,7 +399,6 @@ def start_copilot_relay_proxy(
             "session_secret": session_secret,
             "provider_service": provider_service,
             "sign_in_hint": sign_in_hint,
-            "gateway_routes": dict(gateway_routes),
             # staticmethod: a plain function on the handler class would bind as a method.
             "copilot_host": staticmethod(copilot_host or CopilotHostResolver()),
             "direct_base_url": staticmethod(direct_base_url),

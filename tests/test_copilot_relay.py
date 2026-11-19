@@ -187,17 +187,6 @@ class TestGatewayRoutes:
         assert resp.status_code == 400
         assert "databricks auth login" in resp.json()["error"]["message"]
 
-    def test_routes_can_send_a_call_direct(self, gateway, github):
-        routes = {
-            key: path for key, path in copilot_relay.GATEWAY_ROUTES.items() if key[1] != "/auto"
-        }
-        with _relay(gateway, github, gateway_routes=routes) as (http, _port, direct):
-            http.post(f"/{SECRET}/auto", headers=_auth(), content=b"{}")
-
-        assert gateway.requests == []
-        assert [r["path"] for r in github.requests] == ["/auto"]
-        assert direct == [("POST", "/auto")]
-
 
 class TestOtelExport:
     def test_traces_go_to_the_gateway_otel_route_with_a_databricks_token(self, gateway, github):
