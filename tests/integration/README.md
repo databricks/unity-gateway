@@ -3,6 +3,8 @@
 Relayed Claude smart-routing launcher coverage is currently component-level in
 `../test_claude_smart_routing_v2.py`: first-prompt, print-mode, and subagent routing,
 provider/static catalogs, subscription credentials, and proxy cleanup/fallback.
+These component cases stub executable lookup and process creation; they do not require an
+installed Claude binary on Windows. Native executable resolution has separate component coverage.
 `test_ug_claude_relayed.py` exercises live relay and hybrid inference without smart routing;
 an automated live relay-plus-smart-routing journey remains a coverage gap.
 

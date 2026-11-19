@@ -5,6 +5,8 @@ and subagent routing with provider catalogs and managed static lists. Component 
 verify subscription credential precedence, user-scope exclusion, MCP forwarding,
 provider-scoped selection, proxy lifetime, and cleanup/fallback after routing errors.
 These use controlled transport and process boundaries; they do not establish live inference.
+Executable lookup is stubbed in these launcher cases so Windows unit runs need no installed
+Claude binary; native Windows executable resolution is covered in `test_agent_claude.py`.
 
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.

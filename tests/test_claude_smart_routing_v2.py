@@ -254,6 +254,7 @@ class TestV2Launch:
         )
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
         monkeypatch.setattr(claude, "header_mod_active", lambda **_kw: True)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "_ensure_subscription_login", Mock())
         monkeypatch.setattr(claude, "get_databricks_token", lambda *_a, **_kw: "db-token")
         monkeypatch.setattr(custom_oauth, "get_databricks_token", lambda *_a, **_kw: "db-token")
@@ -361,6 +362,7 @@ class TestV2Launch:
     ):
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
         monkeypatch.setattr(claude, "header_mod_active", lambda **_kw: True)
+        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
         monkeypatch.setattr(claude, "_ensure_subscription_login", Mock())
         monkeypatch.setenv(v2.ENABLE_SUBAGENT_ROUTING_ENV_VAR, "1")
         server = Mock(server_address=("127.0.0.1", 12345))
