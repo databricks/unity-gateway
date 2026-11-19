@@ -80,6 +80,10 @@ Cards survive a turn that ends while the reply waits on a background agent and a
 only when the turn is aborted. Nothing is drawn above the prompt and nothing is logged.
 Decisions are kept for the session; a plugin reload clears them from the screen, and the
 routing decision audit log is unchanged.
+`SHOW_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides these routing spinners, selections, reasons,
+timers and parallel cards. It preserves native rows, animal names and routing behavior.
+Claude Auto's config version sets it to `0`; other mappings set it to `1`.
+Without a version selector, an unset flag preserves the visible routing details.
 Disabled routing, command failures, and invalid responses keep the original call;
 failures also log a diagnostic.
 

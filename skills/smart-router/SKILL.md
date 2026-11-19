@@ -99,5 +99,7 @@ native tools and normal harness model selection, without Smart Router Orchestrat
 Existing children can finish. When turned on, apply the `smart-router-orchestrator`
 skill to further work only if the session was launched with `ENABLE_SMART_ROUTER_ORCHESTRATOR=1`.
 Do not change the orchestration feature flag. Return the command's result briefly, then stop.
+`SHOW_SUBAGENT_MODEL_IN_MAIN_TUI=0` hides routing details in Claude's main terminal;
+Auto's config version sets this flag. Hidden details do not mean routing is off.
 In Codex, the current main turn keeps its original routing attribution; the next user turn
 gets the new state. Do not interrupt, restart, or reload any conversation.

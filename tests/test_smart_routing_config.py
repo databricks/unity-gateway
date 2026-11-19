@@ -11,6 +11,7 @@ from ucode.constants import (
     ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
     ENABLE_SMART_ROUTING_ENV_VAR,
     ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+    SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
 )
 from ucode.smart_routing import config, orchestrator, session_env, v2
@@ -21,30 +22,35 @@ _EXPECTED_PRESETS = {
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ONLY_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ONLY_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V0: {
         ENABLE_SMART_ROUTING_ENV_VAR: "0",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
     config.SUBAGENT_ORCH_V1: {
         ENABLE_SMART_ROUTING_ENV_VAR: "1",
         ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
 }
 
@@ -277,6 +283,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
             "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
             "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
             "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+            "SHOW_SUBAGENT_MODEL_IN_MAIN_TUI": "1",
         },
     )
     source = {"SMART_ROUTER_CONFIG_VERSION": "subagent_orch_v0"}
@@ -285,6 +292,7 @@ def test_agent_config_selection_and_session_precedence(monkeypatch, agent, enabl
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": enabled,
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": enabled,
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
+        "SHOW_SUBAGENT_MODEL_IN_MAIN_TUI": "1",
     }
     assert config.resolve_environment(source, agent=agent) == expected
     assert v2.smart_routing_enabled(source, default=True, agent=agent) == (enabled == "1")
@@ -369,6 +377,37 @@ def test_enabled_version_routes_ignores_uncovered_agent():
 def test_auto_flag_alone_does_not_enable_routing():
     assert not v2.smart_routing_enabled(
         {ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
+    )
+
+
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+@pytest.mark.parametrize("version", [None, "unknown_v99", *config._VERSIONS])
+@pytest.mark.parametrize("inherited", [None, "0", "1"])
+def test_subagent_model_display_version_precedence_and_restoration(agent, version, inherited):
+    source = {}
+    if version is not None:
+        source[SMART_ROUTER_CONFIG_VERSION_ENV_VAR] = version
+    if inherited is not None:
+        source[SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR] = inherited
+    original = source.copy()
+    expected = inherited
+    if version in config._VERSIONS:
+        expected = (
+            "0" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE else "1"
+        )
+    assert (
+        config.resolve_environment(source, agent=agent).get(SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR)
+        == expected
+    )
+    previous = config.apply_config(source, agent=agent)
+    assert source.get(SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR) == expected
+    v2.restore_smart_routing_env(previous, source)
+    assert source == original
+
+
+def test_subagent_model_display_alone_does_not_enable_routing():
+    assert not v2.smart_routing_enabled(
+        {SHOW_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1"}, default=False, agent=AGENT_CLAUDE
     )
 
 

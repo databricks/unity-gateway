@@ -784,15 +784,15 @@ Use `SMART_ROUTER_CONFIG_VERSION` at launch to select a smart-routing configurat
 Each version defines separate Claude Code and Codex flag mappings; the existing versions
 use identical mappings for both agents. The Claude-only version disables routing for Codex:
 
-| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker |
-| --- | --- | --- | --- | --- | --- |
-| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off |
-| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off |
-| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off |
-| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off |
-| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off |
-| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off |
-| `subagent_auto_v0_claude_only` | Claude | On | Off | On | On |
+| Version | Routed agents | Subagent routing | First-prompt routing | Orchestrator | Auto picker | Subagent model details in Claude |
+| --- | --- | --- | --- | --- | --- | --- |
+| `first_prompt_and_subagent_no_orch_v0` | Claude, Codex | On | On | Off | Off | Shown |
+| `subagent_only_v0` | Claude, Codex | On | Off | Off | Off | Shown |
+| `subagent_only_v1` | Claude, Codex | On | Off | Off | Off | Shown |
+| `subagent_orch_v0` | Claude, Codex | On | Off | On | Off | Shown |
+| `subagent_orch_v1` | Claude, Codex | On | Off | On | Off | Shown |
+| `subagent_orch_v0_claude_only` | Claude | On | Off | On | Off | Shown |
+| `subagent_auto_v0_claude_only` | Claude | On | Off | On | On | Hidden |
 
 `first_prompt_and_subagent_no_orch_v0` routes the first prompt and subagents without
 orchestration: `ENABLE_SMART_ROUTING_V2=1`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY=0`, and
@@ -825,7 +825,11 @@ SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude
 The version takes precedence over conflicting legacy flags. Once the agent is selected,
 UG expands its mapping into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
-`ENABLE_SMART_ROUTER_ORCHESTRATOR`, and `ENABLE_SMART_ROUTER_AUTO_MODE` for the launched session. When the version is
+`ENABLE_SMART_ROUTER_ORCHESTRATOR`, `ENABLE_SMART_ROUTER_AUTO_MODE`, and
+`SHOW_SUBAGENT_MODEL_IN_MAIN_TUI` for the launched session. The display flag is `0`
+for Claude Auto and `1` for every other version/agent mapping. Without a known version,
+setting it to `0` hides routing selections, reasons, timers and cards; unset or `1` shows them.
+It does not change routing or the model a subagent uses. When the version is
 unset or empty, the routing and orchestrator flags retain their existing behavior,
 including first-prompt routing through `ENABLE_SMART_ROUTING_V2=1`. The Auto flag is
 derived only from its config version and cannot enable Auto independently. Unknown versions are ignored:
