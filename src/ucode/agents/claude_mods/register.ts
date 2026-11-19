@@ -525,18 +525,14 @@ export function register(on: On, options: PluginOptions): void {
             if (pendingChooser === request) pendingChooser = undefined;
           };
           request.choose = model => choose(model).catch(recover);
-          const pane = await $.ui.open({...AUTO_MODELS_PANE, focus:true});
-          if (pendingChooser !== request) return;
-          if (!pane.isPlaced) throw new Error('The pane was not placed');
-          // Native dismisses /model after this callback and then accepts keyboard focus.
-          const focus = async () => {
+          const focusPane = async () => {
             if (pendingChooser !== request) return;
             const pane = await $.ui.open({...AUTO_MODELS_PANE, focus:true});
-            if (pendingChooser !== request) return;
-            if (!pane.isPlaced) throw new Error('The pane was not placed');
-            await $.ui.focus({requestId:AUTO_MODELS_PANE.id, key:'main-model'});
+            if (!pane.isPlaced) throw new Error('Claude could not place the chooser pane');
           };
-          pendingSelection = $.clock.after(0, () => focus().catch(recover));
+          await focusPane();
+          // Native dismisses /model after this callback and then accepts keyboard focus.
+          if (pendingChooser === request) pendingSelection = $.clock.after(0, () => focusPane().catch(recover));
         } catch (error) {
           await recover(error);
         }

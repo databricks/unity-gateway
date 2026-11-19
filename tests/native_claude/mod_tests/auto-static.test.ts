@@ -57,7 +57,6 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     beforeModel?: () => Promise<void>;
     beforeOpen?: () => Promise<void>;
     beforeClose?: () => Promise<void>;
-    beforeFocus?: () => Promise<void>;
   } = {};
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
@@ -93,12 +92,11 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     return { value: { isPlaced: true } };
   });
   on('ui.close', async ($, e) => {
-    if (e.id === 'auto-models') await chooser.beforeClose?.();
     closed.push(e.id);
+    if (e.id === 'auto-models') await chooser.beforeClose?.();
     return { value: undefined };
   });
   on('ui.render', {component:'Pane'}, ($, e) => $.ui.resolve(e).Box({children:[]}));
-  on('ui.focus', async () => { await chooser.beforeFocus?.(); return {value:{}}; });
   on('ui.toast', ($, e) => { toasts.push(e.text); return {value:undefined}; });
   on('ui.invalidate', () => ({ value: undefined }));
   const clock = mock.clock(on);
@@ -470,17 +468,25 @@ test('/model auto opens the chooser directly', { options: OPTIONS }, async ($, o
   expect(session.opened).toContain('auto-models');
 });
 
-for (const failure of ['beforeModel', 'beforeOpen', 'beforeFocus', 'beforeClose'] as const) {
-  test(`the chooser can be retried after a native ${failure} failure`, {options:OPTIONS}, async ($, on) => {
+for (const stage of ['model lookup', 'pane open', 'deferred focus', 'selection'] as const) {
+  test(`the chooser can be retried after ${stage} fails`, {options:OPTIONS}, async ($, on) => {
     const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
     await $.session.start(START);
-    session.chooser[failure] = async () => {
-      session.chooser[failure] = undefined;
-      throw new Error('native chooser failure');
-    };
+    const fail = async () => { throw new Error('native chooser failure'); };
+    if (stage === 'model lookup') session.chooser.beforeModel = fail;
+    if (stage === 'pane open') session.chooser.beforeOpen = fail;
     await $.command.run({command:'auto', args:''});
-    if (failure === 'beforeFocus') await session.clock.advance(0);
-    if (failure === 'beforeClose') await session.choose(OTHER);
+    if (stage === 'deferred focus') {
+      session.chooser.beforeOpen = fail;
+      await session.clock.advance(0);
+    }
+    if (stage === 'selection') {
+      session.chooser.beforeClose = fail;
+      await session.choose(OTHER);
+    }
+    session.chooser.beforeModel = undefined;
+    session.chooser.beforeOpen = undefined;
+    session.chooser.beforeClose = undefined;
     expect(session.toasts.at(-1)).toContain('Try /model auto');
     expect(session.closed).toContain('auto-models');
     expect(session.store[AUTO.storeKey]).toBe(MAIN);
