@@ -306,10 +306,6 @@ Cursor models still run through your Cursor account. `vscode` can be included in
 install ug's extension for Copilot Chat in VS Code; it is configure-only, with no `ug vscode`
 launch command.
 
-Configuring `copilot` also adds the workspace's Claude and GPT models to the GitHub Copilot desktop
-app when it is installed and running (`--no-copilot-app` skips it). See
-[GitHub Copilot desktop app](docs/copilot-desktop-app.md).
-
 `UG_WORKSPACE` can provide the default workspace. An explicit `--workspace` or
 `--profile` takes precedence.
 
@@ -820,7 +816,6 @@ preferences are ignored and their files are left untouched. See the bundled
 | Pi | `~/.ucode/pi-home/.pi/agent/models.json`, `~/.ucode/pi-home/.pi/agent/settings.json` |
 | Antigravity CLI | `~/.gemini/config/skills.json` (adds `~/.agents/skills`), `~/.gemini/config/mcp_config.json` (ug's MCP servers only); the gateway is set per launch through `AGY_LLM_GATEWAY_*` variables |
 | Cursor Agent | `~/.cursor/mcp.json` |
-| GitHub Copilot app | ug's Databricks Claude and Databricks GPT providers in the app (added through its local API, removed by `ug revert`), served by ug's login service unit (`~/.config/systemd/user/ug-codex-otel.service`, `~/Library/LaunchAgents/com.databricks.ug-codex-otel.plist`, or the `com.databricks.ug-codex-otel` scheduled task) |
 | VS Code (Copilot Chat) | ug's `databricks.unity-gateway-<version>` extension under `~/.vscode/extensions/` (or `~/.vscode-insiders/extensions/`), including the `ug-config.json` inside it; installed by `ug configure --agents vscode`, uninstalled by `ug revert`; your `settings.json` is never edited |
 | Unity Gateway | `/etc/unitygateway/managed-settings.json` (Linux and macOS), `~/.ucode/refresh_ts.json`, `~/.ucode/managed-state.json`, `~/.ucode/managed-backups/` |
 

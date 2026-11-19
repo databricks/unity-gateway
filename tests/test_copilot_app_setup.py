@@ -14,6 +14,11 @@ from ucode import copilot_app_setup, login_service, managed_files
 WS = "https://example.cloud.databricks.com"
 
 
+@pytest.fixture(autouse=True)
+def _experiment(monkeypatch):
+    monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+
+
 @pytest.fixture
 def service(tmp_path, monkeypatch):
     run = Mock()
@@ -122,3 +127,17 @@ def test_managed_config_turns_the_app_off(monkeypatch, capsys):
 
     remove.assert_called_once()
     assert "turns off the GitHub Copilot app" in " ".join(capsys.readouterr().out.split())
+
+
+def test_without_the_experiment_flag_configure_and_revert_leave_the_app_alone(
+    service, app, monkeypatch
+):
+    monkeypatch.delenv("UG_EXPERIMENTAL_COPILOT_APP")
+    configure = Mock()
+    monkeypatch.setattr(copilot_app_setup, "configure", configure)
+
+    agents_mod.configure_copilot_app({"workspace": WS}, provider=None, parent_schema=None)
+
+    configure.assert_not_called()
+    assert copilot_app_setup.remove(keep_service=False) == "not set up"
+    assert app.received == []

@@ -5393,6 +5393,7 @@ def configure(
         bool,
         typer.Option(
             "--no-copilot-app",
+            hidden=True,
             help="Don't add the Databricks models to the GitHub Copilot desktop app. By default, "
             "configuring copilot also sets up the app when it is installed.",
         ),

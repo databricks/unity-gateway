@@ -793,9 +793,9 @@ def request_copilot_app_with_copilot(requested: bool = True) -> None:
 def configure_copilot_app(state: dict, *, provider: str | None, parent_schema: str | None) -> None:
     """Add ug's models to the GitHub Copilot desktop app when it is installed, or remove them when
     the workspace's managed config turns the app off."""
-    from ucode import copilot_app_setup
+    from ucode import copilot_app_setup, login_service
 
-    if is_dry_run():
+    if is_dry_run() or not login_service.copilot_app_enabled():
         return
     if state.get("copilot_app_integration") is False:
         from . import codex

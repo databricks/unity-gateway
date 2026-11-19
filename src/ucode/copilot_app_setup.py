@@ -17,8 +17,6 @@ from ucode.constants import LOOPBACK_HOST
 from ucode.managed_files import OS, current_os
 from ucode.ui import print_note, print_success, print_warning
 
-_DOCS = "https://github.com/databricks/unity-gateway/blob/main/docs/copilot-desktop-app.md"
-
 
 def installed() -> bool:
     """Whether the GitHub Copilot desktop app is installed for this user."""
@@ -77,10 +75,7 @@ def configure(
         )
         return
     except copilot_app.CopilotAppError as exc:
-        print_warning(
-            f"Could not add the Databricks models to the GitHub Copilot app: {exc} "
-            f"To add them by hand, see {_DOCS}."
-        )
+        print_warning(f"Could not add the Databricks models to the GitHub Copilot app: {exc}")
         return
     print_success(
         "GitHub Copilot app: added the Databricks models. Open its model picker to choose one."
@@ -92,7 +87,7 @@ def remove(*, keep_service: bool) -> str:
 
     ``keep_service`` keeps the unit running for Codex desktop. Returns a summary for revert."""
     recorded = login_service.copilot_app_recorded()
-    if not recorded and not installed():
+    if not recorded and not (login_service.copilot_app_enabled() and installed()):
         return "not set up"
     try:
         result = "removed" if copilot_app.unregister() else "not set up"
