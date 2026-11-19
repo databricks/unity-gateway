@@ -9,6 +9,7 @@ const ROUTED = {
   unset: [],
   recipe: 'task_v3',
 };
+const VALIDATED = { ...ROUTED, startupValidation: '1' };
 const OFF = '{"ENABLE_SMART_ROUTING_V2":"0","ENABLE_SMART_ROUTING_SUBAGENT_ONLY":"0","ENABLE_SMART_ROUTER_ORCHESTRATOR":"0"}';
 const start = { surface: 'terminal', isInteractive: true, cwd: '/work' } as const;
 const abovePrompt = {
@@ -65,7 +66,7 @@ const cases = [
 ];
 
 for (const { name, result, routed } of cases) {
-  test(`startup validation ${name} holds the band until the result`, { options: ROUTED }, async ($, on) => {
+  test(`startup validation ${name} holds the band until the result`, { options: VALIDATED }, async ($, on) => {
     const { clock, env, files, state, hint } = engine(on);
 
     // Claude draws before session.start; the band is held from the first paint.
@@ -99,7 +100,7 @@ for (const { name, result, routed } of cases) {
   });
 }
 
-test('startup validation shows the band ON after 5 seconds without a result and stops polling', { options: ROUTED }, async ($, on) => {
+test('startup validation shows the band ON after 5 seconds without a result and stops polling', { options: VALIDATED }, async ($, on) => {
   const { clock, state, hint } = engine(on);
   const ui = await $.ui.mount(abovePrompt);
   await $.session.start(start);
@@ -117,7 +118,7 @@ test('startup validation shows the band ON after 5 seconds without a result and 
   await ui.unmount();
 });
 
-test('a result already written by session start shows the band without polling', { options: ROUTED }, async ($, on) => {
+test('a result already written by session start shows the band without polling', { options: VALIDATED }, async ($, on) => {
   const { clock, files, state, hint } = engine(on);
   files['/session/env.validation.json'] = '{"routing_disabled":false}';
   const ui = await $.ui.mount(abovePrompt);
@@ -130,7 +131,7 @@ test('a result already written by session start shows the band without polling',
   await ui.unmount();
 });
 
-test('a session without controls shows the band once session start runs', { options: ROUTED }, async ($, on) => {
+test('a session without controls shows the band once session start runs', { options: VALIDATED }, async ($, on) => {
   const { env, state } = engine(on);
   env.UCODE_SESSION_ENV_FILE = undefined;
   const ui = await $.ui.mount(abovePrompt);
@@ -141,7 +142,7 @@ test('a session without controls shows the band once session start runs', { opti
   await ui.unmount();
 });
 
-test('a turn that ends while the check is pending does not hide the band', { options: ROUTED }, async ($, on) => {
+test('a turn that ends while the check is pending does not hide the band', { options: VALIDATED }, async ($, on) => {
   const { clock, files } = engine(on);
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
@@ -155,7 +156,7 @@ test('a turn that ends while the check is pending does not hide the band', { opt
   await ui.unmount();
 });
 
-test('a band that appears mid-turn hides when that turn ends', { options: ROUTED }, async ($, on) => {
+test('a band that appears mid-turn hides when that turn ends', { options: VALIDATED }, async ($, on) => {
   const { clock, files } = engine(on);
   on('prompt.submit', ($, e) => ({ text: e.text }));
   on('turn.complete', () => ({ text: '' }));
@@ -167,5 +168,14 @@ test('a band that appears mid-turn hides when that turn ends', { options: ROUTED
   expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
   await $.turn.complete({ answer: 'done' });
   expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+  await ui.unmount();
+});
+
+test('without the startup check the band shows from the first paint', { options: ROUTED }, async ($, on) => {
+  const { state } = engine(on);
+  const ui = await $.ui.mount(abovePrompt);
+  expect(JSON.stringify(await ui.drawn())).toContain('unity gateway smart router');
+  await $.session.start(start);
+  expect(state.reads).toBe(0);
   await ui.unmount();
 });

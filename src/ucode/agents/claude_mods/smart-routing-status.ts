@@ -15,6 +15,11 @@ const VALIDATION_POLL_MS = 100
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
 
+export function skipStartupValidation(): void {
+  validationWatchStarted = true
+  validation.isPending = false
+}
+
 export function showStatusBand(): void {
   band.isVisible = true
   band.isHideArmed = false
