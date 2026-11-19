@@ -38,6 +38,8 @@ from ucode.constants import (
     LOOPBACK_HOST,
     SMART_ROUTER_CONFIG_VERSION_ENV_VAR,
     SMART_ROUTING_ENV_KEYS,
+    TRUE_ENV_VALUES,
+    UG_STARTUP_ROUTE_VALIDATION_ENV_VAR,
 )
 from ucode.custom_oauth import custom_oauth_cli_enabled, launch_token
 from ucode.databricks import (
@@ -47,6 +49,7 @@ from ucode.databricks import (
     list_anthropic_models,
     maybe_add_gpt_1m_suffix,
 )
+from ucode.env import env_bool
 from ucode.os_compatibility import subprocess_cross_os
 from ucode.os_compatibility.file_lock_cross_os import (
     acquire_exclusive_file_lock,
@@ -374,6 +377,12 @@ def _claude_mod_launch_options(env: Mapping[str, str] | None = None) -> dict:
         ),
         "isaacExecutable": str(Path(isaac).absolute()) if isaac else "",
         "isaacFeedbackDirectory": str(Path.home() / ".isaac" / "feedback"),
+        "startupValidation": (
+            "1"
+            if source.get(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "").strip().lower()
+            in TRUE_ENV_VALUES
+            else ""
+        ),
     }
 
 
@@ -409,6 +418,12 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
                     "default": "",
                     "title": "Isaac feedback directory",
                     "description": "Absolute directory for locally captured feedback",
+                },
+                "startupValidation": {
+                    "type": "string",
+                    "default": "",
+                    "title": "Startup route validation",
+                    "description": "1 when ug runs the startup routes:validate check",
                 },
                 "routeCommand": {
                     "type": "string",
@@ -808,14 +823,15 @@ def launch_claude(
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             session_path = _prepare_smart_router_session("claude")
-            startup_validation.start(
-                workspace,
-                token,
-                _claude_route_options(model_ids),
-                router_name=routing.configured_router_name(),
-                session_controls=session_path,
-                provider=state.get("_claude_launch_provider"),
-            )
+            if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+                startup_validation.start(
+                    workspace,
+                    token,
+                    _claude_route_options(model_ids),
+                    router_name=routing.configured_router_name(),
+                    session_controls=session_path,
+                    provider=state.get("_claude_launch_provider"),
+                )
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]
             route_command = routing_hook_argv(routing_state, ROUTE_SUBAGENT_MOD_EVENT)
@@ -947,13 +963,14 @@ def launch_codex(
         "Your assigned task path identifies you.\n\n" + CODEX_V2_COLLABORATION_GUIDANCE
     )
     session_env_path = _prepare_smart_router_session("codex")
-    startup_validation.start(
-        workspace,
-        os.environ[OAUTH_TOKEN_ENV_VAR],
-        routing.route_options_for(available_models, "codex"),
-        router_name=routing.configured_router_name(),
-        session_controls=session_env_path,
-    )
+    if env_bool(UG_STARTUP_ROUTE_VALIDATION_ENV_VAR):
+        startup_validation.start(
+            workspace,
+            os.environ[OAUTH_TOKEN_ENV_VAR],
+            routing.route_options_for(available_models, "codex"),
+            router_name=routing.configured_router_name(),
+            session_controls=session_env_path,
+        )
     # Codex constructs tool subprocess environments through its shell policy.
     # Pass both the session marker and its launching interpreter through that policy.
     overlay[f"shell_environment_policy.set.{SESSION_ENV_VAR}"] = str(session_env_path)

@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, noteRoutingToggle, showStatusBand, watchStartupValidation } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, noteRoutingToggle, showStatusBand, skipStartupValidation, watchStartupValidation } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -177,6 +177,7 @@ export function register(on: On, options: PluginOptions): void {
   };
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
+  if (options.startupValidation !== '1') skipStartupValidation();
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {

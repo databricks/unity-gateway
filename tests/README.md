@@ -1747,7 +1747,8 @@ authorization for credentialed integration.
 
 ## Smart Router startup validation
 
-`test_startup_validation.py` covers the background check with a controlled transport: an
+The check runs only with `UG_STARTUP_ROUTE_VALIDATION=1`; launch and mod tests cover the default
+without it (no request, band from the first paint). `test_startup_validation.py` covers the background check with a controlled transport: an
 unsupported menu turns routing off for the session; HTTP errors, malformed responses,
 exceptions, a result past the 4 s deadline and a session toggle made during the check leave
 routing on; result-write failures are isolated. The smart-routing launch

@@ -270,6 +270,7 @@ class TestLaunchCodex:
             return {"is_supported": True}, None
 
         monkeypatch.setattr(v2.startup_validation, "_http_post_json", validate)
+        monkeypatch.setenv(v2.UG_STARTUP_ROUTE_VALIDATION_ENV_VAR, "1")
         user_config = tmp_path / "config.toml"
         saved_config = (
             b"[features.multi_agent_v2]\nnon_code_mode_only = true\n"
