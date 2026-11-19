@@ -323,6 +323,11 @@ class _CopilotRelayHandler(_ProxyHandler):
     def _is_otel_export(self) -> bool:
         return self.path.split("?", 1)[0] == _OTEL_TRACES_CALL[1]
 
+    def _request_body(self, body: bytes | None) -> bytes | None:
+        if body and self.command == "POST" and self._gateway_call:
+            _log_chat_shape(self.path.split("?", 1)[0], body)
+        return body
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
         if self._is_otel_export():
             strip = self._databricks_headers() | {_OTEL_SESSION_CREDENTIAL_HEADER}
@@ -435,6 +440,58 @@ def _gateway_denial_message(resp: httpx.Response) -> str:
     ):
         return payload["message"]
     return _GENERIC_GATEWAY_DENIAL
+
+
+def _preview(text: str) -> str:
+    text = text.replace("\n", "\\n")
+    return text if len(text) <= 300 else f"{text[:200]} ... {text[-100:]}"
+
+
+def _parts(content: object) -> list[dict]:
+    if isinstance(content, str):
+        return [{"type": "string", "chars": len(content), "text": _preview(content)}]
+    parts = []
+    for part in content if isinstance(content, list) else []:
+        if not isinstance(part, dict):
+            continue
+        text = part.get("text") if isinstance(part.get("text"), str) else None
+        entry: dict = {"type": part.get("type")}
+        if text is not None:
+            entry.update(chars=len(text), text=_preview(text))
+        parts.append(entry)
+    return parts
+
+
+def _log_chat_shape(path: str, body: bytes) -> None:
+    """Debug only: the role, type and text preview of every turn of a chat request."""
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return
+    if not isinstance(payload, dict):
+        return
+    turns = payload.get("input") if "input" in payload else payload.get("messages")
+    if isinstance(turns, str):
+        turns = [{"role": "user", "content": turns}]
+    summary = []
+    for turn in turns if isinstance(turns, list) else []:
+        if not isinstance(turn, dict):
+            continue
+        summary.append(
+            {
+                "role": turn.get("role"),
+                "type": turn.get("type"),
+                "parts": _parts(turn.get("content")),
+            }
+        )
+    log_proxy_diagnostic(
+        "chat_request_shape",
+        path=path,
+        model=payload.get("model"),
+        turns=len(summary),
+        user_turns=[i for i, turn in enumerate(summary) if turn["role"] == "user"],
+        last_turns=summary[-4:],
+    )
 
 
 def _https_base_url(host: str) -> str:
