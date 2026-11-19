@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import signal
 import uuid
 from pathlib import Path
 
@@ -2263,12 +2264,14 @@ class TestSeatRelay:
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         monkeypatch.setattr(copilot, "launch_token", lambda state, workspace, **_: "dbx-token")
         seen = _stub_seat_launch(monkeypatch, returncode=5)
+        sigterm = signal.getsignal(signal.SIGTERM)
 
         returncode = copilot.run_seat_runtime(
             dict(STATE), SEAT_MPS, "/vscode/copilot-runtime", ["--stdio", "--headless"]
         )
 
         assert returncode == 5
+        assert signal.getsignal(signal.SIGTERM) is sigterm
         assert seen["argv"] == ["/vscode/copilot-runtime", "--stdio", "--headless"]
         assert seen["env"]["COPILOT_API_URL"].startswith("http://127.0.0.1:")
         assert seen["unsigned_status"] == 401

@@ -3053,9 +3053,14 @@ def copilot_seat_runtime_cmd(
     provider: Annotated[
         str, typer.Option("--provider", help="The GitHub Copilot seat relay service.")
     ],
+    host: Annotated[str, typer.Option("--host", help="The workspace configure set up.")],
+    profile: Annotated[
+        str | None, typer.Option("--profile", help="The Databricks CLI profile configure used.")
+    ] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
-    """Run VS Code's Copilot runtime with its Copilot API calls through the seat relay."""
+    """Run VS Code's Copilot runtime with its Copilot API calls through the seat relay, only while
+    ug is still configured for the workspace and profile VS Code was set up with."""
     import sys
     from contextlib import redirect_stdout
 
@@ -3065,6 +3070,20 @@ def copilot_seat_runtime_cmd(
         workspace = state.get("workspace")
         if not workspace:
             print("No workspace configured. Run `ug configure` first.", file=sys.stderr)
+            raise typer.Exit(1)
+        # Another workspace's state would send this one's prompts and GitHub token through it.
+        current_profile = state.get("profile")
+        if workspace.rstrip("/") != host.rstrip("/") or current_profile != profile:
+
+            def label(url: str, name: str | None) -> str:
+                return f"{url} (profile `{name}`)" if name else url
+
+            print(
+                f"VS Code's Copilot was set up for {label(host, profile)}, but ug is now "
+                f"configured for {label(workspace, current_profile)}. Run `ug configure --agents "
+                "copilot`, then restart VS Code.",
+                file=sys.stderr,
+            )
             raise typer.Exit(1)
         if workspace_id:
             pin(workspace, workspace_id)

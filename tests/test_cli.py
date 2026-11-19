@@ -10337,6 +10337,8 @@ class TestCopilotSeatRuntime:
                 "copilot-seat-runtime",
                 "--provider",
                 "main.ai.seats",
+                "--host",
+                "https://ws.example",
                 "--workspace-id",
                 "42",
                 "--runtime",
@@ -10362,8 +10364,62 @@ class TestCopilotSeatRuntime:
         result, seen, _pinned = self._run(
             monkeypatch,
             {},
-            ["copilot-seat-runtime", "--provider", "p", "--runtime", "/r", "--", "--stdio"],
+            ["copilot-seat-runtime", "--provider", "p", "--host", "h", "--runtime", "/r", "--"],
         )
 
         assert result.exit_code == 1
         assert seen == {}
+
+    @pytest.mark.parametrize(
+        ("state", "args"),
+        [
+            ({"workspace": "https://b.example"}, []),
+            ({"workspace": "https://a.example", "profile": "b"}, ["--profile", "a"]),
+            ({"workspace": "https://a.example", "profile": "b"}, []),
+            ({"workspace": "https://a.example"}, ["--profile", "a"]),
+        ],
+        ids=["other-workspace", "other-profile", "profile-added", "profile-dropped"],
+    )
+    def test_refuses_to_run_once_ug_moved_to_another_workspace_or_profile(
+        self, monkeypatch, state, args
+    ):
+        result, seen, pinned = self._run(
+            monkeypatch,
+            state,
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://a.example",
+                *args,
+                "--runtime",
+                "/r",
+                "--",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert seen == {} and pinned == []
+        assert "ug configure --agents copilot" in result.stderr
+
+    def test_accepts_the_same_workspace_and_profile(self, monkeypatch):
+        result, seen, _pinned = self._run(
+            monkeypatch,
+            {"workspace": "https://a.example/", "profile": "a"},
+            [
+                "copilot-seat-runtime",
+                "--provider",
+                "p",
+                "--host",
+                "https://a.example",
+                "--profile",
+                "a",
+                "--runtime",
+                "/r",
+                "--",
+            ],
+        )
+
+        assert result.exit_code == 7
+        assert seen["provider"] == "p"
