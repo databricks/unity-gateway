@@ -345,6 +345,7 @@ class TestOtelProxyEndToEnd:
             response = b""
             while chunk := sock.recv(4096):
                 response += chunk
+        assert response.startswith(b"HTTP/"), response
         return int(response.split(b" ", 2)[1])
 
     @pytest.mark.parametrize(
