@@ -3260,28 +3260,10 @@ def otel_proxy_cmd(
     relay_port: Annotated[int | None, typer.Option("--relay-port", min=1, max=65535)] = None,
 ) -> None:
     """Run the same OTLP proxy (and, with --relay-port, ChatGPT relay) as Codex CLI, for desktop."""
-    from ucode import gateway_proxy
+    from ucode import login_service
 
-    try:
-        state = load_full_state().get("workspaces", {}).get(workspace_key(host, workspace_id))
-        if workspace_id:
-            pin(host, workspace_id)
-        if not state:
-            raise RuntimeError(f"No saved configuration for {host}. Run `ug configure` first.")
-        apply_pat_environment(state)
-        token_provider = codex_agent._otel_token_provider(state, host)
-        server, _cache, _client = gateway_proxy.start_otel_proxy(host, token_provider, port=port)
-        if relay_port:
-            # The Codex app is pinned to this port, so fail (and restart) rather than move.
-            relay, _cache, _client = gateway_proxy.start_relay_proxy(
-                host, token_provider, relay_port, agent=AGENT_CODEX, fallback_on_bind_error=False
-            )
-            threading.Thread(target=relay.serve_forever, daemon=True).start()
-        # systemd stops this with SIGTERM, which exits without cleanup, and nothing needs it.
-        server.serve_forever()
-    except (OSError, RuntimeError) as exc:
-        print_err(str(exc))
-        raise typer.Exit(1) from None
+    if code := login_service.serve(host, workspace_id, port, relay_port):
+        raise typer.Exit(code)
 
 
 @app.command("otel-headers", hidden=True)

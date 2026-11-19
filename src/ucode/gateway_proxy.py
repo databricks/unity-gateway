@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import dataclasses
 import hmac
 import json
 import os
@@ -683,6 +684,8 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
     request_headers_adder: Callable[[Message, bytes | None], Mapping[str, str]] | None = None
     discarded_paths: frozenset[str] = frozenset()
+    sign_in_status = 401
+    anthropic_path_prefixes: tuple[str, ...] = (_ANTHROPIC_PATH_PREFIX,)
 
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         # `read` decodes only these encodings, so the body goes out without Content-Encoding.
@@ -752,8 +755,11 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
     def _send_json_error(self, status: int, message: str) -> None:
         # Shaped like the upstream dialect so the agent shows the message instead of
         # a generic transport failure.
-        if self.path.startswith(_ANTHROPIC_PATH_PREFIX):
-            error_type = "authentication_error" if status == 401 else "not_found_error"
+        if self.path.startswith(self.anthropic_path_prefixes):
+            error_type = {
+                400: "invalid_request_error",
+                401: "authentication_error",
+            }.get(status, "not_found_error")
             payload = {"type": "error", "error": {"type": error_type, "message": message}}
         else:
             payload = {"error": {"message": message, "type": "invalid_request_error"}}
@@ -767,12 +773,18 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
         except OSError:
             pass
 
-    def _handle(self) -> None:
+    def _authorize(self) -> bool:
+        """Answer a request the proxy must not forward; True lets it through."""
         if not _is_allowed_gateway_path(self.path, self.allowed_path_prefixes):
             self._reject(404, "This path is not served by the Unity Gateway proxy.")
-            return
+            return False
         if not self._has_session_secret():
             self._reject(401, "Missing or invalid Unity Gateway session credential.")
+            return False
+        return True
+
+    def _handle(self) -> None:
+        if not self._authorize():
             return
         if self.path.split("?", 1)[0] in self.discarded_paths:
             self._discard()
@@ -825,8 +837,67 @@ class _GatewayAuthProxyHandler(_ProxyHandler):
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
         self.cache.report_refresh_failure(exc)
-        self._send_json_error(401, f"Databricks sign-in expired. {self.sign_in_hint}")
+        self._send_json_error(
+            self.sign_in_status, f"Databricks sign-in expired. {self.sign_in_hint}"
+        )
         return True
+
+
+@dataclasses.dataclass(frozen=True)
+class ServiceRoute:
+    """Where the login service's shared port sends a request.
+
+    ``upstream`` is the gateway path (None answers locally with an empty 200). ``headers`` go on
+    the forwarded request. With ``sign_in_error``, a dead Databricks login gets a local 400, for
+    agents that hide a 401; ``bad_request_rewriter`` may replace the body of a gateway 400, and
+    ``dropped_fields`` are removed from Chat Completions request bodies."""
+
+    upstream: str | None
+    headers: Mapping[str, str] = dataclasses.field(default_factory=dict)
+    sign_in_error: bool = False
+    bad_request_rewriter: Callable[[bytes], bytes | None] | None = None
+    dropped_fields: frozenset[str] = frozenset()
+
+
+class _ServiceHandler(_GatewayAuthProxyHandler):
+    """The login service's shared port: exact (method, path) routes and path-prefix routes.
+    Every forwarded request gets a fresh token."""
+
+    exact_routes: Mapping[tuple[str, str], ServiceRoute] = {}
+    prefix_routes: Mapping[str, ServiceRoute] = {}
+    sign_in_status = 400
+    anthropic_path_prefixes = (_ANTHROPIC_PATH_PREFIX, "/copilot/anthropic/")
+    _route = ServiceRoute(None)
+
+    def _match(self) -> tuple[ServiceRoute, str] | None:
+        if route := self.exact_routes.get((self.command, self.path)):
+            return route, route.upstream or ""
+        for prefix, route in self.prefix_routes.items():
+            if self.path.startswith(prefix) and _is_allowed_gateway_path(self.path, (prefix,)):
+                return route, f"{route.upstream}{self.path[len(prefix) :]}"
+        return None
+
+    def _authorize(self) -> bool:
+        match = self._match()
+        if match is None:
+            self._reject(404, "This path is not served by the Unity Gateway proxy.")
+            return False
+        self._route, upstream = match
+        if self._route.upstream is None:
+            self._discard()
+            return False
+        self.path = upstream
+        self.bad_request_rewriter = self._route.bad_request_rewriter
+        self.dropped_chat_completions_fields = self._route.dropped_fields
+        return True
+
+    def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        return dict(self._route.headers)
+
+    def _on_refresh_failure(self, exc: RuntimeError) -> bool:
+        if self._route.sign_in_error:
+            return super()._on_refresh_failure(exc)
+        return _ProxyHandler._on_refresh_failure(self, exc)
 
 
 class _LoopbackHTTPServer(ThreadingHTTPServer):
@@ -1021,4 +1092,34 @@ def start_gateway_auth_proxy(
             "discarded_paths": frozenset(discarded_paths),
         },
         on_refresh_failure=on_refresh_failure,
+    )
+
+
+def start_service_listener(
+    workspace: str,
+    token_provider: Callable[[bool], str],
+    *,
+    port: int,
+    exact_routes: Mapping[tuple[str, str], ServiceRoute],
+    prefix_routes: Mapping[str, ServiceRoute],
+    sign_in_hint: str,
+) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
+    """Start the login service's shared port; a busy port raises."""
+    return _start_proxy(
+        workspace,
+        token_provider,
+        port,
+        upstream_path="",
+        token_header=AUTHORIZATION_HEADER,
+        handler_type=_ServiceHandler,
+        force_refresh_near_expiry=True,
+        fallback_on_bind_error=False,
+        handler_attrs={
+            "exact_routes": dict(exact_routes),
+            "prefix_routes": dict(prefix_routes),
+            "added_headers": {},
+            "allowed_path_prefixes": (),
+            "sign_in_hint": sign_in_hint,
+            "dropped_chat_completions_fields": frozenset(),
+        },
     )

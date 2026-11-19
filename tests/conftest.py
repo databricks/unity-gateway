@@ -48,6 +48,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     import ucode.os_compatibility.subprocess_cross_os as subprocess_cross_os_mod
     import ucode.state as state_mod
     from ucode import desktop_auth as desktop_auth_mod
+    from ucode import login_service as login_service_mod
     from ucode.agents import antigravity as antigravity_mod
     from ucode.agents import claude as claude_mod
     from ucode.agents import codex as codex_mod
@@ -64,7 +65,7 @@ def _isolate_ucode_state(tmp_path, monkeypatch):
     monkeypatch.setattr(config_io_mod, "APP_DIR", state_dir)
     monkeypatch.setattr(config_io_mod, "_dry_run", False)
     monkeypatch.setattr(claude_mod, "_explicit_configure", False)
-    monkeypatch.setattr(codex_mod, "_otel_service_path", lambda: state_dir / "otel.service")
+    monkeypatch.setattr(login_service_mod, "service_path", lambda: state_dir / "otel.service")
     monkeypatch.setattr(desktop_mod, "APP_DIR", state_dir)
     # Bound from APP_DIR at import; creating a log also prunes old ones in that directory.
     monkeypatch.setattr(session_log_mod, "LOG_DIR", state_dir / "smart-router" / "sessions")

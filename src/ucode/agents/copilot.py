@@ -91,7 +91,13 @@ from ucode.os_compatibility.file_lock_cross_os import (
     release_file_lock,
 )
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
-from ucode.state import is_tool_managed, load_state, mark_tool_managed, save_state
+from ucode.state import (
+    get_provider_service,
+    is_tool_managed,
+    load_state,
+    mark_tool_managed,
+    save_state,
+)
 from ucode.string_utils import model_picker_label
 from ucode.telemetry import agent_version, ucode_user_agent, ug_version
 from ucode.ui import print_warning
@@ -108,6 +114,10 @@ COPILOT_BACKUP_PATH = APP_DIR / "copilot-ucode-env.backup"
 LEGACY_MCP_CONFIG_PATH = COPILOT_CONFIG_DIR / "ucode-mcp-config.json"
 LEGACY_MCP_BACKUP_PATH = APP_DIR / "copilot-ucode-mcp-config.backup.json"
 COPILOT_PROXY_LOG_PATH = APP_DIR / "logs" / "copilot-proxy.log"
+# Every model on Chat Completions mishandles Copilot's `reasoning_effort`: OpenAI and Azure
+# reject it for GPT before 5, GLM 5.3 rejects `none`, and GLM and Kimi think less at `high`
+# than without it.
+DROPPED_CHAT_COMPLETIONS_FIELDS = frozenset({"reasoning_effort"})
 _REGISTRY_PREFIX = "ug-providers-"
 _REGISTRY_LOCK_NAME = "ug-providers.lock"
 
@@ -1276,6 +1286,56 @@ def _log_proxy_failure(exc: BaseException) -> None:
         pass
 
 
+# Where the GitHub Copilot app's model providers and OTLP exporter post on ug's login service.
+APP_ANTHROPIC_PATH = "/copilot/anthropic/v1/messages"
+APP_RESPONSES_PATH = "/copilot/responses/v1/responses"
+APP_COMPLETIONS_PATH = "/copilot/completions/v1/chat/completions"
+APP_OTEL_PATH = "/copilot/otel"
+
+
+def app_service_routes(state: dict) -> dict:
+    """The GitHub Copilot app's routes on the login service's shared port, for ``state``'s
+    workspace: Claude, GPT and open-model turns with the headers ``ug copilot`` sends, and the
+    app's own OTLP export. A Model Provider Service gets its routing header and the gateway's
+    native OpenAI route, as in ``render_providers_config``."""
+    from ucode.gateway_proxy import ServiceRoute
+    from ucode.managed_config import load_managed_state
+    from ucode.managed_resolve import resolve_state
+    from ucode.workspace import state_workspace_key
+
+    # Admin headers, the provider service and tracing are managed values that state.json omits.
+    if managed := load_managed_state(state_workspace_key(state)):
+        state = resolve_state(managed, state, "copilot")
+    provider_service = get_provider_service(state, "copilot")
+    headers = proxy_headers(state)
+    routing = {MODEL_PROVIDER_SERVICE_HEADER: provider_service} if provider_service else {}
+    openai_api = "/ai-gateway/openai/v1" if provider_service else "/ai-gateway/mlflow/v1"
+
+    def turn(upstream: str, dropped_fields: frozenset[str] = frozenset()) -> ServiceRoute:
+        return ServiceRoute(
+            upstream,
+            {**headers, **routing},
+            sign_in_error=True,
+            bad_request_rewriter=recognizable_context_overflow,
+            dropped_fields=dropped_fields,
+        )
+
+    routes = {
+        ("POST", APP_ANTHROPIC_PATH): turn("/ai-gateway/anthropic/v1/messages"),
+        ("POST", APP_RESPONSES_PATH): turn(f"{openai_api}/responses"),
+        ("POST", APP_COMPLETIONS_PATH): turn(
+            f"{openai_api}/chat/completions", DROPPED_CHAT_COMPLETIONS_FIELDS
+        ),
+    }
+    if state.get("copilot_otel_tracing"):
+        routes[("POST", f"{APP_OTEL_PATH}/v1/traces")] = ServiceRoute(
+            OTEL_TRACES_PATH, headers, sign_in_error=True
+        )
+        # The gateway takes no metrics, which the runtime always exports.
+        routes[("POST", f"{APP_OTEL_PATH}/v1/metrics")] = ServiceRoute(None)
+    return routes
+
+
 class _ChildProcess(Protocol):
     def wait(self) -> int: ...
 
@@ -1346,10 +1406,7 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
         request_headers_adder=subagent_headers(session_id),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
         on_refresh_failure=_log_proxy_failure,
-        # Every model on Chat Completions mishandles Copilot's `reasoning_effort`: OpenAI and Azure
-        # reject it for GPT before 5, GLM 5.3 rejects `none`, and GLM and Kimi think less at `high`
-        # than without it.
-        dropped_chat_completions_fields=("reasoning_effort",),
+        dropped_chat_completions_fields=DROPPED_CHAT_COMPLETIONS_FIELDS,
         bad_request_rewriter=recognizable_context_overflow,
         allowed_path_prefixes=(*gateway_proxy.GATEWAY_MODEL_PATH_PREFIXES, *otel_paths),
         discarded_paths=(OTEL_METRICS_PATH,) if tracing else (),
