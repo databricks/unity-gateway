@@ -804,18 +804,14 @@ def launch_claude(
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             session_path = _prepare_smart_router_session("claude")
-            validation_models = _canonical_claude_models(model_ids)
-            if provider := state.get("_claude_launch_provider"):
-                validation_models = [
-                    model if model.startswith(f"{provider}.") else f"{provider}.{model}"
-                    for model in validation_models
-                ]
+            # Same menu and provider header as routes:select in _request_claude_routing_decision.
             startup_validation.start(
                 workspace,
                 token,
-                routing.route_options_for(validation_models, "claude"),
+                routing.route_options_for(_canonical_claude_models(model_ids), "claude"),
                 router_name=routing.configured_router_name(),
                 session_controls=session_path,
+                provider=state.get("_claude_launch_provider"),
             )
             env[SESSION_ENV_VAR] = str(session_path)
             env[SESSION_PYTHON_ENV_VAR] = os.environ[SESSION_PYTHON_ENV_VAR]

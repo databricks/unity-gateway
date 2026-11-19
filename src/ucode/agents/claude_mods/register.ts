@@ -173,10 +173,14 @@ export function register(on: On, options: PluginOptions): void {
   let orchestratorActive = Boolean(options.orchestratorInstructions);
 
   on('session.start', async ($, e, next) => {
-    await watchStartupValidation($, () => setRouting($, options, false, false));
-    if (launchedEnabled) {
-      const current = await readEnvironment($);
-      await setRouting($, options, isRoutingEnabled(current), false);
+    try {
+      if (launchedEnabled) {
+        const current = await readEnvironment($);
+        await setRouting($, options, isRoutingEnabled(current), false);
+      }
+    } finally {
+      // After the launch write, so a disabling result cannot be overwritten by it.
+      await watchStartupValidation($, () => setRouting($, options, false, false));
     }
     return next(e);
   });

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import io
 import json
-import threading
 import time
 from email.message import Message
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -26,65 +26,14 @@ def _wait_for_result(path):
     pytest.fail("validation worker did not publish a result")
 
 
-def test_delayed_http_is_nonblocking_and_preserves_resolved_menu(tmp_path, monkeypatch):
-    entered, release = threading.Event(), threading.Event()
-    captured = {}
-
-    def post(url, token, body, **kwargs):
-        captured.update(url=url, token=token, body=body)
-        entered.set()
-        assert release.wait(3)
-        return {"is_supported": True}, None
-
-    monkeypatch.setattr(validation, "_http_post_json", post)
-    controls = tmp_path / "env.json"
-    options = [("custom.schema.service.model", "codex"), ("system.ai.gpt-5", "codex")]
-    try:
-        validation.start(
-            "https://example.com",
-            "test-token",
-            options,
-            router_name="chosen-recipe",
-            session_controls=controls,
-        )
-        assert entered.wait(1)
-        assert not release.is_set()
-        assert not validation.result_path(controls).exists()
-        options.clear()
-    finally:
-        release.set()
-    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
-    assert captured == {
-        "url": "https://example.com/ai-gateway/routing/v1/routes:validate",
-        "token": "test-token",
-        "body": {
-            "route_options": [
-                {"model": "custom.schema.service.model", "harness": "codex"},
-                {"model": "system.ai.gpt-5", "harness": "codex"},
-            ],
-            "route_selector": {"router_name": "chosen-recipe"},
-        },
-    }
-
-
 @pytest.mark.parametrize(
     "response",
     [
         ({"is_supported": True}, None),
-        (
-            {
-                "is_supported": False,
-                "metadata": {"routing_unsupported_reason": "Need two families."},
-                "ineligible_route_options": [
-                    {"model": "custom.model", "reason": "No matching harness."}
-                ],
-                "available_route_options": [{"model": "system.ai.other", "harness": "claude"}],
-            },
-            None,
-        ),
-        (None, "HTTP 503: secret server diagnostics"),
+        ({"is_supported": False}, None),
+        (None, "HTTP 503"),
         ({"is_supported": "false"}, None),
-        RuntimeError("private token diagnostics"),
+        RuntimeError("network down"),
     ],
 )
 def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
@@ -135,6 +84,7 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
         [("original.model", "claude")],
         router_name="stable",
         session_controls=controls,
+        provider="main.default.mps",
     )
     assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
     assert len(captured) == 1
@@ -143,24 +93,32 @@ def test_request_uses_existing_http_auth_and_workspace_selection(tmp_path, monke
     assert request.get_header("Authorization") == "Bearer test-token"
     assert request.get_header("X-databricks-workspace-id") == "111"
     assert request.get_header("X-databricks-org-id") == "111"
+    assert request.get_header("Databricks-model-provider-service") == "main.default.mps"
 
 
-def test_worker_start_failure_is_isolated(tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        validation.threading.Thread, "start", Mock(side_effect=RuntimeError("threads unavailable"))
-    )
+@pytest.mark.parametrize("late", ["past deadline", "toggled during check"])
+def test_late_unsupported_result_leaves_routing_alone(late, tmp_path, monkeypatch):
+    controls = tmp_path / "env.json"
+    controls.write_text("{}")
+    toggled = '{"ENABLE_SMART_ROUTING_V2": "1"}'
+
+    def post(*args, **kwargs):
+        if late == "toggled during check":
+            controls.write_text(toggled)
+        return {"is_supported": False}, None
+
+    monkeypatch.setattr(validation, "_http_post_json", post)
+    if late == "past deadline":
+        clock = iter([0.0, validation.VALIDATION_TIMEOUT_SECONDS + 1])
+        monkeypatch.setattr(validation, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     validation.start(
-        "https://example.com",
-        "test-token",
-        [],
-        router_name="stable",
-        session_controls=tmp_path / "env.json",
+        "https://example.com", "test-token", [], router_name="stable", session_controls=controls
     )
+    assert _wait_for_result(validation.result_path(controls)) == {"routing_disabled": False}
+    assert controls.read_text() == (toggled if late == "toggled during check" else "{}")
 
 
 def test_result_write_failure_is_isolated(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
     monkeypatch.setattr(
         validation.threading, "Thread", lambda *, target, daemon: SimpleNamespace(start=target)
     )

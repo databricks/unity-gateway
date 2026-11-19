@@ -237,8 +237,6 @@ class TestV2Launch:
 
     @requires_pty
     def test_restores_model_captured_immediately_before_switch(self, tmp_path, monkeypatch):
-        validation_start = Mock()
-        monkeypatch.setattr(v2.startup_validation, "start", validation_start)
         ucode_settings = tmp_path / "ucode-settings.json"
         user_settings = tmp_path / "settings.json"
         ucode_settings.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": "https://gw"}}))
@@ -310,13 +308,6 @@ class TestV2Launch:
             )
 
         assert exc.value.code == 0
-        assert validation_start.call_count == 1
-        assert validation_start.call_args.args == (
-            "https://example.com",
-            "token",
-            [("system.ai.claude-opus-4-8", "claude"), ("system.ai.claude-sonnet-5", "claude")],
-        )
-        assert validation_start.call_args.kwargs["router_name"] == routing.configured_router_name()
         assert captured["argv"][3:5] == ["--model", "opus"]
         assert captured["argv"][-1] == "--debug"
         assert captured["routed_model"] == claude_pty.FirstPromptRoute(
@@ -658,16 +649,11 @@ class TestV2ModelPickerDiscovery:
             (
                 "main.default.anthropic-mps",
                 "anthropic.claude-opus-4-8",
-                "main.default.anthropic-mps.anthropic.claude-opus-4-8",
-            ),
-            (
-                "main.default.anthropic-mps",
-                "main.default.anthropic-mps.anthropic.claude-opus-4-8",
-                "main.default.anthropic-mps.anthropic.claude-opus-4-8",
+                "anthropic.claude-opus-4-8",
             ),
         ],
     )
-    def test_startup_validation_preserves_provider_identity(
+    def test_startup_validation_sends_the_routes_select_menu_and_provider(
         self, tmp_path, monkeypatch, provider, model, expected
     ):
         validation_start = Mock()
@@ -683,8 +669,8 @@ class TestV2ModelPickerDiscovery:
             [(expected, "claude")],
             router_name="chosen-recipe",
             session_controls=Path(os.environ[v2.SESSION_ENV_VAR]),
+            provider=provider,
         )
-        assert catalog.model_ids == [model]
 
     def test_model_picker_disables_model_discovery(self, tmp_path, monkeypatch):
         discovery_calls = self._launch(

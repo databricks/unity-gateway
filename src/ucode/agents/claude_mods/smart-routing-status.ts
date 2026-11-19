@@ -12,7 +12,7 @@ let validationWatchStarted = false
 // an unsupported menu turns routing off and must never flash ON.
 const validation = { isPending: true }
 const VALIDATION_POLL_MS = 100
-// Longer than the Python check's 4 s HTTP timeout, so an unsupported result always lands first.
+// Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
 
 export function showStatusBand(): void {
@@ -23,10 +23,10 @@ export function showStatusBand(): void {
 // Hides the band at the end of an armed turn; true when the band changed and needs a redraw.
 // The register module owns the one turn.complete handler, which the routing cards share.
 export function endStatusBandTurn(): boolean {
-  const changed = band.isHideArmed
-  if (band.isHideArmed) band.isVisible = false
+  if (!band.isHideArmed) return false
+  band.isVisible = false
   band.isHideArmed = false
-  return changed
+  return true
 }
 
 type RoutingState = { enabled: boolean; firstPrompt: boolean }
@@ -98,7 +98,9 @@ export async function watchStartupValidation(
         band.isVisible = false
         try {
           await disableRouting()
-        } catch {}
+        } catch (error) {
+          $.ui.log(`Smart Router startup check: ${error instanceof Error ? error.message : 'could not turn routing off'}`, { to: 'debug' })
+        }
       }
       finish()
     }
@@ -111,6 +113,7 @@ export async function watchStartupValidation(
     }
   } catch {
     validation.isPending = false
+    $.ui.invalidate('ui.render')
   }
 }
 
@@ -134,7 +137,7 @@ export const registerStatusBand = (on: On): void => {
     })
     const agents = running ? ` · ${running} subagent${running === 1 ? '' : 's'} running` : ''
     const state = validation.isPending ? '' : `smart router ${enabled ? 'ON' : 'OFF'}${agents}`
-    const tail = state && e.props.tail ? `${e.props.tail} · ${state}` : state || e.props.tail
+    const tail = [e.props.tail, state].filter(Boolean).join(' · ')
     return next({ ...e, props: { ...e.props, tail } })
   })
 

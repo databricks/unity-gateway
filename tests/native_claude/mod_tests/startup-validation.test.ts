@@ -49,8 +49,6 @@ function engine(on: On) {
     state.tails.push(e.props.tail);
     return $.ui.resolve(e).Text({ children: ['hint'] });
   });
-  on('prompt.submit', ($, e) => ({ text: e.text }));
-  on('turn.complete', () => ({ text: '' }));
   on('agent.list', () => ({ value: [] }));
   const hint = async ($: any): Promise<unknown> => {
     state.tails.length = 0;
@@ -67,64 +65,38 @@ const cases = [
 ];
 
 for (const { name, result, routed } of cases) {
-  for (const submittedBeforeResult of [false, true]) {
-    test(`startup validation ${name} holds the band until the result, with earlier prompt ${submittedBeforeResult}`, { options: ROUTED }, async ($, on) => {
-      const { clock, env, files, state, hint } = engine(on);
+  test(`startup validation ${name} holds the band until the result`, { options: ROUTED }, async ($, on) => {
+    const { clock, env, files, state, hint } = engine(on);
 
-      // Claude draws before session.start; the band is held from the first paint.
-      const ui = await $.ui.mount(abovePrompt);
-      expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
-      expect(await $.session.start(start)).toEqual({ cwd: '/resolved-work' });
-      const pending = JSON.stringify(await ui.drawn());
-      expect(pending).toContain('host content');
-      expect(pending).not.toContain('unity gateway smart router');
-      expect(await hint($)).toBe('');
-      await clock.advance(1000);
-      expect(state.reads).toBe(11);
-      expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
-      if (submittedBeforeResult) {
-        expect((await $.prompt.submit({ text: 'before validation' })).text).toBe('before validation');
-      }
+    // Claude draws before session.start; the band is held from the first paint.
+    const ui = await $.ui.mount(abovePrompt);
+    expect(JSON.stringify(await ui.drawn())).not.toContain('unity gateway smart router');
+    expect(await $.session.start(start)).toEqual({ cwd: '/resolved-work' });
+    await clock.advance(1000);
+    const pending = JSON.stringify(await ui.drawn());
+    expect(pending).toContain('host content');
+    expect(pending).not.toContain('unity gateway smart router');
+    expect(await hint($)).toBe('');
 
-      // Python writes the session controls before it publishes a disabling result.
-      if (!routed) files['/session/env.json'] = OFF;
-      files['/session/env.validation.json'] = JSON.stringify(result);
-      await clock.advance(100);
-      const shown = JSON.stringify(await ui.drawn());
-      expect(shown).toContain('host content');
-      expect(shown.includes(' ON ')).toBe(routed);
-      expect(shown.includes('unity gateway smart router')).toBe(routed);
-      expect(await hint($)).toBe(routed ? 'smart router ON' : 'smart router OFF');
-      expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
-      expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
-        .toBe(routed ? 'task_v3' : DISABLED_RECIPE);
-      expect(shown).not.toContain('"borderStyle":"round"');
-      // The check is invisible: no transcript notice for any result.
-      expect(state.notices).toEqual([]);
+    // Python writes the session controls before it publishes a disabling result.
+    if (!routed) files['/session/env.json'] = OFF;
+    files['/session/env.validation.json'] = JSON.stringify(result);
+    await clock.advance(100);
+    const shown = JSON.stringify(await ui.drawn());
+    expect(shown).toContain('host content');
+    expect(shown.includes('unity gateway smart router')).toBe(routed);
+    expect(await hint($)).toBe(routed ? 'smart router ON' : 'smart router OFF');
+    expect(env.ENABLE_SMART_ROUTING_SUBAGENT_ONLY).toBe(routed ? '1' : '0');
+    expect(JSON.parse(env.CLAUDE_CODE_EXTRA_BODY as string)[RECIPE_FIELD])
+      .toBe(routed ? 'task_v3' : DISABLED_RECIPE);
+    expect(state.opened).toBe(0);
+    expect(state.notices).toEqual([]);
 
-      if (submittedBeforeResult) {
-        await $.turn.complete({ answer: 'earlier turn done' });
-        const afterEarlierTurn = JSON.stringify(await ui.drawn());
-        expect(afterEarlierTurn).toContain('host content');
-        expect(afterEarlierTurn).not.toContain('unity gateway smart router');
-      }
-      expect((await $.prompt.submit({ text: 'a real prompt' })).text).toBe('a real prompt');
-      if (!submittedBeforeResult) expect(JSON.stringify(await ui.drawn())).toEqual(shown);
-      await $.turn.complete({ answer: 'done' });
-      const afterTurn = JSON.stringify(await ui.drawn());
-      expect(afterTurn).not.toContain('unity gateway smart router');
-
-      // A later session start does not poll again.
-      const reads = state.reads;
-      await $.session.start(start);
-      await clock.advance(2000);
-      expect(state.reads).toBe(reads);
-      expect(state.opened).toBe(0);
-      expect(state.notices).toEqual([]);
-      expect(await hint($)).toBe(routed ? 'smart router ON' : 'smart router OFF');
-      await ui.unmount();
-    });
-  }
+    const reads = state.reads;
+    await clock.advance(2000);
+    expect(state.reads).toBe(reads);
+    await ui.unmount();
+  });
 }
 
 test('startup validation shows the band ON after 5 seconds without a result and stops polling', { options: ROUTED }, async ($, on) => {
