@@ -16,7 +16,7 @@ import threading
 import time
 import traceback
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -3175,10 +3175,9 @@ def _rewrite_relayed_port(state: dict, port: int) -> None:
         write_json_file(CLAUDE_SETTINGS_PATH, settings)
 
 
-def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
-    """Relayed launch: sign into the Claude subscription, start the loopback
-    refresh proxy, then run Claude Code alongside it (the proxy must outlive the
-    exec, so we spawn-and-wait rather than replacing the process)."""
+@contextmanager
+def _relayed_proxy(state: dict) -> Iterator[None]:
+    """Keep the subscription refresh proxy alive for the whole Claude session."""
     _ensure_subscription_login()
     workspace = state["workspace"]
     port = state.get("relayed_proxy_port")
@@ -3210,7 +3209,21 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
     server_thread.start()
 
     try:
-        with _claude_launch_argv(binary, tool_args, relayed=True) as argv:
+        yield
+    finally:
+        cache.stop()
+        server.shutdown()
+        client.close()
+
+
+def _launch_relayed(
+    state: dict, binary: str, tool_args: list[str], *, settings_override: dict | None = None
+) -> None:
+    """Spawn and wait so the relay proxy survives until Claude exits."""
+    with _relayed_proxy(state):
+        with _claude_launch_argv(
+            binary, tool_args, relayed=True, settings_override=settings_override
+        ) as argv:
             metrics.agent_handoff()
             proc = subprocess_cross_os.popen(argv)
             try:
@@ -3218,10 +3231,6 @@ def _launch_relayed(state: dict, binary: str, tool_args: list[str]) -> None:
             except KeyboardInterrupt:
                 proc.send_signal(signal.SIGINT)
                 returncode = proc.wait()
-    finally:
-        cache.stop()
-        server.shutdown()
-        client.close()
     raise SystemExit(returncode)
 
 
@@ -3255,7 +3264,8 @@ def launch(
         # Discovery is launch-scoped. Pass it in the process environment rather
         # than persisting it in Claude's private or OS-managed settings.
         os.environ["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    if state.get("claude_relayed"):
+    relayed = bool(state.get("claude_relayed"))
+    if relayed and not options.launch_smart_routing:
         # The relayed settings don't pin a picked or launch-only model, so pass it the way the
         # gateway path does: Claude Code's own `--model`, unless the caller forwarded one.
         relayed_start_model = options.user_pinned_model or options.launch_model
@@ -3326,23 +3336,25 @@ def launch(
                 "Routing continues."
             )
         try:
-            smart_routing_v2.launch_claude(
-                state,
-                tool_args,
-                binary=binary,
-                user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                launch_model=pinned_model,
-                default_model=session_model,
-                compose_settings=functools.partial(
-                    _compose_v2_settings, server_side_web_search=server_side_search
-                ),
-                launch_model_args=(
-                    _launch_model_args
-                    if not session_model
-                    else lambda args, model: _launch_model_args(args, model or session_model)
-                ),
-                model_name=_maybe_add_1m_suffix,
-            )
+            with _relayed_proxy(state) if relayed else nullcontext():
+                smart_routing_v2.launch_claude(
+                    state,
+                    tool_args,
+                    binary=binary,
+                    user_settings_path=CLAUDE_USER_SETTINGS_PATH,
+                    launch_model=pinned_model,
+                    default_model=session_model,
+                    compose_settings=functools.partial(
+                        _compose_v2_settings, server_side_web_search=server_side_search
+                    ),
+                    launch_model_args=(
+                        _launch_model_args
+                        if not session_model
+                        else lambda args, model: _launch_model_args(args, model or session_model)
+                    ),
+                    model_name=_maybe_add_1m_suffix,
+                    relayed=relayed,
+                )
         except smart_routing_v2.ClaudeRoutingSetupError:
             _debug("Claude smart-routing setup failed; launching normally", traceback.format_exc())
             routing_setup_failed = True
@@ -3387,6 +3399,9 @@ def launch(
         }
         settings_override = _merge_claude_settings(settings_override or {}, {"env": fallback_env})
         os.environ.update(fallback_env)
+    if relayed:
+        _launch_relayed(state, binary, launch_args, settings_override=settings_override)
+        return
     with _claude_launch_argv(
         binary,
         launch_args,

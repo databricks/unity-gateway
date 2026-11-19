@@ -1,5 +1,11 @@
 # Integration tests
 
+Relayed Claude smart-routing launcher coverage is currently component-level in
+`../test_claude_smart_routing_v2.py`: first-prompt, print-mode, and subagent routing,
+provider/static catalogs, subscription credentials, and proxy cleanup/fallback.
+`test_ug_claude_relayed.py` exercises live relay and hybrid inference without smart routing;
+an automated live relay-plus-smart-routing journey remains a coverage gap.
+
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in

@@ -1,5 +1,11 @@
 # Test suites and user journeys
 
+`test_claude_smart_routing_v2.py` covers relayed Claude first-prompt, print-mode,
+and subagent routing with provider catalogs and managed static lists. Component checks
+verify subscription credential precedence, user-scope exclusion, MCP forwarding,
+provider-scoped selection, proxy lifetime, and cleanup/fallback after routing errors.
+These use controlled transport and process boundaries; they do not establish live inference.
+
 Custom Codex model-service metadata has component coverage in `test_codex_catalog.py`,
 `test_databricks.py`, `test_agent_codex.py`, and `test_published_agent_config.py`.
 Checks resolve external and pay-per-token destinations using selected credentials;

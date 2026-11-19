@@ -4420,6 +4420,7 @@ class TestClaudeLaunch:
             compose_settings=ANY,
             launch_model_args=claude._launch_model_args,
             model_name=claude._maybe_add_1m_suffix,
+            relayed=False,
         )
         compose = launch_v2.call_args.kwargs["compose_settings"]
         assert compose.func is claude._compose_v2_settings
