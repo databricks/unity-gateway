@@ -754,13 +754,9 @@ def configure_shared_state(
     with spinner("Verifying Unity Gateway..."):
         if not cli_custom_oauth:
             token = get_databricks_token(workspace, profile)
-        # First-use setup may already have fetched the inventory before a launch preserves
-        # another writer's picker; reuse that result without refreshing its models.
+        # Successful discovery already proves model-service access.
         model_services_discovery = (
-            discover_model_services(workspace, token)
-            if not skip_model_discovery
-            or (previous_key == key and cached_model_service_entries(workspace))
-            else None
+            None if skip_model_discovery else discover_model_services(workspace, token)
         )
         model_service_probe = (
             None
@@ -810,12 +806,13 @@ def configure_shared_state(
     opencode_models: dict[str, list[str]] = {}
     web_search_model: str | None = None
     if skip_model_discovery:
-        # Keep provider/picker models while reusing this command's discovery for web search.
+        # Provider mode: the agent routes through a Model Provider Service and
+        # pins no Databricks model, so the full family discovery is unused. Web
+        # search (claude only) still needs one Responses-capable model, so fetch
+        # just that with a single call.
         if want_claude:
             with spinner("Fetching available models..."):
-                ws_models = model_services_discovery[1] if model_services_discovery else []
-                if not ws_models:
-                    ws_models, _ = discover_codex_models(workspace, token)
+                ws_models, _ = discover_codex_models(workspace, token)
             if ws_models:
                 web_search_model = ws_models[0]
     else:

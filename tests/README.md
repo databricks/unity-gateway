@@ -976,12 +976,9 @@ These checks do not establish live login or launch-time savings.
 
 `TestConfigureSharedStateDiscoveryAccess` verifies that a fresh setup uses its successful
 scoped model discovery to verify access without an additional gateway probe. Failed or
-empty discovery keeps existing probe diagnostics. First-use configure-to-launch
-continuations reuse that process's successful inventory for access and web search while
-preserving another writer's model defaults. Missing GPT models, failed/empty discovery,
-and other-workspace inventory retain the probe or web-search lookup as needed. Cases cover
-authentication, permissions, unavailable services, network failure, exception preservation,
-and process-local discovery reuse. These
+empty discovery keeps existing probe diagnostics; provider mode keeps its probe and
+web-search lookup. Cases cover authentication, permissions, unavailable services,
+network failure, exception preservation, and process-local discovery reuse. These
 component checks do not measure live request latency.
 
 `test_mcp_web_search_concurrency.py` drives the real stdio dispatcher with controlled
