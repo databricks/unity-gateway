@@ -89,15 +89,15 @@ export async function watchStartupValidation(
         result = JSON.parse(await $.fs.read(controls.slice(0, -5) + '.validation.json'))
       } catch {}
       if (complete) return
-      if (!result || !('routing_disabled' in result)) {
+      if (typeof result !== 'object' || result === null || !('routing_disabled' in result)) {
         if (waited >= VALIDATION_WAIT_MS) finish()
         return
       }
       complete = true
       if (result.routing_disabled === true) {
-        band.isVisible = false
         try {
           await disableRouting()
+          band.isVisible = false
         } catch (error) {
           $.ui.log(`Smart Router startup check: ${error instanceof Error ? error.message : 'could not turn routing off'}`, { to: 'debug' })
         }

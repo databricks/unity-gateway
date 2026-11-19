@@ -61,7 +61,7 @@ def start(
         except Exception as exc:
             payload, reason = None, exc
         if not reason and time.monotonic() - started > VALIDATION_TIMEOUT_SECONDS:
-            reason = "startup validation deadline exceeded"
+            reason = "startup validation timed out"
         if reason:
             metrics.failure(STARTUP_VALIDATION_OPERATION, reason, continued_with_fallback=True)
         unsupported = (

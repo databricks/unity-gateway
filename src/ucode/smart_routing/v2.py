@@ -490,6 +490,10 @@ def _write_routed_claude_plugin(plugin_dir: Path, model_ids: list[str] | None = 
     )
 
 
+def _claude_route_options(model_ids: list[str]) -> list[tuple[str, str]]:
+    return routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+
+
 def _request_claude_routing_decision(
     workspace: str,
     token: str,
@@ -497,7 +501,7 @@ def _request_claude_routing_decision(
     model_ids: list[str],
     provider: str | None = None,
 ) -> tuple[routing.RoutingDecision | None, str | None]:
-    route_options = routing.route_options_for(_canonical_claude_models(model_ids), "claude")
+    route_options = _claude_route_options(model_ids)
     if not route_options:
         return None, "Anthropic models endpoint returned no Claude models"
     return routing.select_route(
@@ -804,11 +808,10 @@ def launch_claude(
             if route_first_prompt:
                 env[FIRST_PROMPT_SOCKET_ENV] = str(socket_path)
             session_path = _prepare_smart_router_session("claude")
-            # Same menu and provider header as routes:select in _request_claude_routing_decision.
             startup_validation.start(
                 workspace,
                 token,
-                routing.route_options_for(_canonical_claude_models(model_ids), "claude"),
+                _claude_route_options(model_ids),
                 router_name=routing.configured_router_name(),
                 session_controls=session_path,
                 provider=state.get("_claude_launch_provider"),

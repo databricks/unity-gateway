@@ -99,8 +99,9 @@ for (const { name, result, routed } of cases) {
   });
 }
 
-test('startup validation shows the band ON after 5 seconds without a result and stops polling', { options: ROUTED }, async ($, on) => {
-  const { clock, state, hint } = engine(on);
+test('startup validation shows the band ON after 5 seconds without a usable result and stops polling', { options: ROUTED }, async ($, on) => {
+  const { clock, files, state, hint } = engine(on);
+  files['/session/env.validation.json'] = '5';
   const ui = await $.ui.mount(abovePrompt);
   await $.session.start(start);
   await clock.advance(4900);
