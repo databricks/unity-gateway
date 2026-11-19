@@ -132,7 +132,7 @@ export const registerSubagentRouting = (
   autoModels?: readonly string[],
 ): void => {
   routedModels.reset()
-  const showModel = options.SHOW_SUBAGENT_MODEL_IN_MAIN_TUI !== '0'
+  const showModel = options.ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI !== '0'
   const names = new Map<string, string>()
   const unusedNames = [...ANIMALS]
   // Calls waiting on the router, by when routing started, shown with a spinner and timer.

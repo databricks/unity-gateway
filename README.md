@@ -826,7 +826,7 @@ The version takes precedence over conflicting legacy flags. Once the agent is se
 UG expands its mapping into
 `ENABLE_SMART_ROUTING_V2`, `ENABLE_SMART_ROUTING_SUBAGENT_ONLY`,
 `ENABLE_SMART_ROUTER_ORCHESTRATOR`, `ENABLE_SMART_ROUTER_AUTO_MODE`, and
-`SHOW_SUBAGENT_MODEL_IN_MAIN_TUI` for the launched session. The display flag is `0`
+`ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI` for the launched session. The display flag is `0`
 for Claude Auto and `1` for every other version/agent mapping. Without a known version,
 setting it to `0` hides routing selections, reasons, timers and cards; unset or `1` shows them.
 It does not change routing or the model a subagent uses. When the version is

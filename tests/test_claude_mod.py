@@ -120,7 +120,7 @@ def test_launch_options_resolve_versions_without_mutating_input(version):
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "0",
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
-        "SHOW_SUBAGENT_MODEL_IN_MAIN_TUI": "0",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "0",
         "SMART_ROUTER_NAME": " custom_recipe ",
     }
     before = env.copy()
@@ -149,7 +149,7 @@ def test_launch_options_preserve_empty_and_absent_values():
         "ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "",
         "ENABLE_SMART_ROUTER_ORCHESTRATOR": "",
         "ENABLE_SMART_ROUTER_AUTO_MODE": "0",
-        "SHOW_SUBAGENT_MODEL_IN_MAIN_TUI": "",
+        "ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI": "",
         "unset": [
             key
             for key in SMART_ROUTING_ENV_KEYS

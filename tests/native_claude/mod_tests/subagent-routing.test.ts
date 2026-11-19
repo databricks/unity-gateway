@@ -21,7 +21,7 @@ for (const staticModel of [undefined, 'ug-auto-test']) {
   test(`Auto hides routing details for lone and parallel calls (${staticModel ? 'static' : 'custom'} picker)`, {
     options: {
       ENABLE_SMART_ROUTER_AUTO_MODE: '1',
-      SHOW_SUBAGENT_MODEL_IN_MAIN_TUI: '0',
+      ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: '0',
       ENABLE_SMART_ROUTING_SUBAGENT_ONLY: '1',
       autoPicker: JSON.stringify({
         model: 'ug-auto-test', mainModel: 'system.ai.claude-sonnet-5', staticModel,
@@ -34,7 +34,7 @@ for (const staticModel of [undefined, 'ug-auto-test']) {
     const spawns: string[] = [];
     on('session.id', () => ({ value: 'session-auto' }));
     on('session.model', () => ({ value: 'ug-auto-test' }));
-    on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : e.name === 'SHOW_SUBAGENT_MODEL_IN_MAIN_TUI' ? '0' : undefined }));
+    on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : e.name === 'ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI' ? '0' : undefined }));
     on('clock.now', () => ({ value: 10_000 }));
     on('clock.every', () => ({ value: { cancel: () => {} } }));
     on('process.run', async () => {
@@ -84,7 +84,7 @@ for (const [show, auto] of [['0', false], ['1', true], ['1', false]] as const) {
   test(`the display flag controls routing details independently of Auto (${show}, ${auto})`, {
     options: {
       ENABLE_SMART_ROUTER_AUTO_MODE: auto ? '1' : '0',
-      SHOW_SUBAGENT_MODEL_IN_MAIN_TUI: show,
+      ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI: show,
       autoPicker: auto ? JSON.stringify({
         model: 'ug-auto-test', mainModel: 'system.ai.claude-sonnet-5',
         models: [{ model: 'system.ai.claude-sonnet-5', label: 'Sonnet', autoModel: 'ug-auto-test' }],
@@ -93,7 +93,7 @@ for (const [show, auto] of [['0', false], ['1', true], ['1', false]] as const) {
   }, async ($, on) => {
     on('session.id', () => ({ value: 'session-display' }));
     on('session.model', () => ({ value: 'ug-auto-test' }));
-    on('env.get', ($, e) => ({ value: e.name === 'SHOW_SUBAGENT_MODEL_IN_MAIN_TUI' ? show : e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined }));
+    on('env.get', ($, e) => ({ value: e.name === 'ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI' ? show : e.name === 'ENABLE_SMART_ROUTING_SUBAGENT_ONLY' ? '1' : undefined }));
     on('process.run', () => ({ value: { exitCode: 0, stderr: '', stdout: JSON.stringify({
       model: 'system.ai.glm-5-3-flash', rationale: 'Display flag reason',
     }) } }));
