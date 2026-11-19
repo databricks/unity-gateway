@@ -841,18 +841,21 @@ OTEL_METRICS_PATH = f"{OTEL_PATH}/v1/metrics"
 _INHERITED_OTEL_PREFIXES = ("OTEL_EXPORTER_OTLP_", "COPILOT_OTEL_")
 
 
-def otel_env(proxy_base_url: str, session_secret: str) -> dict[str, str]:
-    """Copilot's OTLP export to the session proxy, as protobuf, which the gateway requires."""
-    return {
+def otel_env(proxy_base_url: str, session_secret: str | None = None) -> dict[str, str]:
+    """Copilot's OTLP export to the session proxy, as protobuf, which the gateway requires; a
+    ``proxy_base_url`` that already carries the session secret needs no ``session_secret``."""
+    env = {
         "COPILOT_OTEL_ENABLED": "true",
         "COPILOT_OTEL_EXPORTER_TYPE": "otlp-http",
         "OTEL_EXPORTER_OTLP_ENDPOINT": f"{proxy_base_url}{OTEL_PATH}",
         "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
         "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
         "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL": "http/protobuf",
-        # The proxy takes the session secret as an API key, which needs no encoding here.
-        "OTEL_EXPORTER_OTLP_HEADERS": f"x-api-key={session_secret}",
     }
+    if session_secret:
+        # The proxy takes the session secret as an API key, which needs no encoding here.
+        env["OTEL_EXPORTER_OTLP_HEADERS"] = f"x-api-key={session_secret}"
+    return env
 
 
 def build_runtime_env(
@@ -1321,14 +1324,17 @@ _SEAT_RELAY_DROPPED_ENV = frozenset(
 )
 
 
-def seat_relay_env(api_url: str, *, mcp_host: str | None) -> dict[str, str]:
+def seat_relay_env(api_url: str, *, mcp_host: str | None, tracing: bool = False) -> dict[str, str]:
     """Copilot's environment for a session on a GitHub Copilot seat relay: signed in to GitHub,
     with every Copilot API call sent to the relay at ``api_url``, and GitHub MCP sent straight to
-    ``mcp_host`` (the caller's Copilot API host) when it's known."""
+    ``mcp_host`` (the caller's Copilot API host) when it's known. With ``tracing``, Copilot exports
+    OTLP to the same relay, and inherited exporter settings are dropped."""
     env = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("COPILOT_PROVIDER") and key not in _SEAT_RELAY_DROPPED_ENV
+        if not key.startswith("COPILOT_PROVIDER")
+        and key not in _SEAT_RELAY_DROPPED_ENV
+        and not (tracing and key.startswith(_INHERITED_OTEL_PREFIXES))
     }
     env["COPILOT_API_URL"] = api_url
     # Copilot opens /responses as a WebSocket first, which the relay refuses; only `true` (not
@@ -1336,6 +1342,8 @@ def seat_relay_env(api_url: str, *, mcp_host: str | None) -> dict[str, str]:
     env["COPILOT_CLI_DISABLE_WEBSOCKET_RESPONSES"] = "true"
     if mcp_host:
         env["GITHUB_MCP_URL_OVERRIDE"] = f"https://{mcp_host}/mcp/readonly"
+    if tracing:
+        env.update(otel_env(api_url))
     return env
 
 
@@ -1414,7 +1422,11 @@ def _launch_seat_relay(state: dict, tool_args: list[str], provider_service: str)
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
     )
     try:
-        env = seat_relay_env(api_url, mcp_host=copilot_relay.cached_copilot_api_host())
+        env = seat_relay_env(
+            api_url,
+            mcp_host=copilot_relay.cached_copilot_api_host(),
+            tracing=bool(state.get("copilot_otel_tracing")),
+        )
         metrics.agent_handoff()
         proc = subprocess_cross_os.popen([SPEC["binary"], *MCP_LAUNCH_ARGS, *tool_args], env=env)
         returncode = _wait_for_exit(proc)

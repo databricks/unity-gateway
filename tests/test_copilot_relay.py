@@ -233,6 +233,21 @@ class TestOtelExport:
         ):
             assert name not in sent["headers"]
 
+    def test_trace_export_gets_the_launch_headers_but_not_the_seat_routing(self, gateway, github):
+        added = {
+            "User-Agent": "ucode/1 copilot/2",
+            "Authorization": "Bearer spoofed",
+            "Databricks-Model-Provider-Service": "other.mps",
+        }
+        with _relay(gateway, github, added_headers=added) as (http, _port, _direct):
+            http.post(f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/traces", content=b"spans")
+
+        (sent,) = gateway.requests
+        assert sent["headers"]["user-agent"] == "ucode/1 copilot/2"
+        assert sent["headers"]["authorization"] == f"Bearer {DATABRICKS_TOKEN}"
+        assert "databricks-model-provider-service" not in sent["headers"]
+        assert "x-databricks-github-copilot-api-host" not in sent["headers"]
+
     def test_metrics_get_an_empty_success_and_go_nowhere(self, gateway, github):
         with _relay(gateway, github) as (http, _port, direct):
             resp = http.post(f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/metrics", content=b"points")

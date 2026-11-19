@@ -2175,6 +2175,59 @@ class TestSeatRelay:
         assert seen["unsigned_status"] == 401
         assert copilot.LAUNCH_PROVIDER_SERVICE_KEY not in state
 
+    def test_env_traces_to_the_relay_when_the_workspace_traces_copilot(self, monkeypatch):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example")
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_HEADERS", "authorization=Bearer other")
+        monkeypatch.setenv("COPILOT_OTEL_FILE_EXPORTER_PATH", "/tmp/spans")
+
+        traced = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None, tracing=True)
+        untraced = copilot.seat_relay_env("http://127.0.0.1:9/s", mcp_host=None)
+
+        assert traced["COPILOT_OTEL_ENABLED"] == "true"
+        assert traced["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://127.0.0.1:9/s/ai-gateway/otel"
+        assert traced["OTEL_EXPORTER_OTLP_PROTOCOL"] == "http/protobuf"
+        # The secret is already in the endpoint's path.
+        assert "OTEL_EXPORTER_OTLP_HEADERS" not in traced
+        assert "COPILOT_OTEL_FILE_EXPORTER_PATH" not in traced
+        assert "COPILOT_OTEL_ENABLED" not in untraced
+        assert untraced["OTEL_EXPORTER_OTLP_ENDPOINT"] == "https://collector.example"
+
+    def test_relay_serves_copilots_otel_path(self):
+        from ucode import copilot_relay
+
+        assert copilot_relay.OTEL_PATH == copilot.OTEL_PATH
+
+    def test_traced_launch_exports_to_the_live_relay(self, tmp_path, monkeypatch):
+        isolate_copilot_config_paths(monkeypatch, tmp_path)
+        monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "copilot-home"))
+        _stub_provider_service(monkeypatch, SEAT_SERVICE)
+        from ucode import copilot_relay
+
+        monkeypatch.setattr(copilot_relay, "cached_copilot_api_host", lambda *_a: None)
+        seen: dict = {}
+
+        def popen(argv, *, env):
+            seen["env"] = env
+            endpoint = env["OTEL_EXPORTER_OTLP_ENDPOINT"]
+            seen["metrics_status"] = httpx.post(
+                f"{endpoint}/v1/metrics", content=b"points", timeout=5
+            ).status_code
+            return _ExitedProcess(0)
+
+        monkeypatch.setattr(copilot.subprocess_cross_os, "popen", popen)
+        state = {
+            **STATE,
+            "copilot_otel_tracing": True,
+            copilot.LAUNCH_PROVIDER_SERVICE_KEY: SEAT_MPS,
+        }
+
+        with pytest.raises(SystemExit):
+            copilot.launch(state, [], options=copilot.LaunchOptions())
+
+        env = seen["env"]
+        assert env["OTEL_EXPORTER_OTLP_ENDPOINT"] == f"{env['COPILOT_API_URL']}/ai-gateway/otel"
+        assert seen["metrics_status"] == 200
+
     def test_launch_warns_about_copilots_own_api_url_setting(self, tmp_path, monkeypatch, capsys):
         isolate_copilot_config_paths(monkeypatch, tmp_path)
         home = tmp_path / "copilot-home"
