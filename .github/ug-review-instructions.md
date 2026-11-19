@@ -34,6 +34,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    revert changes have meaningful coverage. For behavior changes, require the PR description to
    state `BEFORE: <behavior>` and `AFTER: <behavior>`, ideally with screenshots. Look for relevant
    failure cases and provider/auth/platform combinations rather than exhaustive test matrices.
+   For an interactive change, look for a before/after recording when a still image cannot
+   show the interaction. Link one-off demos and recorder output from the PR description.
+   If those files are committed, check whether a test or maintained doc actually uses them.
+   When the behavior depends on a backend rollout, look for the deployment and flag state
+   in the supplied evidence. Mark the rollout unverified if those details are missing.
    For API behavior, extend existing integration/TUI journeys and use their request recorder to
    verify the outgoing request and actual response, including the status and relevant headers or
    payload fields. Minimize monkeypatch-heavy tests that only assert internal calls; they do not
@@ -51,7 +56,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    when possible, and reserve hard failures for cases where continuing would be unsafe or wrong.
    Prefer fallback, deprecation, or an explicit feature gate when rollout is not atomic.
    Reuse available backend canonical identifiers to avoid duplicating parsing rules across
-   installed client versions.
+   installed client versions. When a client handles provider-wide rate limits, ask whether
+   the gateway should make that routing decision consistently across clients.
+   For config migrations, trace an upgrade where the old managed entry is read-only.
+   Could the user get two active entries for the same service? Check that fallback writers
+   preserve the options the normal writer carries over.
 5. **Follow the complete stateful user journey.** Reason about repeated runs and transitions:
    workspace A to B, personal to managed configuration, one agent to another, configure to
    launch to revert, success to partial failure, and enabled to disabled. Unity Gateway must
@@ -60,7 +69,11 @@ the reviewed changes. The review is advisory and limited to findings on changed 
    Reuse managed custom headers and `UG_HEADERS` instead of hardcoding another agent or product
    identity. Preserve workspace selectors and explicit per-launch overrides. Keep shared ownership
    rules in one authoritative definition and derive repeated tables/checks when practical.
+   If routing waits on a remote call, check whether a cooldown can expire before the
+   caller acts on it. For demo publishing, check that a failed upload preserves the
+   previous evidence links and labels.
 6. **Keep metrics maintainable.** Apply `AGENTS.md`'s "CLI performance metrics" contract.
+   Keep shared metric definitions and recording helpers in `src/ucode/metrics/`.
    When conventions change or necessary guidance is missing, keep its instructions on how,
    where, and when to bind, record, and extend metrics current. Do not request documentation
    edits for every instrumented call site.

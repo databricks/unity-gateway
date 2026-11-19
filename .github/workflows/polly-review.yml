@@ -398,6 +398,8 @@ jobs:
           ### Changes
           Briefly describe the intended outcome and what contributes to the diff
           (implementation, tests, fixtures, docs, dependencies, generated files).
+          For a re-land, identify why the earlier change was reverted and what evidence
+          addresses that failure. If the reason is unavailable, ask for it in Non-blocking notes.
           Explain whether its size is justified and name concrete opportunities
           to reduce it; line counts alone are not evidence of unnecessary work.
           Put test-specific action items only in the notes described below.
