@@ -4661,17 +4661,72 @@ class TestOtelProxyCommand:
         server, cache, client = MagicMock(), MagicMock(), MagicMock()
         with (
             patch(
-                "ucode.gateway_proxy.start_otel_proxy", return_value=(server, cache, client)
+                "ucode.gateway_proxy.start_service_listener", return_value=(server, cache, client)
             ) as start,
             patch("ucode.custom_oauth.get_databricks_token", return_value="fresh-token") as token,
+            patch("ucode.agents.copilot.agent_version", return_value="1.0.91"),
         ):
             result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
             assert start.call_args.args[1](True) == "fresh-token"
         assert result.exit_code == 0, result.output
         assert start.call_args.args[0] == workspace
-        assert start.call_args.kwargs == {"port": 43199}
+        kwargs = start.call_args.kwargs
+        assert kwargs["port"] == 43199
+        # Codex's trace exporter keeps its URL; the Copilot app's turns share the port.
+        assert kwargs["prefix_routes"]["/v1/"].upstream == "/ai-gateway/otel/v1/"
+        # The GitHub Copilot app's routes wait until the app is set up.
+        assert kwargs["exact_routes"] == {}
         token.assert_called_once_with(workspace, "saved-profile", force_refresh=True)
         server.serve_forever.assert_called_once()
+
+    @pytest.mark.parametrize("enable", ["marker", "env"])
+    def test_serves_the_copilot_app_routes_once_the_app_is_set_up(self, monkeypatch, enable):
+        workspace = "https://configured.example"
+        real_save_state({"workspace": workspace, "profile": "saved-profile"})
+        if enable == "marker":
+            monkeypatch.setattr("ucode.login_service.copilot_app_recorded", lambda: True)
+        else:
+            monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+        server = MagicMock()
+        with (
+            patch(
+                "ucode.gateway_proxy.start_service_listener",
+                return_value=(server, MagicMock(), MagicMock()),
+            ) as start,
+            patch("ucode.custom_oauth.get_databricks_token", return_value="fresh-token"),
+            patch("ucode.agents.copilot.agent_version", return_value="1.0.91"),
+        ):
+            result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
+        assert result.exit_code == 0, result.output
+        assert ("POST", "/copilot/anthropic/v1/messages") in start.call_args.kwargs["exact_routes"]
+
+    @pytest.mark.parametrize(
+        ("app_routes", "tracing", "forwarded"),
+        [(True, True, True), (True, False, False), (False, True, False)],
+    )
+    def test_forwards_the_copilot_app_spans_with_app_routes_and_tracing(
+        self, monkeypatch, app_routes, tracing, forwarded
+    ):
+        workspace = "https://configured.example"
+        real_save_state(
+            {"workspace": workspace, "profile": "saved-profile", "copilot_otel_tracing": tracing}
+        )
+        if app_routes:
+            monkeypatch.setenv("UG_EXPERIMENTAL_COPILOT_APP", "1")
+        listener = (MagicMock(), MagicMock(), MagicMock())
+        with (
+            patch("ucode.gateway_proxy.start_service_listener", return_value=listener),
+            patch("ucode.custom_oauth.get_databricks_token", return_value="fresh-token"),
+            patch("ucode.agents.copilot.agent_version", return_value="1.0.91"),
+            patch("ucode.login_service._start_app_span_forwarding") as forward,
+        ):
+            result = runner.invoke(app, ["otel-proxy", "--host", workspace, "--port", "43199"])
+        assert result.exit_code == 0, result.output
+        assert forward.called is forwarded
+        if forwarded:
+            host, cache, client, headers = forward.call_args.args
+            assert (host, cache, client) == (workspace, listener[1], listener[2])
+            assert "copilot/1.0.91" in headers["User-Agent"]
 
     def test_relay_port_also_starts_the_codex_relay_proxy(self):
         workspace = "https://configured.example"
@@ -4681,10 +4736,14 @@ class TestOtelProxyCommand:
             (MagicMock(), MagicMock(), MagicMock()),
         )
         with (
-            patch("ucode.gateway_proxy.start_otel_proxy", return_value=otel),
+            patch("ucode.gateway_proxy.start_service_listener", return_value=otel),
+            patch("ucode.agents.copilot.agent_version", return_value="1.0.91"),
             patch("ucode.gateway_proxy.start_relay_proxy", return_value=relay) as start_relay,
             # Run the relay thread's target inline so its serve_forever call is deterministic.
-            patch("ucode.cli.threading.Thread", lambda target, daemon: MagicMock(start=target)),
+            patch(
+                "ucode.login_service.threading.Thread",
+                lambda target, daemon: MagicMock(start=target),
+            ),
         ):
             result = runner.invoke(
                 app,

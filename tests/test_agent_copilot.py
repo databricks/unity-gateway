@@ -2110,3 +2110,94 @@ class TestWithSessionId:
             "User-Agent": "u",
         }
         assert copilot.with_session_id({"Session-Id": "admin"}, SESSION) == {"Session-Id": "admin"}
+
+
+class TestAppServiceRoutes:
+    WS = "https://example.cloud.databricks.com"
+
+    @pytest.fixture(autouse=True)
+    def _version(self, monkeypatch):
+        monkeypatch.setattr(copilot, "agent_version", lambda binary: "1.0.91")
+
+    def test_turns_go_to_the_gateway_with_ug_copilot_headers(self):
+        routes = copilot.app_service_routes(
+            {"workspace": self.WS, "copilot_http_headers": {"X-Team": "ml"}}
+        )
+        claude = routes[("POST", "/copilot/anthropic/v1/messages")]
+        gpt = routes[("POST", "/copilot/responses/v1/responses")]
+        assert (claude.upstream, gpt.upstream) == (
+            "/ai-gateway/anthropic/v1/messages",
+            "/ai-gateway/mlflow/v1/responses",
+        )
+        assert claude.headers["X-Team"] == "ml"
+        assert claude.headers["x-databricks-use-coding-agent-mode"] == "true"
+        assert "copilot/1.0.91" in claude.headers["User-Agent"]
+        assert claude.sign_in_error and claude.bad_request_rewriter is not None
+        assert not claude.dropped_fields and not gpt.dropped_fields
+        # Without workspace tracing the app's OTLP export has nowhere to go.
+        assert not any(path.startswith("/copilot/otel/") for _, path in routes)
+
+    def test_trace_headers_only_with_workspace_tracing(self):
+        assert copilot.app_trace_headers({"workspace": self.WS}) is None
+
+        headers = copilot.app_trace_headers(
+            {
+                "workspace": self.WS,
+                "copilot_otel_tracing": True,
+                "copilot_http_headers": {"X-Team": "ml"},
+            }
+        )
+
+        assert headers is not None
+        assert headers["X-Team"] == "ml"
+        assert "copilot/1.0.91" in headers["User-Agent"]
+
+    def test_open_model_turns_go_to_chat_completions_without_reasoning_effort(self):
+        routes = copilot.app_service_routes({"workspace": self.WS})
+
+        completions = routes[("POST", "/copilot/completions/v1/chat/completions")]
+
+        assert completions.upstream == "/ai-gateway/mlflow/v1/chat/completions"
+        assert completions.dropped_fields == {"reasoning_effort"}
+        assert completions.sign_in_error and completions.bad_request_rewriter is not None
+        assert copilot.MODEL_PROVIDER_SERVICE_HEADER not in completions.headers
+
+    def test_a_provider_service_routes_only_the_turns(self):
+        routes = copilot.app_service_routes(
+            {
+                "workspace": self.WS,
+                "provider_services": {"copilot": "cat.s.mps"},
+                "copilot_otel_tracing": True,
+            }
+        )
+        gpt = routes[("POST", "/copilot/responses/v1/responses")]
+        traces = routes[("POST", "/copilot/otel/v1/traces")]
+        assert gpt.upstream == "/ai-gateway/openai/v1/responses"
+        assert gpt.headers[copilot.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+        completions = routes[("POST", "/copilot/completions/v1/chat/completions")]
+        assert completions.upstream == "/ai-gateway/openai/v1/chat/completions"
+        assert completions.headers[copilot.MODEL_PROVIDER_SERVICE_HEADER] == "cat.s.mps"
+        assert (
+            routes[("POST", "/copilot/anthropic/v1/messages")].headers[
+                copilot.MODEL_PROVIDER_SERVICE_HEADER
+            ]
+            == "cat.s.mps"
+        )
+        assert traces.upstream == "/ai-gateway/otel/v1/traces"
+        assert copilot.MODEL_PROVIDER_SERVICE_HEADER not in traces.headers
+        assert routes[("POST", "/copilot/otel/v1/metrics")].upstream is None
+
+    def test_managed_headers_and_tracing_come_from_the_saved_managed_config(self, monkeypatch):
+        from ucode import managed_config
+
+        managed = {
+            "enabled_agents": {
+                "copilot": {"http_headers": {"X-Admin": "a"}, "otel_tracing_enabled": True}
+            }
+        }
+        monkeypatch.setattr(managed_config, "load_managed_state", lambda key: managed)
+
+        routes = copilot.app_service_routes({"workspace": self.WS})
+
+        assert routes[("POST", "/copilot/anthropic/v1/messages")].headers["X-Admin"] == "a"
+        assert ("POST", "/copilot/otel/v1/traces") in routes
