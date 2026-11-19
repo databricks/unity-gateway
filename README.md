@@ -660,16 +660,14 @@ The generated shell hooks expect Git Bash; PowerShell-only setups are not covere
 
 `--enable-smart-routing` and a workspace config with `smart_routing.enabled` turn routing on
 through `SMART_ROUTER_CONFIG_VERSION`: they keep a known version and otherwise select
-`subagent_orch_v0_claude_only`. For Claude, that routes subagents and turns on Smart Router
-Orchestrator while the main session stays on its default model. Codex stays unrouted and
-without orchestration under this default, and a Codex launch that turns routing on this way
-warns and runs without smart routing: `--enable-smart-routing` says smart routing on Codex is
-currently not supported, and workspace smart routing says it is enabled for Codex in this
-workspace but currently only supported for Claude Code. `ug codex --help` hides
-`--enable-smart-routing` and `--disable-smart-routing` (the Smart Router skill still uses them)
-and notes that Smart Routing is currently only supported for the Claude Code harness.
-Like any version, it overrides individually set routing env vars. `--disable-smart-routing`
-turns routing off for the launch, including over a workspace config.
+`subagent_orch_v0`. That routes subagents and enables Smart Router Orchestrator for Claude
+and Codex while each main session keeps its starting model. Saved Model Provider Services
+work with both agents, including without a workspace-managed configuration. UG discovers the
+provider's own model catalog and sends its provider header to routing and inference requests.
+Routing requests offer at most 128 models; oversized catalogs prioritize current Claude family
+targets or numbered GPT targets for Codex before filling the remaining positions.
+Like any version, the preset overrides individually set routing env vars.
+`--disable-smart-routing` turns routing off for the launch, including over a workspace config.
 
 In the Auto flow, an explicit ordinary `--model` starts with routing off. In other
 smart-routing launches, an explicit `--model`, from `ug claude --model` or a launcher
@@ -763,8 +761,9 @@ like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
 and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
-`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0_claude_only`, which
-installs both skills for Claude only; Codex gets neither. For example:
+`--enable-smart-routing` and workspace smart routing select `subagent_orch_v0`, which
+installs both skills for Claude and Codex. An explicit Claude-only version still leaves Codex
+unrouted. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude

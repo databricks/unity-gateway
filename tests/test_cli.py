@@ -189,13 +189,12 @@ class TestHelp:
             assert "--model-location" in output
             assert "--parent" not in output
 
-    def test_codex_help_hides_smart_routing_flags(self):
+    def test_codex_help_shows_smart_routing_flags(self):
         result = runner.invoke(app, ["codex", "--help"])
         assert result.exit_code == 0, result.output
         flat = re.sub(r"[│╭╮╯╰─\s]+", " ", _strip_ansi(result.output))
-        assert "--enable-smart-routing" not in flat
-        assert "--disable-smart-routing" not in flat
-        assert "Smart Routing is currently only supported for the Claude Code harness." in flat
+        assert "--enable-smart-routing" in flat
+        assert "--disable-smart-routing" in flat
 
     def test_codex_command_list_entry_keeps_short_help(self):
         result = runner.invoke(app, ["--help"])
@@ -750,16 +749,16 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_env", "expected_version"),
         [
-            ({}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
-            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
-            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY),
+            ({}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({"ENABLE_SMART_ROUTING_V2": "1"}, smart_routing_config.SUBAGENT_ORCH_V0),
+            ({"ENABLE_SMART_ROUTING_V2": "0"}, smart_routing_config.SUBAGENT_ORCH_V0),
             (
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                smart_routing_config.SUBAGENT_ORCH_V0,
             ),
             (
                 {"SMART_ROUTER_CONFIG_VERSION": "unknown_version"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                smart_routing_config.SUBAGENT_ORCH_V0,
             ),
             *(
                 ({"SMART_ROUTER_CONFIG_VERSION": version}, version)
@@ -781,7 +780,7 @@ class TestSubcommandRouting:
             "claude-only-version",
         ],
     )
-    def test_enable_smart_routing_keeps_a_known_version_or_selects_claude_only(
+    def test_enable_smart_routing_keeps_a_known_version_or_selects_shared_preset(
         self, monkeypatch, tool, launch_env, expected_version
     ):
         for name, value in launch_env.items():
@@ -904,8 +903,8 @@ class TestSubcommandRouting:
 
         assert options.launch_smart_routing is expected
 
-    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", False)])
-    def test_provider_routing_is_supported_for_claude_only(self, tool, expected):
+    @pytest.mark.parametrize(("tool", "expected"), [("claude", True), ("codex", True)])
+    def test_provider_routing_is_supported_for_claude_and_codex(self, tool, expected):
         options = cli_mod._launch_options(
             tool,
             [],
@@ -994,30 +993,30 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("launch_args", "launch_env", "expected_version", "routed_tools"),
         [
-            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {"claude"}),
+            ([], {}, smart_routing_config.SUBAGENT_ORCH_V0, {"claude", "codex"}),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_V2": "0"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
             (
                 [],
                 {"ENABLE_SMART_ROUTER_ORCHESTRATOR": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
             (
                 [],
@@ -1044,8 +1043,8 @@ class TestSubcommandRouting:
             (
                 ["--enable-smart-routing"],
                 {"ENABLE_SMART_ROUTING_V2": "1"},
-                smart_routing_config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
-                {"claude"},
+                smart_routing_config.SUBAGENT_ORCH_V0,
+                {"claude", "codex"},
             ),
             (["--disable-smart-routing"], {}, None, set()),
         ],
@@ -1163,7 +1162,7 @@ class TestSubcommandRouting:
         monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_codex", launch_native)
         launch = cli_mod.launch_agent
         # An explicit version keeps Codex routed (managed config is then ignored). The
-        # managed-default case leaves the selector unset: the Claude-only preset applies.
+        # managed-default case leaves the selector unset: the shared preset applies.
         if recovery == "managed-default":
             monkeypatch.delenv("SMART_ROUTER_CONFIG_VERSION", raising=False)
         else:
@@ -1180,15 +1179,14 @@ class TestSubcommandRouting:
             args = ["codex", "--disable-smart-routing"] if recovery == "disable" else ["codex"]
             result = runner.invoke(app, args)
 
-        assert result.exit_code == (1 if recovery == "decline" else 0), result.output
+        assert result.exit_code == (1 if recovery in {"decline", "managed-default"} else 0), (
+            result.output
+        )
         assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery in {"disable", "managed-default"})
+        assert bool(plain) == (recovery == "disable")
         assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
-        if recovery == "managed-default":
-            output = " ".join(_strip_ansi(result.output).split())
-            assert "only supported for Claude Code" in output
-        if recovery == "decline":
+        assert prompt.call_count == (0 if recovery == "disable" else 1)
+        if recovery in {"decline", "managed-default"}:
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
             assert "--disable-smart-routing" in output
@@ -1197,8 +1195,8 @@ class TestSubcommandRouting:
     @pytest.mark.parametrize(
         ("tool", "launch_args", "launch_env", "managed_routing", "warned", "routed"),
         [
-            ("codex", ["--enable-smart-routing"], {}, False, True, False),
-            ("codex", [], {}, True, True, False),
+            ("codex", ["--enable-smart-routing"], {}, False, False, True),
+            ("codex", [], {}, True, False, True),
             (
                 "codex",
                 ["--enable-smart-routing"],
@@ -1396,49 +1394,6 @@ class TestSubcommandRouting:
         assert "_claude_launch_default_model" not in calls["launch"].call_args.args[1]
         calls["resolve_model"].assert_not_called()
         calls["launch"].assert_called_once()
-
-    @pytest.mark.parametrize(
-        "forwarded_args",
-        [[], ["--resume", "previous-session"], ["--", "--model", "anthropic.claude-sonnet-5-5"]],
-    )
-    def test_unmanaged_claude_routing_uses_saved_provider_default(
-        self, monkeypatch, tmp_path, forwarded_args
-    ):
-        from ucode.agents import claude
-
-        catalog = db_mod.AnthropicModelCatalog(
-            model_ids=["anthropic.claude-sonnet-5-5", "anthropic.claude-opus-5-5"],
-            model_id_to_display_name={},
-        )
-        saved_settings = tmp_path / "settings.json"
-        saved_settings.write_text(json.dumps({"model": "anthropic.claude-sonnet-5-5"}))
-        before = saved_settings.read_bytes()
-        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", saved_settings)
-        monkeypatch.setattr(claude, "_resolve_launch_binary", lambda binary: binary)
-        monkeypatch.delenv("ANTHROPIC_DEFAULT_MODEL", raising=False)
-        routed_launches = []
-
-        def capture_routed_launch(state, args, **kwargs):
-            routed_launches.append(
-                (os.environ.get("ANTHROPIC_DEFAULT_MODEL"), list(args), kwargs["launch_model"])
-            )
-
-        monkeypatch.setattr(cli_mod.smart_routing_v2, "launch_claude", capture_routed_launch)
-        with _launch_policy_patches(
-            None, persisted_provider="main.bugbash.bedrock_mps", picker_catalog=catalog
-        ) as calls:
-            calls["launch"].side_effect = lambda tool, state, args, *, options: claude.launch(
-                state, args, options=options
-            )
-            result = runner.invoke(app, ["claude", "--enable-smart-routing", *forwarded_args])
-
-        assert result.exit_code == 0, result.output
-        calls["list_catalog"].assert_called_once_with(
-            calls["state"]["workspace"], "token", provider="main.bugbash.bedrock_mps"
-        )
-        expected_args = forwarded_args[1:] if forwarded_args[:1] == ["--"] else forwarded_args
-        assert routed_launches == [("anthropic.claude-opus-5-5", expected_args, None)]
-        assert saved_settings.read_bytes() == before
 
     def test_unmanaged_claude_launch_lists_gateway_catalog(self):
         with _launch_policy_patches(None) as calls:

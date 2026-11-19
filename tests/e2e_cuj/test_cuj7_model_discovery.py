@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from databricks.sdk.errors import DatabricksError, NotFound
 
-from tests.integration.utils.evidence import FileTask
+from tests.integration.utils.evidence import FileTask, assert_subagent_routed
 from tests.integration.utils.managed import MANAGED_CONFIGS_PATH, assert_no_managed_config
 from tests.integration.utils.model_discovery import (
     assert_claude_system_models_in_picker,
@@ -24,15 +24,20 @@ from .helpers.constants import (
     CLAUDE_SONNET_MODEL_SERVICE,
     CODEX,
     CODEX_LUNA_MODEL_SERVICE,
+    INFERENCE_PATHS,
     MANAGED_PATHS,
+    MODEL_PROVIDER_SERVICE_FIXTURES,
     MODEL_SERVICE_SCHEMA,
+    PROVIDER_HEADER,
     WORKSPACE_POLICY_PATH,
 )
 from .helpers.evidence import (
     SessionEvidence,
     assert_claude_headless_model,
     assert_inference_evidence,
+    assert_served,
     claude_file_task,
+    served_inference_request,
 )
 from .helpers.session import (
     MACHINE_WIDE_LEAK,
@@ -262,6 +267,79 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
         assert_codex_default_models(session, models)
 
     @pytest.mark.claude
+    @pytest.mark.tui
+    def test_ug_claude_saved_provider_smart_routing(self, live_session, request_recorder):
+        """Scenario: configure a personal Claude provider in this unmanaged workspace, then route.
+
+        Expected: the saved provider reaches the router and inference, the selected offered model
+        serves a completed native child file task, and the parent returns the hidden file value.
+        """
+        session = live_session
+        provider, model = MODEL_PROVIDER_SERVICE_FIXTURES[CLAUDE]
+        request_recorder.configure_session(
+            session,
+            ["configure", "--agent", CLAUDE, "--provider", provider, "--skip-upgrade"],
+        )
+        assert session.workspace_state()["provider_services"][CLAUDE] == provider
+        request_recorder.prepare_launch()
+        task = FileTask(session)
+        task.prompt = task.delegate_prompt + (
+            " Use a fresh general-purpose Agent subagent; do not fork or resume."
+        )
+        checkpoint = request_recorder.checkpoint()
+        with Terminal(
+            session, "cuj7-claude-saved-provider-routing", [CLAUDE, "--enable-smart-routing"]
+        ) as tui:
+            tui.boot(timeout=150)
+            tui.submit(task.prompt)
+            tui.wait_until(
+                lambda: (
+                    task.completed(session, CLAUDE, child=True) and task.completed(session, CLAUDE)
+                ),
+                "completed routed child file task and parent reply",
+            )
+            _assert_saved_provider_routing(
+                session, request_recorder, checkpoint, CLAUDE, provider, model, task
+            )
+            tui.wait_for_background_tasks()
+            tui.exit_normally()
+
+    @pytest.mark.codex
+    @pytest.mark.tui
+    def test_ug_codex_saved_provider_smart_routing(self, live_session, request_recorder):
+        """Scenario: configure a personal Codex provider in this unmanaged workspace, then route.
+
+        Expected: the saved provider reaches the router and inference, every selected offered
+        model matches a completed native child, and the parent returns the hidden file value.
+        """
+        session = live_session
+        provider, model = MODEL_PROVIDER_SERVICE_FIXTURES[CODEX]
+        request_recorder.configure_session(
+            session,
+            ["configure", "--agent", CODEX, "--provider", provider, "--skip-upgrade"],
+        )
+        assert session.workspace_state()["provider_services"][CODEX] == provider
+        request_recorder.prepare_launch()
+        task = FileTask(session)
+        task.prompt = task.delegate_prompt
+        checkpoint = request_recorder.checkpoint()
+        with Terminal(
+            session, "cuj7-codex-saved-provider-routing", [CODEX, "--enable-smart-routing"]
+        ) as tui:
+            tui.boot(timeout=150)
+            tui.submit(task.prompt)
+            tui.wait_until(
+                lambda: (
+                    task.completed(session, CODEX, child=True) and task.completed(session, CODEX)
+                ),
+                "completed routed child file task and parent reply",
+            )
+            _assert_saved_provider_routing(
+                session, request_recorder, checkpoint, CODEX, provider, model, task
+            )
+            tui.exit_normally()
+
+    @pytest.mark.claude
     @pytest.mark.parametrize("model_owner", ["ug", "claude"])
     def test_ug_claude_headless_fresh_model_location(
         self, live_session, request_recorder, model_owner
@@ -377,3 +455,42 @@ class TestUnmanagedModelDiscovery(BaseCujTest):
             request_recorder, 0, CODEX, task, model, parent_schema=MODEL_SERVICE_SCHEMA
         )
         session.assert_not_routed()
+
+
+def _assert_saved_provider_routing(session, recorder, checkpoint, agent, provider, model, task):
+    requests = recorder.requests_after(checkpoint)
+    routes = [
+        request
+        for request in requests
+        if request.method == "POST"
+        and request.path.endswith("/routes:select")
+        and task.filename in request.payload.get("task", {}).get("prompt", "")
+    ]
+    assert routes, "No routing request matched the delegated file task"
+    for route in routes:
+        assert route.headers[PROVIDER_HEADER] == provider
+        options = route.payload["route_options"]
+        assert 1 <= len(options) <= 128
+        response = recorder.response_for(route)
+        assert response.status_code == 200, response.payload
+        selections = response.payload["route_selection"]
+        assert len(selections) == 1, selections
+        selected = selections[0]["route_option"]
+        assert selected in options
+        assert selected == {"model": model, "harness": agent}
+    inference = [
+        request
+        for request in requests
+        if request.method == "POST"
+        and request.path == INFERENCE_PATHS[agent]
+        and task.filename in json.dumps(request.payload)
+    ]
+    assert inference, "No provider inference request matched the delegated file task"
+    for request in inference:
+        assert request.headers[PROVIDER_HEADER] == provider
+        assert_served(
+            recorder, served_inference_request(recorder, inference, request, agent), model
+        )
+    task.assert_completed(session, agent, child=True)
+    task.assert_completed(session, agent)
+    assert_subagent_routed(session, agent, task)

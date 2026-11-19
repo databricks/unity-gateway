@@ -279,3 +279,13 @@ keeps its aliases in launch settings. It saves an Auto selection on the unmanage
 workspace, completes a main-model file task, then restarts with routing disabled.
 The restart must complete another task on the same real model with paired successful
 HTTP evidence and no router request. It never seeds Auto aliases in shared settings.
+
+
+CUJ7 includes independent Claude and Codex saved-provider smart-routing journeys. Its existing
+before/after checks require no published CodingAgentConfig. Each journey configures its agent
+with the shared Anthropic or OpenAI provider, then launches the real TUI with only
+`--enable-smart-routing`. A routed native child reads a hidden local file; both child and parent
+must return its value. Recorded requests require the saved provider header on routing and
+inference, successful paired responses, and a selected offered model applied to the child.
+These fixtures have small catalogs. The allow-all Bedrock startup and oversized-catalog cases
+remain separate staging validation and are not established by these CUJs.
