@@ -10125,6 +10125,30 @@ class TestHeadlessConfigureModelSource:
         else:
             assert calls == []
 
+    def test_a_failed_seat_relay_lookup_is_reported_not_taken_for_another_service(
+        self, monkeypatch
+    ):
+        agent = cli_mod.copilot_agent
+        monkeypatch.setattr(agent, "launch_token", lambda *a, **k: "dbx-token")
+        answers = [
+            (None, "Model provider service 'x' was not found. (HTTP 503 Service Unavailable)"),
+            (self.SEAT_SERVICE, None),
+        ]
+        monkeypatch.setattr(agent, "resolve_provider_service", lambda *a: answers.pop(0))
+        monkeypatch.setattr(
+            agent,
+            "provider_service_catalog",
+            lambda *a, **k: pytest.fail("a failed lookup isn't a service with a model catalog"),
+        )
+        _state, saved, configure = self._base_patches(monkeypatch, "copilot")
+
+        result = self._invoke("--agent", "copilot", "--provider", self.SEAT_MPS)
+
+        assert result.exit_code != 0
+        assert "HTTP 503" in " ".join(_strip_ansi(result.output).split())
+        configure.assert_not_called()
+        assert not any(cli_mod.get_provider_service(s, "copilot") for s in saved)
+
 
 class TestLaunchWithManagedFilePicker:
     PICKER_MODELS = {"opus": "system.ai.claude-opus-5-5", "haiku": "system.ai.claude-haiku-4-5"}

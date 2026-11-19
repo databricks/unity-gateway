@@ -1391,12 +1391,17 @@ def copilot_url_setting() -> str | None:
 
 
 def uses_seat_relay(state: dict, provider_service: str, *, tool: str = "copilot") -> bool:
-    """True when ``provider_service`` relays each developer's own GitHub Copilot seat."""
+    """True when ``provider_service`` relays each developer's own GitHub Copilot seat.
+
+    Raises RuntimeError with the service's own error when it can't be looked up or ``tool`` can't
+    use it, so a failed lookup is never taken for a service that isn't a seat relay."""
     workspace = state["workspace"]
-    service, _error = resolve_provider_service(
+    service, error = resolve_provider_service(
         tool, provider_service, workspace, launch_token(state, workspace)
     )
-    return service is not None and is_copilot_seat_relay(service)
+    if error or service is None:
+        raise RuntimeError(error or f"Model provider service '{provider_service}' was not found.")
+    return is_copilot_seat_relay(service)
 
 
 def _launch_seat_relay(state: dict, tool_args: list[str], provider_service: str) -> None:
