@@ -1064,6 +1064,9 @@ class TestSubcommandRouting:
     def test_managed_smart_routing_overrides_env_vars_but_not_the_flag_or_a_version(
         self, monkeypatch, tool, launch_args, launch_env, expected_version, routed_tools
     ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+        )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
         managed = {"enabled_agents": {tool: {"smart_routing_enabled": True}}}
@@ -1243,6 +1246,9 @@ class TestSubcommandRouting:
     def test_warns_once_and_launches_unrouted_when_version_leaves_codex_unrouted(
         self, monkeypatch, tool, launch_args, launch_env, managed_routing, warned, routed
     ):
+        monkeypatch.setattr(
+            cli_mod.codex_agent, "agent_version", lambda *_args, **_kwargs: "0.165.0"
+        )
         for name, value in launch_env.items():
             monkeypatch.setenv(name, value)
         managed = (
