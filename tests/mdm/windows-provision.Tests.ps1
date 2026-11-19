@@ -14,8 +14,10 @@ foreach ($node in $ast.FindAll({ param($n)
 }, $true)) {
   if ($node.Name -in $helpers) { Invoke-Expression $node.Extent.Text }
 }
-function Assert-Equal($Actual, $Expected) {
-  if ($Actual -cne $Expected) { throw "Expected '$Expected', got '$Actual'" }
+function Assert-Equal($Actual, $Expected, [string]$Context) {
+  if ($Actual -cne $Expected) {
+    throw "${Context} (line $($MyInvocation.ScriptLineNumber)): Expected '$Expected', got '$Actual'"
+  }
 }
 function Assert-Throws($Action, $Message) {
   $caught = $false
@@ -105,19 +107,19 @@ if ($args -contains '--fail') { throw 'agent failed' }
         [Security.Principal.SecurityIdentifier]) | Where-Object {
           $_.IdentityReference -eq $users -and $_.AccessControlType -eq 'Allow'
         })
-      Assert-Equal ([bool]($rules | Where-Object { ($_.FileSystemRights -band $readExecute) -eq $readExecute })) $true
-      Assert-Equal ([bool]($rules | Where-Object { $_.FileSystemRights -band $write })) $false
+      Assert-Equal ([bool]($rules | Where-Object { ($_.FileSystemRights -band $readExecute) -eq $readExecute })) $true "Users RX on $path; ACL=$((Get-Acl -LiteralPath $path).Sddl)"
+      Assert-Equal ([bool]($rules | Where-Object { $_.FileSystemRights -band $write })) $false "Users cannot write $path"
     }
     $ownerRules = (Get-Acl -LiteralPath $resource).GetAccessRules($true, $true,
       [Security.Principal.SecurityIdentifier]) | Where-Object IdentityReference -eq $owner
     Assert-Equal ([bool]($ownerRules | Where-Object {
       ($_.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -eq
         [Security.AccessControl.FileSystemRights]::FullControl
-    })) $true
+    })) $true 'Owner FullControl preserved'
     $failed = $false
     try { Set-SharedReadAccess (Join-Path $dir 'missing') *> $null }
     catch { $failed = $true }
-    Assert-Equal $failed $true
+    Assert-Equal $failed $true 'Missing-target ACL failure must throw'
     Write-Output 'PASS: shared runtime ACL repair grants Users RX, preserves owner access and fails on errors'
   }
 } finally {
