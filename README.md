@@ -757,6 +757,11 @@ managed default model, without routing or orchestration. `--enable-smart-routing
 workspace smart routing keep this version, so Codex stays unrouted: ug warns and launches it
 like a plain `ug codex`, without the Smart Router skills or routing hooks.
 
+Managed smart routing launches Codex without routing when its installed version is too old
+or unavailable, or when it uses a ChatGPT subscription relay. These automatic fallbacks warn
+without prompting for an upgrade. Explicit routing requests still require a supported version
+and direct provider.
+
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`

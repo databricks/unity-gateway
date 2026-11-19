@@ -797,19 +797,18 @@ class TestCujSmartRouting(BaseCujTest):
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
         assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
 
-    def test_managed_smart_routing_leaves_codex_unrouted_and_unorchestrated(
+    def test_managed_smart_routing_orchestrates_codex_without_routing_the_first_prompt(
         self, completed_smart_routing_runs
     ):
-        """Scenario: launch Codex with only the managed config's smart_routing.enabled, which
-        selects the Claude-only default preset, and run a no-delegation file task.
+        """Scenario: launch supported Codex with managed smart routing and run a no-delegation task.
 
-        Expected: Codex sends no routing request, its inference carries no Smart Router recipe
-        header, and its inference input has no Smart Router Orchestrator context.
+        Expected: Codex's first prompt completes on the managed default without a routing
+        request. Its inference carries the selected recipe and Smart Router Orchestrator context.
         """
         case = completed_smart_routing_runs.no_model_override[CODEX]
         assert not [request for request in case.requests if request.path == ROUTING_PATH]
-        assert "databricks-smart-router-recipe" not in case.inference_request.headers
-        assert ORCHESTRATOR_CONTEXT.encode() not in case.inference_request.body
+        assert case.inference_request.headers["databricks-smart-router-recipe"]
+        assert ORCHESTRATOR_CONTEXT.encode() in case.inference_request.body
 
     @pytest.mark.parametrize("agent", AGENTS)
     def test_admin_default_model_serves_the_first_prompt(self, completed_smart_routing_runs, agent):

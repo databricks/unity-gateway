@@ -1179,13 +1179,11 @@ class TestSubcommandRouting:
             args = ["codex", "--disable-smart-routing"] if recovery == "disable" else ["codex"]
             result = runner.invoke(app, args)
 
-        assert result.exit_code == (1 if recovery in {"decline", "managed-default"} else 0), (
-            result.output
-        )
+        assert result.exit_code == (1 if recovery == "decline" else 0), result.output
         assert routed == (["0.164.0"] if recovery == "upgrade" else [])
-        assert bool(plain) == (recovery == "disable")
+        assert bool(plain) == (recovery in {"disable", "managed-default"})
         assert updates == ([["codex", "update"]] if recovery == "upgrade" else [])
-        assert prompt.call_count == (0 if recovery == "disable" else 1)
+        assert prompt.call_count == (0 if recovery in {"disable", "managed-default"} else 1)
         if recovery in {"decline", "managed-default"}:
             output = " ".join(_strip_ansi(result.output).split())
             assert f"found {installed_version}" in output
