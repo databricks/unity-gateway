@@ -230,8 +230,13 @@ export function register(on: On, options: PluginOptions): void {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
-        await serialized(() => setRouting($, options, false, true, sessionControlArgs));
-        noteRoutingToggle(false);
+        const previous = noteRoutingToggle(false);
+        try {
+          await serialized(() => setRouting($, options, false, true, sessionControlArgs));
+        } catch (error) {
+          noteRoutingToggle(previous);
+          throw error;
+        }
         showStatusBand();
         $.ui.invalidate('ui.render');
       };
@@ -242,12 +247,13 @@ export function register(on: On, options: PluginOptions): void {
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
+    const previous = noteRoutingToggle(action === 'on');
     try {
       await serialized(() => setRouting($, options, action === 'on', true));
-      noteRoutingToggle(action === 'on');
       showStatusBand();
       $.ui.invalidate('ui.render');
     } catch {
+      noteRoutingToggle(previous);
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
     return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};

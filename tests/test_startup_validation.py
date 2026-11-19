@@ -33,6 +33,7 @@ def _wait_for_result(path):
         ({"is_supported": True}, None),
         ({"is_supported": False}, None),
         (None, "HTTP 503"),
+        (None, "HTTP 404 Not Found"),
         ({"is_supported": "false"}, None),
         RuntimeError("network down"),
     ],
@@ -62,7 +63,7 @@ def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
     assert session_routing_enabled(controls) is not unsupported
     if not unsupported:
         assert controls.read_text() == "{}"
-    failed = isinstance(response, Exception) or response[1] is not None
+    failed = isinstance(response, Exception) or response[1] not in (None, "HTTP 404 Not Found")
     errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
     assert [(labels.get("operation"), labels.get("phase")) for _, labels in errors] == (
         [(metrics.STARTUP_VALIDATION_OPERATION, "startup")] if failed else []

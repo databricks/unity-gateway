@@ -67,7 +67,8 @@ def start(
             payload, reason = None, exc
         if not reason and time.monotonic() - started > VALIDATION_TIMEOUT_SECONDS:
             reason = "startup validation timed out"
-        if reason:
+        # A Gateway without the endpoint yet is expected during rollout, not a failure.
+        if reason and not str(reason).startswith(("HTTP 404", "HTTP 501")):
             metrics.failure(
                 metrics.STARTUP_VALIDATION_OPERATION,
                 reason,

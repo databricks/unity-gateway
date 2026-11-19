@@ -15,9 +15,12 @@ const VALIDATION_POLL_MS = 100
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
 
-// A /smart-router toggle during the startup check wins over its result.
-export function noteRoutingToggle(enabled: boolean): void {
+// A /smart-router toggle during the startup check wins over its result. Returns the previous
+// note so a failed toggle can restore it.
+export function noteRoutingToggle(enabled: boolean | undefined): boolean | undefined {
+  const previous = validation.toggle
   if (validation.isPending) validation.toggle = enabled
+  return previous
 }
 
 export function showStatusBand(): void {
@@ -102,8 +105,9 @@ export async function watchStartupValidation(
       if (result.routing_disabled === true) {
         try {
           // Python already wrote the session controls off; a toggle rewrites them to match.
-          await applyRouting(validation.toggle ?? false, validation.toggle !== undefined)
-          if (validation.toggle === undefined) band.isVisible = false
+          const toggle = validation.toggle
+          await applyRouting(toggle ?? false, toggle !== undefined)
+          if (toggle === undefined) band.isVisible = false
         } catch (error) {
           $.ui.log(`Smart Router startup check: ${error instanceof Error ? error.message : 'could not turn routing off'}`, { to: 'debug' })
         }
