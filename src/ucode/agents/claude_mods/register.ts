@@ -353,11 +353,18 @@ export function register(on: On, options: PluginOptions): void {
       ?? (auto ? autoTarget(auto, e.model) : undefined);
     const step = model ? {...e, model} : e;
     agentTree.stepStarted(step, await $.clock.now().catch(() => 0));
-    const chunkClock = await $.clock.now().catch(() => 0);
+    let chunkClock = await $.clock.now().catch(() => 0);
+    let chunkClockAt = Date.now();
     try {
       const stream = next(step);
       for await (const chunk of stream) {
         if (step.agentId && chunk.kind === 'text') {
+          // The pane's own clock ticks at 500ms; message timestamps need no
+          // finer resolution, so one read per tick bounds the per-chunk cost.
+          if (Date.now() - chunkClockAt >= 500) {
+            chunkClock = await $.clock.now().catch(() => chunkClock);
+            chunkClockAt = Date.now();
+          }
           agentTree.assistantTextChunk(step.agentId, step.turnId, step.index, chunk.text, chunkClock);
         }
         yield chunk;
@@ -369,7 +376,7 @@ export function register(on: On, options: PluginOptions): void {
       agentTree.stepFailed(step, await $.clock.now().catch(() => 0));
       throw error;
     } finally {
-      $.ui.invalidate('ui.render');
+      if (agentTree.consumeRenderDirty()) $.ui.invalidate('ui.render');
     }
   });
 
@@ -826,7 +833,7 @@ export function register(on: On, options: PluginOptions): void {
   on('turn.complete', async ($, e, next) => {
     agentTree.turnFinished(e, await $.clock.now().catch(() => 0));
     resetAutoOpenBatchIfIdle();
-    $.ui.invalidate('ui.render');
+    if (agentTree.consumeRenderDirty()) $.ui.invalidate('ui.render');
     endSubagentRoutingTurn(e.isAborted);
     if (endStatusBandTurn()) $.ui.invalidate('ui.render');
     const result = await next(e);

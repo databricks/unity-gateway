@@ -177,6 +177,12 @@ export function registerAgentTree(on: On): void {
     agentTree.syncAgents(agents, clock)
     resetAutoOpenBatchIfIdle()
     if (!refresh) refresh = $.clock.every(500, async () => {
+      // A pane the host hides without a close (a viewed child transcript, a
+      // narrow surface) must not keep polling for the rest of the session;
+      // the next render re-arms the timer. Hosts that omit the pane from the
+      // list keep polling, since there is nothing to trust either way.
+      const own = (await $.ui.panes().catch(() => [])).find(pane => pane.id === PANE_ID)
+      if (own && !own.isShown) { refresh?.cancel(); refresh = undefined; return }
       clock = await $.clock.now().catch(() => clock)
       const current = await $.agent.list().catch(() => [])
       const nextRoster = JSON.stringify(current)
@@ -435,7 +441,7 @@ export function registerAgentTree(on: On): void {
         text(followedName ? `Pinned · ${safeText(followedName, 28)}` : 'Latest from each agent', palette.muted)] })
     const returnRow = text('↩ Results return to Main', palette.muted)
     const hint = tiny ? undefined : text(viewing
-      ? `Viewing ${safeText(viewName || 'subagent', 28)} · Esc returns to Main`
+      ? `Viewing ${safeText(viewName || 'subagent', 28)} · Back to main returns`
       : e.props.isFocused
         ? NATIVE_VIEW ? 'Tab picks a tile · Enter steps into it · Esc closes'
           : 'Tab picks a tile · Enter opens its details · Esc closes'
@@ -457,7 +463,7 @@ export function registerAgentTree(on: On): void {
             Button({ key: 'close-tree', label: 'Close', plain: true, ...(e.props.isFocused ? { hotkey: 'q' } : {}),
               onPress: () => { resetAgentTreeView(); return $.ui.close({ id: PANE_ID }) } }),
           ] }),
-          text(`${detail.name || 'Subagent'} · ${detail.role || 'role unknown'} · ${modelLabel(detail.model)} · effort ${detail.effort || 'unknown'}`, palette.foreground, true),
+          text(`${safeText(detail.name, 120) || 'Subagent'} · ${safeText(detail.role, 80) || 'role unknown'} · ${modelLabel(detail.model)} · effort ${safeText(detail.effort, 40) || 'unknown'}`, palette.foreground, true),
           text(safePreviewText(detail.task, 32768), palette.muted, false, 'wrap'),
           text(`Now · ${activityText(detail)} · ${detail.toolCount} tools${detail.errorCount ? ` · ${detail.errorCount} errors` : ''}`, colorFor(detail.status), false, 'wrap'),
           text(detail.status === 'completed' ? 'FINAL ANSWER' : 'SAYING NOW', palette.muted, true),
@@ -469,10 +475,10 @@ export function registerAgentTree(on: On): void {
             (!['assistant message', 'final answer'].includes(event.action) || event.detail !== detail.assistantText)).slice(-12).map(event => logRow(event)),
           ...([...agentTree.routes.values()].some(route => route.supersededBy === detail.id)
             ? [text('Relaunched after a denied routing attempt', palette.muted, false, 'wrap')] : []),
-          text(`Launch model · ${detail.model || 'not reported'}`, palette.muted, false, 'wrap'),
-          text(`Parent · ${detail.parentId === 'main' ? 'Main session' : detail.parentId ? nodeById.get(detail.parentId)?.name || detail.parentId : 'not reported'}`, palette.muted, false, 'wrap'),
+          text(`Launch model · ${safeText(detail.model, 200) || 'not reported'}`, palette.muted, false, 'wrap'),
+          text(`Parent · ${detail.parentId === 'main' ? 'Main session' : detail.parentId ? safeText(nodeById.get(detail.parentId)?.name, 120) || safeText(detail.parentId, 200) : 'not reported'}`, palette.muted, false, 'wrap'),
           ...([...agentTree.routes.values()].filter(route => route.agentId === detail.id).flatMap(route => [
-            text(`Router selection · ${route.model || 'not reported'}`, palette.muted, false, 'wrap'),
+            text(`Router selection · ${safeText(route.model, 200) || 'not reported'}`, palette.muted, false, 'wrap'),
             ...(route.rationale ? [text(safePreviewText(route.rationale, 32768), palette.muted, false, 'wrap')] : []),
           ])),
           text(`Usage · ${detail.inputTokens ?? 'unknown'} input · ${detail.outputTokens ?? 'unknown'} output tokens`, palette.muted, false, 'wrap'),
@@ -486,7 +492,7 @@ export function registerAgentTree(on: On): void {
       ...(e.props.placement === 'dock' ? { minHeight: bodyRows } : {}), paddingX: compact ? 1 : 2,
       children: [header, ...(hint ? [hint] : []), ...(!tiny ? [treeTitle] : []),
         ...(tiny ? [] : failed.slice(0, 3)).map(node => Button({ key: 'attention:' + node.id, plain: true,
-          label: `! ${node.name || 'Subagent'} · needs attention`, onPress: () => { selected = node.id; $.ui.invalidate('ui.render') } })),
+          label: `! ${safeText(node.name, 120) || 'Subagent'} · needs attention`, onPress: () => { selected = node.id; $.ui.invalidate('ui.render') } })),
         tileGrid, ...routeRows, ...noActivity,
         ...(pager ? [pager] : []),
         ...(hiddenFinished ? [Button({ key: 'show-finished', label: `${hiddenFinished} finished · show`, plain: true,
@@ -494,7 +500,7 @@ export function registerAgentTree(on: On): void {
         logTitle, ...logContent, returnRow,
         Box({ flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, marginTop: 1, children: [
           Button({ key: 'show-active', label: 'Active first', plain: true, dimColor: true,
-            onPress: () => { displayOrder.sort((a, b) => Number(ACTIVE.has(nodeById.get(b)!.status)) - Number(ACTIVE.has(nodeById.get(a)!.status))); page = 0; $.ui.invalidate('ui.render') } }),
+            onPress: () => { displayOrder.sort((a, b) => Number(ACTIVE.has(agentTree.nodes.get(b)?.status ?? '')) - Number(ACTIVE.has(agentTree.nodes.get(a)?.status ?? ''))); page = 0; $.ui.invalidate('ui.render') } }),
           Button({ key: 'show-failed', label: failedOnly ? 'All subagents' : 'Failed subagents', plain: true, dimColor: true,
             onPress: () => { failedOnly = !failedOnly; page = 0; $.ui.invalidate('ui.render') } }),
         ] }),

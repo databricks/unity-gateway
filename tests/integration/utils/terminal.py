@@ -15,6 +15,7 @@ import signal
 import subprocess
 import threading
 import time
+import unicodedata
 from pathlib import PurePath
 
 import pyte
@@ -371,7 +372,13 @@ class TerminalProcess:
         )
         if hit is None:
             raise AssertionError(f"native control is absent: {label}:\n{self.visible}")
-        y, x = hit
+        y, char_index = hit
+        # Mouse coordinates are terminal cells; wide characters before the
+        # label occupy two cells each.
+        x = sum(
+            2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+            for char in self.screen.display[y][:char_index]
+        )
         press = f"\x1b[<0;{x + 2};{y + 1}M\x1b[<0;{x + 2};{y + 1}m"
         self.send(press, reason)
 

@@ -4,7 +4,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 import shutil
 import signal
 import socket
@@ -78,7 +77,7 @@ from ucode.smart_routing.config import (
     selected_version,
 )
 from ucode.smart_routing.session_env import SESSION_ENV_VAR, SESSION_PYTHON_ENV_VAR, start_session
-from ucode.telemetry import agent_version
+from ucode.telemetry import agent_version, parse_semver
 from ucode.ug_headers import ug_headers
 from ucode.ui import print_note, print_warning
 
@@ -433,8 +432,8 @@ export function registerAgentView(_: unknown): void {}
 
 
 def _claude_host_has_view(binary: str = "claude") -> bool:
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", agent_version(binary))
-    return match is not None and tuple(map(int, match.groups())) >= NATIVE_VIEW_CLAUDE_VERSION
+    version = parse_semver(agent_version(binary))
+    return version is not None and version >= NATIVE_VIEW_CLAUDE_VERSION
 
 
 def _write_routed_claude_plugin(

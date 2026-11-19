@@ -156,6 +156,12 @@ function safeToken(value: string): string {
   if (equal > 0 && isCredentialName(token.slice(0, equal))) {
     return prefix + token.slice(0, equal + 1) + '[redacted]' + suffix
   }
+  // JSON without spaces keeps `key:value` in one word, quotes included.
+  const colon = token.indexOf(':')
+  if (colon > 0 && colon < token.length - 1 && !/^[a-z][a-z0-9+.-]*:\/\//i.test(token)
+      && isCredentialName(token.slice(0, colon).replace(/["']/g, ''))) {
+    return prefix + token.slice(0, colon + 1) + '[redacted]' + suffix
+  }
   const path = equal > 0 ? token.slice(equal + 1) : token
   const assignment = equal > 0 ? token.slice(0, equal + 1) : ''
   if (path.toLowerCase().startsWith('file://')) return prefix + assignment + pathBasename(path.slice(7)) + suffix
@@ -190,9 +196,12 @@ export function safePreviewText(value: unknown, maxLength = 240): string {
     if (isShellLine(trimmed) || CODE_STARTS.some(start => trimmed.startsWith(start))) return undefined
     const words = trimmed.split(/\s+/)
     return words.map(word => {
-      if (redactNext) { redactNext = false; return '[redacted]' }
       const token = safeToken(word)
-      if (token.toLowerCase() === 'bearer' || colonCredentialKey(word)) redactNext = true
+      // A marker word is shown, not consumed: `Authorization: Bearer <token>`
+      // must still redact the token after Bearer.
+      const marker = token.toLowerCase() === 'bearer' || colonCredentialKey(word)
+      if (redactNext && !marker) { redactNext = false; return '[redacted]' }
+      if (marker) redactNext = true
       return token
     }).join(' ')
   }).filter((line): line is string => line !== undefined)
@@ -249,6 +258,13 @@ const failedTurns = new Set<string>()
 const tools = new Map<string, ToolRecord>()
 const assistantBuffers = new Map<string, { step: string; text: string }>()
 let main = makeMain()
+// Set by tree-relevant child activity and consumed by the registration's
+// invalidation gates, so main-loop steps and turns do not redraw the session.
+let renderDirty = false
+
+function markRenderDirty(agentId: string | undefined): void {
+  if (agentId !== undefined && agentId !== MAIN_ID) renderDirty = true
+}
 
 function makeMain(): TreeNode {
   return { id: MAIN_ID, name: 'Main', role: 'main', task: 'Main session', status: 'idle', toolCount: 0, errorCount: 0 }
@@ -373,16 +389,21 @@ function applySpawn(node: TreeNode, spawn: PendingSpawn): void {
 
 export const agentTree = {
   get main(): TreeNode { return main },
+
+  // True once, when tree-relevant child activity happened since the last read.
+  consumeRenderDirty(): boolean { const was = renderDirty; renderDirty = false; return was },
   nodes,
   events,
   routes,
 
   routeStarted(toolId: string, name: string, task: string, parentId: string | undefined, now: number): void {
+    renderDirty = true
     routes.set(toolId, { toolId, name, task, parentId, status: 'selecting' })
     emit(now, parentId ?? MAIN_ID, 'route selecting', name)
   },
 
   routeFinished(toolId: string, route: { model: string; rationale: string; seconds?: number } | undefined, now: number): void {
+    renderDirty = true
     const current = routes.get(toolId)
     if (!current) return
     if (route) {
@@ -395,6 +416,7 @@ export const agentTree = {
   },
 
   spawnStarted(e: SpawnInput, now: number): void {
+    markRenderDirty(e.parentAgentId)
     let route = routes.get(e.tool_use_id)
     if (!route) {
       route = { toolId: e.tool_use_id, name: e.name ?? e.subagentType, task: e.description,
@@ -412,14 +434,15 @@ export const agentTree = {
   },
 
   spawnFinished(e: SpawnInput, result: SpawnResult, now: number): void {
+    markRenderDirty(e.parentAgentId)
     const id = e.tool_use_id
-    const spawn = pendingSpawns.get(id)
-    const route = routes.get(id)
+    const spawn = id === undefined ? undefined : pendingSpawns.get(id)
+    const route = id === undefined ? undefined : routes.get(id)
     const parentId = spawn?.parentId ?? e.parentAgentId ?? route?.parentId ?? MAIN_ID
     if (result.deny !== undefined) {
       if (route) {
         route.status = 'denied'
-        lifeFor(id).deniedAt = now
+        lifeFor(route.toolId).deniedAt = now
       }
       const tool = tools.get(id)
       if (!tool?.errorCounted) {
@@ -472,10 +495,11 @@ export const agentTree = {
       }
     }
     emit(now, agentId ?? parentId, agentId ? 'agent started' : 'spawn resolved', route?.name ?? result.model)
-    pendingSpawns.delete(id)
+    if (id !== undefined) pendingSpawns.delete(id)
   },
 
   stepStarted(e: StepInput, now: number): void {
+    markRenderDirty(e.agentId)
     const node = nodeFor(e.agentId)
     if (endedChild(node) || staleTurn(node, e.turnId)) return
     const key = turnKey(node.id, e.turnId) + ':' + e.index
@@ -489,6 +513,7 @@ export const agentTree = {
   },
 
   assistantTextChunk(agentId: string, turnId: string, index: number, text: string, now?: number): void {
+    markRenderDirty(agentId)
     const node = nodeFor(agentId)
     if (endedChild(node) || staleTurn(node, turnId)) return
     const step = turnKey(node.id, turnId) + ':' + index
@@ -504,6 +529,7 @@ export const agentTree = {
   },
 
   stepFinished(e: StepInput, result: StepResult, now: number): void {
+    markRenderDirty(e.agentId)
     const node = nodeFor(e.agentId)
     const isLate = endedChild(node) || staleTurn(node, result.turnId)
     const usage = usageFrom(result.usage)
@@ -525,6 +551,7 @@ export const agentTree = {
   },
 
   stepFailed(e: StepInput, now: number): void {
+    markRenderDirty(e.agentId)
     const node = nodeFor(e.agentId)
     if (endedChild(node) || staleTurn(node, e.turnId)) return
     assistantBuffers.delete(node.id)
@@ -534,6 +561,7 @@ export const agentTree = {
   },
 
   turnStarted(e: TurnInput, now: number): void {
+    markRenderDirty(e.agentId)
     const node = nodeFor(e.agentId)
     markActive(node, now)
     activeTurns.set(node.id, e.turnId)
@@ -542,6 +570,7 @@ export const agentTree = {
   },
 
   turnFinished(e: TurnInput, now: number): void {
+    markRenderDirty(e.agentId)
     const node = nodeFor(e.agentId)
     const isCurrentTurn = activeTurns.get(node.id) === e.turnId
     const isLate = staleTurn(node, e.turnId) || (endedChild(node) && !isCurrentTurn)
@@ -581,9 +610,9 @@ export const agentTree = {
   },
 
   toolStarted(e: ToolInput, now: number): void {
-    // A SubagentHandback is the delivery receipt for a finished child, not work
-    // by a new agent: the engine may raise it with an agentId that has no roster
-    // node, and creating one manufactured the "Unnamed · NOT CONNECTED" tile.
+    markRenderDirty(e.agentId)
+    // Invariant: a SubagentHandback is a finished child's delivery receipt, so
+    // an agentId with no roster node must never create a tile.
     if (e.tool === 'SubagentHandback' && e.agentId !== undefined && !nodes.has(e.agentId)) return
     const node = nodeFor(e.agentId)
     if (e.tool_use_id !== undefined && tools.has(e.tool_use_id)) return
@@ -598,6 +627,7 @@ export const agentTree = {
   },
 
   toolFinished(e: ToolInput, result: { isError?: boolean; deny?: string }, now: number): void {
+    markRenderDirty(e.agentId)
     if (e.tool === 'SubagentHandback' && e.agentId !== undefined && !nodes.has(e.agentId)) return
     const node = nodeFor(e.agentId)
     let record = e.tool_use_id === undefined ? undefined : tools.get(e.tool_use_id)

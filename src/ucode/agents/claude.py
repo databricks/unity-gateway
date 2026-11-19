@@ -137,7 +137,7 @@ from ucode.state import (
     save_state,
 )
 from ucode.string_utils import model_picker_label
-from ucode.telemetry import agent_version, ucode_user_agent, ug_version
+from ucode.telemetry import agent_version, parse_semver, ucode_user_agent, ug_version
 from ucode.ug_headers import published_agent_config_headers_warning
 from ucode.ui import print_note, print_success, print_warning
 from ucode.workspace import (
@@ -180,11 +180,7 @@ SMART_ROUTING_STATE_KEY = smart_routing_v2.LEGACY_STATE_KEY
 
 
 def _parse_version(value: str) -> tuple[int, int, int] | None:
-    match = re.search(r"(\d+)\.(\d+)\.(\d+)", value)
-    if not match:
-        return None
-    major, minor, patch = match.groups()
-    return int(major), int(minor), int(patch)
+    return parse_semver(value)
 
 
 def minimum_version_error() -> str | None:

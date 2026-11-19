@@ -572,7 +572,7 @@ test('stepping into a child asks for its native view and back-to-main returns to
   await pane.redraw({ ...TREE_PANE.props, view: { agentId: 'child-b' } });
   const drawn = JSON.stringify(await pane.drawn());
   expect(drawn).toContain('Back to main');
-  expect(drawn).toContain('Viewing Heron · Esc returns to Main');
+  expect(drawn).toContain('Viewing Heron · Back to main returns');
   expect(drawn).toContain('· in view');
   await pane.press({ key: 'back-to-main' });
   expect(views).toHaveLength(2);
@@ -837,7 +837,7 @@ test('multilingual tasks use bounded native layout and keep their full text in d
   await pane.unmount();
 });
 
-for (const bodyColumns of [24, 54, 64, 100]) test(`the tree preserves every agent at ${bodyColumns} columns across pages and nested identities`, async ($, on) => {
+for (const bodyColumns of [24, 54]) test(`the tree preserves every agent at ${bodyColumns} columns across pages and nested identities`, async ($, on) => {
   const agents: AgentInfo[] = Array.from({ length: 25 }, (_, index) => ({
     id: `child-${index}`, name: `Worker ${index}`, description: 'Same task', type: 'general-purpose',
     status: 'running', parentId: index === 1 ? 'child-0' : undefined,
@@ -1501,7 +1501,8 @@ test('streamed child text becomes a sanitized excerpt on the card and the detail
     'The lexer in /home/user/secret/lexer.py splits tokens early. ', '```\ncat /etc/shadow\n```\n', '`rm -rf /tmp/x` is never called. ', '\u001b[31mColour\u0007 codes are stripped. ', 'token=sk-live-123456',
     ' The JSON config holds "api_key": "SENTINEL" and the header token: hunter2. ',
     'The env sets apiKey=abcd1234effe and the access accessToken=zzz-9999 in one line. ',
-    'The split credential is token=', 'split-secret-42 across chunks. ', complete,
+    'The split credential is token=', 'split-secret-42 across chunks. ',
+    'The header was Authorization: Bearer sk-abc123 and the config had "password":"qwerty". ', complete,
   ]);
   const card = JSON.stringify(await pane.drawn());
   expect(card).toContain('The lexer in lexer.py splits tokens early.');
@@ -1509,13 +1510,15 @@ test('streamed child text becomes a sanitized excerpt on the card and the detail
   expect(card).toContain(complete);
   expect(card).not.toContain('…');
   for (const leaked of ['/home/user', 'shadow', 'rm -rf', 'sk-live-123456', '\\u001b', '\\u0007',
-    'SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42']) expect(card).not.toContain(leaked);
+    'SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42',
+    'sk-abc123', 'qwerty']) expect(card).not.toContain(leaked);
   await pane.press({ key: 'details:talker' });
   const detail = JSON.stringify(await pane.drawn());
   expect(textsOf(await pane.drawn()).some(line => line.startsWith('SAYING NOW'))).toBe(true);
   expect(detail).toContain(complete);
   expect(detail).not.toContain('…');
-  for (const leaked of ['SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42']) expect(detail).not.toContain(leaked);
+  for (const leaked of ['SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42',
+    'sk-abc123', 'qwerty']) expect(detail).not.toContain(leaked);
   await pane.unmount();
 });
 

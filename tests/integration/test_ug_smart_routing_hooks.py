@@ -44,7 +44,11 @@ from utils.managed import (
     use_managed_config_fixture,
     use_smart_routing_fixture,
 )
-from utils.request_recorder import record_claude_response_protocol, served_inference_request
+from utils.request_recorder import (
+    assert_served,
+    record_claude_response_protocol,
+    served_inference_request,
+)
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
 pytestmark = pytest.mark.harness_latest
@@ -797,177 +801,217 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
     model matches the child's native API requests, and the parent and child answers remain
     present in the terminal and session evidence after closing and reopening the pane. The
     child api-request cross-check applies only where the CLI writes api-request rows into
-    session transcripts (Claude 2.1.290, the CI pin, does not); the tree's reported launch
-    identity and the persisted decision remain the evidence there.
+    session transcripts (Claude 2.1.290, the CI pin, does not); there the recorded gateway
+    traffic proves the child's inference, and the tree's reported launch identity and the
+    persisted decision remain the evidence.
     """
     session = live_session
     session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_only_v0"
-    session.run(
-        "configure",
-        "--user",
-        "--agents",
-        "claude",
-        "--workspace",
-        workspace,
-        "--skip-validate",
-        "--skip-upgrade",
-        "--disable-databricks-ai-tools",
-    )
     parent_model = session.model_for_explicit_case("claude")
     task = FileTask(session)
-
-    with AgentTerminal(
-        session,
-        "claude",
-        [
-            str(session.binary),
+    with record_claude_response_protocol(session, workspace) as recorder:
+        session.run(
+            "configure",
+            "--user",
+            "--agents",
             "claude",
-            "--model",
-            parent_model,
-            "--enable-smart-routing",
-        ],
-        "smart-router-native-tree",
-    ) as tui:
-        tui.boot()
-        tui.submit(task.delegate_prompt)
-        tui.wait_for_task(
-            task,
-            completion=lambda: (
-                task.completed(session, "claude")
-                and bool(
-                    claude_delivered_child_answers(agent_sessions(session, "claude"), task.value)
-                )
-            ),
-            description="the routed child answer delivered to its parent",
+            "--workspace",
+            recorder.url,
+            "--skip-validate",
+            "--skip-upgrade",
+            "--disable-databricks-ai-tools",
         )
 
-        sessions_before = agent_sessions(session, "claude")
-        task.assert_completed(session, "claude")
-        task.assert_completed(session, "claude", child=True)
-        assert_one_delegated_task(sessions_before)
-        assert_subagent_routed(session, "claude", task)
-
-        child_models = {
-            child_id(path): models
-            for path, records in sessions_before.items()
-            if is_child_session("claude", path, records)
-            if (models := claude_completed_task_models(records, task.value))
-        }
-        assert child_models, "No completed child transcript reported its model"
-
-        decisions = _routing_decisions(session, "claude")
-        starts = read_jsonl(session.home / ".ucode" / "claude-smart-routing-audit.jsonl")
-        routed_children = [
-            (decision, start)
-            for decision in decisions
-            for start in starts
-            if start.get("decision_id") == decision.get("decision_id")
-            and start.get("agent_id") in child_models
-        ]
-        assert routed_children, "No completed child matched a persisted routing decision"
-
-        tui.submit("/smart-router tree")
-        tui.wait_for(lambda screen: "SUBAGENTS" in screen, "the native subagent tree", timeout=30)
-        tui.send("\x1b[F", "scroll to the tree's completion summary")
-        tui.wait_for(
-            lambda screen: re.search(r"subagents \d+/\d+ done", screen) is not None,
-            "the native subagent tree reporting the completed child",
-            timeout=30,
-        )
-        tui.send("\x1b[H", "return to the first child card")
-        tui.wait_for(lambda screen: "SUBAGENTS" in screen, "tree header", timeout=30)
-        tui.click_label("details", "show the first child card's details")
-        tui.wait_for(lambda screen: "Back to all subagents" in screen, "child details", timeout=30)
-        tui.send("\x1b[F", "scroll to the child's model identity")
-
-        tui.wait_for(
-            lambda screen: "Launch model ·" in screen and "Router selection ·" in screen,
-            "selected and launched model details",
-            timeout=30,
-        )
-        selected_id = next(agent_id for agent_id in child_models if agent_id in tui.visible)
-        decision, _ = next(
-            pair for pair in routed_children if pair[1].get("agent_id") == selected_id
-        )
-        selected_model = decision["requested_model"]
-        child_records = next(
-            records for path, records in sessions_before.items() if child_id(path) == selected_id
-        )
-        # Claude 2.1.290 (the CI pin) writes no api-request rows into session transcripts;
-        # newer CLIs do. Calibrate on the parent transcript: when the CLI records requests
-        # there, the child's requests must carry exactly the selected model.
-        parent_writes_api_requests = any(
-            row.get("type") == "api-request"
-            for path, records in sessions_before.items()
-            if not is_child_session("claude", path, records)
-            for row in records
-        )
-        requests = [row for row in child_records if row.get("type") == "api-request"]
-        request_models = {row["params"]["model"] for row in requests}
-        if parent_writes_api_requests:
-            assert request_models == {selected_model.removesuffix("[1m]")}, request_models
-            if selected_model.endswith("[1m]"):
-                assert all("context-1m-2025-08-07" in row["params"]["betas"] for row in requests)
-        response_models = child_models[selected_id]
-        assert len(response_models) == 1, (selected_id, response_models)
-        # Providers may report a deployment name instead of the requested catalog alias.
-        launched_model = selected_model
-        session.record(
-            "tree-model-identity.json",
-            {
-                "agent_id": selected_id,
-                "selected_model": selected_model,
-                "request_models": sorted(request_models),
-                "response_models": sorted(response_models),
-                "request_model_check": (
-                    "child api-request rows"
-                    if parent_writes_api_requests
-                    else "unavailable: this CLI writes no api-request rows into transcripts"
+        with AgentTerminal(
+            session,
+            "claude",
+            [
+                str(session.binary),
+                "claude",
+                "--model",
+                parent_model,
+                "--enable-smart-routing",
+            ],
+            "smart-router-native-tree",
+        ) as tui:
+            tui.boot()
+            checkpoint = recorder.checkpoint()
+            tui.submit(task.delegate_prompt)
+            tui.wait_for_task(
+                task,
+                completion=lambda: (
+                    task.completed(session, "claude")
+                    and bool(
+                        claude_delivered_child_answers(
+                            agent_sessions(session, "claude"), task.value
+                        )
+                    )
                 ),
-            },
-        )
-        assert f"Router selection · {selected_model}" in tui.visible, tui.visible
-        assert f"Launch model · {launched_model}" in tui.visible, tui.visible
+                description="the routed child answer delivered to its parent",
+            )
 
-        tui.send("\x1b", "close the native subagent tree")
-        tui.wait_for(
-            lambda screen: "SUBAGENTS" not in screen and task.value in screen,
-            "the original parent answer after closing the tree",
-            timeout=30,
-        )
-        tui.submit("/smart-router tree")
-        tui.wait_for(lambda screen: "SUBAGENTS" in screen, "the reopened subagent tree", timeout=30)
-        tui.send("\x1b[F", "scroll to the retained completion summary")
-        tui.wait_for(
-            lambda screen: re.search(r"subagents \d+/\d+ done", screen) is not None,
-            "the reopened tree overview with the completed child",
-            timeout=30,
-        )
-        tui.send("\x1b[H", "return to the retained child card")
-        tui.wait_for(lambda screen: "SUBAGENTS" in screen, "retained tree header", timeout=30)
-        tui.click_label("details", "reselect the same child after reopening")
-        tui.wait_for(
-            lambda screen: "Back to all subagents" in screen, "retained child details", timeout=30
-        )
-        tui.send("\x1b[F", "scroll to the retained model identity")
-        tui.wait_for(
-            lambda screen: (
-                "Launch model ·" in screen
-                and "Router selection ·" in screen
-                and selected_id in screen
-            ),
-            "the reselected child with its retained model details",
-            timeout=30,
-        )
-        assert f"Router selection · {selected_model}" in tui.visible, tui.visible
-        assert f"Launch model · {launched_model}" in tui.visible, tui.visible
-        tui.send("\x1b", "close the reopened native subagent tree")
-        tui.wait_for(
-            lambda screen: "SUBAGENTS" not in screen and task.value in screen,
-            "the original parent answer after reopening the tree",
-            timeout=30,
-        )
-        tui.exit_normally()
+            sessions_before = agent_sessions(session, "claude")
+            task.assert_completed(session, "claude")
+            task.assert_completed(session, "claude", child=True)
+            assert_one_delegated_task(sessions_before)
+            assert_subagent_routed(session, "claude", task)
+
+            child_models = {
+                child_id(path): models
+                for path, records in sessions_before.items()
+                if is_child_session("claude", path, records)
+                if (models := claude_completed_task_models(records, task.value))
+            }
+            assert child_models, "No completed child transcript reported its model"
+
+            decisions = _routing_decisions(session, "claude")
+            starts = read_jsonl(session.home / ".ucode" / "claude-smart-routing-audit.jsonl")
+            routed_children = [
+                (decision, start)
+                for decision in decisions
+                for start in starts
+                if start.get("decision_id") == decision.get("decision_id")
+                and start.get("agent_id") in child_models
+            ]
+            assert routed_children, "No completed child matched a persisted routing decision"
+
+            tui.submit("/smart-router tree")
+            tui.wait_for(
+                lambda screen: "SUBAGENTS" in screen, "the native subagent tree", timeout=30
+            )
+            tui.send("\x1b[F", "scroll to the tree's completion summary")
+            tui.wait_for(
+                lambda screen: re.search(r"subagents \d+/\d+ done", screen) is not None,
+                "the native subagent tree reporting the completed child",
+                timeout=30,
+            )
+            tui.send("\x1b[H", "return to the first child card")
+            tui.wait_for(lambda screen: "SUBAGENTS" in screen, "tree header", timeout=30)
+            tui.click_label("details", "show the first child card's details")
+            tui.wait_for(
+                lambda screen: "Back to all subagents" in screen, "child details", timeout=30
+            )
+            tui.send("\x1b[F", "scroll to the child's model identity")
+
+            tui.wait_for(
+                lambda screen: "Launch model ·" in screen and "Router selection ·" in screen,
+                "selected and launched model details",
+                timeout=30,
+            )
+            selected_id = next(agent_id for agent_id in child_models if agent_id in tui.visible)
+            decision, _ = next(
+                pair for pair in routed_children if pair[1].get("agent_id") == selected_id
+            )
+            selected_model = decision["requested_model"]
+            child_records = next(
+                records
+                for path, records in sessions_before.items()
+                if child_id(path) == selected_id
+            )
+            # Claude 2.1.290 (the CI pin) writes no api-request rows into session transcripts;
+            # newer CLIs do. Calibrate on the parent transcript: when the CLI records requests
+            # there, the child's requests must carry exactly the selected model.
+            parent_writes_api_requests = any(
+                row.get("type") == "api-request"
+                for path, records in sessions_before.items()
+                if not is_child_session("claude", path, records)
+                for row in records
+            )
+            requests = [row for row in child_records if row.get("type") == "api-request"]
+            request_models = {row["params"]["model"] for row in requests}
+            if parent_writes_api_requests:
+                assert request_models == {selected_model.removesuffix("[1m]")}, request_models
+                if selected_model.endswith("[1m]"):
+                    assert all(
+                        "context-1m-2025-08-07" in row["params"]["betas"] for row in requests
+                    )
+            response_models = child_models[selected_id]
+            assert len(response_models) == 1, (selected_id, response_models)
+            # Providers may report a deployment name instead of the requested catalog alias.
+            launched_model = selected_model
+            session.record(
+                "tree-model-identity.json",
+                {
+                    "agent_id": selected_id,
+                    "selected_model": selected_model,
+                    "request_models": sorted(request_models),
+                    "response_models": sorted(response_models),
+                    "request_model_check": (
+                        "child api-request rows"
+                        if parent_writes_api_requests
+                        else "recorded gateway traffic (assert_served)"
+                    ),
+                },
+            )
+            assert f"Router selection · {selected_model}" in tui.visible, tui.visible
+            assert f"Launch model · {launched_model}" in tui.visible, tui.visible
+
+            tui.send("\x1b", "close the native subagent tree")
+            tui.wait_for(
+                lambda screen: "SUBAGENTS" not in screen and task.value in screen,
+                "the original parent answer after closing the tree",
+                timeout=30,
+            )
+            tui.submit("/smart-router tree")
+            tui.wait_for(
+                lambda screen: "SUBAGENTS" in screen, "the reopened subagent tree", timeout=30
+            )
+            tui.send("\x1b[F", "scroll to the retained completion summary")
+            tui.wait_for(
+                lambda screen: re.search(r"subagents \d+/\d+ done", screen) is not None,
+                "the reopened tree overview with the completed child",
+                timeout=30,
+            )
+            tui.send("\x1b[H", "return to the retained child card")
+            tui.wait_for(lambda screen: "SUBAGENTS" in screen, "retained tree header", timeout=30)
+            tui.click_label("details", "reselect the same child after reopening")
+            tui.wait_for(
+                lambda screen: "Back to all subagents" in screen,
+                "retained child details",
+                timeout=30,
+            )
+            tui.send("\x1b[F", "scroll to the retained model identity")
+            tui.wait_for(
+                lambda screen: (
+                    "Launch model ·" in screen
+                    and "Router selection ·" in screen
+                    and selected_id in screen
+                ),
+                "the reselected child with its retained model details",
+                timeout=30,
+            )
+            assert f"Router selection · {selected_model}" in tui.visible, tui.visible
+            assert f"Launch model · {launched_model}" in tui.visible, tui.visible
+            tui.send("\x1b", "close the reopened native subagent tree")
+            tui.wait_for(
+                lambda screen: "SUBAGENTS" not in screen and task.value in screen,
+                "the original parent answer after reopening the tree",
+                timeout=30,
+            )
+            # Independent launch evidence: the child's own inference in the
+            # recorded gateway traffic, paired with a completed HTTP 200.
+            routed_model = selected_model.removesuffix("[1m]")
+            child_requests = [
+                request
+                for request in recorder.requests_after(checkpoint)
+                if request.method == "POST"
+                and request.path == "/ai-gateway/anthropic/v1/messages"
+                and request.payload.get("model") == routed_model
+            ]
+            if parent_model.removesuffix("[1m]") == routed_model:
+                # The parent shares the routed model; a marker filter cannot
+                # separate them, so served-inference evidence stays model-level.
+                child_requests = [
+                    request
+                    for request in child_requests
+                    if task.marker in json.dumps(request.payload.get("messages", []))
+                ]
+            assert child_requests, (
+                f"No recorded inference at the routed model {routed_model}; recorded models: "
+                f"{sorted({request.payload.get('model') for request in recorder.requests_after(checkpoint) if request.path == '/ai-gateway/anthropic/v1/messages'})}"
+            )
+            assert_served(recorder, child_requests[0], routed_model)
+            tui.exit_normally()
 
     sessions_after = agent_sessions(session, "claude")
     task.assert_completed(session, "claude")

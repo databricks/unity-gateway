@@ -92,6 +92,8 @@ export const registerStatusBand = (on: On, auto?: AutoPicker): void => {
       Button({ key: 'view-subagents', label: 'View subagents', plain: true,
         onPress: async () => {
           try {
+            // The open sequence is inline: the mod compiler refuses to pass $
+            // into a helper imported from another module.
             resetAgentTreeView()
             const own = (await $.ui.panes()).find(pane => pane.id === AGENT_TREE_PANE.id)
             if (own && !own.isShown) await $.ui.close({id: AGENT_TREE_PANE.id})
