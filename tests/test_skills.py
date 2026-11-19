@@ -84,7 +84,7 @@ def test_reinstall_replaces_changed_bundle_and_skips_unchanged_bundle(
         {"hook_event_name": "SessionStart", "source": "compact"},
     ],
 )
-def test_orchestrator_injects_the_installed_agent_instructions(
+def test_orchestrator_injects_the_bundled_agent_instructions(
     bundled_skill, monkeypatch, agent, payload, isaac_launch_mode
 ):
     if isaac_launch_mode is None:
@@ -96,7 +96,6 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     source.joinpath("SKILL.md").unlink()
     for name in ("claude", "codex"):
         source.joinpath(f"SKILL.{name}.md").write_text(f"{name} instructions")
-    installed = skills.install_skill(skills.SMART_ROUTER_ORCHESTRATOR_SKILL, agent, home)
     monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", "1")
     monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "1")
     session_env.start_session()
@@ -110,7 +109,7 @@ def test_orchestrator_injects_the_installed_agent_instructions(
     assert output is not None
     context = output["hookSpecificOutput"]["additionalContext"]
     assert context.endswith(f"\n\n{agent} instructions")
-    assert context.endswith(installed.joinpath("SKILL.md").read_text())
+    assert not home.exists()
 
     session_env.set_session_environment({"ENABLE_SMART_ROUTING_SUBAGENT_ONLY": "0"})
     output = orchestrator.hook_output(payload, agent=agent)

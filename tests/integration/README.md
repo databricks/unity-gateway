@@ -1215,9 +1215,8 @@ PATH conflicts for the Smart Router skill have subprocess/component coverage in
 establish PowerShell command execution.
 
 The toggle journeys retain the legacy routing-only and orchestration cases and add each of
-the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require only `smart-router`
-for routing-only cases, and both `smart-router-orchestrator` and `smart-router` when orchestration
-is enabled. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
+the three subagent-only `SMART_ROUTER_CONFIG_VERSION` presets. They require `smart-router` as the
+only installed skill, with or without orchestration. Claude checks each local mod confirmation and the recorded `smart_router_recipe_name`
 on the following calculation's real gateway requests. Codex verifies saved session controls,
 a new CLI confirmation in native tool-result records, and a completed answer to the
 following calculation. Skill toggles finish normally without interrupting the main turn.

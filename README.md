@@ -751,9 +751,10 @@ like a plain `ug codex`, without the Smart Router skills or routing hooks.
 `SMART_ROUTER_NAME` still selects the router independently of the preset.
 
 Smart-routed Claude and Codex sessions install `smart-router`. The `subagent_orch_v0`
-and `subagent_orch_v1` versions also install and activate the bundled `smart-router-orchestrator` skill.
+and `subagent_orch_v1` versions also activate the bundled Smart Router Orchestrator workflow,
+which its hooks inject, so no orchestrator skill is installed.
 `--enable-smart-routing` and workspace smart routing select `subagent_orch_v0_claude_only`, which
-installs both skills for Claude only; Codex gets neither. For example:
+routes and orchestrates Claude only; Codex gets neither. For example:
 
 ```bash
 SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0 ug claude

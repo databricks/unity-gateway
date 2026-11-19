@@ -209,14 +209,9 @@ def _installed_skills(session, agent: str) -> list[str]:
     )
 
 
-def _toggle_with_skill(
-    tui, session, agent: str, enabled: bool, orchestration_enabled: bool
-) -> None:
+def _toggle_with_skill(tui, session, agent: str, enabled: bool) -> None:
     installed_skills = _installed_skills(session, agent)
-    expected_skills = (
-        ["smart-router", "smart-router-orchestrator"] if orchestration_enabled else ["smart-router"]
-    )
-    assert installed_skills == expected_skills, installed_skills
+    assert installed_skills == ["smart-router"], installed_skills
 
     state = "on" if enabled else "off"
     invocation = f"/smart-router {state}" if agent == "claude" else f"$smart-router {state}"
@@ -821,9 +816,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_off(
             session, "claude", [str(session.binary), "claude"], "smart-router-skill-off"
         ) as tui:
             tui.boot()
-            _toggle_with_skill(
-                tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
-            )
+            _toggle_with_skill(tui, session, "claude", enabled=False)
             checkpoint = recorder.checkpoint()
             task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
             recipe = _assert_claude_calculation_requests(
@@ -892,9 +885,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
                 launch_recipe=None,
                 orchestration_enabled=orchestration_enabled,
             )
-            _toggle_with_skill(
-                tui, session, "claude", enabled=False, orchestration_enabled=orchestration_enabled
-            )
+            _toggle_with_skill(tui, session, "claude", enabled=False)
             # Prove "off" takes effect after a routed child before turning routing back on.
             checkpoint = recorder.checkpoint()
             off_task = _run_calculation(tui, session, "claude", "1+2", "3", False, routed=False)
@@ -907,9 +898,7 @@ def test_smart_router_skill_turns_claude_subagent_routing_back_on(
                 orchestration_enabled=orchestration_enabled,
             )
             assert recipe == "DISABLED", recipe
-            _toggle_with_skill(
-                tui, session, "claude", enabled=True, orchestration_enabled=orchestration_enabled
-            )
+            _toggle_with_skill(tui, session, "claude", enabled=True)
             checkpoint = recorder.checkpoint()
             task = _run_calculation(
                 tui, session, "claude", "2+2", "4", orchestration_enabled, routed=True
@@ -960,9 +949,7 @@ def test_smart_router_skill_turns_codex_subagent_routing_off(
         session, "codex", [str(session.binary), "codex"], "smart-router-skill-off"
     ) as tui:
         tui.boot()
-        _toggle_with_skill(
-            tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
-        )
+        _toggle_with_skill(tui, session, "codex", enabled=False)
         _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
         tui.exit_normally()
         transcript = "".join(tui.output)
@@ -1008,14 +995,10 @@ def test_smart_router_skill_turns_codex_subagent_routing_back_on(
     ) as tui:
         tui.boot()
         _run_calculation(tui, session, "codex", "1+1", "2", orchestration_enabled, routed=True)
-        _toggle_with_skill(
-            tui, session, "codex", enabled=False, orchestration_enabled=orchestration_enabled
-        )
+        _toggle_with_skill(tui, session, "codex", enabled=False)
         # Prove "off" takes effect after a routed child before turning routing back on.
         _run_calculation(tui, session, "codex", "1+2", "3", False, routed=False)
-        _toggle_with_skill(
-            tui, session, "codex", enabled=True, orchestration_enabled=orchestration_enabled
-        )
+        _toggle_with_skill(tui, session, "codex", enabled=True)
         _run_calculation(tui, session, "codex", "2+2", "4", orchestration_enabled, routed=True)
         tui.exit_normally()
         transcript = "".join(tui.output)
