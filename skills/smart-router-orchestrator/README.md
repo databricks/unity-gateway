@@ -1,21 +1,20 @@
 # Smart Router Orchestrator
 
 UG bundles the `smart-router-orchestrator` workflow and five Claude role definitions.
-Smart-routed Claude and Codex launches install and activate this skill alongside
-`smart-router` with `SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0` or `subagent_orch_v1`.
+Smart-routed Claude and Codex launches activate this workflow with
+`SMART_ROUTER_CONFIG_VERSION=subagent_orch_v0` or `subagent_orch_v1`.
 With `--enable-smart-routing` or workspace smart routing and no other version set, the default
-`subagent_orch_v0_claude_only` installs it for Claude only; Codex warns and launches unrouted
-without either skill.
+`subagent_orch_v0_claude_only` activates it for Claude only; Codex warns and launches unrouted.
 UG expands the selected version into the session's legacy feature flags. The `_v1` revision
 enables both V2 and subagent-only routing flags alongside orchestration; subagent-only still
 takes precedence, so the first prompt is not routed.
 The existing `ENABLE_SMART_ROUTER_ORCHESTRATOR=1` opt-in remains supported when
 `SMART_ROUTER_CONFIG_VERSION` is unset; `subagent_only_v0` explicitly leaves orchestration off.
-Otherwise the feature is off; routing alone installs only `smart-router`.
+Otherwise the feature is off.
 
-`SKILL.claude.md` and `SKILL.codex.md` hold each agent's instructions. UG installs
-the selected file as `SKILL.md` and injects that same version through the hooks.
-Role definitions and other bundle resources remain shared.
+`SKILL.claude.md` and `SKILL.codex.md` hold each agent's instructions. The hooks inject
+the selected file from the UG installation, so UG doesn't install this skill into the
+agent's skills directory. Role definitions and other bundle resources remain shared.
 
 The workflow is injected before root prompts and after compaction. The hook checks
 the feature flag, UG session, and current routing controls. The skill uses that

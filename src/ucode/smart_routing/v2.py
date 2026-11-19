@@ -115,14 +115,11 @@ class ClaudeRoutingSetupError(RuntimeError):
 
 
 def _prepare_smart_router_session(agent: str) -> Path:
-    skills = [SMART_ROUTER_SKILL]
-    if orchestrator.feature_enabled(agent=agent):
-        skills.append(SMART_ROUTER_ORCHESTRATOR_SKILL)
-    for skill in skills:
-        try:
-            install_skill(skill, agent, config_io.APP_DIR.parent)
-        except (OSError, RuntimeError) as exc:
-            print_warning(f"Could not install the {skill} skill: {exc}")
+    # Smart Router Orchestrator needs no installed skill: its hooks inject the bundled workflow.
+    try:
+        install_skill(SMART_ROUTER_SKILL, agent, config_io.APP_DIR.parent)
+    except (OSError, RuntimeError) as exc:
+        print_warning(f"Could not install the {SMART_ROUTER_SKILL} skill: {exc}")
     return start_session()
 
 

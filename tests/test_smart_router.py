@@ -50,15 +50,22 @@ def _checkout_skill_bundle(monkeypatch):
     monkeypatch.setattr(session_env, "CONTROLS_READ_RETRY_SECONDS", 0)
 
 
+@pytest.mark.parametrize("orchestration", ["0", "1"])
 @pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_smart_routed_session_installs_skill(tmp_path, monkeypatch, agent):
+def test_smart_routed_session_installs_only_the_smart_router_skill(
+    tmp_path, monkeypatch, agent, orchestration
+):
     monkeypatch.delenv(session_env.SESSION_ENV_VAR, raising=False)
     monkeypatch.setenv("UCODE_SMART_ROUTER_PYTHON", "/older/install/python")
+    monkeypatch.setenv("ENABLE_SMART_ROUTER_ORCHESTRATOR", orchestration)
 
     session_path = v2._prepare_smart_router_session(agent)
 
     home = config_io.APP_DIR.parent
     assert home.joinpath(f".{agent}/skills/{SMART_ROUTER_SKILL}/SKILL.md").is_file()
+    assert [path.name for path in home.joinpath(f".{agent}/skills").iterdir()] == [
+        SMART_ROUTER_SKILL
+    ]
     assert not home.joinpath(f".agents/skills/{SMART_ROUTER_SKILL}").exists()
     assert session_path == Path(os.environ[session_env.SESSION_ENV_VAR])
     assert Path(os.environ[session_env.SESSION_ENV_VAR]).is_file()
