@@ -5,14 +5,17 @@ Copilot sends every Copilot API call to ``COPILOT_API_URL``, which ug sets to
 choice go to the workspace's AI Gateway: the caller's GitHub token stays in ``Authorization`` and a
 Databricks token rides the swap header, with the Model Provider Service and the caller's Copilot
 API host. Every other Copilot API call goes straight to that Copilot API host with the caller's
-own headers. Responses are relayed as they arrive, never rewritten.
+own headers. Copilot's OTLP export posts below the same secret: traces go to the gateway's OTel
+route with a Databricks token in ``Authorization``, and metrics, which the gateway doesn't take,
+get an empty success. Responses are relayed as they arrive, never rewritten.
 
 Security invariants:
   - Binds 127.0.0.1 and serves only requests addressed to it, from no browser origin, whose first
     path segment is the session secret. GitHub MCP, which Copilot sends without the base path, is
     the one exception and only ever goes direct.
-  - A Databricks token is added only on the exact gateway routes. A direct call carries no
-    Databricks header and goes only to a GitHub Copilot API host, without following redirects.
+  - A Databricks token is added only on the exact gateway routes and the OTel trace route. A
+    direct call carries no Databricks header and goes only to a GitHub Copilot API host, without
+    following redirects.
   - Never logs header values or bodies.
 """
 
@@ -55,6 +58,12 @@ GATEWAY_ROUTES: Mapping[tuple[str, str], str] = {
     ("GET", "/models"): "/ai-gateway/v1/models",
     ("POST", "/auto"): "/ai-gateway/github-copilot/v1/auto",
 }
+# Where Copilot's OTLP exporter posts, below the session secret.
+OTEL_PATH = "/ai-gateway/otel"
+_OTEL_TRACES_CALL = ("POST", f"{OTEL_PATH}/v1/traces")
+_OTEL_METRICS_CALL = ("POST", f"{OTEL_PATH}/v1/metrics")
+# A session credential the exporter may send, which must not reach the gateway.
+_OTEL_SESSION_CREDENTIAL_HEADER = "x-api-key"
 # Copilot joins GitHub MCP to the bare host and port, dropping the session secret.
 _SECRETLESS_DIRECT_CALLS = frozenset({("POST", "/mcp/readonly")})
 
@@ -221,6 +230,14 @@ class _CopilotRelayHandler(_ProxyHandler):
             # Copilot retries a refused WebSocket as a plain POST /responses.
             self._reject(426, "WebSockets are not served by the Unity Gateway Copilot relay.")
             return
+        suffix = f"?{query}" if query else ""
+        if (self.command, call) == _OTEL_METRICS_CALL:
+            self._discard()
+            return
+        if (self.command, call) == _OTEL_TRACES_CALL:
+            self.path = call + suffix
+            super()._handle()
+            return
         authorization = self._github_authorization()
         if authorization is None:
             self._reject(401, "Sign in to GitHub Copilot to use the Unity Gateway Copilot relay.")
@@ -233,7 +250,6 @@ class _CopilotRelayHandler(_ProxyHandler):
                 "Copilot again, then restart it.",
             )
             return
-        suffix = f"?{query}" if query else ""
         gateway_path = (
             None
             if (self.command, call) in _SECRETLESS_DIRECT_CALLS
@@ -271,10 +287,18 @@ class _CopilotRelayHandler(_ProxyHandler):
             if name.lower().startswith(_DATABRICKS_HEADER_PREFIXES)
         )
 
+    def _is_otel_export(self) -> bool:
+        return self.path.split("?", 1)[0] == _OTEL_TRACES_CALL[1]
+
     def _forward_target(self, body: bytes | None) -> tuple[str, frozenset[str], str]:
+        if self._is_otel_export():
+            strip = self._databricks_headers() | {_OTEL_SESSION_CREDENTIAL_HEADER}
+            return AUTHORIZATION_HEADER, strip, "copilot-otel"
         return AI_GATEWAY_TOKEN_HEADER, self._databricks_headers(), "copilot-gateway"
 
     def _added_headers(self, body: bytes | None) -> dict[str, str]:
+        if self._is_otel_export():
+            return {}
         return {
             MODEL_PROVIDER_SERVICE_HEADER: self.provider_service,
             GITHUB_COPILOT_API_HOST_HEADER: self._api_host,
@@ -307,10 +331,22 @@ class _CopilotRelayHandler(_ProxyHandler):
             log_proxy_diagnostic("copilot_direct_error", error_type=type(exc).__name__)
             self._send_json_error(502, "GitHub Copilot couldn't be reached.")
 
-    def _reject(self, status: int, message: str) -> None:
+    def _drain(self) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length:
             self.rfile.read(length)
+
+    def _discard(self) -> None:
+        self._drain()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        except OSError:
+            pass
+
+    def _reject(self, status: int, message: str) -> None:
+        self._drain()
         self._send_json_error(status, message)
 
     def _send_json_error(self, status: int, message: str) -> None:
@@ -345,7 +381,8 @@ def start_copilot_relay_proxy(
     on_refresh_failure: Callable[[BaseException], None] = log_token_refresh_failure,
 ) -> tuple[ThreadingHTTPServer, TokenCache, httpx.Client]:
     """Start the seat relay for one Copilot session; Copilot's ``COPILOT_API_URL`` is
-    ``http://127.0.0.1:<server.server_address[1]>/<session_secret>``.
+    ``http://127.0.0.1:<server.server_address[1]>/<session_secret>``, and its OTLP endpoint is that
+    URL followed by :data:`OTEL_PATH`.
 
     ``gateway_routes`` maps the calls AI Gateway serves (by method and path below the secret) to
     their gateway paths; every other call goes direct to the Copilot API host that

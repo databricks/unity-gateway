@@ -199,6 +199,78 @@ class TestGatewayRoutes:
         assert direct == [("POST", "/auto")]
 
 
+class TestOtelExport:
+    def test_traces_go_to_the_gateway_otel_route_with_a_databricks_token(self, gateway, github):
+        headers = {
+            "Content-Type": "application/x-protobuf",
+            "x-api-key": SECRET,
+            "Authorization": "Bearer exporter-supplied",
+            "X-Databricks-Org-Id": "123",
+        }
+        with _relay(gateway, github) as (http, _port, direct):
+            resp = http.post(
+                f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/traces", headers=headers, content=b"spans"
+            )
+
+        assert resp.status_code == 200
+        assert github.requests == [] and direct == []
+        (sent,) = gateway.requests
+        assert (sent["method"], sent["path"]) == ("POST", "/ai-gateway/otel/v1/traces")
+        assert sent["headers"]["authorization"] == f"Bearer {DATABRICKS_TOKEN}"
+        assert sent["names"].count("authorization") == 1
+        assert sent["body"] == b"spans"
+        for name in (
+            "x-api-key",
+            "x-databricks-ai-gateway-token",
+            "databricks-model-provider-service",
+            "x-databricks-github-copilot-api-host",
+            "x-databricks-org-id",
+        ):
+            assert name not in sent["headers"]
+
+    def test_metrics_get_an_empty_success_and_go_nowhere(self, gateway, github):
+        with _relay(gateway, github) as (http, _port, direct):
+            resp = http.post(f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/metrics", content=b"points")
+
+        assert (resp.status_code, resp.content) == (200, b"")
+        assert gateway.requests == [] and github.requests == [] and direct == []
+
+    @pytest.mark.parametrize("kind", ["traces", "metrics"])
+    def test_needs_the_session_secret(self, gateway, github, kind):
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.post(
+                f"{copilot_relay.OTEL_PATH}/v1/{kind}",
+                headers={"x-api-key": SECRET},
+                content=b"x",
+            )
+
+        assert resp.status_code == 404
+        assert gateway.requests == [] and github.requests == []
+
+    def test_other_otel_calls_go_through_the_github_gate(self, gateway, github):
+        with _relay(gateway, github) as (http, _port, _direct):
+            resp = http.get(f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/traces")
+
+        assert resp.status_code == 401
+        assert gateway.requests == [] and github.requests == []
+
+    def test_a_dead_databricks_login_answers_with_the_sign_in_hint(self, gateway, github):
+        gateway._status = 401
+
+        def token_provider(force: bool) -> str:
+            if token_provider.calls:
+                raise RuntimeError("refresh token expired")
+            token_provider.calls += 1
+            return DATABRICKS_TOKEN
+
+        token_provider.calls = 0
+        with _relay(gateway, github, token_provider=token_provider) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}{copilot_relay.OTEL_PATH}/v1/traces", content=b"x")
+
+        assert resp.status_code == 400
+        assert "databricks auth login" in resp.json()["error"]["message"]
+
+
 class TestDirectCalls:
     @pytest.mark.parametrize(
         ("method", "path"),
