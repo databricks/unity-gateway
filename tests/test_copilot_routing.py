@@ -282,10 +282,17 @@ class TestRouterHookCommand:
 
     def test_disabled_routing_prints_nothing(self, monkeypatch):
         monkeypatch.setenv("ENABLE_SMART_ROUTING_SUBAGENT_ONLY", "0")
+        calls = []
+        monkeypatch.setattr(
+            copilot_routing,
+            "request_routing_decision",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
 
         result = self.invoke(PAYLOAD)
 
         assert (result.exit_code, result.stdout) == (0, "")
+        assert calls == []
 
     def test_malformed_registry_mapping_leaves_the_call_unchanged(self, monkeypatch):
         result = self.runner.invoke(
