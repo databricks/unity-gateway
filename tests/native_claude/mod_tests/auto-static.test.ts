@@ -149,7 +149,8 @@ test('/model auto opens a focused Select with the current model first', { option
   const picker = await session.picker();
   const select = await picker.find({type:'Select'});
   expect(select.props.options).toEqual([{value:MAIN, label:'Sonnet 5'}, {value:OTHER, label:'Haiku 4.5'}]);
-  expect(select.props.label).toBe('Auto mode: Choose your main model (currently Sonnet 5).\nSubagents will be smart routed.\nMain model');
+  const heading = await picker.find({type:'Text'});
+  expect(heading.children).toEqual(['Auto mode: Choose your main model (currently Sonnet 5).']);
   expect(select.props.autoFocus).toBe(true);
   expect(select.props.value).toBe(MAIN);
   await picker.unmount();

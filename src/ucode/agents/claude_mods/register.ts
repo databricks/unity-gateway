@@ -30,8 +30,8 @@ import { AUTO_KEPT_CONFIRMATION, AUTO_MAIN_TITLE, AUTO_SET_CONFIRMATION, autoTar
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_RETRY = /^The model changed while you were confirming; pick again(?:$|<)/;
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook)/;
-// Two instruction lines, the selected value, eight visible options and the overflow count.
-const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, rows:12, closeOnEscape:true} as const;
+// Two instruction lines, eight visible options and the overflow count.
+const AUTO_MODELS_PANE = {id:'auto-models', title:AUTO_MAIN_TITLE, rows:11, closeOnEscape:true} as const;
 const MODEL_COMMAND_ECHO = /^(<command-name>\/model<\/command-name>\s*<command-message>model<\/command-message>\s*<command-args>)([^<]+)(<\/command-args>)$/;
 
 function sameOrigin(a: PromptOrigin, b: PromptOrigin): boolean {
@@ -361,11 +361,20 @@ export function register(on: On, options: PluginOptions): void {
     on('ui.render', {component:'Pane', requestId:AUTO_MODELS_PANE.id}, ($, e, next) => {
       const chooser = pendingChooser;
       if (!chooser?.options || !chooser.choose) return next(e);
+      const {Box, Text, Select} = $.ui.resolve(e);
       const current = chooser.options[0];
-      return $.ui.resolve(e).Select({
-        key:chooser.key, label:`${AUTO_MAIN_TITLE} (currently ${current.label}).\nSubagents will be smart routed.\nMain model`,
-        options:chooser.options, value:current.value, autoFocus:true, onSelect:chooser.choose,
-      });
+      const heading = `${AUTO_MAIN_TITLE} (currently ${current.label}).`;
+      // Native Select appends its value and caret after the label. Cover that line with the routing hint.
+      return Box({flexDirection:'column', children:[
+        Select({
+          key:chooser.key, label:'\n', options:chooser.options,
+          value:current.value, autoFocus:true, onSelect:chooser.choose,
+        }),
+        Box({position:'absolute', top:0, left:0, right:0, flexDirection:'column', children:[
+          Text({wrap:'truncate-end', children:[heading]}),
+          Text({wrap:'truncate-end', children:['Subagents will be smart routed.'.padEnd(e.props.bodyColumns)]}),
+        ]}),
+      ]});
     });
     on('ui.close', {id:AUTO_MODELS_PANE.id}, ($, e, next) => {
       if (e.origin.kind === 'person') {

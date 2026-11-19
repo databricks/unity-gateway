@@ -443,6 +443,8 @@ class TestCujAutoModelPicker(BaseCujTest):
                     lambda s: "Auto mode: Choose" in s and main_model_focused(label),
                     "the Auto selector focused on the current main model",
                 )
+                menu = tui.visible.split("Subagents will be smart routed.", 1)[1].splitlines()
+                assert label in menu[1] and "▴" not in menu[1], tui.visible
                 for option in alternatives:
                     option_label = option["label"].removeprefix("Claude ")
                     tui.send("\x1b[B", "focus " + option_label)
