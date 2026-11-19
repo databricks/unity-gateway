@@ -370,6 +370,12 @@ def _parse_managed_settings(text: str) -> dict:
     return settings
 
 
+def read_native_settings(path: Path) -> dict:
+    """Read a Claude settings object. A missing file contributes no settings."""
+    text = read_managed_file(path)
+    return _parse_managed_settings(text) if text is not None else {}
+
+
 def get_family_defaults(
     state: dict, *, managed_config: bool, provider: str | None, parent_schema: str | None
 ) -> dict[str, str] | None:
@@ -387,8 +393,7 @@ def get_family_defaults(
     if path is None or managed_settings_skipped():
         return None
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except RuntimeError:
         return None
     env = settings.get("env")
@@ -2844,8 +2849,7 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     Reads BOM-tolerantly like Claude Code, so a BOM-prefixed policy file is not mistaken for empty.
     """
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except (RuntimeError, OSError, ValueError):
         return True
     permissions = settings.get("permissions")

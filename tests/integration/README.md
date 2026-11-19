@@ -2180,7 +2180,8 @@ Outside the Databricks network, use reachable package indexes explicitly instead
 The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the prompt
 hint after a main-model switch, inference on the selected model, and the saved selection
 after a fresh launch. Launcher component tests cover fresh and continued sessions with
-a saved Kimi alias and verify its launch-scoped compaction window.
+a saved Kimi alias. They also check catalog-supplied windows for other models and explicit
+native compaction preferences.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive

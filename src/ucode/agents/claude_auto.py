@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from copy import deepcopy
 
 from ucode.databricks import AnthropicModelCatalog
-from ucode.managed_files import read_managed_file
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 
 AUTO_MODEL = "ug-auto"  # Legacy identity, accepted during migration only.
@@ -310,24 +309,31 @@ def _auto_window_preference(settings: dict, model: str) -> object:
 def apply_auto_context_windows(
     settings: dict, managed: dict, rows: list[dict], catalog: AnthropicModelCatalog
 ) -> None:
-    """Give an unsuffixed Kimi Auto alias its gateway model's compaction window."""
-    from ucode.agents.claude import _parse_managed_settings, native_settings_paths
+    """Give an unrecognized Auto alias its gateway model's compaction window."""
+    from ucode.agents.claude import native_settings_paths, read_native_settings
 
     native_settings = None
     for row in rows:
         model, alias = row["model"], row["autoModel"]
-        if unwrap_anthropic_gateway_model(model) != "system.ai.kimi-k3-1-pro":
+        target = unwrap_anthropic_gateway_model(model)
+        # Claude recognizes its model names, context suffixes, and configured behavesAs aliases.
+        if (
+            re.search(r"\bclaude-", target, re.IGNORECASE)
+            or model.lower().endswith(("[1m]", "[200k]"))
+            or alias != auto_variant({"model": model})
+        ):
             continue
-        # An explicit behavesAs or [1m] supplies Claude's native profile.
-        if alias != auto_variant({"model": model}):
+        limits = catalog.model_id_to_limits.get(model)
+        if limits and limits[0] > 0:
+            catalog_window = min(limits[0], 1_000_000)
+        elif target == "system.ai.kimi-k3-1-pro":
+            # Static and older catalogs omit limits. Kimi serves 1,048,576; Claude accepts 1M.
+            catalog_window = 1_000_000
+        else:
             continue
         if native_settings is None:
             try:
-                native_settings = [
-                    _parse_managed_settings(text)
-                    for path in native_settings_paths()
-                    if (text := read_managed_file(path)) is not None
-                ]
+                native_settings = [read_native_settings(path) for path in native_settings_paths()]
             except (OSError, RuntimeError, ValueError):
                 # An unreadable scope could contain an explicit compaction preference.
                 return
@@ -343,9 +349,7 @@ def apply_auto_context_windows(
             ):
                 # A personal or project preference may belong to a disabled --setting-sources scope.
                 continue
-            # Kimi K3.1 Pro serves 1,048,576 tokens; Claude accepts a window of at most 1M.
-            limit = catalog.model_id_to_limits.get(model)
-            window = min(limit[0] if limit and limit[0] > 0 else 1_000_000, 1_000_000)
+            window = catalog_window
         if window != "auto" and not (isinstance(window, int) and 100_000 <= window <= 1_000_000):
             continue
         per_model = settings.setdefault("modelSettings", {})

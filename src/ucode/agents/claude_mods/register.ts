@@ -501,35 +501,44 @@ export function register(on: On, options: PluginOptions): void {
         if (pendingChooser || !sessionActive) return;
         const request: MainModelChooser = {};
         pendingChooser = request;
-        pendingSelection?.cancel();
-        const baseline = await selectedModel($, auto);
-        const current = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
-        const rows = [...auto.models.filter(row => row.model === current), ...auto.models.filter(row => row.model !== current)];
-        if (pendingChooser !== request || !sessionActive) return;
-        request.options = rows.map(row => ({
-          value:row.model, label:rows.some(other => other !== row && other.label === row.label)
-            ? `${row.label} (${row.model})` : row.label,
-        }));
-        request.choose = async (model) => {
-          const selected = rows.find(row => row.model === model);
-          if (!selected || pendingChooser !== request) return;
-          await $.ui.close({id:AUTO_MODELS_PANE.id});
-          if (await selectedModel($, auto) === baseline) await save(selected, request);
-          if (pendingChooser === request) pendingChooser = undefined;
-        };
-        const pane = await $.ui.open({...AUTO_MODELS_PANE, focus:true});
-        if (pane.isPlaced) {
-          // Native dismisses /model after this callback and then accepts keyboard focus.
-          pendingSelection = $.clock.after(0, async () => {
-            if (pendingChooser === request) {
-              await $.ui.open({...AUTO_MODELS_PANE, focus:true});
-              await $.ui.focus({requestId:AUTO_MODELS_PANE.id, key:'main-model'});
-            }
-          });
-        } else if (pendingChooser === request) {
+        async function recover(error: unknown): Promise<void> {
+          if (pendingChooser !== request) return;
           pendingChooser = undefined;
-          await $.ui.close({id:AUTO_MODELS_PANE.id});
-          $.ui.toast('Could not open the Auto model chooser. Try /model auto.');
+          $.ui.toast(`Could not complete the Auto model selection: ${String(error)}. Try /model auto.`);
+          await $.ui.close({id:AUTO_MODELS_PANE.id}).catch(() => undefined);
+        }
+        try {
+          pendingSelection?.cancel();
+          const baseline = await selectedModel($, auto);
+          const current = isStaticAuto(auto, baseline) && staticEntry ? staticEntry : await mainModel($, auto);
+          const rows = [...auto.models.filter(row => row.model === current), ...auto.models.filter(row => row.model !== current)];
+          if (pendingChooser !== request || !sessionActive) return;
+          request.options = rows.map(row => ({
+            value:row.model, label:rows.some(other => other !== row && other.label === row.label)
+              ? `${row.label} (${row.model})` : row.label,
+          }));
+          const choose = async (model: string) => {
+            const selected = rows.find(row => row.model === model);
+            if (!selected || pendingChooser !== request) return;
+            await $.ui.close({id:AUTO_MODELS_PANE.id});
+            if (await selectedModel($, auto) === baseline) await save(selected, request);
+            if (pendingChooser === request) pendingChooser = undefined;
+          };
+          request.choose = model => choose(model).catch(recover);
+          const pane = await $.ui.open({...AUTO_MODELS_PANE, focus:true});
+          if (pendingChooser !== request) return;
+          if (!pane.isPlaced) throw new Error('The pane was not placed');
+          // Native dismisses /model after this callback and then accepts keyboard focus.
+          const focus = async () => {
+            if (pendingChooser !== request) return;
+            const pane = await $.ui.open({...AUTO_MODELS_PANE, focus:true});
+            if (pendingChooser !== request) return;
+            if (!pane.isPlaced) throw new Error('The pane was not placed');
+            await $.ui.focus({requestId:AUTO_MODELS_PANE.id, key:'main-model'});
+          };
+          pendingSelection = $.clock.after(0, () => focus().catch(recover));
+        } catch (error) {
+          await recover(error);
         }
       }
       reopenChooser = openChooser;

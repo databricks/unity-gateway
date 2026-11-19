@@ -727,10 +727,15 @@ class TestV2Launch:
         ("model", "listed_limit", "expected_window"),
         [
             ("system.ai.kimi-k3-1-pro", 0, 1_000_000),
+            ("system.ai.glm-5-3", 262_144, 262_144),
+            ("system.ai.glm-5-3", None, None),
+            ("system.ai.glm-5-3", 0, None),
+            ("system.ai.claude-haiku-4-5", 262_144, None),
+            ("system.ai.glm-5-3[1m]", 262_144, None),
             ("anthropic-aigw-726013b5-system.ai.kimi-k3-1-pro", 262_144, 262_144),
         ],
     )
-    def test_kimi_auto_restart_supplies_its_native_window(
+    def test_auto_restart_supplies_catalog_window_for_unrecognized_alias(
         self, tmp_path, monkeypatch, resume, model, listed_limit, expected_window
     ):
         from ucode.agents.claude_auto import auto_variant
@@ -740,7 +745,7 @@ class TestV2Launch:
         user_settings.write_text(json.dumps({"model": alias}))
         monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
         monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
-        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
+        monkeypatch.setattr(claude, "native_settings_paths", lambda: (user_settings,))
         monkeypatch.setattr(v2, "APP_DIR", tmp_path)
         monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
         monkeypatch.setattr(v2, "launch_token", lambda *_a: "token")
@@ -750,7 +755,11 @@ class TestV2Launch:
             v2,
             "list_anthropic_model_catalog",
             lambda *_a: AnthropicModelCatalog(
-                [model], {}, model_id_to_limits={model: (listed_limit, 32_000)}
+                [model],
+                {},
+                model_id_to_limits={model: (listed_limit, 32_000)}
+                if listed_limit is not None
+                else {},
             ),
         )
         launched = {}
@@ -780,9 +789,8 @@ class TestV2Launch:
         else:
             assert launched["args"][launched["args"].index("--model") + 1] == alias
         assert launched["settings"]["modelOverrides"][alias] == model
-        assert launched["settings"]["modelSettings"] == {
-            alias: {"autoCompactWindow": expected_window}
-        }
+        expected = {alias: {"autoCompactWindow": expected_window}} if expected_window else {}
+        assert launched["settings"].get("modelSettings", {}) == expected
 
     @pytest.mark.parametrize(
         ("scope", "key", "window", "expected"),

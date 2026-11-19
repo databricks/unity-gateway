@@ -51,13 +51,21 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
   const writes: string[] = [];
   const runs: readonly string[][] = [];
   const opened: string[] = [];
+  const closed: string[] = [];
+  const toasts: string[] = [];
+  const chooser: {
+    beforeModel?: () => Promise<void>;
+    beforeOpen?: () => Promise<void>;
+    beforeClose?: () => Promise<void>;
+    beforeFocus?: () => Promise<void>;
+  } = {};
   on('env.get', ($, e) => ({ value: env[e.name] }));
   on('env.set', ($, e) => {
     writes.push(e.name);
     env[e.name] = e.value;
     return { value: undefined };
   });
-  on('session.model', () => ({ value: selected }));
+  on('session.model', async () => { await chooser.beforeModel?.(); return {value:selected}; });
   on('session.usage', () => ({ value: { context: { window: 200000, tokens: contextTokens } } }));
   on('settings.read', () => ({
     value: { modelOverrides: { [DEFAULT_ALIAS]: MAIN, [OTHER_ALIAS]: OTHER } },
@@ -79,24 +87,25 @@ function staticCatalogSession($: any, on: On, initial: string, saved?: string, c
     if (e.command === 'model' && e.args) selected = e.args;
     return { value: { ref: 1, text: '' } };
   });
-  on('ui.open', ($, e) => {
+  on('ui.open', async ($, e) => {
+    if (e.id === 'auto-models') await chooser.beforeOpen?.();
     opened.push(e.id);
     return { value: { isPlaced: true } };
   });
-  const chooser: {beforeClose?: () => Promise<void>} = {};
   on('ui.close', async ($, e) => {
     if (e.id === 'auto-models') await chooser.beforeClose?.();
+    closed.push(e.id);
     return { value: undefined };
   });
   on('ui.render', {component:'Pane'}, ($, e) => $.ui.resolve(e).Box({children:[]}));
-  on('ui.focus', () => ({value:{}}));
-  on('ui.toast', () => ({ value: undefined }));
+  on('ui.focus', async () => { await chooser.beforeFocus?.(); return {value:{}}; });
+  on('ui.toast', ($, e) => { toasts.push(e.text); return {value:undefined}; });
   on('ui.invalidate', () => ({ value: undefined }));
   const clock = mock.clock(on);
   on('session.start', () => ({ cwd: '/work' }));
   on('session.end', () => ({sessionId:'session'}));
   return {
-    env, writes, runs, opened, store, commands, clock, chooser,
+    env, writes, runs, opened, closed, toasts, store, commands, clock, chooser,
     async picker() {
       return $.ui.mount({
         plugin:'ug-smart-router', component:'Pane', requestId:'auto-models', surface:'terminal',
@@ -202,6 +211,7 @@ test('a fresh static Auto session starts on the saved main model', { options: OP
   expect(session.selected()).toBe(DEFAULT_ALIAS);
   await $.command.run({ command: 'auto', args: '' });
   await session.clock.advance(0);
+  expect(session.toasts).toEqual([]);
   expect((await (await session.picker()).find({type:'Select'})).props.options[0].label).toBe('Haiku 4.5');
 });
 
@@ -458,6 +468,50 @@ test('/model auto opens the chooser directly', { options: OPTIONS }, async ($, o
   await $.command.run({ command: 'model', args: 'auto' });
   await session.clock.advance(0);
   expect(session.opened).toContain('auto-models');
+});
+
+for (const failure of ['beforeModel', 'beforeOpen', 'beforeFocus', 'beforeClose'] as const) {
+  test(`the chooser can be retried after a native ${failure} failure`, {options:OPTIONS}, async ($, on) => {
+    const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
+    await $.session.start(START);
+    session.chooser[failure] = async () => {
+      session.chooser[failure] = undefined;
+      throw new Error('native chooser failure');
+    };
+    await $.command.run({command:'auto', args:''});
+    if (failure === 'beforeFocus') await session.clock.advance(0);
+    if (failure === 'beforeClose') await session.choose(OTHER);
+    expect(session.toasts.at(-1)).toContain('Try /model auto');
+    expect(session.closed).toContain('auto-models');
+    expect(session.store[AUTO.storeKey]).toBe(MAIN);
+    await $.command.run({command:'auto', args:''});
+    await session.choose(OTHER);
+    expect(session.store[AUTO.storeKey]).toBe(OTHER);
+  });
+}
+
+test('a failed deferred refocus cannot close a newer chooser', {options:OPTIONS}, async ($, on) => {
+  const session = staticCatalogSession($, on, DEFAULT_ALIAS, MAIN);
+  await $.session.start(START);
+  await $.command.run({command:'auto', args:''});
+  let release: () => void;
+  let started: () => void;
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  session.chooser.beforeOpen = async () => {
+    session.chooser.beforeOpen = undefined;
+    await new Promise<void>(resolve => { release = resolve; started(); });
+    throw new Error('old refocus failed');
+  };
+  const refocus = session.clock.advance(0);
+  await ready;
+  await $.command.run({command:'model', args:'auto'});
+  const closeCount = session.closed.length;
+  release!();
+  await refocus;
+  expect(session.toasts).toEqual([]);
+  expect(session.closed.length).toBe(closeCount);
+  await session.choose(OTHER);
+  expect(session.store[AUTO.storeKey]).toBe(OTHER);
 });
 
 const LARGE_AUTO = {

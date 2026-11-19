@@ -635,9 +635,10 @@ The Codex integration is unchanged.
 Fresh launches using the Auto version start in Auto with the managed default model. Resume uses
 Claude's native model precedence without UG injecting a new Auto selection. A configured
 `ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
-uses the exact Claude ID or an explicit admin `behavesAs` hint. For an unsuffixed Kimi K3.1 Pro
-Auto alias, UG supplies a launch-only compaction window so Claude recognizes the window on
-restart. Explicit native window settings take precedence.
+uses the exact Claude ID or an explicit admin `behavesAs` hint. For other Auto aliases without a native
+profile, UG uses the catalog's input limit for Claude's launch-only compaction window, up to
+1M tokens. Kimi K3.1 Pro defaults to 1M when the catalog omits its limit. Explicit native
+window settings take precedence.
 Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
 uses the managed Claude catalog. Native Windows/macOS execution and actual compaction
 require separate validation.
