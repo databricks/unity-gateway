@@ -37,15 +37,6 @@ def test_plugin_contains_mod_entry_point(tmp_path):
     for name in filenames:
         assert (tmp_path / "hooks" / name).read_bytes() == (mods / name).read_bytes()
     assert {path.name for path in (tmp_path / "hooks").iterdir()} == {*filenames, "hooks.json"}
-
-
-def test_plugin_without_native_view_ships_the_agent_view_stub(tmp_path):
-    v2._write_routed_claude_plugin(tmp_path, [], native_view=False)
-
-    stub = (tmp_path / "hooks/agent-view.ts").read_text()
-    assert "NATIVE_VIEW = false" in stub
-    # The stub keeps the module loadable where the ui.view event does not exist.
-    assert "$.ui" not in stub
     settings = json.loads((tmp_path / "settings.json").read_text())
     assert settings == {
         "subagentStatusLine": {
@@ -55,6 +46,15 @@ def test_plugin_without_native_view_ships_the_agent_view_stub(tmp_path):
             ),
         }
     }
+
+
+def test_plugin_without_native_view_ships_the_agent_view_stub(tmp_path):
+    v2._write_routed_claude_plugin(tmp_path, [], native_view=False)
+
+    stub = (tmp_path / "hooks/agent-view.ts").read_text()
+    assert "NATIVE_VIEW = false" in stub
+    # The stub keeps the module loadable where the ui.view event does not exist.
+    assert "$.ui" not in stub
 
 
 def test_native_subagent_statusline_command(tmp_path):

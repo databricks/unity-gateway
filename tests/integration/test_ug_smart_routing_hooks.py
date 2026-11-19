@@ -51,6 +51,8 @@ from utils.request_recorder import (
 )
 from utils.terminal import AgentTerminal, codex_command_approval_pending
 
+from ucode.smart_routing.v2 import _claude_host_has_view
+
 pytestmark = pytest.mark.harness_latest
 
 SMART_ROUTING_BANNER = "Using Unity Gateway Smart Router."
@@ -855,6 +857,7 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
             draft = "Which safeguard matters most for trust? One sentence."
             tui.send(draft, "type the unsent Main draft")
             tui.wait_for(lambda screen: draft in screen, "the unsent draft in Main", timeout=12)
+            assert tui.visible.count(draft) == 1, "the draft was sent instead of preserved"
 
             sessions_before = agent_sessions(session, "claude")
             task.assert_completed(session, "claude")
@@ -881,7 +884,7 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
             ]
             assert routed_children, "No completed child matched a persisted routing decision"
 
-            tui.submit("/smart-router tree")
+            tui.click_label("View subagents", "open the pane without touching the composer")
             tui.wait_for(
                 lambda screen: "SUBAGENTS" in screen, "the native subagent tree", timeout=30
             )
@@ -958,7 +961,7 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 "the original parent answer after closing the tree",
                 timeout=30,
             )
-            tui.submit("/smart-router tree")
+            tui.click_label("View subagents", "reopen the pane without touching the composer")
             tui.wait_for(
                 lambda screen: "SUBAGENTS" in screen, "the reopened subagent tree", timeout=30
             )
@@ -1001,6 +1004,13 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 "the child opened from the tile",
                 timeout=30,
             )
+            # A capable host must switch the main view; the 2.1.290 stub falls
+            # back to the read-only details.
+            native_view = _claude_host_has_view(str(session.binary))
+            if native_view:
+                assert "Back to main" in tui.visible, (
+                    f"a capable host did not switch to the child transcript:\n{tui.visible}"
+                )
             if "Back to main" in tui.visible:
                 tui.click_label("Back to main", "return the main view to Main")
                 tui.wait_for(
@@ -1008,7 +1018,9 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                     "the parent answer back in the main view",
                     timeout=30,
                 )
-            assert draft in tui.visible, "the unsent draft did not survive the view round trip"
+            assert draft in tui.visible and tui.visible.count(draft) == 1, (
+                "the unsent draft did not survive the view round trip intact"
+            )
             tui.send("\x1b", "close the reopened native subagent tree")
             tui.wait_for(
                 lambda screen: "SUBAGENTS" not in screen and task.value in screen,

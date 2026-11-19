@@ -445,7 +445,9 @@ batch, opt-out and manual reopening, semantic parent labels without invented sib
 edges, stable overview-log ordering with chronological pinned history, and answer fallback
 after timeline eviction. They also exercise sanitized streamed previews and native stream
 result retention, monotonic terminal answers, usage, page-scoped logs, focused controls,
-finished-child collapse, and four-row 60x20 content plus end-scroll reachability.
+finished-child collapse, and four-row 60x20 content choices (serialized render
+tree assertions; viewport clipping and scrolling remain covered only by live
+terminal evidence).
 
 CUJ 4's Claude-only preset band journey (separate from the delegation journeys) checks Claude's ON/OFF status band, routing scope, and
 updates after off/on toggles, and that the band is hidden after the launch turn and by

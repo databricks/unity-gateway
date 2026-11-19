@@ -102,7 +102,8 @@ const SHELL_COMMANDS = new Set([
 const CODE_STARTS = ['const ', 'let ', 'function ', 'import ', 'export ', 'def ', 'class ', 'return ', 'if (', 'for (']
 
 function isShellCommand(value: string): boolean {
-  const first = value.trim().split(' ')[0]?.toLowerCase() ?? ''
+  // Case-sensitive: "Find all callers of X" is prose, not the `find` command.
+  const first = value.trim().split(' ')[0] ?? ''
   return SHELL_COMMANDS.has(first)
 }
 
@@ -137,7 +138,7 @@ function omitCode(value: string): string {
 
 function isCredentialName(name: string): boolean {
   return /(?:^|[_-])(?:token|key|secret|password|authorization|credential)(?:$|[_-])/i.test(name)
-    || /[a-z0-9](?:Token|Key|Secret|Password|Authorization|Credential)(?:$|[_-])/i.test(name)
+    || /[a-z0-9](?:Token|Key|Secret|Password|Authorization|Credential)(?:$|[_-])/.test(name)
 }
 
 function colonCredentialKey(word: string): boolean {
@@ -163,6 +164,24 @@ function safeToken(value: string): string {
   if (colon > 0 && colon < token.length - 1 && !/^[a-z][a-z0-9+.-]*:\/\//i.test(token)
       && isCredentialName(token.slice(0, colon).replace(/["']/g, ''))) {
     return prefix + token.slice(0, colon + 1) + '[redacted]' + suffix
+  }
+  // Packed JSON keeps several properties in one word: redact every
+  // credential-named one, not just the first pair.
+  const packed = token.replace(
+    /("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\s]+)/g,
+    (all, name, sep, value) => (value !== 'true' && value !== 'false' && value !== 'null'
+      && isCredentialName(name.slice(1, -1)) ? `${name}${sep}"[redacted]"` : all),
+  )
+  if (packed !== token) {
+    return prefix + packed + suffix
+  }
+  // Known token shapes appear bare, without a key anywhere near them.
+  const shaped = token.replace(
+    /\b(?:dapi[0-9a-f]{16,}|sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b/g,
+    '[redacted]',
+  )
+  if (shaped !== token) {
+    return prefix + shaped + suffix
   }
   // Query strings carry credentials in otherwise ordinary URLs.
   const query = token.indexOf('?')
@@ -210,9 +229,12 @@ export function safePreviewText(value: unknown, maxLength = 240): string {
     return words.map(word => {
       const token = safeToken(word)
       // A marker word is shown, not consumed: `Authorization: Bearer <token>`
-      // must still redact the token after Bearer.
-      const marker = ['bearer', 'basic'].includes(token.toLowerCase()) || colonCredentialKey(word)
-      if (redactNext && !marker) { redactNext = false; return '[redacted]' }
+      // must still redact the token after Bearer, and `password is hunter2`
+      // must survive the trailing `is`.
+      const bare = token.toLowerCase()
+      const marker = bare === 'bearer' || bare === 'basic' || colonCredentialKey(word)
+        || (bare === token.toLowerCase() && isCredentialName(bare))
+      if (redactNext && !marker && bare !== 'is') { redactNext = false; return '[redacted]' }
       if (marker) redactNext = true
       return token
     }).join(' ')

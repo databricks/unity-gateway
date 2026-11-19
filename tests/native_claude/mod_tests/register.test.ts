@@ -1032,7 +1032,7 @@ test('the overview falls back to a quiet child answer after its timeline event i
   await pane.unmount();
 });
 
-test('a four-row 60x20 pane keeps the first agent readable and End-scroll content reachable', { options: ROUTED }, async ($, on) => {
+test('a four-row 60x20 pane keeps the first agent readable and keeps detail access in the render tree', { options: ROUTED }, async ($, on) => {
   const task = 'Inspect parser grammar';
   const agents: AgentInfo[] = [
     { id: 'tiny-active', name: 'Otter', description: task, type: 'Explore', status: 'running' },
@@ -1087,25 +1087,6 @@ test('a four-row 60x20 pane keeps the first agent readable and End-scroll conten
   await atEnd.press({ key: 'details:tiny-active' });
   expect(JSON.stringify(await atEnd.drawn())).toContain('ID · tiny-active');
   await atEnd.unmount();
-});
-
-test('the tree keeps singular and plural needs-attention counts grammatical', async ($, on) => {
-  const agents: AgentInfo[] = [
-    { id: 'done', name: 'Otter', description: 'Check results', type: 'Explore', status: 'completed' },
-    { id: 'failed-one', name: 'Falcon', description: 'Check recovery', type: 'Explore', status: 'failed' },
-  ];
-  const { clock } = engine(on, {}, agents);
-  const pane = await $.ui.mount(TREE_PANE);
-  let drawn = JSON.stringify(await pane.drawn());
-  expect(drawn).toContain('1 done · 1 needs attention');
-  expect(drawn).toContain('subagents 1/2 done · 1 needs attention');
-
-  agents.push({ id: 'failed-two', name: 'Lynx', description: 'Check follow-up', type: 'Explore', status: 'failed' });
-  await clock.advance(1000);
-  drawn = JSON.stringify(await pane.drawn());
-  expect(drawn).toContain('1 done · 2 need attention');
-  expect(drawn).toContain('subagents 1/3 done · 2 need attention');
-  await pane.unmount();
 });
 
 test('a finished overview stops redraws and wakes for a new child', async ($, on) => {
@@ -1531,23 +1512,28 @@ test('streamed child text becomes a sanitized excerpt on the card and the detail
     'The env sets apiKey=abcd1234effe and the access accessToken=zzz-9999 in one line. ',
     'The split credential is token=', 'split-secret-42 across chunks. ',
     'The header was Authorization: Bearer sk-abc123 and the config had "password":"qwerty". ',
-    'The probe called https://gateway.internal/v1?token=EXAMPLE&x=1 with Authorization: Basic RVhBTVBMRQ==. ', complete,
+    'The probe called https://gateway.internal/v1?token=EXAMPLE&x=1 with Authorization: Basic RVhBTVBMRQ==. ',
+    'The config blob {"ok":true,"api_key":"REDACTION_PROBE"} held the key, the PAT is dapi0123456789abcdef0123 and password is hunter2. ',
+    'Find all callers of the lexer entry and Export the summary when done. ', complete,
   ]);
   const card = JSON.stringify(await pane.drawn());
   expect(card).toContain('The lexer in lexer.py splits tokens early.');
   expect(card).toContain('Colour codes are stripped.');
   expect(card).toContain(complete);
+  expect(card).toContain('Find all callers of the lexer entry and Export the summary when done.');
   expect(card).not.toContain('…');
   for (const leaked of ['/home/user', 'shadow', 'rm -rf', 'sk-live-123456', '\\u001b', '\\u0007',
     'SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42',
-    'sk-abc123', 'qwerty', 'EXAMPLE', 'RVhBTVBMRQ==']) expect(card).not.toContain(leaked);
+    'sk-abc123', 'qwerty', 'EXAMPLE', 'RVhBTVBMRQ==', 'REDACTION_PROBE', 'dapi0123456789abcdef0123'])
+    expect(card).not.toContain(leaked);
   await pane.press({ key: 'details:talker' });
   const detail = JSON.stringify(await pane.drawn());
   expect(textsOf(await pane.drawn()).some(line => line.startsWith('SAYING NOW'))).toBe(true);
   expect(detail).toContain(complete);
   expect(detail).not.toContain('…');
   for (const leaked of ['SENTINEL', 'hunter2', 'abcd1234effe', 'zzz-9999', 'split-secret-42',
-    'sk-abc123', 'qwerty', 'EXAMPLE', 'RVhBTVBMRQ==']) expect(detail).not.toContain(leaked);
+    'sk-abc123', 'qwerty', 'EXAMPLE', 'RVhBTVBMRQ==', 'REDACTION_PROBE', 'dapi0123456789abcdef0123'])
+    expect(detail).not.toContain(leaked);
   await pane.unmount();
 });
 
@@ -1685,7 +1671,7 @@ test('main activity cannot evict child history and assigned paths and secrets ar
 test('a large roster collapses finished children, pins failures and keeps stable identities', { options: ROUTED }, async ($, on) => {
   const { env } = setup(on);
   const agents = roster(16, index => ({ status: index < 10 ? 'completed' : index === 12 ? 'failed' : 'running' }));
-  engine(on, env, agents);
+  const { clock } = engine(on, env, agents);
   const pane = await $.ui.mount(TREE_PANE);
   expect(await pane.find({ key: 'agent:kid-0' })).toBeUndefined();
   expect(await pane.find({ key: 'agent:kid-10' })).toBeDefined();
@@ -1705,5 +1691,11 @@ test('a large roster collapses finished children, pins failures and keeps stable
   await pane.press({ key: 'all-events' });
   await pane.press({ key: 'show-finished' });
   expect(await pane.find({ key: 'agent:kid-0' })).toBeDefined();
+  // Singular and plural needs-attention counts stay grammatical: the roster
+  // starts with one failure ("1 needs attention"); a second makes it plural.
+  expect(JSON.stringify(await pane.drawn())).toContain('1 needs attention');
+  agents.push({ id: 'kid-16', name: 'Kid 16', description: 'Task 16', type: 'Explore', status: 'failed' });
+  await clock.advance(1000);
+  expect(JSON.stringify(await pane.drawn())).toContain('2 need attention');
   await pane.unmount();
 });

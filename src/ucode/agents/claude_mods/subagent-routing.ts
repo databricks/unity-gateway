@@ -181,7 +181,7 @@ export const registerSubagentRouting = (
       }
       pending.set(tool_use_id, undefined)
       pending.set(tool_use_id, await now($))
-      agentTree.routeStarted(tool_use_id, names.get(tool_use_id)!, input.description || input.subagent_type || tool, e.agentId, pending.get(tool_use_id) ?? 0)
+      try { agentTree.routeStarted(tool_use_id, names.get(tool_use_id)!, input.description || input.subagent_type || tool, e.agentId, pending.get(tool_use_id) ?? 0) } catch { /* observation only */ }
       // Mods have no global timers; $.clock redraws the spinner while the router answers.
       // The frame comes from the clock, so parallel calls do not speed it up.
       try {
@@ -212,7 +212,7 @@ export const registerSubagentRouting = (
     const seconds = tool_use_id ? await secondsSince($, pending.get(tool_use_id)) : undefined
     if (tool_use_id) {
       pending.delete(tool_use_id)
-      agentTree.routeFinished(tool_use_id, route ? { ...route, seconds } : undefined, (await now($)) ?? 0)
+      try { agentTree.routeFinished(tool_use_id, route ? { ...route, seconds } : undefined, (await now($)) ?? 0) } catch { /* observation only */ }
       if (route) {
         records.set(tool_use_id, {
           name: names.get(tool_use_id)!,
@@ -242,12 +242,12 @@ export const registerSubagentRouting = (
   on('agent.spawn', async ($, e, next) => {
     const route = e.resume ? undefined : records.get(e.tool_use_id)
     const name = route?.name
-    agentTree.spawnStarted(e, (await now($)) ?? 0)
+    try { agentTree.spawnStarted(e, (await now($)) ?? 0) } catch { /* observation only */ }
     let result
     try {
       result = await next(route ? { ...e, model: route.model } : e)
     } catch (error) {
-      agentTree.spawnFinished(e, { deny: 'Spawn failed' }, (await now($)) ?? 0)
+      try { agentTree.spawnFinished(e, { deny: 'Spawn failed' }, (await now($)) ?? 0) } catch { /* observation only */ }
       $.ui.invalidate('ui.render')
       throw error
     }
@@ -255,7 +255,7 @@ export const registerSubagentRouting = (
       route.spawned = { agentId: result.agentId, model: result.model || undefined, background: e.background }
       routedModels.started(route)
     }
-    agentTree.spawnFinished(e, result, (await now($)) ?? 0)
+    try { agentTree.spawnFinished(e, result, (await now($)) ?? 0) } catch { /* observation only */ }
     $.ui.invalidate('ui.render')
     if (name && result.agentId) {
       try {
