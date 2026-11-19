@@ -7505,6 +7505,38 @@ def test_http_transport_passes_headers_and_timeout(monkeypatch):
     assert "accept" not in headers
 
 
+def test_macos_proxy_fallback_uses_urllib_system_proxy_and_bypass(monkeypatch):
+    monkeypatch.setattr(db_mod.sys, "platform", "darwin")
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(
+        db_mod.urllib_request,
+        "getproxies",
+        lambda: {"http": "http://system-proxy:8080", "https": "http://system-proxy:8080"},
+    )
+    monkeypatch.setattr(
+        db_mod.urllib_request, "proxy_bypass", lambda host: host == "internal.example"
+    )
+
+    proxies = db_mod._macos_system_proxies()
+    assert proxies == {
+        "http": "http://system-proxy:8080",
+        "https": "http://system-proxy:8080",
+    }
+    assert (
+        db_mod._urllib_proxy_for_request("https", "workspace.example", proxies)
+        == "http://system-proxy:8080"
+    )
+    assert db_mod._urllib_proxy_for_request("https", "internal.example", proxies) is None
+
+
 def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
     parent_pid = os.getpid()
     parent_client = db_mod._get_http_client()

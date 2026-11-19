@@ -387,6 +387,56 @@ class _RejectCookiesPolicy(DefaultCookiePolicy):
         return False
 
 
+def _macos_system_proxies() -> dict[str, str] | None:
+    if sys.platform != "darwin" or any(
+        os.environ.get(name)
+        for name in (
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        )
+    ):
+        return None
+    proxies = urllib_request.getproxies()
+    system_proxies = {
+        scheme: proxy for scheme in ("http", "https", "all") if (proxy := proxies.get(scheme))
+    }
+    return system_proxies or None
+
+
+def _urllib_proxy_for_request(scheme: str, host: str, proxies: dict[str, str]) -> str | None:
+    if urllib_request.proxy_bypass(host):
+        return None
+    return proxies.get(scheme) or proxies.get("all")
+
+
+def _macos_proxy_transport(httpx, proxies, verify, limits):
+    class SystemProxyTransport(httpx.BaseTransport):
+        def __init__(self):
+            self.direct = httpx.HTTPTransport(verify=verify, trust_env=False, limits=limits)
+            self.proxied = {
+                proxy: httpx.HTTPTransport(
+                    proxy=proxy, verify=verify, trust_env=False, limits=limits
+                )
+                for proxy in set(proxies.values())
+            }
+
+        def handle_request(self, request):
+            proxy = _urllib_proxy_for_request(request.url.scheme, request.url.host, proxies)
+            transport = self.proxied.get(proxy) if proxy else self.direct
+            return transport.handle_request(request)
+
+        def close(self):
+            self.direct.close()
+            for transport in self.proxied.values():
+                transport.close()
+
+    return SystemProxyTransport()
+
+
 _HTTP_CLIENT: httpx.Client | None = None
 _HTTP_CLIENT_PID: int | None = None
 _HTTP_CLIENT_LOCK = threading.Lock()
@@ -415,12 +465,21 @@ def _get_http_client() -> httpx.Client:
             # Before building the SSL context, so the pooled client verifies against the same
             # trust store (os or python) as the urllib path did.
             tls.apply()
+            verify = ssl.create_default_context()
+            limits = httpx.Limits(max_connections=100, max_keepalive_connections=20)
+            system_proxies = _macos_system_proxies()
+            transport = (
+                _macos_proxy_transport(httpx, system_proxies, verify, limits)
+                if system_proxies
+                else None
+            )
             client = httpx.Client(
-                verify=ssl.create_default_context(),
-                trust_env=True,
+                verify=verify,
+                trust_env=transport is None,
                 follow_redirects=True,
-                limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+                limits=limits,
                 cookies=CookieJar(policy=_RejectCookiesPolicy()),
+                **({"transport": transport} if transport is not None else {}),
             )
             _HTTP_CLIENT = client
             _HTTP_CLIENT_PID = pid
