@@ -906,6 +906,7 @@ def test_configure_saves_copilots_model_location_for_its_launches(monkeypatch, t
 def test_configure_saves_copilots_provider_for_its_launches(monkeypatch):
     state = {**STATE, "model_locations": {"copilot": "old.models"}}
     seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "uses_seat_relay", lambda *a, **k: False)
     monkeypatch.setattr(copilot, "provider_service_catalog", lambda *a, **k: ["a model"])
     saved: list[dict] = []
     monkeypatch.setattr(cli_mod, "save_state", lambda s: saved.append(s))
@@ -931,6 +932,7 @@ def test_configure_keeps_copilots_source_when_the_new_one_fails(monkeypatch, sou
 
     state = {**STATE, "provider_services": {"copilot": "old.default.mps"}}
     seen = _stub_workspace_setup(monkeypatch, state, None)
+    monkeypatch.setattr(copilot, "uses_seat_relay", lambda *a, **k: False)
     monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
     monkeypatch.setattr(copilot, "location_catalog", unusable)
 
@@ -1002,6 +1004,7 @@ def test_single_agent_copilot_bad_source_is_not_configured(monkeypatch):
     def unusable(*args, **kwargs):
         raise RuntimeError("not usable")
 
+    monkeypatch.setattr(copilot, "uses_seat_relay", lambda *a, **k: False)
     monkeypatch.setattr(copilot, "provider_service_catalog", unusable)
     monkeypatch.setattr(
         cli_mod, "configure_single_tool", lambda *a, **k: pytest.fail("copilot was configured")
