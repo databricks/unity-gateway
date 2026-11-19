@@ -307,8 +307,10 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
         "-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE",
         "[string]::IsNullOrWhiteSpace($env:UCODE_SMART_ROUTER_PYTHON) -or "
         "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
     ],
-    ids=["unset", "whitespace"],
+    ids=["unset", "whitespace", "empty"],
 )
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
     extra_command, missing_message, guard_style, write_output, selected, condition
@@ -343,8 +345,27 @@ def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
         "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
         "[string]::IsNullOrWhiteSpace($(Remove-Item important.txt)) -or "
         "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrEmpty($env:OTHER_PYTHON) -or "
+        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrEmpty($env:OTHER_ENV_FILE)",
+        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -and "
+        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrEmpty($(Remove-Item important.txt)) -or "
+        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)",
+        "[string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrWhiteSpace($env:UCODE_SESSION_ENV_FILE)",
     ],
-    ids=["other-variable", "wrong-operator", "command-substitution"],
+    ids=[
+        "other-variable",
+        "wrong-operator",
+        "command-substitution",
+        "empty-other-python",
+        "empty-other-env-file",
+        "empty-wrong-operator",
+        "empty-command-substitution",
+        "mixed-checks",
+    ],
 )
 def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
@@ -359,6 +380,51 @@ def test_codex_windows_toggle_approval_rejects_other_guard_conditions(condition)
     )
     with pytest.raises(AssertionError, match="unexpected command approval"):
         codex_command_approval_pending(screen, expected)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        ('$env:UCODE_SMART_ROUTER_PYTHON"', '$env:OTHER_PYTHON"'),
+        ("-m ucode.cli", "-m other_module"),
+        ("--disable-smart-routing", "--enable-smart-routing"),
+        ("--disable-smart-routing", "--disable-smart-routing --other-option"),
+    ],
+    ids=["logged-command", "other-executable", "other-module", "other-action", "extra-argument"],
+)
+def test_codex_windows_toggle_approval_keeps_logged_empty_guard_command_exact(change):
+    # Windows CI run 44452319564 wrapped the missing-variable message onto a second line.
+    screen = (
+        "Would you like to run the following command?\n\n"
+        "  Environment: local\n\n"
+        "  Reason: Do you want to allow the Smart Router command to read session controls "
+        "and turn routing off?\n\n"
+        "  $ if ([string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or "
+        "[string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)) { Write-Output\n"
+        "  'SMART_ROUTER_ENV_UNSET' } else { "
+        '& "$env:UCODE_SMART_ROUTER_PYTHON" '
+        "-m ucode.cli codex --disable-smart-routing }\n\n\n"
+        "\ufffd 1. Yes, proceed (y)\n"
+        "  2. Yes, and don't ask again for commands that start with "
+        "`if ([string]::IsNullOrEmpty($env:UCODE_SMART_ROUTER_PYTHON) -or\n"
+        "     [string]::IsNullOrEmpty($env:UCODE_SESSION_ENV_FILE)) { "
+        "Write-Output 'SMART_ROUTER_ENV_UNSET' } else { &\n"
+        '     "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing }` (p)\n'
+        "  3. No, and tell Codex what to do differently (esc)\n\n"
+        "  Press enter to confirm or esc to cancel"
+    )
+    command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
+    expected = (
+        command,
+        "if (-not $env:UCODE_SMART_ROUTER_PYTHON -or -not $env:UCODE_SESSION_ENV_FILE) "
+        '{ Write-Output "SMART_ROUTER_ENV_UNSET" } else { ' + command + " }",
+    )
+    if change:
+        with pytest.raises(AssertionError, match="unexpected command approval"):
+            codex_command_approval_pending(screen.replace(*change), expected)
+    else:
+        assert codex_command_approval_pending(screen, expected)
 
 
 @pytest.mark.parametrize("extra_command", ["", " && touch unexpected", "; touch unexpected"])

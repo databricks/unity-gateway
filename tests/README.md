@@ -1370,9 +1370,11 @@ runs the marked off through Claude, the mod and the real CLI.
 `test_integration_evidence.py` checks that the Codex approval driver accepts only the
 exact local command. Other commands or environments are rejected, and an incomplete
 dialog cannot borrow the confirmation footer from a previous dialog.
-Windows cases cover the ConPTY replacement selection marker and both the `-not`
-and `IsNullOrWhiteSpace` checks of the two session environment variables. Extra
-commands, substitutions, other variables, and different conditions remain rejected.
+Windows cases cover the ConPTY replacement selection marker and the `-not`,
+`IsNullOrWhiteSpace`, and `IsNullOrEmpty` checks of the two session environment variables,
+including the wrapped, single-quoted message from Windows CI. Extra commands,
+substitutions, other variables, executable or argument changes, and different conditions
+remain rejected.
 
 `test_skills.py` checks agent-specific instruction installation, bundle updates,
 and matching prompt/compaction hook content for Claude and Codex. It also covers
