@@ -794,7 +794,10 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
 
     Expected: the pane's router selection matches the persisted routing decision, its launched
     model matches the child's native API requests, and the parent and child answers remain
-    present in the terminal and session evidence after closing and reopening the pane.
+    present in the terminal and session evidence after closing and reopening the pane. The
+    child api-request cross-check applies only where the CLI writes api-request rows into
+    session transcripts (Claude 2.1.290, the CI pin, does not); the tree's reported launch
+    identity and the persisted decision remain the evidence there.
     """
     session = live_session
     session.env["SMART_ROUTER_CONFIG_VERSION"] = "subagent_only_v0"
@@ -889,11 +892,21 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
         child_records = next(
             records for path, records in sessions_before.items() if child_id(path) == selected_id
         )
+        # Claude 2.1.290 (the CI pin) writes no api-request rows into session transcripts;
+        # newer CLIs do. Calibrate on the parent transcript: when the CLI records requests
+        # there, the child's requests must carry exactly the selected model.
+        parent_writes_api_requests = any(
+            row.get("type") == "api-request"
+            for path, records in sessions_before.items()
+            if not is_child_session("claude", path, records)
+            for row in records
+        )
         requests = [row for row in child_records if row.get("type") == "api-request"]
         request_models = {row["params"]["model"] for row in requests}
-        assert request_models == {selected_model.removesuffix("[1m]")}, request_models
-        if selected_model.endswith("[1m]"):
-            assert all("context-1m-2025-08-07" in row["params"]["betas"] for row in requests)
+        if parent_writes_api_requests:
+            assert request_models == {selected_model.removesuffix("[1m]")}, request_models
+            if selected_model.endswith("[1m]"):
+                assert all("context-1m-2025-08-07" in row["params"]["betas"] for row in requests)
         response_models = child_models[selected_id]
         assert len(response_models) == 1, (selected_id, response_models)
         # Providers may report a deployment name instead of the requested catalog alias.
@@ -905,6 +918,11 @@ def test_smart_router_claude_native_tree_routed_models_survive_reopen(live_sessi
                 "selected_model": selected_model,
                 "request_models": sorted(request_models),
                 "response_models": sorted(response_models),
+                "request_model_check": (
+                    "child api-request rows"
+                    if parent_writes_api_requests
+                    else "unavailable: this CLI writes no api-request rows into transcripts"
+                ),
             },
         )
         assert f"Router selection · {selected_model}" in tui.visible, tui.visible
