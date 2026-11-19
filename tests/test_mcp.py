@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import tomllib
 from unittest.mock import MagicMock
 
 import pytest
@@ -201,6 +202,44 @@ class TestConfigOnlyMcpClients:
 
 
 class TestAddCodexMcpServer:
+    def test_registration_forwards_auth_names_without_persisting_credentials(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / "config.toml"
+        path.write_text(
+            'model = "personal-model"\n[mcp_servers.personal]\ncommand = "personal-tool"\n'
+            '[mcp_servers.github]\nurl = "https://old.example/mcp"\n'
+        )
+        monkeypatch.setattr(mcp.codex, "user_mcp_config_path", lambda: path)
+        monkeypatch.setattr(mcp.shutil, "which", lambda binary: f"/tools/{binary}")
+        monkeypatch.setattr(mcp, "_oauth_http_client", lambda *a, **kw: None)
+        monkeypatch.setenv("DATABRICKS_BEARER", "secret-bearer-value")
+        monkeypatch.setenv("DATABRICKS_BEARER_COMMAND", "secret-command-value")
+        monkeypatch.setenv("DATABRICKS_CONFIG_FILE", "private-config-path")
+        monkeypatch.setattr(
+            mcp.subprocess_cross_os, "run", lambda *a, **kw: MagicMock(returncode=0)
+        )
+
+        assert mcp.configure_client_mcp_server("codex", "github", GH_URL, WS, "p") == [
+            mcp.MCP_USER_SCOPE
+        ]
+
+        contents = path.read_text()
+        config = tomllib.loads(contents)
+        assert config["model"] == "personal-model"
+        assert config["mcp_servers"]["personal"] == {"command": "personal-tool"}
+        assert config["mcp_servers"]["github"] == {
+            "command": "/tools/ug",
+            "args": PROXY_TAIL,
+            "env_vars": [
+                "DATABRICKS_BEARER",
+                "DATABRICKS_BEARER_COMMAND",
+                "DATABRICKS_CONFIG_FILE",
+            ],
+        }
+        for secret in ("secret-bearer-value", "secret-command-value", "private-config-path"):
+            assert secret not in contents
+
     def test_registers_stdio_proxy_command(self, monkeypatch):
         calls: list[dict] = []
 
