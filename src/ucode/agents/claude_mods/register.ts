@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, showStatusBand, watchStartupValidation } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, noteRoutingToggle, showStatusBand, watchStartupValidation } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -168,6 +168,13 @@ async function setRouting(
 }
 
 export function register(on: On, options: PluginOptions): void {
+  // The startup check and toggles write the same environment; overlapping writes would mix them.
+  let routingWrites: Promise<unknown> = Promise.resolve();
+  const serialized = (write: () => Promise<void>): Promise<void> => {
+    const next = routingWrites.then(write, write);
+    routingWrites = next.catch(() => {});
+    return next;
+  };
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
@@ -180,7 +187,7 @@ export function register(on: On, options: PluginOptions): void {
       }
     } finally {
       // After the launch write, so a disabling result cannot be overwritten by it.
-      await watchStartupValidation($, () => setRouting($, options, false, false));
+      await watchStartupValidation($, (enabled, sync) => serialized(() => setRouting($, options, enabled, sync)));
     }
     return next(e);
   });
@@ -234,8 +241,9 @@ export function register(on: On, options: PluginOptions): void {
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
+    noteRoutingToggle(action === 'on');
     try {
-      await setRouting($, options, action === 'on', true);
+      await serialized(() => setRouting($, options, action === 'on', true));
       showStatusBand();
       $.ui.invalidate('ui.render');
     } catch {

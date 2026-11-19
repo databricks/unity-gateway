@@ -64,8 +64,8 @@ def test_unsupported_menu_turns_routing_off_and_failures_are_silent(
         assert controls.read_text() == "{}"
     failed = isinstance(response, Exception) or response[1] is not None
     errors = metric_observations(metrics_recorder, metrics.UG_CLI_ERROR)
-    assert [labels.get("operation") for _, labels in errors] == (
-        [metrics.STARTUP_VALIDATION_OPERATION] if failed else []
+    assert [(labels.get("operation"), labels.get("phase")) for _, labels in errors] == (
+        [(metrics.STARTUP_VALIDATION_OPERATION, "startup")] if failed else []
     )
 
 

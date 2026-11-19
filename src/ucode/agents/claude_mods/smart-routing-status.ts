@@ -10,14 +10,17 @@ const band = { isVisible: true, isHideArmed: false }
 let validationWatchStarted = false
 // Claude draws before session.start, so the band starts held until the startup check settles;
 // an unsupported menu turns routing off and must never flash ON.
-const validation = { isPending: true, isToggled: false }
+const validation: { isPending: boolean; toggle?: boolean } = { isPending: true }
 const VALIDATION_POLL_MS = 100
 // Longer than the Python check's 4 s deadline, after which it never turns routing off.
 const VALIDATION_WAIT_MS = 5000
 
+// A /smart-router toggle during the startup check wins over its result.
+export function noteRoutingToggle(enabled: boolean): void {
+  if (validation.isPending) validation.toggle = enabled
+}
+
 export function showStatusBand(): void {
-  // A toggle during the startup check wins over its result.
-  if (validation.isPending) validation.isToggled = true
   band.isVisible = true
   band.isHideArmed = false
 }
@@ -64,7 +67,7 @@ async function readRoutingState($: any): Promise<RoutingState> {
 
 export async function watchStartupValidation(
   $: EngineInterface,
-  disableRouting: () => Promise<void>,
+  applyRouting: (enabled: boolean, syncSessionControls: boolean) => Promise<void>,
 ): Promise<void> {
   if (validationWatchStarted) return
   validationWatchStarted = true
@@ -96,10 +99,11 @@ export async function watchStartupValidation(
         return
       }
       complete = true
-      if (result.routing_disabled === true && !validation.isToggled) {
+      if (result.routing_disabled === true) {
         try {
-          await disableRouting()
-          band.isVisible = false
+          // Python already wrote the session controls off; a toggle rewrites them to match.
+          await applyRouting(validation.toggle ?? false, validation.toggle !== undefined)
+          if (validation.toggle === undefined) band.isVisible = false
         } catch (error) {
           $.ui.log(`Smart Router startup check: ${error instanceof Error ? error.message : 'could not turn routing off'}`, { to: 'debug' })
         }

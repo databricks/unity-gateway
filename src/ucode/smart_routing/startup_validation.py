@@ -69,7 +69,10 @@ def start(
             reason = "startup validation timed out"
         if reason:
             metrics.failure(
-                metrics.STARTUP_VALIDATION_OPERATION, reason, continued_with_fallback=True
+                metrics.STARTUP_VALIDATION_OPERATION,
+                reason,
+                continued_with_fallback=True,
+                phase="startup",
             )
         unsupported = (
             not reason and isinstance(payload, dict) and payload.get("is_supported") is False
