@@ -59,17 +59,12 @@ auto mode's review of the tool input instead of invalidating it with a routing r
 The display label uses a random animal from a list of 100, without repeats until the list
 is exhausted; later cycles append `2`, `3`, and so on. Each call keeps its name while
 the plugin is loaded. Animal names are display labels for routing rows, parallel
-decision cards and the bottom panel. Claude's messages retain the agent's native name
+decision cards. Claude's messages retain the agent's native name
 or type; routing does not inject a name into the reviewed call.
-The native bottom subagent panel uses Claude's `subagentStatusLine` extension, outside
-`ui.render`. After a routed spawn succeeds, the mod saves its animal name against the
-returned child ID in the temporary plugin directory, with the session ID. The plugin's
-default status-line command reads that mapping and displays the same animal, current
-task label, token count, and running elapsed time. Claude retains the row controls and
-refreshes the custom text on its own status-line cadence. Unmapped tasks, stale-session
-records, and unreadable records retain native rendering; a failed write never prevents
-the agent from starting. User-configured status lines keep Claude's normal precedence.
-The mapping is removed with the launch directory, not written to user settings.
+Claude owns the bottom subagent panel, including its native labels, progress and controls.
+UG does not configure the deprecated `subagentStatusLine` extension or write animal-name
+mapping files. Animal names and routing decisions remain in the existing mod-rendered
+Agent rows and decision cards. User-configured status lines are untouched.
 The matching Agent row shows a spinner and elapsed seconds while the router answers. Claude
 hides that row once a second Agent call joins it, so while any call is routing, the turn's
 spinner line also reads `Selecting a model… Ns` or `Selecting models for N agents… Ns`,

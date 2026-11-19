@@ -287,12 +287,12 @@ nothing above the prompt, pending row and turn-spinner routing timers, and disab
 routing. They do not establish live
 parallel-agent TUI or gateway coverage.
 
-The bottom-bar regression in the native mod suite checks the spawn's returned child ID
-against its transcript animal name, reverse completion order, a model-only spawn override,
-denied/unrouted spawns, and nonblocking mapping-write failures. `test_claude_mod.py` exercises
-the generated `subagentStatusLine` command, including paths with spaces, child-ID lookup,
-session isolation, missing/partial records, progress/token updates, and terminal-control
-filtering. These component checks do not establish interactive native-panel rendering.
+Native spawn regressions cover reverse completion order, a model-only spawn override,
+denied/unrouted/resumed spawns, and no panel-label file writes. `test_claude_mod.py` verifies
+that generated plugins contain only the mod modules, without deprecated `subagentStatusLine`
+settings or a Python formatter. The obsolete formatter test was removed with that formatter;
+Claude owns the bottom panel's labels and controls. Existing mod tests retain animal-name
+and routing-card coverage. These component checks do not establish live panel rendering.
 
 The native auto-mode regression serves controlled server verdicts to the real Claude binary.
 An approved Agent call retains its original input and starts a child on a different routed
