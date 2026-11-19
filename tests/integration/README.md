@@ -2,6 +2,10 @@
 
 Auto picker coverage lives in the read-only workspace CUJs 4 and 7. See the
 [coverage and remaining gaps](../README.md); no Auto managed-config fixture is used.
+The native component terminal journey additionally compares an opaque model's
+regular-picker, Auto-picker and typed-command paths: internal Auto switches omit
+the direct-command advisory, typed commands retain it, and the native context
+window stays unchanged. This checks presentation, not gateway metadata accuracy.
 The configure-time managed-routing and exact Auto-version matrix has component coverage in
 `../test_agent_claude.py`; live configure-to-launch validation remains a gap.
 

@@ -62,7 +62,11 @@ export function register(on) {
             "modelPicker": {
                 "replaceBuiltInOptions": True,
                 "options": [
-                    {"model": model, "label": labels[model], "behavesAs": "claude-opus-5-5"}
+                    {
+                        "model": model,
+                        "label": labels[model],
+                        **({"behavesAs": "claude-opus-5-5"} if model != models[-1] else {}),
+                    }
                     for model in models
                 ],
             },
@@ -139,6 +143,20 @@ export function register(on) {
         tui.wait_for(lambda _: path.exists(), "the native model profile")
         return json.loads(path.read_text())
 
+    def command_outputs():
+        outputs = []
+        for path in home.rglob("*.jsonl"):
+            for line in path.read_text().splitlines():
+                record = json.loads(line)
+                message = record.get("message", {})
+                content = message.get("content") if isinstance(message, dict) else None
+                if isinstance(content, str) and content.startswith("<local-command-stdout>"):
+                    outputs.append(content)
+        return outputs
+
+    def unknown_model_notice(text):
+        return "doesn't recognize the model" in text or "isn't recognized" in text
+
     with launch("native-large-flow") as tui:
         tui.boot(timeout=45)
         tui.child.child.setwinsize(36, 60)
@@ -177,19 +195,21 @@ export function register(on) {
         assert "Auto mode: main model" not in "".join(tui.output)
         assert "classic.PreModelSwitch hook was skipped" not in "".join(tui.output)
         assert "subagentStatusLine" not in "".join(tui.output)
-        first = observe(tui, "model-twelve")
-        assert first["routing"] == "1", first
-        assert first["model"] == (
-            catalog["model"] if static else catalog["models"][11]["autoModel"]
-        ), first
-        # Claude may hide the footer tail at 60 columns. Verify its model name
-        # with room to render, then return to the narrow native-picker journey.
+        # The first Auto confirmation is still in the transcript while the
+        # internal restore runs. Wait for its final footer before typing again.
+        # Claude may hide this footer tail at 60 columns, so give it room here.
         tui.child.child.setwinsize(36, 120)
         tui.screen.resize(lines=36, columns=120)
         tui.wait_for(
             lambda s: "Auto (Model 12)" in "\n".join(s.splitlines()[-4:]),
             "the main model in the footer",
         )
+        first = observe(tui, "model-twelve")
+        assert first["routing"] == "1", first
+        assert first["model"] == (
+            catalog["model"] if static else catalog["models"][11]["autoModel"]
+        ), first
+        # Return to the narrow native-picker journey.
         tui.child.child.setwinsize(36, 60)
         tui.screen.resize(lines=36, columns=60)
         tui.submit("/effort status")
@@ -222,5 +242,53 @@ export function register(on) {
         inactive = observe(tui, "inactive")
         assert inactive["model"] == models[2], inactive
         assert inactive["routing"] == "0", inactive
+        if not static:
+            # An opaque catalog model has no native capability profile. Auto must
+            # match picker output without pretending its assumed window is known.
+            tui.child.child.setwinsize(36, 120)
+            tui.screen.resize(lines=36, columns=120)
+            tui.submit("/model")
+            tui.choose("Select model", "Model 23")
+            regular = observe(tui, "unknown-regular")
+            assert not any(unknown_model_notice(text) for text in command_outputs())
+            # Record this Claude version's own direct-command behavior. Older
+            # releases don't append the advisory; newer releases do.
+            before = len(command_outputs())
+            tui.submit("/model " + models[-1])
+            tui.wait_for(lambda _: len(command_outputs()) > before, "native typed selection")
+            native_typed_output = command_outputs()[-1]
+            native_notices = sum(unknown_model_notice(text) for text in command_outputs())
+            tui.submit("/model")
+            tui.choose("Select model", "Auto")
+            tui.wait_for(
+                lambda s: (
+                    "Select model" in s and "Model 23" in tui.selected_line(after="Select model")
+                ),
+                "unknown main model picker",
+            )
+            tui.send("\r", "choose the unknown main model")
+            tui.wait_for(lambda s: "Auto (Model 23)" in s, "unknown Auto footer")
+            automatic = observe(tui, "unknown-auto")
+            assert automatic["model"] == catalog["models"][-1]["autoModel"]
+            assert automatic["routing"] == "1"
+            assert automatic["usage"]["context"]["window"] == regular["usage"]["context"]["window"]
+            # Reopening also uses an internal command for the real opaque model.
+            tui.submit("/auto")
+            tui.wait_for(lambda s: "Select model" in s, "reopen unknown main model")
+            tui.send("\x1b", "cancel unknown main model")
+            tui.wait_for(
+                lambda s: "Select model" not in s and "Auto (Model 23)" in s,
+                "unknown Auto selection restored",
+            )
+            assert observe(tui, "unknown-cancelled")["model"] == automatic["model"]
+            assert sum(unknown_model_notice(text) for text in command_outputs()) == native_notices
+            before = len(command_outputs())
+            tui.submit("/model " + models[-1])
+            tui.wait_for(lambda _: len(command_outputs()) > before, "typed manual selection")
+            assert command_outputs()[-1] == native_typed_output
+            typed = observe(tui, "unknown-typed")
+            assert typed["model"] == models[-1]
+            assert typed["routing"] == "0"
+            assert typed["usage"]["context"]["window"] == regular["usage"]["context"]["window"]
         assert "classic.PreModelSwitch hook was skipped" not in "".join(tui.output)
         tui.exit_normally()

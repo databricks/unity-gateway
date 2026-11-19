@@ -25,7 +25,7 @@ import {
   routingLogsPaneClosed,
   routingLogsPaneOpen,
 } from './routing-logs.ts';
-import { AUTO_KEPT_PREFIX, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, type AutoPicker } from './auto-model.ts';
+import { AUTO_KEPT_PREFIX, AUTO_SET_PREFIX, autoTarget, formatAutoConfirmation, isStaticAuto, resolveAutoModel, sameAutoTarget, withoutInternalModelWarning, type AutoPicker } from './auto-model.ts';
 
 // Native transcript contracts; exercised by the real terminal tests on CI's Claude pin.
 const MODEL_SWITCH_CANCELLED = /^(?:Model switch cancelled(?:$|<)|Model switch to .+ was blocked by a PreModelSwitch hook|The model changed while you were confirming; pick again(?:$|<))/;
@@ -606,11 +606,18 @@ export function register(on: On, options: PluginOptions): void {
       const autoConfirmation = !(setModel || keptModel) ? undefined
         : staticConfirmation && auto.variant ? auto.models.find(row => row.model === auto.variant)
         : auto.models.find(row => row.autoModel === selected);
-      const confirmation = autoEcho || autoConfirmation ? {
-        ...e, message: { ...e.message, content: content.map((block) => block.type === 'text' ? {
-          ...block, text: autoEcho ? block.text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after)
-            : autoConfirmation ? formatAutoConfirmation(block.text, setModel) : block.text,
-        } : block) },
+      const internalSelection = setModel && internalSwitch && selected
+        && e.origin.kind === 'plugin' && e.origin.name === 'ug-smart-router'
+        && auto.models.some(row => row.model === selected || row.autoModel === selected);
+      const confirmation = autoEcho || autoConfirmation || internalSelection ? {
+        ...e, message: { ...e.message, content: content.map((block) => {
+          if (block.type !== 'text') return block;
+          let text = internalSelection ? withoutInternalModelWarning(block.text, selected) : block.text;
+          if (text !== block.text) $.ui.log(block.text, {to:'debug'});
+          if (autoEcho) text = text.replace(MODEL_COMMAND_ECHO, (_match, before, _model, after) => before + echoArgs + after);
+          else if (autoConfirmation) text = formatAutoConfirmation(text, setModel);
+          return {...block, text};
+        }) },
       } : e;
       const result = await next(confirmation);
       if (saving) {

@@ -52,6 +52,17 @@ export function sameAutoTarget(auto: AutoPicker, from: string, to: string, overr
 
 const MODEL_CONFIRMATION = /^(<local-command-stdout>(?:Set model to|Kept model as) )(`+).+?\2([^\n<]*)/;
 
+// The native picker omits this advisory; its direct /model command appends it.
+// Match only that complete advisory for the confirmed model, leaving every other
+// diagnostic untouched. Callers must also verify this is UG's internal switch.
+export function withoutInternalModelWarning(text: string, model: string): string {
+  if (!MODEL_CONFIRMATION.test(text)) return text;
+  return text.replace(
+    /\nClaude Code doesn't recognize the model "([^"\n]+)", so it assumes a context window of [\d.]+[km]? tokens\. Update Claude Code, or see https:\/\/code\.claude\.com\/docs\/en\/model-config#correct-the-window-for-a-gateway-or-custom-model-id to set the window\.(?=\n|<\/local-command-stdout>$|$)/g,
+    (notice, id: string) => matchesAutoModel(model, id) ? '' : notice,
+  );
+}
+
 export const AUTO_MAIN_TITLE = 'Auto: choose your main model';
 export const AUTO_SET_PREFIX = 'Auto on: ';
 export const AUTO_KEPT_PREFIX = 'Auto still on: ';

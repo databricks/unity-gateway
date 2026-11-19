@@ -2,7 +2,22 @@ import type { AgentInfo, On } from 'claude-code';
 import { expect, mock, test } from 'claude-code/testing';
 import { RECIPE_FIELD } from '../hooks/constants.ts';
 import { mergeExtraBody } from '../hooks/extra-body.ts';
-import { resolveAutoModel, sameAutoTarget } from '../hooks/auto-model.ts';
+import { resolveAutoModel, sameAutoTarget, withoutInternalModelWarning } from '../hooks/auto-model.ts';
+
+test('internal model notices keep errors and unrelated diagnostics', () => {
+  const model = 'ug-auto-123456789abc-opaque-model';
+  const notice = `Claude Code doesn't recognize the model "${model}", so it assumes a context window of 1m tokens. Update Claude Code, or see https://code.claude.com/docs/en/model-config#correct-the-window-for-a-gateway-or-custom-model-id to set the window.`;
+  const confirmation = '<local-command-stdout>Set model to `Auto`';
+  const output = `${confirmation}\n${notice}</local-command-stdout>`;
+  expect(withoutInternalModelWarning(output, model)).toBe(`${confirmation}</local-command-stdout>`);
+  expect(withoutInternalModelWarning(output, model + '[1m]')).toBe(`${confirmation}</local-command-stdout>`);
+  expect(withoutInternalModelWarning(output, 'another-model')).toBe(output);
+  const withOtherNotice = `${confirmation}\n${notice}\nYour organization restricts effort.</local-command-stdout>`;
+  expect(withoutInternalModelWarning(withOtherNotice, model)).toBe(`${confirmation}\nYour organization restricts effort.</local-command-stdout>`);
+  for (const text of [notice, `Model switch cancelled\n${notice}`, output.replace('assumes a context window', 'cannot determine the context window')]) {
+    expect(withoutInternalModelWarning(text, model)).toBe(text);
+  }
+});
 
 const RECIPE = 'task_v3';
 const CALLER_BODY = '{"caller_field":"keep"}';

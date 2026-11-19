@@ -40,6 +40,14 @@ Auto afterward; a forced process termination during that interval can leave the
 native saved model on the real model. Static Auto capability-profile limitations
 and missing metadata for unknown model IDs are not solved by this chooser change.
 
+Claude's direct `/model <id>` command appends an unknown-model context advisory
+that its interactive picker omits. For UG's own successful internal switches,
+Auto removes only that exact advisory for the confirmed catalog model from the
+command output and retains the original output in Claude's debug log. Commands
+typed by the user, other plugins' switches, errors, and other notices are unchanged.
+This matches the native picker's display; it does not supply missing context
+metadata or change Claude's assumed context window or compaction threshold.
+
 The count also includes background agents after the parent turn ends and refreshes within
 one second; unchanged counts do not trigger redraws. Both full and subagent-only smart
 routing launches use this path, and the existing temporary-directory lifecycle

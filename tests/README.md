@@ -278,6 +278,12 @@ model-switch-hook notice. Tiered component plugins also forward `PreModelSwitch`
 past user hooks, checking allow/deny/ask results and no skipped UG hook.
 UG leaves model-switch permissions and cache-cost confirmations to Claude and
 managed security hooks.
+An opaque catalog model also checks that Auto omits the direct-command-only
+unknown-model advisory, including when reopening the chooser, while a manually
+typed `/model <id>` still shows it. The regular and Auto selections must retain
+the same native context window. Notice parsing keeps mismatched model IDs,
+cancellations, unrelated notices and unrecognized wording untouched. This is
+display parity with the native picker, not a fix for missing capability metadata.
 Both static managed catalogs and the
 process-local custom option are exercised. The existing Claude 2.1.290 CI job runs
 these journeys without changing its version pin.
