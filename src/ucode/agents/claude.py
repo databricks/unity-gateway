@@ -2853,18 +2853,12 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     return isinstance(deny, list) and "WebSearch" in deny
 
 
-def _use_server_side_web_search(state: dict) -> bool:
-    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
-
-    A deny in a scope the launch can't override (managed, user, or project settings) would leave
-    no search tool at all, so the launch then keeps ug's MCP instead.
-    """
-    if not server_side_web_search_enabled(state):
-        return False
+def native_settings_paths() -> tuple[Path, ...]:
+    """Native managed, user and project settings that can affect a Claude launch."""
     managed_path = _managed_settings_path()
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     directories = [Path.cwd(), *Path.cwd().parents]
-    for blocker in (
+    return (
         *(
             [
                 managed_path,
@@ -2884,7 +2878,18 @@ def _use_server_side_web_search(state: dict) -> bool:
             for d in directories
             for name in ("settings.json", "settings.local.json")
         ),
-    ):
+    )
+
+
+def _use_server_side_web_search(state: dict) -> bool:
+    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
+
+    A deny in a scope the launch can't override (managed, user, or project settings) would leave
+    no search tool at all, so the launch then keeps ug's MCP instead.
+    """
+    if not server_side_web_search_enabled(state):
+        return False
+    for blocker in native_settings_paths():
         if _denies_web_search_or_unreadable(blocker):
             print_warning(
                 f"Server-side web search is enabled, but {blocker} denies WebSearch (or can't be "

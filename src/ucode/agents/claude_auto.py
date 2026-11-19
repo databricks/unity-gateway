@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 
 from ucode.databricks import AnthropicModelCatalog
+from ucode.managed_files import read_managed_file
+from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 
 AUTO_MODEL = "ug-auto"  # Legacy identity, accepted during migration only.
 AUTO_PREFIX = "ug-auto-"
@@ -295,6 +297,62 @@ def picker_is_configured(settings: dict) -> bool:
         and model_available(target, settings)
         for alias, target in overrides.items()
     )
+
+
+def _auto_window_preference(settings: dict, model: str) -> object:
+    preferences = settings.get("modelSettings", {})
+    row = preferences.get(model) if isinstance(preferences, dict) else None
+    if isinstance(row, dict) and "autoCompactWindow" in row:
+        return row["autoCompactWindow"]
+    return settings.get("autoCompactWindow")
+
+
+def apply_auto_context_windows(
+    settings: dict, managed: dict, rows: list[dict], catalog: AnthropicModelCatalog
+) -> None:
+    """Give an unsuffixed Kimi Auto alias its gateway model's compaction window."""
+    from ucode.agents.claude import _parse_managed_settings, native_settings_paths
+
+    native_settings = None
+    for row in rows:
+        model, alias = row["model"], row["autoModel"]
+        if unwrap_anthropic_gateway_model(model) != "system.ai.kimi-k3-1-pro":
+            continue
+        # An explicit behavesAs or [1m] supplies Claude's native profile.
+        if alias != auto_variant({"model": model}):
+            continue
+        if native_settings is None:
+            try:
+                native_settings = [
+                    _parse_managed_settings(text)
+                    for path in native_settings_paths()
+                    if (text := read_managed_file(path)) is not None
+                ]
+            except (OSError, RuntimeError, ValueError):
+                # An unreadable scope could contain an explicit compaction preference.
+                return
+        if any(
+            _auto_window_preference(source, alias) is not None
+            for source in [settings, *native_settings]
+        ):
+            continue
+        window = _auto_window_preference(managed, model) or _auto_window_preference(settings, model)
+        if window is None:
+            if any(
+                _auto_window_preference(source, model) is not None for source in native_settings
+            ):
+                # A personal or project preference may belong to a disabled --setting-sources scope.
+                continue
+            # Kimi K3.1 Pro serves 1,048,576 tokens; Claude accepts a window of at most 1M.
+            limit = catalog.model_id_to_limits.get(model)
+            window = min(limit[0] if limit and limit[0] > 0 else 1_000_000, 1_000_000)
+        if window != "auto" and not (isinstance(window, int) and 100_000 <= window <= 1_000_000):
+            continue
+        per_model = settings.setdefault("modelSettings", {})
+        if isinstance(per_model, dict) and isinstance(
+            entry := per_model.setdefault(alias, {}), dict
+        ):
+            entry["autoCompactWindow"] = window
 
 
 def picker_config(

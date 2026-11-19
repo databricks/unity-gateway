@@ -2177,12 +2177,10 @@ Do not drop the mirror flags if public registries resolve to `127.0.0.1` or retu
 `ECONNREFUSED`. The runner deliberately ignores host `.npmrc` and resolver settings.
 Outside the Databricks network, use reachable package indexes explicitly instead.
 
-Auto main-model confirmation component tests (`../native_claude/mod_tests/auto-static.test.ts`)
-check the saved-model transcript notice, repeated picks through `/model auto`,
-and cancellation without a save notice. Manual native TUI
-verification on Claude 2.1.290 and 2.1.325 covered normal-mode selection and the saved-model
-notice. This is not an authenticated
-gateway inference check or an automated integration journey.
+The Auto picker journey in `tests/e2e_cuj/test_cuj4_smart_routing.py` checks the prompt
+hint after a main-model switch, inference on the selected model, and the saved selection
+after a fresh launch. Launcher component tests cover fresh and continued sessions with
+a saved Kimi alias and verify its launch-scoped compaction window.
 
 Auto cleanup component tests cover the copy-on-write transformation, configure/revert
 ordering, restored private and managed backups, saved native model resolution, restrictive
@@ -2191,8 +2189,8 @@ restore has removed the source mapping (with and without workspace state), and t
 exact-version plus effective-routing provisioning gate. These cases exercise temporary
 settings through the real Python lifecycle; they do not establish live gateway coverage.
 
-The Auto chooser's native component tests cover compact modal selection, cancellation,
-pagination, invalid typed answers with a visible retry message, and stale answers after
+The Auto chooser's native component tests cover scrolling through a large catalog, cancellation,
+quiet saves, and stale selections after
 a model command or session end. Claude 2.1.290's plugin test runner lacks a
 `session.append` implementation, so these component tests do not cover picker-confirmation
 ordering, picker cancellation, nonstatic alias acceptance, native effort transcript

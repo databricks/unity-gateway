@@ -722,6 +722,106 @@ class TestV2Launch:
         # The managed aliases stay in the managed file; launch settings carry no copies.
         assert not any(is_auto_model(k) for k in captured.get("modelOverrides", {}))
 
+    @pytest.mark.parametrize("resume", [False, True], ids=["fresh", "continue"])
+    @pytest.mark.parametrize(
+        ("model", "listed_limit", "expected_window"),
+        [
+            ("system.ai.kimi-k3-1-pro", 0, 1_000_000),
+            ("anthropic-aigw-726013b5-system.ai.kimi-k3-1-pro", 262_144, 262_144),
+        ],
+    )
+    def test_kimi_auto_restart_supplies_its_native_window(
+        self, tmp_path, monkeypatch, resume, model, listed_limit, expected_window
+    ):
+        from ucode.agents.claude_auto import auto_variant
+
+        alias = auto_variant({"model": model})
+        user_settings = tmp_path / "settings.json"
+        user_settings.write_text(json.dumps({"model": alias}))
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+        monkeypatch.setattr(claude, "_managed_settings_path", lambda: None)
+        monkeypatch.setattr(claude, "CLAUDE_USER_SETTINGS_PATH", user_settings)
+        monkeypatch.setattr(v2, "APP_DIR", tmp_path)
+        monkeypatch.setattr(v2, "_model_picker_catalog", lambda: None)
+        monkeypatch.setattr(v2, "launch_token", lambda *_a: "token")
+        monkeypatch.setattr(v2, "build_auth_token_argv", lambda *_a, **_kw: ["/bin/ug"])
+        monkeypatch.setattr("ucode.databricks.ug_binary", lambda: "/bin/ug")
+        monkeypatch.setattr(
+            v2,
+            "list_anthropic_model_catalog",
+            lambda *_a: AnthropicModelCatalog(
+                [model], {}, model_id_to_limits={model: (listed_limit, 32_000)}
+            ),
+        )
+        launched = {}
+
+        def capture(argv, **kwargs):
+            launched["args"] = argv
+            launched["settings"] = json.loads(Path(argv[argv.index("--settings") + 1]).read_text())
+            return Mock(wait=lambda: 0)
+
+        monkeypatch.setattr(v2.subprocess, "Popen", capture)
+
+        with pytest.raises(SystemExit) as exc:
+            v2.launch_claude(
+                {"workspace": "https://example.com"},
+                ["--continue"] if resume else [],
+                binary="claude",
+                user_settings_path=user_settings,
+                launch_model=None,
+                compose_settings=lambda args: ({}, args),
+                launch_model_args=claude._launch_model_args,
+                model_name=claude._maybe_add_1m_suffix,
+            )
+        assert exc.value.code == 0
+        assert json.loads(user_settings.read_text()) == {"model": alias}
+        if resume:
+            assert "--model" not in launched["args"]
+        else:
+            assert launched["args"][launched["args"].index("--model") + 1] == alias
+        assert launched["settings"]["modelOverrides"][alias] == model
+        assert launched["settings"]["modelSettings"] == {
+            alias: {"autoCompactWindow": expected_window}
+        }
+
+    @pytest.mark.parametrize(
+        ("scope", "key", "window", "expected"),
+        [
+            ("user", "global", "auto", None),
+            ("project", "alias", 150_000, None),
+            ("managed", "target", 250_000, 250_000),
+            ("launch", "target", "auto", "auto"),
+            ("launch", "alias", 200_000, 200_000),
+        ],
+    )
+    def test_kimi_auto_respects_native_window_preferences(
+        self, tmp_path, monkeypatch, scope, key, window, expected
+    ):
+        from ucode.agents.claude_auto import apply_auto_context_windows, auto_variant
+
+        model = "system.ai.kimi-k3-1-pro"
+        alias = auto_variant({"model": model})
+        settings = {"modelSettings": {alias: {"effortLevel": "low"}}}
+        name = alias if key == "alias" else model
+        preference = {"autoCompactWindow": window}
+        native = preference if key == "global" else {"modelSettings": {name: preference}}
+        managed = native if scope == "managed" else {}
+        if scope == "launch":
+            settings["modelSettings"].setdefault(name, {}).update(preference)
+        # The native sources may include a user preference or a managed drop-in.
+        native_file = tmp_path / "settings.json"
+        native_file.write_text(json.dumps({} if scope == "launch" else native))
+        monkeypatch.setattr(claude, "native_settings_paths", lambda: (native_file,))
+        apply_auto_context_windows(
+            settings,
+            managed,
+            [{"model": model, "autoModel": alias}],
+            AnthropicModelCatalog([model], {}),
+        )
+        alias_settings = settings["modelSettings"][alias]
+        assert alias_settings.get("autoCompactWindow") == expected
+        assert alias_settings["effortLevel"] == "low"
+
     @pytest.mark.parametrize(
         ("launch_model", "tool_args", "expected_model"),
         [

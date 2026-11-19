@@ -255,7 +255,9 @@ unit/component checks, not live workspace or sign-in coverage; CLI wiring is sep
 Claude mod entry-point coverage lives in `test_claude_mod.py` (generated plugin contents),
 `test_claude_smart_routing_v2.py` (launch wiring), and the explicitly selected
 `native_claude/test_mod.py` suite. Claude 2.1.290 validates the module and runs its
-TypeScript event-forwarding and launch-option tests in CI. The existing Claude
+TypeScript event-forwarding and launch-option tests in CI. Auto picker tests cover
+selection beyond the first screen and saving without a transcript message. Launcher tests
+cover the Kimi Auto alias on restart and explicit compaction settings. The existing Claude
 skill-toggle integration journeys check the live recipe payload field (launch recipe at
 launch and after off/on, DISABLED after off) and Agent/Task delegation descriptions.
 Native request-construction checks verify the

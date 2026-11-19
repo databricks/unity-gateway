@@ -587,10 +587,9 @@ retain their precedence. Other versions keep their existing Smart Router control
 
 The native `/model` picker includes **Auto**:
 “Delivers frontier-model quality at lower cost through Smart Routing.” Selecting it
-enables UG's existing subagent router and opens a compact main-model modal above the prompt.
-`/model auto` selects Auto and opens the same modal without a model request. The current model
-appears first, followed by the remaining models in catalog order. Larger catalogs use
-**More models** to cycle through pages. No wider terminal is required.
+enables UG's subagent router and opens the main-model picker. `/model auto` opens
+the same picker. Use the arrow keys to scroll through the full list and Enter to select.
+The current model appears first, followed by the remaining models in catalog order.
 
 With the Auto config version, fresh sessions start in Auto with the managed default
 model, or the first available model if no default is configured. An explicit ordinary model
@@ -600,8 +599,7 @@ A separate `Auto (model name)` hint appears only while `/model` is Auto. Choosin
 a main model through `/model auto` changes the model used by the main agent,
 keeping the checkmark on Auto. The chooser has no effort controls; use native `/effort`
 to change effort separately.
-Invalid typed answers show a message and reopen the chooser. Escape preserves the
-current selection; Claude also treats an empty typed submission as cancellation.
+Escape keeps the current selection. Saving updates the Auto hint without adding a chat message.
 Each running session keeps its
 own selected profile, even when another session saves a different preference.
 Model-switch echoes and confirmations use Auto. Native `/status` and the header for non-Claude models still show the internal
@@ -637,7 +635,9 @@ The Codex integration is unchanged.
 Fresh launches using the Auto version start in Auto with the managed default model. Resume uses
 Claude's native model precedence without UG injecting a new Auto selection. A configured
 `ANTHROPIC_MODEL` can still override the restored model, just as it does in Claude itself. Capability recognition
-uses the exact Claude ID or an explicit admin `behavesAs` hint; unrelated models are not assigned Claude capabilities.
+uses the exact Claude ID or an explicit admin `behavesAs` hint. For an unsuffixed Kimi K3.1 Pro
+Auto alias, UG supplies a launch-only compaction window so Claude recognizes the window on
+restart. Explicit native window settings take precedence.
 Native profile checks cover Opus, Sonnet, Haiku, Fable and Astra; inference coverage
 uses the managed Claude catalog. Native Windows/macOS execution and actual compaction
 require separate validation.

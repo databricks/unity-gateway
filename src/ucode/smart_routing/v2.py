@@ -800,6 +800,7 @@ def launch_claude(
     from ucode.agents.claude import _managed_settings_path
     from ucode.agents.claude_auto import (
         add_picker_entry,
+        apply_auto_context_windows,
         is_auto_model,
         picker_is_configured,
         static_auto_model,
@@ -884,6 +885,7 @@ def launch_claude(
             print_warning(f"Skipped Claude Auto: {exc}")
             auto_picker = False
         else:
+            apply_auto_context_windows(settings, managed_auto, auto_config["models"], catalog)
             static_model = static_auto_model(auto_settings or {})
             if static_model and any(
                 row["autoModel"] == static_model for row in auto_config["models"]

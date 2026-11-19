@@ -342,7 +342,8 @@ class TestCujAutoModelPicker(BaseCujTest):
         Both show OFF for a regular model and ON after selecting a different Auto main model.
         Launch preserves model metadata while retargeting the recording proxy.
         Model selections preserve the launched managed settings.
-        The selected alternate main model then completes real inference. The existing
+        The selected alternate main model completes real inference and remains selected
+        after restarting Claude without a model override. The existing
         preset journey also exercises Auto main/subagent inference and routing decisions.
         """
         with smart_router_preset(cuj, SUBAGENT_AUTO_V0_CLAUDE_ONLY) as (
@@ -367,10 +368,6 @@ class TestCujAutoModelPicker(BaseCujTest):
                 row["label"].removeprefix("Claude ")
                 for row in rows
                 if row["model"] != alternate["model"]
-            )
-            saved_notice = (
-                f"Auto mode: main model {alternate['model'].removeprefix('system.ai.')}, "
-                "subagents smart routed."
             )
             checkpoint = recorder.checkpoint()
             recorder.prepare_launch()
@@ -402,7 +399,7 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.submit("/model")
                 tui.wait_for(lambda s: "Select model" in s, "the native model picker")
                 auto_rows = [
-                    line for line in tui.visible.splitlines() if re.search(r"\d+\. Auto\b", line)
+                    line for line in tui.visible.splitlines() if re.search(r"\d+\.\s+Auto\b", line)
                 ]
                 assert len(auto_rows) == 1 and "✔" in auto_rows[0], tui.visible
                 tui.choose("Select model", label)
@@ -418,9 +415,13 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.submit("/model auto")
 
                 def main_model_focused(label):
-                    return re.search(
-                        r"\d+\.\s+" + re.escape(label) + r"\s*$",
-                        tui.selected_line(after="Auto: choose your main model"),
+                    # Claude draws the focused Select option in reverse video.
+                    return any(
+                        "".join(
+                            cell.data for _, cell in sorted(line.items()) if cell.reverse
+                        ).strip()
+                        == label
+                        for line in tui.screen.buffer.values()
                     )
 
                 tui.wait_for(
@@ -436,13 +437,13 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.wait_for(
                     lambda s: (
                         "Auto: choose your main model" not in s
-                        and saved_notice in " ".join(s.split())
                         and f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
                         and _smart_router_band_shown(tui, enabled=True, first_prompt=False)
                         and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the restored Auto ON band and footer",
                 )
+                assert "Auto mode: main model" not in " ".join(tui.visible.split())
                 # TODO: Restore once Claude supports friendly Auto aliases in the header and /status.
                 # assert "ug-auto" not in tui.visible
                 task = _file_task(session, CLAUDE)
@@ -473,12 +474,23 @@ class TestCujAutoModelPicker(BaseCujTest):
                 tui.wait_for(
                     lambda s: (
                         "Auto: choose your main model" not in s
-                        and saved_notice in " ".join(s.split())
                         and _smart_router_hint_shown(tui, enabled=True)
                     ),
                     "the unchanged Auto selection saved without reopening its selector",
                 )
                 assert "re-read the full conversation" not in " ".join(tui.visible.split())
+                tui.exit_normally()
+            recorder.prepare_launch()
+            with Terminal(session, "auto-preset-restarted", [CLAUDE]) as tui:
+                tui.boot(timeout=150)
+                tui.wait_for(
+                    lambda s: (
+                        f"Auto ({alternate_label})" in "\n".join(s.splitlines()[-4:])
+                        and _smart_router_hint_shown(tui, enabled=True)
+                    ),
+                    "the saved Auto main model after restart",
+                )
+                assert "isn't recognized" not in " ".join(tui.visible.split())
                 tui.exit_normally()
             assert MANAGED_PATHS[0].read_bytes() == managed_before
 
