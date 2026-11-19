@@ -3514,7 +3514,13 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
     """Why ``tool`` can't route through ``service``, or None when it can."""
     provider_type = service.get("provider_type", "")
     if not tool_supports_provider_type(tool, provider_type):
-        supported = ", ".join(_TOOL_PROVIDER_TYPES.get(tool, ())) or "none"
+        # A GitHub Copilot service only works as a subscription relay, not as a provider to route to.
+        routable = [
+            name
+            for name in _TOOL_PROVIDER_TYPES.get(tool, ())
+            if name != GITHUB_COPILOT_PROVIDER_TYPE
+        ]
+        supported = ", ".join(routable) or "none"
         return (
             f"Model provider service '{service_name}' is a '{provider_type}' provider, "
             f"which {tool} can't route to (supported: {supported})."

@@ -141,10 +141,13 @@ class CopilotHostResolver:
             known = self._hosts.get(key)
         if known:
             return known
-        host = self._from_github(authorization) or self._from_cache_file()
-        if host:
-            with self._lock:
-                self._hosts[key] = host
+        host = self._from_github(authorization)
+        if host is None:
+            # The cache file can hold another account's newest entry, so it is never remembered
+            # for this credential; a later GitHub answer can still replace it.
+            return self._from_cache_file()
+        with self._lock:
+            self._hosts[key] = host
         return host
 
     def _from_github(self, authorization: str) -> str | None:
@@ -189,7 +192,8 @@ class CopilotHostResolver:
 
 
 def _is_normalized(path: str) -> bool:
-    if not path.startswith("/") or "\\" in path or _ENCODED_SEPARATOR.search(path):
+    # A fragment would miss the gateway routes and then be dropped on the way upstream.
+    if not path.startswith("/") or "\\" in path or "#" in path or _ENCODED_SEPARATOR.search(path):
         return False
     return all(segment not in ("", ".", "..") for segment in path[1:].split("/"))
 
@@ -220,6 +224,15 @@ class _CopilotRelayHandler(_ProxyHandler):
             return
         if self.headers.get("Origin") is not None:
             self._reject(403, "Browser requests are not served by the Unity Gateway Copilot relay.")
+            return
+        if self.headers.get("Transfer-Encoding") is not None:
+            # Bodies are read by Content-Length only; the rest of a chunked body would be read
+            # as the next request.
+            self._send_json_error(
+                411,
+                "Unity Gateway's Copilot relay needs a Content-Length on request bodies.",
+                close=True,
+            )
             return
         call = self._relay_path(raw_path)
         if call is None:
@@ -304,7 +317,7 @@ class _CopilotRelayHandler(_ProxyHandler):
         }
 
     def _on_refresh_failure(self, exc: RuntimeError) -> bool:
-        log_token_refresh_failure(exc)
+        self.cache.report_refresh_failure(exc)
         # Copilot hides the body of a 401 or 403, so the hint needs a status it shows.
         self._send_json_error(400, f"Databricks sign-in expired. {self.sign_in_hint}")
         return True
@@ -348,7 +361,7 @@ class _CopilotRelayHandler(_ProxyHandler):
         self._drain()
         self._send_json_error(status, message)
 
-    def _send_json_error(self, status: int, message: str) -> None:
+    def _send_json_error(self, status: int, message: str, *, close: bool = False) -> None:
         # Readable as both an OpenAI and an Anthropic error, whichever API Copilot called.
         payload = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
         body = json.dumps(payload).encode()
@@ -356,6 +369,9 @@ class _CopilotRelayHandler(_ProxyHandler):
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            if close:
+                # Also makes this handler close the connection after the response.
+                self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(body)
         except OSError:

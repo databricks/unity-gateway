@@ -1338,6 +1338,13 @@ class TestResolveProviderService:
         assert service is None
         assert "can't route to" in error
 
+    def test_copilots_supported_list_leaves_out_github_copilot(self):
+        error = db_mod._provider_service_unusable_reason(
+            "copilot", {"provider_type": "gemini_enterprise"}, "main.a.gemini"
+        )
+        assert error is not None and "(supported: anthropic," in error
+        assert "github_copilot" not in error
+
     def test_copilot_accepts_openai(self, monkeypatch):
         self._patch(monkeypatch)
         service, error = db_mod.resolve_provider_service(

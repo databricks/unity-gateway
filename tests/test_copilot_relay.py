@@ -259,6 +259,25 @@ class TestOtelExport:
         assert resp.status_code == 400
         assert "databricks auth login" in resp.json()["error"]["message"]
 
+    def test_a_dead_databricks_login_goes_to_the_refresh_failure_callback(self, gateway, github):
+        gateway._status = 401
+        reported: list = []
+
+        def token_provider(force: bool) -> str:
+            if token_provider.calls:
+                raise RuntimeError("refresh token expired")
+            token_provider.calls += 1
+            return DATABRICKS_TOKEN
+
+        token_provider.calls = 0
+        with _relay(
+            gateway, github, token_provider=token_provider, on_refresh_failure=reported.append
+        ) as (http, _port, _direct):
+            resp = http.post(f"/{SECRET}/chat/completions", headers=_auth(), content=b"{}")
+
+        assert resp.status_code == 400
+        assert [str(exc) for exc in reported] == ["refresh token expired"]
+
 
 class TestDirectCalls:
     @pytest.mark.parametrize(
@@ -368,6 +387,33 @@ class TestGate:
 
         assert status == 404
         assert gateway.requests == []
+
+    def test_refuses_a_fragment_in_the_target(self, gateway, github):
+        with _relay(gateway, github) as (_http, port, direct):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.request("POST", f"/{SECRET}/chat/completions#x", body=b"{}", headers=_auth())
+            status = conn.getresponse().status
+            conn.close()
+
+        assert status == 404
+        assert gateway.requests == [] and github.requests == [] and direct == []
+
+    def test_refuses_a_chunked_body_and_closes_the_connection(self, gateway, github):
+        with _relay(gateway, github) as (_http, port, direct):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            conn.putrequest("POST", f"/{SECRET}/mcp/readonly", skip_host=True)
+            conn.putheader("Host", f"127.0.0.1:{port}")
+            conn.putheader("Authorization", f"Bearer {GITHUB_TOKEN}")
+            conn.putheader("Transfer-Encoding", "chunked")
+            conn.endheaders()
+            conn.send(b"2\r\n{}\r\n0\r\n\r\n")
+            resp = conn.getresponse()
+            status, closing = resp.status, resp.getheader("Connection")
+            conn.close()
+
+        assert status == 411
+        assert closing == "close"
+        assert gateway.requests == [] and github.requests == [] and direct == []
 
     @pytest.mark.parametrize(
         "headers",
@@ -544,6 +590,36 @@ class TestCopilotHostResolver:
 
         assert resolver(f"Bearer {GITHUB_TOKEN}") == "copilot-api.acme.ghe.com"
         assert len(calls) == 1
+
+    def test_a_cache_file_fallback_is_not_remembered_for_the_credential(self, tmp_path):
+        cache = tmp_path / "copilot-user-cache.json"
+        cache.write_text(
+            json.dumps(
+                {
+                    "other": {
+                        "retrievedAt": "2026-11-18T10:00:00Z",
+                        "endpoints": {"api": "https://api.business.githubcopilot.com"},
+                    }
+                }
+            )
+        )
+        calls: list = []
+        statuses = [503, 200]
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(
+                statuses.pop(0), json={"endpoints": {"api": f"https://{COPILOT_HOST}"}}
+            )
+
+        resolver = copilot_relay.CopilotHostResolver(
+            client=httpx.Client(transport=httpx.MockTransport(handle)), cache_file=cache
+        )
+
+        assert resolver(f"Bearer {GITHUB_TOKEN}") == "api.business.githubcopilot.com"
+        assert resolver(f"Bearer {GITHUB_TOKEN}") == COPILOT_HOST
+        assert resolver(f"Bearer {GITHUB_TOKEN}") == COPILOT_HOST
+        assert len(calls) == 2
 
     def test_vscode_short_lived_tokens_skip_github(self, tmp_path):
         calls: list = []
