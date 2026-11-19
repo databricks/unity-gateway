@@ -121,7 +121,7 @@ Usage and routing instrumentation uses these constants (all in `metrics`):
 | --- | --- |
 | `UG_USAGE_DURATION_MS` | `timed()` around `usage_cmd()`, from Databricks CLI setup through workspace/token lookup, budget retrieval, and report rendering, with `show_all` reflecting `--all`. |
 | `ROUTING_DECISION_DURATION_MS` | `timed(reason_result=True, continued_with_fallback=True)` around one `select_route()` call, including request construction, the HTTP request, response decoding, and selection validation, with `routing_trigger` set to `first_prompt` or `subagent` and `http_status_code` when a response is available. |
-| `STARTUP_VALIDATION_OPERATION` | `failure(..., continued_with_fallback=True)` when the startup `routes:validate` check fails or passes its deadline; routing stays on. HTTP 404 and 501 (a Gateway without the endpoint) are not recorded. Its HTTP attempts use `api_operation="routes_validate"`. |
+| `STARTUP_VALIDATION_OPERATION` | `failure(..., continued_with_fallback=True)` when the startup `routes:validate` check fails or passes its deadline; routing stays on. Its HTTP attempts use `api_operation="routes_validate"`. |
 
 Both durations are recorded on success and failure. Use `subagent_routing()` around
 subagent route selection so its trigger is scoped to that decision. Each routing HTTP

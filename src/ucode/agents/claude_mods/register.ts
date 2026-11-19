@@ -1,5 +1,5 @@
 import type { EngineInterface, On, PluginOptions } from 'claude-code';
-import { endStatusBandTurn, registerStatusBand, noteRoutingToggle, showStatusBand, watchStartupValidation } from './smart-routing-status.ts';
+import { endStatusBandTurn, registerStatusBand, showStatusBand, watchStartupValidation } from './smart-routing-status.ts';
 import { endSubagentRoutingTurn, registerSubagentRouting, routedModels } from './subagent-routing.ts';
 import {
   CLI_AGENT,
@@ -168,13 +168,6 @@ async function setRouting(
 }
 
 export function register(on: On, options: PluginOptions): void {
-  // The startup check and toggles write the same environment; overlapping writes would mix them.
-  let routingWrites: Promise<unknown> = Promise.resolve();
-  const serialized = (write: () => Promise<void>): Promise<void> => {
-    const next = routingWrites.then(write, write);
-    routingWrites = next.catch(() => {});
-    return next;
-  };
   const feedback = createIsaacFeedbackState();
   const launchedEnabled = isRoutingEnabled(options);
   let orchestratorActive = Boolean(options.orchestratorInstructions);
@@ -183,11 +176,11 @@ export function register(on: On, options: PluginOptions): void {
     try {
       if (launchedEnabled) {
         const current = await readEnvironment($);
-        await serialized(() => setRouting($, options, isRoutingEnabled(current), false));
+        await setRouting($, options, isRoutingEnabled(current), false);
       }
     } finally {
       // After the launch write, so a disabling result cannot be overwritten by it.
-      await watchStartupValidation($, (enabled, sync) => serialized(() => setRouting($, options, enabled, sync)));
+      await watchStartupValidation($, () => setRouting($, options, false, false));
     }
     return next(e);
   });
@@ -230,13 +223,7 @@ export function register(on: On, options: PluginOptions): void {
       // The mod compiler keeps $ within one file, so bind these before Isaac's guard.
       feedback.readRoutingEnabled = async () => isRoutingEnabled(await readEnvironment($));
       feedback.disableRouting = async (sessionControlArgs) => {
-        const undoToggleNote = noteRoutingToggle(false);
-        try {
-          await serialized(() => setRouting($, options, false, true, sessionControlArgs));
-        } catch (error) {
-          undoToggleNote();
-          throw error;
-        }
+        await setRouting($, options, false, true, sessionControlArgs);
         showStatusBand();
         $.ui.invalidate('ui.render');
       };
@@ -247,13 +234,11 @@ export function register(on: On, options: PluginOptions): void {
   // Omnigent matches the "smart-router" command name exactly; update Omnigent if it changes.
   on('command.run', {command: 'smart-router'}, async ($, e) => {
     const action = parseSmartRouterCommand(e.args)?.action;
-    const undoToggleNote = noteRoutingToggle(action === 'on');
     try {
-      await serialized(() => setRouting($, options, action === 'on', true));
+      await setRouting($, options, action === 'on', true);
       showStatusBand();
       $.ui.invalidate('ui.render');
     } catch {
-      undoToggleNote();
       return {text: 'Could not update Smart Router. Check the recipe, CLAUDE_CODE_EXTRA_BODY, and environment permissions; retry or restart through UG.'};
     }
     return {text: action === 'on' ? SMART_ROUTER_ON_REPLY : SMART_ROUTER_OFF_REPLY};
