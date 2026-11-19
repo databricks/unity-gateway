@@ -97,8 +97,10 @@ function Set-MachinePath($Dir, [switch]$Remove) {
   $env:Path = Update-PathEntry $env:Path $Dir -Remove:$Remove
 }
 function Set-SharedReadAccess($Dir) {
-  & "$env:SystemRoot\System32\icacls.exe" $Dir /grant '*S-1-5-32-545:(OI)(CI)RX' /T /Q
-  if ($LASTEXITCODE -ne 0) { throw "Setting shared runtime permissions failed: $LASTEXITCODE" }
+  foreach ($permission in '*S-1-5-32-545:(OI)(CI)RX', '*S-1-5-32-545:RX') {
+    & "$env:SystemRoot\System32\icacls.exe" $Dir /grant $permission /T /Q
+    if ($LASTEXITCODE -ne 0) { throw "Setting shared runtime permissions failed: $LASTEXITCODE" }
+  }
 }
 function Get-AgentAliases($Ug) {
   $escaped = $Ug.Replace("'", "''")
