@@ -37,6 +37,10 @@ from ucode import metrics
 from ucode.codex_config import catalog_slugs
 from ucode.config_io import APP_DIR
 from ucode.constants import (
+    AGENT_CLAUDE,
+    AGENT_CODEX,
+    AGENT_COPILOT,
+    AGENT_VSCODE,
     API_ANTHROPIC_MESSAGES,
     API_GEMINI_GENERATE_CONTENT,
     API_OPENAI_RESPONSES,
@@ -3141,15 +3145,21 @@ _TOOL_PROVIDER_TYPES["vscode"] = _TOOL_PROVIDER_TYPES["copilot"]
 BEDROCK_PROVIDER_TYPES: tuple[str, ...] = ("amazon_bedrock", "bedrock_mantle")
 MICROSOFT_FOUNDRY_PROVIDER_TYPE = "microsoft_foundry"
 # Provider types the gateway serves on its Anthropic Messages route.
-ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = ("anthropic", *BEDROCK_PROVIDER_TYPES)
+ANTHROPIC_PROVIDER_TYPE = "anthropic"
+OPENAI_PROVIDER_TYPE = "openai"
 GITHUB_COPILOT_PROVIDER_TYPE = "github_copilot"
+ANTHROPIC_API_PROVIDER_TYPES: tuple[str, ...] = (ANTHROPIC_PROVIDER_TYPE, *BEDROCK_PROVIDER_TYPES)
 
 # Each relayed provider type's subscription: the agents that can sign in to it, its name, and the
 # agent named in the refusal. The fallback for an unknown relayed type keeps the Claude entry.
 _SUBSCRIPTION_RELAYS: dict[str, tuple[tuple[str, ...], str, str]] = {
-    "anthropic": (("claude",), "Claude", "Claude Code"),
-    "openai": (("codex",), "ChatGPT", "Codex"),
-    GITHUB_COPILOT_PROVIDER_TYPE: (("copilot", "vscode"), "GitHub Copilot", "GitHub Copilot"),
+    ANTHROPIC_PROVIDER_TYPE: ((AGENT_CLAUDE,), "Claude", "Claude Code"),
+    OPENAI_PROVIDER_TYPE: ((AGENT_CODEX,), "ChatGPT", "Codex"),
+    GITHUB_COPILOT_PROVIDER_TYPE: (
+        (AGENT_COPILOT, AGENT_VSCODE),
+        "GitHub Copilot",
+        "GitHub Copilot",
+    ),
 }
 
 
@@ -3527,7 +3537,7 @@ def _provider_service_unusable_reason(tool: str, service: dict, service_name: st
         )
     if service.get("relayed"):
         relay_tools, subscription, display = _SUBSCRIPTION_RELAYS.get(
-            provider_type, _SUBSCRIPTION_RELAYS["anthropic"]
+            provider_type, _SUBSCRIPTION_RELAYS[ANTHROPIC_PROVIDER_TYPE]
         )
         if tool not in relay_tools:
             return (

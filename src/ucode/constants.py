@@ -8,6 +8,7 @@ LOOPBACK_HOST = "127.0.0.1"
 AGENT_CLAUDE = "claude"
 AGENT_CODEX = "codex"
 AGENT_COPILOT = "copilot"
+AGENT_VSCODE = "vscode"
 
 # `ug configure --mdm` telemetry: the exported variable and its value when the machine is not MDM.
 MDM_OS_ENV = "MDM_OS"
