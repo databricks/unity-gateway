@@ -1,6 +1,6 @@
 """Best-effort Desktop configuration and cleanup for CLI commands.
 
-For the GitHub Copilot app, ug installs its Copilot copilot_app_plugin. Whenever the app runs, the plugin adds
+For the GitHub Copilot app, ug installs its Copilot plugin. Whenever the app runs, the plugin adds
 ug's providers to the app's model picker and serves their models straight from the AI Gateway, so
 nothing of ug runs in the background.
 """
@@ -441,7 +441,7 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
     if reason := copilot_settings_ignored_reason():
         print_warning(
             f"The GitHub Copilot app ignores its whole settings file while {reason}, so it won't "
-            "load ug's copilot_app_plugin. Remove those keys."
+            "load ug's plugin. Remove those keys."
         )
     print_success("GitHub Copilot app: installed ug's plugin with the Databricks models.")
     print_note(
@@ -451,7 +451,7 @@ def configure_copilot_app(state: dict, *, provider: str | None, location: str | 
 
 
 def revert_copilot_app() -> str:
-    """Remove ug's providers from the app when it's running, then ug's copilot_app_plugin. Never starts the
+    """Remove ug's providers from the app when it's running, then ug's plugin. Never starts the
     app. Returns a summary for revert."""
     if is_dry_run():
         print_note(_COPILOT_APP_DRY_RUN_NOTE)
@@ -534,7 +534,7 @@ def copilot_app_status(
         plugin_label += ", ignored"
         warnings.append(
             f"The GitHub Copilot app ignores its whole settings file while {ignored}, so it "
-            "doesn't load ug's copilot_app_plugin. Remove those keys."
+            "doesn't load ug's plugin. Remove those keys."
         )
     problem = _COPILOT_PLUGIN_PROBLEMS.get(plugin_status) or ("isn't loaded" if ignored else None)
     if registration in ("registered", "outdated") and problem:
