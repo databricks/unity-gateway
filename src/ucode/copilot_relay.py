@@ -27,6 +27,7 @@ import hmac
 import json
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from http.server import ThreadingHTTPServer
@@ -87,6 +88,8 @@ _DATABRICKS_HEADER_PREFIXES = ("x-databricks-", "databricks-")
 
 _GITHUB_COPILOT_USER_URL = "https://api.github.com/copilot_internal/user"
 _GITHUB_LOOKUP_TIMEOUT = httpx.Timeout(10.0)
+# A GitHub lookup that failed isn't retried for this long, so every request doesn't wait on it.
+_GITHUB_MISS_TTL_S = 60.0
 
 
 def copilot_api_host(url: object) -> str | None:
@@ -167,21 +170,28 @@ class CopilotHostResolver:
         self._client = client
         self._cache_file = cache_file
         self._hosts: dict[str, str] = {}
+        self._missed_at: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def __call__(self, authorization: str) -> str | None:
         key = hashlib.sha256(authorization.encode()).hexdigest()
         with self._lock:
             known = self._hosts.get(key)
+            missed_at = self._missed_at.get(key)
         if known:
             return known
+        if missed_at is not None and time.monotonic() - missed_at < _GITHUB_MISS_TTL_S:
+            return self._from_cache_file()
         host = self._from_github(authorization)
         if host is None:
             # The cache file can hold another account's newest entry, so it is never remembered
             # for this credential; a later GitHub answer can still replace it.
+            with self._lock:
+                self._missed_at[key] = time.monotonic()
             return self._from_cache_file()
         with self._lock:
             self._hosts[key] = host
+            self._missed_at.pop(key, None)
         return host
 
     def _from_github(self, authorization: str) -> str | None:
@@ -212,6 +222,12 @@ def _is_normalized(path: str) -> bool:
     if not path.startswith("/") or "\\" in path or "#" in path or "%" in path:
         return False
     return all(segment not in ("", ".", "..") for segment in path[1:].split("/"))
+
+
+def _error_body(message: str) -> bytes:
+    # Readable as both an OpenAI and an Anthropic error, whichever API Copilot called.
+    payload = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
+    return json.dumps(payload).encode()
 
 
 def _log_direct_request(method: str, path: str) -> None:
@@ -351,7 +367,14 @@ class _CopilotRelayHandler(_ProxyHandler):
     def _relay_response(self, resp: httpx.Response, **kwargs: Any) -> None:
         if not self._gateway_call or resp.status_code != 403:
             return super()._relay_response(resp, **kwargs)
-        self._send_json_error(400, _gateway_denial_message(resp))
+        # Relayed through the base relay as a 400, so the error and byte counts are recorded.
+        body = _error_body(_gateway_denial_message(resp))
+        denial = httpx.Response(
+            400,
+            headers={"Content-Type": "application/json", "Content-Length": str(len(body))},
+            stream=httpx.ByteStream(body),
+        )
+        return super()._relay_response(denial, **kwargs)
 
     def _forward_direct(self, host: str, path: str) -> None:
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -395,9 +418,7 @@ class _CopilotRelayHandler(_ProxyHandler):
         self._send_json_error(status, message)
 
     def _send_json_error(self, status: int, message: str, *, close: bool = False) -> None:
-        # Readable as both an OpenAI and an Anthropic error, whichever API Copilot called.
-        payload = {"type": "error", "error": {"type": "invalid_request_error", "message": message}}
-        body = json.dumps(payload).encode()
+        body = _error_body(message)
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -452,6 +473,7 @@ def start_copilot_relay_proxy(
     provider_service: str,
     sign_in_hint: str,
     added_headers: Mapping[str, str] | None = None,
+    request_headers_adder: Callable[[Any, bytes | None], Mapping[str, str]] | None = None,
     copilot_host: Callable[[str], str | None] | None = None,
     direct_base_url: Callable[[str], str] = _https_base_url,
     on_direct_request: Callable[[str, str], None] = _log_direct_request,
@@ -481,6 +503,9 @@ def start_copilot_relay_proxy(
             "session_secret": session_secret,
             "provider_service": provider_service,
             "added_headers": dict(added_headers or {}),
+            "request_headers_adder": (
+                staticmethod(request_headers_adder) if request_headers_adder else None
+            ),
             "sign_in_hint": sign_in_hint,
             # staticmethod: a plain function on the handler class would bind as a method.
             "copilot_host": staticmethod(copilot_host or CopilotHostResolver()),

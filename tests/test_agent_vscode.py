@@ -377,7 +377,11 @@ class TestSeatRelay:
 
     @staticmethod
     def _wrapper() -> Path:
-        return vscode.runtime_wrapper_path(insiders=False)
+        return Path(json.loads(TestSeatRelay._settings().read_text())[vscode.RUNTIME_PATH_SETTING])
+
+    @staticmethod
+    def _wrappers() -> list[Path]:
+        return list(vscode._wrapper_dir(insiders=False).glob("ug-copilot-runtime-*"))
 
     @pytest.mark.skipif(
         sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
@@ -413,9 +417,10 @@ class TestSeatRelay:
 
         assert vscode.configure(STATE, provider=self.SEATS)
 
+        (wrapper,) = self._wrappers()
         assert self._settings().read_text() == (
             '{\n    // mine\n    "editor.tabSize": 2,\n'
-            f'    "{vscode.RUNTIME_PATH_SETTING}": "{self._wrapper()}",\n}}\n'
+            f'    "{vscode.RUNTIME_PATH_SETTING}": "{wrapper}",\n}}\n'
         )
 
     def test_without_a_bundled_runtime_leaves_vscode_unchanged(
@@ -456,7 +461,7 @@ class TestSeatRelay:
 
         assert vscode.configure(STATE, provider=self.SEATS)
 
-        assert not self._settings().exists() and not self._wrapper().exists()
+        assert not self._settings().exists()
         assert "can't route GitHub Copilot through the seat relay yet" in _printed(capsys)
 
     def test_another_source_removes_the_route(self, code, seats, monkeypatch):
@@ -466,7 +471,7 @@ class TestSeatRelay:
         assert vscode.configure(STATE)
 
         assert json.loads(self._settings().read_text()) == {}
-        assert not self._wrapper().exists()
+        assert not self._wrappers()
 
     def test_revert_removes_the_route_but_not_a_developers_own_runtime(self, code, seats):
         assert vscode.configure(STATE, provider=self.SEATS)
@@ -474,13 +479,74 @@ class TestSeatRelay:
         assert vscode.revert() == "removed"
 
         assert json.loads(self._settings().read_text()) == {}
-        assert not self._wrapper().exists()
+        assert not self._wrappers()
 
         self._settings().write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"}))
         vscode.revert()
         assert json.loads(self._settings().read_text()) == {
             vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"
         }
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_a_developers_own_runtime_path_is_left_alone(self, code, seats):
+        self._settings().parent.mkdir(parents=True)
+        self._settings().write_text(json.dumps({vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"}))
+
+        assert not vscode.configure(STATE, provider=self.SEATS)
+
+        assert json.loads(self._settings().read_text()) == {
+            vscode.RUNTIME_PATH_SETTING: "/opt/my/runtime"
+        }
+        assert not self._wrappers()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_a_changed_route_gets_a_new_wrapper_so_vscode_restarts_the_runtime(self, code, seats):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        (first,) = self._wrappers()
+
+        assert vscode.configure({**STATE, "profile": "other"}, provider=self.SEATS)
+
+        (second,) = self._wrappers()
+        assert second != first
+        assert json.loads(self._settings().read_text()) == {
+            vscode.RUNTIME_PATH_SETTING: str(second)
+        }
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_a_symlinked_settings_file_stays_a_link_with_its_permissions(
+        self, code, seats, tmp_path
+    ):
+        target = tmp_path / "dotfiles" / "settings.json"
+        target.parent.mkdir()
+        target.write_text('{\n    "editor.tabSize": 2\n}\n')
+        target.chmod(0o600)
+        self._settings().parent.mkdir(parents=True)
+        self._settings().symlink_to(target)
+
+        assert vscode.configure(STATE, provider=self.SEATS)
+
+        assert self._settings().is_symlink()
+        assert target.stat().st_mode & 0o777 == 0o600
+        assert json.loads(target.read_text())[vscode.RUNTIME_PATH_SETTING] == str(
+            self._wrappers()[0]
+        )
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="the seat relay wrapper is a POSIX shell script"
+    )
+    def test_revert_keeps_the_wrapper_when_the_settings_cant_be_edited(self, code, seats):
+        assert vscode.configure(STATE, provider=self.SEATS)
+        self._settings().write_text("[]")
+
+        vscode.revert()
+
+        assert self._wrappers()
 
 
 class TestBundledRuntime:

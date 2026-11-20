@@ -6,6 +6,7 @@ import contextlib
 import http.client
 import json
 import threading
+import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
@@ -698,7 +699,9 @@ class TestCopilotHostResolver:
         assert resolver(f"Bearer {GITHUB_TOKEN}") == "copilot-api.acme.ghe.com"
         assert len(calls) == 1
 
-    def test_a_cache_file_fallback_is_not_remembered_for_the_credential(self, tmp_path):
+    def test_a_cache_file_fallback_is_not_remembered_for_the_credential(
+        self, tmp_path, monkeypatch
+    ):
         cache = tmp_path / "copilot-user-cache.json"
         cache.write_text(
             json.dumps(
@@ -723,7 +726,15 @@ class TestCopilotHostResolver:
             client=httpx.Client(transport=httpx.MockTransport(handle)), cache_file=cache
         )
 
+        clock = [1000.0]
+        monkeypatch.setattr(
+            copilot_relay, "time", types.SimpleNamespace(monotonic=lambda: clock[0])
+        )
+
         assert resolver(f"Bearer {GITHUB_TOKEN}") == "api.business.githubcopilot.com"
+        assert resolver(f"Bearer {GITHUB_TOKEN}") == "api.business.githubcopilot.com"
+        assert len(calls) == 1
+        clock[0] += copilot_relay._GITHUB_MISS_TTL_S
         assert resolver(f"Bearer {GITHUB_TOKEN}") == COPILOT_HOST
         assert resolver(f"Bearer {GITHUB_TOKEN}") == COPILOT_HOST
         assert len(calls) == 2

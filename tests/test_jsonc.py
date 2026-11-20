@@ -48,7 +48,7 @@ def test_set_ignores_braces_and_keys_inside_strings_comments_and_nested_values()
         pytest.param(f'{{\n    "{KEY}": "/w",\n    "a": 1\n}}', '{\n    "a": 1\n}', id="first"),
         pytest.param(
             f'{{\n    // keep\n    "a": 1,\n    "{KEY}": "/w",\n}}',
-            '{\n    // keep\n    "a": 1,\n}',
+            '{\n    // keep\n    "a": 1\n}',
             id="jsonc",
         ),
         pytest.param('{\n    "a": 1\n}', '{\n    "a": 1\n}', id="absent"),
@@ -56,6 +56,11 @@ def test_set_ignores_braces_and_keys_inside_strings_comments_and_nested_values()
 )
 def test_remove_member(text, expected):
     assert jsonc.remove_member(text, KEY) == expected
+
+
+def test_set_refuses_a_duplicate_key_instead_of_guessing_which_one_counts():
+    with pytest.raises(ValueError, match="more than once"):
+        jsonc.set_member('{\n    "k": 1,\n    "k": 2\n}', "k", 3)
 
 
 def test_get_member_of_an_absent_key_is_none():

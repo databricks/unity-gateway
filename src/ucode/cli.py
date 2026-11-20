@@ -273,6 +273,7 @@ from ucode.workspace import (
     selector_headers,
     split_workspace_key,
     state_workspace_key,
+    workspace_id_args,
     workspace_key,
 )
 
@@ -3087,8 +3088,19 @@ def copilot_seat_runtime_cmd(
                 file=sys.stderr,
             )
             raise typer.Exit(1)
+        saved_workspace_id = next(iter(workspace_id_args(workspace)[1:]), None)
+        if workspace_id and saved_workspace_id not in (None, workspace_id):
+            print(
+                f"ug's saved configuration for {workspace} doesn't match the workspace ID VS Code's "
+                "Copilot was set up with. Run `ug configure --agents copilot`, then restart VS Code.",
+                file=sys.stderr,
+            )
+            raise typer.Exit(1)
         if workspace_id:
             pin(workspace, workspace_id)
+        if managed := load_managed_state(state_workspace_key(state)):
+            state = resolve_state(managed, state, "copilot")
+        apply_pat_environment(state)
         returncode = copilot_agent.run_seat_runtime(state, provider, runtime, list(ctx.args))
     raise typer.Exit(returncode)
 

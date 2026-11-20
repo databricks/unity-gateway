@@ -37,6 +37,18 @@ def _skip_comment(text: str, index: int) -> int | None:
     return None
 
 
+def _comma_after(text: str, index: int) -> int | None:
+    """The index of the comma that follows ``index``, past whitespace and comments, or None."""
+    while index < len(text):
+        if (after := _skip_comment(text, index)) is not None:
+            index = after
+        elif text[index].isspace():
+            index += 1
+        else:
+            return index if text[index] == "," else None
+    return None
+
+
 def _members(text: str) -> tuple[list[_Member], int, int]:
     """The top-level object's members, and the indexes of its opening and closing braces."""
     members: list[_Member] = []
@@ -68,6 +80,8 @@ def _members(text: str) -> tuple[list[_Member], int, int]:
             if key is not None:
                 if value_start < 0:
                     raise ValueError(f"no value for {key}")
+                if any(member.key == key for member in members):
+                    raise ValueError(f"{key} is set more than once; keep one")
                 members.append(_Member(key, key_start, value_start, value_end))
             key, value_start, colon = None, -1, False
             if char == "}":
@@ -137,23 +151,29 @@ def set_member(text: str, key: str, value: object) -> str:
 
 
 def remove_member(text: str, key: str) -> str:
-    """``text`` without top-level ``key``. Raises ValueError when ``text`` isn't a JSON(C) object."""
+    """``text`` without top-level ``key``, with the comments around it kept. Raises ValueError when
+    ``text`` isn't a JSON(C) object."""
     members = _members(text)[0]
-    for position, member in enumerate(members):
-        if member.key != key:
-            continue
-        if position + 1 < len(members):
-            return text[: member.key_start] + text[members[position + 1].key_start :]
-        if position > 0:
-            return text[: members[position - 1].value_end] + text[member.value_end :]
-        rest = text[member.value_end :]
-        stripped = rest.lstrip()
-        if stripped.startswith(","):
-            rest = stripped[1:]
-        start = member.key_start
-        while start > 0 and text[start - 1] in " \t":
-            start -= 1
-        if start > 0 and text[start - 1] == "\n":
-            start -= 1
-        return text[:start] + rest
+    position = next((index for index, member in enumerate(members) if member.key == key), None)
+    if position is None:
+        return text
+    member = members[position]
+    line_start = text.rfind("\n", 0, member.key_start) + 1
+    line_end = text.find("\n", member.value_end)
+    line_end = len(text) if line_end < 0 else line_end
+    own_line = not text[line_start : member.key_start].strip() and not text[
+        member.value_end : line_end
+    ].strip(" \t,")
+    if own_line:
+        deletions = [(line_start, min(line_end + 1, len(text)))]
+    else:
+        deletions = [(member.key_start, member.value_end)]
+        if (comma := _comma_after(text, member.value_end)) is not None:
+            deletions.append((comma, comma + 1))
+    if position > 0 and position == len(members) - 1:
+        previous = _comma_after(text, members[position - 1].value_end)
+        if previous is not None:
+            deletions.append((previous, previous + 1))
+    for start, stop in sorted(deletions, reverse=True):
+        text = text[:start] + text[stop:]
     return text

@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
-from ucode import metrics
+from ucode import jsonc, metrics
 from ucode.config_io import (
     APP_DIR,
     ToolSpec,
@@ -1348,7 +1348,12 @@ def seat_relay_env(api_url: str, *, mcp_host: str | None, tracing: bool = False)
 
 
 def start_seat_relay(
-    state: dict, provider_service: str, *, headers: dict[str, str], sign_in_hint: str
+    state: dict,
+    provider_service: str,
+    *,
+    headers: dict[str, str],
+    sign_in_hint: str,
+    request_headers_adder: Callable[[Any, bytes | None], dict[str, str]] | None = None,
 ) -> tuple[Any, Any, Any, str]:
     """Start the seat relay for one session; returns ``(server, cache, client, api_url)``."""
     from ucode import copilot_relay
@@ -1361,6 +1366,7 @@ def start_seat_relay(
         provider_service=provider_service,
         sign_in_hint=sign_in_hint,
         added_headers=headers,
+        request_headers_adder=request_headers_adder,
         on_refresh_failure=_log_proxy_failure,
     )
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -1383,10 +1389,9 @@ def copilot_url_setting() -> str | None:
     """The ``copilotUrl`` in Copilot's user settings, which an interactive session may use
     instead of ``COPILOT_API_URL``."""
     try:
-        settings = json.loads(_copilot_settings_path().read_text(encoding="utf-8"))
+        value = jsonc.get_member(_copilot_settings_path().read_text(encoding="utf-8"), "copilotUrl")
     except (OSError, ValueError):
         return None
-    value = settings.get("copilotUrl") if isinstance(settings, dict) else None
     return value if isinstance(value, str) and value else None
 
 
@@ -1404,7 +1409,9 @@ def uses_seat_relay(state: dict, provider_service: str, *, tool: str = "copilot"
     return is_copilot_seat_relay(service)
 
 
-def _launch_seat_relay(state: dict, tool_args: list[str], provider_service: str) -> None:
+def _launch_seat_relay(
+    state: dict, tool_args: list[str], provider_service: str, *, launch_model: str | None
+) -> None:
     """Run Copilot signed in to GitHub, with its Copilot API calls through the seat relay."""
     scrub_stored_credentials()
     try:
@@ -1420,11 +1427,14 @@ def _launch_seat_relay(state: dict, tool_args: list[str], provider_service: str)
 
     workspace = state["workspace"]
     tool_args, session_id = session_args(tool_args)
+    if launch_model and not explicit_model_arg_value(tool_args):
+        tool_args = ["--model", launch_model, *tool_args]
     server, cache, client, api_url = start_seat_relay(
         state,
         provider_service,
         headers=with_session_id(proxy_headers(state), session_id),
         sign_in_hint=f"Run `databricks auth login --host {workspace}`, then restart `ug copilot`.",
+        request_headers_adder=subagent_headers(session_id),
     )
     try:
         env = seat_relay_env(
@@ -1487,7 +1497,13 @@ def launch(state: dict, tool_args: list[str], *, options: LaunchOptions) -> None
     provider_service = state.pop(LAUNCH_PROVIDER_SERVICE_KEY, None)
     model_location = state.pop(LAUNCH_MODEL_LOCATION_KEY, None)
     if provider_service and uses_seat_relay(state, provider_service):
-        _launch_seat_relay(state, tool_args, provider_service)
+        requested = options.launch_model or state.get("copilot_default_model")
+        _launch_seat_relay(
+            state,
+            tool_args,
+            provider_service,
+            launch_model=requested if isinstance(requested, str) and requested else None,
+        )
     catalog = _session_catalog(state, tool_args, provider_service, model_location)
     # Resolve before the proxy starts so a bad model fails without starting Copilot.
     tool_args, selected = rewrite_model_args(tool_args, catalog)

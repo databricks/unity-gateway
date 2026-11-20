@@ -244,6 +244,12 @@ class TestHelperArgv:
         argv = db_mod.build_otel_headers_argv(SHARED, "p")
         assert argv[argv.index("--workspace-id") + 1] == WSID
 
+    def test_copilot_seat_runtime(self, selected):
+        from ucode.agents import vscode
+
+        argv = vscode.seat_relay_command({"workspace": SHARED, "profile": "p"}, "svc")
+        assert argv[argv.index("--workspace-id") + 1] == WSID
+
     def test_claude_router_hook_preserves_selection_and_launch_provider(self, selected):
         from ucode.smart_routing.claude_hooks import ROUTE_SUBAGENT_MOD_EVENT, routing_hook_argv
 
