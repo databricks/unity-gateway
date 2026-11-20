@@ -86,6 +86,7 @@ from ucode.custom_oauth import (
 )
 from ucode.databricks import (
     SKILLS_MCP_MIN_DATABRICKS_CLI_VERSION,
+    AnthropicModelCatalog,
     apply_pat_environment,
     build_shared_base_urls,
     cached_model_service_entries,
@@ -575,8 +576,8 @@ def _find_profile_name(workspace: str, workspace_id: str | None) -> str | None:
     return find_profile_name_for_host(workspace)
 
 
-def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
-    """Run ``fn(*args)`` on a daemon thread; the returned future carries its result or exception.
+def _start_in_background[T](fn: Callable[..., T], *args: object, **kwargs: object) -> Future[T]:
+    """Run ``fn(*args, **kwargs)`` on a daemon thread; the returned future carries its result.
 
     Not a ``ThreadPoolExecutor`` worker, which interpreter exit joins: a caller that raises before
     reading the result must exit without waiting out the abandoned call's network retries.
@@ -585,7 +586,7 @@ def _start_in_background[T](fn: Callable[..., T], *args: object) -> Future[T]:
 
     def run() -> None:
         try:
-            future.set_result(fn(*args))
+            future.set_result(fn(*args, **kwargs))
         except BaseException as exc:
             future.set_exception(exc)
 
@@ -4386,6 +4387,73 @@ def _launch_tool(
             and (managed is None or managed_provider or managed_parent_schema)
         ):
             os.environ[claude_agent.GATEWAY_MODEL_DISCOVERY_ENV_VAR] = "1"
+        # The Anthropic picker catalog depends only on inputs settled above, so start it
+        # speculatively here and overlap it with the probe and discovery that
+        # `configure_shared_state` runs. A launch shape whose routing wouldn't read the catalog
+        # abandons the request on its daemon thread.
+        picker_catalog_future: Future | None = None
+        picker_catalog_started_profile: str | None = None
+        launch_only_auto_picker = (
+            tool == AGENT_CLAUDE
+            and smart_routing_config.auto_mode_enabled()
+            and not smart_routing_v2.claude_print_mode(ctx.args)
+            and _routes_launch(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=provider,
+            )
+        )
+        unmanaged_picker_catalog = (
+            tool == "claude"
+            and managed is None
+            and not provider
+            and not parent_schema
+            and family_defaults is None
+            and not launch_only_auto_picker
+        )
+        # Provider launches resolve their service first: a relayed one skips this catalog
+        # (`relayed` below), and that's only known after a lookup, so only a source that
+        # never relays — a Unity Catalog location — starts the catalog here.
+        scoped_picker_catalog = (
+            tool == "claude"
+            and not provider
+            and bool(managed_parent_schema or (managed is None and bool(parent_schema)))
+        )
+        if unmanaged_picker_catalog or scoped_picker_catalog:
+            picker_catalog_started_profile = _get_catalog_profile(state)
+            # A token fetched before `configure_shared_state`'s auth check can fail on stale
+            # credentials the auth step below would repair; skip the speculation and let the
+            # normal path recover rather than changing that flow.
+            try:
+                picker_catalog_token = get_databricks_token(
+                    state["workspace"], picker_catalog_started_profile
+                )
+            except Exception:
+                picker_catalog_started_profile = None
+            else:
+                picker_catalog_future = _start_in_background(
+                    list_anthropic_model_catalog,
+                    state["workspace"],
+                    picker_catalog_token,
+                    **({} if unmanaged_picker_catalog else {"parent_schema": parent_schema}),
+                )
+
+        def _speculative_picker_catalog() -> AnthropicModelCatalog | None:
+            """The speculative catalog result when its profile still matches and it succeeded;
+            None sends the caller to the serial fetch with the live token."""
+            if picker_catalog_future is None or picker_catalog_started_profile != catalog_profile:
+                return None
+            speculative = picker_catalog_future.result()
+            if speculative.error_msg:
+                # The speculative request rode a token fetched before configure's auth step, so
+                # its failure may be stale credentials that step repaired; refetch with the live
+                # token rather than failing the launch on it.
+                return None
+            return speculative
+
         state = configure_shared_state(
             state["workspace"],
             profile=state.get("profile"),
@@ -4530,12 +4598,14 @@ def _launch_tool(
             )
         )
         if should_fetch_claude_picker_catalog:
-            token = get_databricks_token(state["workspace"], catalog_profile)
-            picker_catalog = list_anthropic_model_catalog(
-                state["workspace"],
-                token,
-                **({"provider": provider} if provider else {"parent_schema": parent_schema}),
-            )
+            picker_catalog = _speculative_picker_catalog()
+            if picker_catalog is None:
+                token = get_databricks_token(state["workspace"], catalog_profile)
+                picker_catalog = list_anthropic_model_catalog(
+                    state["workspace"],
+                    token,
+                    **({"provider": provider} if provider else {"parent_schema": parent_schema}),
+                )
             error = picker_catalog.error_msg
             if error:
                 if provider:
@@ -4638,33 +4708,16 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
-        launch_only_auto_picker = (
-            tool == AGENT_CLAUDE
-            and smart_routing_config.auto_mode_enabled()
-            and not smart_routing_v2.claude_print_mode(ctx.args)
-            and _routes_launch(
-                tool,
-                ctx.args,
-                smart_routing_enabled=smart_routing_enabled,
-                explicit_prompt=explicit_prompt,
-                model=model or forwarded_model,
-                provider=provider,
-            )
-        )
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
-        if (
-            tool == "claude"
-            and managed is None
-            and not provider
-            and not parent_schema
-            and family_defaults is None
-            and not launch_only_auto_picker
-        ):
-            discovered = list_anthropic_model_catalog(
-                state["workspace"],
-                get_databricks_token(state["workspace"], catalog_profile),
-            )
+        # launch_only_auto_picker was settled above, where the speculative catalog started.
+        if unmanaged_picker_catalog:
+            discovered = _speculative_picker_catalog()
+            if discovered is None:
+                discovered = list_anthropic_model_catalog(
+                    state["workspace"],
+                    get_databricks_token(state["workspace"], catalog_profile),
+                )
             if discovered.model_ids:
                 picker_catalog = claude_agent.default_model_picker_catalog(
                     state.get("claude_models") or {},
