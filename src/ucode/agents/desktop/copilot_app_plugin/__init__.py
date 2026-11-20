@@ -244,7 +244,12 @@ def extension_config(config: PluginConfig) -> dict:
 
 # What the extension keeps between runs, in its own directory; a reinstall carries them over, so
 # an unchanged configure neither resyncs nor restarts the app.
-_EXTENSION_STATE_FILES = ("app-sync.json", "app-restart.json", "app-restart.log")
+_EXTENSION_STATE_FILES = (
+    "app-sync.json",
+    "app-restart.json",
+    "app-restart.log",
+    "tracing-exports.json",
+)
 _STAGING_PREFIX = ".staging-"
 _REPLACED_PREFIX = ".replaced-"
 # Older leftovers are from a run that crashed, never from one still writing.
