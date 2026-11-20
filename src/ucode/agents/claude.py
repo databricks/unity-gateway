@@ -165,9 +165,7 @@ CLAUDE_BACKUP_PATH = APP_DIR / "claude-ucode-settings.backup.json"
 WEB_SEARCH_MCP_STATE_KEY = "claude_web_search_mcp"
 WEB_SEARCH_MODEL_PREFERENCES = (
     "system.ai.gpt-6-luna",
-    "databricks-gpt-6-luna",
     "system.ai.gpt-5-mini",
-    "databricks-gpt-5-mini",
 )
 MINIMUM_CLAUDE_VERSION = (2, 1, 290)
 MINIMUM_CLAUDE_VERSION_TEXT = "2.1.290"

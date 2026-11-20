@@ -83,7 +83,7 @@ def test_claude_only_setup_registers_search_without_prior_codex_setup(
 ):
     prefix = "databricks-" if discovery == "legacy" else "system.ai."
     search_models = [prefix + name for name in model_names]
-    search_model = prefix + expected_name
+    search_model = prefix + (model_names[0] if discovery == "legacy" else expected_name)
     monkeypatch.setattr(
         cli,
         "discover_model_services",

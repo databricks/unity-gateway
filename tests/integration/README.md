@@ -711,9 +711,10 @@ tests in `../test_claude_search_discovery.py`, including legacy catalog fallback
 an explicit model override, and no available GPT model. `../test_cli.py` checks provider mode
 replaces saved legacy search names with UC model-service IDs and preserves agent models,
 including fallback when UC discovery is empty or unavailable. Live search remains
-outside this integration suite. The component discovery matrix covers preferring GPT-6 Luna,
-then GPT-5 Mini, then the discovered default in standard and provider-mode setup with UC
-and legacy catalogs. `../test_agent_claude.py` keeps explicit overrides ahead of that order.
+outside this integration suite. The component discovery matrix covers preferring UC GPT-6 Luna,
+then UC GPT-5 Mini, then the discovered default in standard and provider-mode setup. Legacy
+catalogs retain their existing default. `../test_agent_claude.py` keeps explicit overrides
+ahead of that order.
 
 CLI token memoization and capability-gated `--no-browser` re-auth are covered by
 component tests in `../test_databricks.py` and `../test_mcp_web_search.py`, including
