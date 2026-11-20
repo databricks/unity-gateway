@@ -52,6 +52,20 @@ _EXPECTED_PRESETS = {
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+    },
+}
+
+# Versions whose mapping hides subagent model details in the main TUI, per agent.
+_HIDDEN_MODEL_DETAIL_AGENTS = {
+    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY: {AGENT_CLAUDE},
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {AGENT_CLAUDE, AGENT_CODEX},
+    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {AGENT_CLAUDE},
 }
 
 
@@ -88,6 +102,7 @@ def test_absent_or_unknown_selector_is_a_no_op(selector):
         config.SUBAGENT_ONLY_V1,
         config.SUBAGENT_ORCH_V0,
         config.SUBAGENT_ORCH_V1,
+        config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL,
     ],
 )
 def test_smart_routing_config_cartesian_grid(
@@ -183,6 +198,63 @@ def test_codex_uses_existing_presets():
         assert config.resolve_environment(source, agent=AGENT_CODEX) == expected
 
 
+@pytest.mark.parametrize("agent", [AGENT_CLAUDE, AGENT_CODEX])
+def test_blind_orch_version_hides_model_details_without_auto(agent):
+    source = {SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL}
+    applied = source.copy()
+
+    previous = config.apply_config(applied, agent=agent)
+
+    assert applied == {
+        **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+    }
+    assert not config.auto_mode_enabled(source)
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == source
+
+
+@pytest.mark.parametrize(
+    ("agent", "expected"),
+    [
+        (
+            AGENT_CLAUDE,
+            {
+                **_EXPECTED_PRESETS[config.SUBAGENT_ORCH_V0],
+                ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+            },
+        ),
+        (
+            AGENT_CODEX,
+            {
+                **dict.fromkeys(
+                    (
+                        ENABLE_SMART_ROUTING_ENV_VAR,
+                        ENABLE_SUBAGENT_ROUTING_ENV_VAR,
+                        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR,
+                        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR,
+                    ),
+                    "0",
+                ),
+                ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+            },
+        ),
+    ],
+)
+def test_blind_orch_claude_only_version(agent, expected):
+    source = {
+        SMART_ROUTER_CONFIG_VERSION_ENV_VAR: config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY
+    }
+    applied = source.copy()
+
+    previous = config.apply_config(applied, agent=agent)
+
+    assert applied == expected
+    assert not config.auto_mode_enabled(source)
+    v2.restore_smart_routing_env(previous, applied)
+    assert applied == source
+
+
 @pytest.mark.parametrize(
     ("selector", "expected"),
     [
@@ -249,12 +321,20 @@ def test_enabled_version_keeps_a_known_version(agent, version):
         (None, {AGENT_CLAUDE: True, AGENT_CODEX: True}),
         ("unsupported_version", {AGENT_CLAUDE: True, AGENT_CODEX: True}),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
+        (
+            config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
+            {AGENT_CLAUDE: True, AGENT_CODEX: False},
+        ),
         (config.SUBAGENT_AUTO_V0_CLAUDE_ONLY, {AGENT_CLAUDE: True, AGENT_CODEX: False}),
         *(
             (version, {AGENT_CLAUDE: True, AGENT_CODEX: True})
             for version in sorted(
                 set(config._VERSIONS)
-                - {config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, config.SUBAGENT_AUTO_V0_CLAUDE_ONLY}
+                - {
+                    config.SUBAGENT_ORCH_V0_CLAUDE_ONLY,
+                    config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY,
+                    config.SUBAGENT_AUTO_V0_CLAUDE_ONLY,
+                }
             )
         ),
     ],
@@ -326,7 +406,9 @@ def test_unreadable_controls_fallback_is_silent(tmp_path, capsys, agent):
         (config.SUBAGENT_ONLY_V1, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V1, (AGENT_CLAUDE, AGENT_CODEX)),
+        (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL, (AGENT_CLAUDE, AGENT_CODEX)),
         (config.SUBAGENT_ORCH_V0_CLAUDE_ONLY, (AGENT_CLAUDE,)),
+        (config.SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY, (AGENT_CLAUDE,)),
     ],
 )
 def test_describe_routing_reports_each_version_over_shell_flags(version, harnesses, shell_value):
@@ -392,9 +474,7 @@ def test_subagent_model_display_version_precedence_and_restoration(agent, versio
     original = source.copy()
     expected = inherited
     if version in config._VERSIONS:
-        expected = (
-            "0" if version == config.SUBAGENT_AUTO_V0_CLAUDE_ONLY and agent == AGENT_CLAUDE else "1"
-        )
+        expected = "0" if agent in _HIDDEN_MODEL_DETAIL_AGENTS.get(version, set()) else "1"
     assert (
         config.resolve_environment(source, agent=agent).get(
             ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR

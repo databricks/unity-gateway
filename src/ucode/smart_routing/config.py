@@ -34,8 +34,16 @@ SUBAGENT_ORCH_V0 = "subagent_orch_v0"
 # Route only subagents with V2, subagent-only, and orchestration all enabled.
 SUBAGENT_ORCH_V1 = "subagent_orch_v1"
 
+# Route only subagents with orchestration, hiding subagent model details in the main TUI.
+SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL = "subagent_orch_v0_blind_subagent_model"
+
 # Preserve subagent_orch_v0 for Claude, with all Codex routing flags disabled.
 SUBAGENT_ORCH_V0_CLAUDE_ONLY = "subagent_orch_v0_claude_only"
+
+# Preserve subagent_orch_v0_blind_subagent_model for Claude, with all Codex routing flags disabled.
+SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY = (
+    "subagent_orch_v0_blind_subagent_model_claude_only"
+)
 
 SUBAGENT_AUTO_V0_CLAUDE_ONLY = "subagent_auto_v0_claude_only"
 
@@ -80,6 +88,13 @@ _BASE_VERSIONS = {
         ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
         ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
     },
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
+        ENABLE_SMART_ROUTING_ENV_VAR: "0",
+        ENABLE_SUBAGENT_ROUTING_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "1",
+        ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+        ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "0",
+    },
 }
 
 # Agents share the base preset unless explicitly changed; comment any intentional difference.
@@ -104,9 +119,24 @@ _VERSIONS = {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
         AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V1],
     },
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+        AGENT_CODEX: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
+    },
     # Codex opts out of routing and orchestration; Claude keeps subagent_orch_v0.
     SUBAGENT_ORCH_V0_CLAUDE_ONLY: {
         AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0],
+        AGENT_CODEX: {
+            ENABLE_SMART_ROUTING_ENV_VAR: "0",
+            ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_ORCHESTRATOR_ENV_VAR: "0",
+            ENABLE_SMART_ROUTER_AUTO_MODE_ENV_VAR: "0",
+            ENABLE_SUBAGENT_MODEL_IN_MAIN_TUI_ENV_VAR: "1",
+        },
+    },
+    # Codex opts out of routing and orchestration; Claude keeps the blind orch v0 preset.
+    SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL_CLAUDE_ONLY: {
+        AGENT_CLAUDE: _BASE_VERSIONS[SUBAGENT_ORCH_V0_BLIND_SUBAGENT_MODEL],
         AGENT_CODEX: {
             ENABLE_SMART_ROUTING_ENV_VAR: "0",
             ENABLE_SUBAGENT_ROUTING_ENV_VAR: "0",
