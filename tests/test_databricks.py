@@ -7448,6 +7448,10 @@ def test_http_transport_preserves_status_errors(fresh_pooled_client):
         assert reason == "HTTP 302 Found: redirect"
         _, reason = db_mod._http_get_bytes(f"{url}/failure", "token")
         assert reason == "HTTP 503 Service Unavailable: unavailable"
+        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
+            db_mod._http_open(db_mod.urllib_request.Request(f"{url}/failure"), timeout=5)
+        assert raised.value.code == 503
+        assert raised.value.read() == b"unavailable"
     finally:
         server.shutdown()
         server.server_close()
@@ -7655,6 +7659,7 @@ class TestPooledClientDispatch:
             assert db_mod._use_pooled_client() is False
             db_mod._http_open(request, timeout=5)
 
+        monkeypatch.setattr(db_mod.urllib_request, "getproxies", lambda: {})
         monkeypatch.delenv(db_mod.POOLED_HTTP_DISABLE_ENV_VAR)
         assert db_mod._use_pooled_client() is True
         assert opened == [(request, 5), (request, 5)]
@@ -7877,31 +7882,3 @@ class TestPooledRedirectPolicies:
             assert response.read() == b"{}"
 
         assert sent == ["https://example.test/start", "https://example.test/final"]
-
-
-def test_status_errors_from_the_real_transport(monkeypatch):
-    """A real httpx client (MockTransport) exercises _http_open's status→HTTPError mapping and
-    _http_get_bytes' handling, not a mock of the helper itself."""
-    import httpx
-
-    for status, body in ((404, b"nope"), (503, b"later")):
-        client = httpx.Client(
-            transport=httpx.MockTransport(
-                lambda request, status=status, body=body: httpx.Response(status, content=body)
-            )
-        )
-        monkeypatch.setattr(db_mod, "_get_http_client", lambda client=client: client)
-        _force_pooled(monkeypatch)
-
-        _, reason = db_mod._http_get_bytes(
-            f"https://example.test/api/{status}", "token", max_retries=0
-        )
-        assert reason is not None
-        assert reason.startswith(f"HTTP {status}")
-
-        with pytest.raises(db_mod.urllib_error.HTTPError) as raised:
-            db_mod._http_open(
-                db_mod.urllib_request.Request(f"https://example.test/api/{status}"), timeout=5
-            )
-        assert raised.value.code == status
-        assert raised.value.read() == body
