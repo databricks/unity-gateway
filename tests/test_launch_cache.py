@@ -677,6 +677,13 @@ class TestRefresher:
         assert spawned["argv"][4:6] == ["--refresh", "--identity"]
         assert json.loads(base64.urlsafe_b64decode(spawned["argv"][6].encode())) == identity
 
+    def test_spawn_failure_is_ignored(self, monkeypatch):
+        def denied(*_a, **_k):
+            raise OSError("spawn denied")
+
+        monkeypatch.setattr("ucode.os_compatibility.subprocess_cross_os.popen", denied)
+        lc.spawn_refresher(_identity())  # must not raise
+
     def test_a_clear_during_the_fetch_is_not_written_back(self, monkeypatch):
         self._patch_lookups(monkeypatch)
         key = _key()
@@ -812,6 +819,23 @@ class TestLaunchPath:
         spawn.assert_not_called()
         assert not _entries()
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_a_read_only_cache_dir_degrades_to_no_cache(self):
+        cache_dir = lc._cache_dir()
+        cache_dir.chmod(0o500)
+        try:
+            list_catalog = MagicMock(return_value=CATALOG)
+            spawn = MagicMock()
+            with self._launch(list_catalog, spawn):
+                result = runner.invoke(cli_mod.app, ["claude"])
+            assert result.exit_code == 0, result.output
+            # Every launch-cache write was skipped, and the launch fetched as today.
+            list_catalog.assert_called_once()
+            spawn.assert_not_called()
+            assert not _entries()
+        finally:
+            cache_dir.chmod(0o700)
+
 
 class TestInvalidation:
     def test_configure_invalidates(self):
@@ -837,6 +861,26 @@ class TestInvalidation:
             result = runner.invoke(cli_mod.app, ["configure", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert lc.load_entry(key) is not None
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes")
+    def test_configure_with_a_read_only_cache_dir_succeeds(self):
+        key = _key()
+        _store(key, {}, checked_at=time.time())
+        (lc._cache_dir() / f"{key}.lock").touch()
+        cache_dir = lc._cache_dir()
+        cache_dir.chmod(0o500)
+        try:
+            with (
+                patch("ucode.cli.install_databricks_cli"),
+                patch("ucode.cli.install_tool_binary"),
+                patch("ucode.cli.configure_workspace_command"),
+            ):
+                result = runner.invoke(cli_mod.app, ["configure"])
+            assert result.exit_code == 0, result.output
+            # The invalidation was swallowed with the rest of the cache's I/O failures.
+            assert lc.load_entry(key) is not None
+        finally:
+            cache_dir.chmod(0o700)
 
     def test_login_invalidates(self, monkeypatch):
         key = _key()

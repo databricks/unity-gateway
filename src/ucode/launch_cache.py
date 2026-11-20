@@ -168,21 +168,25 @@ def try_merge_entry(key: str, identity: dict, payload: dict) -> bool:
     the lock never interleaves with its read-fetch-invalidate, and the ``checked_at`` it
     bumps cannot make that refresher skip dropping a failed result. When the key is held,
     the write is skipped — the holder is a refresher writing fresh results anyway, and
-    the next launch fetches and records again."""
+    the next launch fetches and records again. A read-only or unwritable cache dir
+    degrades to no cache, never a launch crash."""
     from ucode.os_compatibility.file_lock_cross_os import (
         acquire_exclusive_file_lock,
         release_file_lock,
     )
 
-    with (_cache_dir() / f"{key}.lock").open("a+b") as lock_file:
-        try:
-            acquire_exclusive_file_lock(lock_file, timeout=0)
-        except TimeoutError:
-            return False
-        try:
-            merge_entry(key, identity, payload)
-        finally:
-            release_file_lock(lock_file)
+    try:
+        with (_cache_dir() / f"{key}.lock").open("a+b") as lock_file:
+            try:
+                acquire_exclusive_file_lock(lock_file, timeout=0)
+            except TimeoutError:
+                return False
+            try:
+                merge_entry(key, identity, payload)
+            finally:
+                release_file_lock(lock_file)
+    except OSError:
+        return False
     return True
 
 
@@ -400,8 +404,13 @@ def _refresh(identity: dict) -> int:
     # One refresher per key at a time: a second launch's refresher waits here, then
     # sees the first one's fresh entry, and a failure cannot drop an entry another
     # refresher wrote in between. The lock file stays in place, like the other
-    # helpers', so waiters always lock the same inode.
-    with (_cache_dir() / f"{key}.lock").open("a+b") as lock_file:
+    # helpers', so waiters always lock the same inode. An unwritable cache dir fails
+    # this detached process quietly instead of a traceback into a DEVNULL stderr.
+    try:
+        lock_file = (_cache_dir() / f"{key}.lock").open("a+b")
+    except OSError:
+        return 1
+    with lock_file:
         try:
             acquire_exclusive_file_lock(lock_file, timeout=REFRESH_LOCK_TIMEOUT_SECONDS)
         except TimeoutError:
