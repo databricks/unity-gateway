@@ -7597,7 +7597,14 @@ def test_after_fork_hook_replaces_parent_http_client(monkeypatch):
 
 def test_macos_schemeless_system_proxy_is_normalized(monkeypatch):
     monkeypatch.setattr(db_mod.sys, "platform", "darwin")
-    for name in ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+    for name in (
+        "HTTP_PROXY",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         db_mod.urllib_request, "getproxies", lambda: {"https": "system-proxy:3128", "all": ""}
@@ -7614,8 +7621,9 @@ class TestPooledRedirectErrors:
 
     @staticmethod
     def _client_raising(monkeypatch, exc):
-        import httpx
         from unittest.mock import MagicMock
+
+        import httpx
 
         client = MagicMock()
         client.send.side_effect = exc
@@ -7623,8 +7631,9 @@ class TestPooledRedirectErrors:
         return httpx
 
     def test_too_many_redirects_maps_to_http_error(self, monkeypatch):
-        import httpx
         from urllib.error import HTTPError
+
+        import httpx
 
         self._client_raising(monkeypatch, httpx.TooManyRedirects("too many redirects"))
 
