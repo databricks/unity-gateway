@@ -95,15 +95,18 @@ def test_ug_configure_antigravity_gemini_mps(
     assert antigravity_provider in session.run("status").stdout
 
     for attempt in range(antigravity.RESOURCE_EXHAUSTED_MAX_ATTEMPTS):
-        result = session.run(
-            "antigravity",
-            "--",
-            "-p",
-            task.prompt,
-            *antigravity.HEADLESS_ARGS,
-            timeout=300,
-            ok=False,
-        )
+        try:
+            result = session.run(
+                "antigravity",
+                "--",
+                "-p",
+                task.prompt,
+                *antigravity.HEADLESS_ARGS,
+                timeout=300,
+                ok=False,
+            )
+        finally:
+            antigravity.requested_urls(session)
         if not antigravity.resource_exhausted(result.stdout):
             break
         if attempt == antigravity.RESOURCE_EXHAUSTED_MAX_ATTEMPTS - 1:

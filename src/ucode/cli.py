@@ -66,6 +66,7 @@ from ucode.agents.model_sources import (
     resolve_model_sources,
 )
 from ucode.agents.pi import PI_SETTINGS_BACKUP_PATH, PI_SETTINGS_PATH
+from ucode.codex_config import is_codex_app_server_launch
 from ucode.config_io import is_dry_run, restore_file, set_dry_run
 from ucode.constants import (
     AGENT_CLAUDE,
@@ -223,6 +224,7 @@ from ucode.state import (
     aliased_workspace_key,
     clear_state,
     current_workspace_key,
+    get_claude_auto_revert_targets,
     get_managed_model_source_expansions,
     get_model_location,
     get_provider_service,
@@ -233,6 +235,7 @@ from ucode.state import (
     remove_self_managed_agent,
     save_config_scope,
     save_state,
+    set_claude_auto_revert_targets,
     set_current_workspace,
     set_managed_model_source_expansions,
     set_model_location,
@@ -2070,6 +2073,12 @@ def revert() -> int:
     from ucode.agents.desktop.setup import revert_desktop
 
     state = load_state()
+    auto_targets = {
+        **get_claude_auto_revert_targets(),
+        **claude_agent.auto_model_targets(),
+    }
+    if auto_targets:
+        set_claude_auto_revert_targets(auto_targets)
     desktop_result = revert_desktop()
     managed_configs = state.get("managed_configs") or {}
     mcp_results = revert_mcp_configs(state)
@@ -2116,6 +2125,7 @@ def revert() -> int:
         else restore_file(spec["config_path"], spec["backup_path"], bool(managed_configs.get(tool)))
         for tool, spec in TOOL_SPECS.items()
     }
+    claude_agent.cleanup_auto_configuration(alias_targets=auto_targets)
     pi_settings_restored = restore_file(
         PI_SETTINGS_PATH, PI_SETTINGS_BACKUP_PATH, bool(managed_configs.get("pi"))
     )
@@ -3074,6 +3084,9 @@ def claude_desktop_auth_cmd(
     claude_binary: Annotated[
         str | None, typer.Option("--claude-binary", help="Absolute Claude Code executable path.")
     ] = None,
+    use_pat: Annotated[
+        bool, typer.Option("--use-pat", help="Read the profile's static PAT instead of OAuth.")
+    ] = False,
 ) -> None:
     """Print a Desktop credential, allowing browser login only for interactive requests."""
     import sys
@@ -3085,6 +3098,11 @@ def claude_desktop_auth_cmd(
 
     try:
         with redirect_stdout(sys.stderr):
+            if use_pat and not ensure_pat_bearer(profile):
+                raise RuntimeError(
+                    f"Databricks profile `{profile}` has no personal access token. "
+                    "Add one, then start a new Cowork task."
+                )
             if relay:
                 if not claude_binary or not os.path.isabs(claude_binary):
                     raise RuntimeError("An absolute Claude Code executable path is required.")
@@ -3355,6 +3373,7 @@ def codex_router_hook_cmd(
     profile: Annotated[str | None, typer.Option("--profile")] = None,
     use_pat: Annotated[bool, typer.Option("--use-pat")] = False,
     model: Annotated[list[str] | None, typer.Option("--model")] = None,
+    provider: Annotated[str | None, typer.Option("--provider", hidden=True)] = None,
     workspace_id: Annotated[str | None, typer.Option("--workspace-id", hidden=True)] = None,
 ) -> None:
     """Run a Codex smart-routing lifecycle hook."""
@@ -3426,6 +3445,7 @@ def codex_router_hook_cmd(
                 token=token,
                 available_models=model or [],
                 audit_decision=True,
+                **({"provider": provider} if provider else {}),
             )
     output = stamp_spawn(payload, enabled=enabled, output=output)
     if output is not None:
@@ -3446,31 +3466,51 @@ def smart_router_describe_cmd() -> None:
 def smart_router_logs_cmd(
     session: Annotated[str, typer.Option("--session")],
     decision: Annotated[str | None, typer.Option("--decision")] = None,
+    harness: Annotated[str, typer.Option("--harness")] = AGENT_CLAUDE,
+    output_format: Annotated[str, typer.Option("--format")] = "json",
 ) -> None:
-    """Print a session's recorded smart-routing decisions as JSON on stdout."""
+    """Print a session's recorded smart-routing decisions as JSON, or a table with --format table."""
     from ucode.smart_routing import session_log
 
-    def emit(payload: dict[str, object]) -> None:
-        sys.stdout.write(json.dumps({"v": 1, **payload}) + "\n")
+    as_table = output_format == "table"
 
+    def fail(message: str) -> typer.Exit:
+        if as_table:
+            sys.stdout.write(f"error: {message}\n")
+        else:
+            sys.stdout.write(json.dumps({"v": 1, "error": message}) + "\n")
+        return typer.Exit(1)
+
+    if harness not in (AGENT_CLAUDE, AGENT_CODEX):
+        raise fail(f"unknown harness {harness!r}; expected {AGENT_CLAUDE} or {AGENT_CODEX}")
+    if output_format not in ("json", "table"):
+        raise fail(f"unknown format {output_format!r}; expected json or table")
     try:
-        records = session_log.read_decisions("claude", session)
+        records = session_log.read_decisions(harness, session)
     except OSError as exc:
-        emit(
-            {
-                "error": f"cannot read session log at "
-                f"{session_log.session_log_path('claude', session)}: {exc.strerror or exc}"
-            }
-        )
-        raise typer.Exit(1) from exc
+        raise fail(
+            f"cannot read session log at "
+            f"{session_log.session_log_path(harness, session)}: {exc.strerror or exc}"
+        ) from exc
+    if as_table and decision is not None:
+        try:
+            output = session_log.render_detail(session_log.find_decision(records, decision))
+        except (LookupError, ValueError) as exc:
+            raise fail(str(exc)) from exc
+        sys.stdout.write(output + "\n")
+        return
+    if as_table:
+        sys.stdout.write(session_log.render_table(records) + "\n")
+        return
     if decision is None:
-        emit({"decisions": [session_log.overview(record) for record in records]})
+        sys.stdout.write(
+            json.dumps({"v": 1, "decisions": [session_log.overview(r) for r in records]}) + "\n"
+        )
         return
     record = next((r for r in records if r.get("decision_id") == decision), None)
     if record is None:
-        emit({"error": "decision not found"})
-        raise typer.Exit(1)
-    emit({"decision": record})
+        raise fail("decision not found")
+    sys.stdout.write(json.dumps({"v": 1, "decision": record}) + "\n")
 
 
 @app.command("claude-router-hook", hidden=True)
@@ -3621,16 +3661,17 @@ def _smart_routing_v2_flag(enabled: bool | None, *, agent: str) -> Iterator[bool
 
     Yields whether the flag or a known version already chose this launch's routing.
     """
-    routing_chosen = enabled is not None or smart_routing_config.known_version()
-    previous = (
-        smart_routing_v2.apply_config(agent=agent)
-        if enabled is None
-        else smart_routing_v2.override_smart_routing(enabled, agent=agent)
-    )
-    try:
-        yield routing_chosen
-    finally:
-        smart_routing_v2.restore_smart_routing_env(previous)
+    with smart_routing_config.version_scope():
+        routing_chosen = enabled is not None or smart_routing_config.known_version()
+        previous = (
+            smart_routing_v2.apply_config(agent=agent)
+            if enabled is None
+            else smart_routing_v2.override_smart_routing(enabled, agent=agent)
+        )
+        try:
+            yield routing_chosen
+        finally:
+            smart_routing_v2.restore_smart_routing_env(previous)
 
 
 def _toggle_current_smart_routing_session(enabled: bool | None, reason: str | None = None) -> bool:
@@ -3932,15 +3973,17 @@ def _should_launch_smart_routing(
 
 
 def _smart_routing_launch_shape(tool: str, tool_args: list[str], explicit_prompt: bool) -> bool:
-    """Whether the forwarded arguments represent an interactive launch."""
+    """Whether the forwarded arguments represent an interactive launch or Codex's app-server."""
     if not tool_args or explicit_prompt:
         return True
+    if tool == AGENT_CODEX:
+        return is_codex_app_server_launch(tool_args)
     return tool == "claude" and tool_args[0].startswith("-")
 
 
 def _smart_routing_supported(tool: str, provider: str | None) -> bool:
     """Whether smart routing supports this agent and provider combination."""
-    return not provider or tool == "claude"
+    return not provider or tool in {AGENT_CLAUDE, AGENT_CODEX}
 
 
 def _routes_launch(
@@ -3958,7 +4001,6 @@ def _routes_launch(
         smart_routing_enabled
         # Only Claude Code and Codex currently support smart routing.
         and tool in CAN_USE_CACHED_CONFIG_AGENTS
-        # Model Provider Services are supported for Claude only.
         and _smart_routing_supported(tool, provider)
         # Route a supported interactive launch shape.
         and _should_launch_smart_routing(
@@ -4042,6 +4084,7 @@ def _get_catalog_profile(state: dict) -> str | None:
     return state.get("profile")
 
 
+@smart_routing_config.version_scope()
 def _launch_tool(
     tool_name: str,
     ctx: typer.Context,
@@ -4339,6 +4382,23 @@ def _launch_tool(
                 if authored:
                     provider_models = authored
                     coding_agent_config_defaults = authored
+        if tool == AGENT_CODEX and managed_smart_routing_applies:
+            if relayed:
+                routing_unavailable = (
+                    "Smart routing is unavailable with a ChatGPT subscription relay."
+                )
+            else:
+                try:
+                    routing_unavailable = codex_agent.minimum_version_error(
+                        smart_routing_enabled=True
+                    )
+                except RuntimeError as exc:
+                    routing_unavailable = str(exc)
+            if routing_unavailable:
+                print_warning(f"{routing_unavailable} Running without smart routing.")
+                smart_routing_enabled = False
+                managed_smart_routing_applies = False
+                previous = {**smart_routing_v2.disable_smart_routing(), **previous}
         if tool == AGENT_CLAUDE and not provider and not parent_schema:
             # A static model list (no provider) can still name a model service that routes to a
             # subscription relay; that launch must swap credentials like a relayed provider.
@@ -4472,6 +4532,19 @@ def _launch_tool(
                 resolved_model = model
         if model and tool == "claude" and not provider and not claude_inputs_from_configure:
             route_root_model = None
+        launch_only_auto_picker = (
+            tool == AGENT_CLAUDE
+            and smart_routing_config.auto_mode_enabled()
+            and not smart_routing_v2.claude_print_mode(ctx.args)
+            and _routes_launch(
+                tool,
+                ctx.args,
+                smart_routing_enabled=smart_routing_enabled,
+                explicit_prompt=explicit_prompt,
+                model=model or forwarded_model,
+                provider=provider,
+            )
+        )
         # List the gateway's models in ug's own /model picker so GPT rows get the `[1m]` hint.
         # Claude Code's own discovery lists them without it, so they would run at 200K.
         if (
@@ -4480,6 +4553,7 @@ def _launch_tool(
             and not provider
             and not parent_schema
             and family_defaults is None
+            and not launch_only_auto_picker
         ):
             discovered = list_anthropic_model_catalog(
                 state["workspace"],
@@ -4525,7 +4599,7 @@ def _launch_tool(
             # Claude re-adds an out-of-catalog saved model to /model even when built-ins are
             # replaced. Keep the catalog launch-scoped and leave the user's settings alone.
             state["_claude_launch_picker_models"] = picker_catalog.model_ids
-            if managed is None and (explicit_provider or parent_schema) and not model:
+            if managed is None and (provider or parent_schema) and not model:
                 # The permanent Default row should also resolve within the selected catalog.
                 state["_claude_launch_default_model"] = (
                     claude_agent.default_model(
@@ -4855,24 +4929,20 @@ def codex_cmd(
         str | None,
         typer.Option("--scopes", hidden=True, help="Comma-separated custom OAuth scopes."),
     ] = None,
-    # Hidden while Codex is unrouted by default; the Smart Router skill still toggles with them.
     enable_smart_routing: Annotated[
         bool,
-        typer.Option("--enable-smart-routing", hidden=True),
+        typer.Option("--enable-smart-routing", help="Enable smart routing for this session."),
     ] = False,
     disable_smart_routing: Annotated[
         bool,
-        typer.Option("--disable-smart-routing", hidden=True),
+        typer.Option("--disable-smart-routing", help="Disable smart routing for this session."),
     ] = False,
     smart_router_feedback: Annotated[
         str | None,
         typer.Option("--smart-router-feedback", hidden=True),
     ] = None,
 ) -> None:
-    """Launch Codex via Databricks.
-
-    Smart Routing is currently only supported for the Claude Code harness.
-    """
+    """Launch Codex via Databricks."""
     # Both flags cancel out: the launch behaves as if neither was passed.
     enable_smart_routing_flag = (
         None if enable_smart_routing == disable_smart_routing else enable_smart_routing
@@ -5472,6 +5542,8 @@ def configure(
                     return
         claude_agent.request_explicit_configure()
         request_explicit_managed_writes()
+        if not claude_agent.auto_configuration_enabled():
+            claude_agent.cleanup_auto_configuration()
         codex_agent.request_explicit_configure()
         request_vscode_with_copilot(not no_vscode)
         custom_oauth = _custom_oauth_config(client_id, redirect_url, scopes)
@@ -5819,6 +5891,22 @@ def _configure_global_from_agent_config(
                 ) from exc
             # The preview still shows the files, with this installation's paths in them.
             print_warning(f"A real run would stop here: {exc}")
+        if not claude_agent.auto_configuration_enabled():
+            try:
+                claude_agent.cleanup_auto_configuration()
+            except RuntimeError as exc:
+                raise published_agent_config.ManagedRunError(
+                    published_agent_config.EXIT_WRITE, str(exc)
+                ) from exc
+        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
+        if not dry_run and from_file is None:
+            # Install missing enabled agents as the merge does, before the build checks versions.
+            for tool_name in selected:
+                if tool_name in enabled:
+                    try:
+                        install_tool_binary(tool_name, strict=False)
+                    except RuntimeError as exc:
+                        print_warning(str(exc))
         published_agent_config.run(
             key=key,
             raw=raw,
@@ -5828,7 +5916,6 @@ def _configure_global_from_agent_config(
             profile=profile,
             token=token,
         )
-        enabled = normalize_managed_config(raw).get("enabled_agents") or {}
         if from_file is None and "claude" in selected:
             if "claude" in enabled:
                 # Best effort, as before: a Desktop failure warns without failing the run. A dry

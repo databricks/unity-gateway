@@ -20,6 +20,7 @@ import copy
 import json
 import subprocess
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -236,12 +237,20 @@ def build_claude(
         ug_values[claude_agent.CLAUDE_ALLOWED_MCP_SERVERS_KEY] = [
             {"serverName": name} for name in sorted(names)
         ]
-    return ownership.compose(
+    composed = ownership.compose(
         ownership.load_table("claude").section("managed_settings"),
         native=native,
         ug_values=ug_values,
         features=agent_features(manifest, "claude"),
     )
+    if not claude_agent.auto_configuration_enabled():
+        from ucode.agents.claude_auto import remove_auto_configuration
+
+        try:
+            composed.doc = remove_auto_configuration(composed.doc)
+        except ValueError as exc:
+            raise ManagedRunError(EXIT_USAGE, f"Cannot remove Claude Auto settings: {exc}") from exc
+    return composed
 
 
 def _codex_identity(entry: dict) -> dict:
@@ -337,7 +346,11 @@ def _codex_static_models(manifest: dict) -> list[str] | None:
 
 
 def _codex_catalog_files(
-    manifest: dict, previous_paths: set[str], warnings: list[str]
+    manifest: dict,
+    previous_paths: set[str],
+    warnings: list[str],
+    workspace: str,
+    get_token: Callable[[], str] | None,
 ) -> dict[Path, str | None]:
     """The model catalog and the ``managed_config.toml`` that names it, or their removal.
 
@@ -356,7 +369,9 @@ def _codex_catalog_files(
             )
             return {}
         try:
-            catalog = prepare_codex_catalog(codex_agent.SPEC["binary"], static)
+            catalog = prepare_codex_catalog(
+                codex_agent.SPEC["binary"], static, workspace=workspace, get_token=get_token
+            )
         except RuntimeError as exc:
             raise ManagedRunError(EXIT_USAGE, f"Codex: {exc}") from exc
         if legacy is not None:
@@ -433,6 +448,7 @@ def plan_agents(
     previous_state: dict | None,
     *,
     claude_mcp_names: set[str] | None = None,
+    get_token: Callable[[], str] | None = None,
 ) -> list[AgentPlan]:
     previously_written = set(((previous_state or {}).get("agents") or {}).keys())
     enabled = manifest.get("enabled_agents") or {}
@@ -487,7 +503,9 @@ def plan_agents(
             previous_paths = set(
                 (((previous_state or {}).get("agents") or {}).get("codex") or {}).get("paths") or []
             )
-            plan.files.update(_codex_catalog_files(manifest, previous_paths, plan.warnings))
+            plan.files.update(
+                _codex_catalog_files(manifest, previous_paths, plan.warnings, workspace, get_token)
+            )
             version_warning = _codex_version_warning()
             if version_warning:
                 plan.warnings.append(version_warning)
@@ -788,7 +806,13 @@ def run(
 
     try:
         plans = plan_agents(
-            manifest, host, agents, mcp_entries, previous, claude_mcp_names=claude_mcp_names
+            manifest,
+            host,
+            agents,
+            mcp_entries,
+            previous,
+            claude_mcp_names=claude_mcp_names,
+            get_token=(lambda: token) if token is not None else None,
         )
     except ValueError as exc:
         raise ManagedRunError(EXIT_USAGE, str(exc)) from exc

@@ -14,3 +14,6 @@ export const TRUE_ENV_VALUES: readonly string[] = ['1', 'true', 'yes', 'on'];
 export function envBool(value: string | undefined): boolean {
   return TRUE_ENV_VALUES.includes((value ?? '').trim().toLowerCase());
 }
+
+export const MODEL_SET_PREFIX = '<local-command-stdout>Set model to ';
+export const MODEL_KEPT_PREFIX = '<local-command-stdout>Kept model';

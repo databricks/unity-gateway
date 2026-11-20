@@ -35,6 +35,7 @@ from ucode.config_io import (
     write_json_file,
 )
 from ucode.constants import (
+    AGENT_CLAUDE,
     AI_GATEWAY_REQUEST_TAGS_HEADER,
     CLAUDE_SERVER_SIDE_WEB_SEARCH_STATE_KEY,
     LOOPBACK_HOST,
@@ -59,11 +60,11 @@ from ucode.databricks import (
     build_otel_headers_shell_command,
     build_otel_traces_endpoint,
     build_tool_base_url,
+    custom_model_services,
     get_databricks_token,
     maybe_add_gpt_1m_suffix,
     model_service_relay_lookup,
     model_services_need_subscription_relay,
-    relay_candidate_model_services,
     ug_binary,
 )
 from ucode.env import env_bool
@@ -126,6 +127,7 @@ from ucode.smart_routing.claude_hooks import (
     remove_smart_routing_hooks,
     sync_smart_routing_hooks,
 )
+from ucode.smart_routing.config import auto_mode_enabled
 from ucode.smart_routing.routing import unwrap_anthropic_gateway_model
 from ucode.state import (
     CLAUDE_RELAYED_FOR_MODEL_SERVICES_KEY,
@@ -368,6 +370,12 @@ def _parse_managed_settings(text: str) -> dict:
     return settings
 
 
+def read_native_settings(path: Path) -> dict:
+    """Read a Claude settings object. A missing file contributes no settings."""
+    text = read_managed_file(path)
+    return _parse_managed_settings(text) if text is not None else {}
+
+
 def get_family_defaults(
     state: dict, *, managed_config: bool, provider: str | None, parent_schema: str | None
 ) -> dict[str, str] | None:
@@ -385,8 +393,7 @@ def get_family_defaults(
     if path is None or managed_settings_skipped():
         return None
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except RuntimeError:
         return None
     env = settings.get("env")
@@ -465,8 +472,16 @@ def revert_managed_settings() -> str:
     # out with ug's entries. When an admin has since added to the list, put the guard back: a
     # non-empty list without it turns the guard off.
     guard_listed = _CLAUDE_GUARD_MOD_ID in _managed_prepend_plugins()
+    removes_parent_settings_merge = _ug_added_parent_settings_merge()
 
     def dump(settings: dict) -> str:
+        # Value-aware rather than an owned path: an admin's later "replace" must survive revert.
+        if (
+            removes_parent_settings_merge
+            and settings.get(CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0])
+            == CLAUDE_PARENT_SETTINGS_BEHAVIOR
+        ):
+            del settings[CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0]]
         prepend = settings.get("prependPlugins")
         if guard_listed and isinstance(prepend, list) and prepend:
             if _CLAUDE_GUARD_MOD_ID not in prepend:
@@ -478,6 +493,110 @@ def revert_managed_settings() -> str:
     )
     _remove_header_mod()
     return status
+
+
+def auto_configuration_enabled() -> bool:
+    return auto_mode_enabled() and smart_routing_v2.smart_routing_enabled(
+        None, default=False, agent=AGENT_CLAUDE
+    )
+
+
+def _auto_configuration_files() -> tuple[dict[Path, dict], Path | None]:
+    managed_path = None if managed_settings_skipped() else _managed_settings_path()
+    paths = [] if machine_wide_only() else [CLAUDE_USER_SETTINGS_PATH, CLAUDE_SETTINGS_PATH]
+    if managed_path is not None:
+        paths.append(managed_path)
+    documents = {}
+    for path in paths:
+        try:
+            text = (
+                read_managed_file(path)
+                if path == managed_path
+                else (path.read_text(encoding="utf-8") if path.exists() else None)
+            )
+            if text is not None:
+                documents[path] = _parse_managed_settings(text)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(f"Cannot read Claude Auto settings at {path}: {exc}") from exc
+    return documents, managed_path
+
+
+def _auto_model_targets(documents: dict[Path, dict]) -> dict[str, str]:
+    from ucode.agents.claude_auto import is_auto_model
+
+    targets = {}
+    for document in documents.values():
+        overrides = document.get("modelOverrides")
+        if isinstance(overrides, dict):
+            targets.update(
+                (alias, target)
+                for alias, target in overrides.items()
+                if isinstance(alias, str) and is_auto_model(alias) and isinstance(target, str)
+            )
+    return targets
+
+
+def auto_model_targets() -> dict[str, str]:
+    """Capture mappings before revert restores files that may contain the saved model's target."""
+    documents, _ = _auto_configuration_files()
+    return _auto_model_targets(documents)
+
+
+def cleanup_auto_configuration(*, alias_targets: dict[str, str] | None = None) -> None:
+    """Remove UG Auto settings in the command's scope, preserving all other settings."""
+    from ucode.agents.claude_auto import remove_auto_configuration
+
+    if is_dry_run():
+        return
+    documents, managed_path = _auto_configuration_files()
+    targets = {**(alias_targets or {}), **_auto_model_targets(documents)}
+    cleaned = {}
+    try:
+        for path, document in documents.items():
+            if path != CLAUDE_USER_SETTINGS_PATH:
+                cleaned[path] = remove_auto_configuration(document, alias_targets=targets)
+        if CLAUDE_USER_SETTINGS_PATH in documents:
+            policy = {
+                **cleaned.get(CLAUDE_SETTINGS_PATH, {}),
+                **cleaned.get(managed_path, {}),
+            }
+            cleaned[CLAUDE_USER_SETTINGS_PATH] = remove_auto_configuration(
+                documents[CLAUDE_USER_SETTINGS_PATH], alias_targets=targets, model_policy=policy
+            )
+    except ValueError as exc:
+        raise RuntimeError(f"Cannot remove Claude Auto settings: {exc}") from exc
+    changed = {path: document for path, document in cleaned.items() if document != documents[path]}
+    for path in changed:
+        if path.is_symlink():
+            raise RuntimeError(
+                f"Cannot remove Claude Auto settings through symlink {path}. "
+                "Remove its Auto settings at the link target and retry."
+            )
+    ordered_paths = sorted(changed, key=lambda path: path != CLAUDE_USER_SETTINGS_PATH)
+    for path in ordered_paths:
+        document = changed[path]
+        try:
+            if path == managed_path:
+                reconcile_privileged_files(
+                    {path: _dump_managed_settings(document)}, display="Claude Code"
+                )
+            else:
+                mode = path.stat().st_mode & 0o777
+                atomic_write_json(path, document)
+                path.chmod(mode)
+        except (OSError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Could not remove Claude Auto settings at {path}: {exc}. Fix the file and retry."
+            ) from exc
+
+
+def _ug_added_parent_settings_merge() -> bool:
+    snapshots = managed_file_snapshots("claude", _parse_managed_settings)
+    key = CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0]
+    return (
+        key not in (snapshots.original_before_ug or {})
+        and (snapshots.last_applied_by_ug or {}).get(key) == CLAUDE_PARENT_SETTINGS_BEHAVIOR
+    )
 
 
 def _managed_prepend_plugins() -> list:
@@ -1581,7 +1700,7 @@ def static_models_need_subscription_relay(state: dict, *, configuring: bool = Fa
     if machine_wide_only():  # `--global` serves every user on the machine; the relay is per-user
         return False
     models = state.get("claude_static_models")
-    candidates = relay_candidate_model_services(models if isinstance(models, list) else [])
+    candidates = custom_model_services(models if isinstance(models, list) else [])
     if not candidates:
         state.pop(CLAUDE_RELAY_DETECTION_KEY, None)
         return False
@@ -1908,6 +2027,13 @@ def write_tool_config(
                 elif not ug_picker:
                     _warn_unrecorded_allow_list(merged, managed_settings_snapshots)
         sync_smart_routing_hooks(merged, state, enabled=False)
+        if _explicit_configure and not auto_configuration_enabled():
+            from ucode.agents.claude_auto import remove_auto_configuration
+
+            try:
+                merged = remove_auto_configuration(merged)
+            except ValueError as exc:
+                raise RuntimeError(f"Cannot remove Claude Auto settings: {exc}") from exc
         return merged
 
     managed_snapshots = managed_file_snapshots("claude", _parse_managed_settings)
@@ -1990,6 +2116,20 @@ def write_tool_config(
             *(["WebSearch"] if withdraws_web_search else []),
         ],
         passthrough_leaves=passthrough.record(),
+        auto_picker=not (provider or parent_schema or relayed) and auto_configuration_enabled(),
+        # Managed smart routing whose configure-time environment resolves to the
+        # Auto config version serves Auto from the static catalog itself. The
+        # managed config carries no version of its own; this is the version the
+        # admin selected for configure (SMART_ROUTER_CONFIG_VERSION).
+        managed_auto_catalog=(
+            not (provider or parent_schema or relayed)
+            and auto_configuration_enabled()
+            and (managed_manifest or {})
+            .get("enabled_agents", {})
+            .get(AGENT_CLAUDE, {})
+            .get("smart_routing_enabled")
+            is True
+        ),
     )
 
     custom_oauth = state.get("custom_oauth")
@@ -2182,6 +2322,11 @@ def _allow_ug_mcp_servers(settings: dict, admin_allowlist: list | None, names: s
     ]
     return settings
 
+
+# Without "merge", a hosting app's own policy (Claude Desktop's Cowork and Chat) is dropped in
+# favor of this file, and Desktop warns about it. An administrator's explicit value is kept.
+CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH = ["parentSettingsBehavior"]
+CLAUDE_PARENT_SETTINGS_BEHAVIOR = "merge"
 
 CLAUDE_HEADER_MOD_MARKETPLACE = "ucode-managed"
 _HEADER_MOD_PREFIX = "ug-headers@"
@@ -2392,6 +2537,8 @@ def _reconcile_managed_settings(
     picker_keys: list[str],
     withdrawn_denies: list | None = None,
     passthrough_leaves: list | None = None,
+    auto_picker: bool = False,
+    managed_auto_catalog: bool = False,
 ) -> None:
     """Reconcile Claude Code's OS-managed settings so a bare ``claude`` uses the gateway.
 
@@ -2457,8 +2604,54 @@ def _reconcile_managed_settings(
         header_mod_root, managed_file_exists=current_text is not None
     )
     desired_settings = _enable_header_mod(compose(existing), header_mod_root if installed else None)
+    if auto_picker or not _explicit_configure:
+        from ucode.agents.claude_auto import (
+            AUTO_CUSTOM_MODEL_ENV_KEYS,
+            add_picker_entry,
+            is_auto_model,
+            picker_has_auto_row,
+            picker_is_configured,
+        )
+
+        # The native picker and startup allowlist read their source directly,
+        # before the merged settings.read hook. Install the row at configure;
+        # subsequent launches preserve an installed row independently of their
+        # Auto flag. Only explicit configure may change the installed mode.
+        if "modelPicker" in picker_keys and (
+            _explicit_configure or picker_is_configured(managed_before)
+        ):
+            # Managed smart routing with the Auto config version keeps the static
+            # catalog's replacement picker and adds one Auto row to it; every
+            # other case exposes Auto through the native custom-model option.
+            static_auto_row = (
+                managed_auto_catalog if _explicit_configure else picker_has_auto_row(managed_before)
+            )
+            desired_settings = add_picker_entry(desired_settings, static_auto_row=static_auto_row)
+            before_env = managed_before.get("env")
+            before_env = before_env if isinstance(before_env, dict) else {}
+            desired_env = desired_settings.get("env")
+            desired_env = desired_env if isinstance(desired_env, dict) else {}
+            owned_paths = [
+                *owned_paths,
+                ["modelPicker"],
+                *[
+                    ["modelOverrides", key]
+                    for source in (managed_before, desired_settings)
+                    for key in (source.get("modelOverrides") or {})
+                    if isinstance(key, str) and is_auto_model(key)
+                ],
+                *[
+                    ["env", key]
+                    for key in AUTO_CUSTOM_MODEL_ENV_KEYS
+                    if key in before_env and key not in desired_env
+                ],
+            ]
     # Only the explicit `ug configure` path adds the blanks.
     _settle_credential_blanks(desired_settings, managed_before, add=_explicit_configure)
+    if _explicit_configure:
+        desired_settings.setdefault(
+            CLAUDE_PARENT_SETTINGS_BEHAVIOR_PATH[0], CLAUDE_PARENT_SETTINGS_BEHAVIOR
+        )
     if header_mod_root is not None:
         owned_paths = [*owned_paths, *CLAUDE_HEADER_MOD_PATHS]
     _preserve_permission_denies(managed_before, desired_settings, withdrawn=withdrawn_denies or [])
@@ -2656,8 +2849,7 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     Reads BOM-tolerantly like Claude Code, so a BOM-prefixed policy file is not mistaken for empty.
     """
     try:
-        text = read_managed_file(path)
-        settings = _parse_managed_settings(text) if text is not None else {}
+        settings = read_native_settings(path)
     except (RuntimeError, OSError, ValueError):
         return True
     permissions = settings.get("permissions")
@@ -2665,18 +2857,12 @@ def _denies_web_search_or_unreadable(path: Path) -> bool:
     return isinstance(deny, list) and "WebSearch" in deny
 
 
-def _use_server_side_web_search(state: dict) -> bool:
-    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
-
-    A deny in a scope the launch can't override (managed, user, or project settings) would leave
-    no search tool at all, so the launch then keeps ug's MCP instead.
-    """
-    if not server_side_web_search_enabled(state):
-        return False
+def native_settings_paths() -> tuple[Path, ...]:
+    """Native managed, user and project settings that can affect a Claude launch."""
     managed_path = _managed_settings_path()
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     directories = [Path.cwd(), *Path.cwd().parents]
-    for blocker in (
+    return (
         *(
             [
                 managed_path,
@@ -2696,7 +2882,18 @@ def _use_server_side_web_search(state: dict) -> bool:
             for d in directories
             for name in ("settings.json", "settings.local.json")
         ),
-    ):
+    )
+
+
+def _use_server_side_web_search(state: dict) -> bool:
+    """Whether this launch swaps ug's search MCP for Claude's native WebSearch.
+
+    A deny in a scope the launch can't override (managed, user, or project settings) would leave
+    no search tool at all, so the launch then keeps ug's MCP instead.
+    """
+    if not server_side_web_search_enabled(state):
+        return False
+    for blocker in native_settings_paths():
         if _denies_web_search_or_unreadable(blocker):
             print_warning(
                 f"Server-side web search is enabled, but {blocker} denies WebSearch (or can't be "
@@ -3094,6 +3291,41 @@ def launch(
         if options.launch_model and not pinned_model
         else None
     )
+    managed_path = _managed_settings_path()
+    managed = read_json_safe(managed_path) if managed_path is not None else {}
+    auto_mode = auto_mode_enabled() and options.launch_smart_routing
+    if not auto_mode:
+        from ucode.agents.claude_auto import (
+            AUTO_CUSTOM_MODEL_ENV_KEYS,
+            auto_model_target,
+            is_auto_model,
+            model_available,
+        )
+
+        managed_env = managed.get("env")
+        managed_env = managed_env if isinstance(managed_env, dict) else {}
+        saved = read_json_safe(CLAUDE_USER_SETTINGS_PATH).get("model")
+        if (
+            isinstance(saved, str)
+            and is_auto_model(saved)
+            and not managed_env.get("ANTHROPIC_MODEL")
+        ):
+            for source in (managed, read_json_safe(CLAUDE_SETTINGS_PATH)):
+                overrides = source.get("modelOverrides")
+                target = (
+                    overrides.get(saved, overrides.get(saved + "[1m]"))
+                    if isinstance(overrides, dict)
+                    else None
+                )
+                if isinstance(target, str) and not is_auto_model(target):
+                    session_model = session_model or target
+                    break
+            if not session_model and (target := auto_model_target(saved)):
+                if model_available(target, managed):
+                    session_model = target
+        if is_auto_model(os.environ.get("ANTHROPIC_CUSTOM_MODEL_OPTION", "")):
+            for key in AUTO_CUSTOM_MODEL_ENV_KEYS:
+                os.environ.pop(key, None)
     routing_setup_failed = False
     if options.launch_smart_routing:
         if not header_mod_active(require_current=True):
@@ -3108,8 +3340,8 @@ def launch(
                 tool_args,
                 binary=binary,
                 user_settings_path=CLAUDE_USER_SETTINGS_PATH,
-                # With no user pin, let Claude resolve its starting model from its own settings.
                 launch_model=pinned_model,
+                default_model=session_model,
                 compose_settings=functools.partial(
                     _compose_v2_settings, server_side_web_search=server_side_search
                 ),

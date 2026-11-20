@@ -59,6 +59,7 @@ def _machine(monkeypatch, tmp_path):
     monkeypatch.setattr(codex, "agent_version", lambda *_a, **_k: "0.166.0")
     monkeypatch.setattr(machine, "agent_version", lambda *_a, **_k: "0.166.0")
     monkeypatch.setattr(claude, "managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
+    monkeypatch.setattr(claude, "_managed_settings_path", lambda: tmp_path / "claude" / "ms.json")
     monkeypatch.setattr(
         managed_files_mod, "CODEX_SYSTEM_REQUIREMENTS_PATH", tmp_path / "codex" / "req.toml"
     )
@@ -345,7 +346,7 @@ class TestCodexFiles:
     def catalog(self, monkeypatch):
         built: list[list[str]] = []
 
-        def prepare(binary, names):
+        def prepare(binary, names, **kwargs):
             built.append(list(names))
             return {"models": [{"slug": name} for name in names]}
 
@@ -413,7 +414,7 @@ class TestCodexFiles:
         assert any(w.startswith("Replaced") for w in plan.warnings)
 
     def test_a_catalog_that_wont_build_stops_the_run(self, monkeypatch):
-        def fail(binary, names):
+        def fail(binary, names, **kwargs):
             raise RuntimeError("Could not build the managed Codex model catalog locally.")
 
         monkeypatch.setattr(machine, "prepare_codex_catalog", fail)
@@ -476,6 +477,7 @@ def writes(monkeypatch):
 
     saved: list[tuple] = []
     monkeypatch.setattr(machine, "reconcile_privileged_files", fake_reconcile)
+    monkeypatch.setattr(claude, "reconcile_privileged_files", fake_reconcile)
     monkeypatch.setattr(machine, "save_managed_state", lambda *a, **k: saved.append((a, k)))
     monkeypatch.setattr(machine, "has_machine_privileges", lambda: True)
     monkeypatch.setattr(machine, "get_databricks_token", lambda host, profile: "token")
@@ -709,8 +711,18 @@ class TestRun:
 
 
 @pytest.fixture
-def global_cli(monkeypatch, writes):
-    """`ug configure --global` on Linux with the Desktop step recorded instead of run."""
+def installed(monkeypatch):
+    """Agent installs `ug configure --global` asks for, recorded instead of run."""
+    calls: list = []
+    monkeypatch.setattr(
+        cli_mod, "install_tool_binary", lambda tool, **kwargs: calls.append((tool, kwargs)) or True
+    )
+    return calls
+
+
+@pytest.fixture
+def global_cli(monkeypatch, writes, installed):
+    """`ug configure --global` on Linux with the Desktop step and agent installs recorded."""
     from ucode.agents.desktop import setup as desktop_setup
 
     desktop: list[dict] = []
@@ -730,6 +742,54 @@ def _configure(*args: str):
 
 
 class TestGlobalCli:
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_codex_only_configure_cleans_existing_claude_auto(
+        self, monkeypatch, writes, global_cli, dry_run
+    ):
+        raw = _raw_config(codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(managed_files_mod, "published_agent_config_used", lambda: True)
+        path = claude.managed_settings_path()
+        path.parent.mkdir(parents=True)
+        original = {"modelOverrides": {"ug-auto-old": "main", "admin": "keep"}, "other": True}
+        path.write_text(json.dumps(original))
+        native = claude.CLAUDE_USER_SETTINGS_PATH
+        native.parent.mkdir(parents=True, exist_ok=True)
+        native.write_text(json.dumps({"model": "ug-auto-old"}))
+        result = _configure("--agent", "codex", *(["--dry-run"] if dry_run else []))
+        assert result.exit_code == 0, result.output
+        expected = original if dry_run else {"modelOverrides": {"admin": "keep"}, "other": True}
+        assert json.loads(path.read_text()) == expected
+        assert json.loads(native.read_text()) == {"model": "ug-auto-old"}
+
+    def test_auto_cleanup_failure_uses_write_exit_code(self, monkeypatch, writes, global_cli):
+        monkeypatch.setattr(
+            machine, "get_managed_config", lambda host, token: (_raw_config(codex_config={}), None)
+        )
+        path = claude.managed_settings_path()
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"availableModels": ["ug-auto-unknown"]}))
+        result = _configure("--agent", "codex")
+        assert result.exit_code == machine.EXIT_WRITE, result.output
+        assert "Cannot remove Claude Auto settings" in result.output
+
+    def test_static_catalog_reuses_configure_credentials(self, monkeypatch, writes, global_cli):
+        raw = _raw_config(codex_config={"models": {"model_services": ["main.team.opaque"]}})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        monkeypatch.setattr(machine, "get_databricks_token", lambda *a, **kw: "selected-token")
+        catalogs = []
+
+        def prepare(binary, names, *, workspace, get_token):
+            catalogs.append((workspace, list(names), get_token()))
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+
+        result = _configure("--agents", "codex")
+
+        assert result.exit_code == 0, result.output
+        assert catalogs == [(WS, ["main.team.opaque"], "selected-token")]
+
     def test_published_config_rebuilds_and_provisions_desktop(
         self, monkeypatch, writes, global_cli
     ):
@@ -741,6 +801,51 @@ class TestGlobalCli:
         assert claude.managed_settings_path() in written
         assert global_cli == [{"workspace": WS, "profile": None}]
         assert not managed_files_mod.machine_wide_only()
+
+    def test_installs_enabled_agents_before_building_their_files(
+        self, monkeypatch, writes, global_cli, installed
+    ):
+        raw = _raw_config(claude_config={}, codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        real_run = machine.run
+        monkeypatch.setattr(
+            machine, "run", lambda **kwargs: installed.append("run") or real_run(**kwargs)
+        )
+        result = _configure("--agents", "claude,codex,gemini")
+        assert result.exit_code == 0, result.output
+        assert installed == [("claude", {"strict": False}), ("codex", {"strict": False}), "run"]
+
+    def test_installs_only_the_agents_the_configuration_enables(
+        self, monkeypatch, writes, global_cli, installed
+    ):
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--agents", "claude,codex")
+        assert result.exit_code == 0, result.output
+        assert installed == [("claude", {"strict": False})]
+
+    def test_dry_run_installs_nothing(self, monkeypatch, writes, global_cli, installed):
+        raw = _raw_config(claude_config={}, codex_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+        result = _configure("--dry-run", "--agents", "claude,codex")
+        assert result.exit_code == 0, result.output
+        assert installed == []
+
+    def test_a_failed_install_warns_and_still_writes_the_files(
+        self, monkeypatch, writes, global_cli
+    ):
+        written, _ = writes
+        raw = _raw_config(claude_config={})
+        monkeypatch.setattr(machine, "get_managed_config", lambda host, token: (raw, None))
+
+        def too_old(tool, **kwargs):
+            raise RuntimeError("Claude Code 1.0.0 is too old.")
+
+        monkeypatch.setattr(cli_mod, "install_tool_binary", too_old)
+        result = _configure("--agents", "claude")
+        assert result.exit_code == 0, result.output
+        assert "Claude Code 1.0.0 is too old." in result.output
+        assert claude.managed_settings_path() in written
 
     def test_no_cached_sign_in_signs_in_before_deciding(self, monkeypatch, writes, global_cli):
         written, _ = writes
@@ -975,6 +1080,36 @@ class TestGlobalCli:
         assert "apiKeyHelper" in result.output
         assert written == {} and global_cli == []
 
+    def test_preview_custom_codex_service_needs_no_credentials(
+        self, monkeypatch, writes, global_cli, tmp_path
+    ):
+        draft = tmp_path / "codex.json"
+        raw = _raw_config(
+            codex_config={
+                "models": {"model_services": ["main.team.opaque"]},
+                "default_models": {"default_model": "main.team.opaque"},
+            }
+        )
+        raw["default_agent"] = "CODING_AGENT_CODEX"
+        draft.write_text(json.dumps(raw))
+        monkeypatch.setattr(
+            machine, "get_databricks_token", lambda *a, **kw: pytest.fail("draft requested login")
+        )
+        catalogs = []
+
+        def prepare(binary, names, *, workspace, get_token):
+            assert get_token is None
+            catalogs.append(names)
+            return {"models": [{"slug": name} for name in names]}
+
+        monkeypatch.setattr(machine, "prepare_codex_catalog", prepare)
+
+        result = _configure("--dry-run", "--agents", "codex", "--from-file", str(draft))
+
+        assert result.exit_code == 0, result.output
+        assert catalogs == [["main.team.opaque"]]
+        assert writes[0] == {} and global_cli == []
+
     def test_from_file_requires_global_dry_run(self, tmp_path):
         result = CliRunner().invoke(
             cli_mod.app, ["configure", "--from-file", str(tmp_path / "x.json")]
@@ -1183,3 +1318,31 @@ class TestAuthTokenUsesSavedChoices:
         }
         calls = self._invoke(monkeypatch, state, WS)
         assert calls == [("custom", "cid", "oauth-profile")]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_published_claude_auto_aliases_follow_exact_version(monkeypatch, enabled):
+    if enabled:
+        monkeypatch.setenv("SMART_ROUTER_CONFIG_VERSION", "subagent_auto_v0_claude_only")
+    else:
+        monkeypatch.setenv("ENABLE_SMART_ROUTER_AUTO_MODE", "1")
+    alias = "ug-auto-old"
+    manifest = _manifest(
+        _raw_config(
+            claude_config={
+                "agent_native_settings": {
+                    "modelOverrides": {alias: "real", "admin": "foreign"},
+                    "modelPicker": {
+                        "options": [{"model": alias, "label": "Auto"}, {"model": "real"}]
+                    },
+                },
+            }
+        )
+    )
+    document = machine.build_claude(manifest, WS).doc
+    assert document["modelOverrides"] == (
+        {alias: "real", "admin": "foreign"} if enabled else {"admin": "foreign"}
+    )
+    assert [row["model"] for row in document["modelPicker"]["options"]] == (
+        [alias, "real"] if enabled else ["real"]
+    )

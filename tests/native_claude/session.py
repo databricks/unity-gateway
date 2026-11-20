@@ -36,8 +36,14 @@ class Session:
         api="http://127.0.0.1:1",
         route_command=(),
         resume=None,
+        auto_picker=None,
         user_settings=None,
+        launch_settings=None,
+        model="claude-sonnet-4-6",
     ):
+        assert not {"env", "pluginConfigs"}.intersection(launch_settings or {}), (
+            "Use env and auto_picker to configure the native session fixture"
+        )
         self.root = root
         root.mkdir()
         resume_args = []
@@ -58,7 +64,10 @@ class Session:
         if user_settings is not None:
             (root / "config/settings.json").write_text(json.dumps(user_settings))
         options = {**_claude_mod_launch_options(env), "routeCommand": list(route_command)}
+        if auto_picker is not None:
+            options["autoPicker"] = json.dumps(auto_picker)
         settings = {
+            **(launch_settings or {}),
             "env": {
                 **resolve_environment(env, agent=AGENT_CLAUDE),
                 "CLAUDE_CODE_EXTRA_BODY": '{"caller_field":"keep"}',
@@ -97,8 +106,7 @@ class Session:
                 "user",
                 "--settings",
                 json.dumps(settings),
-                "--model",
-                "claude-sonnet-4-6",
+                *(["--model", model] if model else []),
                 "--tools",
                 "Agent",
                 "--allowedTools",

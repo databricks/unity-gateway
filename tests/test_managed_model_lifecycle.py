@@ -218,7 +218,7 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(
         codex,
         "prepare_codex_catalog",
-        lambda _binary, names: {"models": [{"slug": n, "visibility": "list"} for n in names]},
+        lambda _binary, names, **kw: {"models": [{"slug": n, "visibility": "list"} for n in names]},
     )
     return h
 

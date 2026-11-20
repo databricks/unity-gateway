@@ -10,6 +10,24 @@ become inline review comments. OCR always posts a summary comment, so the workfl
 finding was posted inline; Polly posts the overall review. The summary stays only
 when it holds findings GitHub would not accept inline.
 
+## Recommendation and label
+
+After a complete review, `recommendation.py` derives an advisory approve/reject
+recommendation. A zero-finding review approves without a model call; otherwise
+the script sends the bounded finding briefs — ordered most severe first, so the
+truncation bound never drops a critical or high finding — to the same gateway
+model and requires the marker `RECOMMENDATION: APPROVE` or
+`RECOMMENDATION: REJECT` followed by `REASONS:` bullets. Finding text is passed
+to the model as untrusted pull-request data. The workflow posts the
+recommendation as one bot comment that lists the reasons, replacing the previous
+run's comment by its marker, and keeps the `ready-to-approve` label in sync:
+approve adds the label (addLabels creates a missing repository label), while a
+reject or a run without a recommendation removes any existing one. A missing or
+unparseable marker, a failed gateway request, or a review that is incomplete or
+carries warnings — with or without findings — becomes "No recommendation": the
+note comment says why. The recommendation never approves or merges the PR, and
+the review job reaches it only after the completeness check passed.
+
 The job retains the existing protected runner, workspace, service principal, and
 `UG_CLI_REVIEW_BOT_SP_CLIENT_SECRET`. `auth.py` uses the same OAuth
 `client_credentials` exchange with `scope=all-apis`, masks the result, and exposes

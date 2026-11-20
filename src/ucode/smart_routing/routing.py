@@ -19,7 +19,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,13 +27,15 @@ from typing import Any
 from ucode import metrics
 from ucode.constants import MODEL_PROVIDER_SERVICE_HEADER
 from ucode.smart_routing.rationale import format_rationale
-from ucode.ug_headers import ug_headers
+from ucode.telemetry import ucode_user_agent, ug_version
+from ucode.ug_headers import parse_header_line, ug_headers
 from ucode.workspace import workspace_headers
 
 ROUTER_NAME = "stable"
 ROUTER_NAME_ENV_VAR = "SMART_ROUTER_NAME"
 ROUTING_PATH = "/ai-gateway/routing/v1/routes:select"
 VALIDATION_PATH = "/ai-gateway/routing/v1/routes:validate"
+MAX_ROUTE_OPTIONS = 128
 REQUEST_TIMEOUT_S = 30.0
 SUBAGENT_ROUTING_DISCLAIMER = (
     "Spawned subagents are routed independently based on their own complexity."
@@ -78,16 +80,22 @@ def format_subagent_message(
 
 
 def _format_box(lines: list[str]) -> str:
-    wrapped_lines = [
-        wrapped
-        for line in lines
-        for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
-    ]
+    return draw_box(
+        [
+            wrapped
+            for line in lines
+            for wrapped in (textwrap.wrap(line, width=ROUTING_BOX_WIDTH) or [""])
+        ]
+    )
+
+
+def draw_box(fitted_lines: list[str]) -> str:
+    """Draw lines already no wider than ROUTING_BOX_WIDTH in the routing-card box."""
     border = "─" * (ROUTING_BOX_WIDTH + 2)
     return "\n".join(
         [
             f"┌{border}┐",
-            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in wrapped_lines),
+            *(f"│ {line:<{ROUTING_BOX_WIDTH}} │" for line in fitted_lines),
             f"└{border}┘",
         ]
     )
@@ -204,6 +212,37 @@ def route_options_for(models: Iterable[str], harness: str) -> list[tuple[str, st
     return [(model, harness) for model in dict.fromkeys(models)]
 
 
+# Per-harness session and subagent header names that AI Gateway reads.
+_SESSION_HEADER_NAMES = {
+    "claude": ("x-claude-code-session-id", "x-claude-code-agent-id"),
+    "codex": ("session-id", "thread-id"),
+}
+
+
+def attribution_headers(
+    harness: str,
+    *,
+    session_id: Any = None,
+    agent_id: Any = None,
+    harness_headers: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Headers that attribute a routing call to the harness session and subagent that made it.
+
+    ``harness_headers`` are the custom headers the harness sends on its own inference requests;
+    without a User-Agent there, it names ucode. Session and agent IDs come from the hook payload.
+    Absent or unsendable values are omitted, never sent empty.
+    """
+    session_name, agent_name = _SESSION_HEADER_NAMES[harness]
+    ids = {session_name: session_id, agent_name: agent_id}
+    headers: dict[str, tuple[str, str]] = {}
+    for name, value in [*(harness_headers or {}).items(), *ids.items()]:
+        parsed = parse_header_line(f"{name}: {value}") if isinstance(value, str) else None
+        if parsed:
+            headers[parsed[0].casefold()] = parsed
+    headers.setdefault("user-agent", ("User-Agent", ucode_user_agent(ug_version())))
+    return dict(headers.values())
+
+
 @metrics.timed(
     metrics.ROUTING_DECISION_DURATION_MS, reason_result=True, continued_with_fallback=True
 )
@@ -216,6 +255,7 @@ def select_route(
     router_name: str,
     provider: str | None = None,
     timeout: float = REQUEST_TIMEOUT_S,
+    attribution_headers: Mapping[str, str] | None = None,
 ) -> tuple[RoutingDecision | None, str | None]:
     """POST one ``routes:select`` request and return the router's pick.
 
@@ -237,6 +277,7 @@ def select_route(
         workspace.rstrip("/") + ROUTING_PATH,
         data=json.dumps(body).encode("utf-8"),
         headers={
+            **(attribution_headers or {}),
             **ug_headers(),
             **workspace_headers(workspace),
             **({MODEL_PROVIDER_SERVICE_HEADER: provider} if provider else {}),

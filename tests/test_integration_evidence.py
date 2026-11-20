@@ -1,8 +1,10 @@
 """Unit checks for interpreting terminal evidence, not live agent substitutes."""
 
 import json
+import os
 import re
-from pathlib import PurePosixPath, PureWindowsPath
+import sys
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pytest
 
@@ -15,11 +17,106 @@ from tests.integration.utils.evidence import (
     assistant_answer_contains,
     tool_outputs,
 )
+from tests.integration.utils.harness import UserSession
 from tests.integration.utils.terminal import (
+    claude_workspace_trust_dialog_shown,
     codex_command_approval_pending,
     codex_session_footer_shown,
     codex_trust_dialog_shown,
 )
+
+
+def test_antigravity_native_log_evidence_is_bounded_and_redacted(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(7):
+        text = f"Making Gateway streaming request to: http://127.0.0.1/models/model-{index}\n"
+        text += "x" * 70_000 + "secret-session-bearer\nrequest timed out; retrying\n"
+        (directory / f"cli-{index}.log").write_text(text)
+        os.utime(directory / f"cli-{index}.log", (index + 1, index + 1))
+
+    assert antigravity.requested_urls(session) == [
+        f"http://127.0.0.1/models/model-{index}" for index in range(7)
+    ]
+    artifact = (session.artifacts / "antigravity-logs.json").read_text()
+    assert "secret-session-bearer" not in artifact
+    value = json.loads(artifact)
+    assert value["files_omitted"] == 2
+    assert [log["name"] for log in value["logs"]] == [f"cli-{index}.log" for index in range(2, 7)]
+    for log in value["logs"]:
+        assert log["truncated"]
+        assert len(log["tail"]) == 64_000
+        assert log["tail"].endswith("<redacted>\nrequest timed out; retrying\n")
+
+
+def test_antigravity_native_log_evidence_without_logs(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+
+    assert antigravity.requested_urls(session) == []
+    assert json.loads((session.artifacts / "antigravity-logs.json").read_text()) == {
+        "files_omitted": 0,
+        "logs": [],
+    }
+
+
+def test_antigravity_native_log_evidence_keeps_recent_files_by_modification_time(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    for index in range(12):
+        path = directory / f"cli-{index}.log"
+        path.write_text(f"Making Gateway streaming request to: http://127.0.0.1/{index}\n")
+        os.utime(path, (index + 1, index + 1))
+
+    urls = antigravity.requested_urls(session)
+
+    assert urls == [
+        f"http://127.0.0.1/{index}" for index in sorted(range(12), key=lambda i: f"cli-{i}.log")
+    ]
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["files_omitted"] == 7
+    assert {log["name"] for log in value["logs"]} == {f"cli-{index}.log" for index in range(7, 12)}
+    assert all(not log["truncated"] for log in value["logs"])
+
+
+def test_antigravity_native_log_redacts_token_crossing_tail_boundary(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    session = UserSession(
+        tmp_path / "session", project, Path(sys.executable), tmp_path / "artifacts"
+    )
+    session.env["DATABRICKS_BEARER"] = "secret-session-bearer"
+    directory = session.home / antigravity.STATE_DIRECTORY / "log"
+    directory.mkdir(parents=True)
+    (directory / "cli-1.log").write_text("prefixsecret-session-bearer" + "x" * 63_990)
+
+    antigravity.requested_urls(session)
+
+    value = json.loads((session.artifacts / "antigravity-logs.json").read_text())
+    assert value["logs"][0]["tail"] == "<redacted>" + "x" * 63_990
+
+
+@pytest.mark.parametrize("wrap", ["", "\n "])
+def test_claude_workspace_trust_requires_full_project_path(wrap):
+    cwd = PureWindowsPath(r"D:\a\_temp\ug-integration-project-8725e2e1b7c0\project with spaces")
+    screen = f"Accessing workspace:\n{str(cwd).replace('with spaces', 'with' + wrap + ' spaces')}\n❯ No, exit\n  Yes, I trust this folder"
+    assert claude_workspace_trust_dialog_shown(screen, cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("8725e2e1b7c0", "other"), cwd)
+    assert not claude_workspace_trust_dialog_shown(screen.replace("Accessing workspace:", ""), cwd)
 
 
 @pytest.mark.parametrize(
@@ -152,6 +249,7 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
 )
 @pytest.mark.parametrize("extra_command", ["", "; Remove-Item important.txt"])
 @pytest.mark.parametrize("guard_style", ["exit", "else"])
+@pytest.mark.parametrize("write_output", ["Write-Output ", ""])
 @pytest.mark.parametrize("selected", ["›", "\ufffd"], ids=["native", "windows-conpty"])
 @pytest.mark.parametrize(
     "condition",
@@ -163,12 +261,12 @@ def test_codex_session_footer_accepts_the_warning_badge(change, shown):
     ids=["unset", "whitespace"],
 )
 def test_codex_windows_toggle_approval_accepts_only_the_known_guard(
-    extra_command, missing_message, guard_style, selected, condition
+    extra_command, missing_message, guard_style, write_output, selected, condition
 ):
     command = '& "$env:UCODE_SMART_ROUTER_PYTHON" -m ucode.cli codex --disable-smart-routing'
     branch = "; exit 2 }; &" if guard_style == "exit" else " } else { &"
     suffix = "" if guard_style == "exit" else " }"
-    guard = f"if ({condition}) {{ Write-Output {missing_message}{branch}"
+    guard = f"if ({condition}) {{ {write_output}{missing_message}{branch}"
     screen = (
         "Would you like to run the following command?\nEnvironment: local\n"
         f"  $ {guard}\n  {command[2:]}{suffix}{extra_command}\n\n\n"
