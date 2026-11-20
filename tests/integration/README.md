@@ -392,6 +392,8 @@ Both platforms wait for the typed draft, click Send, and require the user prompt
 rollout before the answer wait. The GUI prompt names only the skill. Success requires the token on screen,
 a completed Codex Desktop/Databricks turn on the managed model, and native `McpToolCall`
 receipts in that same turn with the reference query, successful status and nonempty MCP content.
+The skill/MCP check selects the single root rollout while retaining child rollouts as evidence.
+Missing or ambiguous roots fail; a child's successful call or answer cannot satisfy the root's checks.
 Every matching call is checked; additional successful calls are allowed, including calls made
 through code mode. Native approval dialogs must name web_search on the expected server and show
 the hidden query before the test clicks Allow once; unexpected or ambiguous approvals fail.

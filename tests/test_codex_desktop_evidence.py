@@ -276,13 +276,42 @@ def test_skill_values_are_only_in_the_reference_file(tmp_path):
     )
 
 
-def test_native_mcp_receipt_proves_execution_including_code_mode(records):
-    # Native receipts establish execution even when functions.exec hides the direct model call.
+def test_native_mcp_receipts_allow_extra_successful_calls(records):
     assert_skill_mcp_turn(records, QUERY, MARKER, MODEL)
     extra_call = copy.deepcopy(records[2])
     extra_call["payload"]["item"]["id"] = "call-2"
     records.insert(3, extra_call)
     assert_skill_mcp_turn(records, QUERY, MARKER, MODEL)
+
+
+@pytest.fixture
+def desktop_session(monkeypatch, records):
+    child = copy.deepcopy(records)
+    child[0]["payload"]["source"] = {"subagent": {"thread_spawn": {"parent_thread_id": "root"}}}
+    sessions = {"child.jsonl": child, "root.jsonl": records}
+    evidence = {}
+    session = SimpleNamespace(
+        sessions=sessions,
+        evidence=evidence,
+        record=lambda name, value: evidence.update({name: value}),
+    )
+    monkeypatch.setattr(codex_desktop, "agent_sessions", lambda *args: sessions)
+    return session
+
+
+def test_desktop_root_allows_child_rollouts_and_records_all_evidence(desktop_session):
+    codex_desktop.assert_desktop_skill_mcp_session(desktop_session, QUERY, MARKER, MODEL)
+    assert desktop_session.evidence["agent-sessions.json"] == desktop_session.sessions
+
+
+@pytest.mark.parametrize("root_count", [0, 2])
+def test_missing_or_ambiguous_desktop_roots_fail(desktop_session, root_count):
+    if root_count == 0:
+        del desktop_session.sessions["root.jsonl"]
+    else:
+        desktop_session.sessions["another-root.jsonl"] = desktop_session.sessions["root.jsonl"]
+    with pytest.raises(AssertionError, match="Expected one desktop root session"):
+        codex_desktop.assert_desktop_skill_mcp_session(desktop_session, QUERY, MARKER, MODEL)
 
 
 @pytest.mark.parametrize(
@@ -298,10 +327,10 @@ def test_native_mcp_receipt_proves_execution_including_code_mode(records):
         (3, {"last_agent_message": f"I could not finish {MARKER}"}),
     ],
 )
-def test_wrong_origin_model_turn_or_answer_fails(records, index, changes):
+def test_wrong_origin_model_turn_or_answer_fails(records, desktop_session, index, changes):
     records[index]["payload"].update(changes)
     with pytest.raises(AssertionError):
-        assert_skill_mcp_turn(records, QUERY, MARKER, MODEL)
+        codex_desktop.assert_desktop_skill_mcp_session(desktop_session, QUERY, MARKER, MODEL)
 
 
 @pytest.mark.parametrize(
@@ -334,7 +363,7 @@ def test_success_cannot_hide_another_failed_matching_call(records):
         assert_skill_mcp_turn(records, QUERY, MARKER, MODEL)
 
 
-def test_final_answer_alone_cannot_prove_tool_use(records):
+def test_final_answer_alone_cannot_prove_tool_use(records, desktop_session):
     del records[2]
     with pytest.raises(AssertionError, match="No native web_search receipt"):
-        assert_skill_mcp_turn(records, QUERY, MARKER, MODEL)
+        codex_desktop.assert_desktop_skill_mcp_session(desktop_session, QUERY, MARKER, MODEL)

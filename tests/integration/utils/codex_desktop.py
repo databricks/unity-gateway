@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 
 from .agents.codex import completed_task_models
-from .evidence import agent_sessions
+from .evidence import agent_sessions, is_child_session
 
 MCP_SERVICE = "system.ai.web_search"
 MCP_SERVER = "system-ai-web_search"
@@ -196,5 +196,10 @@ def assert_skill_mcp_turn(records: list[dict], query: str, marker: str, model: s
 def assert_desktop_skill_mcp_session(session, query: str, marker: str, model: str) -> None:
     sessions = agent_sessions(session, "codex")
     session.record("agent-sessions.json", sessions)
-    assert len(sessions) == 1, f"Expected only the desktop session, got {list(sessions)}"
-    assert_skill_mcp_turn(next(iter(sessions.values())), query, marker, model)
+    roots = {
+        path: records
+        for path, records in sessions.items()
+        if not is_child_session("codex", path, records)
+    }
+    assert len(roots) == 1, f"Expected one desktop root session, got {list(roots)}"
+    assert_skill_mcp_turn(next(iter(roots.values())), query, marker, model)

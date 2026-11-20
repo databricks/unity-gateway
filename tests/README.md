@@ -1459,8 +1459,10 @@ The token must render in the GUI and complete on the managed model; native succe
 must carry the query in that same Codex Desktop/Databricks turn. The pinned app versions are
 macOS `26.1103.31037` and Windows `26.1103.7773.0`; harness-latest also selects the macOS journey.
 `test_codex_desktop_evidence.py` rejects false positives from failed/missing calls, unrelated
-turns/queries/servers, wrong origins/models and echoed or incomplete answers. These are offline
-parser checks; live desktop coverage requires the native CI jobs.
+turns/queries/servers, wrong origins/models and echoed or incomplete answers. Skill/MCP evidence
+selects the single root rollout and retains any child rollouts in the artifacts. Missing or
+ambiguous roots fail, and successful child evidence cannot satisfy a failed or incomplete root.
+These are offline parser checks; live desktop coverage requires the native CI jobs.
 Both inference and skill journeys wait for the typed draft, click Send, and require the submitted user prompt
 in the rollout before waiting for an answer. Windows first completes its visible sandbox setup.
 The app's saved elevated sandbox mode proves completion even after its short-lived banner disappears;
