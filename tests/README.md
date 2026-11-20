@@ -36,6 +36,10 @@ HTTP 200 through the relay. Its dedicated protected Linux CI job maps `CODEX_OAU
 to `CODEX_ACCESS_TOKEN`; `test_cuj_session.py` covers credential redaction from evidence.
 File tools, desktop configure/revert, desktop inference, and browser sign-in are not covered.
 
+The shared integration redactor masks both original and stripped credentials, even after
+removal from the session environment. Component checks cover padded bearer and Codex tokens
+in stdin/stdout/stderr artifacts and leave ordinary whitespace intact for blank credentials.
+
 Codex routing component tests in `test_codex_metadata.py` cover spawn stamping,
 main-turn metadata (including a JSON-null patch), on/off/on transitions, and normal
 completion of a toggle turn before the next turn receives the new state.

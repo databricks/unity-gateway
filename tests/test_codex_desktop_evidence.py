@@ -1,9 +1,6 @@
 """Reject false positives in the native desktop skill/MCP evidence checks."""
 
 import copy
-import json
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,7 +12,6 @@ from tests.integration.utils.codex_desktop import (
     assert_skill_mcp_turn,
     write_search_skill,
 )
-from tests.integration.utils.harness import UserSession
 
 QUERY = "Databricks Unity Catalog documentation a13b42"
 MARKER = "b39c21"
@@ -60,24 +56,6 @@ def test_token_profile_removes_bypasses_and_stops_on_failure(tmp_path, failure):
             ("current-user", "me", "--profile", profile),
         ]
     assert len(calls) == (1 if failure == "configure" else 2)
-
-
-def test_token_profile_credential_is_redacted_after_removing_session_bearer(tmp_path, monkeypatch):
-    token = "inert-ci-oauth-token"
-    monkeypatch.setenv("DATABRICKS_BEARER", token)
-    root, project = tmp_path / "session", tmp_path / "project"
-    project.mkdir()
-    session = UserSession(root, project, Path(sys.executable), tmp_path / "artifacts")
-    assert "DATABRICKS_BEARER" not in session.env
-    result = session.run(
-        "-c",
-        "import sys; token = sys.stdin.read(); print(token); print(token, file=sys.stderr)",
-        input_text=token + "\n",
-    )
-    evidence = (session.artifacts / "command-1.json").read_text()
-    assert token not in evidence
-    assert json.loads(evidence)["stdin"] == "<redacted>\n"
-    assert result.stdout.strip() == result.stderr.strip() == "<redacted>"
 
 
 @pytest.mark.parametrize("state", ["ready", "recovers", "fails"])

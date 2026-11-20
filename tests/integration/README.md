@@ -402,8 +402,10 @@ the workspace identity must have access to `system.ai.web_search`. They cover lo
 execution and MCP invocation, not UC skill downloads, connector browser sign-in or search ranking.
 `../test_codex_desktop_evidence.py` checks hidden reference inputs and rejects missing/failed
 receipts, unrelated servers/queries/turns, wrong origins/models and incomplete answers offline.
-It also rejects false submission evidence and checks profile setup failure propagation,
-removal of inherited credentials, and redaction of token stdin/stdout/stderr from evidence.
+It also rejects false submission evidence and checks profile setup failure propagation
+and removal of inherited credentials. `../test_cuj_session.py` covers shared token redaction
+from stdin/stdout/stderr, including stripped whitespace-padded tokens after removal from the
+session environment. Blank credentials do not alter ordinary output whitespace.
 These component checks do not establish live authentication or MCP execution.
 `scripts/run_integration.py` ignores both modules unless `--desktop-app` is passed, which only the
 desktop CI jobs do, so a local run never drives a developer's installed app.
