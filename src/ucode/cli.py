@@ -4579,11 +4579,15 @@ def _launch_tool(
         )
         if launch_cache_entry_identity is not None:
             # configure may switch the profile or workspace (a re-login rewrites the
-            # credentials file): the cached catalog belongs to the pre-configure identity,
-            # so re-check it here like the speculation does, and record fresh results
-            # under the identity configure settled on.
+            # credentials file) or re-log in without rewriting it — a login clears the
+            # cache and the generation makes the re-read miss. The cached catalog belongs
+            # to the pre-configure identity either way, so re-check it here like the
+            # speculation does, and record fresh results under the identity configure
+            # settled on.
             configured_identity = entry_identity(state)
-            if configured_identity != launch_cache_entry_identity:
+            if configured_identity != launch_cache_entry_identity or (
+                load_entry(cache_key(configured_identity), configured_identity) is None
+            ):
                 cached_picker_catalog = None
             launch_cache_entry_identity = configured_identity
         # An admin-published managed config wins over the developer's own settings. Layered on after

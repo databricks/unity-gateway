@@ -221,15 +221,17 @@ def clear_cache() -> None:
 
     The generation bump makes a refresher that fetched before this clear refuse to
     write its pre-clear results back. A held lock stays: pruning it would let a second
-    refresher for the same key run alongside, and the next clear prunes it instead."""
+    refresher for the same key run alongside, and the next clear prunes it instead.
+    A user who never opted in has no cache dir, and this must not create one."""
     from ucode.os_compatibility.file_lock_cross_os import (
         acquire_exclusive_file_lock,
         release_file_lock,
     )
 
     directory = config_io.APP_DIR / CACHE_DIR_NAME
+    if not directory.is_dir():
+        return
     try:
-        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         _bump_generation()
         for path in directory.glob("*.json"):
             path.unlink(missing_ok=True)

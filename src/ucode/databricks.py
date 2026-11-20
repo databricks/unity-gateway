@@ -2859,7 +2859,9 @@ def list_model_service_entries(
         f"schemas/{parent_schema}" if parent_schema is not None else _MODEL_SERVICE_PARENT_SCHEMA
     )
     use_cache = use_cache and parent == _MODEL_SERVICE_PARENT_SCHEMA
-    if use_cache:
+    # A primed memo is disk-seeded, not walked: a complete_only caller re-walks it
+    # instead of trusting it, without depending on the caller clearing first.
+    if use_cache and not (complete_only and workspace in _PRIMED_MODEL_SERVICES):
         cached = _MODEL_SERVICES_CACHE.get(workspace)
         if cached is not None:
             return list(cached), None

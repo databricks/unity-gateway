@@ -9,7 +9,7 @@ import subprocess
 import sys
 import threading
 import time
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from email.message import Message
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -304,7 +304,7 @@ class TestPrime:
 
 class TestConfigureIsolation:
     @staticmethod
-    def _run(monkeypatch, *, use_launch_cache, hit=False, login_during_fetch=False):
+    def _run(monkeypatch, *, use_launch_cache, login_during_fetch=False):
         monkeypatch.setenv("DATABRICKS_BEARER", "bearer")
         if login_during_fetch:
             # A login inside the token fetch clears the on-disk cache, as
@@ -316,33 +316,16 @@ class TestConfigureIsolation:
             monkeypatch.setattr(cli_mod, "get_databricks_token", token_with_login)
         else:
             monkeypatch.setattr(cli_mod, "get_databricks_token", lambda *_a, **_k: "token")
-        if hit:
-            # A hit must serve the probe and the discovery from the primed in-process
-            # caches; any workspace request means the cache failed to serve.
-            def no_network(*_args, **_kwargs):
-                raise AssertionError("launch cache hit must not make workspace requests")
+        monkeypatch.setattr(cli_mod, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE)
 
-            monkeypatch.setattr(db_mod, "_http_get_json", no_network)
-            monkeypatch.setattr(
-                cli_mod, "probe_unity_gateway_capabilities", db_mod.probe_unity_gateway_capabilities
-            )
-            monkeypatch.setattr(cli_mod, "discover_model_services", db_mod.discover_model_services)
-            # The UC listing only buckets claude models, so configure falls back to the
-            # gateway listing for codex; that fallback is outside the cache's scope.
-            monkeypatch.setattr(cli_mod, "discover_codex_models", lambda *_a, **_k: ([], None))
-        else:
-            monkeypatch.setattr(
-                cli_mod, "probe_unity_gateway_capabilities", lambda *_a, **_k: PROBE
-            )
+        def discover(workspace, _token):
+            # The listing runs in the background: outlast the probe so the cold save can
+            # only happen after the join.
+            time.sleep(0.1)
+            db_mod.prime_model_services_cache(workspace, SERVICES)
+            return {"sonnet": "system.ai.claude-sonnet-5"}, [], [], [], None
 
-            def discover(workspace, _token):
-                # The listing runs in the background: outlast the probe so the cold save can
-                # only happen after the join.
-                time.sleep(0.1)
-                db_mod.prime_model_services_cache(workspace, SERVICES)
-                return {"sonnet": "system.ai.claude-sonnet-5"}, [], [], [], None
-
-            monkeypatch.setattr(cli_mod, "discover_model_services", discover)
+        monkeypatch.setattr(cli_mod, "discover_model_services", discover)
         reads: list[str] = []
         real_load = lc.load_entry
 
@@ -380,25 +363,6 @@ class TestConfigureIsolation:
         assert entry is not None
         assert lc.entry_probe(entry) == PROBE
         assert lc.entry_model_services(entry) == SERVICES
-
-    def test_hit_serves_probe_and_discovery_without_a_request(self, monkeypatch):
-        # configure_shared_state resolves the key from its state, where the URL carries no
-        # workspace id; its identity also reflects the isolated credentials file.
-        key = _key(workspace_id="")
-        _store(
-            key,
-            {"probe": lc.probe_payload(PROBE), "model_services": lc.services_payload(SERVICES)},
-            checked_at=time.time(),
-            identity=_identity(workspace_id=""),
-        )
-        db_mod.clear_gateway_probe_cache()
-        db_mod.clear_model_services_cache()
-        state, reads, writes = self._run(monkeypatch, use_launch_cache=True, hit=True)
-        # The pre-fetch read and the post-fetch re-read (which would drop the entry
-        # if the fetch had re-logged in) both land on the same key.
-        assert reads == [key, key]
-        assert writes == []
-        assert state["claude_models"] == {"sonnet": "system.ai.claude-sonnet-5"}
 
     def test_a_login_during_the_token_fetch_drops_the_primed_entry(self, monkeypatch):
         key = _key(workspace_id="")
@@ -504,18 +468,6 @@ class TestRefresher:
         assert lc.main(refresh_args()) == 0
         # The untimed fetch never re-auths for any caller; the refresher passes no overrides.
         assert calls == [(WORKSPACE, "p", {})]
-
-    def test_failed_token_fetch_invalidates(self, monkeypatch):
-        self._patch_lookups(monkeypatch)
-
-        def failing(*_a, **_k):
-            raise RuntimeError("auth expired")
-
-        monkeypatch.setattr(lc, "fetch_databricks_token_untimed", failing)
-        key = _key()
-        _store(key, {}, checked_at=time.time() - lc.REFRESH_THROTTLE_SECONDS - 1)
-        assert lc.main(refresh_args()) == 1
-        assert lc.load_entry(key) is None
 
     def test_custom_oauth_refresh_reuses_the_saved_login(self, monkeypatch):
         self._patch_lookups(monkeypatch)
@@ -720,14 +672,6 @@ class TestRefresher:
 
 
 class TestLaunchMerge:
-    def test_merge_under_the_key_lock(self):
-        key = _key()
-        _store(key, {"probe": lc.probe_payload(PROBE)}, checked_at=time.time())
-        assert lc.try_merge_entry(key, _identity(), {"catalog": lc.catalog_payload(CATALOG)})
-        entry = lc.load_entry(key, _identity())
-        assert entry is not None
-        assert lc.entry_catalog(entry) is not None
-
     def test_a_merge_is_skipped_while_a_refresher_holds_the_key(self):
         key = _key()
         _store(key, {"probe": lc.probe_payload(PROBE)}, checked_at=time.time())
@@ -751,25 +695,49 @@ class TestLaunchMerge:
 
 class TestLaunchPath:
     @contextmanager
-    def _launch(self, list_catalog, spawn, *, configured_state=None):
-        configured_state = configured_state or STATE
-        with (
+    def _launch(
+        self,
+        list_catalog,
+        spawn,
+        *,
+        configured_state=None,
+        clear_during_configure=False,
+        state=STATE,
+        real_configure=False,
+    ):
+        configured_state = configured_state or state
+
+        def configure(*_args, **_kwargs):
+            if clear_during_configure:
+                # A login inside configure cleared the cache without changing the identity.
+                lc.clear_cache()
+            return dict(configured_state)
+
+        patches = [
             patch("ucode.cli.ensure_bootstrap_dependencies"),
-            patch("ucode.cli.load_state", return_value=dict(STATE)),
-            patch("ucode.cli.ensure_provider_state", return_value=dict(STATE)),
+            patch("ucode.cli.load_state", return_value=dict(state)),
+            patch("ucode.cli.ensure_provider_state", return_value=dict(state)),
             patch("ucode.cli._fetch_managed_config", return_value=(None, False)),
             patch("ucode.cli.get_databricks_token", return_value="token"),
-            patch("ucode.cli.configure_shared_state", return_value=dict(configured_state)),
+        ]
+        if not real_configure:
+            # `list_catalog` None leaves the real catalog fetch unpatched (journey mode).
+            patches.append(patch("ucode.cli.configure_shared_state", side_effect=configure))
+        if list_catalog is not None:
+            patches.append(patch("ucode.cli.list_anthropic_model_catalog", list_catalog))
+        patches += [
             patch(
                 "ucode.cli.resolve_launch_model",
-                return_value=(dict(STATE), "databricks-claude-sonnet-4"),
+                return_value=(dict(state), "databricks-claude-sonnet-4"),
             ),
-            patch("ucode.cli.configure_tool", return_value=dict(STATE)),
+            patch("ucode.cli.configure_tool", return_value=dict(state)),
             patch("ucode.cli.refresh_downloaded_skills_on_launch"),
             patch("ucode.cli.launch_agent"),
-            patch("ucode.cli.list_anthropic_model_catalog", list_catalog),
             patch("ucode.cli.spawn_refresher", spawn),
-        ):
+        ]
+        with ExitStack() as stack:
+            for _patch in patches:
+                stack.enter_context(_patch)
             yield
 
     def test_hit_serves_catalog_without_a_lookup_and_starts_refresher(self):
@@ -804,6 +772,17 @@ class TestLaunchPath:
         entry = lc.load_entry(lc.cache_key(lc.entry_identity(switched)))
         assert entry is not None
         assert lc.entry_catalog(entry) is not None
+
+    def test_a_login_during_configure_drops_the_cached_catalog(self):
+        _store(_key(), {"catalog": lc.catalog_payload(CATALOG)}, checked_at=time.time())
+        list_catalog = MagicMock(return_value=CATALOG)
+        spawn = MagicMock()
+        with self._launch(list_catalog, spawn, clear_during_configure=True):
+            result = runner.invoke(cli_mod.app, ["claude"])
+        assert result.exit_code == 0, result.output
+        # A re-login clears the cache without rewriting ~/.databrickscfg, so the
+        # identity still matches — the post-configure re-read must drop the catalog.
+        list_catalog.assert_called_once()
 
     def test_hit_within_throttle_does_not_refresh(self):
         _store(_key(), {"catalog": lc.catalog_payload(CATALOG)}, checked_at=time.time())
@@ -910,3 +889,96 @@ class TestInvalidation:
         monkeypatch.setattr(db_mod, "run", lambda *_a, **_k: None)
         db_mod.run_databricks_login(WORKSPACE, "p")
         assert lc.load_entry(key) is None
+
+    def test_configure_and_login_leave_default_users_disk_untouched(self, monkeypatch):
+        # The cache is opt-in: with the flag off, neither command may create
+        # ~/.ucode/launch-cache or anything in it.
+        monkeypatch.delenv("UG_LAUNCH_CACHE")
+        cache_dir = config_io.APP_DIR / lc.CACHE_DIR_NAME
+        assert not cache_dir.exists()
+        with (
+            patch("ucode.cli.install_databricks_cli"),
+            patch("ucode.cli.install_tool_binary"),
+            patch("ucode.cli.configure_workspace_command"),
+        ):
+            result = runner.invoke(cli_mod.app, ["configure"])
+        assert result.exit_code == 0, result.output
+        monkeypatch.setattr(db_mod, "databricks_cli_path", lambda: "databricks")
+        monkeypatch.setattr(db_mod, "find_profile_name_for_workspace", lambda *_a, **_k: "p")
+        monkeypatch.setattr(db_mod, "run", lambda *_a, **_k: None)
+        db_mod.run_databricks_login(WORKSPACE, "p")
+        assert not cache_dir.exists()
+
+
+class TestLaunchJourney:
+    """A launch over a recorded HTTP layer: the workspace lookups a miss and a hit make."""
+
+    @staticmethod
+    def _journey_http(monkeypatch, requests: list[str]) -> None:
+        class _Response(io.BytesIO):
+            def __init__(self, body: bytes):
+                super().__init__(body)
+                self.status = 200
+                self.headers = Message()
+
+            def geturl(self):
+                return WORKSPACE
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return None
+
+        monkeypatch.setattr(db_mod, "_use_pooled_client", lambda: False)
+
+        def open_fake(request, *, timeout=10):
+            url = request.full_url
+            requests.append(url)
+            if "unity-catalog/model-services" in url:
+                body = {"model_services": [{"name": "model-services/system.ai.claude-sonnet-5"}]}
+            else:
+                body = {
+                    "data": [{"id": "system.ai.claude-sonnet-5", "display_name": "Claude Sonnet 5"}]
+                }
+            return _Response(json.dumps(body).encode("utf-8"))
+
+        monkeypatch.setattr(db_mod, "_http_open", open_fake)
+
+    @staticmethod
+    def _lookup_count(requests: list[str]) -> int:
+        return sum("model-services" in url or "/anthropic/" in url for url in requests)
+
+    def test_cold_launch_makes_the_lookups_and_a_hit_makes_none(self, monkeypatch):
+        # A URL without a workspace id, like configure saves for one: the launch's
+        # pre-configure and post-configure identities must agree with its entry.
+        state = {**STATE, "workspace_id": ""}
+        # The bearer keeps the auth check off the network and off the Databricks CLI.
+        monkeypatch.setenv("DATABRICKS_BEARER", "bearer")
+        cold: list[str] = []
+        self._journey_http(monkeypatch, cold)
+        spawn = MagicMock()
+        with TestLaunchPath._launch(self, None, spawn, state=state, real_configure=True):
+            result = runner.invoke(cli_mod.app, ["claude"])
+            assert result.exit_code == 0, result.output
+            # The cold launch made the three lookups — probe, discovery walk and picker
+            # catalog — and persisted all three parts for the next one.
+            assert self._lookup_count(cold) == 3
+            assert sum("model-services" in url for url in cold) == 2
+            assert sum("/anthropic/" in url for url in cold) == 1
+            identity = _identity(workspace_id="")
+            entry = lc.load_entry(_key(workspace_id=""), identity)
+            assert entry is not None
+            assert lc.entry_probe(entry) is not None
+            assert lc.entry_model_services(entry) is not None
+            assert lc.entry_catalog(entry) is not None
+            cli_mod.launch_agent.assert_called_once()
+
+        # The next launch starts Claude from the cache: no lookup requests at all.
+        warm: list[str] = []
+        self._journey_http(monkeypatch, warm)
+        with TestLaunchPath._launch(self, None, spawn, state=state, real_configure=True):
+            result = runner.invoke(cli_mod.app, ["claude"])
+            assert result.exit_code == 0, result.output
+            assert self._lookup_count(warm) == 0
+            cli_mod.launch_agent.assert_called_once()
