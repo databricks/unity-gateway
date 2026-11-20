@@ -7564,6 +7564,25 @@ def fresh_pooled_client(monkeypatch):
         client.close()
 
 
+def _stub_http_transport(handled):
+    """A transport double for _proxy_transport: records which route (proxied or direct)
+    handled each request."""
+    import httpx
+
+    class StubTransport(httpx.BaseTransport):
+        def __init__(self, name):
+            self.name = name
+
+        def handle_request(self, request):
+            handled.append((self.name, request.url.host))
+            return httpx.Response(200)
+
+        def close(self):
+            pass
+
+    return lambda **kwargs: StubTransport("proxied" if kwargs.get("proxy") else "direct")
+
+
 def test_system_proxies_use_urllib_system_proxy_and_bypass(monkeypatch):
     _clear_proxy_env(monkeypatch)
     monkeypatch.setattr(
@@ -7677,21 +7696,7 @@ def test_windows_registry_proxies_route_bypassed_hosts_direct(monkeypatch):
 
     handled = []
 
-    class StubTransport(httpx.BaseTransport):
-        def __init__(self, name):
-            self.name = name
-
-        def handle_request(self, request):
-            handled.append((self.name, request.url.host))
-            return httpx.Response(200)
-
-        def close(self):
-            pass
-
-    def stub_transport(**kwargs):
-        return StubTransport("proxied" if kwargs.get("proxy") else "direct")
-
-    monkeypatch.setattr(httpx, "HTTPTransport", stub_transport)
+    monkeypatch.setattr(httpx, "HTTPTransport", _stub_http_transport(handled))
     proxies = db_mod._urllib_proxies()
     assert proxies == {
         "http": "http://registry-proxy:8080",
@@ -7748,21 +7753,7 @@ def test_env_no_proxy_bypasses_the_proxy_per_host(monkeypatch):
 
     handled = []
 
-    class StubTransport(httpx.BaseTransport):
-        def __init__(self, name):
-            self.name = name
-
-        def handle_request(self, request):
-            handled.append((self.name, request.url.host))
-            return httpx.Response(200)
-
-        def close(self):
-            pass
-
-    def stub_transport(**kwargs):
-        return StubTransport("proxied" if kwargs.get("proxy") else "direct")
-
-    monkeypatch.setattr(httpx, "HTTPTransport", stub_transport)
+    monkeypatch.setattr(httpx, "HTTPTransport", _stub_http_transport(handled))
     proxies = db_mod._urllib_proxies()
     assert proxies == {"https": "http://env-proxy:3128"}
     transport = db_mod._proxy_transport(httpx, proxies, httpx.Limits())
